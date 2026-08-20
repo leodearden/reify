@@ -1,0 +1,36 @@
+module dcr_yield_stress_dimension_silent
+
+// D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaf β, boundary row B5 — AMENDED at decompose.
+//
+// PRD §8 B5 writes the fixture as a `Material` with `yield_stress: 310mm`, but
+// `Material` (crates/reify-compiler/stdlib/materials_mechanical.ri:82) has NO
+// `yield_stress` field — the PRD states this correctly in §2.4 correction 3 and
+// then contradicts it in B5. MEASURED at decompose: writing it that way makes
+// the argument silently lower to a POSITIONAL `__arg3: 0.31 m`, so the fixture
+// would not exercise the intended reader at all.
+//
+// `yield_stress : Option<Pressure>` lives on `trait ElasticMaterial`
+// (materials_fea.ri:114) and its conformers (`Steel_AISI_1045` at :157, default
+// `some(310MPa)` at :161). This fixture uses the real field.
+//
+// MEASURED at decompose (2026-07-28, main efba5a8036): `reify eval` EXIT 0,
+// ZERO diagnostics; `wrong` stores `yield_stress: Some(0.31 m)` where the
+// default is `Some(310000000 kg*m^-1*s^-2)`. `material_field_si`
+// (crates/reify-stdlib/src/flexures/common.rs:126) then reads 0.31 as Pa.
+//
+// NOTE for leaf α (contract §7): this is the `Option<Pressure>` shape.
+// `accept_arg` (crates/reify-eval/src/arg_acceptance.rs:117-130) has NO
+// `Value::Option` arm — it matches Undef / Scalar / `other => Rejected`. Making
+// `validate_dimensioned_scalar` "a thin adapter over accept_arg" (§6 decision 8)
+// WITHOUT adding Option-unwrapping would regress every `yield_stress` read to a
+// rejection, because `scalar_si`/`material_field_si` deliberately recurse into
+// `Option(Some(_))` (documented at common.rs:117-125).
+
+structure def DcrYieldStressDimensionSilent {
+    let wrong   = Steel_AISI_1045(yield_stress: some(310mm))
+    let correct = Steel_AISI_1045()
+
+    let j_wrong = prb_cantilever_beam(20mm, 5mm, 0.5mm, wrong, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+    let j_ok    = prb_cantilever_beam(20mm, 5mm, 0.5mm, correct, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+}

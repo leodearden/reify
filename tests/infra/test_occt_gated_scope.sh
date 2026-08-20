@@ -135,6 +135,40 @@ echo "--- Test 4 (task 4451): plan has NO cargo-test-occt-gated.sh invocation (f
 assert "plan contains NO cargo-test-occt-gated.sh (gated pass dropped, OCCT in nextest pool)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo-test-occt-gated\.sh'"
 
+# NEXTEST-LESS HOST AUDIT (task 5604): Tests 5-8 need NO change — they are
+# host-independent BY CONSTRUCTION, and this is the shape to copy. Why the
+# alternation is sound at all (verify.sh's two emission branches share their
+# selector fragment): see the canonical "WHY THE FALLBACK IS SHAPE-IDENTICAL"
+# block in tests/infra/test_verify_nextest_absent_suites.sh.
+#
+# Each one EXTRACTS with the `cargo (test|nextest run)` alternation into
+# FULL_WS_DEBUG / NEXTEST_RELEASE, asserts the extract is NON-EMPTY
+# (`test -n`), and only THEN negative-greps the extract. That ordering is what
+# makes them non-vacuous: a negative grep run directly against the whole plan
+# passes for free on a nextest-less host (its needle matches nothing), whereas
+# here the `test -n` assert fails first if the pass is missing. Sibling suites
+# that instead negative-grepped a hard-coded `cargo nextest run` against the
+# raw plan were silently asserting nothing on that path — see task 5604's fix
+# to test_verify_scope.sh / test_verify_failfast_order.sh.
+#
+# Two deliberate exceptions further down, neither of them a defect:
+#   - Test 9 (--config-file / reify-nextest-occt) is GENUINELY nextest-only:
+#     cargo test has no --config-file. It carries an explicit PLAN_HAS_NEXTEST
+#     guard with a written reason — the correct form when a property really is
+#     runner-specific, as opposed to widening the grep. The guard is written
+#     OUTSIDE the assert (skip-and-echo), not as an early `exit 0` inside the
+#     assert body; see the "GUARD FORM MATTERS" note at Test 9 for why that
+#     distinction is what keeps S7's floor load-bearing.
+#   - Tests 9b/9c are negative regression guards whose subject is a
+#     `cargo nextest run` line. When NEXTEST=0 no such line exists, so they are
+#     INERT by construction rather than vacuous by accident: the thing they
+#     forbid (a broken --config form on a nextest line) cannot occur where
+#     there are no nextest lines at all.
+#
+# Pinned mechanically by S7 in test_verify_nextest_absent_suites.sh, floor 57
+# = 58 ambient minus Test 9's runner-specific skip, so this verdict fails
+# loudly if a future edit guards a further assert away here.  (Floor raised
+# from 48/49 by task 5984; the 1-assert delta is unchanged.)
 echo ""
 echo "--- Test 5 (task 4451): full-workspace nextest pass has --workspace with NO --exclude ---"
 FULL_WS_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
@@ -208,6 +242,16 @@ assert "workspace nextest pass is wrapped in 'timeout --kill-after=60 [0-9]+m'" 
 # Guard: plan-shape assertions are only meaningful when the plan actually uses
 # cargo nextest run.  When NEXTEST=0 the plan uses cargo test (no --config-file
 # support), so skip the plan-shape checks (vacuous pass).
+#
+# GUARD FORM MATTERS (task 5604 amendment).  The skip is expressed OUTSIDE the
+# assert (`if [ "$PLAN_HAS_NEXTEST" -gt 0 ]; then assert ...; else echo SKIP; fi`)
+# rather than as an early `exit 0` INSIDE the assert body.  test_helpers.sh:42
+# counts any zero-exit checker as a PASS, so an in-body `exit 0` guard still
+# increments PASS while checking nothing — invisible to S7's pass floor in
+# test_verify_nextest_absent_suites.sh, which is the mechanism meant to catch
+# exactly this.  The outside form makes the skip VISIBLE as a count of 57 rather
+# than 58 on a nextest-less host, so a future guard that silently swallows
+# coverage trips the floor.  Copy this shape, not an in-body `exit 0`.
 # ---------------------------------------------------------------------------
 PLAN_HAS_NEXTEST="$(printf '%s\n' "$TEST_PLAN_SEGS" | grep -c 'cargo nextest run' || true)"
 GEN_CFG="$REPO_ROOT/scripts/gen-nextest-config.sh"
@@ -218,14 +262,26 @@ echo "--- Tests 9–12 (task 4503/γ): --config-file plan assertions for env-dri
 # Test 9 (plan-shape): every cargo nextest run line carries --config-file <path>
 # where the path contains the 'reify-nextest-occt' prefix.  In --print-plan mode
 # (used here) this is the static placeholder; in execute mode it is the real temp path.
-assert "every 'cargo nextest run' plan line carries '--config-file' with 'reify-nextest-occt' path" \
-    bash -c "
-        if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
-        bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
-            | grep 'cargo nextest run' \
-            | grep -v -- '--config-file.*reify-nextest-occt' || true)
-        [ -z \"\$bad\" ]
-    "
+#
+# Genuinely nextest-only: `cargo test` has no --config-file, so this cannot be
+# fixed by widening the grep the way task 5604 fixed its siblings.  Guarded in
+# the skip-outside-assert form per the note above — this is the ONE assert
+# behind S7's 57-nextest-less / 58-ambient delta.
+if [ "$PLAN_HAS_NEXTEST" -gt 0 ]; then
+    assert "every 'cargo nextest run' plan line carries '--config-file' with 'reify-nextest-occt' path" \
+        bash -c "
+            bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
+                | grep 'cargo nextest run' \
+                | grep -v -- '--config-file.*reify-nextest-occt' || true)
+            [ -z \"\$bad\" ]
+        "
+else
+    echo "  SKIP: Test 9 (--config-file / reify-nextest-occt) — the plan has no"
+    echo "        'cargo nextest run' line on this host (nextest=0) and cargo test"
+    echo "        has no --config-file, so the property is genuinely runner-specific."
+    echo "        S7's floor in test_verify_nextest_absent_suites.sh is pinned at 57"
+    echo "        (= 58 ambient minus this assert) to account for exactly this skip."
+fi
 
 # Regression guard: NO cargo nextest run line may carry the broken Cargo-config form.
 # cargo --config overrides CARGO configuration only; test-groups is a nextest config
@@ -515,7 +571,7 @@ _DEFAULT_ST_PERIOD="$(awk "$_DEFAULT_ST_PERIOD_AWK" "$NEXTEST_TOML")"
 _DEFAULT_ST_TERM="$(awk "$_DEFAULT_ST_TERM_AWK" "$NEXTEST_TOML")"
 
 assert "default slow-timeout ceiling (period=${_DEFAULT_ST_PERIOD:-unset}s * terminate-after=${_DEFAULT_ST_TERM:-unset}, both extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${_DEFAULT_ST_PERIOD:-}' ] && [ -n '${_DEFAULT_ST_TERM:-}' ] && [ \$(( ${_DEFAULT_ST_PERIOD:-0} * ${_DEFAULT_ST_TERM:-0} )) -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${_DEFAULT_ST_PERIOD:-}' ] && [ -n '${_DEFAULT_ST_TERM:-}' ] && [ \$(( ${_DEFAULT_ST_PERIOD:-0} * ${_DEFAULT_ST_TERM:-0} )) -lt 3600 ]"
 
 # Test 16d: REGRESSION GUARD (green-on-arrival) — no `retries` key anywhere in
 # nextest.toml or the generated config. A retry would re-run and mask the very
@@ -532,6 +588,285 @@ assert "no 'retries' key in gen-nextest-config.sh generated config (no-retries i
         grep -v '^[[:space:]]*#' \"\$cfg\" | grep -q 'retries' && rc=1
         rm -f \"\$cfg\"
         exit \$rc
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 17a-17b (task 5984): global [profile.default] test-threads pool cap.
+#
+# Before this task the ONLY concurrency bound in nextest.toml was the `occt`
+# test-group's max-threads.  Every crate OUTSIDE that group (reify_lsp,
+# reify-syntax, reify-compiler, the GUI Rust tests, ...) ran in nextest's
+# DEFAULT global pool, which is the host's logical CPU count (32 here) —
+# i.e. uncapped in practice.  `[profile.default] test-threads` is the global
+# pool bound; these tests pin that it exists and actually bounds.
+#
+# The extractor below is section-scoped to the [profile.default] TABLE: the
+# `/^\[/{f=0}` reset is what stops a match inside a following
+# [[profile.default.overrides]] block from satisfying a [profile.default]
+# assertion (same reason Test 16a is section-scoped).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17a-17b (task 5984): global [profile.default] test-threads pool cap ---"
+
+_DEFAULT_TT_AWK='/^\[profile\.default\]/{f=1;next}/^\[/{f=0}f&&/^test-threads[[:space:]]*=/{match($0,/[0-9]+/);print substr($0,RSTART,RLENGTH);exit}'
+
+# Test 17a: the in-file literal is the sed-template fallback / HARD_CAP ceiling.
+# Asserted on the EXTRACTED value (not a raw grep) so an occurrence inside an
+# overrides block cannot satisfy it.
+assert "nextest.toml: [profile.default] has test-threads = 16 (sed-template fallback / HARD_CAP literal, section-scoped to the [profile.default] table)" \
+    bash -c "[ \"\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')\" = '16' ]"
+
+# Test 17b: that value is a non-empty positive integer >= 1.  nextest treats an
+# absent key as unbounded (= logical CPU count), so this pins that the in-file
+# fallback actually BOUNDS the pool rather than merely being present.
+# NOTE the two zero-ish cases are NOT the same failure and must not be conflated:
+# an ABSENT key silently defaults to the CPU count (fail-open), whereas an
+# explicit `test-threads = 0` is REJECTED by nextest 0.9.136 as an invalid config
+# (fail-closed — see Test 17g).  This assert excludes both.
+assert "nextest.toml: [profile.default] test-threads is a non-empty positive integer >= 1 (fallback actually bounds the pool)" \
+    bash -c "
+        val=\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')
+        [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ]
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 17c-17e (task 5984): host-relative derivation of the global pool cap.
+#
+# Derivation: tt = min(HARD_CAP=16, nproc)   [nproc term skipped if unavailable]
+#   REIFY_NEXTEST_TEST_THREADS — explicit override, wins verbatim.
+#   nproc — REIFY_OCCT_NPROC if valid, else system nproc/getconf.  That knob is
+#     deliberately REUSED rather than aliased: the value is the host's logical
+#     CPU count, nothing about it is OCCT-specific (the prefix is historical,
+#     from task 4621's occt-only derivation).
+#
+# NO RAM term here, unlike the occt cap — deliberate, see the rationale block in
+# .config/nextest.toml: this cap's justification is CPU-share symmetry and
+# runqueue depth, not RSS.
+#
+# Why host-relative at all (the task 4621 lesson): a bare literal 16 equals
+# nproc on a 16t laptop (no reduction whatsoever — the status quo this task
+# exists to fix) and OVERSUBSCRIBES an 8-core host or CPU-quota'd container 2x,
+# making the "cap" actively harmful.  REIFY_OCCT_NPROC is injected in every case
+# below so each expectation is an exact integer on ANY host (Tests 13a-15b form).
+# Compile-free: no cargo, no nextest, no workspace compile (task 4613).
+#
+# HERMETICITY (required form — copy this, not a shorter one): every case that
+# asserts an EXACT derived value must clear BOTH global-pool knobs, i.e.
+#   env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP
+# unless it is itself setting that knob.  HARD_CAP is a supported tuning point,
+# so an operator or CI job may legitimately have it exported; clearing only
+# REIFY_NEXTEST_TEST_THREADS leaves 17d/17e resolving to the ambient ceiling
+# (e.g. 4) and failing spuriously in that shell.  17h/17i already used the full
+# form; 17d/17e were widened to match in the task-5984 review pass.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17c-17e (task 5984): host-relative derivation of the global test-threads cap ---"
+
+# Test 17c: explicit REIFY_NEXTEST_TEST_THREADS=5 wins verbatim.
+# RED against step-2: the generated config keeps the in-file literal 16.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=5: [profile.default] test-threads resolves to 5 (explicit override wins verbatim)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS=5 bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"5\" ]
+    "
+
+# Test 17d: REIFY_OCCT_NPROC=8 -> 8 (nproc binds, below HARD_CAP=16).
+# This is the assertion a bare in-file literal cannot satisfy: on an 8-core host
+# a fixed 16 would oversubscribe 2x.
+# RED against step-2: stays 16.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads resolves to 8 (nproc binds, no 2x oversubscription)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=8 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"8\" ]
+    "
+
+# Test 17e: REIFY_OCCT_NPROC=32 -> 16 (HARD_CAP binds; workstation profile).
+# GREEN-by-coincidence before step-4 (the literal 16 is simply passed through
+# unrewritten) — kept deliberately: it is the host-independent workstation
+# anchor that pins the ceiling once 17d forces a real derivation.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profile.default] test-threads resolves to 16 (HARD_CAP binds)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"16\" ]
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 17f-17g (task 5984): the HARD_CAP knob and the >=1 clamp.
+#
+# 17f exercises the REIFY_NEXTEST_TEST_THREADS_HARD_CAP parse path — mirroring
+#   Test 15a's role for REIFY_OCCT_NEXTEST_HARD_CAP.  With NPROC=32 neither the
+#   default 16 nor the CPU term binds, so the custom ceiling is the SOLE active
+#   bound; without this assert a regression in that parse silently produces 16
+#   and nothing notices.
+# 17g pins the zero-clamp.  `0` is digits-only-VALID, so it passes the parse
+#   guard and would otherwise reach the config as `test-threads = 0`.
+#   VERIFIED on cargo-nextest 0.9.136 (scratch crate, task-5984 review pass):
+#   nextest REJECTS that value rather than treating it as unbounded —
+#     error: failed to parse nextest config at `.../nextest.toml`
+#     Caused by: profile.default.test-threads: invalid value: integer `0`,
+#                expected an integer or the string "num-cpus"
+#   and exits 96.  So the unclamped failure mode is fail-CLOSED: every nextest
+#   pass on the host aborts before running a test — a verify OUTAGE, not the
+#   silently-uncapped pool an earlier draft of this comment claimed.  (Reason
+#   from the verified behaviour, not that inverted claim: an unclamped 0 is not
+#   merely a perf problem.)  Same "arithmetically valid, semantically
+#   nonsensical" defence the occt ram_bound already carries, and the identical
+#   nextest rejection it cites for `max-threads = 0`.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17f-17g (task 5984): global-cap HARD_CAP knob and >=1 clamp ---"
+
+# Test 17f: REIFY_NEXTEST_TEST_THREADS_HARD_CAP=4 with NPROC=32
+#   min(4, 32) = 4 (custom ceiling binds).
+#   RED against step-4, which hardcodes 16 with no knob.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=4/NPROC=32: [profile.default] test-threads = 4 (custom HARD_CAP binds)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS_HARD_CAP=4 REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"4\" ]
+    "
+
+# Test 17g: REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0 with NPROC=32 -> 1, never 0.
+#   Drives the clamp via the DERIVE branch; Test 17j drives the same clamp via
+#   the explicit-override branch.
+#   RED against step-4, which has no clamp.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0/NPROC=32: [profile.default] test-threads = 1 (clamped, never 0 = invalid config nextest rejects)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0 REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"1\" ]
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 17h-17i (task 5984): REGRESSION GUARDS (green-on-arrival).
+#
+# Labeled as such following Test 16d's precedent, so a reviewer does not read
+# them as a failed RED step: they pin properties the derivation already
+# satisfies, so that a future edit cannot quietly violate them.
+#
+# Both derive BOTH operands from real parsed state rather than repeating
+# literals — the test-quality standard Test 16c and Assertion H were amended to
+# meet.  An assertion whose two sides are both hardcoded can never fail no
+# matter what the config says.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17h-17i (task 5984): REGRESSION GUARDS (green-on-arrival) — no oversubscription; global cap is the binding ceiling ---"
+
+# Test 17h (no oversubscription): the generated global pool never exceeds the
+# host's CPU count.  This is the invariant the whole task exists to establish,
+# and precisely what a bare in-file literal violates on a small host.  The
+# comparison operand is the INJECTED cpu count (8), not a repeated expectation
+# of the derivation's output.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8 (no explicit overrides): generated [profile.default] test-threads is a positive integer <= the injected CPU count 8 (never oversubscribes)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=8 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ] && [ \"\$val\" -le 8 ]
+    "
+
+# Test 17i (the global is the binding ceiling; the occt group is a BACKSTOP,
+# not competing config): under the host-independent workstation profile, extract
+# BOTH caps from the SAME generated file and assert the global is strictly less
+# than the occt group cap (16 < 24).  Pins the design property documented in
+# .config/nextest.toml: the global subsumes the group cap on this host class,
+# TIGHTENING the group's effective memory bound (24x2=48 GiB -> 16x2=32 GiB)
+# rather than loosening anything — which is why the group is kept, not deleted.
+#
+# DO NOT generalise this to "global <= occt cap on any host".  That is FALSE:
+# the occt cap carries a RAM term the global deliberately does not, so on e.g.
+# NPROC=8 with a small MemTotal the occt cap resolves BELOW the global.  This
+# assertion is deliberately scoped to the injected workstation profile.
+assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): generated [profile.default] test-threads is strictly less than the generated [test-groups] occt max-threads, BOTH extracted from the same file (global binds; occt group is a backstop)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=128 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              -u REIFY_OCCT_NEXTEST_MAX_THREADS -u REIFY_OCCT_NEXTEST_HARD_CAP \
+              bash \"${GEN_CFG}\")
+        tt=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        oc=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ -n \"\$tt\" ] && [ -n \"\$oc\" ] && [ \"\$tt\" -lt \"\$oc\" ]
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 17j-17k (task 5984, REVIEW-AMENDMENT pass): the two gaps a reviewer
+# found in the 17a-17i block above.  Appended rather than interleaved so the
+# existing letters keep their meaning in the commit history and in the S7
+# accounting table; each cross-references the test it belongs beside.
+#
+# 17j closes a CLAMP-BRANCH coverage gap next to Test 17g.
+# 17k turns gen-nextest-config.sh's PROSE uniqueness claim about its sed anchor
+#   into a checked invariant.
+# Both are compile-free (bash/sed/awk only), so they raise the nextest-less and
+# ambient S7 counts by the same amount.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17j-17k (task 5984 review amendment): clamp covers BOTH branches; sed anchor is unique ---"
+
+# Test 17j (sibling of 17g — the OTHER branch into the same clamp):
+# the >=1 clamp in gen-nextest-config.sh sits AFTER the
+# `case "${REIFY_NEXTEST_TEST_THREADS:-}"` block, so it guards the
+# explicit-override branch (tt=$(( 10#${REIFY_NEXTEST_TEST_THREADS} ))) as well
+# as the derive branch that 17g exercises.  REIFY_NEXTEST_TEST_THREADS=0 is
+# equally digits-only-VALID and equally reachable, but reaches the clamp by a
+# DIFFERENT code path.
+#
+# Why this assert is not redundant with 17g: a natural-looking tidy-up that
+# moves the clamp inside the derive branch (where its explanatory comment sits)
+# leaves 17g GREEN while REIFY_NEXTEST_TEST_THREADS=0 emits `test-threads = 0`
+# and aborts every nextest pass with the config parse error quoted at 17g.
+# Falsifiability checked by mutation, not assumed: moving the clamp into the
+# derive branch fails THIS assert and only this one.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=0/NPROC=32: [profile.default] test-threads = 1 (the >=1 clamp also covers the EXPLICIT-OVERRIDE branch, not just the derive branch 17g drives)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS=0 REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"1\" ]
+    "
+
+# Test 17k (the sed anchor's unstated precondition, made explicit):
+# gen-nextest-config.sh rewrites the global cap with a LINE-anchored but NOT
+# section-anchored substitution:
+#     sed -e "s/^test-threads = [0-9][0-9]*\$/test-threads = \${tt}/"
+# The occt anchor next to it is safe because `occt = { max-threads = N }` is
+# unique by key NAME.  `test-threads` is NOT: it is a generic nextest PROFILE
+# key that a future [profile.ci] / [profile.offline] table could legitimately
+# carry with a deliberately different value.  A second such line would be
+# rewritten to the SAME host-derived value, silently clobbering that profile's
+# setting.
+#
+# Assertion I in tests/infra/test_nextest_slow_priority.sh cannot catch this:
+# its extractor is section-scoped to [profile.default] and would report the
+# correctly-rewritten default while the other profile was quietly overwritten.
+# The script's comment asserts uniqueness in prose; this assert is what makes
+# the claim CHECKED, so adding a second profile turns a silent clobber into a
+# loud CI failure that forces the sed to be made section-aware first.
+#
+# Counted on the SOURCE .config/nextest.toml (the sed template), which is what
+# the anchor is matched against.
+assert "nextest.toml: exactly ONE line matches gen-nextest-config.sh's '^test-threads = <int>\$' sed anchor (uniqueness precondition of the non-section-scoped substitution — a second profile's test-threads would be silently clobbered)" \
+    bash -c "
+        n=\$(grep -c '^test-threads = [0-9][0-9]*\$' '$NEXTEST_TOML' || true)
+        [ \"\$n\" = \"1\" ]
     "
 
 test_summary

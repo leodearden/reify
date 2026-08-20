@@ -67,7 +67,7 @@ Location: `crates/reify-kernel-occt/src/stubs.rs` and related test modules.
 
 **Class B — geometry-sentinel noun ("placeholder"):**
 Pattern: `fn tessellate_sentinel_placeholder_continues_independent_ops()` with `assert!(result.is_empty())`.
-Location: `crates/reify-eval/tests/geometry_error_handling.rs`.
+Location: `crates/reify-eval/tests/harness_geometry/geometry_error_handling.rs`.
 "placeholder" describes a sentinel value in the geometry kernel (a placeholder geometric object used during error recovery paths), not a placeholder-test marker. The fn legitimately asserts that the sentinel path produces an empty geometry list.
 
 **Class C — path/template noun ("placeholder"):**

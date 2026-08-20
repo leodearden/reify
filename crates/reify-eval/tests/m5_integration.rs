@@ -102,11 +102,8 @@ fn trait_implementing_structure() {
 /// - Both modules are compiled and returned
 #[test]
 fn multi_module_import() {
-    let dir = std::env::temp_dir()
-        .join("reify_m5_test")
-        .join(format!("multi_mod_{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    let guard = reify_test_support::prefixed_tempdir("reify_m5_test-multi_mod-");
+    let dir = guard.path().to_path_buf();
 
     // Create stdlib dir (required by ModuleResolver)
     let stdlib = dir.join("stdlib");
@@ -154,9 +151,6 @@ structure def Assembly {
             panic!("compile_project failed: {:?}", errors);
         }
     }
-
-    // Cleanup
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 7: collection_lambda_operations ────────────────────────────
@@ -772,11 +766,8 @@ fn trait_rigid_mass_conformance() {
 /// structure as a sub-component, exercising cross-module resolution.
 #[test]
 fn multi_module_import_with_sub() {
-    let dir = std::env::temp_dir()
-        .join("reify_m5_test")
-        .join(format!("multi_sub_{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    let guard = reify_test_support::prefixed_tempdir("reify_m5_test-multi_sub-");
+    let dir = guard.path().to_path_buf();
 
     // Create stdlib dir (required by ModuleResolver)
     let stdlib = dir.join("stdlib");
@@ -840,9 +831,6 @@ structure def Assembly {
             panic!("compile_project failed: {:?}", errors);
         }
     }
-
-    // Cleanup
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── guarded_enum_multi_branch ───────────────────────────────────────

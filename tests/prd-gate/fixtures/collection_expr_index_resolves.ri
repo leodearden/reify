@@ -1,0 +1,21 @@
+// γ-verification ADVERSARY baseline fixture for indexed-sub-instantiation §7 δ.
+// Premise the prover missed: δ's neighbor-constraint signal
+// (`forall i in 0..2 : constraint ps[i].od < ps[i + 1].od`, PRD §6.1 row 5)
+// unrolls with "the per-element replacement is the binder's literal value"
+// (§3.3), i.e. `ps[i + 1]` becomes the EXPRESSION index `ps[0 + 1]` — but PRD
+// probe #7 only evidenced a bare literal index (`idlers[0].od`). This fixture
+// probes the expression-index substrate directly: `vs[0 + 1].od` resolves today
+// via the DYNAMIC collection-index path (stderr info: "dynamic collection
+// index: vs[<expr>].od — result depends on runtime list assembly"), and a
+// constraint over it checks green.
+// Expected: `reify check` exits 0; stdout contains "OK Rig#constraint[0]"
+// (verified 2026-07-25 against target/debug/reify built same day).
+structure def P {
+    param od : Length = 5mm
+}
+structure def Rig {
+    sub vs : List<P>
+    constraint vs.count == 2
+    let d1 = vs[0 + 1].od
+    constraint d1 > 1mm
+}

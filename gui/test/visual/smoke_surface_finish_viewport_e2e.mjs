@@ -41,6 +41,8 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -72,29 +74,12 @@ function fail(msg) {
   process.exit(1);
 }
 
-async function rpc(method, args = {}) {
-  const res = await fetch(DEBUG_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: method, arguments: args },
-    }),
-  });
-  const envelope = await res.json();
-  if (envelope.error) throw new Error(`RPC error: ${JSON.stringify(envelope.error)}`);
-  const content = envelope?.result?.content;
-  if (!content || content.length === 0) return null;
-  const textBlock = content.find(c => c.type === 'text');
-  if (!textBlock) return null;
-  try {
-    return JSON.parse(textBlock.text);
-  } catch {
-    return textBlock.text;
-  }
-}
+// The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
+// (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
+// can never run in CI. `rpc()` folds both failure dialects into one §2a shape —
+// see ./rpcEnvelope.mjs for the fold, and ./smokeDriverGuards.mjs
+// (describeRpcFailure) for what a driver does with the decoded payload.
+const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -124,23 +109,12 @@ async function main() {
   console.log('  OK: server ready');
 
   // ── Boot: open surface_finish_viewport.ri (with retry for WebView init) ────
-  // The debug MCP server comes up before the WebKit WebView finishes loading.
-  // Retry open_file up to 8 times (≤45s) to give the WebView time to complete
-  // its startup sequence.  Mirrors smoke_appearance_e2e.mjs.
+  // The retry budget, the `.ok` verdict and the failure wording live in
+  // ./smokeDriverGuards.mjs, where vitest can cover them; this file needs a live
+  // GUI, so nothing inline here ever could be. `fail` is passed (not `log`) so an
+  // exhausted retry exits 1 naming the underlying RPC error.
   log('Opening examples/surface_finish_viewport.ri via open_file (with retry for WebView init)…');
-  let openResult = null;
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    openResult = await rpc('open_file', { path: FIXTURE });
-    console.log(`  open_file attempt ${attempt} result:`, JSON.stringify(openResult));
-    if (openResult && openResult.ok) break;
-    if (attempt < 8) {
-      console.log(`  Retrying in 3s (WebView still initialising)…`);
-      await sleep(3000);
-    }
-  }
-  if (!openResult || !openResult.ok) {
-    fail(`open_file failed after retries: ${JSON.stringify(openResult)}`);
-  }
+  await openFileWithRetry(rpc, FIXTURE, { fail });
 
   log('Waiting for engine idle…');
   const idleResult = await rpc('wait_for_idle', { timeout_ms: 15000 });
@@ -148,6 +122,10 @@ async function main() {
 
   // Boot: activeFile must contain 'surface_finish_viewport'
   const storeAfterOpen = await rpc('store_state');
+  // Diagnose the RPC before the optional chain reads past an in-band error —
+  // see ./smokeDriverGuards.mjs (describeRpcFailure).
+  const storeAfterOpenFailure = describeRpcFailure(storeAfterOpen, 'store_state (post-open)');
+  if (storeAfterOpenFailure) fail(storeAfterOpenFailure);
   if (!storeAfterOpen?.editor?.activeFile?.includes('surface_finish_viewport')) {
     fail(`Expected activeFile to contain 'surface_finish_viewport', got: ${storeAfterOpen?.editor?.activeFile}`);
   }
@@ -157,9 +135,8 @@ async function main() {
 
   log('Collecting viewport_state for B9 material-state probes…');
   const vpState = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!vpState || typeof vpState !== 'object' || 'error' in vpState) {
-    fail(`viewport_state('design-main') failed: ${JSON.stringify(vpState)}`);
-  }
+  const vpStateFailure = describeRpcFailure(vpState, "viewport_state('design-main')");
+  if (vpStateFailure) fail(vpStateFailure);
 
   const meshInfo = vpState.meshInfo ?? [];
   console.log('  meshInfo count:', meshInfo.length);

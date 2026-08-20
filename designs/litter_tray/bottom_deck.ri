@@ -40,6 +40,14 @@ structure def BottomDeck : Rigid {
     param floor_fillet : Length = 5mm      // main cavity: floor-wall junction
     param ledge_fillet : Length = 2mm      // recess cavity: ledge-wall junction
 
+    // ── Mid-span pedestals (support the top deck's solid pads) ──────────
+    // The top deck carries two Ø26 solid pads at (±pad_x, 0) on its sieve
+    // floor; these pedestals rise from this deck's floor to ledge level and
+    // bear on those pads, halving the sieve floor's unsupported span.
+    param pedestal_x : Length = 120mm      // MUST match top_deck.pad_x
+    param pedestal_r : Length = 10mm
+    param top_pad_r  : Length = 13mm       // top_deck.pad_r (interface echo)
+
     param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
 
     // ── Derived section dims ────────────────────────────────────────────
@@ -50,8 +58,11 @@ structure def BottomDeck : Rigid {
     let recess_length = outer_length - 2 * upper_wall
     let recess_width  = outer_width  - 2 * upper_wall
 
-    // Sawdust capacity between emptyings (rectangular approximation).
+    // Sawdust capacity between emptyings (rectangular approximation,
+    // minus the two pedestals).
+    let pedestal_h = ledge_z - floor_thickness
     let capacity = (ledge_z - floor_thickness) * inner_length * inner_width
+                 - 2.0 * 3.14159265 * pedestal_r * pedestal_r * pedestal_h
 
     // ── Printability & sanity constraints ───────────────────────────────
     let bed_limit = 265mm                            // U1 bed 270mm minus margin
@@ -67,6 +78,8 @@ structure def BottomDeck : Rigid {
     constraint edge_fillet < upper_wall              // rim fillet fits the rim
     constraint floor_fillet < ledge_z / 4
     constraint ledge_fillet < recess_depth / 2
+    constraint pedestal_r <= top_pad_r - 2mm         // lands fully on the pad
+    constraint pedestal_x + pedestal_r < inner_length / 2 - floor_fillet
 
     // ── Geometry ────────────────────────────────────────────────────────
     // Shared corner-cylinder centres for all three rounded prisms (scalar
@@ -81,7 +94,9 @@ structure def BottomDeck : Rigid {
     // outer envelope minus recess cavity (ledge level up, upper_wall thick)
     // minus main cavity (floor up, lower_wall thick); each rounded prism is
     // union_all(2 boxes + 4 corner cylinders) with small all-edge fillets.
-    param geometry : Solid = difference(
+    // Pedestals union on last, standing in the cavity from floor to ledge.
+    param geometry : Solid = union_all(
+        difference(
         difference(
             fillet(union_all(
                 translate(box(outer_length - 2 * corner_radius, outer_width, wall_height), 0mm, 0mm, wall_height / 2),
@@ -108,6 +123,11 @@ structure def BottomDeck : Rigid {
             translate(cylinder(main_r, wall_height), -cx, -cy, floor_thickness),
             translate(cylinder(main_r, wall_height), cx, -cy, floor_thickness)
         ), floor_fillet)
+        ),
+        // Plain cylinders: a base-seam fillet wants curated edge selection
+        // (base loop only, not the bearing top rim) — add when #5208 lands.
+        translate(cylinder(pedestal_r, pedestal_h), pedestal_x, 0mm, floor_thickness),
+        translate(cylinder(pedestal_r, pedestal_h), 0mm - pedestal_x, 0mm, floor_thickness)
     )
 
     sub display = DisplayOutput(subject: geometry)

@@ -833,29 +833,24 @@ pub enum GeometryOp {
     },
     /// Create a pipe along `path` with circular cross-section of `radius`.
     ///
-    /// Composed at the kernel layer as `make_pipe(make_circle_face(radius, 0.0),
-    /// path)`. The circle cross-section is a private kernel-internal detail.
+    /// Composed at the kernel layer by posing the circular cross-section on
+    /// the path's **start frame** — centred at the path wire's start point,
+    /// with the section plane's normal aligned to the path's start tangent —
+    /// then sweeping that face along `path`. The circular cross-section and
+    /// the way it is constructed remain private kernel-internal details.
     ///
-    /// # Orientation constraint
+    /// # Orientation
     ///
-    /// The circular cross-section is a face in the **XY plane at z=0**
-    /// (i.e. its normal is +Z). `BRepOffsetAPI_MakePipe` expects the
-    /// profile's plane to align with the path's start-tangent; only paths
-    /// whose start-tangent is approximately **+Z** (within 1e-6) are
-    /// accepted.
+    /// **Any** finite start-tangent orientation is accepted: there is no
+    /// preferred axis and no antiparallel singularity.
     ///
-    /// Paths whose start-tangent is not aligned with +Z are rejected at
-    /// `execute` with `GeometryError::OperationFailed`. Callers needing
-    /// arbitrary path orientations should use `Sweep { profile, path }`
-    /// directly, supplying an explicit profile wire already aligned to
-    /// the desired frame.
+    /// A path whose start tangent has a non-finite component is rejected at
+    /// `execute` with `GeometryError::OperationFailed`. That signals a
+    /// malformed path wire, *not* an unsupported orientation.
     ///
-    /// The `kernel_pipe_non_z_start_tangent_returns_error` test locks in
-    /// this contract over +X, +Y, and arc-in-XY-plane paths.
-    ///
-    /// **Future work:** General start-tangent reorientation (automatically
-    /// aligning the profile face to the path's local frame) is deferred;
-    /// see option (a) from the task-2095 review.
+    /// `Sweep { profile, path }` remains the right operation for a
+    /// **non-circular** cross-section, where the caller supplies the profile
+    /// wire and is responsible for posing it.
     Pipe {
         path: GeometryHandleId,
         radius: Value,
@@ -2663,6 +2658,73 @@ impl MeshContractViolation {
             counts: self.counts,
             witness: self.witness,
         }
+    }
+}
+
+/// Enforcement posture for the mesh contract (INV-GEO-1) at the kernel
+/// seam wiring sites (task #5105 δ).
+///
+/// After the δ rollout flip, [`MeshContractMode::Enforce`] is the default:
+/// a mesh failing [`Mesh::validate`] aborts the operation with a structured
+/// `GeometryError::MeshContractViolation`. `REIFY_MESH_CONTRACT=warn` is the
+/// break-glass escape hatch that downgrades a violation to a diagnostic and
+/// lets the mesh through.
+///
+/// Lives in `reify-ir` — the only crate both wiring sites can share (site 1
+/// is in `reify-eval`, site 2 in `reify-kernel-manifold`, whose dependency on
+/// `reify-eval` is dev-only) — next to the rest of the mesh-contract
+/// mechanism. Reading an env var is not a kernel dependency, so the layering
+/// stays clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MeshContractMode {
+    /// Break-glass: report a violation (diagnostic / log) but let the mesh
+    /// through (`REIFY_MESH_CONTRACT=warn`).
+    Warn,
+    /// Fail closed: a violation aborts the operation with a structured
+    /// `GeometryError::MeshContractViolation`. The default.
+    #[default]
+    Enforce,
+}
+
+impl MeshContractMode {
+    /// Environment variable consulted by [`MeshContractMode::from_env`].
+    pub const ENV_VAR: &'static str = "REIFY_MESH_CONTRACT";
+
+    /// Pure parser: map an optional configuration string to a mode.
+    ///
+    /// Fails **CLOSED**. Only `Some("warn")` (case-insensitive, surrounding
+    /// whitespace tolerated) yields [`MeshContractMode::Warn`]; every other
+    /// value — `None`, empty, `"enforce"`, garbage, a typo like `"enfroce"`
+    /// — yields [`MeshContractMode::Enforce`]. Unlike the usual
+    /// "unparseable → benign default" convention, the safe fallback here is
+    /// the STRICT one: a typo must never silently disable INV-GEO-1.
+    pub fn from_env_value(value: Option<&str>) -> Self {
+        let normalized = value.map(|v| v.trim().to_ascii_lowercase());
+        match normalized.as_deref() {
+            Some("warn") => MeshContractMode::Warn,
+            _ => MeshContractMode::Enforce,
+        }
+    }
+
+    /// Production selection: read `REIFY_MESH_CONTRACT`.
+    ///
+    /// # Unit-test coverage
+    ///
+    /// This thin env-reading wrapper delegates to the pure
+    /// [`MeshContractMode::from_env_value`] parser, which carries the
+    /// exhaustive string→mode cases (`mesh_contract_mode_from_env_value_parsing`).
+    /// Mirroring the codebase convention, the wrapper is intentionally NOT
+    /// unit-tested with `std::env::set_var`/`remove_var` — both are `unsafe`
+    /// in Rust 2024 and race-prone across parallel tests. A same-process
+    /// "delegates to the parser" test is not written either: with `ENV_VAR`
+    /// unset (the normal suite environment) both sides of such an assertion
+    /// evaluate to `Enforce`, so it would pass equally against a `from_env`
+    /// that hard-codes `Enforce` and ignores the environment — no
+    /// discriminating power. Pinning it honestly would need a child process
+    /// with the var set. The one behavioral line here is instead covered
+    /// indirectly by the site-1/site-2 integration tests.
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var(Self::ENV_VAR).ok().as_deref())
     }
 }
 
@@ -5353,16 +5415,21 @@ impl TopologyAttributeTable {
 
     /// Remove the entry for `handle`, returning it if present.
     ///
-    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
-    /// to evict any colliding entry at `handle` before pushing the cached
-    /// handle — so a subsequent `lookup(handle)` correctly returns `None`
-    /// (the #3226 spec: a cache-served handle has no entries in the attribute
-    /// table on the second build). Keying by the full `KernelHandle` means
-    /// this eviction can no longer collaterally remove a different kernel's
-    /// entry that happens to share the same numeric id (#4351).
+    /// Retained for collection-API symmetry with [`Self::record`] /
+    /// [`Self::lookup`], not because a production path calls it today: its
+    /// last production caller was the task-4349 defensive cache-hit
+    /// short-circuit eviction in `Engine::probe_realization_cache`, which
+    /// task θ (#5064) retired in favor of a fail-closed `debug_assert!` once
+    /// #4351's `KernelHandle` re-key made that eviction's target collision
+    /// impossible by construction (the #3226 spec — a cache-served handle
+    /// has no entries in the attribute table on the second build — is now
+    /// directly assertable instead of needing defensive removal). See PRD
+    /// `docs/prds/v0_6/engine-build-hardening.md` §4 D6 / §9 OQ-3 for the
+    /// keep-vs-delete decision (KEEP, for API symmetry). Exercised only by
+    /// its unit tests, `topology_attribute_table_remove_returns_some_and_empties_entry`
+    /// and `topology_attribute_table_remove_absent_returns_none`.
     ///
-    /// Returns `None` silently when `handle` is absent (no-op in the common
-    /// single-kernel case where the per-build reset already cleared the table).
+    /// Returns `None` silently when `handle` is absent.
     pub fn remove(&mut self, handle: KernelHandle) -> Option<TopologyAttribute> {
         self.entries.remove(&handle)
     }
@@ -12194,6 +12261,76 @@ mod tests {
         };
         assert_fallback_matches(&open_mesh, &[0_u32; 1]); // too short
         assert_fallback_matches(&open_mesh, &[0_u32; 100]); // too long
+    }
+
+    // --- MeshContractMode env-knob parser (task #5105 δ, INV-GEO-1) ---
+
+    /// Exhaustive string→mode cases for the pure `from_env_value` parser.
+    ///
+    /// Mirrors `build_scheduler_from_env_value_parsing` (engine_fixpoint.rs).
+    /// The critical property is that the parser fails **CLOSED**: only an
+    /// exact (trimmed, case-insensitive) `warn` downgrades the contract to a
+    /// diagnostic; unset / empty / unrecognized values all resolve to
+    /// `Enforce` so a typo can never silently disable INV-GEO-1.
+    #[test]
+    fn mesh_contract_mode_from_env_value_parsing() {
+        // Unset: post-flip default is the strict mode.
+        assert_eq!(
+            MeshContractMode::from_env_value(None),
+            MeshContractMode::Enforce,
+            "an unset REIFY_MESH_CONTRACT must enforce (post-flip default)"
+        );
+        // Shell `VAR=` yields an empty string — treated as absent.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("")),
+            MeshContractMode::Enforce,
+            "an empty REIFY_MESH_CONTRACT must be treated as absent, i.e. enforce"
+        );
+
+        // The one break-glass string that flips the default off.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("warn")),
+            MeshContractMode::Warn
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("WARN")),
+            MeshContractMode::Warn,
+            "matching must be case-insensitive"
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("  warn  ")),
+            MeshContractMode::Warn,
+            "surrounding whitespace must be tolerated"
+        );
+
+        // Explicit strict spelling.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("enforce")),
+            MeshContractMode::Enforce
+        );
+
+        // Fail-closed: an unrecognized value must NEVER disable the contract.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("bogus")),
+            MeshContractMode::Enforce,
+            "an unknown REIFY_MESH_CONTRACT value must fail CLOSED, never silently \
+             disable the mesh contract"
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("enfroce")),
+            MeshContractMode::Enforce,
+            "a typo'd strict spelling must still enforce"
+        );
+    }
+
+    /// `Default` must agree with the unset-env parse: enforce.
+    #[test]
+    fn mesh_contract_mode_default_is_enforce() {
+        assert_eq!(MeshContractMode::default(), MeshContractMode::Enforce);
+        assert_eq!(
+            MeshContractMode::default(),
+            MeshContractMode::from_env_value(None)
+        );
     }
 
     #[test]

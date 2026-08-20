@@ -26,21 +26,24 @@
 // The trampoline lives at crates/reify-eval/src/modal_ops.rs.
 //
 // Signature deviation from PRD §1 `(part, opts)`:
-//   The `Part` topology type has not landed in v0.3 (`ModalResult.part` is a
-//   String placeholder — modal_analysis.ri:241). There is no Body→trampoline
-//   geometry channel, so — exactly like `solve_buckling` — the @optimized
-//   trampoline receives flat value_inputs and reconstructs the beam mesh from
-//   length/width/height. `boundary_conditions`, `damping`, `n_modes`, `tol`,
-//   `max_iters`, `sigma`, and `reference_direction` are read from the single
-//   `options : ModalOptions` StructureInstance (matching the PRD §1 example,
-//   which bundles the BCs inside ModalOptions). See plan design-decision-1.
+//   There is no Part→trampoline geometry channel: `Part` (see `structure def
+//   Part` in modal_analysis.ri, task 4578, per
+//   `docs/prds/v0_6/stdlib-surface-type-substrate.md` §12 open-question-3)
+//   carries no geometry for the trampoline to reconstruct a mesh from — see
+//   that declaration for the opaque-marker rationale. So — exactly like
+//   `solve_buckling` — the @optimized trampoline receives flat value_inputs
+//   and reconstructs the beam mesh from length/width/height.
+//   `boundary_conditions`, `damping`, `n_modes`, `tol`, `max_iters`, `sigma`,
+//   and `reference_direction` are read from the single `options : ModalOptions`
+//   StructureInstance (matching the PRD §1 example, which bundles the BCs
+//   inside ModalOptions). See plan design-decision-1.
 //
 // Signature notes:
 //   `material : ElasticMaterial` (the trait from std.materials.fea):
 //     Callers wrap a concrete material via `FEAMaterialInput(material: mat)`
 //     and pass `mi.material` (compile-time type `ElasticMaterial`) — the same
-//     coercion shim `solve_buckling` uses (solver_buckling_fns.ri:51,
-//     solver_elastic.ri:389). The trampoline reads `youngs_modulus`,
+//     coercion shim `solve_buckling` uses (solver_buckling_fns.ri) via
+//     `FEAMaterialInput` (solver_elastic.ri). The trampoline reads `youngs_modulus`,
 //     `poisson_ratio`, and `density` off the runtime StructureInstance.
 //
 //   `options : ModalOptions = ModalOptions()`:
@@ -75,7 +78,7 @@ pub fn first_frequency(result : ModalResult) -> Frequency {
 // `mode_frequency` — natural frequency of mode `n` (0-based), in Hz.
 //
 // Returns `result.modes[n].frequency`. Mirrors buckling's `mode_shape(result, n)`
-// dynamic-index accessor (solver_buckling_fns.ri:99-104).
+// dynamic-index accessor (solver_buckling_fns.ri).
 pub fn mode_frequency(
     result : ModalResult,
     n      : Int
@@ -92,13 +95,13 @@ pub fn mode_frequency(
 //
 // Signature deviation from PRD §5.2 `transient_response(modal_result, forcing,
 // t_range : Range<Time>, dt)`:
-//   `Range<T>` is NOT a surface type in Reify .ri yet (kinematic.ri:164
-//   "Range<T> not yet a surface type"; flexures_types.ri:104 same), so a typed
+//   `Range<T>` is NOT a surface type in Reify .ri yet (kinematic.ri's
+//   "not yet surface types (Range<T>, ...)" note), so a typed
 //   `t_range : Range<Time>` param would not resolve. A uniform time grid is
 //   fully specified by (t_start, t_end, dt), so the single `t_range` is split
 //   into two scalar params `t_start : Time, t_end : Time` (plus the existing
 //   `dt : Time`) — a documented signature deviation, exactly the pattern
-//   `modal_analysis` itself uses (modal_analysis_fns.ri:28) and
+//   `modal_analysis` itself uses (its signature-deviation note above) and
 //   `solve_elastic_static` (List placeholders for loads/supports). See plan
 //   design-decision-2.
 //
@@ -112,7 +115,7 @@ pub fn mode_frequency(
 // Placeholder body: dispatch replaces the body once the trampoline is
 // registered (task ι step-10), so the `DisplacementTimeHistory()` ctor call is
 // never evaluated — the same body-placeholder pattern `modal_analysis` uses with
-// `ModalResult()` (modal_analysis_fns.ri:60).
+// `ModalResult()` (the `modal_analysis` body above).
 @optimized("modal::transient_response")
 pub fn transient_response(
     modal_result : ModalResult,
@@ -140,7 +143,7 @@ pub fn transient_response(
 // non-struct value; the ComputeOutcome carries a `Value::List`. `Real` (not a
 // dimensioned `List<Length>`) because the mass-normalized reconstruction Φ·ξ
 // carries the same unrepresentable √mass·length unit algebra `Mode.shape`
-// documents (modal_analysis.ri:155-165).
+// documents (`Mode.shape` in modal_analysis.ri).
 //
 // NOTE: invoked as a FREE function `displacement_at(history, location, direction)`
 // — method-call syntax is not UFCS in Reify, so `history.displacement_at(...)`
@@ -178,7 +181,8 @@ pub fn displacement_at(
 // Both overloads share the ONE Rust-registered trampoline: the
 // `@optimized("modal::displacement_at")` annotation is dispatch metadata, so two
 // `.ri` fns naming the same target do not collide — the same two-overload /
-// one-trampoline pattern as `solver::elastic_static` (solver_elastic.ri:535/576).
+// one-trampoline pattern as `solver::elastic_static` (the
+// `solve_elastic_static` overloads in solver_elastic.ri).
 // Exact-type `resolve_function_overload` routes the call site to the matching
 // declaration (a `String` arg → the String overload, a `FaceSelector` arg → this
 // one), and the trampoline (`displacement_at_trampoline`, modal_ops.rs) branches

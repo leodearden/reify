@@ -51,6 +51,15 @@ scripts/gen-nextest-config.sh
 #   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
 scripts/lib_slot_acquire.sh
 #
+# scripts/lib_lane_x_flock.sh: sibling lock-acquire lib sourced TRANSITIVELY
+#   by tests/infra/run_all.sh (--scope host-infra), same non-derivable
+#   property as scripts/lib_slot_acquire.sh above. Not derivable from
+#   verify.sh's direct 'source "$SCRIPT_DIR/..."' lines, so
+#   verify-pipeline-guard.sh's auto-derivation misses it. An edit to this lib
+#   alone would otherwise take the merge-worker config fast-path and ambush
+#   the next task that needs the lock (task 5672).
+scripts/lib_lane_x_flock.sh
+#
 # scripts/lib_clock_stop.sh: shared @@REIFY_CLOCK_*@@ emitter sourced TRANSITIVELY
 #   (verify.sh → lib_test_semaphore.sh → lib_slot_acquire.sh → lib_clock_stop.sh,
 #   AND verify.sh → cpu-admit.sh → lib_clock_stop.sh).  Not derivable from
@@ -84,3 +93,35 @@ tests/infra/run_all.sh
 #   guard actually re-runs against the change, mirroring the run_all.sh
 #   entry immediately above.
 tests/infra/run-all-ambient-vars.manifest
+#
+# scripts/check-nan-safe-ordering.sh / scripts/check-compute-trampoline-
+#   registration.sh (task 6243): the two INV-FEA lint gates. Both are
+#   emitted-not-sourced by verify.sh's lint plan — the same SHAPE as
+#   scripts/check-manifold-deps.sh / scripts/check-infra-classification-
+#   manifest.sh (which are NOT registered in this manifest and remain
+#   fast-path eligible today; see the task-6243-followup entry below), so
+#   verify-pipeline-guard.sh's live 'source' derivation misses them. Without
+#   these entries an edit to either gate script is fast-path eligible instead
+#   of routing through the full --scope all gate (measured via
+#   `requires-full-gate` at HEAD 19f0307f30 — both exited 1, fast-path
+#   eligible, before this fix). Per-task fail-fast coverage for each is
+#   separately wired via scripts/verify-pipeline-infra-tests.txt.
+scripts/check-nan-safe-ordering.sh
+scripts/check-compute-trampoline-registration.sh
+#
+# task-6243-followup (tkt_0RSKSDAK6WDWWR3N29RQ804T1B): the same
+#   emitted-not-sourced gap is open for OTHER verify.sh lint-plan gate
+#   scripts too — scripts/check-manifold-deps.sh (verify.sh:2271),
+#   scripts/check-infra-classification-manifest.sh (verify.sh:2247; see its
+#   documented task-5252 exclusion rationale in
+#   scripts/verify-pipeline-infra-tests.txt before assuming it needs this
+#   fix), scripts/check-harness-baseline-registration.sh (verify.sh:2263),
+#   scripts/tree-sitter-generate.sh (verify.sh:2276),
+#   scripts/ensure-gui-sidecar-placeholder.sh (verify.sh:2227), and
+#   scripts/check_event_inventory.sh (verify.sh:2499) all measured
+#   fast-path eligible via `requires-full-gate`. Deliberately left open here
+#   because task 6243's plan and title scope to "both INV-FEA lint gates"
+#   only. See the follow-up ticket for the fix (either register each
+#   remaining script the same way as the two above, or make
+#   verify-pipeline-guard.sh self-healing by auto-deriving load-bearing
+#   paths from verify.sh's emitted plan lines).

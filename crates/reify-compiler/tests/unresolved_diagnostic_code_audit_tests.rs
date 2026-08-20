@@ -39,7 +39,7 @@
 //!
 //! Dispatch through these arms (at the *message* level) is already exercised by
 //! the direct-AST-construction tests in
-//! `crates/reify-compiler/tests/type_expr_kind_dispatch_tests.rs`
+//! `crates/reify-compiler/tests/harness_langcore/type_expr_kind_dispatch_tests.rs`
 //! (`dim_op_in_field_domain_emits_exactly_one_diagnostic`,
 //! `dim_op_in_trait_param_emits_diagnostic`).  The `.with_code(DiagnosticCode::UnresolvedType)`
 //! attachment at those sites is verified only by step-6 code inspection.  No

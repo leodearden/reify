@@ -1,0 +1,35 @@
+// G3 grammar-gate fixture for docs/prds/v0_6/dimensioned-construction-strictness.md §8.
+//
+// Confirms that every syntax form the PRD relies on parses today — the PRD introduces NO
+// novel grammar; it changes only what the compiler ACCEPTS at already-parseable positions.
+//
+// Verify with (from the repo root):
+//     cd tree-sitter-reify && tree-sitter parse --quiet ../docs/prds/v0_6/fixtures/dimensioned_construction_strictness.ri
+// Expected: exit 0, zero ERROR nodes.
+//
+// NOTE: this is a PARSE fixture, not a compile fixture. It deliberately lives outside
+// examples/ so it is not swept by crates/reify-compiler/tests/examples_smoke.rs.
+
+module test.dimensioned_construction_strictness
+
+structure def Limit {
+    param velocity_limit : Scalar<Velocity>
+    param acceleration_limit : Scalar<Acceleration>
+}
+
+structure def Root {
+    // Compound-unit literal spelling — the corpus-standard fix form in ordinary
+    // user/example scope (PRD decision D4-9).
+    let a = Limit(velocity_limit: 300mm/s, acceleration_limit: 5000mm/s^2)
+
+    // Compositional `<scalar> * <unit-literal>` spelling — required in a registry-less
+    // bootstrap scope, where compound-unit resolution is unavailable
+    // (crates/reify-compiler/src/expr.rs:1455-1462; cf. stdlib/units.ri:141-148).
+    let b = Limit(velocity_limit: 300.0 * 1mm / 1s, acceleration_limit: 5000.0 * 1mm / (1s * 1s))
+
+    // Dimensioned param default (gate 3 — the D5 reinstatement site).
+    param speed : Scalar<Velocity> = 300mm/s
+
+    // Dimensioned let annotation (gate 4 — the `let` twin task 4318 created).
+    let c : Scalar<Force> = 5000.0 * 1N
+}

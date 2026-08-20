@@ -121,6 +121,61 @@ fn ignore_attr(line: &str) -> Option<IgnoreForm> {
     }
 }
 
+/// §8.1 δ-A anchor (`.rs` only — gating in [`scan_file`]): an
+/// `#[allow(…dead_code…)]` attribute carrying a trailing `//` rationale.
+/// Returns the trimmed rationale text, or `None` when the line is not such an
+/// attribute or carries no rationale.
+///
+/// A direct structural sibling of [`ignore_attr`]: `trim_start`, early-return
+/// on a doc-comment prefix, then prefix-strip and inspect.
+///
+/// **Ordering hazard.** The `///`/`//!` guard MUST fire before the `#[allow(`
+/// search. `crates/reify-core/src/diagnostics.rs:4046` is a doc comment reading
+/// ``/// This function is `#[allow(dead_code)]` pending the live wiring of`` —
+/// prose that merely mentions the attribute, with the real attribute 12 lines
+/// below. Without the guard, that doc paragraph would be reported as an
+/// allow-rationale.
+///
+/// The lint list is SCANNED for a whole `dead_code` token rather than
+/// string-equality-matched, so `#[allow(dead_code, unused_variables)]` is
+/// recognised while `#[allow(dead_codex)]` is not.
+///
+/// Only the `//` rationale form is recognised; a `/* … */` trailing comment is
+/// out of scope (unmeasured in the live corpus, so unpinned by evidence).
+///
+/// **Same-line only — a scope decision, not an oversight.** A rationale on the
+/// PRECEDING line (the shape arm (4)'s stub-macro lookback handles for
+/// `// #NNNN` \ `todo!()`) is deliberately NOT recognised by δ-A v1. Measured
+/// over the live corpus under task #6087: the preceding-line population is **2
+/// sites** (`crates/reify-stdlib/src/loads.rs:71`,
+/// `crates/reify-stdlib/src/supports.rs:76`) and **both are `///` doc comments**
+/// describing the item — the same class the `///`/`//!` guard above already
+/// excludes on the same-line form, for the same reason (item documentation is
+/// not an attribute rationale). The plain-`//` preceding-line form has **zero**
+/// occurrences. Adding the lookback would therefore buy no signal while widening
+/// the anchor to doc-comment prose; revisit only if that count moves.
+fn allow_dead_code_attr(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    // Doc-comment prose mentioning the attribute is not the attribute.
+    if t.starts_with("///") || t.starts_with("//!") {
+        return None;
+    }
+    let rest = t.strip_prefix("#[allow(")?;
+    let (lints, after) = rest.split_once(")]")?;
+    // Whole-token scan of the lint list: split on the separators a lint list
+    // can use, so `dead_codex` and a `dead_code` mention in the comment cannot
+    // both be read as the lint.
+    if !lints
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .any(|tok| tok == "dead_code")
+    {
+        return None;
+    }
+    let comment = after.trim_start().strip_prefix("//")?;
+    let rationale = comment.trim();
+    (!rationale.is_empty()).then_some(rationale)
+}
+
 // -----------------------------------------------------------------------
 // §8.2 citation resolution (canonical vs malformed)
 // -----------------------------------------------------------------------
@@ -591,6 +646,109 @@ fn has_blocker_prose(reason: &str) -> bool {
     reason.contains("RED:")
 }
 
+/// §8.1 δ-A deferral-prose needles — the vocabulary that turns an
+/// `#[allow(dead_code)]` rationale into a tracked-work marker.
+///
+/// Deliberately a SEPARATE const from [`BLOCKER_PROSE`], and deliberately
+/// EXCLUDING that set's `once ` and `until `. `BLOCKER_PROSE` is applied to a
+/// short EXTRACTED `#[ignore]` reason string, where those two are acceptable;
+/// this set is applied to a whole trailing comment, where they explode ("run
+/// once manually", "once the cell is built", "valid until the next commit").
+/// Keeping the consts separate also guarantees the γ `#[ignore]` reason policy
+/// stays byte-identical — mutating `BLOCKER_PROSE` would silently reclassify
+/// existing `#[ignore]` findings and perturb the §6.6 baseline.
+///
+/// All needles are lowercase, and are matched case-SENSITIVELY (guard 1 below).
+const DEFERRAL_PROSE: &[&str] = &["pending", "deferred to", "not yet", "blocked on", "awaiting"];
+
+/// §8.1 δ-A: `true` when `text` carries deferral prose — i.e. an occurrence of a
+/// [`DEFERRAL_PROSE`] needle that survives all three false-positive guards.
+///
+/// FP control here is load-bearing, not cosmetic. Every false-positive line
+/// measured over the live corpus cites a task that is already `done`, so a
+/// spurious match does not merely add noise: it resolves through the β liveness
+/// lane to a **High `orphaned`** finding and hard-fails the merge gate. Each
+/// guard was derived from a measured class (task #6087), and each is pinned by a
+/// verbatim negative in `deferral_prose_negatives`:
+///
+/// 1. **Case-sensitive, lowercase-only.** No `to_lowercase()` — unlike
+///    [`has_blocker_prose`]. `Pending` is the `NodeCache` freshness enum
+///    VARIANT, and prose referring to it is not a deferral. Kills six of the
+///    seven originally-pinned sites (`crates/reify-eval/src/cache.rs:977`,
+///    `:1055`, `:1418`, `:3917`, `:4156`; `engine_demand.rs:110`). This
+///    mirrors the existing `RED:` case-sensitivity precedent in
+///    [`has_blocker_prose`].
+/// 2. **Delimiter guard.** A needle whose immediately preceding or following
+///    byte is `"` or a backtick is a quoted state name / code span, not prose.
+///    Required for the seventh site, `gui/src-tauri/src/types.rs:1010`
+///    (`/// "pending"` …`), which is lowercase and survives guard 1.
+/// 3. **Identifier context.** A needle flanked by an ASCII word byte
+///    ([`is_word_byte`]) is part of an IDENTIFIER, not prose —
+///    `mark_pending_with_cause`, `mark_pruned_pending`
+///    (`crates/reify-eval/src/cache.rs:968`, `:3651`). Measured as a real class
+///    over the live corpus during task #6087. The same guard also rejects the
+///    non-`snake_case` halves of that family, which the first cut missed: a
+///    hyphenated compound (`the pending-queue path`) on either side, and a
+///    member/path qualification (`self.pending`, `NodeCache::pending`) on the
+///    LEFT. The `.`/`:` half is deliberately left-only — see
+///    [`disqualifies_before`](has_deferral_prose::disqualifies_before).
+///
+/// Guards are per-OCCURRENCE, not per-line: a disqualified occurrence is
+/// skipped and scanning continues, so a line that both names an identifier and
+/// states a real deferral still matches on the latter.
+///
+/// Do NOT "simplify" this to a lowercased `contains` sweep: that reintroduces
+/// class 1 wholesale, and PRD §14 rejected unanchored substring vocabularies at
+/// an 89–100% false-positive rate for exactly this reason.
+fn has_deferral_prose(text: &str) -> bool {
+    /// A byte that disqualifies an adjacent needle occurrence from EITHER side:
+    /// `"`/backtick (guard 2 — quoted state name or code span), an ASCII word
+    /// byte (guard 3 — the occurrence is inside an identifier), or `-` (guard 3
+    /// — a hyphenated compound such as `pending-queue` NAMES a thing rather than
+    /// deferring work).
+    ///
+    /// The word-byte half delegates to the module-shared [`is_word_byte`], the
+    /// documented alphabet for the hand-rolled `\b` checks, rather than
+    /// re-spelling `is_ascii_alphanumeric() || b == b'_'` — so a future change to
+    /// the module's notion of a word byte cannot silently skip this guard.
+    fn disqualifies_either_side(b: u8) -> bool {
+        b == b'"' || b == b'`' || b == b'-' || is_word_byte(b)
+    }
+
+    /// The byte immediately BEFORE a needle occurrence. Everything in
+    /// [`disqualifies_either_side`], plus `.` and `:` — a needle qualified by a
+    /// member or path separator is a SYMBOL reference, not prose
+    /// (`self.pending`, `NodeCache::pending`).
+    ///
+    /// The `.`/`:` half is deliberately LEFT-ONLY. A trailing `.`/`:` is ordinary
+    /// punctuation, and disqualifying it would silently kill the two most
+    /// natural ways to write a real deferral — `wiring is pending.` and
+    /// `pending: the morph rewrite`. Pinned by
+    /// `deferral_prose_trailing_punctuation_still_matches`.
+    ///
+    /// Absent (start of string) never disqualifies.
+    fn disqualifies_before(b: Option<u8>) -> bool {
+        b.is_some_and(|b| b == b'.' || b == b':' || disqualifies_either_side(b))
+    }
+
+    /// The byte immediately AFTER a needle occurrence — the symmetric half of
+    /// [`disqualifies_before`] MINUS `.`/`:` (see that doc). Absent (end of
+    /// string) never disqualifies.
+    fn disqualifies_after(b: Option<u8>) -> bool {
+        b.is_some_and(disqualifies_either_side)
+    }
+
+    let bytes = text.as_bytes();
+    DEFERRAL_PROSE.iter().any(|needle| {
+        // Guard 1: match against the ORIGINAL text, not a lowercased copy.
+        text.match_indices(needle).any(|(start, hit)| {
+            let before = start.checked_sub(1).map(|i| bytes[i]);
+            let after = bytes.get(start + hit.len()).copied();
+            !disqualifies_before(before) && !disqualifies_after(after)
+        })
+    })
+}
+
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
 fn line_escaped(line: &str) -> bool {
@@ -720,7 +878,10 @@ enum LineClass {
 /// 4. stub macro (`.rs`): a canonical cite on this line OR the line directly
 ///    above → `Cited(this-line ∪ above-line cites)` (above-line lookback for the
 ///    `// #NNNN` \ `todo!()` convention); else `Structural(Untracked)`.
-/// 5. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+/// 5. lane δ-A (`.rs`): an `#[allow(…dead_code…)]` attribute whose trailing
+///    `//` rationale carries deferral prose → canonical cite → `Cited(ids)`;
+///    else `Structural(Untracked)`.
+/// 6. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
 fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
@@ -785,8 +946,52 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
+        } else if is_rust
+            && let Some(rationale) = allow_dead_code_attr(line)
+            && has_deferral_prose(rationale)
+        {
+            // (5) lane δ-A (.rs only): an #[allow(…dead_code…)] attribute whose
+            // trailing rationale defers the work is a tracked-work marker.
+            //
+            // Placement is load-bearing, not stylistic. It sits AFTER arm (3)
+            // so a line carrying both the attribute and a real TODO/FIXME
+            // marker stays owned by the marker lane — the `else if` chain is
+            // what guarantees at-most-one entry per line, which the
+            // fingerprint/§6.6 baseline machinery assumes.
+            //
+            // Prose is matched against the RATIONALE, never the whole line, so
+            // the `dead_code` token inside the attribute itself can never be
+            // read as comment prose.
+            //
+            // Emits only the EXISTING classes (§8.3 taxonomy unchanged, no new
+            // `Kind`), and the three-way split MIRRORS arm (3) rather than
+            // inventing its own: canonical cite → the unmodified β liveness lane
+            // (→ orphaned / unknown-id); legacy/Greek cite → malformed-cite;
+            // otherwise unmarked debt → untracked.
+            //
+            // The malformed-cite branch is deliberate. §8.3 defines that trigger
+            // LANE-INDEPENDENTLY, and three of this lane's live findings are
+            // `// production wiring deferred to task 4050 (…)`
+            // (crates/reify-eval/src/engine_build.rs:2199/2278/2292) — the legacy
+            // `task NNNN` form. Collapsing them into `untracked` would report an
+            // author who cited imprecisely at High (hard gate) where §8.4 rates a
+            // malformed cite Medium (advisory).
+            //
+            // The γ `#[ignore]` arm (2) above does NOT have this branch. That is
+            // a divergence, not a precedent to copy: γ's reason policy is
+            // cite-first-then-blocker-prose and is byte-frozen (changing it would
+            // reclassify existing `#[ignore]` findings and perturb the §6.6
+            // baseline), so aligning it is out of scope here rather than
+            // unnecessary. See PRD §8.3.
+            if has_canonical_cite(rationale) {
+                out.push((line_no, LineClass::Cited(extract_cites(rationale)), line.trim().to_string()));
+            } else if has_malformed_cite(rationale) {
+                out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
+            } else {
+                out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
+            }
         } else if phantom_phrase(line) && !has_canon {
-            // (5) phantom tracking — claim of tracking with no canonical cite.
+            // (6) phantom tracking — claim of tracking with no canonical cite.
             out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
         }
 
@@ -1622,6 +1827,152 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.1 deferral-prose matching — has_deferral_prose (lane δ-A)
+    // -------------------------------------------------------------------
+
+    /// Verbatim rationale substrings from the real evidence sites the δ-A
+    /// allow-attribute lane exists to surface. Pinning the exact in-tree source
+    /// text (rather than a paraphrase) keeps the user-observable signal covered
+    /// at the unit level: if a refactor stops matching any of these, the lane
+    /// has silently stopped reporting the debt it was built for.
+    #[test]
+    fn deferral_prose_positives() {
+        // crates/reify-eval/src/engine_build.rs:12891 — the δ-A rationale, and
+        // the one cited-orphaned site this task delivers end-to-end.
+        assert!(has_deferral_prose(
+            "production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring)"
+        ));
+        // crates/reify-eval/src/engine_build.rs:2199 — δ-A rationale (legacy
+        // `task 4050` cite form; the cite grammar is not this function's job).
+        assert!(has_deferral_prose(
+            "production wiring deferred to task 4050 (in-realization conversion executor)"
+        ));
+        // Guard 2 is scoped to the bytes adjacent to the NEEDLE, not to any
+        // backtick on the line: a rationale that code-spans a symbol name next
+        // to (but not around) the needle still matches.
+        assert!(has_deferral_prose(
+            "`dispatch_volume_mesh` wiring is blocked on the realization rewrite"
+        ));
+        assert!(has_deferral_prose("awaiting the solver rewrite"));
+        assert!(has_deferral_prose("not yet wired into the dispatcher"));
+    }
+
+    /// False-positive control. Every line in the first two groups is VERBATIM
+    /// from the pinned false-positive set measured over the live corpus, and
+    /// each cites a task that is already `done` — so a match would not merely be
+    /// noisy, it would resolve through the β liveness lane to a High `orphaned`
+    /// finding and hard-fail the merge gate. Guard 1 (case-sensitive,
+    /// lowercase-only needles) kills six of the seven; guard 2 (quote/backtick
+    /// delimiter) is required for the seventh; guard 3 (word boundary) kills the
+    /// identifier class (`mark_pending_with_cause`), measured under task #6087.
+    #[test]
+    fn deferral_prose_negatives() {
+        // --- guard 1: lowercase-only needles ---
+        // `Pending` here is the NodeCache freshness enum VARIANT, not prose.
+        // crates/reify-eval/src/cache.rs:977
+        assert!(!has_deferral_prose(
+            "Demand-prune **Pending producer** (task #4739 γ): flip every cached node"
+        ));
+        // crates/reify-eval/src/cache.rs:1055
+        assert!(!has_deferral_prose(
+            "builds (task #2592, parity with the Pending guard from task #2451)."
+        ));
+        // crates/reify-eval/src/cache.rs:1418
+        assert!(!has_deferral_prose(
+            "is enforced via `assert!` in all builds (task #2592, parity with the Pending"
+        ));
+        // crates/reify-eval/src/cache.rs:3917
+        assert!(!has_deferral_prose(
+            "--- set_freshness precondition: Pending is forbidden (task #2451, step-1) ---"
+        ));
+        // crates/reify-eval/src/cache.rs:4156
+        assert!(!has_deferral_prose(
+            "#2328): Failed and Pending inputs now produce a Pending output rather than"
+        ));
+        // crates/reify-eval/src/engine_demand.rs:110
+        assert!(!has_deferral_prose(
+            "Demand-prune **Pending producer** wired at the Engine facade (task #4739 γ)."
+        ));
+
+        // --- guard 2: quote / backtick delimiter ---
+        // gui/src-tauri/src/types.rs:1010 — the needle IS lowercase, so guard 1
+        // alone lets it through; it is a quoted state name, not deferral prose.
+        assert!(!has_deferral_prose(
+            "\"pending\"` (task #4739 γ): a hidden body's cell keeps its cached prior"
+        ));
+        // The BACKTICK half of guard 2, which the `"` case above does not cover:
+        // a rationale that code-spans the state name is naming a symbol, not
+        // deferring work. (`deferral_prose_positives` pins the converse — a
+        // backtick elsewhere on the line does not disqualify.)
+        assert!(!has_deferral_prose("uses the `pending` flag internally"));
+
+        // --- guard 3: word boundary (the identifier class) ---
+        // A needle occurrence flanked by an ASCII word byte or `_` is part of an
+        // identifier, not prose. Both lines below are verbatim from
+        // crates/reify-eval/src/cache.rs (:968, :3651); `mark_pending_with_cause`
+        // and `mark_pruned_pending` are real symbols there (:926-:968, :1013).
+        // Measured under task #6087: this class is why guard 3 exists.
+        assert!(!has_deferral_prose(
+            "cause via mark_pending_with_cause (task #2330 §9.2 invariant)."
+        ));
+        assert!(!has_deferral_prose(
+            "--- mark_pruned_pending producer tests (task #4739 γ) ---"
+        ));
+        // Word-boundary symmetry: a trailing word byte disqualifies too, so a
+        // needle used as an identifier PREFIX cannot match either.
+        assert!(!has_deferral_prose("the pendingWrites queue is drained here"));
+        // The non-`snake_case` halves of the same identifier family. These are
+        // ordinary explanatory rationales an author would write without any
+        // thought of debt, so matching them would hand a future author a red
+        // merge gate (`untracked` is High) with no obvious cause.
+        // Member access — `.` immediately before the needle.
+        assert!(!has_deferral_prose("only set when self.pending is drained"));
+        // Path qualification — `:` immediately before the needle.
+        assert!(!has_deferral_prose("mirrors NodeCache::pending semantics"));
+        // Hyphenated compound — `-` on either side names a thing, it does not
+        // defer work.
+        assert!(!has_deferral_prose("used by the pending-queue path"));
+        assert!(!has_deferral_prose("the not-quite-pending state is transient"));
+
+        // --- real allow-rationales that are NOT deferrals (the dominant benign
+        // class among the 68 measured δ-A candidates) ---
+        assert!(!has_deferral_prose(
+            "used by some, but not all, test binaries that include this module"
+        ));
+        assert!(!has_deferral_prose("Phase-1 scaffold; consumed in later phases"));
+        assert!(!has_deferral_prose(""));
+    }
+
+    /// Guard 3's `.`/`:` half is LEFT-ONLY, and that asymmetry is load-bearing:
+    /// `.` and `:` are identifier context only when they PRECEDE the needle
+    /// (`self.pending`, `NodeCache::pending`, pinned as negatives above). After
+    /// it they are ordinary punctuation, and disqualifying them would silently
+    /// kill the two most natural ways to write a real deferral. Assert the
+    /// surviving direction directly so a "symmetry cleanup" fails loudly.
+    #[test]
+    fn deferral_prose_trailing_punctuation_still_matches() {
+        assert!(has_deferral_prose("volume-mesh wiring is pending."));
+        assert!(has_deferral_prose("pending: the morph rewrite"));
+        assert!(has_deferral_prose("awaiting: the solver rewrite"));
+        // Sanity: the same needles WITH the punctuation on the left do not match.
+        assert!(!has_deferral_prose("mirrors NodeCache::pending"));
+        assert!(!has_deferral_prose("only set when self.pending"));
+    }
+
+    /// Case-sensitivity is load-bearing, not incidental. `has_blocker_prose`
+    /// lowercases its input; copying that here would reintroduce the entire
+    /// `Pending`-enum-variant false-positive class pinned above. Assert the
+    /// asymmetry directly so such a "simplification" fails loudly.
+    #[test]
+    fn deferral_prose_is_case_sensitive() {
+        assert!(has_deferral_prose("pending"));
+        assert!(!has_deferral_prose("Pending"));
+        assert!(!has_deferral_prose("PENDING"));
+        assert!(has_deferral_prose("blocked on"));
+        assert!(!has_deferral_prose("Blocked on"));
+    }
+
+    // -------------------------------------------------------------------
     // §8.1 marker recognition — ignore attributes (.rs)
     // -------------------------------------------------------------------
 
@@ -1633,6 +1984,73 @@ mod tests {
         assert_eq!(ignore_attr("    #[ignore]"), Some(IgnoreForm::Bare));
         // Doc-comment prose mentioning the attribute must NOT fire.
         assert_eq!(ignore_attr("/// #[ignore]"), None);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.1 marker recognition — allow(dead_code) attributes (.rs, lane δ-A)
+    // -------------------------------------------------------------------
+
+    /// Real in-tree shapes the δ-A anchor must recognise. The returned value is
+    /// the trailing `//` RATIONALE, never the whole line — matching prose
+    /// against the whole line would let the `dead_code` token inside the
+    /// attribute itself be read as comment text.
+    #[test]
+    fn allow_dead_code_attr_positives() {
+        // crates/reify-eval/src/engine_build.rs:12891 (shape).
+        assert_eq!(
+            allow_dead_code_attr(
+                "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)"
+            ),
+            Some("production wiring pending task #4744 (volume-mesh)")
+        );
+        // Indented — the recogniser trims like `ignore_attr` does.
+        assert_eq!(
+            allow_dead_code_attr("    #[allow(dead_code)] // consumed by #4744 step-20"),
+            Some("consumed by #4744 step-20")
+        );
+        // Multi-lint list: the bracketed lints must be SCANNED, not
+        // string-equality-matched against `#[allow(dead_code)]`.
+        assert_eq!(
+            allow_dead_code_attr("#[allow(dead_code, unused_variables)] // pending #1234"),
+            Some("pending #1234")
+        );
+        // Whitespace inside the lint list, and extra spacing before the comment.
+        assert_eq!(
+            allow_dead_code_attr("#[allow( unused_variables , dead_code )]   // pending #1234"),
+            Some("pending #1234")
+        );
+    }
+
+    /// Negative pins. The `///`/`//!` case is the load-bearing one: it is
+    /// verbatim-shaped after `crates/reify-core/src/diagnostics.rs:4046`, a doc
+    /// comment that merely MENTIONS the attribute in backticks (the real
+    /// attribute is 12 lines below). Attributing that line to δ-A would report
+    /// a doc paragraph as an allow-rationale.
+    #[test]
+    fn allow_dead_code_attr_negatives() {
+        assert_eq!(
+            allow_dead_code_attr("/// This function is `#[allow(dead_code)]` pending the wiring"),
+            None
+        );
+        assert_eq!(
+            allow_dead_code_attr("//! module prose about `#[allow(dead_code)]` pending work"),
+            None
+        );
+        // Bare attribute, no trailing rationale → nothing to classify.
+        assert_eq!(allow_dead_code_attr("#[allow(dead_code)]"), None);
+        // Trailing whitespace only — still no rationale.
+        assert_eq!(allow_dead_code_attr("#[allow(dead_code)]   "), None);
+        // `dead_code` absent from the lint list.
+        assert_eq!(allow_dead_code_attr("#[allow(unused)]  // pending #1234"), None);
+        // `dead_code` appears only in the COMMENT, not the lint list.
+        assert_eq!(
+            allow_dead_code_attr("#[allow(deprecated)] // dead_code appears only in prose here"),
+            None
+        );
+        // Whole-token match: `dead_codex` is a different lint name.
+        assert_eq!(allow_dead_code_attr("#[allow(dead_codex)] // pending #1234"), None);
+        // Not an attribute line at all.
+        assert_eq!(allow_dead_code_attr("let x = 1; // pending #1234"), None);
     }
 
     // -------------------------------------------------------------------
@@ -1902,6 +2320,102 @@ mod tests {
         let expected_structural: Vec<(usize, Kind, String)> =
             vec![(5, Kind::Untracked, "// TODO: wire this".to_string())];
         assert_eq!(classified, expected_structural);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.1 lane δ-A — #[allow(dead_code)] + deferral rationale (.rs)
+    // -------------------------------------------------------------------
+
+    /// The user-observable signal at unit level: a cited deferral rationale on
+    /// an allow-attribute becomes `Cited`, so the UNCHANGED β liveness lane
+    /// resolves it (cite #4744 is `done` → High `orphaned`). Shaped after
+    /// `crates/reify-eval/src/engine_build.rs:12891`.
+    #[test]
+    fn scan_file_allow_dead_code_cited() {
+        let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![4744]), line.to_string())]
+        );
+    }
+
+    /// SCOPE-1: a δ-A rationale with deferral prose but NO cite is unmarked
+    /// debt → `Structural(Untracked)`. This is the bulk of the measured lane.
+    #[test]
+    fn scan_file_allow_dead_code_uncited() {
+        let line = "#[allow(dead_code)] // wiring pending the morph rewrite";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Structural(Kind::Untracked), line.to_string())]
+        );
+    }
+
+    /// A δ-A rationale whose cite is the LEGACY `task NNNN` form is
+    /// `malformed-cite`, not `untracked` — the arm mirrors arm (3)'s three-way
+    /// split, and §8.3 defines the malformed-cite trigger lane-independently.
+    ///
+    /// This is the live shape at `crates/reify-eval/src/engine_build.rs:2199`
+    /// (also `:2278`, `:2292` — 3 of the lane's 14 live findings, 1 of the 5
+    /// seeded baseline fingerprints), pinned VERBATIM. The kind drives severity:
+    /// `malformed-cite` is Medium/advisory per §8.4 whereas `untracked` is High
+    /// and hard-fails the merge gate, so a silent flip here would change what a
+    /// merge does, not just what it prints.
+    #[test]
+    fn scan_file_allow_dead_code_legacy_cite() {
+        let line =
+            "#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Structural(Kind::MalformedCite), line.to_string())]
+        );
+    }
+
+    /// The dominant BENIGN class among the 68 measured δ-A candidates: a real
+    /// allow-rationale that explains rather than defers. It must stay silent —
+    /// a lane that fired here would report ordinary documented code as debt.
+    #[test]
+    fn scan_file_allow_dead_code_no_deferral() {
+        let lines = [
+            "#[allow(dead_code)] // used by some, but not all, test binaries that include this",
+            "#[allow(dead_code)] // Phase-1 scaffold; consumed in later phases",
+            "#[allow(dead_code)]",
+            // Guard 3 (word boundary) at the scan_file level: an identifier
+            // mention is not a deferral. Symbols are real
+            // (crates/reify-eval/src/cache.rs:968, :1013).
+            "#[allow(dead_code)] // superseded by mark_pending_with_cause",
+        ];
+        assert_eq!(scan_file(&lines.join("\n"), true), vec![]);
+    }
+
+    /// SCOPE-3: the §6.8 inline escape is precedence arm (1), ahead of every
+    /// classification arm, so it keeps working against δ-A with no code change.
+    /// Pinned rather than assumed.
+    #[test]
+    fn scan_file_allow_dead_code_escape_wins() {
+        let line = "#[allow(dead_code)] // pending #1234  // ptodo:allow";
+        assert_eq!(scan_file(line, true), vec![]);
+    }
+
+    /// δ-A is `.rs`-gated, keeping the `.sh`/`.py`/`.ts`/`.ri` blast radius at
+    /// zero (and removing the self-match hazard for the shell scenario's own
+    /// fixture text).
+    #[test]
+    fn scan_file_allow_dead_code_non_rust() {
+        let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
+        assert_eq!(scan_file(line, false), vec![]);
+    }
+
+    /// Precedence: a line carrying BOTH an allow-attribute and a real comment
+    /// marker stays owned by the marker lane (arm 3) — ONE entry, no
+    /// double-count. The `else if` chain is what the fingerprint/baseline
+    /// machinery relies on for at-most-one-entry-per-line.
+    #[test]
+    fn scan_file_allow_dead_code_marker_lane_wins() {
+        let line = "#[allow(dead_code)] // TODO(#1234): pending the rewrite";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![1234]), line.to_string())]
+        );
     }
 
     // -------------------------------------------------------------------

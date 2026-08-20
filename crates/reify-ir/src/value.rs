@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
 use reify_core::dimension::DimensionVector;
@@ -2562,27 +2563,12 @@ impl Value {
                 source,
                 ..
             } => format!("Field<{}, {}>({:?})", domain_type, codomain_type, source),
-            Value::Tensor(items) => {
-                let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
-                format!("[{}]", strs.join(", "))
-            }
-            Value::Point(items) => {
-                let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
-                format!("point({})", strs.join(", "))
-            }
-            Value::Vector(items) => {
-                let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
-                format!("vec({})", strs.join(", "))
-            }
-            Value::Matrix(rows) => {
-                let row_strs: Vec<String> = rows
-                    .iter()
-                    .map(|row| {
-                        let inner: Vec<String> = row.iter().map(|v| v.format_display()).collect();
-                        format!("[{}]", inner.join(", "))
-                    })
-                    .collect();
-                format!("[{}]", row_strs.join(", "))
+            // Aggregate variants (task 5339): the only place the
+            // whole-aggregate reference is seeded. One delegating arm, not
+            // four inlined copies, so `format_display_rel` solely owns
+            // aggregate rendering and cannot drift from it.
+            Value::Tensor(_) | Value::Point(_) | Value::Vector(_) | Value::Matrix(_) => {
+                self.format_display_rel(aggregate_magnitude(self))
             }
             Value::Complex { re, im, dimension } => {
                 let (display_re, _) = dimension.to_display_units(*re);
@@ -2687,6 +2673,40 @@ impl Value {
             Value::Selector(sv) => format!("Selector({})", sv.kind),
             Value::Feature(fid) => format!("Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => "undefined".to_string(),
+        }
+    }
+
+    /// Format this value for GUI display like [`format_display`](Value::format_display),
+    /// but snap to `"0"` when this value is dust relative to `reference` (task 5339).
+    ///
+    /// `reference` is the whole-aggregate magnitude seeded once by
+    /// [`format_display`](Value::format_display) (see [`aggregate_magnitude`])
+    /// and threaded *unchanged* through every nesting level — never
+    /// recomputed per-subtree, so a `Point` inside a `Tensor` is judged
+    /// against the outer aggregate rather than its own smaller local max.
+    /// Aggregate variants must stay in sync with `aggregate_magnitude`; any
+    /// variant missing here falls back to the unsnapped
+    /// [`format_display`](Value::format_display).
+    fn format_display_rel(&self, reference: f64) -> String {
+        match self {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                let (display_value, _unit) = dimension.to_display_units(*si_value);
+                format_display_number_rel(display_value, reference)
+            }
+            Value::Real(r) => format_display_number_rel(*r, reference),
+            Value::Complex { re, im, dimension } => format!(
+                "{} + {}i",
+                format_display_number_rel(dimension.display_scale(*re), reference),
+                format_display_number_rel(dimension.display_scale(*im), reference)
+            ),
+            Value::Tensor(items) => format!("[{}]", join_rel(items, reference)),
+            Value::Point(items) => format!("point({})", join_rel(items, reference)),
+            Value::Vector(items) => format!("vec({})", join_rel(items, reference)),
+            Value::Matrix(rows) => format!("[{}]", join_rows_rel(rows, reference)),
+            _ => self.format_display(),
         }
     }
 
@@ -2865,14 +2885,185 @@ pub fn format_display_number(v: f64) -> String {
     }
 }
 
+/// Relative snap-to-zero threshold for [`format_display_number_rel`] (task
+/// 5339, follow-up papercut to 5198).
+///
+/// Bracketed by the two observed ratios, not guessed: the `BottomDeck.centroid`
+/// dust ratio is `3.86564423998e-13 / 21.5084347502 ≈ 1.80e-14` (must snap),
+/// and the smallest legitimate tolerance ratio is `0.00005 / 21.5 ≈ 2.33e-6`
+/// (task 5198; must survive). `1e-9` sits ~5 and ~3 orders from them
+/// respectively.
+///
+/// This is three orders coarser than the ~1e-12 relative resolution
+/// [`DISPLAY_SIG_FIGS`] already provides, so a genuine term in the
+/// 1e-12..1e-9 band (e.g. `1e-10` next to a `1.0` sibling) is
+/// display-representable yet snapped anyway. That band is knowingly
+/// sacrificed for margin on both sides — tighten only on a newly observed
+/// case that actually falls inside it.
+const DISPLAY_REL_ZERO_EPSILON: f64 = 1e-9;
+
+/// Format `v` like [`format_display_number`] does, but additionally snap it
+/// to `"0"` when it is dust *relative to* `reference` — the max-magnitude
+/// leaf in the containing aggregate (task 5339).
+///
+/// This is the relative counterpart to `format_display_number`'s absolute
+/// 1-ulp cleanup, which has no sibling context and so cannot see that
+/// `3.86564423998e-13` is dust next to `21.5084347502`. Non-snapping
+/// values delegate to the byte-identical `format_display_number`, keeping
+/// this purely additive over the task-5198 behaviour.
+///
+/// The `reference` finite-and-positive guard is load-bearing: it is what
+/// stops a single `inf` or zero sibling from zeroing out otherwise
+/// legitimate finite components.
+fn format_display_number_rel(v: f64, reference: f64) -> String {
+    if reference.is_finite() && reference > 0.0 && v != 0.0 && v.abs() < DISPLAY_REL_ZERO_EPSILON * reference {
+        return "0".to_string();
+    }
+    format_display_number(v)
+}
+
+/// Compute the reference magnitude for [`format_display_number_rel`]'s
+/// relative snap: the max absolute display-unit magnitude over every numeric
+/// leaf reachable from `v` (task 5339).
+///
+/// Magnitudes are taken via [`DimensionVector::display_scale`] — the same
+/// scale [`Value::format_display`] applies via `to_display_units` — so the
+/// reference is commensurable with the values `format_display_rel` snaps.
+/// The recursing arms must stay in sync with [`Value::format_display_rel`]'s:
+/// both must agree on what "the aggregate" spans, or a nested member gets
+/// judged against a reference it did not contribute to.
+///
+/// Members with no arm here (`List`/`Set`/`Map`/`Option`/…) contribute `0.0`,
+/// which in an otherwise-empty aggregate leaves `reference == 0.0` and so
+/// disables snapping for that container. That is a deliberate under-snap,
+/// never a wrong snap.
+///
+/// PRECONDITION: the aggregate is dimensionally homogeneous — every `Scalar`
+/// leaf shares one [`DimensionVector`]. `reify-core`'s `Type::Point`,
+/// `Type::Vector`, and `Type::Tensor` each carry a single `quantity` type, so
+/// this holds for every type-checked `Value`; a hand-constructed
+/// mixed-dimension aggregate is out of contract and would compare across
+/// incompatible units (e.g. mm³ against mm).
+fn aggregate_magnitude(v: &Value) -> f64 {
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => dimension.display_scale(*si_value).abs(),
+        Value::Real(r) => r.abs(),
+        Value::Int(i) => (*i as f64).abs(),
+        Value::Complex { re, im, dimension } => dimension
+            .display_scale(*re)
+            .abs()
+            .max(dimension.display_scale(*im).abs()),
+        Value::Point(items) | Value::Vector(items) | Value::Tensor(items) => {
+            items.iter().map(aggregate_magnitude).fold(0.0, f64::max)
+        }
+        Value::Matrix(rows) => rows
+            .iter()
+            .flatten()
+            .map(aggregate_magnitude)
+            .fold(0.0, f64::max),
+        _ => 0.0,
+    }
+}
+
+/// Render a flat aggregate's items by mapping each through
+/// [`Value::format_display_rel`] with the given `reference`, joining with
+/// `", "` (task 5339). Shared by that method's `Tensor`/`Point`/`Vector`
+/// arms.
+fn join_rel(items: &[Value], reference: f64) -> String {
+    items
+        .iter()
+        .map(|v| v.format_display_rel(reference))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render a `Matrix`'s rows by mapping each row's cells through
+/// [`join_rel`] and wrapping each row in `[..]`, producing
+/// `"[a, b], [c, d]"`-style joined rows (task 5339).
+fn join_rows_rel(rows: &[Vec<Value>], reference: f64) -> String {
+    rows.iter()
+        .map(|row| format!("[{}]", join_rel(row, reference)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render `exponent` as Unicode superscript digits, with `⁻` (U+207B) for a
+/// negative value — the exponent half of PRD display-unit-preference §5c's
+/// `4.2×10⁻³` form.
+///
+/// The glyphs come from two different Unicode blocks: `¹` `²` `³` are Latin-1
+/// Supplement code points (U+00B9/U+00B2/U+00B3) while `⁰` and `⁴`-`⁹` live in
+/// Superscripts and Subscripts (U+2070, U+2074-U+2079). A contiguous-range
+/// mapping would silently mangle three of the ten, so they are tabulated.
+fn superscript_exponent(exponent: i32) -> String {
+    const SUPERSCRIPT_DIGITS: [char; 10] = [
+        '\u{2070}', '\u{00B9}', '\u{00B2}', '\u{00B3}', '\u{2074}', '\u{2075}', '\u{2076}',
+        '\u{2077}', '\u{2078}', '\u{2079}',
+    ];
+    let mut out = String::new();
+    if exponent < 0 {
+        out.push('\u{207B}');
+    }
+    // Format the magnitude via `unsigned_abs` so `i32::MIN` cannot overflow.
+    for byte in exponent.unsigned_abs().to_string().bytes() {
+        out.push(SUPERSCRIPT_DIGITS[(byte - b'0') as usize]);
+    }
+    out
+}
+
+/// Render a `(mantissa, exponent)` split as PRD display-unit-preference §5c's
+/// engineering notation, e.g. `4.2×10⁻³`.
+///
+/// The mantissa goes through [`format_display_number`] like every other
+/// display magnitude, so an auto-scaled cell keeps the same
+/// sig-fig/trailing-zero convention as a plain one.
+///
+/// ASCII `4.2e-3` was considered and declined: §5c's worked example shows the
+/// `×10ⁿ` form, and this crate already emits Unicode in display strings
+/// (`mm²`, `mm³`, `kg/m³`, `kg·m^-3`).
+///
+/// An `exponent` of zero short-circuits to the bare mantissa. That is
+/// unreachable from
+/// [`DimensionLadder::auto_scaled`](reify_core::DimensionLadder::auto_scaled)
+/// — an exponent-0 magnitude is by definition in band at the anchor rung, so
+/// a rung would have been selected instead — but is guarded so the helper is
+/// total.
+fn format_engineering(mantissa: f64, exponent: i32) -> String {
+    let magnitude = format_display_number(mantissa);
+    if exponent == 0 {
+        return magnitude;
+    }
+    format!("{magnitude}\u{00D7}10{}", superscript_exponent(exponent))
+}
+
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
-/// Used by [`Value::format_hover`] for user-facing display.
+/// Used by [`Value::format_hover`] for user-facing display, which renders
+/// the RAW (unscaled) `si_value` — so a curated name is only safe to adopt
+/// here when it is valid *at that raw magnitude*.
 ///
-/// For dimensions without a curated arm, the fallback composes the base-SI
-/// unit label from [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass
-/// density) rather than a bare placeholder — hence the `Cow` return: known
-/// arms borrow a `'static` string, the composed fallback owns a freshly
+/// `LENGTH`/`AREA`/`VOLUME`/`ANGLE` keep their own hardcoded raw-SI arms
+/// (`"m"`/`"m²"`/`"m³"`/`"rad"`) rather than the unit-ladder registry's
+/// curated name, because their registry default rung is *scaled*
+/// (mm/mm²/mm³/deg) — adopting it here would misrender the raw magnitude
+/// (e.g. a raw `0.08` m would read `"0.08 mm"`). `MONEY` and dimensionless
+/// keep their own arms too: Money is not a registry ladder dimension, and
+/// dimensionless has no unit at all.
+///
+/// For any other dimension, this consults [`registry_display_default`]
+/// (task #5232's unit-ladder registry, PRD display-unit-preference §4) and
+/// adopts its curated name ONLY when the default rung's `si_scale` is
+/// exactly `1.0` — i.e. the curated name is itself a raw-SI unit, valid at
+/// the raw magnitude `format_hover` renders. This curates Mass, Pressure,
+/// Density, Force, Energy, and Power (all coherent-SI by construction).
+/// Any dimension without a scale-1.0 registry entry falls back to
+/// composing the base-SI unit label from
+/// [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass density)
+/// rather than a bare placeholder — hence the `Cow` return: known arms
+/// borrow a `'static` string, the composed fallback owns a freshly
 /// formatted one.
 fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
@@ -2881,17 +3072,178 @@ fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
         Cow::Borrowed("m\u{00B2}")
     } else if *dim == DimensionVector::VOLUME {
         Cow::Borrowed("m\u{00B3}")
-    } else if *dim == DimensionVector::MASS {
-        Cow::Borrowed("kg")
     } else if *dim == DimensionVector::ANGLE {
         Cow::Borrowed("rad")
     } else if *dim == DimensionVector::MONEY {
         Cow::Borrowed("USD")
     } else if dim.is_dimensionless() {
         Cow::Borrowed("")
+    } else if let Some((si_scale, label)) = registry_display_default(dim) {
+        if si_scale == 1.0 {
+            Cow::Borrowed(label)
+        } else {
+            Cow::Owned(format!("{dim}"))
+        }
     } else {
         Cow::Owned(format!("{dim}"))
     }
+}
+
+/// A single resolved display rung: a unit label and its SI scale factor.
+///
+/// Represents a rung that has *already won* PRD display-unit-preference
+/// §6.1's precedence order (e.g. an explicit `@display` annotation or a
+/// user-picked GUI unit) — [`resolve_display`] renders `si_value /
+/// si_scale` under `label` directly and does **not** re-run that
+/// precedence itself.
+// G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayPreference {
+    /// User-facing unit label (e.g. `"mm"`, `"L"`, `"kPa"`).
+    pub label: String,
+    /// `display_magnitude = si_value / si_scale`.
+    pub si_scale: f64,
+}
+
+impl DisplayPreference {
+    /// Construct a resolved display preference from a label and SI scale factor.
+    pub fn new(label: impl Into<String>, si_scale: f64) -> Self {
+        Self {
+            label: label.into(),
+            si_scale,
+        }
+    }
+}
+
+/// Process-wide cache of [`reify_core::unit_ladders`]'s registry, populated
+/// once on first use.
+///
+/// Both [`resolve_display`] and [`dimension_unit_label`] consult this via
+/// [`registry_ladder`] rather than calling `unit_ladders()` directly, so the
+/// registry's ~30 `String`s are allocated once per process (not once per
+/// format call) and both callers can return borrowed `&'static str` labels.
+static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
+
+/// Look up `dim`'s curated default display rung in the cached unit-ladder
+/// registry (task #5232 / PRD display-unit-preference §4), keyed by
+/// [`DimensionVector::canonical_name`].
+///
+/// Returns `Some((si_scale, label))` for the ladder's `is_default` rung, or
+/// `None` when `dim` has no `canonical_name()` (e.g. dimensionless or a
+/// composite dimension) or is not present in the registry (e.g. `Money`,
+/// `Velocity`) — callers fall through to their own uncurated handling in
+/// that case.
+fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)> {
+    let ladder = registry_ladder(dim)?;
+    let default_rung = ladder.units.iter().find(|u| u.is_default)?;
+    Some((default_rung.si_scale, default_rung.label.as_str()))
+}
+
+/// Look up `dim`'s whole ladder in the cached unit-ladder registry, keyed by
+/// [`DimensionVector::canonical_name`].
+///
+/// The single lookup path every registry consumer shares — [`resolve_display`]
+/// (which resolves the whole of §6.1 rungs 3/4 from the ladder it gets back,
+/// auto-scaled *and* static) and [`registry_display_default`] (which narrows to
+/// the `is_default` rung for [`dimension_unit_label`]) — so no two can disagree
+/// about which ladder a dimension resolves to. Returns `None` when `dim` has no
+/// `canonical_name()` or is not in the registry — see
+/// [`registry_display_default`] for the caller contract.
+fn registry_ladder(dim: &DimensionVector) -> Option<&'static reify_core::DimensionLadder> {
+    let name = dim.canonical_name()?;
+    let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
+    ladders.iter().find(|l| l.dimension == name)
+}
+
+/// Shared display formatter (PRD display-unit-preference §6.2): resolve an
+/// SI-stored scalar to a `(formatted_magnitude, unit_label)` pair.
+///
+/// `preference`, when `Some`, is a rung that has already won §6.1's
+/// precedence order — this renders `si_value / preference.si_scale` under
+/// `preference.label` directly and does not re-run precedence. A
+/// `preference` whose `si_scale` is zero or non-finite is treated as if it
+/// were absent (guards against a garbage `DisplayPreference` producing an
+/// `inf`/`NaN` display magnitude): this falls through to the `None`
+/// handling below instead. When `None` (or the preference was degenerate),
+/// falls through §6.1 rungs 3-5: the dimension's curated registry ladder
+/// (rungs 3/4, via [`registry_ladder`]), then `is_dimensionless()` (empty
+/// label), then the composed base-SI [`Display`](std::fmt::Display) fallback
+/// (rung 5).
+///
+/// The magnitude is always formatted via [`format_display_number`], so
+/// this stays numerically consistent with [`Value::format_display_pair`].
+///
+/// **§5d — an explicit pin suppresses auto-scaling.** The `Some(pref)` early
+/// return below *is* that rule: a pin that has won §6.1's precedence renders
+/// at its own rung regardless of magnitude, and never reaches the auto-scaling
+/// arm at all. No separate flag, guard or bypass implements §5d — it is
+/// structural.
+///
+/// **§5e — rung 3 is where auto-scaling engages.** With no pin (or a
+/// degenerate one), the dimension's ladder decides via
+/// [`DimensionLadder::auto_scaled`](reify_core::DimensionLadder::auto_scaled):
+/// a default-ON dimension (Length, Area, Volume) hops to whichever rung keeps
+/// the mantissa in band, falling back to §5c engineering notation when none
+/// does; a default-OFF or structurally excluded one stays on its static
+/// default rung, which is byte-identical to the pre-§5 output.
+// G-allow: shared display formatter (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
+pub fn resolve_display(
+    si_value: f64,
+    dimension: &DimensionVector,
+    preference: Option<&DisplayPreference>,
+) -> (String, String) {
+    // §5d: an explicit pin is authoritative and stable regardless of
+    // magnitude, so it returns before auto-scaling is ever consulted.
+    if let Some(pref) = preference
+        && pref.si_scale.is_finite()
+        && pref.si_scale != 0.0
+    {
+        return (
+            format_display_number(si_value / pref.si_scale),
+            pref.label.clone(),
+        );
+    }
+    // §5e rung 3: unpinned, so the dimension's auto-scale posture decides.
+    if let Some(ladder) = registry_ladder(dimension) {
+        match ladder.auto_scaled(si_value) {
+            reify_core::AutoScaleChoice::Rung(rung) => {
+                return (
+                    format_display_number(si_value / rung.si_scale),
+                    rung.label.clone(),
+                );
+            }
+            // §5c: no rung fits, so render the magnitude against the static
+            // default rung in engineering notation.
+            reify_core::AutoScaleChoice::Engineering {
+                rung,
+                mantissa,
+                exponent,
+            } => {
+                return (format_engineering(mantissa, exponent), rung.label.clone());
+            }
+            // Posture gate said no (or the magnitude is unusable), so rungs
+            // 3/4 render at the ladder's static default rung exactly as they
+            // did before §5. Resolved from the `ladder` already in hand rather
+            // than via `registry_display_default`, which would re-run
+            // `canonical_name()` and a second scan of the registry for the
+            // ladder this arm is already holding — and this is the common path
+            // for every default-OFF and structurally-excluded dimension (Mass,
+            // Pressure, Density, Angle, Force, Energy, Power). A ladder with no
+            // `is_default` rung falls through to rung 5 below, as before.
+            reify_core::AutoScaleChoice::Static => {
+                if let Some(rung) = ladder.units.iter().find(|u| u.is_default) {
+                    return (
+                        format_display_number(si_value / rung.si_scale),
+                        rung.label.clone(),
+                    );
+                }
+            }
+        }
+    }
+    if dimension.is_dimensionless() {
+        return (format_display_number(si_value), String::new());
+    }
+    (format_display_number(si_value), format!("{dimension}"))
 }
 
 /// Bit-identity equality for `Value`.
@@ -10315,30 +10667,37 @@ mod tests {
         );
     }
 
-    // ── dimension_unit_label / format_display_pair composed base-unit tests ──
-    // (task 5198 fix b) — MASS_DENSITY has no curated arm in either fallback,
-    // so both must compose from Display ("kg·m^-3") instead of leaking "SI".
+    // ── dimension_unit_label registry curation tests (task #5234) ────────────
+    // dimension_unit_label now sources curated names from L1's unit-ladder
+    // registry (reify_core::unit_ladders, via registry_display_default) for
+    // any dimension whose default rung has si_scale == 1.0 — Mass, Pressure,
+    // Density, Force, Energy, Power. format_display_pair's `to_display_units`
+    // is UNCHANGED by this task and still composes MASS_DENSITY's base-SI
+    // symbols ("kg·m^-3") — seeing "kg/m³" here (hover) and "kg·m^-3" there
+    // (GUI-cell / format_display_pair) for the same dimension is an
+    // expected, temporary divergence that L4/L6 (tasks #5235/#5237) unify.
 
     #[test]
-    fn dimension_unit_label_mass_density_composes_base_units() {
+    fn dimension_unit_label_mass_density_uses_curated_registry_name() {
         assert_eq!(
             dimension_unit_label(&DimensionVector::MASS_DENSITY),
-            "kg\u{b7}m^-3",
-            "dimension_unit_label(MASS_DENSITY) should compose the Display form, not fall through to \"SI\""
+            "kg/m\u{00B3}",
+            "dimension_unit_label(MASS_DENSITY) should adopt the registry's curated \"kg/m³\", not compose \"kg·m^-3\""
         );
     }
 
     #[test]
-    fn format_hover_mass_density_scalar_renders_composed_units() {
-        // body_density-style scalar must render composed base units, never "1270 SI".
+    fn format_hover_mass_density_scalar_uses_curated_registry_name() {
+        // body_density-style scalar must render the registry-curated unit,
+        // not the composed "kg·m^-3" (nor the old "1270 SI" leak).
         let v = Value::Scalar {
             si_value: 1270.0,
             dimension: DimensionVector::MASS_DENSITY,
         };
         assert_eq!(
             v.format_hover(),
-            "1270 kg\u{b7}m^-3",
-            "format_hover() on a MASS_DENSITY scalar should render composed base units, not \"1270 SI\""
+            "1270 kg/m\u{00B3}",
+            "format_hover() on a MASS_DENSITY scalar should render the registry-curated \"kg/m³\""
         );
     }
 
@@ -10351,8 +10710,57 @@ mod tests {
         assert_eq!(
             v.format_display_pair(),
             ("1270".to_string(), "kg\u{b7}m^-3".to_string()),
-            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\""
+            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\" — to_display_units is unchanged by task #5234"
         );
+    }
+
+    #[test]
+    fn dimension_unit_label_curates_scale_one_registry_dims() {
+        // Pressure/Force/Energy/Power all have a coherent-SI (si_scale ==
+        // 1.0) default rung in the registry, so dimension_unit_label should
+        // now adopt their curated names instead of composing base-SI symbols.
+        assert_eq!(dimension_unit_label(&DimensionVector::PRESSURE), "Pa");
+        assert_eq!(dimension_unit_label(&DimensionVector::FORCE), "N");
+        assert_eq!(dimension_unit_label(&DimensionVector::ENERGY), "J");
+        assert_eq!(dimension_unit_label(&DimensionVector::POWER), "W");
+    }
+
+    #[test]
+    fn format_hover_pressure_scalar_uses_curated_registry_name() {
+        let v = Value::Scalar {
+            si_value: 101_325.0,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(v.format_hover(), "101325 Pa");
+    }
+
+    #[test]
+    fn dimension_unit_label_scaled_default_rung_dims_stay_on_raw_si_label() {
+        // Length/Angle's registry default rung is SCALED (mm @ 1e-3, deg @
+        // π/180), but dimension_unit_label's caller (format_hover) renders
+        // the RAW si_value — so these must NOT adopt the registry's scaled
+        // label (which would misrender the raw magnitude, e.g. "0.08 mm" for
+        // a raw 0.08 m) and must stay on their existing raw-SI arms.
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::LENGTH),
+            "m",
+            "LENGTH must stay \"m\" (raw SI), not adopt the registry's scaled \"mm\" label"
+        );
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::ANGLE),
+            "rad",
+            "ANGLE must stay \"rad\" (raw SI), not adopt the registry's scaled \"deg\" label"
+        );
+    }
+
+    #[test]
+    fn dimension_unit_label_unaffected_arms_unchanged() {
+        // Mass's registry default rung is already si_scale == 1.0 with label
+        // "kg", so curation is a no-op in output (even though it now flows
+        // through the registry lookup instead of a hardcoded arm).
+        // Dimensionless is untouched by the registry lookup entirely.
+        assert_eq!(dimension_unit_label(&DimensionVector::MASS), "kg");
+        assert_eq!(dimension_unit_label(&DimensionVector::DIMENSIONLESS), "");
     }
 
     // ── Value::Complex format_display_pair scaling (task 5198 amend) ─────────
@@ -10391,6 +10799,513 @@ mod tests {
             ("1270 + 4i".to_string(), "kg\u{b7}m^-3".to_string()),
             "im must render correctly through the composed-fallback (identity-scale) path too"
         );
+    }
+
+    // ── resolve_display shared formatter tests (task #5234 step-1) ───────────
+    // PRD display-unit-preference §6.2: `resolve_display` is the new shared
+    // formatter the four L4 call sites (task #5235) will route onto. These
+    // lock its contract ahead of any caller: `preference: None` falls through
+    // §6.1 rungs 3-5 (curated registry default, dimensionless, composed
+    // fallback); `preference: Some` renders the already-resolved rung
+    // directly without re-running precedence.
+
+    #[test]
+    fn resolve_display_none_curated_scale_one_dims_render_raw_magnitude() {
+        assert_eq!(
+            resolve_display(101_325.0, &DimensionVector::PRESSURE, None),
+            ("101325".to_string(), "Pa".to_string()),
+            "Pressure's default rung has si_scale 1.0, so the raw SI magnitude is the display magnitude"
+        );
+        assert_eq!(
+            resolve_display(2.5, &DimensionVector::MASS, None),
+            ("2.5".to_string(), "kg".to_string())
+        );
+        assert_eq!(
+            resolve_display(1270.0, &DimensionVector::MASS_DENSITY, None),
+            ("1270".to_string(), "kg/m\u{00B3}".to_string())
+        );
+        assert_eq!(
+            resolve_display(250.0, &DimensionVector::FORCE, None),
+            ("250".to_string(), "N".to_string())
+        );
+        assert_eq!(
+            resolve_display(1500.0, &DimensionVector::ENERGY, None),
+            ("1500".to_string(), "J".to_string())
+        );
+        assert_eq!(
+            resolve_display(750.0, &DimensionVector::POWER, None),
+            ("750".to_string(), "W".to_string())
+        );
+    }
+
+    /// Rung-3 output for the dimensions whose curated default rung is a
+    /// *scaled* one.
+    ///
+    /// The Area and Volume expectations moved with task #5236: PRD §5e makes
+    /// rung 3 the point where a default-ON dimension auto-scales, so Area
+    /// `0.0045` is now `45 cm²` (was `4500 mm²`) and Volume `0.007` is now
+    /// `7 L` (was `7000000 mm³` — and `7 L` is the PRD's own G1 figure,
+    /// reached here with no `@display` pin at all). These lines encoded
+    /// pre-§5 rung-3 behaviour that §5 changes on purpose, so they are
+    /// updated rather than preserved.
+    ///
+    /// The other two rows are unchanged and say why the change is narrow:
+    /// Length `0.08` already reads `80 mm` in band, so it hops zero rungs;
+    /// Angle carries `auto_scale: None` (§5b excludes discrete deg/rad), so
+    /// the policy never engages for it.
+    ///
+    /// No user-visible surface moves yet either way — `resolve_display` still
+    /// has no production caller until L4 (#5235) routes the four surfaces
+    /// onto it.
+    #[test]
+    fn resolve_display_none_scaled_default_rung_dims_scale_magnitude_and_label() {
+        assert_eq!(
+            resolve_display(0.08, &DimensionVector::LENGTH, None),
+            ("80".to_string(), "mm".to_string())
+        );
+        assert_eq!(
+            resolve_display(0.0045, &DimensionVector::AREA, None),
+            ("45".to_string(), "cm\u{00B2}".to_string())
+        );
+        assert_eq!(
+            resolve_display(0.007, &DimensionVector::VOLUME, None),
+            ("7".to_string(), "L".to_string())
+        );
+        assert_eq!(
+            resolve_display(std::f64::consts::PI, &DimensionVector::ANGLE, None),
+            ("180".to_string(), "deg".to_string())
+        );
+    }
+
+    /// §5e rung 3, default-ON: an unpinned Length hops to whichever rung keeps
+    /// the mantissa in `[1, 1000)`, and — per §5b's stability argument — hops
+    /// as few rungs off the familiar default as possible.
+    #[test]
+    fn resolve_display_none_default_on_dims_hop_to_the_in_band_rung() {
+        assert_eq!(
+            resolve_display(5.0, &DimensionVector::LENGTH, None),
+            ("500".to_string(), "cm".to_string()),
+            "5 m is 5000 mm (out of band), so it hops one rung to 500 cm"
+        );
+        assert_eq!(
+            resolve_display(50.0, &DimensionVector::LENGTH, None),
+            ("50".to_string(), "m".to_string()),
+            "50 m needs two hops: 50000 mm and 5000 cm are both out of band"
+        );
+        assert_eq!(
+            resolve_display(0.5, &DimensionVector::LENGTH, None),
+            ("500".to_string(), "mm".to_string()),
+            "0.5 m is in band at BOTH mm (500) and cm (50); the minimal hop wins"
+        );
+
+        // §5a's decimal-sibling eligibility, observed end-to-end: an unpinned
+        // metric Length can never flip unit *system* into inches, at any
+        // magnitude.
+        for exponent in -6..=6 {
+            for mantissa in [1.0, 2.5, 4.2, 7.5] {
+                let si_value = mantissa * 10f64.powi(exponent);
+                for signed in [si_value, -si_value] {
+                    let (_, label) = resolve_display(signed, &DimensionVector::LENGTH, None);
+                    assert_ne!(
+                        label, "in",
+                        "auto-scaling flipped an unpinned metric Length to inches at {signed}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// §5b/§5e, the no-op half: a default-OFF dimension (Mass, Pressure,
+    /// Density — `enabled: false`) and a structurally excluded one (Angle,
+    /// Force, Energy, Power — `auto_scale: None`) render their static default
+    /// rung's raw magnitude, full stop, however far out of band it sits. §5e
+    /// also states engineering notation does not apply to them either, so no
+    /// output here may contain `×10`.
+    ///
+    /// This is the behavioural anchor for the `enabled` posture pinned in
+    /// `reify_core::display_units`: it observes the *consequence* of the
+    /// default-ON/OFF split rather than echoing the flag.
+    #[test]
+    fn resolve_display_none_default_off_and_excluded_dims_never_auto_scale() {
+        let cases: &[(DimensionVector, f64, &str, &str)] = &[
+            // Default-OFF (§5b): each magnitude is far outside [1, 1000), and
+            // each ladder has a rung that would take it in band — g for Mass,
+            // kPa for Pressure, g/cm³ for Density — which the posture forbids.
+            (DimensionVector::MASS, 2.5e-6, "0.0000025", "kg"),
+            (DimensionVector::PRESSURE, 1.01325e5, "101325", "Pa"),
+            (
+                DimensionVector::MASS_DENSITY,
+                7850.0,
+                "7850",
+                "kg/m\u{00B3}",
+            ),
+            // Structurally excluded (`auto_scale: None`).
+            (DimensionVector::ANGLE, std::f64::consts::PI, "180", "deg"),
+            (DimensionVector::FORCE, 250_000.0, "250000", "N"),
+            (DimensionVector::ENERGY, 1.5e-5, "0.000015", "J"),
+            (DimensionVector::POWER, 750_000.0, "750000", "W"),
+        ];
+
+        for (dimension, si_value, magnitude, label) in cases {
+            let actual = resolve_display(*si_value, dimension, None);
+            assert_eq!(
+                actual,
+                (magnitude.to_string(), label.to_string()),
+                "{dimension:?} @ {si_value} must render its static default rung unchanged"
+            );
+            assert!(
+                !actual.0.contains('\u{00D7}'),
+                "{dimension:?} @ {si_value} reached engineering notation, which §5e forbids \
+                 for default-OFF and excluded dimensions: {actual:?}"
+            );
+        }
+    }
+
+    /// §5d: an explicit unit pin is authoritative and stable regardless of
+    /// magnitude — auto-scaling only acts on a cell with no pin. This is a
+    /// regression lock on `resolve_display`'s existing `Some(pref)` early
+    /// return rather than new behaviour: that early return **is** the
+    /// pin-suppression rule, so §5d needs no separate flag or guard.
+    ///
+    /// The Volume cases are §5d's own worked tie-in to G1: `capacity` is
+    /// pinned to `"L"`, and even if an edit drove it to `0.0007 m³` or
+    /// `0.7 m³` the cell stays in liters rather than hopping to mL or m³.
+    #[test]
+    fn resolve_display_some_preference_suppresses_auto_scaling() {
+        let liters = DisplayPreference::new("L", 1e-3);
+        assert_eq!(
+            resolve_display(0.0007, &DimensionVector::VOLUME, Some(&liters)),
+            ("0.7".to_string(), "L".to_string()),
+            "a pinned rung stays pinned below the band — no hop to mL"
+        );
+        assert_eq!(
+            resolve_display(0.7, &DimensionVector::VOLUME, Some(&liters)),
+            ("700".to_string(), "L".to_string())
+        );
+
+        // A pin can also hold a Length at a rung auto-scaling would have moved
+        // off, in both directions — including one far enough out of band that
+        // an unpinned cell would reach §5c's engineering notation.
+        let mm = DisplayPreference::new("mm", 1e-3);
+        assert_eq!(
+            resolve_display(5.0, &DimensionVector::LENGTH, Some(&mm)),
+            ("5000".to_string(), "mm".to_string()),
+            "unpinned this would read 500 cm; the pin holds it at mm"
+        );
+        let tiny = resolve_display(1e-9, &DimensionVector::LENGTH, Some(&mm));
+        assert_eq!(tiny, ("0.000001".to_string(), "mm".to_string()));
+        assert!(
+            !tiny.0.contains('\u{00D7}'),
+            "a pinned rung must never render in engineering notation: {tiny:?}"
+        );
+    }
+
+    /// §5c: when auto-scaling is on but no rung keeps the mantissa in band,
+    /// the magnitude renders in engineering notation at the ladder's static
+    /// default rung — the `4.2×10⁻³`-style form the PRD's own example shows.
+    ///
+    /// Area `0.5 m²` is the registry's genuine coverage gap: its eligible
+    /// rungs span SI `[1e-6, 0.1) ∪ [1, 1000)`, so nothing lands in band
+    /// there (5e5 mm², 5e3 cm², 0.5 m²).
+    #[test]
+    fn resolve_display_none_renders_engineering_notation_when_no_rung_fits() {
+        assert_eq!(
+            resolve_display(0.5, &DimensionVector::AREA, None),
+            (
+                "500\u{00D7}10\u{00B3}".to_string(),
+                "mm\u{00B2}".to_string()
+            ),
+            "no Area rung lands in band at 0.5 m²"
+        );
+
+        // Negative and multi-digit exponents, pinning ⁻ (U+207B), the
+        // Latin-1 ¹²³ code points and the two-digit exponent path.
+        assert_eq!(
+            resolve_display(1e-9, &DimensionVector::LENGTH, None),
+            ("1\u{00D7}10\u{207B}\u{2076}".to_string(), "mm".to_string())
+        );
+        assert_eq!(
+            resolve_display(5000.0, &DimensionVector::VOLUME, None),
+            (
+                "5\u{00D7}10\u{00B9}\u{00B2}".to_string(),
+                "mm\u{00B3}".to_string()
+            )
+        );
+
+        // The mantissa goes through `format_display_number` like every other
+        // display magnitude, so its sig-fig/trailing-zero convention holds and
+        // no float noise leaks: 4.2e-9 m divides to a mantissa of
+        // 4.200000000000001, which must render "4.2" — the exact shape of
+        // §5c's own `4.2×10⁻³` example.
+        assert_eq!(
+            resolve_display(4.2e-9, &DimensionVector::LENGTH, None),
+            (
+                "4.2\u{00D7}10\u{207B}\u{2076}".to_string(),
+                "mm".to_string()
+            )
+        );
+        assert_eq!(
+            resolve_display(0.5678, &DimensionVector::AREA, None),
+            (
+                "567.8\u{00D7}10\u{00B3}".to_string(),
+                "mm\u{00B2}".to_string()
+            )
+        );
+    }
+
+    /// Zero and non-finite magnitudes render at the static default rung and
+    /// never reach engineering notation — a cell reading `0×10⁰ mm` instead of
+    /// `0 mm` would be strictly worse than the pre-§5 output.
+    #[test]
+    fn resolve_display_none_zero_and_non_finite_never_reach_engineering_notation() {
+        assert_eq!(
+            resolve_display(0.0, &DimensionVector::LENGTH, None),
+            ("0".to_string(), "mm".to_string())
+        );
+        for si_value in [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (magnitude, label) = resolve_display(si_value, &DimensionVector::LENGTH, None);
+            assert_eq!(
+                label, "mm",
+                "{si_value} must stay on the static default rung"
+            );
+            assert!(
+                !magnitude.contains('\u{00D7}'),
+                "{si_value} reached engineering notation: {magnitude:?}"
+            );
+        }
+    }
+
+    /// §5e end-to-end over the *whole* registry — the no-silent-gap guard.
+    ///
+    /// Every ladder is driven through `resolve_display` at rung 3, so a newly
+    /// added dimension is picked up automatically rather than needing a
+    /// hand-maintained list. The dimension→`DimensionVector` mapping comes off
+    /// `reify_core::NAMED_DIMENSIONS`, the same way
+    /// `every_ladder_dimension_round_trips_through_canonical_name` does in
+    /// reify-core.
+    ///
+    /// §5e admits exactly three outcomes and this pins all three:
+    ///   * **default-ON, finite non-zero** — the magnitude either parses back
+    ///     to an in-band value (a rung hop landed) or is engineering notation
+    ///     with an in-band mantissa and a multiple-of-three exponent. There is
+    ///     no third case: a bare out-of-band plain magnitude would mean the
+    ///     policy silently gave up;
+    ///   * **default-OFF or excluded** — the label is always the ladder's
+    ///     curated `derived_unit_name` (L1's invariant: that equals the
+    ///     `is_default` rung's label) and the string never contains `×10`;
+    ///   * **zero or non-finite, any dimension** — the static default rung's
+    ///     label, and no `×10`.
+    #[test]
+    fn resolve_display_none_honours_section5e_across_the_whole_registry() {
+        /// Split an engineering-notation magnitude into its mantissa and
+        /// exponent halves, or `None` if it is a plain magnitude.
+        fn split_engineering(magnitude: &str) -> Option<(f64, i32)> {
+            let (mantissa, exponent) = magnitude.split_once('\u{00D7}')?;
+            let exponent = exponent
+                .strip_prefix("10")
+                .expect("engineering notation must read <mantissa>×10<exponent>");
+            let digits: String = exponent
+                .chars()
+                .map(|c| match c {
+                    '\u{207B}' => '-',
+                    '\u{2070}' => '0',
+                    '\u{00B9}' => '1',
+                    '\u{00B2}' => '2',
+                    '\u{00B3}' => '3',
+                    '\u{2074}'..='\u{2079}' => char::from(b'4' + (c as u32 - 0x2074) as u8),
+                    other => panic!("unexpected glyph {other:?} in exponent {exponent:?}"),
+                })
+                .collect();
+            Some((
+                mantissa.parse().expect("mantissa must parse"),
+                digits.parse().expect("exponent must parse"),
+            ))
+        }
+
+        let mut sweep: Vec<f64> = Vec::new();
+        for exponent in -12..=12 {
+            for mantissa in [1.0, 2.5, 4.2, 7.5] {
+                sweep.push(mantissa * 10f64.powi(exponent));
+                sweep.push(-mantissa * 10f64.powi(exponent));
+            }
+        }
+        let degenerate = [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+
+        for ladder in reify_core::unit_ladders() {
+            let dim = *reify_core::NAMED_DIMENSIONS
+                .iter()
+                .find(|(_, name)| *name == ladder.dimension)
+                .map(|(dim, _)| dim)
+                .unwrap_or_else(|| panic!("no NAMED_DIMENSIONS entry for {:?}", ladder.dimension));
+            let name = &ladder.dimension;
+            let default_on = ladder.auto_scale.as_ref().is_some_and(|a| a.enabled);
+
+            // Zero and non-finite never auto-scale, whatever the posture.
+            for si_value in degenerate {
+                let (magnitude, label) = resolve_display(si_value, &dim, None);
+                assert_eq!(
+                    label, ladder.derived_unit_name,
+                    "{name} @ {si_value} left the static default rung"
+                );
+                assert!(
+                    !magnitude.contains('\u{00D7}'),
+                    "{name} @ {si_value} reached engineering notation: {magnitude:?}"
+                );
+            }
+
+            for &si_value in &sweep {
+                let (magnitude, label) = resolve_display(si_value, &dim, None);
+
+                if !default_on {
+                    assert_eq!(
+                        label, ladder.derived_unit_name,
+                        "{name} @ {si_value} hopped a rung despite its §5b posture"
+                    );
+                    assert!(
+                        !magnitude.contains('\u{00D7}'),
+                        "{name} @ {si_value} reached engineering notation, which §5e \
+                         forbids for default-OFF and excluded dimensions: {magnitude:?}"
+                    );
+                    continue;
+                }
+
+                match split_engineering(&magnitude) {
+                    Some((mantissa, exponent)) => {
+                        assert_eq!(
+                            exponent % 3,
+                            0,
+                            "{name} @ {si_value}: exponent {exponent} is not a multiple of three"
+                        );
+                        assert!(
+                            mantissa.abs() >= 1.0 && mantissa.abs() < 1000.0,
+                            "{name} @ {si_value}: mantissa {mantissa} outside [1, 1000)"
+                        );
+                    }
+                    None => {
+                        let rendered: f64 = magnitude
+                            .parse()
+                            .unwrap_or_else(|e| panic!("{name} @ {si_value}: {magnitude:?} {e}"));
+                        assert!(
+                            rendered.abs() >= 1.0 && rendered.abs() < 1000.0,
+                            "{name} @ {si_value}: rendered {magnitude:?} is out of band and is \
+                             not engineering notation — §5e admits no third outcome"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The exponent glyph mapper, direct. Covers every digit `0-9` at least
+    /// once plus the `⁻` (U+207B) sign prefix, because the glyphs come from
+    /// two different Unicode blocks — `¹²³` are Latin-1 Supplement code
+    /// points while `⁰⁴⁵⁶⁷⁸⁹` live in Superscripts and Subscripts — so a
+    /// naive contiguous-range mapping would silently mangle three of them.
+    #[test]
+    fn superscript_exponent_maps_every_digit_and_the_sign() {
+        assert_eq!(superscript_exponent(0), "\u{2070}");
+        assert_eq!(superscript_exponent(3), "\u{00B3}");
+        assert_eq!(superscript_exponent(-3), "\u{207B}\u{00B3}");
+        assert_eq!(superscript_exponent(12), "\u{00B9}\u{00B2}");
+        assert_eq!(superscript_exponent(-6), "\u{207B}\u{2076}");
+        assert_eq!(superscript_exponent(123), "\u{00B9}\u{00B2}\u{00B3}");
+        assert_eq!(
+            superscript_exponent(-123),
+            "\u{207B}\u{00B9}\u{00B2}\u{00B3}"
+        );
+        // 4, 5, 7, 8, 9 — the remaining glyphs, all from the second block.
+        assert_eq!(
+            superscript_exponent(45_789),
+            "\u{2074}\u{2075}\u{2077}\u{2078}\u{2079}"
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_dimensionless_renders_empty_label() {
+        assert_eq!(
+            resolve_display(3.0, &DimensionVector::DIMENSIONLESS, None),
+            ("3".to_string(), "".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_uncurated_dims_compose_base_unit_fallback() {
+        assert_eq!(
+            resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            ("2".to_string(), "m\u{b7}s^-1".to_string()),
+            "Velocity has no registry ladder, so it falls through to the composed Display fallback"
+        );
+        assert_eq!(
+            resolve_display(25.0, &DimensionVector::MONEY, None),
+            ("25".to_string(), "USD".to_string()),
+            "Money is not a ladder dimension, so composed Display yields \"USD\" naturally"
+        );
+    }
+
+    #[test]
+    fn resolve_display_some_preference_renders_the_resolved_rung_directly() {
+        let liters = DisplayPreference::new("L", 1e-3);
+        assert_eq!(
+            resolve_display(0.007, &DimensionVector::VOLUME, Some(&liters)),
+            ("7".to_string(), "L".to_string()),
+            "explicit preference overrides the registry default rung (mm\u{00B3})"
+        );
+
+        let cm = DisplayPreference::new("cm", 1e-2);
+        assert_eq!(
+            resolve_display(0.08, &DimensionVector::LENGTH, Some(&cm)),
+            ("8".to_string(), "cm".to_string())
+        );
+
+        let kpa = DisplayPreference::new("kPa", 1e3);
+        assert_eq!(
+            resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&kpa)),
+            ("101.325".to_string(), "kPa".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_some_degenerate_scale_falls_back_to_none_handling() {
+        // A `DisplayPreference` with a zero or non-finite `si_scale` must not
+        // reach `si_value / si_scale` (that would render `inf`/`NaN`).
+        // `resolve_display` treats it as if `preference` were absent, so the
+        // result matches the `None` path for the same `(si_value, dimension)`.
+        for degenerate_scale in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let broken = DisplayPreference::new("bogus", degenerate_scale);
+
+            assert_eq!(
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&broken)),
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, None),
+                "degenerate si_scale {degenerate_scale} must fall back to the curated registry default, not \"bogus\"/inf/NaN"
+            );
+            assert_eq!(
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&broken)),
+                ("101325".to_string(), "Pa".to_string())
+            );
+
+            // Also lock the rung-5 (uncurated) fallback path for a dimension
+            // with no registry ladder, so the guard is verified independent
+            // of `registry_display_default` returning `Some`.
+            assert_eq!(
+                resolve_display(2.0, &DimensionVector::VELOCITY, Some(&broken)),
+                resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            );
+
+            // A default-ON dimension (task #5236): "treated as absent" must
+            // land on the full §5e rung-3 result — the AUTO-SCALED rung —
+            // not on the static default rung. Pressure above cannot
+            // distinguish these (it is default-OFF, so both are "Pa"); Volume
+            // can, because unpinned it hops mm³ → L.
+            assert_eq!(
+                resolve_display(0.007, &DimensionVector::VOLUME, Some(&broken)),
+                resolve_display(0.007, &DimensionVector::VOLUME, None),
+            );
+            assert_eq!(
+                resolve_display(0.007, &DimensionVector::VOLUME, Some(&broken)),
+                ("7".to_string(), "L".to_string()),
+                "a degenerate pin falls through to auto-scaled rung 3, not the static mm³ rung"
+            );
+        }
     }
 
     // --- Freshness::is_final tests (task #2356) ---
@@ -10978,6 +11893,447 @@ mod tests {
         // exercises round_to_sig_figs' abs()-guarded fast path for a negative
         // whole number.
         assert_eq!(format_display_number(-80.0), "-80");
+    }
+
+    // ── format_display_number_rel relative-to-aggregate snap-to-zero (task 5339) ──
+
+    #[test]
+    fn format_display_number_rel_snaps_near_zero_relative_to_reference() {
+        // Real artifact: BottomDeck.centroid x component (~1.80e-14 of the
+        // z sibling) must snap to "0".
+        assert_eq!(
+            format_display_number_rel(3.86564423998e-13, 21.5084347502),
+            "0"
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_preserves_above_threshold_value() {
+        // ratio = 0.00005 / 21.5 ≈ 2.33e-6, well above the 1e-9 epsilon — a
+        // legitimate small tolerance (task 5198) must survive unchanged.
+        assert_eq!(format_display_number_rel(0.00005, 21.5), "0.00005");
+    }
+
+    #[test]
+    fn format_display_number_rel_preserves_the_reference_value_itself() {
+        // A value equal to the reference (ratio == 1.0) must render exactly
+        // as format_display_number would render it standalone.
+        assert_eq!(
+            format_display_number_rel(21.5084347502, 21.5084347502),
+            format_display_number(21.5084347502)
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_zero_reference_delegates_to_absolute_path() {
+        // reference == 0.0 (e.g. an all-zero or all-comparable-tiny
+        // aggregate) disables the relative snap entirely — falls through to
+        // the unchanged absolute-path cleanup.
+        assert_eq!(
+            format_display_number_rel(6.3999999999999995, 0.0),
+            "6.4"
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_non_finite_reference_disables_snapping() {
+        // A non-finite reference (e.g. an inf sibling in the aggregate) must
+        // never zero out a finite component — falls through unchanged.
+        assert_eq!(
+            format_display_number_rel(4e-13, f64::INFINITY),
+            format_display_number(4e-13)
+        );
+    }
+
+    #[test]
+    fn format_display_number_rel_exact_zero_value_stays_zero() {
+        assert_eq!(format_display_number_rel(0.0, 21.5), "0");
+    }
+
+    #[test]
+    fn format_display_number_rel_negative_dust_snaps_to_positive_zero() {
+        // The snap branch returns the literal "0", never "-0" — must hold
+        // even for a negative dust value, since the moment_of_inertia
+        // off-diagonals in this task's motivating example are negative
+        // (e.g. -8.681e-18).
+        assert_eq!(format_display_number_rel(-4e-13, 21.5), "0");
+    }
+
+    // ── Value::format_display Point/Vector relative snap-to-zero (task 5339) ──
+    //
+    // End-to-end wiring: format_display seeds the whole-aggregate reference
+    // and threads it into each component. Value::Real components keep the
+    // ratios transparent; a dedicated case below covers Value::Scalar's
+    // display-unit scaling.
+
+    #[test]
+    fn format_display_point_snaps_centroid_dust_relative_to_z() {
+        // Real artifact: BottomDeck.centroid. x/y are ~1e-13 dust next to the
+        // z sibling (21.5084347502) and must snap to "0"; z is unaffected.
+        let v = Value::Point(vec![
+            Value::Real(3.86564423998e-13),
+            Value::Real(1.56011476434e-13),
+            Value::Real(21.5084347502),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, 0, {})", format_display_number(21.5084347502))
+        );
+    }
+
+    #[test]
+    fn format_display_vector_snaps_dust_relative_to_sibling() {
+        let v = Value::Vector(vec![
+            Value::Real(4e-13),
+            Value::Real(0.0),
+            Value::Real(21.5),
+        ]);
+        assert_eq!(v.format_display(), "vec(0, 0, 21.5)");
+    }
+
+    #[test]
+    fn format_display_point_preserves_comparable_components() {
+        // No component is dust relative to another — no-op, matches the
+        // pre-5339 rendering exactly.
+        let v = Value::Point(vec![
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+        ]);
+        assert_eq!(v.format_display(), "point(1, 2, 3)");
+    }
+
+    #[test]
+    fn format_display_point_preserves_legit_small_tolerance() {
+        // ratio = 0.00005 / 21.5 ≈ 2.33e-6, above the 1e-9 epsilon — a
+        // legitimate small tolerance (task 5198) must survive unchanged even
+        // alongside a much larger sibling.
+        let v = Value::Point(vec![
+            Value::Real(0.00005),
+            Value::Real(0.0),
+            Value::Real(21.5),
+        ]);
+        assert_eq!(v.format_display(), "point(0.00005, 0, 21.5)");
+    }
+
+    #[test]
+    fn format_display_point_all_comparable_tiny_not_snapped() {
+        // All three components are equally tiny in absolute terms, so none
+        // is dust *relative to* a sibling — the relative test must not
+        // collapse the whole aggregate to zero just because every component
+        // is small in absolute magnitude. Pin the exact rendering (not just
+        // "isn't all-zero") so a partial snap or a garbled fallback also
+        // fails this test.
+        let v = Value::Point(vec![
+            Value::Real(1e-13),
+            Value::Real(1e-13),
+            Value::Real(1e-13),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!(
+                "point({}, {}, {})",
+                format_display_number(1e-13),
+                format_display_number(1e-13),
+                format_display_number(1e-13)
+            )
+        );
+    }
+
+    #[test]
+    fn format_display_point_infinite_sibling_disables_snapping() {
+        // A non-finite sibling must never zero out an otherwise-dust finite
+        // component: the aggregate reference becomes non-finite, which
+        // disables the relative snap entirely (format_display_number_rel's
+        // guard), so every component falls through to its own unsnapped
+        // decimal rendering. Pin the exact string (not just "doesn't start
+        // with point(0, ") so a partial snap of a later component, or a
+        // garbled inf/NaN rendering, also fails this test.
+        let v = Value::Point(vec![
+            Value::Real(4e-13),
+            Value::Real(f64::INFINITY),
+            Value::Real(21.5),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!(
+                "point({}, {}, {})",
+                format_display_number(4e-13),
+                format_display_number(f64::INFINITY),
+                format_display_number(21.5)
+            )
+        );
+    }
+
+    #[test]
+    fn format_display_point_nan_sibling_does_not_poison_reference() {
+        // f64::max's NaN-ignoring semantics mean a NaN leaf is silently
+        // dropped when folding the aggregate reference (unlike an inf
+        // sibling, tested above, which propagates into the reference and
+        // disables snapping entirely). Here the reference is still 21.5 —
+        // computed from the finite 4e-13/21.5 pair alone — so 4e-13 snaps to
+        // "0" exactly as it would without the NaN sibling present, and the
+        // NaN component itself renders via the unchanged absolute path.
+        let v = Value::Point(vec![
+            Value::Real(4e-13),
+            Value::Real(f64::NAN),
+            Value::Real(21.5),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, {}, {})", format_display_number(f64::NAN), format_display_number(21.5))
+        );
+    }
+
+    #[test]
+    fn format_display_list_excluded_from_relative_snap() {
+        // List is a heterogeneous collection, not a geometric/tensor
+        // aggregate sharing a coordinate frame — relative snapping must not
+        // apply, unlike the Point case above with the same magnitudes. Pin
+        // the exact absolute-path rendering (not just "isn't the snapped
+        // form") so any other corruption also fails this test.
+        let v = Value::List(vec![Value::Real(4e-13), Value::Real(21.5)]);
+        assert_eq!(
+            v.format_display(),
+            format!(
+                "[{}, {}]",
+                format_display_number(4e-13),
+                format_display_number(21.5)
+            )
+        );
+    }
+
+    #[test]
+    fn format_display_point_scalar_reference_computed_in_display_units() {
+        // The centroid case expressed as Value::Scalar{si_value in metres,
+        // LENGTH} instead of Value::Real — proves aggregate_magnitude computes
+        // the reference from the *display*-unit value (mm, via display_scale's
+        // ×1000) and not the raw SI value, matching format_display's own
+        // to_display_units conversion for each component.
+        //
+        // The dust magnitude is chosen to sit inside the band where the ×1000
+        // LENGTH scale flips the outcome, so the test actually discriminates
+        // the raw-SI bug rather than passing under both:
+        //   correct (display reference 21.5084347502 mm):
+        //     1e-9 < 1e-9 * 21.5084347502 = 2.15e-8  → snaps to "0"
+        //   bug (raw-SI reference 0.0215084347502 m):
+        //     1e-9 < 1e-9 * 0.0215084347502 = 2.15e-11 is FALSE
+        //     → renders "0.000000001" and this assertion fails.
+        // Don't retune these magnitudes without re-checking both lines.
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0215084347502,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, 0, {})", format_display_number(21.5084347502))
+        );
+    }
+
+    #[test]
+    fn format_display_point_scalar_pins_real_centroid_artifact() {
+        // The real BottomDeck.centroid magnitudes in Scalar form (x/y ~3.9e-13
+        // and ~1.6e-13 mm next to a 21.5084347502 mm z). Kept alongside the
+        // discriminating case above so the reported artifact stays pinned
+        // end-to-end through the Scalar/display-units path.
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 3.86564423998e-16,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1.56011476434e-16,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0215084347502,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_eq!(
+            v.format_display(),
+            format!("point(0, 0, {})", format_display_number(21.5084347502))
+        );
+    }
+
+    // ── Value::format_display Tensor relative snap-to-zero (task 5339) ───────
+    //
+    // The reference spans the WHOLE tensor, so a 3×3 nested Tensor-of-Tensor
+    // (the moment_of_inertia shape) judges an off-diagonal in any row against
+    // the global max, not just that row's own.
+
+    #[test]
+    fn format_display_tensor_snaps_inertia_off_diagonals_relative_to_whole_tensor_max() {
+        // reference must be computed over the WHOLE tensor (max diagonal
+        // 2.7), not per-row, and threaded unchanged into every row — so
+        // every ~1e-18 off-diagonal snaps, including in rows whose own max
+        // (e.g. row 0's 1.5) is smaller than the global reference.
+        let v = Value::Tensor(vec![
+            Value::Tensor(vec![
+                Value::Real(1.5),
+                Value::Real(8.681e-18),
+                Value::Real(-3.0e-18),
+            ]),
+            Value::Tensor(vec![
+                Value::Real(8.681e-18),
+                Value::Real(2.1),
+                Value::Real(1.0e-18),
+            ]),
+            Value::Tensor(vec![
+                Value::Real(-3.0e-18),
+                Value::Real(1.0e-18),
+                Value::Real(2.7),
+            ]),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            "[[1.5, 0, 0], [0, 2.1, 0], [0, 0, 2.7]]"
+        );
+    }
+
+    #[test]
+    fn format_display_tensor_flat_snaps_dust_relative_to_sibling() {
+        let v = Value::Tensor(vec![Value::Real(4e-13), Value::Real(21.5)]);
+        assert_eq!(v.format_display(), "[0, 21.5]");
+    }
+
+    #[test]
+    fn format_display_tensor_preserves_comparable_components() {
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_eq!(v.format_display(), "[1, 2]");
+    }
+
+    #[test]
+    fn format_display_tensor_nested_point_threads_outer_reference() {
+        // A Point nested inside a Tensor must snap relative to the WHOLE
+        // tensor's magnitude, not a magnitude recomputed from just its own
+        // components: aggregate_magnitude recurses into a nested Point's
+        // items when folding the outer reference, and format_display_rel's
+        // Point arm threads that SAME outer reference back in — it does not
+        // fall back to format_display() (which would recompute a smaller
+        // local reference scoped to just that one Point). Without the Point
+        // arm, the first Point below would render its own 4e-13 unsnapped,
+        // since 4e-13 is its own row's max (ratio 1.0) even though it is
+        // dust (ratio ~1.86e-14) relative to the second Point's 21.5.
+        let v = Value::Tensor(vec![
+            Value::Point(vec![Value::Real(4e-13), Value::Real(0.0), Value::Real(0.0)]),
+            Value::Point(vec![Value::Real(21.5), Value::Real(0.0), Value::Real(0.0)]),
+        ]);
+        assert_eq!(
+            v.format_display(),
+            "[point(0, 0, 0), point(21.5, 0, 0)]"
+        );
+    }
+
+    // ── Value::format_display Matrix relative snap-to-zero (task 5339) ───────
+    //
+    // The reference spans the whole matrix and is threaded into every cell of
+    // every row. The comparable-entries case guards the existing golden shape
+    // (gui types_tests / cli_eval_geometry pin `[[1, 2], [3, 4]]` output).
+
+    #[test]
+    fn format_display_matrix_snaps_near_zero_entries_relative_to_whole_matrix_max() {
+        let v = Value::Matrix(vec![
+            vec![Value::Real(1.5), Value::Real(4e-13)],
+            vec![Value::Real(4e-13), Value::Real(2.1)],
+        ]);
+        assert_eq!(v.format_display(), "[[1.5, 0], [0, 2.1]]");
+    }
+
+    #[test]
+    fn format_display_matrix_preserves_comparable_entries() {
+        let v = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(2.0)],
+            vec![Value::Real(3.0), Value::Real(4.0)],
+        ]);
+        assert_eq!(v.format_display(), "[[1, 2], [3, 4]]");
+    }
+
+    // ── Complex as an aggregate member (task 5339) ───────────────────────────
+    //
+    // Complex is a numeric leaf, so it must participate on BOTH sides: it
+    // contributes to aggregate_magnitude's reference, and its own parts snap
+    // against that reference. Missing either half silently folds a
+    // Tensor/Matrix of Complex to reference == 0.0, losing the snap wholesale.
+
+    #[test]
+    fn format_display_tensor_complex_member_contributes_to_reference() {
+        // Without the aggregate_magnitude Complex arm the reference folds to
+        // 4e-13 (the Complex contributing 0.0), so the dust component is its
+        // own max and renders unsnapped.
+        let v = Value::Tensor(vec![
+            Value::Real(4e-13),
+            Value::Complex {
+                re: 21.5,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        ]);
+        assert_eq!(v.format_display(), "[0, 21.5 + 0i]");
+    }
+
+    #[test]
+    fn format_display_tensor_complex_parts_snap_against_outer_reference() {
+        // Without the format_display_rel Complex arm this falls through to
+        // format_display and renders "21.5 + 0.0000000000008i".
+        let v = Value::Tensor(vec![
+            Value::Complex {
+                re: 21.5,
+                im: 8e-13,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Value::Real(1.0),
+        ]);
+        assert_eq!(v.format_display(), "[21.5 + 0i, 1]");
+    }
+
+    #[test]
+    fn format_display_tensor_complex_reference_computed_in_display_units() {
+        // Both the Complex's contribution to the reference and its own parts
+        // are taken in display units (mm, via display_scale's ×1000), matching
+        // format_display's to_display_units rendering: reference is 21.5 mm,
+        // not 0.0215 m, so the 1e-9 mm dust part snaps (1e-9 < 2.15e-8) where
+        // a raw-SI reference (threshold 2.15e-11) would leave it rendered.
+        let v = Value::Tensor(vec![
+            Value::Complex {
+                re: 0.0215,
+                im: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1e-12,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_eq!(v.format_display(), "[21.5 + 0i, 0]");
+    }
+
+    #[test]
+    fn format_display_standalone_complex_is_not_relatively_snapped() {
+        // A lone Complex is a leaf, not an aggregate: like a lone Scalar it
+        // has no containing aggregate to be judged dust against, so it keeps
+        // the unchanged absolute-path rendering (matching
+        // format_display_pair's Complex arm). The snap only applies once it
+        // is a member of a Tensor/Point/Vector/Matrix, as pinned above.
+        let v = Value::Complex {
+            re: 21.5,
+            im: 8e-13,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(
+            v.format_display(),
+            format!("21.5 + {}i", format_display_number(8e-13))
+        );
     }
 
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────

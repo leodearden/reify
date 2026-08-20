@@ -13,10 +13,11 @@ The architect's blocking note flagged the orphan-producer risk directly: *"no re
 **Phase 1 — FEA-native derivative channels (the real consumer).** The elastic solver already forms the displacement gradient: `element_stress_p1` (`crates/reify-solver-elastic/src/result.rs:72`) builds the physical shape-function gradients `∇x N_i = J⁻ᵀ·∇ξN_i` and computes strain `ε = B·u_e` to recover stress (σ = D:ε). The derivative information exists; today it is discarded after stress recovery. Phase 1 surfaces it as first-class result fields:
 
 - **`ElasticResult.divergence`** : `Field<Point3<Length>, Real>` — volumetric strain (dilatation) `tr(ε) = ∂uₓ/∂x + ∂u_y/∂y + ∂u_z/∂z`. Scalar codomain.
-- **`ElasticResult.gradient`** : `Field<Point3<Length>, Tensor<2,3,Real>>` — the displacement-gradient tensor ∇u (its symmetric part is strain). Dimensionless.
-- **`ElasticResult.curl`** : `Field<Point3<Length>, Vector3<Real>>` — `∇×u` (twice the infinitesimal rotation vector). Dimensionless.
+- **`ElasticResult.gradient`** : `Field<Point3<Length>, Tensor<2,3,Real>>` — the displacement-gradient tensor ∇u (its symmetric part is strain). Dimensionless — and necessarily single-quantity: tensor components mix under coordinate rotation, so `Tensor<2,3,Q>` carries one Q and the antisymmetric (rotation) block shares the dimensionless typing by construction. Extracting a finite rotation from ∇u is a designated crossing (polar decomposition → orient family), not a projection.
+- **`ElasticResult.curl`** : `Field<Point3<Length>, Vector3<Real>>` — `∇×u` (twice the infinitesimal rotation vector). Dimensionless — **decided, not defaulted** (ruled 2026-08-10, task 6164): the derivative algebra is quotient-pure (the curvature precedent, m⁻¹ with no rad) and ANGLE enters only at designated crossings; the crossing for this channel is `.rotation` below.
+- **`ElasticResult.rotation`** : `Field<Point3<Length>, Vector3<Angle>>` — `∇×u / 2`, the infinitesimal rotation vector, with the radian introduced explicitly at this named channel (the designated crossing; added by ruling task 6164, not part of the original Phase-1 landing). Valid as an angle in the small-deformation regime (‖∇u‖ ≪ 1); the exact finite-rotation extraction is polar decomposition of the deformation gradient (future).
 
-All three are emitted with **`source: FieldSourceKind::Sampled`** (mirroring the existing `displacement`/`stress` channels), so `sample()` and the scalar reductions work through the *existing* Sampled paths.
+All of these channels are emitted with **`source: FieldSourceKind::Sampled`** (mirroring the existing `displacement`/`stress` channels), so `sample()` and the scalar reductions work through the *existing* Sampled paths.
 
 **User-observable signal (G2):** a stdlib `.ri` example solves a known load case and asserts `result.divergence` against the analytic dilatation (e.g. an axially-loaded bar: `tr(ε) = (1−2ν)σ/E`), runnable in CI. Plus `.gradient`/`.curl` sampled at a point.
 
@@ -64,7 +65,7 @@ All three are emitted with **`source: FieldSourceKind::Sampled`** (mirroring the
 - **D3 — Vector/tensor Sampled reduction by magnitude.** `max(grad)`/`max(curl)` reduce by pointwise Euclidean magnitude (the VonMises projection shape). Divergence is scalar → reduces directly, no projection.
 - **D4 — Generic FD scheme.** Central difference O(h²) interior, first/second-order one-sided at boundaries (mirror `medial.rs`). Accuracy contract pinned to polynomials where FD is **exact** (§6), never a guessed tolerance.
 - **D5 — Laplacian: scalar-only, Phase 2, SDF-curvature consumer.** Excluded from the FEA spine: `∇²(linear)=0` per P1 element (degenerate), and the equilibrium-residual use case is already covered by `error_estimator.rs` (ZZ recovery). Its real near-term home is mean curvature of SDF/OpenVDB scalar fields via the generic stencil.
-- **D6 — Dimensions.** `div(u)`, `∇u`, `∇×u` of a Length-valued displacement over a Length domain are all dimensionless (strain), via the existing `dim_quotient_type` logic in `calculus.rs`.
+- **D6 — Dimensions.** `div(u)`, `∇u`, `∇×u` of a Length-valued displacement over a Length domain are all dimensionless (strain), via the existing `dim_quotient_type` logic in `calculus.rs`. **Adjudicated 2026-08-10 (task 6164), no longer a default:** the quotient typing is the decision — rotation-as-angle is provided by the explicit `.rotation` channel rather than by retyping `curl`, which would break `result.curl` ≡ `curl(result.displacement)` coherence and the single-quantity tensor invariant.
 
 ---
 

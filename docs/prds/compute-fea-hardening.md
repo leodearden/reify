@@ -32,7 +32,7 @@ Because GUI and CLI each build the underlying `Engine` differently (`Engine::new
 
 Migrate the three hand-rolled bundlers (CLI `register_compute_trampolines`, GUI `EngineSession::from_engine`, test_runner `build_test_engine`) to delegate to it; add a grep-based architecture test that all three (and no fourth undelegated site) call it. GUI's migration fixes its missing morph-producer registration **as a side effect** — the actual esc-2962-66-class bug this PRD closes.
 
-`cmd_check`'s deliberate trampoline-free opt-out (`crates/reify-cli/src/main.rs:450-471`, locked by `check_fea_violated_constraint_is_not_gated`, `crates/reify-cli/tests/cli_build_fea.rs:147`) needs **no change** — it is already documented and already locked. It is the pattern the LSP posture work (§2) copies.
+`cmd_check`'s deliberate trampoline-free opt-out (`crates/reify-cli/src/main.rs:450-471`, locked by `check_fea_violated_constraint_is_not_gated`, `crates/reify-cli/tests/harness_cli/cli_build_fea.rs:147`) needs **no change** — it is already documented and already locked. It is the pattern the LSP posture work (§2) copies.
 
 ### 2. LSP posture (INV-FEA-1)
 
@@ -204,7 +204,7 @@ Labels are intra-batch (Greek/alphanumeric); real task IDs assigned at decompose
 
 ### Scope 2 — LSP posture (INV-FEA-1)
 
-- **C1** — Document the LSP's trampoline-free posture (mirror `cmd_check`'s comment at `crates/reify-cli/src/main.rs:450-471`) in `crates/reify-lsp/src/diagnostics.rs`; author an inline FEA-bearing `.ri` source fixture (LSP tests use inline `&str`, not files — no shared helper needed unless C2 wants one); add a locking test mirroring `check_fea_violated_constraint_is_not_gated` (`reify-cli/tests/cli_build_fea.rs:147`) asserting the FEA constraint surfaces as `Indeterminate`/no-violation under the LSP's engine. **Leaf.** User-observable signal: a committed test pins that an FEA-bearing `.ri` file produces no false violation/false pass under `compute_diagnostics` — the documented-posture contract itself, locked. Files: `crates/reify-lsp/src/diagnostics.rs`.
+- **C1** — Document the LSP's trampoline-free posture (mirror `cmd_check`'s comment at `crates/reify-cli/src/main.rs:450-471`) in `crates/reify-lsp/src/diagnostics.rs`; author an inline FEA-bearing `.ri` source fixture (LSP tests use inline `&str`, not files — no shared helper needed unless C2 wants one); add a locking test mirroring `check_fea_violated_constraint_is_not_gated` (`reify-cli/tests/harness_cli/cli_build_fea.rs:147`) asserting the FEA constraint surfaces as `Indeterminate`/no-violation under the LSP's engine. **Leaf.** User-observable signal: a committed test pins that an FEA-bearing `.ri` file produces no false violation/false pass under `compute_diagnostics` — the documented-posture contract itself, locked. Files: `crates/reify-lsp/src/diagnostics.rs`.
 - **C2** — Add the hint diagnostic: an FEA-dependent constraint that is `Indeterminate` gets a `Severity::Info` diagnostic ("FEA constraint not evaluated in editor — run `reify test`"), once per document per constraint (dedup by constraint id). Cite task **#5023** as the superseding long-term consumer in the task text. Depends: C1 (reuses its fixture). **Leaf.** User-observable signal: **G2(b)** — "an FEA-bearing `.ri` open in the LSP shows the hint diagnostic on its FEA constraint (was: nothing)." Files: `crates/reify-lsp/src/diagnostics.rs`.
 
 ### Scope 3 — panic boundary (INV-FEA-2)

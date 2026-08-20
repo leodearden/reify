@@ -84,9 +84,13 @@ seam:
   (background `rm`); inv.2 (one consumer per lane) guarantees these are always from a
   prior crash/SIGKILL, never a live concurrent seed. Note: the sweep covers the
   "next-seed-for-this-lane" recovery path; a lane that is never re-acquired after a
-  crash leaves orphans until the next seed. A GC reaper sweep of the entire
-  `.reseed-trash/` dir (δ, `warm-lane-gc.sh`) is the complementary durability seam
-  and is tracked separately.
+  crash leaves orphans until the next seed. The complementary durability seam — a GC reaper
+  sweep of the entire `.reseed-trash/` dir — now **exists** in `warm-lane-gc-sweep.sh` (the periodic
+  δ backstop; timer + hand-run), added by task 5326: every sweep reaps a stranded
+  `<lane>.<pid>` entry when its encoded PID is dead **and** no live process still references the
+  dir via cwd / open fd / mmap (a PID-reuse / in-flight-rm-or-seed guard), fail-open. It lives in
+  gc-sweep.sh, not the per-acquire `gc.sh reclaim` hot path, because the live-reference `/proc` scan
+  is too costly for that path (Leo, 2026-07-22, on task 5301 / esc-5322-1).
 - **D2 — no cold-lane fallback (operator policy).** When `warm_lane_pool` is enabled there is no
   full cold worktree, ever. Pool-exhaustion is normal scheduling backpressure (not an error, not an
   escalation); genuine provisioning faults escalate; disk-pressure requeues as transient.
@@ -97,9 +101,18 @@ seam:
   triggers reclaim-then-requeue.
 - **D5 — reclaim before requeue.** Under disk pressure, try reclaiming task-side space first (cheap,
   preserves throughput); only requeue if reclaim doesn't free enough — the merge-guard pattern.
-- **D6 — GC preserves WIP unconditionally.** GC never touches a lane/worktree with dirty tracked
-  changes, unlanded ahead-of-`main` commits, or a live consumer (inv.2). Only clean+landed cold
-  worktrees and divergent FREE lanes are reclaimable.
+- **D6 — GC preserves source WIP; a FREE lane's `target/` is not WIP.** GC preserves WIP for two
+  cases: **orphan cold worktrees** (Pass 2 — removed only when clean+landed with no live consumer),
+  and **any live-consumer lane** (inv.2 — the per-lane flock is held). It does **not** preserve a
+  FREE pool-lane's divergent `target/`: that is reclaimed (Pass 1) **regardless of dirty tracked
+  changes or an ahead-of-`main` tip** (task 5326), because the reset touches only `target/` — never
+  the source tree or the branch — `acquire_lane` always re-seeds from base (D10 / cow-seeding §9.5),
+  and committed work lives on `refs/heads/task/NNNN`, not in `target/`. This is exactly
+  `warm-lane-pool-sizing-lifecycle.md` **Invariant T1** ("only `target/` is removed; source WIP
+  survives on the branch, restored by `reset_lane` on re-acquire") and is **not** a D5 violation:
+  a FREE lane's `target/` is neither live (flock-free) nor at-risk (rebuilt on acquire). See that
+  PRD's T1/D5 reconciliation. Only clean+landed cold worktrees (Pass 2) and FREE-lane `target/`
+  (Pass 1) are reclaimable.
 
 ## 5. Pre-conditions for activating
 
@@ -191,33 +204,92 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   > invariant, enforced by `check --soft` itself).
 
 ### 8.4 GC — `warm-lane-gc.sh` (δ)
-- `reclaim` resets divergent FREE lanes to thin (via the α primitive) and `git worktree remove`s
-  orphaned worktrees that are clean **and** landed (`git merge-base --is-ancestor <branch> main`)
-  **and** have no live consumer. **inv.preserve:** dirty WIP / unlanded-ahead / live-consumer is
-  never touched.
-- **Terminal-task reclaim tier (task 5167).** A pool-lane FREE entry (Pass 1 only — orphan cold
-  worktrees in Pass 2, which never match `task/NNNN`, are unaffected) whose checked-out branch is
-  `task/NNNN` — or a detached HEAD reachable from exactly one `task/NNNN` branch — is reclaimable
-  **regardless of ahead-of-main and dirty tracked changes** once the backing task's status is
-  terminal (`done`/`cancelled`). This closes the rebase-orphan leak: a task landed via merge-train
-  REBASE has its work on `main` under new SHAs, while its lane's `task/NNNN` tip is an orphan SHA
-  that is never an ancestor of `main`, so the ahead-of-main guard alone preserved such lanes
-  forever (root cause of the 2026-07-10 ENOSPC outage — two terminal-task lanes leaked to
-  768G/404G and wedged ~8 verifies). Status comes from an advisory oracle — `--status-cmd PATH` /
-  `REIFY_WARM_LANE_GC_STATUS_CMD`, falling back to the shared `REIFY_LANE_LEAK_STATUS_CMD` (the
-  same oracle `warm-lane-preflight.sh` Check 6 and `warm-lane-degenerate-ref-check.sh` consume, so
-  one env var lights up detector + reclaimer together) — invoked as `<cmd> <task_id>` → status on
-  stdout; a non-zero exit or empty output is unknown/non-terminal (fail-safe: preserve).
-  **inv.preserve still holds for the live-consumer case:** the lane flock is acquired, and checked,
-  before the terminal-status check runs, so a flock-held lane is never reclaimed even when its
-  backing task is terminal.
+
+> **Scope note (added 2026-08-07 — task 6063).** This section's heading and framing — Pass 1 / Pass 2,
+> the `_is_reclaimable` predicate, the per-entry cost model — are gc's. **One bullet below is not:** the
+> **live-reference gate** is *shared* mechanism, and `scripts/thin-warm-lane.sh` (its third call site,
+> task 5823) points here as its single normative home, as does `warm-lane-pool-cow-seeding.md` §9.5
+> inv.10/inv.11. Read that bullet as binding on **both** callers — the /proc mechanism, the
+> per-lane-not-batch TOCTOU rationale and the measured **per-call** cost apply identically to thin.
+> What is gc-specific there is only the Pass 1 / Pass 2 *ordering* prose and the `entries × per-call`
+> aggregate that follows from gc's per-entry loop; thin's own ordering and its one-call-per-invocation
+> shape are stated in the same bullet. Every other bullet in this section is gc-only.
+
+- `reclaim` runs two passes:
+  - **Pass 1 — FREE pool lanes (`_lane-*`/`_spec-*`).** Reset `target/` to thin (via the α
+    primitive) for **every** lane whose per-lane `flock -n` is free — **regardless of dirty tracked
+    changes, an ahead-of-`main` tip, or backing-task status**. Pass 1 has exactly **two** preserve
+    gates, checked in this order: (1) the live-consumer flock (inv.2), and (2) — since task 5572 —
+    a live **process reference** at or under the lane dir (see the live-reference gate bullet
+    below). Safe because `acquire_lane` always re-seeds from base
+    (cow-seeding §9.5), so a FREE lane's divergent `target/` is never reused; reset touches only
+    `target/` (never the source tree or the branch), and committed work lives on
+    `refs/heads/task/NNNN` — see D6 and the `warm-lane-pool-sizing-lifecycle.md` T1/D5
+    reconciliation (task 5326).
+  - **Pass 2 — orphan cold worktrees.** `git worktree remove` only those that are clean **and**
+    landed (`git merge-base --is-ancestor <branch> main`) **and** have no live consumer — the
+    conservative `_is_reclaimable` predicate is retained here because removing a real worktree is
+    destructive. **inv.preserve (Pass 2):** dirty WIP / unlanded-ahead / live-consumer is never
+    touched — where "live-consumer" is **two** distinct tests since task 5572: the `_is_reclaimable`
+    flock, and a live process reference at or under the entry, which sits OUTSIDE that predicate and
+    runs after it (see the live-reference gate bullet below).
+- **Live-reference gate (gc: task 5572; thin: task 5823).** A per-lane live **process-reference** check
+  (`live_ref_present`, `scripts/lib_live_refs.sh`): does any process hold its cwd, an open fd, or an
+  mmap at or under the entry? It sits deliberately **OUTSIDE** the `_is_reclaimable` predicate,
+  which is precisely why its share of the preserved count is reported separately rather than folded
+  into `preserved`. **Order:** Pass 1 gains it as its second preserve gate (after the flock); in
+  Pass 2 it runs **AFTER** `_is_reclaimable` — cheapest decisive predicate first, so only an orphan
+  that would actually be removed pays for the walk (the `_is_reclaimable` git pair is ~18 ms).
+  **Third call site — `thin-warm-lane.sh` (task 5823).** The same `live_ref_present` is also thin's
+  T4 gate, making thin this gate's **third** call site alongside gc's Pass 1 and Pass 2. Unlike gc's
+  per-entry, per-pass call, thin calls it **exactly once per invocation**: after its own `flock -n 9`
+  acquire and immediately before its `rm -rf <lane_dir>/target`. That placement is also why it covers
+  thin's `--reseed` branch and the post-abort discard of an uncertified clone (cow-seeding §9.5
+  inv.13).
+  **Why per-lane and not a batch snapshot:** it is evaluated immediately before that entry's reset
+  (Pass 1) or remove (Pass 2), under the flock the loop already holds. An up-front batch scan is the
+  TOCTOU this gate exists to close — it would leave a lane that goes live mid-traversal unprotected
+  across a 25–40 minute pass. It lives in the primitive rather than a wrapper because only one of
+  the two entry points ever passed `--extra-protect-glob` (`warm-lane-gc-sweep.sh` did; dark-factory's
+  ε path, `git_ops.py _run_warm_lane_gc_reclaim`, never has), so every caller inherits the guard
+  with no dark-factory change. **Cost — and an explicit reversal.** Moving from one batch `/proc`
+  scan to a per-entry scan is O(entries × `/proc`): ~1.9 s per call (≈1.5 s find+awk over `/proc`
+  cwd/fd, ≈0.38 s grep over `/proc/*/maps`), measured on 1159 live processes / 11527 fd+cwd
+  symlinks, giving ≈2–3 min of added wall clock for a 93-entry pool across both passes (measured
+  2026-07-28 on the live host). Budget for the full `entries × 1.9 s`: "only flock-FREE entries pay
+  the walk" is true but nearly vacuous, since in a pool at rest almost every lane is flock-free.
+  This **SUPERSEDES** — not silently contradicts — the earlier judgement that a per-entry scan was
+  "too costly for the hot path": it lands on dark-factory's ε admission path, which imposes **no**
+  timeout, against a pass that already runs 25–40 min. Over-preserving is safe and TEMPORARY — a
+  lingering reference costs one extra sweep. **What it closes:** reclaim resetting `<lane>/target`
+  out from under a live build, because the inv.2 flock is FREE during the implement phase
+  (root-caused 2026-07-26, esc-5334-6; earlier auto-dismissed L0 instance of the class:
+  `esc-5375-1`, whose record carries only the hypothesis).
+  **Counter:** `preserved_live_ref=L` is the share of `preserved=K` attributable to this gate — a
+  breakdown, not an extra bucket (L ≤ K) — APPENDED to the summary line so prefix-matching
+  consumers keep working.
+- **Terminal-task reclaim tier (task 5167) — SUBSUMED (task 5326).** The former Pass-1 tier that
+  reclaimed a `task/NNNN`-backed FREE lane (ahead-of-`main` and dirty notwithstanding) only once its
+  backing task's status was terminal (`done`/`cancelled`), read from an advisory `--status-cmd` /
+  `REIFY_WARM_LANE_GC_STATUS_CMD` / `REIFY_LANE_LEAK_STATUS_CMD` oracle, is now strictly subsumed by
+  the Pass-1 always-reclaim policy above: a FREE pool lane is reclaimed regardless of backing-task
+  status, so the terminal-status check became dead code. The `--status-cmd` flag and gc.sh's oracle
+  reads are **removed** — `gc.sh` neither accepts nor consumes a status oracle. (`REIFY_LANE_LEAK_STATUS_CMD`
+  remains a live env var, still consumed by `warm-lane-preflight.sh` Check 6,
+  `warm-lane-degenerate-ref-check.sh`, and `warm-lane-audit.sh` — each owning its own `--status-cmd`
+  — just no longer by `gc.sh`.) The rebase-orphan leak that tier closed (a terminal task whose
+  lane's `task/NNNN` tip is an orphan SHA never an ancestor of `main`, so the ahead-of-`main` guard
+  alone preserved it forever — root cause of the 2026-07-10 ENOSPC outage, two lanes leaked to
+  768G/404G and wedged ~8 verifies) is now closed *a fortiori*: such a lane is reclaimed on the
+  first FREE sweep, terminal or not. Human decision: Leo, 2026-07-22, on task 5301 / esc-5322-1.
 - **Disk-pressure fast-path (task 5167).** `--disk-pressure` / `REIFY_WARM_LANE_GC_DISK_PRESSURE`
-  (off by default) switches the Pass-1 reset action, for any lane already found reclaimable under
-  either tier, from the α reflink-reseed clone to a direct `rm -rf <lane>/target` — no reseed
-  clone, so none of the clone's transient 2×-space window (old divergent `target/` and the new
-  clone briefly coexisting). Valid because `acquire_lane` always re-seeds from base
-  (warm-lane-pool-cow-seeding.md §9.5), so an empty/missing `target/` is a legal lane state. Still
-  counted as `reset` in the `reclaim: reset=N removed=M preserved=K` summary. Mirrors the manual
+  (off by default) switches the Pass-1 reset action, for any FREE pool lane Pass 1 reclaims (i.e.
+  one that clears both Pass-1 preserve gates), from the α reflink-reseed clone to a direct
+  `rm -rf <lane>/target` — no reseed clone, so none of the clone's transient 2×-space window (old
+  divergent `target/` and the new clone briefly coexisting). Valid because `acquire_lane` always
+  re-seeds from base (warm-lane-pool-cow-seeding.md §9.5), so an empty/missing `target/` is a legal
+  lane state. Still counted as `reset` in the
+  `reclaim: reset=N removed=M preserved=K preserved_live_ref=L` summary. Mirrors the manual
   2026-07-10 remediation for the leaked lanes above.
 - **Emergency low-water trigger (task 5168).** `warm-lane-gc-sweep.sh` (the periodic-timer and
   hand-run GC backstop) now measures available bytes on `--mount` (`df`; override via `--df` /
@@ -230,8 +302,10 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   by a reflink clone would have its metadata write denied by the near-full volume — the
   reset=N/removed=0 deadlock (and sometimes free-lowering) behind the 2026-07-10 outage. A hand-run
   or periodic sweep now makes forward progress at true ENOSPC instead of wedging. The mechanism
-  itself (rm-outright, its `_is_reclaimable` + per-lane flock gate, inv.preserve) is unchanged from
-  task 5167; the trigger fires only on a positive low-water measurement — a df failure or
+  itself (rm-outright and its per-lane flock gate) is unchanged from task 5167; under the task-5326
+  always-reclaim policy the Pass-1 preserve gates are the live-consumer flock and — since task 5572
+  — the live process reference (see the first §8.4 bullet); the trigger fires only on a positive
+  low-water measurement — a df failure or
   unparseable output falls back to the plain (α) `reclaim` invocation unchanged (fail-to-α), so a
   benign df misconfiguration in steady state never silently cold-ifies every reclaimable lane on
   every periodic sweep. `warm-lane-gc.sh reclaim` itself is untouched by this trigger.

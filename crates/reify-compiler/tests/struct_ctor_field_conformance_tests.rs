@@ -1,0 +1,1776 @@
+//! Struct-constructor field-conformance tests (task 5302, struct-ctor-conformance α).
+//!
+//! Task 5302 generalizes task 4584's struct-ctor conformance chokepoint from its
+//! original 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
+//! `Selector`) to ALL concrete field types, at **Warning** severity behind a single
+//! module const (`CTOR_FIELD_CONFORMANCE_SEVERITY`; δ later flips it to Error).
+//!
+//! These are inline-source integration tests (NOT on-disk `.ri` fixtures under
+//! `examples/`, which would be swept by `examples_smoke.rs`). Each `const SOURCE`
+//! begins with a `module test.<name>` decl so the compiler does not emit the
+//! `W_MODULE_DECL_MISSING` warning — that keeps the per-fixture "exactly one
+//! diagnostic" counts exact (the double-emission pin in row 4 / C2(ii) relies on
+//! this).
+//!
+//! Convention (mirrors `param_binding_selector_coercion_tests.rs` /
+//! `vec3_type_tests.rs`): inline `const SOURCE` + assertions on the *filtered*
+//! diagnostics' code / severity / message. The [`ctor_conformance_diags`] /
+//! [`ctor_conformance_warnings`] helpers below filter to just the ctor-conformance
+//! diagnostic codes so unrelated diagnostics never pollute the counts.
+//!
+//! No new diagnostic codes are minted in α; no reify-core change.
+
+use reify_compiler::CompiledModule;
+use reify_core::diagnostics::DiagnosticCode;
+use reify_core::{Diagnostic, Severity, SourceSpan};
+use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
+
+/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
+/// field-conformance pass (task 5302 / 4584 / 4598 / 4622 / 4444).
+///
+/// Filtering to this set keeps the per-fixture "exactly one diagnostic" counts
+/// from being polluted by unrelated diagnostics (an incidental `W_*` warning, a
+/// downstream note, etc.). All five codes already exist in `diagnostics.rs`; α
+/// mints none.
+fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
+    matches!(
+        code,
+        Some(
+            DiagnosticCode::ArgTypeMismatch
+                | DiagnosticCode::SelectorKindMismatch
+                | DiagnosticCode::TypeNotConformingToTrait
+                | DiagnosticCode::TypeNotConformingToStructureRef
+                | DiagnosticCode::TypeNotConformingToVector
+        )
+    )
+}
+
+/// All ctor-conformance diagnostics in `module`, of any severity.
+///
+/// Used by "exactly N diagnostics" / "zero diagnostics" assertions so an
+/// incidental unrelated diagnostic does not throw off the count.
+fn ctor_conformance_diags(module: &CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| is_ctor_conformance_code(d.code))
+        .collect()
+}
+
+/// Ctor-conformance diagnostics in `module` restricted to `Severity::Warning`.
+///
+/// At α the whole ctor-conformance surface emits at Warning (the knob default),
+/// so most probe fixtures assert against this. Intersecting the code filter with
+/// [`warnings_only`] guards against a fixture that trips an unrelated warning.
+#[allow(dead_code)]
+fn ctor_conformance_warnings(module: &CompiledModule) -> Vec<&Diagnostic> {
+    warnings_only(module)
+        .into_iter()
+        .filter(|d| is_ctor_conformance_code(d.code))
+        .collect()
+}
+
+/// Ctor-conformance diagnostics in `module` restricted to `Severity::Error`.
+///
+/// Reserved for the (few) sites that must stay Error even at α — currently only
+/// the fn-call conformance path, which these ctor fixtures do not exercise; kept
+/// for symmetry with [`ctor_conformance_warnings`] and future δ-flip tests.
+#[allow(dead_code)]
+fn ctor_conformance_errors(module: &CompiledModule) -> Vec<&Diagnostic> {
+    errors_only(module)
+        .into_iter()
+        .filter(|d| is_ctor_conformance_code(d.code))
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-1 probes: core general-leaf + implicit-Some + allowlist-flip behaviors.
+//
+// RED on `main`: rows 2/4/8/13 are silent (or a wrong-code wrapper-shape Error for
+// rows 5/8) before the step-2 core mechanism lands. Rows 3/7 and boundary rows
+// 8/9 are legality guards that must stay clean before AND after.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── row 2: value-cell String param given Int → one ArgTypeMismatch Warning ──
+const SOURCE_ROW2_VALUE_CELL_STRING: &str = r#"module test.row2
+structure def Widget { param label : String }
+structure def Root {
+    let x = Widget(label: 42)
+}
+"#;
+
+#[test]
+fn row2_value_cell_string_param_given_int_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW2_VALUE_CELL_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "value-cell String←Int must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    for needle in ["label", "String", "Int"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── row 4: sub `=` String param given Int → SAME code/msg, exactly one total ──
+// (context independence + C2(ii) double-emission pin: the sub `=` RHS is not a
+//  StructureInstanceCtor expr, so only the PendingBoundCheck path emits.)
+const SOURCE_ROW4_SUB_STRING: &str = r#"module test.row4
+structure def Widget { param label : String }
+structure def Root {
+    sub p = Widget(label: 42)
+}
+"#;
+
+#[test]
+fn row4_sub_string_param_given_int_warns_arg_type_mismatch_exactly_once() {
+    let module = compile_source_with_stdlib(SOURCE_ROW4_SUB_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "sub-path String←Int must emit EXACTLY ONE ctor-conformance diagnostic \
+         (C2(ii) double-emission pin), got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "sub context must produce the same code as the value-cell context, got: {:?}",
+        diags[0].code
+    );
+    for needle in ["label", "String", "Int"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── row 3: value-cell FaceSelector → Option<FaceSelector> (implicit-Some) → 0 ──
+const SOURCE_ROW3_VALUE_CELL_OPTION_SELECTOR: &str = r#"module test.row3
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    let b = box(10mm, 10mm, 10mm)
+    let pl = PressureLoad(face: faces_by_normal(b, [0, 0, 1], 1deg))
+}
+"#;
+
+#[test]
+fn row3_value_cell_option_selector_implicit_some_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_ROW3_VALUE_CELL_OPTION_SELECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "implicit-Some FaceSelector→Option<FaceSelector> must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ── row 5: sub FaceSelector → Option<FaceSelector> → 0 (wrapper-shape Error on main) ──
+const SOURCE_ROW5_SUB_OPTION_SELECTOR: &str = r#"module test.row5
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    let b = box(10mm, 10mm, 10mm)
+    sub p = PressureLoad(face: faces_by_normal(b, [0, 0, 1], 1deg))
+}
+"#;
+
+#[test]
+fn row5_sub_option_selector_implicit_some_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_ROW5_SUB_OPTION_SELECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "implicit-Some FaceSelector→Option<FaceSelector> (sub context) must be clean; \
+         this was a wrapper-shape Error on main (the live hole α closes), got: {diags:#?}"
+    );
+}
+
+// ── row 8: sub Int → Option<FaceSelector> → one ArgTypeMismatch Warning ──
+// (re-coded from the misleading wrapper-shape TypeNotConformingToTrait Error on main)
+const SOURCE_ROW8_SUB_OPTION_SELECTOR_INT: &str = r#"module test.row8
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    sub p = PressureLoad(face: 42)
+}
+"#;
+
+#[test]
+fn row8_sub_option_selector_given_int_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW8_SUB_OPTION_SELECTOR_INT);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "Option<FaceSelector>←Int must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "re-coded from the misleading wrapper-shape TypeNotConformingToTrait, got: {:?}",
+        diags[0].code
+    );
+}
+
+// ── §7 row 7: value-cell Int → Real (dimensionless) param → 0 (C1.2 Int→Real) ──
+const SOURCE_B7_REAL_PARAM_INT: &str = r#"module test.b7
+structure def Gadget { param mag : Real }
+structure def Root {
+    let x = Gadget(mag: 1)
+}
+"#;
+
+#[test]
+fn boundary7_real_param_given_int_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_B7_REAL_PARAM_INT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "Int→dimensionless Real is compatible (C1.2); must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ── §7 row 8: value-cell empty list → List<Geometry> param → 0 (C1.10 TypeParam skip) ──
+const SOURCE_B8_EMPTY_LIST_GEOMETRY: &str = r#"module test.b8
+structure def Holder { param items : List<Geometry> }
+structure def Root {
+    let x = Holder(items: [])
+}
+"#;
+
+#[test]
+fn boundary8_empty_list_geometry_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_B8_EMPTY_LIST_GEOMETRY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "empty-collection arg has TypeParam element type → skipped (C1.10); must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ── §7 row 9: value-cell bare trait param → 0 (D6 bare-TraitObject exemption) ──
+// A NON-conforming arg is used deliberately: it proves the exemption (if bare
+// TraitObject were checked here, this would fire TypeNotConformingToTrait).
+const SOURCE_B9_BARE_TRAIT_EXEMPT: &str = r#"module test.b9
+structure def NotAMaterial { param density : Real = 1.0 }
+structure def Host { param m : MaterialSpec }
+structure def Root {
+    let x = Host(m: NotAMaterial())
+}
+"#;
+
+#[test]
+fn boundary9_bare_trait_param_value_cell_is_exempt() {
+    let module = compile_source_with_stdlib(SOURCE_B9_BARE_TRAIT_EXEMPT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "D6: bare TraitObject params are exempt from value-cell ctor conformance and must \
+         stay clean even with a non-conforming arg, got: {diags:#?}"
+    );
+}
+
+// ── §7 row 13: value-cell Option<trait> non-conforming → one TypeNotConformingToTrait Warning ──
+const SOURCE_B13_OPTION_TRAIT_NONCONFORMING: &str = r#"module test.b13
+structure def NotAMaterial { param density : Real = 1.0 }
+structure def Holder { param mat : Option<MaterialSpec> }
+structure def Root {
+    let x = Holder(mat: NotAMaterial())
+}
+"#;
+
+#[test]
+fn boundary13_option_trait_param_nonconforming_warns_trait_conformance() {
+    let module = compile_source_with_stdlib(SOURCE_B13_OPTION_TRAIT_NONCONFORMING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "Option<MaterialSpec>←non-conforming must emit exactly one ctor-conformance diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToTrait),
+        "expected TypeNotConformingToTrait, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("MaterialSpec"),
+        "message must name the required trait, got: {:?}",
+        diags[0].message
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-3 probes: selector diagnostic refinement (D2).
+//
+// After step-2 the whole selector surface fires as Warnings, but every selector
+// mismatch is still coded `ArgTypeMismatch` (the single `emit_selector_mismatch`
+// helper). Step-4 refines it: a `Selector(j)→Selector(k)` KIND mismatch must
+// carry `SelectorKindMismatch` (4371 BT1 uniformity), while a non-selector arg
+// (bare String) stays `ArgTypeMismatch` (disallow-string over-tag guard, 4581).
+//
+// RED on this branch: row 6's `SelectorKindMismatch` code assertion fails
+// (currently `ArgTypeMismatch`). Row 9 is the over-tag guard and is already green
+// after step-2.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── row 6: value-cell EdgeSelector → FaceSelector param → one SelectorKindMismatch ──
+// `edges(b)` is typed `Selector(Edge)`; `param loc : FaceSelector` is
+// `Selector(Face)`. A kind mismatch must be coded SelectorKindMismatch and name
+// BOTH the expected (FaceSelector) and found (EdgeSelector) kinds.
+const SOURCE_ROW6_VALUE_CELL_WRONG_SELECTOR_KIND: &str = r#"module test.row6
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    let b = box(10mm, 10mm, 10mm)
+    let h = Holder(loc: edges(b))
+}
+"#;
+
+#[test]
+fn row6_value_cell_wrong_selector_kind_warns_selector_kind_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW6_VALUE_CELL_WRONG_SELECTOR_KIND);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "wrong-kind Selector→Selector param must emit exactly one ctor-conformance diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    // RED until step-4: `emit_selector_mismatch` currently tags every selector
+    // mismatch `ArgTypeMismatch`; a `Selector(j)→Selector(k)` KIND mismatch must
+    // carry `SelectorKindMismatch` (D2 / 4371 BT1 uniformity).
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "wrong-kind selector must carry SelectorKindMismatch, got: {:?}",
+        diags[0].code
+    );
+    // Message names BOTH the expected (FaceSelector) and found (EdgeSelector)
+    // kinds — the Display strings for `SelectorKind::Face` / `SelectorKind::Edge`
+    // (reify-core/src/ty.rs). Already satisfied by the current wording; the code
+    // assertion above is the RED one.
+    for needle in ["FaceSelector", "EdgeSelector"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── row 9: value-cell bare String literal → FaceSelector param → one ArgTypeMismatch ──
+// Over-tag guard (mirrors 4581): a bare String is NOT a selector, so this stays
+// ArgTypeMismatch even after step-4 re-codes the Selector(j)→Selector(k) case.
+const SOURCE_ROW9_VALUE_CELL_STRING_TO_SELECTOR: &str = r#"module test.row9
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    let h = Holder(loc: "x_max")
+}
+"#;
+
+#[test]
+fn row9_value_cell_string_to_selector_param_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW9_VALUE_CELL_STRING_TO_SELECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "bare String→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    // A bare String literal is not a selector — disallow-string stays
+    // ArgTypeMismatch; only a Selector(j)→Selector(k) kind mismatch is re-coded to
+    // SelectorKindMismatch in step-4 (over-tag guard, 4581).
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "String→Selector must stay ArgTypeMismatch (not SelectorKindMismatch), got: {:?}",
+        diags[0].code
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-5 probes: pose-vs-set hint (D2, task 4833 consumer).
+//
+// PRD §4 D2: a selector-typed param given a coordinate-pose arg (`Frame` /
+// `Transform` / `Point`) keeps `DiagnosticCode::ArgTypeMismatch` but carries a
+// fixed hint substring — the deterministic string task 4833's fixtures assert
+// on. It is a *message variant*, not a new failure class or code.
+//
+// Fixture note — why a `param : Frame` ValueRef and NOT `frame3(...)`:
+// the plan's row-1 sketch used `frame3(...)`, but the Reify compiler does NOT
+// special-case `frame3`/`point3`/`orient_identity` in its function-call
+// return-type ladder (units.rs result_type tables / expr.rs NoUserFunctions),
+// so `frame3(point3(0mm,0mm,0mm), orient_identity())` infers via the first-arg
+// fallback to `Scalar[m]` (Length) — NOT a pose type — despite the LSP's
+// advertised `-> Frame` signature (verified empirically, 2026-07-20). A
+// `Scalar[m]` arg would exercise the generic concrete-leaf mismatch, never the
+// pose branch. To obtain a genuine pose-typed arg deterministically we declare
+// a param with an explicit resolvable pose type and pass it as a ValueRef:
+// `param p : Frame` → `Type::Frame(3)`, `param p : Transform3` →
+// `Type::Transform(3)` (type_resolution.rs:576/589). The plan explicitly grants
+// this latitude ("whichever concrete pose type it yields; the hint applies to
+// Frame/Transform/Point uniformly"). Frame AND Transform variants below force
+// the step-6 detection set to cover both pose kinds.
+//
+// RED on this branch: after step-4 the Option-unwrap arm already reaches the
+// selector leaf and `emit_selector_mismatch` emits `ArgTypeMismatch` at Warning,
+// but WITHOUT the pose hint substring — so the `contains(POSE_HINT)` assertion
+// is the RED one. Count / code / severity are already green.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The verbatim pose-vs-set hint substring (PRD §4 D2; task 4833's fixtures
+/// assert on exactly this string). Kept as one const so the RED test and the
+/// step-6 impl cannot drift.
+const POSE_HINT: &str = "a coordinate pose is not a region target; select a face/edge/vertex instead";
+
+// ── row 1: value-cell Option<FaceSelector> param given a Frame pose → hint ──
+const SOURCE_ROW1_OPTION_SELECTOR_POSE_FRAME: &str = r#"module test.row1
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    param pose : Frame
+    let pl = PressureLoad(face: pose)
+}
+"#;
+
+#[test]
+fn row1_value_cell_option_selector_given_pose_frame_warns_with_pose_hint() {
+    let module = compile_source_with_stdlib(SOURCE_ROW1_OPTION_SELECTOR_POSE_FRAME);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "pose→Option<FaceSelector> must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "pose-vs-set stays ArgTypeMismatch (a message variant, not a new code), got: {:?}",
+        diags[0].code
+    );
+    // RED until step-6: the pose branch must append the fixed hint substring.
+    assert!(
+        diags[0].message.contains(POSE_HINT),
+        "pose arg at a selector field must carry the pose-vs-set hint {POSE_HINT:?}, got: {:?}",
+        diags[0].message
+    );
+}
+
+// ── bare selector param (FaceSelector) given a Frame pose → hint ──
+const SOURCE_BARE_SELECTOR_POSE_FRAME: &str = r#"module test.row1b
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    param pose : Frame
+    let h = Holder(loc: pose)
+}
+"#;
+
+#[test]
+fn bare_selector_param_given_pose_frame_warns_with_pose_hint() {
+    let module = compile_source_with_stdlib(SOURCE_BARE_SELECTOR_POSE_FRAME);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "pose→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "pose-vs-set stays ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    // RED until step-6.
+    assert!(
+        diags[0].message.contains(POSE_HINT),
+        "pose arg at a bare selector field must carry the pose-vs-set hint {POSE_HINT:?}, got: {:?}",
+        diags[0].message
+    );
+}
+
+// ── bare selector param (FaceSelector) given a Transform3 pose → hint ──
+// Uniformity: the hint applies to every pose kind, so the step-6 detection set
+// must include Transform, not only Frame.
+const SOURCE_BARE_SELECTOR_POSE_TRANSFORM: &str = r#"module test.row1c
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    param pose : Transform3
+    let h = Holder(loc: pose)
+}
+"#;
+
+#[test]
+fn bare_selector_param_given_pose_transform_warns_with_pose_hint() {
+    let module = compile_source_with_stdlib(SOURCE_BARE_SELECTOR_POSE_TRANSFORM);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "Transform pose→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "pose-vs-set stays ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    // RED until step-6 (and requires Transform in the detection set).
+    assert!(
+        diags[0].message.contains(POSE_HINT),
+        "Transform pose arg at a selector field must carry the pose-vs-set hint {POSE_HINT:?}, got: {:?}",
+        diags[0].message
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-7 probes: param-default extension (D8, §7 row 10).
+//
+// A struct `param`'s DEFAULT expression is checked by
+// `check_param_default_conformance` (conformance/mod.rs) — a distinct ctor-
+// conformance entry from the call-site arg walker. On main it covers only
+// `StructureRef` and `Geometry` param defaults (a `_ => continue` skips every
+// other cell type), so a `String` param with an `Int` default is SILENT. Step-8
+// routes every concrete param default through the shared walker at ctx.severity,
+// so a String←Int default warns `ArgTypeMismatch` (Warning at α) — the same code
+// and message shape the call-site probes assert (context independence: a bad
+// default and a bad explicit arg diagnose identically).
+//
+// A lone `structure def` (no instantiation) is enough: the check runs over every
+// template unconditionally (see `solid_param_with_non_geometry_default_rejected`
+// in solid_param_tests.rs, which pins `structure def W3 { param g : Solid = 42 }`
+// with no call site).
+//
+// RED on this branch: the String-default warning assertion fails (silent before
+// step-8). The valid-default guard (Int=3, Real=1) is clean before AND after.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── §7 row 10: param default String ← Int literal → one ArgTypeMismatch Warning ──
+const SOURCE_PARAM_DEFAULT_STRING_GIVEN_INT: &str = r#"module test.pd_string
+structure def LabelHolder { param label : String = 42 }
+"#;
+
+#[test]
+fn param_default_string_given_int_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_PARAM_DEFAULT_STRING_GIVEN_INT);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "String param with an Int default must emit exactly one ctor-conformance \
+         diagnostic (param-default path, D8), got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "concrete param-default mismatch must carry ArgTypeMismatch (same code as the \
+         call-site leaf), got: {:?}",
+        diags[0].code
+    );
+    for needle in ["label", "String", "Int"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── valid param defaults (Int←Int, dimensionless Real←Int) → 0 (guard) ──
+// `param n : Int = 3` is trivially compatible; `param mag : Real = 1` is the
+// C1.2 Int→dimensionless-Real coercion — both must stay clean before AND after
+// step-8 so the extension does not over-warn on legal defaults.
+const SOURCE_PARAM_DEFAULT_VALID: &str = r#"module test.pd_valid
+structure def Config {
+    param n : Int = 3
+    param mag : Real = 1
+}
+"#;
+
+#[test]
+fn param_default_valid_int_and_real_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_PARAM_DEFAULT_VALID);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "valid Int←Int and dimensionless Real←Int param defaults must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-9 probes: per-context coverage (Q4/D10), span anchoring (Q1), and the
+// examples/fea_pressure_smoke.ri implicit-Some regression.
+//
+// (a) Per-context coverage: a `String`←`Int` ctor mismatch (`Widget(label: 42)`
+//     with `param label : String`) must warn `ArgTypeMismatch` in EVERY parsing
+//     context that routes through the two ctor-conformance entries — the fields
+//     `for_each_template_root_expr` enumerates plus the free-fn / assoc-fn body
+//     loops (entities_phase.rs). Syntax per context confirmed against the
+//     tree-sitter grammar and passing tests/examples (task 5302 syntax survey):
+//       - constraint keyword is `constraint` (there is NO `require`);
+//       - a "realization" is a geometry-op call bound in a value cell (there is
+//         NO `realize`/`realization` keyword) — the ctor rides an op argument;
+//       - guarded groups use `where <cond> { … }` (NOT `when`/`if`);
+//       - a forall body is `forall v in <coll>: constraint <expr>`.
+//     The "colon-form arg-bearing sub" (`sub p : Widget(label: 42)`) is
+//     deliberately ABSENT: no colon-form `sub` arm admits `(args)` in the
+//     grammar, so it does not parse — only the `=` instantiation form (row-4
+//     context) carries ctor args.
+//
+// (b) Span anchoring: the emitted diagnostic's label span must anchor at the
+//     offending ctor call-site, NOT `SourceSpan::empty`. The free-fn body is
+//     walked with a `SourceSpan::empty(0)` representative span today, so the
+//     label span is empty on this branch — RED until step-10 threads the
+//     StructureInstanceCtor node's own call-site span (task 4089 `.span`).
+//
+// (c) Real-stdlib regression: examples/fea_pressure_smoke.ri exercises
+//     `PressureLoad(face: face(body, "x_max"))` where `face : Option<FaceSelector>`
+//     and `face(...)` is `Selector(Face)` — the implicit-Some legality this task
+//     opens. It must compile with ZERO ctor-conformance diagnostics.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── (a) per-context coverage sources: `Widget(label: 42)` (String←Int) ──
+
+const SRC_CTX_VALUE_CELL: &str = r#"module test.ctx_value_cell
+structure def Widget { param label : String }
+structure def Root {
+    let x = Widget(label: 42)
+}
+"#;
+
+const SRC_CTX_SUB: &str = r#"module test.ctx_sub
+structure def Widget { param label : String }
+structure def Root {
+    sub p = Widget(label: 42)
+}
+"#;
+
+// A constraint expr is a full `_expression`; `==` makes it Bool-shaped. Two ctor
+// calls (one per operand) → this context legitimately hosts >1 diagnostic, hence
+// the `.any()` coverage predicate below rather than an exactly-one count.
+const SRC_CTX_CONSTRAINT: &str = r#"module test.ctx_constraint
+structure def Widget { param label : String }
+structure def Root {
+    constraint Widget(label: 42) == Widget(label: 42)
+}
+"#;
+
+// "Realization" = a geometry-op call bound in a value cell; the ctor rides a
+// positional op argument. `box` also rejects the non-Length arg, but that is a
+// distinct (non-ctor-conformance) diagnostic filtered out by the code predicate.
+const SRC_CTX_REALIZATION: &str = r#"module test.ctx_realization
+structure def Widget { param label : String }
+structure def Root {
+    let g = box(Widget(label: 42), 10mm, 10mm)
+}
+"#;
+
+const SRC_CTX_PORT_MEMBER_DEFAULT: &str = r#"module test.ctx_port
+structure def Widget { param label : String }
+trait P {}
+structure def Root {
+    port x : P {
+        param m : Widget = Widget(label: 42)
+    }
+}
+"#;
+
+const SRC_CTX_GUARDED_GROUP: &str = r#"module test.ctx_guard
+structure def Widget { param label : String }
+structure def Root {
+    where true {
+        let m = Widget(label: 42)
+    }
+}
+"#;
+
+const SRC_CTX_FORALL_BODY: &str = r#"module test.ctx_forall
+structure def Widget { param label : String }
+structure def Root {
+    forall v in [1, 2, 3]: constraint Widget(label: 42) == Widget(label: 42)
+}
+"#;
+
+const SRC_CTX_FREE_FN_BODY: &str = r#"module test.ctx_free_fn
+structure def Widget { param label : String }
+fn make() -> Widget { Widget(label: 42) }
+"#;
+
+// Associated-function body — DOCUMENTED as not-currently-routing (per step-9's
+// "documenting any form that does not parse/route"). A `Widget(label: 42)` ctor
+// placed in an assoc-fn body PARSES in all three forms — a trait DEFAULT fn body
+// realized on a conforming structure, a structure's own trait-fn override, and a
+// bare structure-body fn — but none emits a ctor-conformance diagnostic in this
+// task's α surface (empirically zero diagnostics in every form). The existing
+// `assoc_fn_body_bad_arg_emits_type_not_conforming_to_trait` fixture proves the
+// assoc-fn body IS walked for a `self`-dependent fn-CALL trait-conformance check
+// (`couple(self)`); a self-independent nested StructureInstanceCtor in that same
+// body is not re-checked by the ctor entry here. This is a coverage observation,
+// not a regression (nothing about assoc-fn bodies changed in α), and is left as a
+// documented gap rather than asserted, so the sweep below stays green and honest.
+// A `module test.ctx_assoc_fn` form: `trait Mk { fn make(self) -> Widget {
+// Widget(label: 42) } }  structure def Root : Mk { param seed : Int = 0 }`.
+
+/// True when `module` carries at least one ctor-conformance `ArgTypeMismatch`
+/// Warning whose message names `label` / `String` / `Int` — the signature of the
+/// `Widget(label: 42)` String←Int mismatch. `.any()` (not exactly-one) because a
+/// context may legitimately host more than one ctor call (`constraint A == B`) or
+/// draw an incidental non-ctor-conformance diagnostic (already filtered).
+fn has_string_int_arg_type_mismatch_warning(module: &CompiledModule) -> bool {
+    ctor_conformance_diags(module).iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.code == Some(DiagnosticCode::ArgTypeMismatch)
+            && ["label", "String", "Int"].iter().all(|n| d.message.contains(n))
+    })
+}
+
+/// (a) D10 per-context coverage sweep. A String←Int ctor mismatch must warn
+/// `ArgTypeMismatch` wherever a `StructureInstanceCtor` can be routed through the
+/// two ctor-conformance entries. Collects ALL non-firing contexts before
+/// asserting so one run reports the full picture.
+#[test]
+fn per_context_string_int_ctor_mismatch_warns_everywhere() {
+    let cases: &[(&str, &str)] = &[
+        ("value-cell let", SRC_CTX_VALUE_CELL),
+        ("sub `=`", SRC_CTX_SUB),
+        ("constraint expr", SRC_CTX_CONSTRAINT),
+        ("realization arg", SRC_CTX_REALIZATION),
+        ("port member default", SRC_CTX_PORT_MEMBER_DEFAULT),
+        ("guarded-group member", SRC_CTX_GUARDED_GROUP),
+        ("forall body", SRC_CTX_FORALL_BODY),
+        ("free-fn body", SRC_CTX_FREE_FN_BODY),
+        // "assoc-fn body" is documented above as not-currently-routing (parses in
+        // three forms, emits zero ctor-conformance diagnostics), so it is a
+        // documented gap rather than an asserted row.
+    ];
+    let mut missing: Vec<(&str, String)> = Vec::new();
+    for &(label, source) in cases {
+        let module = compile_source_with_stdlib(source);
+        if !has_string_int_arg_type_mismatch_warning(&module) {
+            missing.push((label, format!("{:#?}", module.diagnostics)));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "per-context coverage: these contexts did NOT emit the expected String←Int \
+         ArgTypeMismatch Warning:\n{}",
+        missing
+            .iter()
+            .map(|(l, d)| format!("  [{l}] diagnostics:\n{d}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+// ── (b) span anchoring: free-fn body → empty representative span today ──
+
+const SRC_SPAN_FN_BODY: &str = r#"module test.span_fn
+structure def Widget { param label : String }
+fn make() -> Widget { Widget(label: 42) }
+"#;
+
+/// (b) Q1 span anchoring. The free-fn body routes through
+/// `check_expr_struct_ctor_args` with a `SourceSpan::empty(0)` representative
+/// span, so on this branch the emitted label span is EMPTY. Step-10 threads the
+/// `StructureInstanceCtor` node's own call-site span (task 4089 `.span`) so the
+/// label anchors at the offending `Widget(label: 42)` call — RED until then.
+#[test]
+fn ctor_conformance_label_span_anchors_at_ctor_call_site() {
+    let module = compile_source_with_stdlib(SRC_SPAN_FN_BODY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "free-fn body String←Int must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert!(
+        !diags[0].labels.is_empty(),
+        "ctor-conformance diagnostic must carry a label span, got: {:?}",
+        diags[0]
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    // RED until step-10: today the label span is `SourceSpan::empty(0)`.
+    assert!(
+        !span.is_empty(),
+        "label span must be NON-empty (anchored at the ctor call site) rather than \
+         SourceSpan::empty, got: {span:?}"
+    );
+    let sliced = &SRC_SPAN_FN_BODY[span.start as usize..span.end as usize];
+    assert!(
+        sliced.starts_with("Widget") && sliced.contains("label: 42"),
+        "label span must anchor at the offending `Widget(label: 42)` ctor call, got slice {sliced:?}"
+    );
+}
+
+// ── (c) real-stdlib implicit-Some regression ──
+
+/// (c) examples/fea_pressure_smoke.ri exercises the live implicit-Some legality
+/// this task opens: `PressureLoad(face: face(body, "x_max"))` where
+/// `face : Option<FaceSelector>` and `face(...)` yields `Selector(Face)`. It must
+/// compile with ZERO ctor-conformance diagnostics AND no compile errors.
+#[test]
+fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
+    const FEA_SMOKE: &str = include_str!("../../../examples/fea_pressure_smoke.ri");
+    let module = compile_source_with_stdlib(FEA_SMOKE);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "examples/fea_pressure_smoke.ri must compile with ZERO ctor-conformance diagnostics \
+         (real-stdlib implicit-Some legality: PressureLoad.face is Option<FaceSelector> given a \
+         FaceSelector via face(body, \"x_max\")), got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fea_pressure_smoke.ri must compile without errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-11 probes: per-family false-positive fences + α-value-floor guards.
+//
+// The general concrete-leaf arm shipped with a NEGATIVE skip list (`!matches!(
+// param_type, Type::Geometry | Type::TypeParam(_))`), i.e. every present and
+// future `Type` variant was opted IN to raw `type_compatible` unless someone
+// remembered to carve it out. `type_compatible` is a call-site coercion
+// predicate that assumes both sides carry genuinely inferred types; it is not
+// valid against the expression compiler's placeholder/erased result_types, nor
+// against literal shapes for which no coercion rule exists. Five families were
+// therefore false-rejected across 15+ shipped examples.
+//
+// Step-12 inverted the gate to a positive, explicitly-vetted allowlist. Task
+// 5465 then PROMOTED four of those five families back in — not by re-broadening
+// the gate, but by giving each family a rule that is valid against the
+// placeholder/erased types the expression compiler actually produces: dedicated
+// shape-based arms for Point / Field / Matrix / Tensor, and an
+// `enum_payload_compatible` short-circuit for Enum / Applied.
+//
+// The groups below are the fence around that promotion:
+//
+//   (b) PROMOTED families — each contributes a PAIR: a clean fixture that must
+//       stay at ZERO ctor-conformance diagnostics (the false positive that
+//       caused the family's original exclusion), and at least one value floor
+//       that must emit exactly one Warning (proving the family is genuinely
+//       checked and not merely re-excluded under a new name). Each family also
+//       carries a wrapper-composition probe so a leaf arm cannot be added in a
+//       position the List/Option recursion never reaches.
+//
+//       Accepts that no inline `.ri` fixture can reach — the `Point`/`Matrix`
+//       ARITY rules, the `Matrix` nominal self-accept, the `Field` arm's lambda
+//       accept, and the enum-erasure REVERSE pairing — are pinned in
+//       `conformance/mod.rs`'s own `mod tests`, which constructs the `Type`s
+//       directly. Each site here points at its counterpart so the split stays
+//       navigable.
+//
+//       One family — dimensioned `Scalar` — is deliberately still HELD, with a
+//       clean-only probe and a doc comment naming its owner. It is the fifth
+//       family, and its absence from group (b)'s pair pattern is the signal.
+//
+//   (c) α-VALUE-FLOOR guards — the families that were vetted at α must still
+//       emit exactly one Warning. GREEN before and after both step-12 and 5465.
+//       Their presence is what keeps each change a re-shaping rather than a
+//       revert.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── (b) excluded family: Point ← numeric-fallback placeholder ────────────────
+//
+// `point3(0m, 0m, 0m)` is a `CompiledExprKind::FunctionCall` whose result_type
+// is the expression compiler's numeric fallback `Scalar[m]`, NOT `Type::Point`.
+// `type_compatible` has a Point-vs-Point arm but no Point-vs-Scalar arm, so the
+// general leaf arm false-rejects. This is the same placeholder class the
+// pre-existing `Type::Geometry` carve-out and `promote_function_call_to_structure_ref`
+// exist for. Shape taken from examples/anisotropic_bar.ri and the five
+// examples/tensegrity_*.ri files.
+const SRC_FAMILY_POINT: &str = r#"module test.family_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point3(0m, 0m, 0m))
+}
+"#;
+
+/// Clean fixture for the promoted `Point` family.
+///
+/// `point3` is a stdlib EVAL-BUILTIN (`crates/reify-stdlib/src/geometry.rs:942`)
+/// with no `.ri` signature, so it carries no declared return type at compile
+/// time and the call compiles to a `CompiledExprKind::FunctionCall` typed
+/// `Scalar[m]` — the expression compiler's numeric fallback — never
+/// `Type::Point`. The dedicated `Point` arm tolerates scalar-like args as
+/// exactly that placeholder.
+///
+/// Shape from `examples/anisotropic_bar.ri:82` (`origin: point3(0m, 0m, 0m)`)
+/// and `examples/dynamics/pendulum_idyn.ri:29` (`com:`).
+#[test]
+fn point_param_given_placeholder_function_call_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_POINT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Point3<Length> param given `point3(0m, 0m, 0m)` must emit ZERO ctor-conformance \
+         diagnostics — the arg's result_type is the numeric-fallback placeholder Scalar[m], \
+         not Type::Point, so `type_compatible` cannot judge it. Got: {diags:#?}"
+    );
+}
+
+const SRC_LIST_OF_POINT_PLACEHOLDERS: &str = r#"module test.list_point
+structure def Truss { param nodes : List<Point3<Length>> }
+structure def Root {
+    let t = Truss(nodes: [point3(0m, 0m, 0m), point3(1m, 0m, 0m), point3(0m, 1m, 0m)])
+}
+"#;
+
+/// Wrapper composition on the clean side: the placeholder tolerance must be
+/// reached PER ELEMENT through the walker's `ListLiteral` recursion.
+///
+/// Shape from `examples/tensegrity_pavilion.ri:53-58`, where the `point3(…)`
+/// calls sit inside a list literal.
+#[test]
+fn list_of_point_param_given_placeholder_calls_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_LIST_OF_POINT_PLACEHOLDERS);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a List<Point3<Length>> param given a list literal of `point3(…)` calls must emit ZERO \
+         ctor-conformance diagnostics — each element is the same numeric-fallback placeholder. \
+         Got: {diags:#?}"
+    );
+}
+
+const SRC_POINT_GIVEN_STRING: &str = r#"module test.point_string
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: "origin")
+}
+"#;
+
+/// Value floor for the promoted `Point` family: a `String` is not point-shaped
+/// and is not the numeric placeholder, so it must warn.
+///
+/// This is the probe that fences the placeholder tolerance: it is narrow
+/// (`Int | Scalar` only), NOT `type_compat.rs::is_scalar_like_leaf`, which also
+/// admits `Bool`/`String`/`Enum`/`StructureRef`/`TraitObject`/`Geometry`.
+#[test]
+fn point_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_POINT_GIVEN_STRING,
+        "origin",
+        "Point3<Length> ← String",
+    );
+}
+
+// The `Point` arm's ARITY rule ("a `Point2` value is not a valid substitute for
+// a `Point3` param", mirroring the `Type::Vector` arm) is NOT pinned here.
+// `resolve_parameterized_builtin_type` recognises `Point3` only
+// (crates/reify-compiler/src/type_resolution.rs:3192) — there is no `Point2`
+// surface spelling — so no inline `.ri` fixture can produce a
+// `Type::Point { n: 2, .. }` arg. It is pinned instead by
+// `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`'s own
+// `mod tests`, which constructs the `Type` directly, alongside
+// `point_param_accepts_dimensionless_point_arg` for the loose-quantity leg.
+// `vector_param_rejects_wrong_arity_vector_arg` sits there for the same reason.
+
+const SRC_OPTION_POINT_GIVEN_STRING: &str = r#"module test.option_point_string
+structure def Anchor { param origin : Option<Point3<Length>> }
+structure def Root {
+    let a = Anchor(origin: "origin")
+}
+"#;
+
+/// Wrapper composition: the Option-unwrap arm (implicit-`Some`) must reach the
+/// new `Point` arm, not fall through to the wrapper-shape catch-all.
+#[test]
+fn option_wrapped_point_param_given_string_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_OPTION_POINT_GIVEN_STRING,
+        "origin",
+        "Option<Point3<Length>> ← String",
+    );
+}
+
+// ── (b) excluded family: Matrix ← nested list literal ────────────────────────
+//
+// A nested list literal is the idiomatic spelling of a Matrix3x3, but it
+// compiles to `List<List<Real>>` and `type_compatible` has no
+// `List<List<Real>>` → Matrix arm. Unlike the Point family this is NOT a
+// placeholder artifact — it is a genuinely missing coercion rule, so it cannot
+// be fixed by placeholder detection alone. Shape from the MassProperties ctor
+// in every examples/dynamics/*_idyn.ri.
+const SRC_FAMILY_MATRIX: &str = r#"module test.family_matrix
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+}
+"#;
+
+/// Clean fixture for the promoted `Matrix` family.
+///
+/// A nested list literal is the IDIOMATIC spelling of a `Matrix3x3` — it is what
+/// the `MassProperties` ctor in `examples/dynamics/pendulum_idyn.ri:29` writes —
+/// and it compiles to `List<List<Real>>`. `List<List<Real>>` carries no element
+/// counts in its type, so the declared m/n arity is structurally unverifiable at
+/// this leaf; the dedicated `Matrix`/`Tensor` arm therefore accepts `Type::List`
+/// and deliberately applies NO arity check (see the arm comment for the
+/// asymmetry with the `Point`/`Vector` arms).
+#[test]
+fn matrix_param_given_nested_list_literal_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_MATRIX);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Matrix<3,3,_> param given a nested list literal must emit ZERO ctor-conformance \
+         diagnostics — the literal compiles to List<List<Real>> and no List→Matrix coercion \
+         rule exists in type_compat.rs. Got: {diags:#?}"
+    );
+}
+
+const SRC_MATRIX_GIVEN_STRING: &str = r#"module test.matrix_string
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: "heavy")
+}
+"#;
+
+/// Value floor for the promoted `Matrix` family.
+#[test]
+fn matrix_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_GIVEN_STRING,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← String",
+    );
+}
+
+const SRC_MATRIX_GIVEN_STRING_LIST: &str = r#"module test.matrix_string_list
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: ["a", "b"])
+}
+"#;
+
+/// Value floor on the `Matrix`/`Tensor` arm's `Type::List` ACCEPT itself.
+///
+/// The arm accepts `Type::List` because a nested list literal is the idiomatic
+/// `Matrix3x3` spelling — but "is a list" is a weaker claim than "is a matrix
+/// literal". A `Matrix`-typed param never pairs with the literal walker's
+/// `(Type::List(param), ListLiteral)` arm (the param is `Matrix`, not `List`),
+/// so `["a", "b"]` reaches this leaf as a bare `List<String>` type. An
+/// unconstrained `Type::List(_)` accept therefore left the just-promoted family
+/// silent on exactly the shape the accept was written to admit.
+///
+/// `list_bottoms_out_numeric` closes it by peeling `List` recursively and
+/// requiring a numeric/tensor bottom — the same narrowness the `Point` arm's
+/// placeholder tolerance already had.
+#[test]
+fn matrix_param_given_string_list_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_GIVEN_STRING_LIST,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← List<String>",
+    );
+}
+
+const SRC_LIST_OF_MATRIX_GIVEN_STRING_ELEMENT: &str = r#"module test.list_matrix_string
+structure def Body { param inertias : List<Matrix<3, 3, MomentOfInertia>> }
+structure def Root {
+    let b = Body(inertias: ["a"])
+}
+"#;
+
+/// Wrapper composition for the `Matrix`/`Tensor` family: the arm must be
+/// reachable THROUGH the walker's `List` recursion, not only at the top level.
+///
+/// The `Point` and `Field` families each have one of these; `Matrix`/`Tensor`
+/// did not, so nothing pinned that a `List<Matrix<…>>` param's elements are
+/// judged at all.
+#[test]
+fn list_of_matrix_param_given_string_element_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_LIST_OF_MATRIX_GIVEN_STRING_ELEMENT,
+        "inertias",
+        "List<Matrix<3,3,MomentOfInertia>> ← [String]",
+    );
+}
+
+const SRC_TENSOR_GIVEN_STRING: &str = r#"module test.tensor_string
+structure def Body { param stress : Tensor<2, 3, Pressure> }
+structure def Root {
+    let b = Body(stress: "t")
+}
+"#;
+
+/// Value floor for the promoted `Tensor` family (which the task title groups
+/// with `Matrix`, and which the combined arm handles).
+///
+/// `Tensor<rank, n, Q>` is the surface spelling `resolve_parameterized_builtin_type`
+/// accepts (`type_resolution.rs:3220`, three type args).
+#[test]
+fn tensor_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_TENSOR_GIVEN_STRING,
+        "stress",
+        "Tensor<2,3,Pressure> ← String",
+    );
+}
+
+const SRC_TENSOR_RANK1_GIVEN_VECTOR: &str = r#"module test.tensor_vector
+structure def Body { param axis : Tensor<1, 3, Length> }
+structure def Root {
+    let b = Body(axis: vec3(0m, 0m, 1m))
+}
+"#;
+
+/// Regression fence: the new arm must not reject an ALREADY-legal conversion.
+///
+/// `implicitly_converts_to` Rules 1a/1b (`type_compat.rs:83-108`) make
+/// `Vector<N, Q>` and `Tensor<1, N, Q>` interconvertible, so a `Vector3`-typed
+/// arg at a rank-1 `Tensor` param is legal today and must stay silent.
+#[test]
+fn tensor_param_given_vector_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_TENSOR_RANK1_GIVEN_VECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Tensor<1,3,Length> param given a vec3 arg must emit ZERO ctor-conformance \
+         diagnostics — implicitly_converts_to Rules 1a/1b already make Vector<N,Q> and \
+         Tensor<1,N,Q> interconvertible. Got: {diags:#?}"
+    );
+}
+
+// The `Matrix`/`Tensor` arm's NOMINAL SELF-ACCEPT (a genuinely `Type::Matrix`-
+// typed arg at a `Matrix` param, and with it the deliberate ABSENCE of an m/n
+// arity check) is pinned by `matrix_param_accepts_matrix_arg_without_arity_check`
+// in `conformance/mod.rs`'s own `mod tests`, alongside the Point-arity probes
+// and for the same reason: no inline `.ri` fixture reliably yields a
+// `Type::Matrix`-typed arg, so the `Type` is constructed directly. The probes
+// above cover only the LOOSE accepts (nested list literal, `Vector` →
+// `Tensor<1,…>`).
+
+// ── (b) excluded family: Field ← erased Field<Real, Real> ────────────────────
+//
+// An analytical `field def` erases both slots to the numeric fallback, so its
+// result_type is `Field<Real, Real>` whatever the declared domain/codomain.
+// Shape from examples/fea_shell_channels.ri, which alone emitted six such
+// warnings (top / mid / bottom / displacement / stress / frame).
+const SRC_FAMILY_FIELD: &str = r#"module test.family_field
+field def scalar_field : Real -> Real { source = analytical { |x| 100.0 } }
+structure def Holder { param mode_shape : Field<Point3<Length>, Vector3<Length>> }
+structure def Root {
+    let h = Holder(mode_shape: scalar_field)
+}
+"#;
+
+/// Clean fixture for the promoted `Field` family.
+///
+/// BOTH slots of a `Field` erase to the expression compiler's numeric fallback:
+/// an analytical `field def` carries `result_type = Field<Real, Real>` however
+/// its domain/codomain were declared. Comparing the declaration against that
+/// placeholder would be comparing a declaration against a hole, which is exactly
+/// why the dedicated arm added for this family is SHAPE-based and is not routed
+/// through `type_compatible` (same posture as the adjacent `Type::Vector` arm).
+///
+/// Before task 5465 this passed via blanket family exclusion; it now passes
+/// because the `Type::Field` arm accepts any `Type::Field { .. }` regardless of
+/// domain/codomain. This is the same 6-warning shape
+/// `examples/fea_shell_channels.ri` exhibited (top / mid / bottom /
+/// displacement / stress / frame).
+#[test]
+fn field_param_given_erased_analytical_field_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Field<Point3<Length>, Vector3<Length>> param given an analytical field whose \
+         result_type erases to Field<Real, Real> must emit ZERO ctor-conformance diagnostics. \
+         Got: {diags:#?}"
+    );
+}
+
+const SRC_FIELD_GIVEN_STRING: &str = r#"module test.field_string
+structure def Holder { param mode_shape : Field<Point3<Length>, Vector3<Length>> }
+structure def Root {
+    let h = Holder(mode_shape: "shape")
+}
+"#;
+
+/// Value floor for the promoted `Field` family: a `String` at a `Field` slot is
+/// not field-shaped by any reading and must warn.
+///
+/// The arm's OTHER accept — a lambda, i.e. a `Type::Function` arg — is pinned by
+/// `field_param_accepts_function_arg` in `conformance/mod.rs`'s own `mod tests`.
+#[test]
+fn field_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_FIELD_GIVEN_STRING,
+        "mode_shape",
+        "Field<Point3<Length>, Vector3<Length>> ← String",
+    );
+}
+
+const SRC_LIST_OF_FIELD_GIVEN_STRING_ELEMENT: &str = r#"module test.list_field_string
+structure def Holder { param modes : List<Field<Point3<Length>, Vector3<Length>>> }
+structure def Root {
+    let h = Holder(modes: ["a"])
+}
+"#;
+
+/// Wrapper composition: the new `Field` leaf arm must be reachable THROUGH the
+/// walker's `ListLiteral` recursion, not only at the top level.
+///
+/// Without this probe a leaf arm could be added in a position the wrapper
+/// recursion never reaches and the top-level probe above would not notice.
+#[test]
+fn list_of_field_param_given_string_element_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_LIST_OF_FIELD_GIVEN_STRING_ELEMENT,
+        "modes",
+        "List<Field<…>> ← [String]",
+    );
+}
+
+// ── promoted family: generic enum / `Applied` (task 5465, family 4) ──────────
+//
+// Under enum erasure a constructed variant's result_type is always the bare
+// `Type::Enum(name)`, never the applied form — which is precisely why
+// `enum_payload_compatible` exists in type_compat.rs (its own doc notes that a
+// naive `type_compatible` "would spuriously fail") and why variant_construct.rs
+// already guards with it. Shape from examples/m6_generic_enum.ri and the
+// reify-cli result_match_bore_{ok,err}.ri / result_prelude_pinned_mismatch.ri
+// fixtures.
+const SRC_FAMILY_GENERIC_ENUM: &str = r#"module test.family_generic_enum
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+structure def Root {
+    param r : Result<Length, String> = Ok { value: 12mm }
+}
+"#;
+
+/// Clean fixture for the promoted enum family.
+///
+/// The declared param type is the applied form `Type::Applied { name: "Result",
+/// args: [Length, String] }`, but the supplied arg's `result_type` under D1 /
+/// F-Mono erasure is the BARE `Type::Enum("Result")` — the applied form is never
+/// persisted on a value (`type_compat.rs::enum_payload_compatible` doc, §7.1:
+/// "resolved args live only in the per-site substitution map"). Raw
+/// `type_compatible` therefore has nothing to match on and would spuriously
+/// fail.
+///
+/// Before task 5465 this passed for the WRONG reason — the whole enum family was
+/// absent from `general_leaf_param_family_is_validated`, so every enum-typed
+/// param fell through silently, including genuine mismatches. It now passes
+/// because the general concrete-leaf arm short-circuits on
+/// `enum_payload_compatible`, exactly as `variant_construct.rs:325` already
+/// does — a targeted erasure tolerance, not a blanket family bypass (probe
+/// `enum_param_given_wrong_enum_warns_arg_type_mismatch` below is the fence).
+#[test]
+fn generic_enum_param_given_erased_variant_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_GENERIC_ENUM);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a `Result<Length, String>` param defaulted to `Ok {{ value: 12mm }}` must emit ZERO \
+         ctor-conformance diagnostics — enum erasure gives the constructed variant the bare \
+         result_type Enum(\"Result\"), never the applied form. Got: {diags:#?}"
+    );
+}
+
+const SRC_GENERIC_ENUM_GIVEN_STRING: &str = r#"module test.generic_enum_string
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+structure def Root {
+    param r : Result<Length, String> = "nope"
+}
+"#;
+
+/// Value floor for the promoted `Applied`-enum family: a `String` default at a
+/// `Result<Length, String>` param is a genuine mismatch and must warn.
+///
+/// This exercises the param-DEFAULT entry (`check_param_default_conformance`),
+/// which is the shape the reify-cli `result_match_bore_ok.ri:10` fixture uses —
+/// not the call-site ctor entry. Without it, promoting the family would only be
+/// pinned on its tolerance half.
+#[test]
+fn generic_enum_param_given_string_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_GENERIC_ENUM_GIVEN_STRING,
+        "r",
+        "Result<Length, String> ← String",
+    );
+}
+
+// NOTE ON NAMING: the two enums are deliberately spelled `Hue` / `Outline`
+// rather than the obvious `Color` / `Shape`. The prelude declares
+// `structure def Color` (crates/reify-compiler/stdlib/materials_appearance.ri:17),
+// so a local `enum Color` annotation resolves to the prelude's
+// `Type::StructureRef("Color")` instead of `Type::Enum("Color")` and the probe
+// would exercise the StructureRef arm, not the enum family.
+const SRC_ENUM_CROSS_ENUM_MISMATCH: &str = r#"module test.enum_cross_mismatch
+enum Hue {
+    Red { level: Real },
+    Blue { level: Real },
+}
+enum Outline {
+    Round { radius: Length },
+    Square { side: Length },
+}
+structure def Root {
+    param c : Hue = Round { radius: 5mm }
+}
+"#;
+
+/// Fence on the `enum_payload_compatible` short-circuit: it tolerates ONLY the
+/// erasure gap (same base name), and still rejects a genuine cross-enum
+/// mismatch.
+///
+/// A `Hue` param defaulted to a constructed `Outline::Round { .. }` variant
+/// gives declared `Type::Enum("Hue")` vs supplied `Type::Enum("Outline")` —
+/// different base names, so `enum_payload_compatible` returns false and the
+/// general concrete-leaf arm's `type_compatible` gate rejects. Without this
+/// probe the short-circuit could be widened into a blanket enum bypass without
+/// any test noticing.
+#[test]
+fn enum_param_given_wrong_enum_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(SRC_ENUM_CROSS_ENUM_MISMATCH, "c", "Hue ← Outline");
+}
+
+// The REVERSE erasure pairing — a param declared as the BARE `Type::Enum(n)`
+// supplied an APPLIED `Type::Applied { name: n, .. }` arg — is pinned by
+// `enum_param_accepts_applied_enum_arg_of_same_base` (plus its cross-base and
+// applied-generic-STRUCTURE fences) in `conformance/mod.rs`'s own `mod tests`.
+// It lives there because which surface spelling survives inference on the arg
+// side is not something an inline fixture can pin reliably, and because that
+// pairing is reachable at `Severity::Error` through the fn-call entry.
+
+
+
+// ── (b) HELD family: dimensioned Scalar ← dimensionless Real ─────────────────
+//
+// Migrated by task 5758 (β): the args are now dimensioned unit literals, the
+// fix form the ruling settled on. Shape from
+// examples/trajectory/{printer_print_envelope,tots_optimal_ptp}.ri.
+const SRC_FAMILY_DIMENSIONED_SCALAR: &str = r#"module test.family_dim_scalar
+structure def Limit {
+    param velocity_limit : Scalar<Velocity>
+    param acceleration_limit : Scalar<Acceleration>
+}
+structure def Root {
+    let l = Limit(velocity_limit: 300mm/s, acceleration_limit: 5000mm/s^2)
+}
+"#;
+
+/// A dimensioned unit literal at a dimensioned `Scalar<Q>` ctor field slot emits
+/// ZERO ctor-conformance diagnostics — i.e. β's fix form is ACCEPTED.
+///
+/// **The ruling landed.** This probe was formerly
+/// `excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent`, held
+/// pending a language-semantics ruling on whether a dimensionless arg is legal
+/// at a dimensioned slot. Leo ruled (esc-5758-2, and esc-5758-4 for the
+/// printer's deferred pair), recorded in PRD
+/// `docs/prds/v0_6/dimensioned-construction-strictness.md` §6.3 / §11 β: fix the
+/// call sites. Task 5758 migrated this fixture along with the rest of the
+/// corpus, so the probe now pins fix-form ACCEPTANCE rather than the held
+/// dimensionless-at-dimensioned question. See the PRD for the contract table;
+/// it is not restated here.
+///
+/// **What this probe pins, precisely.** Zero *ctor-conformance* diagnostics —
+/// i.e. exclusion from ONE pass. It does NOT assert that the program is
+/// well-typed, and it must not be read as one.
+///
+/// **The bare-arg negative pin is γ's.** With this fixture migrated, nothing
+/// here asserts what happens to a BARE arg at a dimensioned slot. γ introduces
+/// that as one of its I1-I8 value floors (PRD §7.1) rather than inverting this
+/// probe in place.
+#[test]
+fn family_dimensioned_scalar_given_unit_literal_arg_is_silent() {
+    let module = compile_source_with_stdlib(SRC_FAMILY_DIMENSIONED_SCALAR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "dimensioned Scalar params given dimensioned unit-literal args must emit ZERO \
+         ctor-conformance diagnostics — this is the fix form task 5758 (β) migrated the \
+         corpus to. Got: {diags:#?}"
+    );
+}
+
+// ── (c) α-value-floor guards: the RETAINED families must still warn ──────────
+
+/// Assert `source` emits exactly one ctor-conformance diagnostic, and that it is
+/// a `Warning`-severity `ArgTypeMismatch` naming `param_name`.
+///
+/// Shared by the four value-floor guards below so each stays a one-liner and the
+/// four cases cannot drift apart in what they check.
+fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label: &str) {
+    let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "{label}: expected exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "{label}: α ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "{label}: expected ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains(param_name),
+        "{label}: message must name the offending param {param_name:?}, got: {:?}",
+        diags[0].message
+    );
+}
+
+const SRC_FLOOR_STRING: &str = r#"module test.floor_string
+structure def W { param label : String }
+structure def Root { let a = W(label: 42) }
+"#;
+
+const SRC_FLOOR_BOOL: &str = r#"module test.floor_bool
+structure def W { param flag : Bool }
+structure def Root { let a = W(flag: "yes") }
+"#;
+
+const SRC_FLOOR_INT: &str = r#"module test.floor_int
+structure def W { param n : Int }
+structure def Root { let a = W(n: "seven") }
+"#;
+
+const SRC_FLOOR_REAL: &str = r#"module test.floor_real
+structure def W { param mag : Real }
+structure def Root { let a = W(mag: "big") }
+"#;
+
+/// Value floor: `String` stays validated. Deliberately a standalone fn rather
+/// than a reliance on the step-1 row-2 probe — this group is the regression
+/// fence around the step-12 narrowing itself, so it must fail loudly and by name
+/// if the allowlist ever loses a family.
+#[test]
+fn value_floor_string_param_given_int_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_STRING, "label", "String ← Int");
+}
+
+/// Value floor: `Bool` stays validated.
+#[test]
+fn value_floor_bool_param_given_string_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_BOOL, "flag", "Bool ← String");
+}
+
+/// Value floor: `Int` stays validated.
+#[test]
+fn value_floor_int_param_given_string_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_INT, "n", "Int ← String");
+}
+
+/// Value floor: dimensionless `Scalar` (spelled `Real`) stays validated. Note
+/// this is the DIMENSIONLESS half of the Scalar family only — the dimensioned
+/// half is excluded above, and the two must not be conflated.
+#[test]
+fn value_floor_dimensionless_real_param_given_string_still_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_FLOOR_REAL, "mag", "Real ← String");
+}
+
+// ===========================================================================
+// Quantity-slot dimension semantics (task 5766) — `Vector` family, `.ri` level
+// ===========================================================================
+//
+// Task 5766 rules the quantity slot of `Vector`/`Point`/`Matrix`/`Tensor` to be
+// dimension-checked under **dimensionless-tolerant strict equality**: reject iff
+// BOTH sides name a concrete dimension and they disagree. `Field` is HELD LOOSE
+// by decision (it has no quantity slot — see `field_hold_*` below and the
+// normative block in `crates/reify-core/src/ty.rs`).
+//
+// The four tests below pin the whole boundary of the `Vector` half in one place:
+// one REJECT leg (the tightening) and three legs that must stay GREEN both
+// before and after it.
+
+const SRC_VEC3_CROSS_DIMENSION: &str = r#"module test.vec3_cross_dimension
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec3(1kg, 0kg, 0kg))
+}
+"#;
+
+/// THE TIGHTENING (task 5766, `Vector` family): a `vec3` whose components carry
+/// a dimension that DISAGREES with the param's quantity slot is now rejected.
+///
+/// `vec3(1kg, 0kg, 0kg)` compiles to `Vector3<Scalar[kg]>`; the param declares
+/// `Vector3<Scalar[m]>`. Both sides name a concrete — and different — dimension,
+/// so this is the one case decidable from the type alone with no risk of
+/// comparing a declaration against a hole.
+///
+/// Routed through `emit_arg_type_mismatch` (→ `ArgTypeMismatch`), NOT
+/// `emit_vector_mismatch` (→ `TypeNotConformingToVector`), which keeps that
+/// bespoke code owning ARITY failures only — see
+/// `vector_string_still_rejected_family_before_quantity` below.
+#[test]
+fn vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_VEC3_CROSS_DIMENSION,
+        "axis",
+        "Vector3<Length> ← Vector3<Mass>",
+    );
+}
+
+const SRC_VEC3_DIMENSIONLESS: &str = r#"module test.vec3_dimensionless
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec3(0, 0, 1))
+}
+"#;
+
+/// FENCE (a) — the DIMENSIONLESS leg the ruling deliberately keeps loose.
+///
+/// This is the reason the rule is dimensionless-TOLERANT rather than strict
+/// `DimensionVector` equality: `examples/dynamics/pendulum_idyn.ri:32` spells a
+/// joint axis `vec3(0, 1, 0)` into `Revolute.axis : Vec3<Length>`, and the ty.rs
+/// "Point / Vector quantity-slot convention" records that
+/// `Value::Vector::infer_type()` may yield a dimensionless (or `Int`) quantity.
+/// Green BEFORE and AFTER the tightening; its unit-level sibling is
+/// `vector_param_accepts_dimensionless_vector_arg` in `conformance/mod.rs`.
+#[test]
+fn vec3_dimensionless_at_dimensioned_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONLESS);
+    // Non-vacuity guard: `ctor_conformance_diags` filters to the five
+    // ctor-conformance codes, so a compile-layer error in the fixture would leave
+    // it empty and pass this fence for the wrong reason.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a dimensionless vec3(0, 0, 1) at a Vector3<Length> param must stay SILENT — the \
+         quantity rule is dimensionless-tolerant by decision (task 5766), because the arg \
+         side is systematically erased at this arm and pendulum_idyn.ri:32 relies on this \
+         spelling. Got: {diags:#?}"
+    );
+}
+
+const SRC_VEC3_MATCHING_DIMENSION: &str = r#"module test.vec3_matching_dimension
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec3(0mm, 0mm, 1mm))
+}
+"#;
+
+/// FENCE (b) — dimensions AGREE, so silent. `stdlib/fdm.ri:112`'s shape.
+///
+/// Guards against a tightening that compares something other than the dimension
+/// (e.g. the rendered unit or the `Type` by structural equality): `mm` and the
+/// param's `Length` are the same `DimensionVector`, and `DimensionVector`'s
+/// derived `PartialEq` is what the rule uses.
+#[test]
+fn vec3_matching_dimension_at_dimensioned_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC3_MATCHING_DIMENSION);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "vec3(0mm, 0mm, 1mm) at a Vector3<Length> param must stay SILENT — the dimensions \
+         AGREE (mm and Length are the same DimensionVector). Got: {diags:#?}"
+    );
+}
+
+const SRC_VECTOR_GIVEN_STRING: &str = r#"module test.vector_string
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: "z")
+}
+"#;
+
+/// FENCE (c) — the unknown-ness fence's REJECT leg: FAMILY is decided BEFORE
+/// quantity, so a `String` at a `Vector3<Length>` param is still rejected.
+///
+/// Pins the ordering the ruling depends on. The quantity check is applied only
+/// AFTER the existing family/arity check passes and only to args that actually
+/// carry a quantity slot, so it can neither silence this rejection nor be
+/// reached by it. The code stays `TypeNotConformingToVector` — the `Vector`
+/// arm's bespoke family/arity code — which is what leaves `ArgTypeMismatch`
+/// free to mean "quantity conflict" at this arm.
+#[test]
+fn vector_string_still_rejected_family_before_quantity() {
+    let module = compile_source_with_stdlib(SRC_VECTOR_GIVEN_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a String at a Vector3<Length> param must still be rejected — family is decided \
+         before the quantity slot is consulted. Got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToVector),
+        "the Vector arm's FAMILY/ARITY rejection keeps its bespoke code; only a QUANTITY \
+         conflict routes to ArgTypeMismatch (task 5766). Got: {:?}",
+        diags[0].code
+    );
+}
+
+// ===========================================================================
+// Quantity-slot dimension semantics (task 5766) — `Matrix`/`Tensor` family
+// ===========================================================================
+
+const SRC_MATRIX_CROSS_DIMENSION: &str = r#"module test.matrix_cross_dimension
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: matrix([[1mm, 0mm, 0mm], [0mm, 1mm, 0mm], [0mm, 0mm, 1mm]]))
+}
+"#;
+
+/// THE TIGHTENING (task 5766, `Matrix`/`Tensor` family), on the task's own named
+/// example type.
+///
+/// `math_fn_result_type("matrix", …)` takes the quantity from the first element,
+/// so `matrix([[1mm, …], …])` compiles to `Tensor2x3<Scalar[m]>` while the param
+/// declares `Matrix3x3<Scalar[m^2·kg]>`. Both sides name a concrete — and
+/// different — dimension, so the conflict is decidable from the type alone.
+///
+/// Also the empirical proof that `MomentOfInertia` in a `Matrix<3,3,…>` slot
+/// resolves through `resolve_type_expr_with_aliases` all the way to
+/// `Type::Scalar { dimension }` and not to an alias or `Applied` form — if it
+/// did not, [`quantity_slot_dimension`] would need an alias-resolution step and
+/// this fixture would be silent.
+///
+/// Note the arg is a `Type::Tensor` and the param a `Type::Matrix`: Rule 3
+/// (`type_compat.rs`) already makes that conversion legal, so the FAMILY check
+/// passes and only the quantity slot separates them.
+#[test]
+fn matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_MATRIX_CROSS_DIMENSION,
+        "inertia",
+        "Matrix<3,3,MomentOfInertia> ← Tensor2x3<Length>",
+    );
+}
+
+// FENCES (a) and (b) for this family are ALREADY PINNED above and must stay
+// green through the tightening; they are cited here rather than cloned, because
+// re-asserting an identical fixture in two places is the lockstep duplication
+// that rots (house rule G7):
+//
+//   (a) `matrix_param_given_nested_list_literal_stays_clean` — a
+//       `Matrix<3,3,MomentOfInertia>` param fed `[[0.0, …], …]`. `Type::List`
+//       carries NO quantity slot, so there is nothing to compare and the arm
+//       must stay silent. This is the spelling all 12 corpus
+//       `MassProperties.inertia` sites use (`examples/dynamics/*_idyn.ri`), and
+//       it is the reason strict equality is unavailable for this family.
+//   (b) `tensor_param_given_vector_stays_clean` — a `Tensor<1,3,Length>` param
+//       fed `vec3(0m, 0m, 1m)`: dimensions AGREE, so silent.
+
+const SRC_TENSOR_MATCHING_DIMENSION: &str = r#"module test.tensor_matching_dimension
+structure def Surface {
+    param moi : Tensor<2, 3, MomentOfInertia>
+}
+structure def Root {
+    let s = Surface(moi: matrix([
+        [1.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m],
+        [0.0 * 1kg * 1m * 1m, 1.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m],
+        [0.0 * 1kg * 1m * 1m, 0.0 * 1kg * 1m * 1m, 1.0 * 1kg * 1m * 1m]
+    ]))
+}
+"#;
+
+/// FENCE (c) — a MATCHING concrete dimension at a `Tensor` param stays clean.
+///
+/// The build form is lifted verbatim from `examples/type_hygiene/type_hygiene_surface.ri:26`'s
+/// own `HasInertia.moi` default, so this pins the tightening against the one
+/// non-`Length` `Tensor` spelling that actually exists in the corpus. Green both
+/// before and after the tightening; distinguishes "compares the dimension" from
+/// "rejects any dimensioned `matrix(…)` arg".
+#[test]
+fn tensor_matching_dimension_at_moi_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_TENSOR_MATCHING_DIMENSION);
+    // Non-vacuity guard, load-bearing HERE above all: this is the only new fixture
+    // with no rejecting sibling to prove its param/arg spelling still reaches the
+    // walker, so an unresolvable `MomentOfInertia`, a `Tensor<2,3,Q>` resolution
+    // regression, or a change in how `1.0 * 1kg * 1m * 1m` types would otherwise
+    // leave the fence passing vacuously.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a Tensor<2,3,MomentOfInertia> param fed a matrix(…) whose elements carry the SAME \
+         dimension (kg·m²) must stay SILENT — the quantity rule compares DimensionVectors, \
+         it does not reject dimensioned args. Got: {diags:#?}"
+    );
+}

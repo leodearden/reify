@@ -24,6 +24,9 @@ type PanePassthroughProps = Pick<
   | 'fitToViewRef'
   | 'flyToEntityRef'
   | 'displayAppearance'
+  | 'feaModeStore'
+  | 'feaDiagnostics'
+  | 'feaConvergence'
 >;
 
 /** Configuration for a single pane in the MultiViewport grid. */
@@ -65,6 +68,19 @@ export interface MultiViewportProps {
  * ignored for column sizing, and dragging a splitter mutates only the
  * first-row pane's weight. Per-cell splitter trees (free-form resize for N≥3)
  * are deferred to PRD §10.
+ *
+ * **Per-pane prop contract:** every `PanePassthroughProps` key is forwarded
+ * verbatim from `PaneConfig` to that pane's `<Viewport>`; this component
+ * enforces no pane policy and synthesizes no defaults. Which props a pane
+ * actually carries is entirely the *caller's* choice (see App.tsx's `panes`
+ * mapArray): `tensegrityWires`/`tensegritySurfaces` and the
+ * `fitToViewRef`/`flyToEntityRef` refs remain design-main-only, while the FEA
+ * trio `feaModeStore`/`feaDiagnostics`/`feaConvergence` is populated for EVERY
+ * pane since #5670 — each pane drawing its own store from a viewportId-keyed
+ * registry, and the diagnostics/convergence being global to the model. This
+ * component is itself unchanged by that: a pane whose config omits a key
+ * receives `undefined`, which is how `<Viewport>` decides not to render the
+ * corresponding overlay.
  *
  * **Splitter placement:** C-1 Splitters are absolutely positioned (taken out
  * of grid flow) at column boundaries. The `left` of splitter `col` is
@@ -169,6 +185,9 @@ export function MultiViewport(props: MultiViewportProps) {
                 fitToViewRef={pane.fitToViewRef}
                 flyToEntityRef={pane.flyToEntityRef}
                 displayAppearance={pane.displayAppearance}
+                feaModeStore={pane.feaModeStore}
+                feaDiagnostics={pane.feaDiagnostics}
+                feaConvergence={pane.feaConvergence}
               />
             </div>
           )}

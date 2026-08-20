@@ -36,8 +36,27 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/run-all-classification-lib.sh" ] || { echo "ERROR: run-all-classification-lib.sh not found at $SCRIPT_DIR/run-all-classification-lib.sh"; exit 1; }
 source "$SCRIPT_DIR/run-all-classification-lib.sh"
 
+# Load-tolerant retry-budget helper (task 4585): guarded, fail-open — a
+# missing lib just leaves load_tolerant_attempts undefined, and
+# classification_stable_empty (run-all-classification-lib.sh) already
+# degrades to its fixed BASE attempt count via `declare -F` when that's the
+# case, so this guard test adds no hard dependency on the lib's presence.
+if [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ]; then
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/load_tolerance_lib.sh"
+fi
+
 MANIFEST="$SCRIPT_DIR/run-all-classification.manifest"
 MANIFEST_REL="tests/infra/run-all-classification.manifest"
+
+# Shared retry-budget base (task 5251) for the three load-fragile guard
+# verdicts below (malformed-rows in Test 2, overlap in Test 3, coverage_diff
+# in Test 5). Each is routed through classification_stable_empty with this
+# same BASE, which auto-scales via load_tolerant_attempts when in scope (see
+# run-all-classification-lib.sh) so a transient shell hiccup under
+# concurrent-verify load is retried away while a stable/genuine condition
+# still surfaces (guard integrity locked in by Test 6 (e)/(f) above).
+_CLASSIFICATION_STABLE_BASE=3
 
 echo "=== run_all.sh classification drift-guard tests ==="
 
@@ -59,19 +78,13 @@ assert "$MANIFEST_REL is non-empty after stripping comments/blanks" \
 echo ""
 echo "--- Test 2: every manifest row is well-formed (2 fields, valid bucket) ---"
 
-if [ -f "$MANIFEST" ]; then
-    ALL_BUCKETS="$(classification_all_buckets)"
-    export ALL_BUCKETS
-    while IFS= read -r _row; do
-        [ -z "$_row" ] && continue
-        _nf="$(awk '{print NF}' <<< "$_row")"
-        assert "manifest row has exactly 2 fields: '$_row'" \
-            test "$_nf" -eq 2
-        _bucket="$(awk '{print $2}' <<< "$_row")"
-        assert "manifest row bucket is valid (pool|intra-run-serial|host-exclusive): '$_row'" \
-            bash -c "printf '%s\n' \"\$ALL_BUCKETS\" | grep -qxF -- \"$_bucket\""
-    done < <(grep -v '^[[:space:]]*#' "$MANIFEST" | grep -v '^[[:space:]]*$')
+_MALFORMED="$(classification_stable_empty "$_CLASSIFICATION_STABLE_BASE" classification_malformed_rows)" || true
+if [ -n "$_MALFORMED" ]; then
+    echo "  Malformed row(s) detected (not exactly 2 fields, or invalid bucket):"
+    echo "$_MALFORMED" | sed 's/^/    /'
 fi
+assert "every manifest row is well-formed (2 fields, valid bucket)" \
+    test -z "$_MALFORMED"
 
 # ---------------------------------------------------------------------------
 # Test 3: no test basename is declared in more than one bucket
@@ -79,7 +92,7 @@ fi
 echo ""
 echo "--- Test 3: no overlap (no test declared in more than one bucket) ---"
 
-_OVERLAP_OUT="$(classification_overlap)"
+_OVERLAP_OUT="$(classification_stable_empty "$_CLASSIFICATION_STABLE_BASE" classification_overlap)" || true
 if [ -n "$_OVERLAP_OUT" ]; then
     echo "  Overlap detected (declared in more than one bucket):"
     echo "$_OVERLAP_OUT" | sed 's/^/    /'
@@ -107,7 +120,7 @@ done < <(classification_declared_union)
 echo ""
 echo "--- Test 5: declared union equals the live discovered set (no drift) ---"
 
-_DIFF_OUT="$(classification_coverage_diff)"
+_DIFF_OUT="$(classification_stable_empty "$_CLASSIFICATION_STABLE_BASE" classification_coverage_diff)" || true
 if [ -n "$_DIFF_OUT" ]; then
     echo "  Classification drift detected (< declared union, > live discovered set):"
     echo "$_DIFF_OUT" | sed 's/^/    /'
@@ -164,6 +177,55 @@ assert "the real manifest yields EMPTY coverage_diff (sanity: guard is green on 
 assert "the real manifest yields EMPTY overlap (sanity: guard is green on truth)" \
     test -z "$(classification_overlap "$MANIFEST")"
 
+# (d) Malformed-row fixture: real manifest plus one appended 3-field row.
+# classification_malformed_rows against this fixture must report NON-empty
+# (an injected malformed row must surface, not be silently accepted).
+_MALFORMED_SELFCHECK_MANIFEST="$_SELFCHECK_TMPDIR/malformed_selfcheck.manifest"
+cp "$MANIFEST" "$_MALFORMED_SELFCHECK_MANIFEST"
+echo "test_bogus_malformed_selfcheck_fixture.sh pool extra" >> "$_MALFORMED_SELFCHECK_MANIFEST"
+
+_MALFORMED_SELFCHECK_OUT="$(classification_malformed_rows "$_MALFORMED_SELFCHECK_MANIFEST")"
+assert "classification_malformed_rows on a manifest with an injected 3-field row reports NON-empty" \
+    test -n "$_MALFORMED_SELFCHECK_OUT"
+
+# (e) Guard-integrity regression lock: routing each injected fixture THROUGH
+# the classification_stable_empty retry wrapper must STILL report the
+# injected condition (the wrapper masks only non-reproducing transients,
+# never a stable/genuine condition — this is what makes it safe to route the
+# live guard's verdicts through it in place, below).
+_WRAPPED_DRIFT_RC=0
+_WRAPPED_DRIFT_OUT="$(classification_stable_empty 3 classification_coverage_diff "$_DRIFT_MANIFEST")" || _WRAPPED_DRIFT_RC=$?
+assert "wrapper on the injected drift fixture still reports NON-empty (guard integrity)" \
+    test -n "$_WRAPPED_DRIFT_OUT"
+
+_WRAPPED_OVERLAP_RC=0
+_WRAPPED_OVERLAP_OUT="$(classification_stable_empty 3 classification_overlap "$_OVERLAP_MANIFEST")" || _WRAPPED_OVERLAP_RC=$?
+assert "wrapper on the injected overlap fixture still reports NON-empty (guard integrity)" \
+    test -n "$_WRAPPED_OVERLAP_OUT"
+
+_WRAPPED_MALFORMED_RC=0
+_WRAPPED_MALFORMED_OUT="$(classification_stable_empty 3 classification_malformed_rows "$_MALFORMED_SELFCHECK_MANIFEST")" || _WRAPPED_MALFORMED_RC=$?
+assert "wrapper on the injected malformed-row fixture still reports NON-empty (guard integrity)" \
+    test -n "$_WRAPPED_MALFORMED_OUT"
+
+# (f) Sanity: all three verdicts routed through the wrapper on the REAL
+# manifest are EMPTY (the wrapper is green on truth, same as the raw
+# accessors in (c) above).
+_WRAPPED_REAL_DRIFT_RC=0
+_WRAPPED_REAL_DRIFT_OUT="$(classification_stable_empty 3 classification_coverage_diff "$MANIFEST")" || _WRAPPED_REAL_DRIFT_RC=$?
+assert "wrapper on the real manifest yields EMPTY coverage_diff" \
+    test -z "$_WRAPPED_REAL_DRIFT_OUT"
+
+_WRAPPED_REAL_OVERLAP_RC=0
+_WRAPPED_REAL_OVERLAP_OUT="$(classification_stable_empty 3 classification_overlap "$MANIFEST")" || _WRAPPED_REAL_OVERLAP_RC=$?
+assert "wrapper on the real manifest yields EMPTY overlap" \
+    test -z "$_WRAPPED_REAL_OVERLAP_OUT"
+
+_WRAPPED_REAL_MALFORMED_RC=0
+_WRAPPED_REAL_MALFORMED_OUT="$(classification_stable_empty 3 classification_malformed_rows "$MANIFEST")" || _WRAPPED_REAL_MALFORMED_RC=$?
+assert "wrapper on the real manifest yields EMPTY malformed_rows" \
+    test -z "$_WRAPPED_REAL_MALFORMED_OUT"
+
 # ---------------------------------------------------------------------------
 # Test 7: load-flaky host-burn tests are host-exclusive (task 4997 / esc-4986
 # regression lock). test_cpu_load_governance.sh performs real CPU-burn + real
@@ -191,5 +253,105 @@ assert "test_cpu_load_governance.sh is NOT classified pool" \
 
 assert "test_cpu_load_governance_deflake.sh remains classified host-exclusive" \
     bash -c "printf '%s\n' \"\$_HOST_EXCLUSIVE\" | grep -qxF -- test_cpu_load_governance_deflake.sh"
+
+# ---------------------------------------------------------------------------
+# Test: classification_malformed_rows accessor
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test: classification_malformed_rows accessor ---"
+
+_MALFORMED_ROWS_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$_SELFCHECK_TMPDIR" "$_MALFORMED_ROWS_TMPDIR"' EXIT
+
+_MALFORMED_FIXTURE="$_MALFORMED_ROWS_TMPDIR/malformed_rows.manifest"
+cat > "$_MALFORMED_FIXTURE" <<'EOF'
+test_x.sh pool
+test_y.sh pool extra
+test_z.sh bogusbucket
+EOF
+
+_MALFORMED_FIXTURE_OUT="$(classification_malformed_rows "$_MALFORMED_FIXTURE")"
+export _MALFORMED_FIXTURE_OUT
+
+assert "classification_malformed_rows detects the malformed fixture rows (non-empty)" \
+    test -n "$_MALFORMED_FIXTURE_OUT"
+
+assert "classification_malformed_rows fixture output contains the 3-field row (test_y.sh)" \
+    bash -c "printf '%s\n' \"\$_MALFORMED_FIXTURE_OUT\" | grep -qF -- test_y.sh"
+
+assert "classification_malformed_rows fixture output contains the invalid-bucket row (test_z.sh)" \
+    bash -c "printf '%s\n' \"\$_MALFORMED_FIXTURE_OUT\" | grep -qF -- test_z.sh"
+
+assert "classification_malformed_rows fixture output does NOT contain the well-formed row (test_x.sh)" \
+    bash -c "! printf '%s\n' \"\$_MALFORMED_FIXTURE_OUT\" | grep -qF -- test_x.sh"
+
+assert "classification_malformed_rows on the real manifest is EMPTY (guard green on truth)" \
+    test -z "$(classification_malformed_rows "$MANIFEST")"
+
+# ---------------------------------------------------------------------------
+# Test: classification_stable_empty retry-until-clean wrapper
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test: classification_stable_empty retry-until-clean wrapper ---"
+
+_STABLE_EMPTY_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$_SELFCHECK_TMPDIR" "$_MALFORMED_ROWS_TMPDIR" "$_STABLE_EMPTY_TMPDIR"' EXIT
+
+# (a) Always-clean fake: prints nothing, returns 0 on every invocation.
+_fake_always_clean() {
+    return 0
+}
+
+# (b) Blip-then-clean fake: prints "blip" on its FIRST invocation only (a
+# counter file records invocation count so later invocations know they are
+# not the first) — models a non-reproducing transient shell hiccup that
+# clears on retry.
+_fake_blip_then_clean() {
+    local _counter="$_STABLE_EMPTY_TMPDIR/blip_counter"
+    local _n=0
+    [ -f "$_counter" ] && _n="$(cat "$_counter")"
+    _n=$((_n + 1))
+    printf '%s' "$_n" > "$_counter"
+    [ "$_n" -eq 1 ] && echo "blip"
+    return 0
+}
+
+# (c) Always-drift fake: ALWAYS prints "DRIFT" — models a STABLE, genuine
+# condition that must survive the whole retry budget (guard integrity: the
+# wrapper must never mask this).
+_fake_always_drift() {
+    echo "DRIFT"
+    return 0
+}
+
+_CLEAN_RC=0
+_CLEAN_OUT="$(classification_stable_empty 3 _fake_always_clean)" || _CLEAN_RC=$?
+assert "classification_stable_empty: always-clean fake yields EMPTY output" \
+    test -z "$_CLEAN_OUT"
+assert "classification_stable_empty: always-clean fake returns rc 0" \
+    test "$_CLEAN_RC" -eq 0
+
+_BLIP_RC=0
+_BLIP_OUT="$(classification_stable_empty 3 _fake_blip_then_clean)" || _BLIP_RC=$?
+assert "classification_stable_empty: a non-reproducing transient blip (1st call only) is masked by retry -> EMPTY output" \
+    test -z "$_BLIP_OUT"
+assert "classification_stable_empty: a non-reproducing transient blip (1st call only) is masked by retry -> rc 0" \
+    test "$_BLIP_RC" -eq 0
+
+# NB: classification_stable_empty returns rc 1 on a STABLE non-empty verdict
+# (by design — see its header doc). The capture below MUST tolerate that via
+# `|| _DRIFT_RC=$?` (not left unguarded): an unguarded `X="$(cmd)"` whose cmd
+# exits 1 would trip `set -e` and silently abort this whole script before the
+# assertions below ever run (the same hazard step-6 documents for the live
+# guard's own `_OVERLAP_OUT`/`_DIFF_OUT`/`_MALFORMED` captures).
+_DRIFT_RC=0
+_DRIFT_OUT="$(classification_stable_empty 3 _fake_always_drift)" || _DRIFT_RC=$?
+export _DRIFT_OUT
+assert "classification_stable_empty: a STABLE genuine condition (always DRIFT) is NOT masked -> non-empty output" \
+    test -n "$_DRIFT_OUT"
+assert "classification_stable_empty: a STABLE genuine condition (always DRIFT) output contains DRIFT" \
+    bash -c "printf '%s\n' \"\$_DRIFT_OUT\" | grep -qF -- DRIFT"
+assert "classification_stable_empty: a STABLE genuine condition (always DRIFT) returns rc 1 (not masked, guard integrity)" \
+    test "$_DRIFT_RC" -eq 1
 
 test_summary

@@ -47,10 +47,50 @@
 #                                     declared union (from manifest [m]) and
 #                                     the discovered set (from dir [d])
 #                                     (empty = no drift).
+#   classification_undeclared [m] [d]  prints discovered test_*.sh basenames
+#                                     (from dir [d]) with NO row in manifest
+#                                     [m] — the "missing manifest row" set
+#                                     (empty = every discovered file is
+#                                     declared).
+#   classification_orphaned [m] [d]  prints declared basenames (from manifest
+#                                     [m]) with NO discovered file (in dir
+#                                     [d]) — the "stale row" set (empty = no
+#                                     orphaned rows).
 #   classification_overlap [m]       prints any test basename declared in
 #                                     more than one bucket in manifest [m]
 #                                     (default: the real manifest) (empty =
 #                                     no overlap).
+#   classification_malformed_rows [m]  prints each malformed ROW (the raw
+#                                     line, verbatim) of manifest [m]
+#                                     (default: the real manifest): a row is
+#                                     malformed when it does not have exactly
+#                                     2 fields, OR its bucket field (2nd) is
+#                                     not one of classification_all_buckets.
+#                                     Empty output = every row is
+#                                     well-formed. A SINGLE-awk pass over the
+#                                     whole manifest (comment/blank lines
+#                                     skipped in-awk, valid-bucket set built
+#                                     from classification_all_buckets) — no
+#                                     per-row forking, unlike a
+#                                     read-loop-plus-per-row-assert idiom.
+#   classification_stable_empty BASE ACCESSOR [args...]  retry-until-clean
+#                                     wrapper: runs ACCESSOR [args...] up to
+#                                     load_tolerant_attempts(BASE) times
+#                                     (falls back to BASE when
+#                                     load_tolerant_attempts is not in scope),
+#                                     tolerating a non-zero exit each attempt.
+#                                     Returns the CLEAN (empty output, rc 0)
+#                                     verdict the first time any attempt is
+#                                     clean (prints "", rc 0); otherwise
+#                                     prints the LAST (stable) non-empty
+#                                     output and returns rc 1. Because the
+#                                     wrapped accessors are deterministic
+#                                     reads of static files, a
+#                                     non-reproducing non-empty result is a
+#                                     transient shell hiccup (masked by
+#                                     retry), while a STABLE non-empty result
+#                                     is genuine (never masked — guard
+#                                     integrity is preserved).
 #
 # All [m]/[d] arguments are OPTIONAL — every accessor defaults to the real
 # manifest/dir when omitted, via classification_manifest_path /
@@ -159,6 +199,35 @@ classification_coverage_diff() {
     printf '%s' "$_diff_out"
 }
 
+# classification_undeclared [manifest] [dir] — the "missing manifest row" set:
+# discovered test_*.sh basenames (from [dir]) that are NOT in the declared
+# union (from [manifest]) — i.e. a test file exists on disk with no manifest
+# row. Derives SOLELY from the two set accessors, so a file flagged here is
+# exactly a `>` line in classification_coverage_diff (the shared derivation).
+# Both accessors emit sorted output (declared_union: `sort -u`; discovered_set:
+# `sort`), so a plain `comm -13` (lines only in the discovered file) yields the
+# set difference. Empty output = every discovered file is declared.
+classification_undeclared() {
+    local _manifest="${1:-$(classification_manifest_path)}"
+    local _dir="${2:-$(classification_infra_dir)}"
+    [ -f "$_manifest" ] || return 0
+    comm -13 <(classification_declared_union "$_manifest") \
+             <(classification_discovered_set "$_dir")
+}
+
+# classification_orphaned [manifest] [dir] — the "stale row" set: declared
+# basenames (from [manifest]) that have NO discovered file (in [dir]) — i.e. a
+# manifest row whose test_*.sh no longer exists. `comm -23` (lines only in the
+# declared file) yields the set difference; same shared derivation as above.
+# Empty output = no orphaned rows.
+classification_orphaned() {
+    local _manifest="${1:-$(classification_manifest_path)}"
+    local _dir="${2:-$(classification_infra_dir)}"
+    [ -f "$_manifest" ] || return 0
+    comm -23 <(classification_declared_union "$_manifest") \
+             <(classification_discovered_set "$_dir")
+}
+
 # classification_overlap [manifest] — any test basename declared in MORE
 # THAN ONE bucket in [manifest] (default: the real manifest). Empty output =
 # no overlap.
@@ -169,4 +238,78 @@ classification_overlap() {
         | grep -v '^[[:space:]]*$' \
         | awk '{print $1}' \
         | sort | uniq -d
+}
+
+# classification_malformed_rows [manifest] — print each malformed row (the
+# raw line, verbatim) of [manifest] (default: the real manifest). A row is
+# malformed when it does not have exactly 2 fields, or its bucket field (2nd
+# field) is not one of classification_all_buckets. Empty output = every row
+# is well-formed.
+#
+# SINGLE-awk validator (comment/blank lines skipped IN-awk, not via a
+# separate grep -v | grep -v pre-filter): this replaces a per-row
+# read-loop-plus-per-row-assert idiom (which forks 2-3 subprocesses PER ROW)
+# with one awk invocation over the whole file, collapsing the dominant
+# fork/pipe surface for a manifest with many rows.
+classification_malformed_rows() {
+    local _manifest="${1:-$(classification_manifest_path)}"
+    [ -f "$_manifest" ] || return 0
+    local _buckets
+    _buckets="$(classification_all_buckets | tr '\n' ' ')"
+    awk -v buckets="$_buckets" '
+        BEGIN {
+            n = split(buckets, arr, " ")
+            for (i = 1; i <= n; i++) valid[arr[i]] = 1
+        }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        { if (NF != 2 || !($2 in valid)) print }
+    ' "$_manifest"
+}
+
+# classification_stable_empty BASE ACCESSOR [args...] — retry-until-clean
+# wrapper. Runs `ACCESSOR [args...]` up to load_tolerant_attempts(BASE)
+# attempts (BASE itself when load_tolerant_attempts is not in scope),
+# tolerating a non-zero exit each attempt (never aborts the caller under
+# `set -e`). Returns the CLEAN (empty output, rc 0) verdict the first time
+# any attempt is clean; otherwise returns the LAST (stable) non-empty output
+# with rc 1. A fixed (not load-scaled) short yield separates attempts on the
+# non-clean path only.
+classification_stable_empty() {
+    local _base="$1"
+    shift
+
+    local _attempts
+    if declare -F load_tolerant_attempts >/dev/null 2>&1; then
+        _attempts="$(load_tolerant_attempts "$_base")"
+    else
+        _attempts="$_base"
+    fi
+    # Validate to a positive integer: empty/non-numeric -> fall back to
+    # BASE; if BASE is ALSO empty/non-numeric -> floor to 1. Mirrors the
+    # load_tolerance_lib BASE-validation idiom, but (unlike
+    # load_tolerant_attempts, which may just echo a raw BASE back) this loop
+    # bound must end up a real positive integer.
+    case "$_attempts" in
+        ''|*[!0-9]*) _attempts="$_base" ;;
+    esac
+    case "$_attempts" in
+        ''|*[!0-9]*) _attempts=1 ;;
+    esac
+    [ "$_attempts" -gt 0 ] 2>/dev/null || _attempts=1
+
+    local _out="" _rc _attempt
+    for ((_attempt = 1; _attempt <= _attempts; _attempt++)); do
+        _rc=0
+        _out="$("$@" 2>/dev/null)" || _rc=$?
+        if [ "$_rc" -eq 0 ] && [ -z "$_out" ]; then
+            printf ''
+            return 0
+        fi
+        if [ "$_attempt" -lt "$_attempts" ]; then
+            sleep 0.1 2>/dev/null || true
+        fi
+    done
+    printf '%s' "$_out"
+    return 1
 }

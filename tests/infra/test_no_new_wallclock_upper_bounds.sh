@@ -9,9 +9,12 @@
 #
 # Allowlist mechanism (three composable filters):
 #   (1) Operator:     only -le / -lt upper bounds are flagged (-ge / -gt ignored).
-#   (2) Wall-clock lexeme: only lines whose description or compared variable
-#       carries a time signal (elapsed | within [0-9]+s | [0-9]+ms | seconds |
-#       wall | duration | var matching ELAPSED/_S/_MS/_NS/SECONDS).
+#   (2) Time-measurement signal: only lines whose description or compared
+#       variable carries a genuine time-MEASUREMENT signal — a description
+#       lexeme (elapsed | within [0-9]+[ms]s? | duration) OR a time-suffixed
+#       variable operand (var matching ELAPSED/_S/_MS/_NS/SECONDS).  Bare
+#       prose `wall`/`seconds` with a literal/config-constant operand does
+#       NOT match (task #5257).
 #   (3) Inline escape: `# wallclock:allow` on the assert line opts it out.
 #
 # SELF-MATCH SAFETY: this file must not contain any literal flaggable construct
@@ -44,9 +47,12 @@ echo "=== Wall-clock upper-bound regression guard ==="
 # via awk) is a violation iff ALL of:
 #   (1) assert-wired: the word "assert" appears on the line
 #   (2) upper-bound:  line contains `-le <int>` or `-lt <int>`
-#   (3) wall-clock:   description or compared var carries a time lexeme:
-#                     elapsed | within [0-9]+[ms]s? | seconds | wall |
-#                     duration | ELAPSED/_S/_MS/_NS/SECONDS suffix
+#   (3) time-measurement: description or compared var carries a genuine
+#                     time-MEASUREMENT signal — a time-suffixed variable
+#                     operand (ELAPSED/_S/_MS/_NS/SECONDS suffix) OR a
+#                     description lexeme (elapsed | within [0-9]+[ms]s? |
+#                     duration).  Bare prose `wall`/`seconds` alongside a
+#                     literal/config-constant operand no longer matches (#5257).
 #   (4) NOT escaped:  line does NOT contain `wallclock:allow`
 #
 # Prints each violation as "file:lineno: <content>" to stderr.
@@ -73,7 +79,14 @@ _detect_wallclock_upper_bound() {
     local _ass_re; _ass_re='asse''rt'
     local _esc_re; _esc_re='wallcl''ock:allow'
     local _wc_re
-    _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
+    # Free-prose description lexemes.  Task #5257 dropped the bare `wall` and
+    # lowercase `seconds` alternatives: they matched config-constant ceilings
+    # whose description merely mentioned "wall"/"seconds" without any genuine
+    # time-MEASUREMENT signal (the ep3 false positives).  A time-suffixed
+    # variable operand is still a legitimate signal — see `_wc_var_sfx` below,
+    # which is composed in UNCHANGED (its uppercase SECONDS suffix is a
+    # case-sensitive, independent matcher from the removed lowercase prose).
+    _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|durat''ion'
     # Variable-name suffixes: single-quoted so '' splits work correctly.
     local _wc_var_sfx
     _wc_var_sfx='ELAP''SED|_M?S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
@@ -211,7 +224,7 @@ _detect_wallclock_upper_bound() {
             if ! [[ "$logical" =~ $_ass_re ]]; then continue; fi
             # (2) Upper-bound operator: -le <int> or -lt <int>
             if ! [[ "$logical" =~ $_op_re ]]; then continue; fi
-            # (3) Wall-clock lexeme
+            # (3) Time-measurement signal (description lexeme OR var-suffix)
             if ! [[ "$logical" =~ $_wc_re ]]; then continue; fi
             # Violation: all four conditions met
             echo "${f}:${lineno}: ${logical}" >> "$_viof"
@@ -556,6 +569,111 @@ _s2m_rc=0
 _detect_wallclock_upper_bound "$_s2m_tmpdir" 2>/dev/null || _s2m_rc=$?
 assert "2m: multi-line DOUBLE-quoted assert description (open dquote spanning a physical newline) is flagged (returns 1)" \
     test "$_s2m_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2n (task #5257): PRECISION NEGATIVE — the six ep3 config-constant false
+# positives, reproduced UN-annotated.  Each compares a CONFIG-CONSTANT ceiling
+# with `-lt 3600` and matched the OLD detector ONLY because its description
+# prose carried the word "wall"; NONE carries a genuine time-measurement
+# signal — the operands are not time-suffixed variables (HS_* has no
+# _S/_MS/_NS/ELAPSED/SECONDS suffix; `_DEFAULT_ST_*` carries a NON-boundary
+# _S inside `_ST_`, which `_M?S([^A-Za-z0-9_]|$)` does not match) and no
+# description carries elapsed/within-Ns/duration.  Both operand shapes are
+# reproduced: a bare quoted variable and an arithmetic product whose var names
+# carry the `_ST_` non-boundary substring.  RED before the step-2 tightening
+# (the `wall` prose still flags them, rc==1); GREEN after it (no
+# time-measurement signal remains, rc==0).
+# ---------------------------------------------------------------------------
+_s2n_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2n_tmpdir")
+
+# Assemble the soon-to-be-removed free-prose "wall" lexeme and the strict
+# upper-bound operator from parts (self-match safety: no literal
+# assert+upper-bound+lexeme lands on a single source line of this guard).
+_WALL_LEX='wal''l'         # assembles to the removed free-prose "wall" lexeme
+_UB_LT='-lt'               # strict upper-bound operator used by the in-tree asserts
+
+printf '#!/usr/bin/env bash\n' > "$_s2n_tmpdir/fixture.sh"
+# Shape A: bare quoted variable operand (HS_T0A style), "pass-level wall" prose.
+printf '%s "tensegrity heavy ceiling strictly less than the 3600s pass-level %s" \\\n' \
+    "$_ASS_WORD" "$_WALL_LEX" >> "$_s2n_tmpdir/fixture.sh"
+printf '    bash -c "[ '\''${HS_T0A:-0}'\'' %s 3600 ]"\n' \
+    "$_UB_LT" >> "$_s2n_tmpdir/fixture.sh"
+# Shape B: arithmetic product whose var names carry a NON-boundary _S (_ST_).
+printf '%s "default slow-timeout ceiling strictly less than the 3600s pass-level %s" \\\n' \
+    "$_ASS_WORD" "$_WALL_LEX" >> "$_s2n_tmpdir/fixture.sh"
+printf '    bash -c "[ $(( ${_DEFAULT_ST_PERIOD:-0} * ${_DEFAULT_ST_TERM:-0} )) %s 3600 ]"\n' \
+    "$_UB_LT" >> "$_s2n_tmpdir/fixture.sh"
+
+_s2n_rc=0
+_detect_wallclock_upper_bound "$_s2n_tmpdir" 2>/dev/null || _s2n_rc=$?
+assert "2n: config-constant ceilings matched only by the removed wall prose (no time-measurement signal) NOT flagged (returns 0)" \
+    test "$_s2n_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2o (task #5257): PRECISION NEGATIVE — an assert whose ONLY wall-clock signal
+# is the bare free-prose word "seconds", over a non-time operand ($count, no
+# _S/_MS/_NS/ELAPSED/SECONDS suffix) and a literal ceiling.  RED before the
+# step-2 tightening (the `seconds` prose still flags it, rc==1); GREEN after it
+# (no time-measurement signal remains, rc==0).  NOTE: bash `[[ =~ ]]` is
+# case-sensitive, so removing this LOWERCASE free-prose lexeme does NOT touch
+# the retained UPPERCASE SECONDS var-suffix matcher exercised by 2q.
+# ---------------------------------------------------------------------------
+_s2o_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2o_tmpdir")
+
+# Assemble the soon-to-be-removed lowercase free-prose "seconds" lexeme.
+_SEC_PROSE='second''s'     # assembles to the removed free-prose "seconds" lexeme
+
+printf '#!/usr/bin/env bash\n' > "$_s2o_tmpdir/fixture.sh"
+printf '%s "job completed in a few %s" test "$count" %s 5\n' \
+    "$_ASS_WORD" "$_SEC_PROSE" "$_UB_LT" >> "$_s2o_tmpdir/fixture.sh"
+
+_s2o_rc=0
+_detect_wallclock_upper_bound "$_s2o_tmpdir" 2>/dev/null || _s2o_rc=$?
+assert "2o: bare lowercase seconds prose over a non-time operand (no time-measurement signal) NOT flagged (returns 0)" \
+    test "$_s2o_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2p (task #5257): TRUE POSITIVE (green-on-arrival) — the ep1/ep2 shape the
+# task names: a description carrying the RETAINED `elapsed` lexeme with a
+# strict upper bound.  Must stay flagged (returns 1) both before AND after the
+# step-2 tightening — `elapsed` is a genuine time-MEASUREMENT description lexeme
+# the guard must keep firing on.
+# ---------------------------------------------------------------------------
+_s2p_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2p_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2p_tmpdir/fixture.sh"
+printf '%s "render %s under budget" test "$el" %s 2\n' \
+    "$_ASS_WORD" "$_WC_LEX_PART" "$_UB_LT" >> "$_s2p_tmpdir/fixture.sh"
+
+_s2p_rc=0
+_detect_wallclock_upper_bound "$_s2p_tmpdir" 2>/dev/null || _s2p_rc=$?
+assert "2p: real elapsed upper-bound assert (retained description lexeme) still fires (returns 1)" \
+    test "$_s2p_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2q (task #5257): TRUE-POSITIVE PRECISION GUARD — a SECONDS-suffixed variable
+# operand (wait_SECONDS) under a NEUTRAL description that carries NO
+# elapsed/within/duration/wall/seconds prose.  Must stay flagged (returns 1):
+# a time-suffixed variable operand is a genuine time-MEASUREMENT signal, matched
+# by the RETAINED uppercase SECONDS var-suffix branch.  This pins the exact
+# distinction this task turns on — removing the LOWERCASE free-prose `seconds`
+# lexeme (intended) must NOT delete the UPPERCASE SECONDS VAR-SUFFIX (a
+# regression that would reintroduce false negatives); an over-eager
+# "remove seconds" edit that nuked the var-suffix would flip this to rc==0.
+# ---------------------------------------------------------------------------
+_s2q_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2q_tmpdir")
+
+# Assemble the SECONDS var-name suffix from parts (self-match safety).
+_SEC_SFX='SECOND''S'       # assembles to the retained uppercase SECONDS var-suffix
+
+printf '#!/usr/bin/env bash\n' > "$_s2q_tmpdir/fixture.sh"
+printf '%s "worker finished under budget" test "$wait_%s" %s 30\n' \
+    "$_ASS_WORD" "$_SEC_SFX" "$_UB_OP" >> "$_s2q_tmpdir/fixture.sh"
+
+_s2q_rc=0
+_detect_wallclock_upper_bound "$_s2q_tmpdir" 2>/dev/null || _s2q_rc=$?
+assert "2q: time-suffixed variable operand under a neutral description (retained var-suffix measurement signal) still fires (returns 1)" \
+    test "$_s2q_rc" -eq 1
 
 # ===========================================================================
 # Section 3: LIVE guard — scan the real tests/infra for un-escaped

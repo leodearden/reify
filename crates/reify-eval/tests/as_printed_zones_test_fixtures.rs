@@ -63,8 +63,11 @@ pub fn het_ortho_law(e: f64, nu: f64) -> Value {
 /// Build a `MaterialFrame` StructureInstance whose z-axis is `build_z`
 /// (the weak / build direction).  x and y are an orthonormal complement.
 ///
-/// The `origin` field is set to the zero point.  Axis fields are
-/// `Value::Vector` of three LENGTH-dimension `Value::Scalar` entries.
+/// The `origin` field is set to the zero point (`Point3<Length>`).  Axis
+/// fields are `Value::Vector` of three `Value::Real` entries — the axes are
+/// `Vector3<Dimensionless>` (task 5848), and `Value::Real` is the house
+/// spelling for a dimensionless quantity (Invariant V), matching what the
+/// production minter `as_printed_material::material_frame` emits.
 pub fn het_material_frame(build_z: [f64; 3]) -> Value {
     let mag = (build_z[0]*build_z[0] + build_z[1]*build_z[1] + build_z[2]*build_z[2]).sqrt();
     let z = [build_z[0]/mag, build_z[1]/mag, build_z[2]/mag];
@@ -81,7 +84,7 @@ pub fn het_material_frame(build_z: [f64; 3]) -> Value {
     // y = cross(z, x):
     let y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
     let len_scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
-    let vec3  = |v: [f64; 3]| Value::Vector(vec![len_scalar(v[0]), len_scalar(v[1]), len_scalar(v[2])]);
+    let vec3  = |v: [f64; 3]| Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])]);
     let point3 = |v: [f64; 3]| Value::Point(vec![len_scalar(v[0]), len_scalar(v[1]), len_scalar(v[2])]);
     let frame_fields: PersistentMap<String, Value> = [
         ("origin".to_string(), point3([0.0; 3])),

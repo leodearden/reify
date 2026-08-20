@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 /// Returns `true` when `line` is an outer (`///`) or inner (`//!`) doc-comment
 /// line, after stripping leading whitespace.  Regular `//` line comments and
 /// `/* ... */` block comments return `false` — only `///` and `//!` are skipped
-/// by both scanners.  Note that `////` (four or more slashes) also returns
+/// by the scanners that use this predicate (the two here, plus
+/// [`crate::temp_dirs::find_unguarded_temp_dir_sites`]).  Note that `////`
+/// (four or more slashes) also returns
 /// `true` due to `starts_with("///")` semantics, preserving the existing
 /// behavior from the original field-local scanner.
-fn is_doc_comment_line(line: &str) -> bool {
+pub(crate) fn is_doc_comment_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with("///") || trimmed.starts_with("//!")
 }
@@ -220,8 +222,10 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Recursively walk `workspace_root` collecting every `.rs` file whose path
-/// contains a directory component named `tests`. Skips the following directories:
+/// Recursively walk `workspace_root` collecting every `.rs` file for which
+/// `include` returns `true`, given the file's path RELATIVE to
+/// `workspace_root`. Skips the following directories unconditionally, before
+/// `include` is ever consulted:
 ///
 /// - `target` — Cargo build artifacts
 /// - Dot-dirs (any name starting with `.`) — VCS internals (`.git`), worktrees
@@ -232,13 +236,17 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
 /// - `vendor` — Cargo vendored dependency trees; vendored crate source is not
 ///   project-owned test code and scanning it wastes time
 ///
+/// The path passed to `include` is relative — that is what every caller
+/// reasons about, and it keeps predicates independently testable without a
+/// `workspace_root` in scope (see [`has_tests_component`]).
+///
 /// Uses `std::fs::read_dir` with an explicit stack (no recursion, no external
 /// `walkdir` dep) — matching the existing convention in `reify-kernel-occt/build.rs`.
 ///
 /// # Panics
 ///
 /// Does not panic — I/O errors on individual directories are silently skipped.
-pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
+pub fn walk_rs_files(workspace_root: &Path, include: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let mut stack = vec![workspace_root.to_path_buf()];
 
@@ -263,9 +271,15 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
                 }
                 stack.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                // Only include files that have "tests" as a directory component
-                // in the path relative to workspace_root.
-                if has_tests_component(&path, workspace_root) {
+                // A path that (unexpectedly) isn't under workspace_root is
+                // excluded rather than handed to `include` as an absolute
+                // path — `include` predicates only ever reason about
+                // workspace-relative paths.
+                let included = match path.strip_prefix(workspace_root) {
+                    Ok(rel) => include(rel),
+                    Err(_) => false,
+                };
+                if included {
                     result.push(path);
                 }
             }
@@ -273,6 +287,16 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
     }
 
     result
+}
+
+/// Recursively walk `workspace_root` collecting every `.rs` file whose path
+/// contains a directory component named `tests`.
+///
+/// A thin delegation over [`walk_rs_files`] passing [`has_tests_component`] as
+/// the predicate — see that function's docs for the directory-exclusion list
+/// (`target`, dot-dirs, `node_modules`, `vendor`) and the walk strategy.
+pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
+    walk_rs_files(workspace_root, has_tests_component)
 }
 
 /// Walk `workspace_root` for test `.rs` files and collect every stale
@@ -308,13 +332,9 @@ pub fn collect_workspace_stale_pointers(workspace_root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Returns true when `path` (relative to `workspace_root`) contains at least
-/// one directory component whose name is exactly `"tests"`.
-fn has_tests_component(path: &Path, workspace_root: &Path) -> bool {
-    let rel = match path.strip_prefix(workspace_root) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+/// Returns true when `rel` (a path already relative to the workspace root)
+/// contains at least one directory component whose name is exactly `"tests"`.
+fn has_tests_component(rel: &Path) -> bool {
     // Iterate directory components only (skip the final filename component).
     rel.parent()
         .unwrap_or(Path::new(""))
@@ -903,6 +923,37 @@ mod tests {
         assert_eq!(extract_ignore_reason(&line), Some("pending fillet binding"));
     }
 
+    // ── walk_test_rs_files / walk_rs_files shared test helpers ──────────────
+
+    /// Write an empty synthetic `.rs` file (plus parent dirs) at
+    /// `root.join(rel)`, for each `rel` in `rels`. Shared by the
+    /// `walk_test_rs_files` and `walk_rs_files` fixture-construction tests
+    /// below so each test body reduces to its fixture lists plus the walker
+    /// call.
+    fn write_tree(root: &Path, rels: &[&str]) {
+        for rel in rels {
+            let full = root.join(rel);
+            std::fs::create_dir_all(full.parent().unwrap()).expect("create parent dirs");
+            std::fs::write(&full, b"// synthetic\n").expect("write file");
+        }
+    }
+
+    /// Convert a walker's absolute-path results into a set of
+    /// `root`-relative, `/`-normalised strings for easy `contains`
+    /// assertions. Shared by the same two tests.
+    fn rel_set(found: &[PathBuf], root: &Path) -> std::collections::HashSet<String> {
+        found
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
     // ── walk_test_rs_files ────────────────────────────────────────────────────
 
     /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
@@ -931,25 +982,11 @@ mod tests {
             "vendor/tests/skip_vendor.rs",            // vendor dir excluded
         ];
 
-        for rel in included.iter().chain(excluded.iter()) {
-            let full = root.join(rel);
-            std::fs::create_dir_all(full.parent().unwrap()).expect("create parent dirs");
-            std::fs::write(&full, b"// synthetic\n").expect("write file");
-        }
+        write_tree(root, &included);
+        write_tree(root, &excluded);
 
         let found = walk_test_rs_files(root);
-
-        // Convert to relative paths for easy comparison
-        let found_rel: std::collections::HashSet<String> = found
-            .iter()
-            .map(|p| {
-                p.strip_prefix(root)
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .replace('\\', "/")
-            })
-            .collect();
+        let found_rel = rel_set(&found, root);
 
         for rel in &included {
             assert!(
@@ -961,6 +998,110 @@ mod tests {
             assert!(
                 !found_rel.contains(*rel),
                 "expected {rel:?} to be excluded by walk_test_rs_files, got: {found_rel:?}"
+            );
+        }
+    }
+
+    // ── walk_rs_files ─────────────────────────────────────────────────────────
+
+    /// Build a synthetic workspace tree and verify that `walk_rs_files` with an
+    /// accept-everything predicate (a) returns `src/` files — the whole point of
+    /// generalising past `walk_test_rs_files`'s tests-only filter, since
+    /// `reify-lsp/src/server.rs` and `reify-build-utils/src/lib.rs` are `src/`
+    /// files the old walker could never see — and (b) still prunes `target`,
+    /// dot-dirs, `node_modules`, and `vendor`, so the `include` parameter widens
+    /// only the file-level filter, not the directory-level pruning.
+    #[test]
+    fn walk_rs_files_permissive_predicate_includes_src_files_and_still_prunes_dirs() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        // Files that MUST be returned under an accept-everything predicate,
+        // including the `src/` file that `walk_test_rs_files` could never see.
+        let included = [
+            "crates/foo/src/lib.rs",
+            "crates/foo/tests/bar.rs",
+            "crates/foo/src/tests/inner.rs",
+        ];
+        // Files that must stay excluded regardless of the predicate, because
+        // directory pruning happens before the predicate is ever consulted.
+        let excluded = [
+            "target/tests/skip.rs",
+            ".git/tests/skip.rs",
+            "node_modules/tests/skip.rs",
+            "vendor/tests/skip.rs",
+        ];
+
+        write_tree(root, &included);
+        write_tree(root, &excluded);
+
+        let found = walk_rs_files(root, |_| true);
+        let found_rel = rel_set(&found, root);
+
+        for rel in &included {
+            assert!(
+                found_rel.contains(*rel),
+                "expected {rel:?} to be returned by walk_rs_files under an accept-everything \
+                 predicate, got: {found_rel:?}"
+            );
+        }
+        for rel in &excluded {
+            assert!(
+                !found_rel.contains(*rel),
+                "expected {rel:?} to stay pruned even under an accept-everything predicate \
+                 (directory pruning does not depend on the file-level filter), got: {found_rel:?}"
+            );
+        }
+    }
+
+    /// Pins the behavioural contract stated three times in `walk_rs_files`'s
+    /// doc comment: `include` receives a path RELATIVE to `workspace_root`,
+    /// never absolute. Every test above uses an accept-everything predicate
+    /// (`|_| true`), which cannot observe its argument at all — this test
+    /// uses a CAPTURING predicate so a future regression that started handing
+    /// `include` the absolute path would be caught here, even though it would
+    /// slip past every other test in this file (and past
+    /// `collect_workspace_unguarded_temp_dirs`'s own `|_| true` predicate).
+    #[test]
+    fn walk_rs_files_passes_relative_not_absolute_paths_to_the_predicate() {
+        use std::cell::RefCell;
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let rels = ["crates/foo/src/lib.rs", "crates/foo/tests/bar.rs"];
+        write_tree(root, &rels);
+
+        let seen: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
+        let found = walk_rs_files(root, |p| {
+            seen.borrow_mut().push(p.to_path_buf());
+            true
+        });
+
+        assert_eq!(
+            found.len(),
+            rels.len(),
+            "expected both fixture files to be walked: {found:?}"
+        );
+        for p in seen.borrow().iter() {
+            assert!(
+                p.is_relative(),
+                "expected the predicate to receive a path RELATIVE to \
+                 workspace_root, got an absolute path: {p:?}"
+            );
+        }
+        let seen_rel: std::collections::HashSet<String> = seen
+            .borrow()
+            .iter()
+            .map(|p| p.to_str().unwrap().replace('\\', "/"))
+            .collect();
+        for rel in &rels {
+            assert!(
+                seen_rel.contains(*rel),
+                "expected the predicate to have observed {rel:?}, got: {seen_rel:?}"
             );
         }
     }

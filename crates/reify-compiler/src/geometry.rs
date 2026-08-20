@@ -1010,9 +1010,9 @@ fn rounded_corner_dims(
 /// `zone_annulus`/`zone_profile` multi-op compose + `step_offset +
 /// sub_ops.len()` index-tracking idiom. The final `Union` (the last element
 /// of the returned `Vec`) is the realization root. `dz` is cloned across all
-/// 4 corners by the caller: a dimensioned `-(height/2)` for `rounded_box`'s
-/// solid cylinders, a dimensionless `Literal(Real(0.0))` for
-/// `rounded_rect`'s planar circles.
+/// 4 corners by the caller, and is LENGTH-dimensioned from both: a
+/// `-(height/2)` product for `rounded_box`'s solid cylinders, a
+/// `Literal(Scalar{LENGTH, 0.0})` for `rounded_rect`'s planar circles.
 #[allow(clippy::too_many_arguments)]
 fn emit_rounded_union_compose(
     mut sub_ops: Vec<CompiledGeometryOp>,
@@ -1094,6 +1094,48 @@ fn emit_rounded_union_compose(
 /// index of the first op this call will emit in the flat step_handles array).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_geometry_call(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    step_offset: usize,
+    geometry_lets: &HashMap<&str, &reify_ast::Expr>,
+    visiting: &mut HashSet<String>,
+) -> Option<Vec<CompiledGeometryOp>> {
+    // Bound compiler expression-recursion depth (task #5337) — the SAME depth
+    // cap and on-demand stack growth used by compile_expr_guarded_with_expected,
+    // so the combined cross-function on-stack depth is bounded uniformly;
+    // rationale and tuning live in `crate::recursion_guard`. Past the cap this
+    // site returns None (the established geometry failure signal); the
+    // diagnostic is pushed by the guard.
+    crate::recursion_guard::with_recursion_guard(
+        expr.span,
+        diagnostics,
+        || None,
+        |diagnostics| {
+            compile_geometry_call_inner(
+                expr,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                step_offset,
+                geometry_lets,
+                visiting,
+            )
+        },
+    )
+}
+
+/// Inner body of [`compile_geometry_call`]. All recursion-depth bounding — the
+/// [`RecursionDepthGuard`](crate::recursion_guard::RecursionDepthGuard) cap and
+/// the `stacker::maybe_grow` on-demand stack growth — lives in that wrapper and
+/// is re-applied at every level because this body's recursive calls (directly,
+/// and via `compile_boolean_op`/`resolve_boolean_arg` and `compile_expr`) go
+/// back through the wrapper, never here.
+#[allow(clippy::too_many_arguments)]
+fn compile_geometry_call_inner(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_ir::EnumDef],
@@ -1454,11 +1496,25 @@ pub(crate) fn compile_geometry_call(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `height.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real`
+                // takes the Scalar×Real arm and preserves LENGTH. Retyping the factor
+                // to LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — numerically silent through `Value::as_f64()`, but
+                // rejected by the incoming eval-layer length gate. Pinned by
+                // crates/reify-compiler/tests/harness_geometry_solver/geometry_centered_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero =
-                CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            // dx = dy = 0, LENGTH-dimensioned in anticipation of the eval-layer length
+            // gate (docs/prds/v0_6/units-length-gate-completion.md §8 α: "without it,
+            // cylinder_centered(5mm, 20mm) starts failing the moment translate dx/dy is
+            // gated"). That gate matches on the runtime Value's DimensionVector, so a
+            // bare Real(0.0) will not be accepted once it reaches these slots. TODAY
+            // Translate still reads dx/dy/dz via `Value::as_f64()`, which accepts Real
+            // and Scalar alike — so this is behaviour-preserving, not a behaviour change.
+            let zero = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
@@ -2018,10 +2074,16 @@ pub(crate) fn compile_geometry_call(
             let ax = it.next().unwrap();
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
-            // Inject literal 2π for the angle
+            // Inject literal 2π (radians) for the angle — ANGLE-dimensioned in
+            // anticipation of the eval-layer angle gate
+            // (docs/prds/v0_6/angle-units-surface-convergence.md, which owns all OTHER
+            // angle gating). TODAY `sweep_revolve` reads this slot via
+            // `Value::as_f64()`, which accepts Real and Scalar alike, so the retype is
+            // behaviour-preserving. `Value::angle` takes radians and the SI angle base
+            // unit IS the radian, so si_value == TAU exactly.
             let tau_expr = CompiledExpr::literal(
-                Value::Real(std::f64::consts::TAU),
-                reify_core::Type::dimensionless_scalar(),
+                Value::angle(std::f64::consts::TAU),
+                reify_core::Type::angle(),
             );
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
@@ -2314,9 +2376,21 @@ pub(crate) fn compile_geometry_call(
                 w.result_type.clone(),
             );
             // minus_offset = -w/2 = w * (-0.5)
+            // NOTE: the units-length PRD
+            // (docs/prds/v0_6/units-length-gate-completion.md §8 α / §4 M1 / §2 anchor
+            // table) attributes this `-0.5` to `rounded_box`'s corner dz. It is
+            // `zone_profile`'s `minus_offset`, and it must NOT be retyped — see the
+            // invariant below.
             let minus_offset = CompiledExpr::binop(
                 BinOp::Mul,
                 w.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `w.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real` takes
+                // the Scalar×Real arm and preserves LENGTH. Retyping the factor to
+                // LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — rejected by the incoming eval-layer length gate.
+                // Pinned by crates/reify-compiler/tests/rounded_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 w.result_type.clone(),
             );
@@ -2394,6 +2468,13 @@ pub(crate) fn compile_geometry_call(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `height.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real`
+                // takes the Scalar×Real arm and preserves LENGTH. Retyping the factor
+                // to LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — rejected by the incoming eval-layer length gate.
+                // Pinned by crates/reify-compiler/tests/rounded_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
@@ -2479,8 +2560,13 @@ pub(crate) fn compile_geometry_call(
             }
 
             let dims = rounded_corner_dims(&width, &depth, &corner_r);
-            // dz (all 4 corner circles) = 0 — planar, no z-offset.
-            let dz = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            // dz (all 4 corner circles) = 0 — planar, no z-offset. LENGTH-dimensioned
+            // even though it is zero, in anticipation of the eval-layer length gate
+            // (docs/prds/v0_6/units-length-gate-completion.md §8 α), which matches on
+            // the runtime Value's DimensionVector rather than on `result_type`. TODAY
+            // Translate reads dz via `Value::as_f64()`, which accepts Real and Scalar
+            // alike — so this is behaviour-preserving, not a behaviour change.
+            let dz = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
 
             // Rect A: rectangle(width, depth-2r)
             let body_a = CompiledGeometryOp::Profile {
@@ -3854,6 +3940,290 @@ mod tests {
             },
             span: reify_core::SourceSpan::new(0, 1),
         }
+    }
+
+    /// The geometry-call recursion cap fires at `MAX_COMPILE_RECURSION_DEPTH`:
+    /// pre-seeding the shared thread-local with that many live guards makes a
+    /// trivial `box(1,1,1)` return `None` + the `ExpressionNestingTooDeep`
+    /// diagnostic, while without the pre-seed it compiles to `Some(ops)`.
+    /// Exercises the cap without real deep recursion (parallels the cegwe cap
+    /// test in expr.rs; the two share the thread-local counter).
+    #[test]
+    fn compile_geometry_call_recursion_cap_fires_past_max_depth() {
+        use crate::recursion_guard::{MAX_COMPILE_RECURSION_DEPTH, RecursionDepthGuard};
+
+        let box_expr = make_call_with_arity("box", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        // Baseline: box(1,1,1) compiles to Some(ops) with no too-deep diagnostic
+        // (proves the cap only fires past MAX, not on ordinary input).
+        {
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_geometry_call(
+                &box_expr,
+                &scope,
+                &enum_defs,
+                &functions,
+                &mut diagnostics,
+                0,
+                &geometry_lets,
+                &mut HashSet::new(),
+            );
+            assert!(
+                result.is_some(),
+                "box(1,1,1) should compile without the cap engaged; diags: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.code
+                    == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+                "no too-deep diagnostic without pre-seeded depth, got: {:?}",
+                diagnostics
+            );
+        }
+
+        // Cap: pre-seed MAX live guards so the compile_geometry_call entry pushes
+        // the depth to MAX+1 and the cap fires — None + the too-deep diagnostic.
+        let guards: Vec<RecursionDepthGuard> = (0..MAX_COMPILE_RECURSION_DEPTH)
+            .map(|_| RecursionDepthGuard::enter())
+            .collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_geometry_call(
+            &box_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+        assert!(
+            result.is_none(),
+            "cap should make compile_geometry_call return None once depth exceeds MAX"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "expected the ExpressionNestingTooDeep diagnostic, got: {:?}",
+            diagnostics
+        );
+
+        // Releasing the pre-seeded guards must return the shared counter to 0
+        // (and re-arm the report latch), so the NEXT compile on this thread is
+        // not permanently poisoned by a leaked count.
+        drop(guards);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_geometry_call(
+            &box_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+        assert!(
+            result.is_some(),
+            "a later compile on the same thread must not inherit the cap; diags: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "the depth counter must return to 0 once the guards drop, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Regression for the reported SIGSEGV (task #5337): compiling a deeply-
+    /// nested boolean-geometry expression on a small-stack embedder thread (the
+    /// GUI's 2 MB tokio worker) must NOT overflow the stack and abort the
+    /// process — it must bottom out at the depth cap and return `None` + an
+    /// `ExpressionNestingTooDeep` diagnostic instead.
+    ///
+    /// The nested AST is built PROGRAMMATICALLY in a loop (`difference(prev,
+    /// box(1,1,1))` ~1500 deep) rather than parsed from a source string — a deep
+    /// source would overflow the recursive-descent parser first, which is a
+    /// separate concern. 1500 ≫ `MAX_COMPILE_RECURSION_DEPTH` (256) and is deep
+    /// enough that the fat `compile_geometry_call` debug frames overflow a 2 MB
+    /// stack well before the cap fires *without* on-demand stack growth.
+    ///
+    /// PRE-FIX (before `stacker::maybe_grow` in step-10) this SIGSEGVs on the
+    /// 2 MB thread and aborts the test binary (the reproduced bug). POST-FIX the
+    /// stack grows on demand so the descent reaches the cap, which converts the
+    /// overflow into the clean diagnostic and the thread joins with
+    /// `(true, true)`.
+    #[test]
+    fn deeply_nested_boolean_geometry_does_not_overflow_2mb_stack() {
+        use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
+
+        // Depth well past the cap AND deep enough to overflow a 2 MB stack
+        // pre-fix (each level consumes fat compile_geometry_call debug frames).
+        const NEST_DEPTH: usize = 1500;
+        // Both operands are `const`, so this is compile-time foldable and a
+        // runtime `assert!` would trip `clippy::assertions_on_constants`; the
+        // `const` block pins the relationship at compile time instead.
+        const {
+            assert!(
+                NEST_DEPTH > MAX_COMPILE_RECURSION_DEPTH,
+                "the nesting depth must overshoot the cap for this to exercise it"
+            )
+        };
+
+        let handle = std::thread::Builder::new()
+            // 2 MiB = tokio's default worker-thread stack size, which is what
+            // the GUI compiles on (the synchronous `open_file_engine` Tauri
+            // command) because nothing under `gui/src-tauri` overrides
+            // `stack_size`/`thread_stack_size`.
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                // Build difference(difference(… box(1,1,1) …), box(1,1,1)) nested
+                // NEST_DEPTH deep. Construction is ITERATIVE (a loop), so it does
+                // not itself recurse — only *compilation* of the result recurses.
+                let mut nested = make_call_with_arity("box", 3);
+                for _ in 0..NEST_DEPTH {
+                    nested = reify_ast::Expr {
+                        kind: reify_ast::ExprKind::FunctionCall {
+                            name: "difference".to_string(),
+                            arg_names: vec![None, None],
+                            args: vec![nested, make_call_with_arity("box", 3)],
+                        },
+                        span: reify_core::SourceSpan::new(0, 1),
+                    };
+                }
+
+                let scope = CompilationScope::new("test");
+                let mut diags: Vec<Diagnostic> = vec![];
+                let result = compile_geometry_call(
+                    &nested,
+                    &scope,
+                    &[],
+                    &[],
+                    &mut diags,
+                    0,
+                    &HashMap::new(),
+                    &mut HashSet::new(),
+                );
+                let outcome = (
+                    result.is_none(),
+                    diags.iter().any(|d| {
+                        d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)
+                    }),
+                );
+
+                // The nested AST's `Drop` recurses NEST_DEPTH deep through the
+                // `Vec<Expr>` chain; leak it so a drop-time overflow cannot
+                // contaminate the result on this small stack. The thread is about
+                // to exit and the process reclaims the memory regardless.
+                // Drop-time recursion is itself an unguarded surface, deferred to
+                // the follow-up filed from this task's amendment pass
+                // (fused-memory ticket `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`).
+                std::mem::forget(nested);
+                outcome
+            })
+            .expect("spawn 2 MB compile thread");
+
+        match handle.join() {
+            Ok(outcome) => assert_eq!(
+                outcome,
+                (true, true),
+                "deeply-nested geometry must return None + an \
+                 ExpressionNestingTooDeep diagnostic on a 2 MB stack (post-fix)"
+            ),
+            Err(_) => panic!(
+                "the 2 MB compile thread panicked instead of returning cleanly"
+            ),
+        }
+    }
+
+    /// END-TO-END regression for the reported crash: real `.ri` **source**,
+    /// compiled through the **public `compile()` entry point**, on a 2 MiB
+    /// stack. This is the shape of the bug that was reported (the GUI opening
+    /// `designs/litter_tray/bottom_deck_split.ri`), as opposed to the
+    /// programmatically-built-AST tests above which drive internals directly.
+    ///
+    /// 64 nested `difference(…)` levels is the *rescue* band: comfortably below
+    /// `MAX_COMPILE_RECURSION_DEPTH`, so the correct outcome is a CLEAN compile
+    /// — but ~64 × ~143 KiB ≈ 9 MiB of compiler frames, far more than the 2 MiB
+    /// stack holds, so without `stacker::maybe_grow` this SIGSEGVs the test
+    /// binary exactly as the GUI did.
+    ///
+    /// Why the cap is not exercised end-to-end here: an expression deeper than
+    /// 256 trips `compile_builder::dot_chain_lint` / `shadow_lint`, whose own
+    /// `MAX_EXPR_DEPTH = 256` fires a deliberate `debug_assert!(false, …)` in
+    /// debug/test builds (they pre-walk the parsed module in `lib.rs`, before
+    /// expression compilation). So the >256 path through `compile()` panics in
+    /// a *lint* before this task's cap can answer, and only the internal-entry
+    /// tests above can pin the cap's diagnostic. Parse-time recursion (a deep
+    /// source overflows the recursive-descent parser, which is why the parse
+    /// below runs on its own big stack) and drop-time AST recursion are the two
+    /// other unguarded surfaces on this input class. All three are deferred to
+    /// the follow-up filed from this task's amendment pass (fused-memory ticket
+    /// `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`, escalation id
+    /// `agent-followup-5337-recursion-surfaces`), not fixed here.
+    #[test]
+    fn deeply_nested_geometry_source_compiles_via_public_api_on_2mb_stack() {
+        use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
+
+        const NEST_DEPTH: usize = 64;
+        const {
+            assert!(
+                NEST_DEPTH < MAX_COMPILE_RECURSION_DEPTH,
+                "this test must stay in the rescue band (below the cap): the \
+                 expected outcome is a clean compile, not a diagnostic"
+            )
+        };
+
+        let mut geom = "box(w, w, w)".to_string();
+        for _ in 0..NEST_DEPTH {
+            geom = format!("difference({geom}, box(w, w, w))");
+        }
+        let source = format!("structure S {{\n    param w: Length = 1mm\n    let g = {geom}\n}}");
+
+        // Parse on a deliberately large stack: the recursive-descent parser is
+        // NOT covered by this task's fix, and a deep source overflows it first.
+        let parsed = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || reify_syntax::parse(&source, reify_core::ModulePath::single("test")))
+            .expect("spawn parse thread")
+            .join()
+            .expect("the parser must not crash on this depth with a big stack");
+        assert!(
+            parsed.errors.is_empty(),
+            "the nested source must parse cleanly, got: {:?}",
+            parsed.errors
+        );
+
+        // Compile on tokio's default 2 MiB worker stack — the GUI's condition.
+        let diagnostics = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || crate::compile(&parsed).diagnostics)
+            .expect("spawn 2 MiB compile thread")
+            .join()
+            .expect("compiling nested geometry on a 2 MiB stack must not crash");
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "depth {NEST_DEPTH} is below the cap, so it must compile rather than \
+             be refused, got: {diagnostics:?}"
+        );
+        let errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "nested-but-under-cap geometry must compile without errors, got: {errors:?}"
+        );
     }
 
     /// `is_geometry_let` must classify the 2-arg CSG `sweep(profile, path)` as

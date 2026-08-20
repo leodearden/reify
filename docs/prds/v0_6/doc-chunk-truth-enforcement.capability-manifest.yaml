@@ -1,0 +1,137 @@
+prd: docs/prds/v0_6/doc-chunk-truth-enforcement.md
+schema_version: 1
+# Authored at decompose time 2026-07-25; task ids pre-stamped from the
+# same-session planning_mode batch (5477-5480) per the single-landing SOP —
+# commit_planning's stamper re-writes the same values.
+# Narrative evidence + probe provenance: doc-chunk-truth-enforcement.capability-manifest.md.
+tasks:
+- label: "α"
+  task_id: 5477
+  title: "Consolidate doc-chunk smoke tests into harness_doc_chunks.rs (C1 contract; reverse #5364's baseline grandfather)"
+  capabilities:
+  - name: harness-root-consolidates
+    binding: "capability→producer (this leaf) — C1 contract test_harness_kloc_cap.sh sanctions harness_<subsystem>.rs by name; 4 in-crate precedents on main; absorbed module declared under original stem preserves selectors"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'mod geometry_chunk_smoke'
+      paths:
+      - crates/reify-compiler/tests/harness_doc_chunks.rs
+      expect: present
+  - name: baseline-grandfather-reversed
+    binding: "capability→producer (this leaf) — #5364's geometry_chunk_smoke.rs grandfather entry at harness-layout-baseline.manifest:126 (grep-verified 2026-07-25) removed same-diff; ratchet shrink"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'geometry_chunk_smoke'
+      paths:
+      - tests/infra/harness-layout-baseline.manifest
+      expect: absent
+  - name: absorption-target-5347
+    binding: "capability→producer — producer:5347 upstream (in-progress; adds stdlib_chunk_geometry_ops_smoke.rs + fixture); hard add_dependency 5477→5347 wired"
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: "5347's final landed filenames may shift; absorption asserted by α's own harness run (selector-preserving move is the C1 contract's guarantee)"
+- label: "β"
+  task_id: 5479
+  title: "Chunk fence-gate module + one-time explicit-tag retag sweep of all language-reference fences"
+  capabilities:
+  - name: fence-gate-module-wired
+    binding: "capability→producer (this leaf) — fence_gate.rs declared from the α harness root; compile_source_with_stdlib exists (used by landed geometry_chunk_smoke.rs); chunks dir reachable via the examples_smoke CARGO_MANIFEST_DIR idiom"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'mod fence_gate'
+      paths:
+      - crates/reify-compiler/tests/harness_doc_chunks.rs
+      expect: present
+  - name: retag-sweep-applied
+    binding: "capability→producer (this leaf) — census 2026-07-25: 116 fences / 111 untagged / 5 reify (3 fragment-shaped); sweep tags all; schematic majority → reify-schematic"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '```reify-schematic'
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: bare-fence-ban-enforced
+    binding: "rejection-mechanism (G6 branch 4) — delivered by this leaf's own gate: bare OPENING fence FAILs naming file:line (closing fences are bare by markdown syntax — state-tracking parser, not grep-expressible)"
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: "open/close fence state is not pattern-discriminable; asserted by the harness's own RED-first demonstration in β's test strategy"
+  - name: reachability-check
+    binding: "capability→producer (this leaf) — language_chunks.rs holds include_str! per chunk + TOPICS list (read 2026-07-25); text-scan asserts every chunks/*.md is referenced"
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: "asserted by the fence_gate module's own test; no stable standalone pattern"
+- label: "γ"
+  task_id: 5478
+  title: "PDOCCOVER reify-audit pattern: registry-name omission detector + brittle-parse guard"
+  capabilities:
+  - name: registries-textually-extractable
+    binding: "signal premise — 8 pub const *_NAMES &[&str] literals in units.rs (:21/:102/:130/:215/:551/:674/:803/:873 at 92551d18d6); extraction exercised live by the 2026-07-25 census (83/133 names undocumented incl. the clearance-oracle family)"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'GEOMETRY_KINEMATIC_QUERY_NAMES'
+      paths:
+      - crates/reify-audit
+      expect: present
+  - name: cli-pattern-arm
+    binding: "capability→producer (this leaf) — --pattern enum parse/usage/pattern_selects in bin/reify-audit.rs (:249-273/:419-444); PDOCCOVER stays out of the jcodemunch-required predicate; PTYPE sibling arm is additive (placeholder-type-eradication-ratchet δ)"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'PDOCCOVER'
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+  - name: pattern-module-registered
+    binding: "capability→producer (this leaf) — one-module-per-pattern architecture (ptodo.rs et al.); pdoccover module registered in lib.rs"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pdoccover'
+      paths:
+      - crates/reify-audit/src/lib.rs
+      expect: present
+  - name: nonzero-exit-signal-ordering-safe
+    binding: "signal premise (G6 branch 3) — the non-zero-exit demonstration is producible from γ's own dependency set under ANY sibling ordering: 79 names remain undocumented even after #5389 lands the clearance family"
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: "time-dependent census; asserted by γ's own detector tests"
+- label: "δ"
+  task_id: 5480
+  title: "PDOCCOVER hard gate: tests/infra verify-step test + seeded shrinking baseline"
+  capabilities:
+  - name: gate-registered-same-diff
+    binding: "capability→producer (this leaf) — mirrors test_reify_audit_ptodo.sh wiring; run-all-classification.manifest row lands same-diff per the overlay drift-guard rule (esc-4914-162 lesson)"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'test_reify_audit_pdoccover'
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: gate-script-runs-pattern
+    binding: "capability→producer (this leaf) — hard gate invokes reify-audit --pattern PDOCCOVER, riding reify-audit-freshness.sh binary discipline"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'PDOCCOVER'
+      paths:
+      - tests/infra/test_reify_audit_pdoccover.sh
+      expect: present
+  - name: baseline-seeded-post-content
+    binding: "capability→producer (this leaf) — ptodo-baseline.txt + ptodo-baseline-gen single-derivation precedent; hard edges 5480→{5478,5347,5389} make the seed post-content (the #5364 trap class avoided); stale-entry FAIL keeps the ledger honest"
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pdoccover-baseline'
+      paths:
+      - tests/infra/test_reify_audit_pdoccover.sh
+      expect: present

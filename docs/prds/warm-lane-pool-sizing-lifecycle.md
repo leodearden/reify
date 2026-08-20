@@ -14,7 +14,7 @@ The XFS-reflink warm-lane pool (`/dev/loop29`, 6.0 TB, mounted `/home/leo/src/wa
 
 | Axis | Today | With this PRD |
 |---|---|---|
-| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target |
+| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target — unless a live process reference refuses the release-thin (exit 75, since #5823), in which case that lane's `target/` is PRESERVED until the next release-thin, gc pass, **or acquire-time reseed** reclaims it (acquire always re-seeds from base — cow-seeding D10/§9.5 — so re-acquisition is in practice the most common of the three) |
 | Accretion visibility | none until the disk-guard trips at the 50 GiB cliff (which *is* the wedge) | `warm-lane-audit.sh` reports resident/free/reclaimable/leaked/stale + projected headroom on demand and on a timer |
 | Dispatch under disk pressure | allocates new divergent lanes straight into the hard floor → ENOSPC | throttles new-lane allocation at a **soft floor** (prefers reclaim/reuse) before the hard floor is reached |
 | Pool capacity | fixed 6.0 TB image, hand-grown in incidents | budget-derived sizing + a supported online-grow operation (insurance, not the primary lever) |
@@ -123,21 +123,45 @@ All scripts follow the repo's stdout-contract convention (resolved value on stdo
 
 ```
 warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd <cmd>]
-                    [--stale-age-min <N>]
+                    [--stale-age-min <N>] [--main-ref <ref>] [--safety <N>]
   For each resident worktree under <mount> (lanes _lane-*/_spec-* and orphan dirs), emit:
-    lane · role · ASSIGNED|FREE (flock -n -x <dir>.lock) · branch · backing-task-status
-      (terminal|non-terminal|unknown, via REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) ·
-      recoverable (LANDED | PUSHED | ORPHAN) · divergent_gib (du or df-delta) · age_min (mtime)
-    classification: LIVE | RECLAIMABLE (free ∧ (terminal ∨ recoverable ∨ residue-only-dirty)) |
-                    LEAKED (free ∧ non-terminal ∧ unrecoverable-WIP ∧ stale, where
+    lane · role · live (LIVE|IDLE, non-blocking flock -n -s <dir>.lock probe) ·
+      assigned (ASSIGNED|RELEASED|QUARANTINED|UNKNOWN, read from the orchestrator record
+      at <state-dir>/<lane>.json — never inferred from the lock) · pin (raw backing
+      status of a reserved-but-idle lane's holder; `unknown` if unresolvable, `-` when
+      not pinned) · branch · backing-task-status (terminal|non-terminal|unknown, via
+      REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) · recoverable (LANDED | PUSHED | ORPHAN) ·
+      dirty (clean|residue-only|wip) · divergent_gib (du or df-delta) · age_min (mtime)
+    classification: LIVE | PINNED (idle ∧ ASSIGNED) | QUARANTINED | RECLAIMABLE (idle ∧
+                    (terminal ∨ recoverable ∨ residue-only-dirty)) | LEAKED (idle ∧
+                    non-terminal ∧ unrecoverable-WIP ∧ stale, where
                       stale ⟺ age_min ≥ stale_age_min) | PRESERVED-OK
-  STDOUT: the table/json. Trailing one-line HEADROOM summary:
-    "resident=N assigned=A free=F reclaimable=R leaked=L divergent_gib=D free_gib=G budget_gib=B"
+      PINNED and QUARANTINED both rank above the ENTIRE free ladder below them, so such a
+      lane is never additionally reported LEAKED — and never counted in leaked= — even
+      when it satisfies the LEAKED predicate exactly. Rationale (why each outranks the free
+      ladder) is canonical in docs/notes/warm-lane-audit-runbook.md's Classification section
+      (not restated here, G7 no-lockstep-duplication).
+  STDOUT: the table/json. Trailing two-line HEADROOM + PINNED summary (post-#5363 shape):
+    "HEADROOM resident=N live=Li pinned=Pn quarantined=Qt free=F assigned=A state_unknown=Su
+       reclaimable=R leaked=Lk leak_unknown=Lu divergent_gib=D free_gib=G budget_gib=B"
+    "PINNED total=Pt pending=Pd infra-hold=Ih blocked=Bk terminal=Tm other=Ot unknown=Uk"
+  Occupancy (live/pinned/quarantined/free) is an ORDERED, mutually exclusive PARTITION --
+    live > pinned > quarantined > free -- so `resident = live + pinned + quarantined + free`
+    holds by construction; `assigned` and `state_unknown` are CROSS-CUTS over that partition,
+    not partition members, and are never summed into that identity. `free` is the partition
+    RESIDUE (neither live, nor reserved, nor withheld). History (the pre-#5363 `free =
+    resident - live` accounting and the 2026-07-22 misread it caused) and operational reading
+    guidance (how to interpret a PINNED-heavy pool, etc.) are canonical in
+    docs/notes/warm-lane-audit-runbook.md (not restated here, G7 no-lockstep-duplication).
   Exit 0 always (advisory/observability — NEVER fail-closed; it must not gate anything).
 knobs: --stale-age-min <N>  minutes (env: REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN; default: 60 —
   promotes the §2 working-set mtime<60min example from an incidental figure to a declared knob)
+  REIFY_WARM_LANE_AUDIT_STATE_DIR <dir>  orchestrator lane-record dir holding <lane>.json
+  (no dedicated flag; default: <mount>/.lane-state, dark-factory's LANE_STATE_DIRNAME) — when
+  absent, every lane reports assigned=UNKNOWN and none is counted pinned, quarantined or
+  assigned
 ```
-*Invariant A1:* read-only — `warm-lane-audit.sh` never mutates a lane (no reset/rm/reclaim); it observes. *Invariant A2:* `flock -n -x` probe is non-blocking and released immediately (never holds a lane lock across the walk). *Invariant A3:* a status-lookup failure degrades that lane to `unknown` (never aborts the report, never reclassifies as reclaimable). *Invariant A4:* `stale` is always the relation `age_min ≥ stale_age_min` against the declared knob (default 60 min) — never an inline/undeclared literal (D8/G6 no-frozen-constant rule); B1's fixture ages its leaked lane past the knob so the assertion tests the relation, not a guessed age.
+*Invariant A1:* read-only — `warm-lane-audit.sh` never mutates a lane (no reset/rm/reclaim); it observes. *Invariant A2:* `flock -n -s` (shared) probe is non-blocking and released immediately (never holds a lane lock across the walk); a live consumer's exclusive flock still blocks a new shared request, which is why a shared probe is a sufficient liveness test. *Invariant A3:* a status-lookup failure degrades that lane to `unknown` (never aborts the report, never reclassifies as reclaimable/leaked); when it suppresses what would otherwise be a LEAKED verdict, the lane still reports PRESERVED-OK but is additionally counted in the HEADROOM `leak_unknown` field (a lane that would be LEAKED but for the unresolved status), so "no leaks" stays distinguishable from "leaks could not be evaluated" — `state_unknown` is the analogous count for a lane whose *assignment* record (not backing-task status) could not be resolved. *Invariant A4:* `stale` is always the relation `age_min ≥ stale_age_min` against the declared knob (default 60 min) — never an inline/undeclared literal (D8/G6 no-frozen-constant rule); B1's fixture ages its leaked lane past the knob so the assertion tests the relation, not a guessed age.
 
 ### 9.2 Sizing budget + online-grow — `scripts/provision-warm-lane-fs.sh --grow` (β) + budget formula
 
@@ -213,7 +237,7 @@ dispatch/acquire admission                               (θ — new soft-floor 
     hard floor unchanged: space-safety ε check → reclaim → requeue exit-75
 ```
 **Invariants (additive to cow-seeding §9.5 inv.1–9):**
-10. **Release-thin safety** — `release_lane`'s thin removes only `target/`; the lane's branch + uncommitted source WIP are untouched and recoverable (T1). A lane is never thinned while ASSIGNED (T3).
+10. **Release-thin safety** — `release_lane`'s thin removes only `target/`; the lane's branch + uncommitted source WIP are untouched and recoverable (T1). T3's `flock -x` excludes only a consumer that **holds** the lane lock — the ACQUIRE reseed and `run_scoped_verification` — and an `ASSIGNED` lane whose agent is mid-build holds none; what protects *that* lane is `thin-warm-lane.sh`'s live-process-reference gate (task 5823), which refuses with `EX_TEMPFAIL` 75 and **PRESERVES** `target/`. *(Amended 2026-08-07 — task 6063: this invariant previously derived "a lane is never thinned while `ASSIGNED`" from T3 alone. The 2026-07-26 root cause (esc-5334-6) **falsified** that derivation — the lane lock is not held across the implement phase — and task 5615 amended the identical claim in place in `warm-lane-pool-cow-seeding.md` §9.5 inv.10, which remains the normative home for the falsification, its live evidence, and the 5823 closure. The gate's mechanism, ordering and cost are recorded once in `warm-lane-pool-space-safety.md` §8.4. Neither is restated here; this invariant states only the scope guarantee (T1) and the corrected exclusivity consequence.)*
 11. **Soft-floor precedence** — soft-floor throttling is *backpressure* (defer dispatch), never an escalation or a fault; only the *hard* floor requeues (exit-75) and only genuine seed/worktree faults escalate (space-safety D2/D3 unchanged).
 12. **Observability is non-gating** — the audit (α) never blocks dispatch, reclaim, or merge; it informs. Only the guard (ε) gates.
 

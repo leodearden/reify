@@ -1,0 +1,226 @@
+# Capability manifest — stdlib-namespace (v0_6)
+
+PRD: `docs/prds/v0_6/stdlib-namespace.md`. Machine-readable sidecar twin (stamped
+with real task ids at `commit_planning`): `stdlib-namespace.capability-manifest.yaml`.
+
+Decompose session 2026-07-25 (prd-reify-125232). Evidence dated 2026-07-25 unless
+noted; PRD-authoring probes dated 2026-07-24 were re-verified against a fresh
+2026-07-25 07:44 debug binary (probe-binary-freshness rule: `reify` embeds the
+stdlib via `include_str!`). D3 workflow run: `wf_ed2243d0-e66` over the six
+leaves (β, δ, η, θ, λ, ν).
+
+**Amendment 2026-07-27 (esc-5493-2, `/unblock` session).** The α↔β edge is
+**inverted**: β lands first with no deps, α depends on β. β's leaf status is
+withdrawn (it is now `intermediate → α, δ, ζ`); the leaf set becomes
+(δ, η, θ, λ, ν). Boundary #1 moves α → β; α takes the new #1a property form.
+See PRD §8's ordering amendment for the full derivation. The D3 run above
+predates this amendment and evaluated β as a leaf — its β dispositions still
+hold (they concern β's own signal encodings, not its position in the graph).
+
+Cross-PRD note: `resolution-unification.md` landed on main in the same merge as
+this PRD (mr-2181baf9) with reconciliation amendments (its §6 row for this PRD;
+D-11 supersession recorded both sides). Its decompose runs as a separate session
+and had **not filed** at this session's wiring time — every binding below that
+names a resolution-unification producer is recorded as a textual gate in the
+consuming task's description, to be upgraded to a real `add_dependency` edge when
+its batch files.
+
+## α — compile-side collision/direction unification + NS-P4 parity test *(intermediate → ε, ν; deps β)*
+
+- **collision-census-sites-real** → PASS. All §1-census sites verified live on
+  main: template last-wins collects (`entities_phase.rs`), enum
+  `prelude ++ local` inversion (`enums_phase.rs` / `type_resolution.rs`),
+  eval-side first-wins `find_template_with_prelude`
+  (`crates/reify-eval/src/engine_eval.rs:64-68`); both `structure def Mode`
+  decls live (`solver_buckling.ri:174`, `modal_analysis.ri:192`).
+- **mode-compile-eval-divergence-real** → PASS. Fixtures
+  `tests/prd-gate/fixtures/stdlib_ns_mode_member.ri` (exit 1, `structure 'Mode'
+  has no member 'eigenvalue'`) vs `stdlib_ns_mode_member_modal.ri` (exit 0)
+  pin the divergence direction: compile binds modal `Mode` (last-wins), eval
+  binds buckling `Mode` (first-wins).
+- **flip-precondition-is-β** → BLOCKING pre-state (recorded 2026-07-27,
+  esc-5493-2; producer: β, now upstream). α's first-wins flip cannot land before
+  β's rename: `stdlib_loader.rs:113` registers `solver_buckling.ri` before
+  `modal_analysis.ri` (:158), so first-wins rebinds bare `Mode` to buckling's
+  `{eigenvalue, mode_shape}` and `modal_analysis_fns.ri`'s
+  `result.modes[0].frequency` (:72-73, :84) stops resolving — a stdlib-internal
+  break, not a fixture break. Scan evidence bounding the fix: `Mode` is the only
+  duplicate `structure def` name across the whole stdlib; zero duplicate
+  `enum def` / `occurrence def` names.
+- **parity-signal-non-vacuity** → α's signal is #1a, NOT #1. Post-β there is no
+  surviving `Mode` collision, so #1 as originally written passes with α's flip
+  absent (β alone restores parity). #1a pins the property that both sides read
+  the ONE shared policy point, seeded from #2's user-shadows-prelude fixture and
+  synthetic two-peer prelude sets — first-wins-among-peers has no live stdlib
+  witness once β's Error gate forbids peer collisions, so a synthetic vehicle is
+  mandatory, not a convenience.
+
+## β — intra-stdlib collision = Error + BucklingMode rename *(intermediate → α, δ, ζ; deps none)*
+
+- **duplicate-pub-name-rejection-fires** → PASS (producer: this leaf). The
+  rejection mechanism is absent today *by construction of the pre-state* (the
+  census shows silent per-kind policies); boundary #3's injected-duplicate test
+  observes the new Error fire (negative-assertion mandate satisfied post-state).
+- **buckling-rename-blast-radius-stdlib-internal** → PASS. Buckling `Mode`
+  fields are unreachable from user code today (probe above), so the rename's
+  blast radius is stdlib-internal + accessors (`critical_load`,
+  `solver_buckling_fns.ri:74`) + goldens — exactly D-1's premise.
+
+## γ — authoritative templates before fn bodies; delete skeleton mirror *(intermediate → δ, ζ)*
+
+- **skeleton-mirror-exists-with-documented-hazards** → PASS.
+  `build_structure_def_skeleton` at `entity.rs:5951`; poison-default hazard
+  (`:5935-5950`) and nested-ctor-in-`let` hazard (`:5972-5984`) both documented
+  in-file; the two-sub-pass split is the anticipated direction. Resolves the
+  standing `no-lockstep-duplication` G7 violation (D-8).
+
+## δ — fold the three vestigial `*_fns` files *(leaf; deps γ, β)*
+
+- **vestigial-fns-files-exist** → PASS. All three files exist + registered in
+  `stdlib_loader.rs`; same-module substrate landed (3895+4544,
+  `solver_elastic.ri:717`).
+- **fold-safety-producer** → PASS (producers: γ, β — in-batch, wired). Signal
+  deliberately phrased as a **relative** delta (the three files gone, fns
+  resolve from parents) — absolute stdlib counts are NOT asserted because
+  same-day sibling PRDs add stdlib modules concurrently (thread-hole
+  `std.features.holes`, discrete-cost `standard_stock`).
+
+## ε — import-header generation tooling *(intermediate → ζ, λ; deps α)*
+
+- **shared-tooling-consumed-twice** → PASS (D-9). Consumers: ζ (stdlib
+  conversion) and λ (corpus migration + `fix --imports`); reuse proof is
+  boundary #13's second clause. Packaging per §10 Q5 decided in-task.
+
+## ζ — stdlib declared imports + strict per-module compile + headers *(intermediate → η, θ, ι; deps β, γ, δ, ε)*
+
+- **ordering-comments-and-identity-test-exist** → PASS. `stdlib_loader.rs:37-48`
+  footgun comment block; identity pin
+  `signal_2_real_stdlib_compiles_clean_and_order_is_stable` (retired by D-10 →
+  NS-M3 determinism test); `is_std_path` skip of `attach_module_path_diag`
+  (`module_dag.rs:527`, removed per NS-V3).
+- **stdlib-modules-gain-declared-imports** → PASS (producer: this leaf; headers
+  generated by ε's tool). Boundary #7 negative fixture + #8 order-permutation
+  determinism.
+
+## η — embedded mount; delete StdlibMode *(leaf; deps ζ; cross-PRD gate)*
+
+- **stdlibmode-machinery-exists** → PASS, with a D3-corrected mechanism
+  attribution: entry-level `import std.*` is today **filtered out of the DAG
+  walk entirely** (`module_dag.rs:931` `is_std_import_path`;
+  `import std.nonexistent` exits 0 with only a W-level "not resolved by this
+  entry point" warning, no Error — probes 2026-07-25); stdlib names resolve
+  via ambient prelude seeding (`load_stdlib`), and `StdlibMode` governs the
+  stdlib *source* for that seeding, not entry-level import resolution. η
+  deletes both the filtered skip and `StdlibMode`. Signal refinement: η's
+  boundary #9 gains a **negative control** (committed fixture
+  `stdlib_ns_std_nonexistent_import.ri`) — post-η that import is an ordinary
+  Error — without which exit-0 on a valid std import cannot discriminate DAG
+  resolution from the filtered skip.
+- **compiled-program-imports-surface** → PASS (producer: **cross-PRD**,
+  resolution-unification §8 β — `compile_program`/`CompiledProgram`). PRD
+  committed on main; task id pending its decompose. Textual gate in η's
+  description; edge wired when filed. (`git grep compile_program` empty today is
+  expected pre-state, not producer-absent.)
+
+## θ — fold `modal_mechanism_fns` *(leaf; deps ζ)*
+
+- **cross-module-artifact-exists** → PASS. `modal_mechanism_fns.ri` with
+  `pub fn mechanism_modal_analysis` (line 72); a cross-module ordering artifact
+  needing `std.modal.analysis` + `std.kinematic`, curable only by ζ's declared
+  imports (producer ζ upstream, wired).
+
+## ι — `std.prelude` facade *(intermediate → κ; deps ζ; cross-PRD gate)*
+
+- **pub-import-reexport-substrate** → PASS (producer: **cross-PRD**,
+  resolution-unification §8 μ — `pub import` re-export; `ImportKind` pub form
+  parses today, parser-only). Textual gate in ι's description; edge wired when
+  filed.
+- **facade-module-committed** → PASS (producer: this leaf; §10 Q1 curation list
+  finalized in-task; boundary #11).
+
+## κ — strict-visibility flip + NS-V2 fix-its + shadow-Error *(intermediate → λ; deps ι; cross-PRD gate)*
+
+- **strict-flip-substrate** → PASS (producer: **cross-PRD**,
+  resolution-unification P2 = its θ/ι/κ — DefEnv authoritative + flat-slice
+  migration + interim deletion). Textual gate in κ's description; edges wired
+  when filed. Supersedes its I4 + β-interim seeding per D-11 (recorded in both
+  PRDs, same-branch amendments — deliberate, not drift).
+- **fixit-diagnostic-structured** → PASS (producer: this leaf). NS-V2 fix-its
+  carry a `DiagnosticCode` (INV-SF-6); `#cfg` row #14 rides the landed
+  `import_cfg_satisfied` mechanism (conditional-compilation.md).
+
+## λ — `fix --imports` + corpus migration *(leaf; deps ε, κ)*
+
+- **corpus-compiles-today** → PASS. `examples/` + `prj/` compile under the
+  ambient regime (examples_smoke green on main); migration is mechanical header
+  insertion via ε's tool under κ's regime (both upstream, wired).
+- **tool-reuse-proof** → PASS (producer: ε upstream). Boundary #13 second
+  clause pins reuse equivalence.
+
+## μ — qualified-ref grammar production *(intermediate → ν; no deps)*
+
+- **qualified-ref-does-not-parse-today** → PASS. `tree-sitter parse` on
+  `tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri` and
+  `stdlib_ns_qualified_type.ri` both exit 1 (2026-07-25, matching the PRD's
+  grammar-gate probe). μ **is** the grammar producer (`grammar_confirmed:
+  false`); μ commits the passing forms of both fixtures with the production
+  (§6 last row).
+- **grammar-disambiguation-from-member-access** → PASS. NS-Q2 rides the
+  landed resolution-unification D-9 MemberAccess→EnumAccess fixup precedent.
+
+## ν — qualified resolution over DefEnv keying *(leaf; deps μ, α; cross-PRD gate)*
+
+- **grammar-producer-upstream** → PASS (producer: μ in-batch, wired).
+- **defenv-keying-substrate** → PASS (producer: **cross-PRD**,
+  resolution-unification β's I7 `(module_key, name)` keying, NS-Q3). Textual
+  gate in ν's description; edge wired when filed.
+- **no-fallback-rejection-fires** → PASS (producer: this leaf). Boundary #17
+  negative-assertion observes the Error fire; coded diagnostic (INV-SF-6),
+  Error exit via existing severity gates (INV-SF-2).
+
+## D3 verification disposition (run `wf_ed2243d0-e66`, 2026-07-25)
+
+24 agents, 6 leaves. Verdict `blocks: true` — every blocking record dispositioned
+here; none falsifies a decomposition premise:
+
+- **β ×3 UNPROVABLE** (duplicate-Mode fixture / BucklingMode-coexistence
+  fixture don't exist yet): batch-delivered post-state capabilities, bound
+  `producer:this-leaf` above — expected pre-state, not a block. **β adversary
+  enforceability finding** (real): the boundary #3 match must assert the
+  specific collision-message text naming both modules, not bare exit-1 (an
+  `stderr_contains_all` key would be silently ignored by
+  `prd-capability-check.py`; one probe per substring). Folded into β's task
+  description.
+- **η adversary FAIL** (real, accepted): the silent-skip discovery + negative
+  control above. Folded into η's binding and task description.
+- **θ adversary FAIL** (real, accepted): the ordering/undeclared-sibling
+  rejection is unobservable via user-level `.ri` fixtures (user code compiles
+  after the full prelude); the rejection pin lives at the Rust stdlib-build
+  level (ζ's boundary #7). θ keeps the positive-form signal only. Folded into
+  θ's task description.
+- **ν adversary FAILs ×4** (real, accepted): #17 must match Error text (bare
+  exit-1 passes spuriously pre-state — demonstrated); #17 needs an in-scope
+  unqualified decoy to observe no-fallback; #16 must observe the Warning +
+  struct distinctness; #16 is necessarily a multi-file fixture set. All folded
+  into ν's task description. The "missed premise" record (α dep + 5391 wiring)
+  was already in the decompose plan (ν deps μ+α; 5391 → ν wired at Step 4).
+- **δ, λ**: clean.
+
+## G6 sweep
+
+No numeric bounds or closed-form exactness claims anywhere in the signal set
+(branches 1/2 vacuous). Branch 3 (misattributed capability): every cross-PRD
+capability is bound to a named committed producer above. Branch 4 (rejection
+mechanisms): #3 and #17 are built by their own leaves and observed by their own
+boundary tests; the pre-state silent-accept direction is pinned by committed
+fixtures. The one count-shaped claim (stdlib 47→44) was **relativized** at
+decompose (δ block above) because sibling PRDs add stdlib modules concurrently.
+
+## G7 walk (INV-SF-1..6, docs/legibility/design-invariants.md)
+
+No waivers required. Notable positives: γ deletes the poison-default
+silent-divergence source (INV-SF-1/5); β converts silent collisions to a loud
+build Error; κ/ν diagnostics are required to carry codes (INV-SF-6) and ride
+the existing Error-severity exit gates (INV-SF-2); NS-P4's shared policy point
+resolves the standing `no-lockstep-duplication` violation (D-8) rather than
+adding a mirror.

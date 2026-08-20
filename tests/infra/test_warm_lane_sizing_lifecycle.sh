@@ -376,11 +376,19 @@ _wait_for_reader_lock "$B_READY_A" 30
 _wait_for_reader_lock "$B_READY_B" 30
 _wait_for_reader_lock "$B_READY_C" 30
 
-# BEFORE: all three ASSIGNED -> LIVE; none free/reclaimable yet.
+# BEFORE: all three lanes have a LIVE consumer holding the lane lock; none
+# free/reclaimable yet. This block's fixture is a flock holder and nothing
+# else -- it writes no .lane-state/ record -- so the honest column to assert
+# here is `live`, NOT `assigned`. Post-#5363 those are distinct questions:
+# `live` is the shared-flock probe (is a consumer process running?) while
+# `assigned` cross-cuts it from the orchestrator's own assignment state (is
+# the lane reserved?). Asserting `assigned=3` against a lock-only fixture was
+# the same liveness-as-assignment conflation #5363 exists to retire; with no
+# state records present the honest reading is assigned=0, live=3.
 run_audit --mount "$B_MOUNT" --status-cmd "$NULL_STATUS_CMD"
 assert "B1: audit BEFORE exit 0" test "$AUDIT_RC" -eq 0
-assert "B2: audit BEFORE HEADROOM assigned=3" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=3"' _ "$AUDIT_OUT"
+assert "B2: audit BEFORE HEADROOM live=3" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "live=3"' _ "$AUDIT_OUT"
 assert "B3: audit BEFORE HEADROOM free=0" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=0"' _ "$AUDIT_OUT"
 assert "B4: audit BEFORE HEADROOM reclaimable=0" \
@@ -436,13 +444,16 @@ assert "B17: freed bytes >= one full lane footprint (>=1x; ~2x-per-lane B8 headl
 
 echo "RECOVERED-ON-RELEASE-DELTA: before=${B_POOL_BEFORE} after=${B_POOL_AFTER} freed=${B_FREED}"
 
-# AFTER: assigned 3->1, free 0->2, reclaimable 0->2 (a+b are FREE + LANDED,
-# via make_lane's no-ahead-commit branch -- recoverable=LANDED short-circuits
-# RECLAIMABLE regardless of backing-task status).
+# AFTER: live 3->1 (a+b dropped their locks; c still holds), free 0->2,
+# reclaimable 0->2 (a+b are FREE + LANDED, via make_lane's no-ahead-commit
+# branch -- recoverable=LANDED short-circuits RECLAIMABLE regardless of
+# backing-task status). Asserted on `live` for the same reason as B2: this
+# fixture carries no .lane-state/ record, so `assigned` is 0 throughout and
+# the lock drop is only observable on the liveness column.
 run_audit --mount "$B_MOUNT" --status-cmd "$NULL_STATUS_CMD"
 assert "B18: audit AFTER exit 0" test "$AUDIT_RC" -eq 0
-assert "B19: audit AFTER HEADROOM assigned=1" \
-    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$AUDIT_OUT"
+assert "B19: audit AFTER HEADROOM live=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "live=1"' _ "$AUDIT_OUT"
 assert "B20: audit AFTER HEADROOM free=2" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=2"' _ "$AUDIT_OUT"
 assert "B21: audit AFTER HEADROOM reclaimable=2" \

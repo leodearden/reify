@@ -1,0 +1,14 @@
+module placement_b3_operand_type
+
+structure Part {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+    let bad = 3.0
+}
+structure Asm {
+    sub a : Part at auto
+    sub b : Part
+    relate {
+        concentric(a.bad, b.shank_axis)
+    }
+}

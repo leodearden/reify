@@ -15,12 +15,22 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
-use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan, Type, ValueCellId};
+use reify_ir::{
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem,
+    SolveResult, Value, ValueMap,
+};
 
+use crate::sketch::{
+    SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
+    SketchEntityId, SketchHandleMap, SketchSolveResult, SketchSystem,
+};
 use crate::slvs_sys::{
-    self, SLVS_C_ANGLE, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT,
-    SLVS_C_PT_PT_DISTANCE, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE, SLVS_RESULT_INCONSISTENT,
+    self, SLVS_C_ANGLE, SLVS_C_ARC_LINE_TANGENT, SLVS_C_AT_MIDPOINT, SLVS_C_CURVE_CURVE_TANGENT,
+    SLVS_C_DIAMETER, SLVS_C_EQUAL_LENGTH_LINES, SLVS_C_EQUAL_RADIUS, SLVS_C_HORIZONTAL,
+    SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_ON_CIRCLE,
+    SLVS_C_PT_ON_LINE, SLVS_C_PT_PT_DISTANCE, SLVS_C_SYMMETRIC_LINE, SLVS_C_VERTICAL,
+    SLVS_C_WHERE_DRAGGED, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE, SLVS_RESULT_INCONSISTENT,
     SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS, Slvs_Constraint, Slvs_Entity, Slvs_Param,
     Slvs_System, Slvs_hConstraint, Slvs_hEntity, Slvs_hGroup, Slvs_hParam,
 };
@@ -103,6 +113,23 @@ struct LineRef {
 }
 
 /// Try to recognize a geometric constraint pattern from an expression tree.
+///
+/// **Superseded for 2D sketches only** (`docs/prds/v0_6/constrained-2d-sketch.md`,
+/// D8).  A sketch no longer arrives as an expression tree to be pattern-matched:
+/// it arrives as a typed `SketchSystem` and is lowered declaration-by-declaration
+/// by `add_sketch` behind `solve_sketch`.  Guessing a constraint's meaning back
+/// out of an expression is inherently partial — an unrecognized shape reports
+/// `NoProgress` — where direct lowering cannot fail to understand what the caller
+/// declared.
+///
+/// This route stays live regardless: it serves the registry's auto-param path
+/// (`ConstraintSolver::solve` over a `ResolutionProblem`), whose input really is
+/// expressions and which has no `SketchSystem` to hand over.  Nothing here is
+/// deprecated, and nothing here changed.
+///
+/// Consolidating the three geometric solvers now in the crate — relate-solve's
+/// Gauss–Newton, this pattern path, and the sketch path — is explicitly out of
+/// scope (PRD §11, "Solver consolidation"): breadcrumbs only, no unification.
 fn recognize_pattern(expr: &CompiledExpr, auto_params: &[AutoParam]) -> Option<GeometricPattern> {
     match &expr.kind {
         // eq(distance_call, literal) or eq(literal, distance_call)
@@ -353,6 +380,7 @@ struct HandleAlloc {
     next_param: Slvs_hParam,
     next_entity: Slvs_hEntity,
     next_constraint: Slvs_hConstraint,
+    next_group: Slvs_hGroup,
 }
 
 impl HandleAlloc {
@@ -361,7 +389,23 @@ impl HandleAlloc {
             next_param: Slvs_hParam(1),
             next_entity: Slvs_hEntity(1),
             next_constraint: Slvs_hConstraint(1),
+            // 1 and 2 are reserved for FIXED_GROUP and the legacy SOLVE_GROUP,
+            // so the legacy route's group numbering is untouched.
+            next_group: Slvs_hGroup(3),
         }
+    }
+
+    /// Allocate a fresh solve group.
+    ///
+    /// `Slvs_Solve(sys, hg)` varies only params whose group is `hg` and treats
+    /// every other param as a constant, so a group is the unit of "what this
+    /// solve is allowed to move".  Allocation is sequential, which keeps group
+    /// ids — like entity and constraint handles — a deterministic function of
+    /// the input.
+    fn group(&mut self) -> Slvs_hGroup {
+        let h = self.next_group;
+        self.next_group.0 += 1;
+        h
     }
 
     fn param(&mut self) -> Slvs_hParam {
@@ -446,6 +490,32 @@ struct SystemBuilder {
     point_entities: HashMap<PointKey, Slvs_hEntity>,
     /// Lazily-created XY workplane entity handle for 2D constraints.
     workplane: Option<Slvs_hEntity>,
+    /// Lazily-created in-plane normal, shared by every circle and arc.
+    ///
+    /// libslvs requires a normal entity per circle/arc, but in a 2D sketch they
+    /// all lie in the one workplane, so one instance serves all of them.
+    sketch_normal: Option<Slvs_hEntity>,
+    /// The group `solve()` hands to `Slvs_Solve` — i.e. the params it may vary.
+    ///
+    /// Defaults to `SOLVE_GROUP` so the legacy pattern-recognition route is
+    /// unchanged; `add_sketch` repoints it at the group it allocated for the
+    /// sketch.
+    solve_group: Slvs_hGroup,
+    /// The sketch declaration currently being lowered, if any.
+    ///
+    /// Held on the builder rather than threaded through each emit call so that
+    /// attribution is automatic: every slvs constraint allocated while this is
+    /// set is recorded against that declaration, including the several a single
+    /// `Fix` on a line expands into.  A per-call-site `record(...)` would be one
+    /// forgotten line away from an unattributable failure.
+    ///
+    /// `None` outside `add_sketch`, which is what keeps the legacy route's
+    /// constraints out of the map entirely.
+    attributing: Option<(SketchConstraintId, SourceSpan)>,
+    /// Reverse index from emitted slvs constraint handle to the sketch
+    /// declaration it came from.  Handed to the `SketchHandleMap` on the way
+    /// out of `add_sketch`.
+    constraint_attribution: HashMap<Slvs_hConstraint, (SketchConstraintId, SourceSpan)>,
 }
 
 const FIXED_GROUP: Slvs_hGroup = Slvs_hGroup(1);
@@ -483,6 +553,10 @@ impl SystemBuilder {
             mapping: ParamMapping::new(),
             point_entities: HashMap::new(),
             workplane: None,
+            sketch_normal: None,
+            solve_group: SOLVE_GROUP,
+            attributing: None,
+            constraint_attribution: HashMap::new(),
         }
     }
 
@@ -722,7 +796,30 @@ impl SystemBuilder {
         wp_e
     }
 
+    /// Get or create the in-plane normal that circles and arcs point at.
+    ///
+    /// Lives in `FIXED_GROUP` alongside the workplane it names: it carries no
+    /// params, and a normal that the solver was free to move would be a datum
+    /// that drifts.
+    fn get_sketch_normal(&mut self) -> Slvs_hEntity {
+        if let Some(n) = self.sketch_normal {
+            return n;
+        }
+        let wrkpl = self.get_workplane();
+        let n = self.alloc.entity();
+        self.entities
+            .push(Slvs_Entity::normal_in_2d(n, FIXED_GROUP, wrkpl));
+        self.sketch_normal = Some(n);
+        n
+    }
+
     /// Add a constraint on a specific workplane (or `SLVS_FREE_IN_3D` for 3D).
+    ///
+    /// The constraint lands in `self.solve_group`, which is what makes it
+    /// visible to the subsequent solve: libslvs only generates equations for
+    /// constraints whose group matches the group `Slvs_Solve` was called with.
+    /// For the legacy pattern-recognition route `solve_group` is still
+    /// `SOLVE_GROUP`, so nothing there changes.
     #[allow(clippy::too_many_arguments)]
     fn add_constraint_wrkpl(
         &mut self,
@@ -734,18 +831,495 @@ impl SystemBuilder {
         entity_a: Slvs_hEntity,
         entity_b: Slvs_hEntity,
     ) {
+        // Both endpoint selectors zero: every constraint but the tangency pair
+        // ignores them entirely.
+        self.add_constraint_wrkpl_other(type_, wrkpl, val_a, pt_a, pt_b, entity_a, entity_b, 0, 0);
+    }
+
+    /// Add a workplane constraint that also selects *which end* of each curve it
+    /// is talking about.
+    ///
+    /// slvs carries that choice in `other` / `other2`: 0 names a curve's start
+    /// point, 1 its end point.  Only the tangency constraints read them, which
+    /// is why [`Self::add_constraint_wrkpl`] — the form every other constraint
+    /// uses — is this function with both selectors zero rather than a second
+    /// copy of the push.
+    #[allow(clippy::too_many_arguments)]
+    fn add_constraint_wrkpl_other(
+        &mut self,
+        type_: std::os::raw::c_int,
+        wrkpl: Slvs_hEntity,
+        val_a: f64,
+        pt_a: Slvs_hEntity,
+        pt_b: Slvs_hEntity,
+        entity_a: Slvs_hEntity,
+        entity_b: Slvs_hEntity,
+        other: std::os::raw::c_int,
+        other2: std::os::raw::c_int,
+    ) {
         let ch = self.alloc.constraint();
-        self.constraints.push(Slvs_Constraint::new(
-            ch,
-            SOLVE_GROUP,
-            type_,
-            wrkpl,
-            val_a,
-            pt_a,
-            pt_b,
-            entity_a,
-            entity_b,
-        ));
+        let group = self.solve_group;
+        // Every handle allocated while a sketch declaration is being lowered is
+        // attributed to it, whether the declaration produced one constraint or
+        // several.  Outside `add_sketch` this is a no-op.
+        if let Some(origin) = self.attributing {
+            self.constraint_attribution.insert(ch, origin);
+        }
+        self.constraints.push(
+            Slvs_Constraint::new(
+                ch, group, type_, wrkpl, val_a, pt_a, pt_b, entity_a, entity_b,
+            )
+            .with_other(other, other2),
+        );
+    }
+
+    /// Lower a [`SketchSystem`] directly into this builder's slvs system.
+    ///
+    /// "Directly" is the point: nothing here inspects a `CompiledExpr` or tries
+    /// to recognise a pattern.  The caller has already decided what the sketch
+    /// means; this walks the typed declarations and emits the corresponding slvs
+    /// entities and constraints one for one.
+    ///
+    /// The sketch gets its own freshly allocated group and this builder's
+    /// `solve_group` is repointed at it, so the subsequent `solve()` varies the
+    /// sketch's params and holds the datum geometry (workplane origin, normal)
+    /// fixed.  One `add_sketch` per builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(SketchBuildError)` for a malformed `SketchSystem`.
+    fn add_sketch(&mut self, system: &SketchSystem) -> Result<SketchHandleMap, SketchBuildError> {
+        // Before anything is emitted, so a malformed system is refused whole
+        // instead of being lowered with the offending declaration dropped — a
+        // partial lowering still solves, and returns a plausible answer to a
+        // question the caller never asked.
+        system.validate()?;
+
+        let wrkpl = self.get_workplane();
+        let group = self.alloc.group();
+        self.solve_group = group;
+
+        let mut handles = SketchHandleMap::new();
+        let mut emitted: HashMap<SketchEntityId, EmittedEntity> = HashMap::new();
+
+        // Pass 1: points.  Every other entity kind is defined by the points it
+        // references, so points must exist as slvs entities before anything can
+        // name them.
+        for def in &system.entities {
+            if let SketchEntity::Point { x, y } = def.entity {
+                let px = self.alloc.param();
+                let py = self.alloc.param();
+                self.params.push(Slvs_Param::new(px, group, x));
+                self.params.push(Slvs_Param::new(py, group, y));
+                let eh = self.alloc.entity();
+                self.entities
+                    .push(Slvs_Entity::point_2d(eh, group, wrkpl, px, py));
+                emitted.insert(
+                    def.id,
+                    EmittedEntity::Point {
+                        entity: eh,
+                        params: (px, py),
+                    },
+                );
+            }
+        }
+
+        // Pass 2: composite entities, and the readback map for everything.
+        //
+        // Walked in declaration order, and the readback entry is pushed for
+        // points here too rather than in pass 1, so the solved output order is
+        // the declaration order (O9) instead of "points first, then the rest".
+        for def in &system.entities {
+            match def.entity {
+                SketchEntity::Point { .. } => {
+                    if let Some((_, (px, py))) =
+                        emitted.get(&def.id).and_then(EmittedEntity::as_point)
+                    {
+                        handles.push_point(def.id, px, py);
+                    }
+                }
+                SketchEntity::Line { start, end } => {
+                    let ends = emitted
+                        .get(&start)
+                        .and_then(EmittedEntity::as_point)
+                        .zip(emitted.get(&end).and_then(EmittedEntity::as_point));
+                    let Some(((ae, ap), (be, bp))) = ends else {
+                        unresolved_entity_ref(def.id, start, end);
+                        continue;
+                    };
+                    let eh = self.alloc.entity();
+                    self.entities
+                        .push(Slvs_Entity::line_segment_2d(eh, group, wrkpl, ae, be));
+                    emitted.insert(
+                        def.id,
+                        EmittedEntity::Line {
+                            entity: eh,
+                            start,
+                            end,
+                        },
+                    );
+                    handles.push_line(def.id, ap, bp);
+                }
+                SketchEntity::Circle { center, radius } => {
+                    let Some((ce, cp)) = emitted.get(&center).and_then(EmittedEntity::as_point)
+                    else {
+                        unresolved_entity_ref(def.id, center, center);
+                        continue;
+                    };
+                    // libslvs has no radius param: a circle points at a
+                    // *distance entity*, which is what holds the param.
+                    let rp = self.alloc.param();
+                    self.params.push(Slvs_Param::new(rp, group, radius));
+                    let rc = self.alloc.entity();
+                    self.entities
+                        .push(Slvs_Entity::distance(rc, group, wrkpl, rp));
+                    let normal = self.get_sketch_normal();
+                    let eh = self.alloc.entity();
+                    self.entities
+                        .push(Slvs_Entity::circle(eh, group, wrkpl, ce, normal, rc));
+                    emitted.insert(def.id, EmittedEntity::Circle { entity: eh });
+                    handles.push_circle(def.id, cp, rp);
+                }
+                SketchEntity::Arc { center, start, end } => {
+                    let pts = [center, start, end]
+                        .iter()
+                        .map(|id| emitted.get(id).and_then(EmittedEntity::as_point))
+                        .collect::<Option<Vec<_>>>();
+                    let Some(pts) = pts else {
+                        unresolved_entity_ref(def.id, start, end);
+                        continue;
+                    };
+                    let [(ce, cp), (se, sp), (ee, ep)] = pts[..] else {
+                        unresolved_entity_ref(def.id, start, end);
+                        continue;
+                    };
+                    // No radius param of its own: an arc's radius is implied by
+                    // centre→start, and libslvs supplies |c-s| = |c-e| itself.
+                    //
+                    // That implicit equation is why DOF is never recomputed on
+                    // this side of the FFI.  An arc's three points are six
+                    // params but only five degrees of freedom, and nothing here
+                    // declared the equation that removes the sixth.  `solve`
+                    // reports whatever `Slvs_Solve` reports, so the arc is
+                    // accounted for correctly without this emit site having to
+                    // publish its own rank contribution.
+                    let normal = self.get_sketch_normal();
+                    let eh = self.alloc.entity();
+                    self.entities.push(Slvs_Entity::arc_of_circle(
+                        eh, group, wrkpl, normal, ce, se, ee,
+                    ));
+                    emitted.insert(def.id, EmittedEntity::Arc { entity: eh });
+                    handles.push_arc(def.id, cp, sp, ep);
+                }
+            }
+        }
+
+        // Pass 3: constraints.
+        //
+        // The declaration under emission is announced on the builder rather than
+        // passed down, so every slvs handle allocated below it is attributed
+        // without the emit sites having to remember to say so.
+        for def in &system.constraints {
+            self.attributing = Some((def.id, def.span));
+            self.emit_sketch_constraint(def, wrkpl, &emitted);
+        }
+        self.attributing = None;
+
+        handles.set_attribution(std::mem::take(&mut self.constraint_attribution));
+        Ok(handles)
+    }
+
+    /// Emit the slvs constraints for one sketch constraint declaration.
+    ///
+    /// One declaration can expand into more than one slvs constraint — `Fix` on
+    /// a line anchors each endpoint separately — so this pushes rather than
+    /// returning a handle.
+    fn emit_sketch_constraint(
+        &mut self,
+        def: &SketchConstraintDef,
+        wrkpl: Slvs_hEntity,
+        emitted: &HashMap<SketchEntityId, EmittedEntity>,
+    ) {
+        /// The "no entity" sentinel for the slots a given constraint leaves empty.
+        const NONE: Slvs_hEntity = Slvs_hEntity(0);
+
+        /// Resolve `id` to a point entity handle, or report and yield `None`.
+        fn point(
+            emitted: &HashMap<SketchEntityId, EmittedEntity>,
+            def: &SketchConstraintDef,
+            id: SketchEntityId,
+        ) -> Option<Slvs_hEntity> {
+            match emitted.get(&id).and_then(EmittedEntity::as_point) {
+                Some((entity, _)) => Some(entity),
+                None => {
+                    unresolved_constraint_ref(def, id, "point");
+                    None
+                }
+            }
+        }
+
+        /// Resolve `id` to a curve (circle or arc) handle, or report and yield
+        /// `None`.
+        fn curve(
+            emitted: &HashMap<SketchEntityId, EmittedEntity>,
+            def: &SketchConstraintDef,
+            id: SketchEntityId,
+        ) -> Option<Slvs_hEntity> {
+            match emitted.get(&id).and_then(EmittedEntity::as_curve) {
+                Some(entity) => Some(entity),
+                None => {
+                    unresolved_constraint_ref(def, id, "circle or arc");
+                    None
+                }
+            }
+        }
+
+        /// Resolve `id` to an arc handle, or report and yield `None`.
+        ///
+        /// Deliberately stricter than [`curve`]: the tangency constraints read
+        /// the *endpoints* of the curves they name, and a circle has none —
+        /// `Slvs_Entity::circle` leaves `point[1]`/`point[2]` at zero.  Handing
+        /// libslvs a circle here would have it resolve point handles the entity
+        /// does not carry, which is a C-side lookup on a null handle rather than
+        /// anything this binding can catch afterwards.  Hence a kind check
+        /// before the call, not a hope about what happens after it.
+        fn arc(
+            emitted: &HashMap<SketchEntityId, EmittedEntity>,
+            def: &SketchConstraintDef,
+            id: SketchEntityId,
+        ) -> Option<Slvs_hEntity> {
+            match emitted.get(&id) {
+                Some(EmittedEntity::Arc { entity }) => Some(*entity),
+                _ => {
+                    unresolved_constraint_ref(def, id, "arc");
+                    None
+                }
+            }
+        }
+
+        /// slvs' endpoint selector for a curve: 0 = its start, 1 = its end.
+        fn endpoint(at_end: bool) -> std::os::raw::c_int {
+            if at_end { 1 } else { 0 }
+        }
+
+        /// Resolve `id` to a line entity handle, or report and yield `None`.
+        fn line(
+            emitted: &HashMap<SketchEntityId, EmittedEntity>,
+            def: &SketchConstraintDef,
+            id: SketchEntityId,
+        ) -> Option<Slvs_hEntity> {
+            match emitted.get(&id) {
+                Some(EmittedEntity::Line { entity, .. }) => Some(*entity),
+                _ => {
+                    unresolved_constraint_ref(def, id, "line");
+                    None
+                }
+            }
+        }
+
+        match def.constraint {
+            SketchConstraint::Fix(id) => {
+                // Anchoring is per point: a line is anchored by anchoring both
+                // of its endpoints, which is two slvs constraints for one
+                // declaration.
+                let anchored: Vec<SketchEntityId> = match emitted.get(&id) {
+                    Some(EmittedEntity::Point { .. }) => vec![id],
+                    Some(EmittedEntity::Line { start, end, .. }) => vec![*start, *end],
+                    _ => {
+                        unresolved_constraint_ref(def, id, "point or line");
+                        return;
+                    }
+                };
+                for pt in anchored {
+                    let Some(pe) = point(emitted, def, pt) else {
+                        continue;
+                    };
+                    self.add_constraint_wrkpl(
+                        SLVS_C_WHERE_DRAGGED,
+                        wrkpl,
+                        0.0,
+                        pe,
+                        NONE,
+                        NONE,
+                        NONE,
+                    );
+                }
+            }
+            SketchConstraint::Coincident { a, b } => {
+                let (Some(ae), Some(be)) = (point(emitted, def, a), point(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_POINTS_COINCIDENT, wrkpl, 0.0, ae, be, NONE, NONE);
+            }
+            SketchConstraint::Distance { a, b, value } => {
+                let (Some(ae), Some(be)) = (point(emitted, def, a), point(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_PT_PT_DISTANCE, wrkpl, value, ae, be, NONE, NONE);
+            }
+            SketchConstraint::Horizontal(id) => {
+                let Some(le) = line(emitted, def, id) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_HORIZONTAL, wrkpl, 0.0, NONE, NONE, le, NONE);
+            }
+            SketchConstraint::Vertical(id) => {
+                let Some(le) = line(emitted, def, id) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_VERTICAL, wrkpl, 0.0, NONE, NONE, le, NONE);
+            }
+            SketchConstraint::Parallel { a, b } => {
+                let (Some(ae), Some(be)) = (line(emitted, def, a), line(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_PARALLEL, wrkpl, 0.0, NONE, NONE, ae, be);
+            }
+            SketchConstraint::Perpendicular { a, b } => {
+                let (Some(ae), Some(be)) = (line(emitted, def, a), line(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_PERPENDICULAR, wrkpl, 0.0, NONE, NONE, ae, be);
+            }
+            SketchConstraint::Angle { a, b, degrees } => {
+                let (Some(ae), Some(be)) = (line(emitted, def, a), line(emitted, def, b)) else {
+                    return;
+                };
+                // Degrees, not radians: `SLVS_C_ANGLE` reads `valA` in degrees,
+                // which is also the convention the legacy pattern route uses.
+                self.add_constraint_wrkpl(SLVS_C_ANGLE, wrkpl, degrees, NONE, NONE, ae, be);
+            }
+            SketchConstraint::Diameter { circle, value } => {
+                let Some(ce) = curve(emitted, def, circle) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_DIAMETER, wrkpl, value, NONE, NONE, ce, NONE);
+            }
+            SketchConstraint::Radius { circle, value } => {
+                let Some(ce) = curve(emitted, def, circle) else {
+                    return;
+                };
+                // libslvs exposes no radius constraint — `SLVS_C_DIAMETER` is
+                // the whole radius family — so the doubling happens here, at the
+                // single emit site, rather than being pushed onto callers. That
+                // keeps `radius` meaning radius in the surface vocabulary.
+                self.add_constraint_wrkpl(
+                    SLVS_C_DIAMETER,
+                    wrkpl,
+                    2.0 * value,
+                    NONE,
+                    NONE,
+                    ce,
+                    NONE,
+                );
+            }
+            SketchConstraint::PtOnCircle { pt, circle } => {
+                let (Some(pe), Some(ce)) = (point(emitted, def, pt), curve(emitted, def, circle))
+                else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_PT_ON_CIRCLE, wrkpl, 0.0, pe, NONE, ce, NONE);
+            }
+            SketchConstraint::EqualRadius { a, b } => {
+                let (Some(ae), Some(be)) = (curve(emitted, def, a), curve(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_EQUAL_RADIUS, wrkpl, 0.0, NONE, NONE, ae, be);
+            }
+            // Tangency, both arms.
+            //
+            // These constrain *directions* only: they say the line is square to
+            // the arc's radius at the chosen end, or that two arcs' radii there
+            // are parallel.  Neither makes the curves touch — a caller who wants
+            // them to meet pairs the tangency with a `Coincident` on the two
+            // endpoints, which is what the fixtures do.
+            SketchConstraint::ArcLineTangent {
+                arc: arc_id,
+                line: line_id,
+                at_end,
+            } => {
+                let (Some(ae), Some(le)) = (arc(emitted, def, arc_id), line(emitted, def, line_id))
+                else {
+                    return;
+                };
+                self.add_constraint_wrkpl_other(
+                    SLVS_C_ARC_LINE_TANGENT,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    ae,
+                    le,
+                    endpoint(at_end),
+                    0,
+                );
+            }
+            SketchConstraint::CurveCurveTangent {
+                a,
+                a_at_end,
+                b,
+                b_at_end,
+            } => {
+                let (Some(ae), Some(be)) = (arc(emitted, def, a), arc(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl_other(
+                    SLVS_C_CURVE_CURVE_TANGENT,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    ae,
+                    be,
+                    endpoint(a_at_end),
+                    endpoint(b_at_end),
+                );
+            }
+            SketchConstraint::PtOnLine { pt, line: line_id } => {
+                let (Some(pe), Some(le)) = (point(emitted, def, pt), line(emitted, def, line_id))
+                else {
+                    return;
+                };
+                // The line's *infinite extension*: this says the point is on the
+                // line, not that it lies between the endpoints, so it leaves the
+                // point free to slide.
+                self.add_constraint_wrkpl(SLVS_C_PT_ON_LINE, wrkpl, 0.0, pe, NONE, le, NONE);
+            }
+            SketchConstraint::AtMidpoint { pt, line: line_id } => {
+                let (Some(pe), Some(le)) = (point(emitted, def, pt), line(emitted, def, line_id))
+                else {
+                    return;
+                };
+                self.add_constraint_wrkpl(SLVS_C_AT_MIDPOINT, wrkpl, 0.0, pe, NONE, le, NONE);
+            }
+            SketchConstraint::SymmetricLine { a, b, about } => {
+                let (Some(ae), Some(be), Some(me)) = (
+                    point(emitted, def, a),
+                    point(emitted, def, b),
+                    line(emitted, def, about),
+                ) else {
+                    return;
+                };
+                // The mirrored pair goes in the point slots and the mirror in the
+                // entity slot — the asymmetry of the arguments is the whole
+                // difference between "mirror a about b" and "mirror b about a".
+                self.add_constraint_wrkpl(SLVS_C_SYMMETRIC_LINE, wrkpl, 0.0, ae, be, me, NONE);
+            }
+            SketchConstraint::EqualLengthLines { a, b } => {
+                let (Some(ae), Some(be)) = (line(emitted, def, a), line(emitted, def, b)) else {
+                    return;
+                };
+                self.add_constraint_wrkpl(
+                    SLVS_C_EQUAL_LENGTH_LINES,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    ae,
+                    be,
+                );
+            }
+        }
     }
 
     /// Solve the system and return the result.
@@ -754,13 +1328,28 @@ impl SystemBuilder {
     /// performs bounds-checked access on the `faileds` field returned by
     /// `Slvs_Solve`.
     fn solve(mut self) -> SlvsSolveResult {
-        if self.constraints.is_empty() {
-            return SlvsSolveResult::Ok {
-                params: self.params,
-                mapping: self.mapping,
-                dof: 0,
-            };
-        }
+        let solve_group = self.solve_group;
+
+        // Every system goes through `Slvs_Solve`, including one with no
+        // constraints at all, so `dof` is always libslvs' own number.
+        //
+        // There is no shortcut here for the zero-constraint case, and
+        // deliberately so.  Computing `dof` in Rust as "count the free params
+        // in the solve group" requires knowing every equation libslvs
+        // generates on its own behalf, and that knowledge cannot be kept
+        // honest: an `SLVS_E_ARC_OF_CIRCLE` silently contributes
+        // `|c-s| = |c-e|`, so rank is not 0 even with zero declared
+        // constraints, and an unconstrained arc's true dof is 5 rather than
+        // its six params.  Correcting the arithmetic per entity kind would
+        // only re-derive libslvs' internal rules on this side of the FFI,
+        // where they go stale the moment another entity kind grows an
+        // implicit equation.  Asking the library is correct by construction.
+        //
+        // Nothing is lost by the removal: the legacy `recognize_pattern`
+        // route cannot reach `solve` with an empty constraint list at all —
+        // `ConstraintSolver::solve` bails with `NoProgress` unless a pattern
+        // was recognized, and every recognized pattern contributes at least
+        // one constraint — and it discards `dof` regardless.
 
         // --- Overflow checks for vec lengths → c_int (i32) ---
         // Return TooLarge instead of panicking — panics here would
@@ -779,7 +1368,13 @@ impl SystemBuilder {
             Err(_) => return SlvsSolveResult::TooLarge,
         };
 
-        let mut failed: Vec<Slvs_hConstraint> = vec![Slvs_hConstraint(0); self.constraints.len()];
+        // At least one slot even for a constraint-free system: an empty `Vec`'s
+        // `as_mut_ptr()` is a dangling (aligned, unallocated) pointer, and now
+        // that such a system reaches the FFI it would be handed straight to C.
+        // `faileds` below still reports the *true* allocated length, so the
+        // readback's bounds check stays sound.
+        let mut failed: Vec<Slvs_hConstraint> =
+            vec![Slvs_hConstraint(0); self.constraints.len().max(1)];
         let n_failed_buf = match i32::try_from(failed.len()) {
             Ok(n) => n,
             Err(_) => return SlvsSolveResult::TooLarge,
@@ -812,7 +1407,7 @@ impl SystemBuilder {
         };
 
         unsafe {
-            slvs_sys::Slvs_Solve(&mut sys, SOLVE_GROUP);
+            slvs_sys::Slvs_Solve(&mut sys, solve_group);
         }
 
         // Drop guard after solve completes
@@ -845,7 +1440,7 @@ enum SlvsSolveResult {
     Ok {
         params: Vec<Slvs_Param>,
         mapping: ParamMapping,
-        #[allow(dead_code)]
+        /// libslvs' degrees-of-freedom count for the solved group.
         dof: i32,
     },
     Inconsistent {
@@ -858,6 +1453,164 @@ enum SlvsSolveResult {
     /// The global SLVS_LOCK mutex was poisoned by a prior panic.
     LockPoisoned,
     UnknownError(i32),
+}
+
+// ---------------------------------------------------------------------------
+// Constrained-2D-sketch entry point
+// ---------------------------------------------------------------------------
+
+/// What `add_sketch` emitted for one sketch entity, indexed by its sketch id.
+///
+/// The emit-side counterpart of `SketchHandleMap`: constraints name their
+/// operands by entity handle and are picky about kind (`SLVS_C_HORIZONTAL`
+/// wants a line, `SLVS_C_WHERE_DRAGGED` wants a point), so this records the
+/// handle *and* enough structure to reject a slot handed the wrong thing.
+enum EmittedEntity {
+    Point {
+        entity: Slvs_hEntity,
+        /// The two params carrying the point's coordinates, kept so a composite
+        /// entity can register its readback without re-deriving them.
+        params: (Slvs_hParam, Slvs_hParam),
+    },
+    Line {
+        entity: Slvs_hEntity,
+        start: SketchEntityId,
+        end: SketchEntityId,
+    },
+    Circle {
+        entity: Slvs_hEntity,
+    },
+    Arc {
+        entity: Slvs_hEntity,
+    },
+}
+
+impl EmittedEntity {
+    /// The slvs entity handle and coordinate params, if this is a point.
+    ///
+    /// `None` for every other kind, which is what makes "this slot wants a
+    /// point" a check rather than an assumption.
+    fn as_point(&self) -> Option<(Slvs_hEntity, (Slvs_hParam, Slvs_hParam))> {
+        match self {
+            EmittedEntity::Point { entity, params } => Some((*entity, *params)),
+            _ => None,
+        }
+    }
+
+    /// The slvs entity handle, if this is a curve — a circle or an arc.
+    ///
+    /// The radius family and `PtOnCircle` accept either: libslvs treats an arc
+    /// as a circle with two ends for all of them.
+    fn as_curve(&self) -> Option<Slvs_hEntity> {
+        match self {
+            EmittedEntity::Circle { entity } | EmittedEntity::Arc { entity } => Some(*entity),
+            _ => None,
+        }
+    }
+}
+
+/// Report a composite entity whose defining points could not be resolved.
+///
+/// Unreachable for any input: `SketchSystem::validate` runs before emission
+/// starts and rejects a dangling id or a non-point endpoint as a typed
+/// `SketchBuildError::BadEntityRef`.  What remains here is a guard against
+/// *this crate* drifting — the validator's slot table and the emit path's
+/// per-kind lookups describe the same rule in two places, and if they ever
+/// disagree the entity would otherwise vanish from the readback in silence.
+/// Hence a loud report and a debug assertion, not a warning.
+fn unresolved_entity_ref(owner: SketchEntityId, start: SketchEntityId, end: SketchEntityId) {
+    tracing::error!(
+        entity = owner.0,
+        start = start.0,
+        end = end.0,
+        "a validated sketch entity is defined by ids that are not emitted points; \
+         the validator's slot table and the emit path disagree"
+    );
+    debug_assert!(
+        false,
+        "unresolvable entity ref after validation: entity {} references {}/{}",
+        owner.0, start.0, end.0
+    );
+}
+
+/// Report a constraint operand that could not be resolved to an entity of the
+/// kind that slot requires.
+///
+/// Same provenance as [`unresolved_entity_ref`]: `SketchSystem::validate` has
+/// already rejected every input that could reach this, so arriving here means
+/// the validator and the emit path disagree about a slot's kind.
+fn unresolved_constraint_ref(def: &SketchConstraintDef, entity: SketchEntityId, expected: &str) {
+    tracing::error!(
+        constraint = def.id.0,
+        entity = entity.0,
+        expected,
+        "a validated sketch constraint operand is not an emitted entity of the \
+         expected kind; the validator's slot table and the emit path disagree"
+    );
+    debug_assert!(
+        false,
+        "unresolvable constraint operand after validation: constraint {} wants {} at entity {}",
+        def.id.0, expected, entity.0
+    );
+}
+
+/// Solve a 2D constrained sketch through a real `Slvs_Solve` call.
+///
+/// This is the crate's only sketch-solving seam.  `SystemBuilder` and
+/// `add_sketch` stay private on purpose: the builder holds raw `Slvs_*` structs,
+/// and publishing it would push the whole slvs vocabulary across the crate
+/// boundary and make every future FFI change a breaking change for consumers.
+/// A free function that owns the whole build → solve → read-back round trip
+/// gives callers exactly one thing to depend on.
+///
+/// What comes back is libslvs' own report, not a judgement about it: the raw
+/// `dof`, the resolved failing set, the raw non-OK result codes.  Classifying
+/// that into diagnostics needs to know which degrees of freedom were declared
+/// `auto`, which this layer cannot see.
+pub fn solve_sketch(system: &SketchSystem) -> SketchSolveResult {
+    let mut builder = SystemBuilder::new();
+
+    let handles = match builder.add_sketch(system) {
+        Ok(handles) => handles,
+        // Nothing was emitted, so there is nothing to solve and nothing to tear
+        // down: the builder is dropped and the typed error goes back verbatim.
+        Err(err) => return SketchSolveResult::Malformed(err),
+    };
+
+    match builder.solve() {
+        SlvsSolveResult::Ok { params, dof, .. } => {
+            let values: HashMap<Slvs_hParam, f64> = params.iter().map(|p| (p.h, p.val)).collect();
+            match handles.read_back(&values) {
+                Ok(entities) => SketchSolveResult::Solved { entities, dof },
+                Err(missing) => {
+                    // Every param the handle map references was pushed into the
+                    // same system that produced `params`, so this cannot happen.
+                    // If it somehow does, say so loudly instead of returning
+                    // fabricated coordinates — and say the *true* thing: libslvs
+                    // reported OKAY and the failure is on this side of the FFI,
+                    // so this is its own arm rather than `UnknownError(OKAY)`,
+                    // which would blame the C library for a Rust bug.
+                    tracing::error!(
+                        param = missing.0,
+                        "sketch readback referenced a param absent from the solved system"
+                    );
+                    SketchSolveResult::ReadbackFailed { param: missing.0 }
+                }
+            }
+        }
+        SlvsSolveResult::Inconsistent { failed_ids } => SketchSolveResult::Inconsistent {
+            // libslvs names the constraints that contradict by slvs handle; the
+            // attribution map turns those back into the declarations — and the
+            // spans — the author actually wrote, which is the difference between
+            // a diagnostic that points at source and a bare count.
+            failing: handles.resolve_failing(&failed_ids),
+        },
+        SlvsSolveResult::DidntConverge => SketchSolveResult::DidntConverge,
+        SlvsSolveResult::TooManyUnknowns => SketchSolveResult::TooManyUnknowns,
+        SlvsSolveResult::TooLarge => SketchSolveResult::TooLarge,
+        SlvsSolveResult::LockPoisoned => SketchSolveResult::LockPoisoned,
+        SlvsSolveResult::UnknownError(code) => SketchSolveResult::UnknownError(code),
+    }
 }
 
 fn point_key(pt: &PointRef) -> PointKey {

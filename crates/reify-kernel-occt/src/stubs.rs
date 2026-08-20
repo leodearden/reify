@@ -34,6 +34,14 @@ impl OcctKernel {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub single-pass n-ary fuse (task 5213) — OCCT not available.
+    pub fn fuse_all(
+        &mut self,
+        _handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
     pub fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }

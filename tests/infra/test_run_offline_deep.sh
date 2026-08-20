@@ -26,6 +26,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_in_plan (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 RUN_OFFLINE_DEEP="$REPO_ROOT/scripts/run-offline-deep.sh"
 
 echo "=== run-offline-deep.sh wrapper tests (task 4916/A5) ==="
@@ -118,14 +125,36 @@ esac
 
 POSITIVE_PATTERN='-E "('
 
-# nextest availability probe — guarded with `|| true` so an empty PLAN_FULL
-# (RED phase) yields NEXTEST_AVAILABLE=0 instead of aborting this script
-# under pipefail (grep finds no header line -> exit 1 in the pipe).
-_HEADER="$(printf '%s\n' "$PLAN_FULL" | grep '^# verify.sh plan' || true)"
+# nextest availability probe — read back OUT of the PLAN_FULL capture above via
+# the shared detector in tests/infra/nextest_absent_lib.sh (task 5644). PLAN_FULL
+# stays: the plan-shape asserts above and below read it too.
+#
+# WHY THE in_plan FORM AND NOT nextest_available_ambient, which is a correctness
+# requirement here rather than merely the cheaper option: PLAN_FULL comes from
+# scripts/run-offline-deep.sh --print-plan, NOT from verify.sh directly. The
+# ambient form would probe a DIFFERENT command than the plan this suite asserts
+# against.
+#
+# The lib's extractor is compatible with the all-match grep this replaced.
+# _nextest_absent_header_of uses `grep -m1` (first match only), so the two forms
+# could in principle diverge for a multi-stage plan producer — and this suite is
+# the only such producer among the seven migrated. Measured: run-offline-deep.sh
+# --print-plan emits exactly ONE `^# verify.sh plan` line
+# (`... include_infra=0 nextest=1 role=offline`), so first-match and all-match
+# agree.
+#
+# The empty-PLAN_FULL (RED phase) guard the local `|| true` used to provide is
+# preserved: _nextest_absent_header_of is itself `|| true`-guarded, so an empty
+# plan yields NEXTEST_AVAILABLE=0 instead of aborting this script under pipefail.
+# That is a converted failure mode, not an eliminated one — a quiet
+# NEXTEST_AVAILABLE=0 skips the nextest arm below. What catches it is the
+# unconditional "run-offline-deep.sh --print-plan exits 0" assert above, which
+# sits outside every NEXTEST_AVAILABLE branch and fails loudly on exactly the
+# empty/failed capture that could produce a wrong availability answer.
 NEXTEST_AVAILABLE=0
-case "$_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_in_plan "$PLAN_FULL"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then

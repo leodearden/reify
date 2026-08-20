@@ -125,6 +125,22 @@ merge suite is the backstop).
   marker — silence in `_CS_RUNNING` is already safe, and a marker would risk the concurrent-STOP-collapse.
 - **INV-5 (exactly-one-tier).** The merge-plan drift-guard asserts the `role==merge` plan **contains** the
   `run_all.sh` line and the `role==task` plan **does not** — making "the merge backstop exists" a tested invariant.
+- **INV-5′ (per-member content-addressed skip within the merge tier).** Amends INV-5 per
+  `docs/prds/merge-gate-riders.md` §4.4 (task γ / 5273). The full pool stays **merge-tier-resident** and the plan
+  shape is unchanged — INV-5's tier assertions still hold, and the `role==merge` run_all.sh line now additionally
+  carries `REIFY_RUN_ALL_CONTENT_SKIP=1`. **Within** the merge-tier invocation: every member runs on every merge
+  whose delta (vs. that member's last green main run) touches its declared closure; every member without a declared
+  closure runs on every merge; and every member runs at least once per `REIFY_RUN_ALL_SKIP_MAX_MERGES` (default 25)
+  merge-tier runs and once per `REIFY_RUN_ALL_SKIP_MAX_AGE_HOURS` (default 24) regardless of deltas. Skips are
+  **per-member, content-hash-based** (git tree compare against the closure declared in
+  `tests/infra/run-all-skip-closures.manifest`), **individually logged**
+  (`SKIP (content-clean)` / `RUN (delta|unmapped|no-baseline|backstop-due)`), and **fail-open** — an unmapped or
+  no-baseline member, an own-file change, or a corrupt/absent `REIFY_RUN_ALL_SKIP_STATE` file all force a run (the
+  last emits one loud line + full pool). The engine is a three-key inert no-op
+  (`REIFY_RUN_ALL_CONTENT_SKIP=1` **and** inbound role `merge` **and** a non-empty state path), so it ships
+  production-inert until the activation task (δ / 5276) wires the durable state path in yaml `verify_env`. Guarded by
+  `tests/infra/test_run_all_content_skip.sh` plus the run_all.sh-line token asserts in
+  `test_run_all_tiering.sh` / `test_verify_failfast_order.sh`.
 
 ---
 

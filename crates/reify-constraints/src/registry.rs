@@ -161,6 +161,14 @@ impl SolverRegistry {
             );
         }
 
+        // For each dependent cell, the autos it reads TRANSITIVELY (task #5720).
+        // Computed ONCE per solve — never inside the component loop below, which
+        // also consumes it as the per-component fold filter.
+        let dependent_auto_reads = crate::decompose::dependent_cell_auto_reads(
+            &problem.dependent_cells,
+            &problem.auto_params,
+        );
+
         // Collect value-refs from ALL objective terms for objective-aware decomposition.
         // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
         let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
@@ -169,11 +177,35 @@ impl SolverRegistry {
                 for term in &obj.terms {
                     crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
                 }
+                // Expand through `dependent_cells` (task #5720): a ref to a
+                // derived cell also means every auto that cell transitively
+                // drives.  `dependent_cell_auto_reads` is already transitive, so
+                // one pass over the syntactic refs closes the set.
+                let reached: Vec<ValueCellId> = refs
+                    .iter()
+                    .filter_map(|id| dependent_auto_reads.get(id))
+                    .flat_map(|autos| autos.iter().cloned())
+                    .collect();
+                refs.extend(reached);
                 refs
             });
 
-        // Decompose into connected components, merging any components
-        // whose auto params are co-referenced by the objective expression(s)
+        // Decompose into connected components. Decomposition FOLLOWS
+        // `dependent_cells`: because `obj_refs` above was expanded through them,
+        // an objective that reads a derived cell unions every auto that cell
+        // transitively drives into ONE component, and `objective_component`'s
+        // first-match lookup below therefore resolves for real.
+        //
+        // Why the expansion is load-bearing (task #5720): the canonical
+        // joint-drive shape (task #5189 β) is an objective that reads a bare
+        // derived cell and NO auto directly, so the unexpanded `obj_refs` held
+        // no auto ids at all. `decompose_into_components`' objective-union step
+        // filters to auto indices, got an empty set, and unioned nothing — two
+        // autos coupled only through that cell landed in separate components,
+        // and the lookup below fell through to the hardcoded `0`, handing the
+        // objective to an arbitrary component of a nondeterministic `HashMap`
+        // iteration while the other component's autos were solved
+        // feasibility-only against stale seeds.
         let components =
             decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
 
@@ -240,12 +272,109 @@ impl SolverRegistry {
                 None
             };
 
+            // Per-component `dependent_cells` (task #5720). Retain, IN STORED
+            // ORDER, only the cells whose transitively-read autos are a SUBSET
+            // of this component's own autos.  `iter().filter()` over the
+            // original slice, never a rebuild from a set or a `HashMap`
+            // iteration: the result must be a SUBSEQUENCE of the stored order,
+            // which is the topological guarantee `build_dependent_cells`
+            // produces once upstream and `fold_dependent_cells` consumes
+            // (PRD §6.3 — single authority on order).
+            let sub_dependent_cells: Vec<(ValueCellId, CompiledExpr)> = problem
+                .dependent_cells
+                .iter()
+                .filter(|(id, _)| {
+                    dependent_auto_reads
+                        .get(id)
+                        .is_some_and(|autos| autos.is_subset(&component.auto_params))
+                })
+                .cloned()
+                .collect();
+
+            // β (task #5189): build from `..problem.clone()` and override only the
+            // fields that genuinely differ per component.  The functional update
+            // syntax is load-bearing, NOT cosmetic: `dependent_cells` must reach
+            // the domain solver or `fold_dependent_cells` takes its empty-vector
+            // early return and the per-trial recompute silently never runs on the
+            // production path (`SolverRegistry::production()` is what the CLI
+            // wires in `configured_eval_engine`).  Listing fields explicitly here
+            // is how that field got zeroed in the first place; spreading means the
+            // NEXT field added to `ResolutionProblem` cannot be silently dropped.
+            // That warning still holds for every field this literal does not name.
+            //
+            // # Why `dependent_cells` is FILTERED per component (task #5720)
+            //
+            // It used to be passed wholesale, on the rationale that `sub_values`
+            // carries every cell in `problem.current_values` so every dependent
+            // expression stays evaluable.  That is FALSE for an auto owned by
+            // ANOTHER component: such an auto is in neither `sub_auto_params` nor
+            // (necessarily) `current_values`, so the fold evaluates its `ValueRef`
+            // to `Undef`, writes `Undef` into the cell, and an objective reading
+            // that cell reports `NoProgress { reason: "objective expression
+            // evaluated to undefined at solution point" }`.
+            //
+            // The load-bearing invariants of the filter:
+            //
+            // - A component only ever folds cells whose every transitively-read
+            //   auto it OWNS.  That is what makes the cross-component `Undef`
+            //   STRUCTURALLY IMPOSSIBLE rather than merely unlikely, and it also
+            //   bounds the per-trial fold cost by the component's own cells
+            //   instead of the whole model's list.
+            // - The `obj_refs` expansion above is what makes the filter SAFE for
+            //   the objective-bearing component: it guarantees every auto the
+            //   objective transitively drives lands in ONE component, so every
+            //   cell the objective reads survives the subset test there.
+            //   `build_scoring_values` and the lexicographic ε-band anchor below
+            //   therefore still score a COMPLETE map.  Landing the filter without
+            //   the expansion would drop objective-relevant cells from an
+            //   arbitrarily-chosen component — a differently wrong answer.
+            // - Filtering is internal to `solve_inner`'s sub-problems and never
+            //   escapes the registry.  reify-eval's post-solve
+            //   `materialize_dependent_cells` still consumes the engine-level
+            //   FULL list from both of its post-solve write-back paths (the
+            //   per-template Let re-eval and the cross-scope cluster path), so
+            //   cross-component cells are still written back.
+            // - When all autos are in one component every cell's read set is
+            //   trivially a subset, so the filter is the IDENTITY and every
+            //   pre-existing single-component solve stays byte-identical
+            //   (PRD §6.2 / I1).
+            // - A cell absent from `dependent_auto_reads` is dropped.  For a
+            //   well-formed problem the only such cells are cycle members, which
+            //   `dependent_cell_auto_reads` deliberately omits rather than
+            //   publish a partial auto set (reify-eval's `build_dependent_cells`
+            //   drops cycles upstream anyway).  Dropping is the safe direction: a
+            //   cell whose auto reads are unknown is exactly one we cannot prove
+            //   is foldable here.
+            //
+            // # SCOPE of "structurally impossible" — objective refs only
+            //
+            // The expansion above is applied to `obj_refs` ONLY.
+            // `decompose_into_components` still unions a CONSTRAINT's autos
+            // purely SYNTACTICALLY, so the guarantee is scoped to reads that
+            // happen inside the fold and the objective, NOT to every read in the
+            // model.  A constraint that reaches a second auto only THROUGH a
+            // derived cell — `a + side >= K` where `side = SIDE_COEFF*c` — still
+            // splits `a` and `c` into separate components, because the union
+            // step sees only the syntactic ref `side` and filters it away as a
+            // non-auto.  This filter then also removes `side` from the `{a}`
+            // component, since `{c}` is not a subset of `{a}`, and the
+            // constraint is evaluated each trial against whatever stale `side`
+            // sits in `current_values`.
+            //
+            // That coupling gap PRE-DATES task #5720 — decomposition has always
+            // unioned constraint refs syntactically — but this filter does change
+            // its symptom, from a loud `Undef` (the wholesale list folded `side`
+            // against an unowned `c`) to a silent stale read.  Closing it means
+            // expanding constraint refs through `dependent_auto_reads` the same
+            // way, which changes decomposition for every existing model and is
+            // deliberately OUT OF SCOPE here; it is filed as its own follow-up.
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
                 current_values: sub_values,
                 objective: sub_objective,
-                functions: problem.functions.clone(),
+                dependent_cells: sub_dependent_cells,
+                ..problem.clone()
             };
 
             // Select solver based on component domain
@@ -556,12 +685,19 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             .map(|ap| AutoParam { free: true, ..ap.clone() })
             .collect();
 
+        // β (task #5189): mirror the degenerate single-priority path above, which
+        // builds `ws_problem` as `ResolutionProblem { objective, ..base.clone() }`
+        // and therefore inherits `dependent_cells`.  Enumerating fields here made
+        // the same function behave differently depending on how many distinct
+        // priorities the objective carries — a multi-rank lexicographic objective
+        // over a joint-drive cluster dropped the per-trial fold at every stage.
+        // Override only what genuinely differs per stage.
         let stage_problem = ResolutionProblem {
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
             current_values: current_values.clone(),
             objective: Some(stage_objective),
-            functions: base.functions.clone(),
+            ..base.clone()
         };
 
         let stage_result = solver.solve(&stage_problem);
@@ -580,29 +716,57 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                 // uniqueness-verified.  The final stage's own verdict is preserved —
                 // given the accumulated ε-band constraints it may be fully determined.
                 let result_unique = is_final && stage_unique;
-                last_result = Some(SolveResult::Solved { values, unique: result_unique });
-
-                if is_final {
-                    break;
-                }
 
                 // Freeze this rank's realized optimum as an ε-band for the next stage.
                 // If any term is non-finite, skip the band and warn — the lexicographic
                 // ordering is NOT enforced for this rank, so later ranks may freely
                 // sacrifice it.
-                match eval_rank_cost(&rank_terms, &current_values, &base.functions) {
-                    Some(obj_star) => {
-                        accumulated_constraints
-                            .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                //
+                // esc-5189-7: `obj*` MUST be measured on the same folded map the next
+                // stage evaluates the band against.  `build_band_constraints` bakes
+                // `obj*` in as a LITERAL, while the band's `cost_expr` is built from
+                // this rank's term exprs — which read the cluster's dependent cells and
+                // are therefore folded by the next stage's cost surface (the stage
+                // problem inherits `dependent_cells` via `..base.clone()` above).
+                // Reading `obj*` off `current_values` measured the two sides of ONE
+                // constraint on two different value maps: `current_values` carries the
+                // warm-started solved AUTOS, but `SolveResult::Solved` returns only
+                // autos, so every dependent cell in it is still at its stale base
+                // value.  A trivially feasible model then reported
+                // `ConstraintUnsatisfiable`, off by the full stale-vs-folded gap.
+                // `build_scoring_values` is the single fold authority (solver.rs) —
+                // this site is the reason its INVARIANT is crate-scoped, not
+                // module-scoped.
+                //
+                // Computed here, before `values` is moved into `last_result`, and only
+                // on the non-final path — the final stage builds no band.
+                if !is_final {
+                    let scored = crate::solver::build_scoring_values(
+                        &current_values,
+                        &values,
+                        &base.dependent_cells,
+                        &base.functions,
+                    );
+                    match eval_rank_cost(&rank_terms, &scored, &base.functions) {
+                        Some(obj_star) => {
+                            accumulated_constraints
+                                .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                        }
+                        None => {
+                            tracing::warn!(
+                                stage = stage_idx,
+                                "solve_lexicographic: stage {} rank produced non-finite obj*; \
+                                 ε-band skipped — lexicographic ordering not enforced for this rank",
+                                stage_idx,
+                            );
+                        }
                     }
-                    None => {
-                        tracing::warn!(
-                            stage = stage_idx,
-                            "solve_lexicographic: stage {} rank produced non-finite obj*; \
-                             ε-band skipped — lexicographic ordering not enforced for this rank",
-                            stage_idx,
-                        );
-                    }
+                }
+
+                last_result = Some(SolveResult::Solved { values, unique: result_unique });
+
+                if is_final {
+                    break;
                 }
             }
             infeasible_or_no_progress => {

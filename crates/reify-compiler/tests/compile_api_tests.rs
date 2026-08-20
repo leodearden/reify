@@ -62,7 +62,7 @@ fn entity_kind_as_label() {
 fn compile_linear_pattern_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = linear_pattern(w, 1, 0, 0, 4, 20)
+    let pattern = linear_pattern(w, 1, 0, 0, 4, 20mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat"));
     assert!(
@@ -172,7 +172,7 @@ fn compile_mirror_produces_realization() {
 fn compile_linear_pattern_2d_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
+    let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20mm, 0, 1, 0, 4, 30mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d"));
     assert!(
@@ -230,6 +230,25 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
         "expected arity diagnostic, got: {:?}",
         compiled.diagnostics
     );
+
+    // Task 5652: the bare `20` above is NOT migrated to `20mm` on purpose —
+    // this is an ARITY-error fixture, and a 6-arg `linear_pattern_2d` is
+    // slot-free by construction (the spacing slots are guarded on
+    // `arg_count == 11`). So the wrong-arity call must report ONLY the arity
+    // problem; piling an ArgTypeMismatch on top would bury the real error
+    // under a diagnostic about an argument whose position is meaningless in a
+    // call that has the wrong shape to begin with.
+    let arg_type_mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+        .collect();
+    assert!(
+        arg_type_mismatches.is_empty(),
+        "a wrong-arity linear_pattern_2d must emit no ArgTypeMismatch — the \
+         arity guard makes a 6-arg call slot-free. Got: {:?}",
+        arg_type_mismatches
+    );
 }
 
 #[test]
@@ -253,7 +272,7 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
     // place — the eval-side resolution was already correct and covered, so
     // this compile-level test closes the actual gap.
     let source = r#"structure S {
-    let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
+    let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), 1, 0, 0, 3, 20mm, 0, 1, 0, 4, 30mm)
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -668,7 +687,7 @@ fn compile_draft_produces_realization() {
 fn compile_circular_pattern_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = circular_pattern(w, 0, 0, 0, 0, 0, 1, 6, 360)
+    let pattern = circular_pattern(w, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_circpat"));
     assert!(

@@ -7,11 +7,10 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use reify_compiler::{CompiledModule, compile_with_prelude};
 use reify_core::ModulePath;
-use reify_test_support::{compile_source, compile_source_named, errors_only};
+use reify_test_support::{TempDir, compile_source, compile_source_named, errors_only};
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
 
@@ -25,15 +24,11 @@ fn compile_with_prelude_helper(source: &str, prelude: &[CompiledModule]) -> Comp
     compile_with_prelude(&parsed, prelude)
 }
 
-/// Create a unique temp directory for filesystem-based tests.
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("reify_unit_test_209")
-        .join(name)
-        .join(format!("{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// Panic-safe temp dir for this file's filesystem-based tests. Binding rules
+/// and the `REIFY_KEEP_TEMP_DIRS` post-mortem knob: see
+/// [`reify_test_support::prefixed_tempdir`].
+fn test_dir(name: &str) -> TempDir {
+    reify_test_support::prefixed_tempdir(&format!("reify_unit_test_209-{name}-"))
 }
 
 /// Write the three-module transitive chain used by one-hop limitation pinning tests:
@@ -231,7 +226,8 @@ fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
 
 #[test]
 fn cross_module_pub_unit_visible_via_module_dag() {
-    let dir = test_dir("cross_module_pub_unit");
+    let guard = test_dir("cross_module_pub_unit");
+    let dir = guard.path().to_path_buf();
 
     fs::write(
         dir.join("units_lib.ri"),
@@ -256,15 +252,14 @@ fn cross_module_pub_unit_visible_via_module_dag() {
         "expected no errors in user module, got: {:?}",
         errors
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ─── step-11: cross-module private unit NOT visible via ModuleDag ─────────────
 
 #[test]
 fn cross_module_private_unit_not_visible_via_module_dag() {
-    let dir = test_dir("cross_module_private_unit");
+    let guard = test_dir("cross_module_private_unit");
+    let dir = guard.path().to_path_buf();
 
     // Private unit (no `pub`)
     fs::write(
@@ -294,15 +289,14 @@ fn cross_module_private_unit_not_visible_via_module_dag() {
         !errors.is_empty(),
         "expected error for private unit 'privmil' used across module boundary"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ─── step-13: compile_project entry module resolves imported pub unit ─────────
 
 #[test]
 fn compile_project_entry_sees_imported_pub_unit() {
-    let dir = test_dir("compile_project_pub_unit");
+    let guard = test_dir("compile_project_pub_unit");
+    let dir = guard.path().to_path_buf();
 
     fs::write(
         dir.join("units_lib.ri"),
@@ -327,15 +321,14 @@ fn compile_project_entry_sees_imported_pub_unit() {
         "entry module should see imported pub unit 'mil', got errors: {:?}",
         errors
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ─── step-14: compile_project entry does NOT see imported private unit ─────────
 
 #[test]
 fn compile_project_entry_does_not_see_imported_private_unit() {
-    let dir = test_dir("compile_project_private_unit");
+    let guard = test_dir("compile_project_private_unit");
+    let dir = guard.path().to_path_buf();
 
     // Private unit (no `pub`) — should NOT be seeded into the entry module's prelude.
     fs::write(
@@ -372,8 +365,6 @@ fn compile_project_entry_does_not_see_imported_private_unit() {
         "error should mention unknown unit or 'privmil'; got: {:?}",
         errors
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ─── step-15: local unit duplicating an imported pub unit produces error ──────
@@ -479,7 +470,8 @@ fn transitive_pub_unit_not_visible_via_module_dag() {
     // The DAG seeds A's `mil` into B's registry, but B's CompiledModule.units
     // is empty (B has no locally-declared units). When C is compiled, prelude-seeding
     // from B.units yields nothing, so `mil` is unknown in C.
-    let dir = test_dir("transitive_pub_unit_module_dag");
+    let guard = test_dir("transitive_pub_unit_module_dag");
+    let dir = guard.path().to_path_buf();
     write_transitive_unit_chain(&dir);
 
     let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
@@ -495,8 +487,6 @@ fn transitive_pub_unit_not_visible_via_module_dag() {
     let module_c = dag.modules.get("c").expect("module c not in dag");
     let errors = errors_only(module_c);
     assert_unknown_unit_mil(&errors);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ─── step-21: transitive pub unit NOT visible two hops via compile_project ────
@@ -507,7 +497,8 @@ fn transitive_pub_unit_not_visible_via_compile_project() {
     // Same three-module chain: a.ri → b.ri → c.ri (c.ri is the entry file).
     // C's entry-point compilation cannot see `mil` from A because B's
     // CompiledModule.units is empty (B has no locally-declared units).
-    let dir = test_dir("transitive_pub_unit_compile_project");
+    let guard = test_dir("transitive_pub_unit_compile_project");
+    let dir = guard.path().to_path_buf();
     write_transitive_unit_chain(&dir);
 
     let resolver = reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
@@ -526,6 +517,4 @@ fn transitive_pub_unit_not_visible_via_compile_project() {
         .expect("module 'c' not found in compile_project output");
     let errors = errors_only(entry_module);
     assert_unknown_unit_mil(&errors);
-
-    let _ = fs::remove_dir_all(&dir);
 }

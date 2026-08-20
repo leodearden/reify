@@ -60,6 +60,21 @@
 # HOSTILE_LOOP_KEYS only when a var gains a matching knob-UNSET sub-case in
 # test_run_all.sh. (See run-all-ambient-vars.manifest's header for a
 # matching per-entry note next to REIFY_AUDIT_NO_COLD_BUILD.)
+#
+# Task 5259 (PRD docs/prds/merge-gate-health.md W4c): the hostile-ambient
+# RE-RUN no longer double-counts a PRE-EXISTING test_run_all.sh failure. The
+# per-key decision is extracted into ambient_isolation_check_one()
+# (tests/infra/run_all_ambient_isolation_lib.sh): on a hostile-RED run it
+# disambiguates against a CLEAN-env baseline run of the SAME target. If the
+# baseline is ALSO red, test_run_all.sh is broken independent of the ambient
+# env, so the failure is DERIVATIVE — the function emits a distinct
+# `SKIP: baseline test_run_all.sh already red (not an isolation bug)` marker
+# and returns verdict 0, so run_all.sh's exit-code classifier names only
+# test_run_all.sh (not this guard too — previously both went red, doubling the
+# triage noise). If the baseline is GREEN, the hostile ambient env ALONE
+# flipped it red — a genuine ambient-isolation bug — and the function FAILs.
+# The extra baseline run is paid ONLY on the rare hostile-red path; the common
+# all-green gate keeps its single-nested-run cost.
 
 set -euo pipefail
 
@@ -71,6 +86,9 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 [ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/plan_capture_lib.sh"
+
+[ -f "$SCRIPT_DIR/run_all_ambient_isolation_lib.sh" ] || { echo "ERROR: run_all_ambient_isolation_lib.sh not found at $SCRIPT_DIR/run_all_ambient_isolation_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/run_all_ambient_isolation_lib.sh"
 
 TARGET="$SCRIPT_DIR/test_run_all.sh"
 [ -f "$TARGET" ] || { echo "ERROR: test_run_all.sh not found at $TARGET"; exit 1; }
@@ -310,14 +328,18 @@ while IFS= read -r _hkey; do
 done <<< "$HOSTILE_LOOP_KEYS"
 
 # ---------------------------------------------------------------------------
-# Hostile-ambient RE-RUN loop: for each allow-listed var, run the REAL
-# test_run_all.sh once with every ledger var unset and just that one var
+# Hostile-ambient RE-RUN loop: for each allow-listed var, delegate to
+# ambient_isolation_check_one (run_all_ambient_isolation_lib.sh). It runs the
+# REAL test_run_all.sh with every ledger var unset and just that one var
 # exported to its live value -- the same shape dark-factory-orchestrator.yaml's
-# verify_env / the run_all.sh plan line's prefix env produce. `unset` +
-# `export` + the nested `bash "$TARGET"` all run inside the `$( ... )`
-# command-substitution subshell, so none of it leaks back out to this
-# script. Anchored line match (not a substring grep) so an inner mock's own
-# "0 failed"-shaped output could never false-pass this assertion -- only the
+# verify_env / the run_all.sh plan line's prefix env produce -- with `unset` +
+# `export` + the nested `bash "$TARGET"` all inside a `$( ... )` subshell, so
+# none of it leaks back out. On a hostile-RED run it additionally runs a
+# CLEAN-env baseline to separate a genuine ambient-isolation bug (baseline
+# green -> FAIL) from a derivative pre-existing test_run_all.sh failure
+# (baseline red -> distinct SKIP marker, verdict 0; task 5259 / W4c). The lib's
+# green-check is an anchored line match (not a substring grep) so an inner
+# mock's own "0 failed"-shaped output could never false-pass -- only the
 # nested test_run_all.sh's OWN test_summary line qualifies.
 # ---------------------------------------------------------------------------
 echo ""
@@ -334,24 +356,17 @@ while IFS= read -r _key; do
     echo ""
     echo "--- hostile-ambient: $_key=$_val (every ledger var unset, then only this one exported) ---"
 
-    amb_rc=0
-    amb_out="$(
-        while IFS= read -r _unset_key; do
-            [ -z "$_unset_key" ] && continue
-            unset "$_unset_key"
-        done <<< "$MANIFEST_KEYS"
-        export "$_key=$_val"
-        bash "$TARGET" 2>&1
-    )" || amb_rc=$?
+    # Delegate the hostile+baseline decision to the sourceable lib (task 5259).
+    # It prints the PASS/SKIP/FAIL verdict line (incl. the distinct baseline-red
+    # SKIP marker) to stdout — landing in run_all's captured log — and returns
+    # the verdict via exit code (0 = PASS/SKIP, 1 = genuine isolation bug). A
+    # derivative test_run_all.sh failure therefore yields rc 0 here, so run_all's
+    # exit-code classifier names only test_run_all.sh, not this guard too (W4c).
+    _check_rc=0
+    ambient_isolation_check_one "$TARGET" "$_key" "$_val" "$MANIFEST_KEYS" || _check_rc=$?
 
-    assert "test_run_all.sh exits 0 under ambient $_key=$_val (got rc=$amb_rc)" \
-        test "$amb_rc" -eq 0
-
-    if plan_match "$amb_out" '^Results: [0-9]+ passed, 0 failed$'; then
-        assert "test_run_all.sh reports 0 failed under ambient $_key=$_val" true
-    else
-        assert "test_run_all.sh reports 0 failed under ambient $_key=$_val (got: $amb_out)" false
-    fi
+    assert "test_run_all.sh has no ambient-isolation bug for $_key (SKIPs distinctly if the baseline is independently red) [rc=$_check_rc]" \
+        test "$_check_rc" -eq 0
 done <<< "$HOSTILE_LOOP_KEYS"
 
 test_summary

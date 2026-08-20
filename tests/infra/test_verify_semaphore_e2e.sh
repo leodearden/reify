@@ -73,6 +73,12 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# For nextest_available_in_plan (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 # compute_sha256 (task 5144): needed by the tree-sitter readiness helpers
 # below (ensure_tree_sitter_ready's stamp-match check) and by the
 # _make_fake_ts_dir unit-test fixture, so both sides of the contract use the
@@ -200,6 +206,55 @@ _wait_for_marker() {
         tick=$(( tick + 1 ))
     done
     return 1
+}
+
+# _clear_psi_fixture_on_marker <watch_file> <marker> <deadline_s> <fixture_path> <quiet_avg10>
+# Causal replacement for a fixed `sleep N` PSI-fixture updater (task 5839).
+# Blocks until the gate under test PROVES it observed pressure — i.e. until
+# <marker> lands in <watch_file> — and only then clears <fixture_path> to
+# <quiet_avg10>.  A wall-clock delay cannot express this: the gate's startup
+# latency (bash + verify.sh's preamble, which sources lib.sh, cpu-admit.sh and
+# lib_clock_stop.sh) is unbounded under load, and cpu-admit.sh admits on its
+# FIRST poll when avg10 is already below threshold — taking the uncontended
+# fast path with _ca_waited=0, so clock_enter_wait/clock_maybe_heartbeat are
+# never reached and clock_exit_wait emits no START.  Measured at base
+# HEAD=c89bac9267: rc=0 with ZERO clock markers and empty stderr.
+# Returns 0 once rewritten; 1 with the fixture UNCHANGED if the deadline
+# elapses, so a gate that never entered the wait fails LOUDLY downstream
+# (its own `timeout` bound fires → rc 124) instead of being handed a spurious
+# admit that would leave only the marker asserts red — the very signature 5839
+# exists to remove.
+#
+# MARKER-STREAM NOTE: this helper is not marker-silent, and is not meant to be.
+# _wait_for_marker calls load_tolerant_keepalive on every 0.05s tick, and that
+# emits a real @@REIFY_CLOCK_HEARTBEAT@@ line to ${REIFY_KEEPALIVE_FD:-2} — fd 3
+# in this suite (line 99), i.e. the parent stream — on the FIRST tick, because
+# the throttle's _REIFY_KEEPALIVE_LAST_EMIT_EPOCH starts empty and defaults to 0.
+# That emission is deliberate (it is what keeps a long causal wait from tripping
+# dark-factory's 180s heartbeat-idle backstop) and it can never reach the file
+# being polled, since fd 3 is dup'd from the ORIGINAL stderr, kept distinct from
+# every $*_ERR capture this suite greps.  What must stay marker-free is the
+# helper's own DIAGNOSTIC LINE below (T1f pins exactly that, and no more).
+_clear_psi_fixture_on_marker() {
+    local _watch="$1" _marker="$2" _deadline_s="$3" _fixture="$4" _avg10="$5"
+    if ! _wait_for_marker "$_watch" "$_marker" "$_deadline_s"; then
+        # Deliberately does NOT echo "$_marker": the token would leak into the
+        # parent verify stream and be parsed as a real clock-stop event by
+        # dark_factory:1916 (esc-4789-63, the same hazard assert_marker
+        # documents).  Describe the marker, never print it.
+        echo "  [5839] _clear_psi_fixture_on_marker: gate never emitted the awaited clock marker within ${_deadline_s}s; fixture left stuck (downstream asserts will fail loudly)" >&2
+        return 1
+    fi
+    # Atomic swap: the gate re-opens <fixture_path> on every poll, so a
+    # truncate-then-write could be read mid-write.  An empty read would make
+    # cpu_admit's `[ -z "$_avg10" ]` branch admit, silently converting a
+    # partial write into a passing test.  Same-directory temp + mv is a
+    # rename, so every poll sees either the old or the new content.
+    local _tmp="${_fixture}.tmp.$$"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        "$_avg10" > "$_tmp"
+    mv -f "$_tmp" "$_fixture"
+    return 0
 }
 
 # assert_marker <label> <file> <token>
@@ -647,6 +702,102 @@ assert "_load_scaled_deadline factor=8 base=180 max=600 == 600 (MAX cap: 180x8=1
     test "$_LSD_T2" = "600"
 assert "_load_scaled_deadline factor=1 base=60 == 60 (idle floor: factor=1 preserves BASE)" \
     test "$_LSD_T3" = "60"
+
+# ===========================================================================
+# _clear_psi_fixture_on_marker unit tests (G2 causal updater, task 5839)
+# ===========================================================================
+# Pins the contract of the causal replacement for Section G2's old fixed
+# `sleep 2` PSI-fixture updater: the fixture must be cleared when the gate has
+# PROVEN it observed pressure (a clock marker landed in the watch file), and
+# NEVER on wall-clock alone.  Every case here is hermetic — the watch file is a
+# plain fixture written by this block, no verify.sh is spawned — so the whole
+# block runs in ~3s and is load-independent apart from T1e's deliberate 2s
+# writer delay.  Runs early (before the heavy execute sections) for fast
+# feedback.  The awaited token rides only in printf/helper ARGUMENTS here,
+# never in an echoed assert description (esc-4789-63; see assert_marker).
+echo ""
+echo "--- _clear_psi_fixture_on_marker unit tests (G2 causal updater, task 5839) ---"
+
+_CPF_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_CPF_DIR")
+_CPF_STUCK='some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n'
+
+# --- T1a/T1b: marker ALREADY present → returns 0 and rewrites the fixture ---
+_CPF_WATCH_A="$_CPF_DIR/watch_a.txt"
+_CPF_PSI_A="$_CPF_DIR/psi_a"
+# shellcheck disable=SC2059  # _CPF_STUCK is a literal format string, not user input
+printf "$_CPF_STUCK" > "$_CPF_PSI_A"
+printf '%s\n' '@@REIFY_CLOCK_HEARTBEAT@@ reason=psi_pressure waited=1' > "$_CPF_WATCH_A"
+
+_CPF_RC_A=0
+_clear_psi_fixture_on_marker "$_CPF_WATCH_A" '@@REIFY_CLOCK_HEARTBEAT@@' 5 "$_CPF_PSI_A" 10.00 \
+    2>/dev/null || _CPF_RC_A=$?
+
+assert "T1a: _clear_psi_fixture_on_marker returns 0 when the awaited marker is already present" \
+    test "$_CPF_RC_A" -eq 0
+assert "T1b: marker observed → fixture rewritten to the quiet avg10 (10.00 present, 99.00 gone)" \
+    bash -c 'grep -qF "avg10=10.00" "$1" && ! grep -qF "avg10=99.00" "$1"' _ "$_CPF_PSI_A"
+
+# --- T1c/T1d/T1f: deadline expiry → non-zero, fixture UNCHANGED, no token leak ---
+# T1d is THE assert that encodes the 5839 fix: a wall-clock deadline must never
+# be sufficient to clear the fixture.  Deadline 1 keeps this to ~1s
+# (_wait_for_marker ticks at 0.05s × 20/s).
+_CPF_WATCH_C="$_CPF_DIR/watch_c.txt"
+_CPF_PSI_C="$_CPF_DIR/psi_c"
+_CPF_DIAG_C="$_CPF_DIR/diag_c.txt"
+: > "$_CPF_WATCH_C"
+# shellcheck disable=SC2059
+printf "$_CPF_STUCK" > "$_CPF_PSI_C"
+
+_CPF_RC_C=0
+_clear_psi_fixture_on_marker "$_CPF_WATCH_C" '@@REIFY_CLOCK_HEARTBEAT@@' 1 "$_CPF_PSI_C" 10.00 \
+    2>"$_CPF_DIAG_C" || _CPF_RC_C=$?
+
+assert "T1c: deadline elapses with no marker → returns non-zero (got ${_CPF_RC_C})" \
+    test "$_CPF_RC_C" -ne 0
+assert "T1d: deadline expiry leaves the fixture UNCHANGED (never clears on wall-clock alone)" \
+    bash -c 'grep -qF "avg10=99.00" "$1" && ! grep -qF "avg10=10.00" "$1"' _ "$_CPF_PSI_C"
+# T1f is scoped to the helper's OWN fd-2 diagnostic ($_CPF_DIAG_C) and claims
+# nothing about the parent stream: _wait_for_marker's per-tick
+# load_tolerant_keepalive legitimately writes a @@REIFY_CLOCK_HEARTBEAT@@ line to
+# fd 3 (the suite's real stderr) on its first tick, so the run above DOES put a
+# marker on the parent stream by design.  The regression this catches is a
+# diagnostic that interpolates the awaited token (esc-4789-63) — see the helper's
+# MARKER-STREAM NOTE for why the two streams are deliberately different.
+assert "T1f: the timeout DIAGNOSTIC LINE carries no clock-marker token (the fd-3 keepalive heartbeat is separate and intentional)" \
+    bash -c '! grep -qF "@@REIFY_CLOCK_" "$1"' _ "$_CPF_DIAG_C"
+
+# --- T1e: late-arriving marker → the helper BLOCKS until it exists ---
+# The elapsed bound is guaranteed by construction, not tuned: the writer sleeps
+# 2s before the marker exists, so the helper cannot return before t0+2, and
+# floor(t0+2) >= floor(t0)+1 makes the >= 1 integer-seconds check exact.
+_CPF_WATCH_E="$_CPF_DIR/watch_e.txt"
+_CPF_PSI_E="$_CPF_DIR/psi_e"
+: > "$_CPF_WATCH_E"
+# shellcheck disable=SC2059
+printf "$_CPF_STUCK" > "$_CPF_PSI_E"
+(
+    sleep 2
+    printf '%s\n' '@@REIFY_CLOCK_HEARTBEAT@@ reason=psi_pressure waited=1' >> "$_CPF_WATCH_E"
+) &
+_CPF_WRITER_E=$!
+
+_CPF_T0="$(date +%s)"
+_CPF_RC_E=0
+_clear_psi_fixture_on_marker "$_CPF_WATCH_E" '@@REIFY_CLOCK_HEARTBEAT@@' \
+    "$(_load_scaled_deadline 30 120)" "$_CPF_PSI_E" 10.00 2>/dev/null || _CPF_RC_E=$?
+_CPF_T1="$(date +%s)"
+
+kill "$_CPF_WRITER_E" 2>/dev/null || true
+wait "$_CPF_WRITER_E" 2>/dev/null || true
+
+_CPF_ELAPSED_E=$(( _CPF_T1 - _CPF_T0 ))
+assert "T1e: late-arriving marker is observed → returns 0 (got ${_CPF_RC_E})" \
+    test "$_CPF_RC_E" -eq 0
+assert "T1e: late-arriving marker → fixture rewritten to the quiet avg10" \
+    bash -c 'grep -qF "avg10=10.00" "$1" && ! grep -qF "avg10=99.00" "$1"' _ "$_CPF_PSI_E"
+assert "T1e: helper BLOCKED until the marker existed (elapsed ${_CPF_ELAPSED_E}s >= 1; writer sleeps 2s)" \
+    test "$_CPF_ELAPSED_E" -ge 1
 
 # ===========================================================================
 # _ts_outputs_healthy unit tests (Part C helper, task 5144 F1)
@@ -1160,9 +1311,49 @@ echo ""
 echo "--- Section D: print-plan oracle (occt cap=24 + gated-region ordering) ---"
 
 capture_plans
-assert "test plan: all nextest run lines carry --config-file with reify-nextest-occt path" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run" && ! printf "%s\n" "$1" | grep "cargo nextest run" | grep -v -- "--config-file.*reify-nextest-occt"' \
-    _ "$PLAN_TEST_CMDS"
+
+# HOST-INDEPENDENCE (task 5599). On a host WITHOUT cargo-nextest installed,
+# verify.sh gracefully emits `cargo test` instead (plan header nextest=0), and
+# the assertions below split into two kinds:
+#   - --config-file presence is NEXTEST-ONLY (--config-file is a nextest flag;
+#     the fallback line is `cargo test --workspace -- --test-threads=1 9<&-`
+#     with no --config-file at all), so it is guarded by NEXTEST_AVAILABLE with
+#     an else arm asserting the fallback shape;
+#   - the gated-region ORDERING and the absence of --no-run are plan-SHAPE
+#     facts that hold identically on the fallback (measured on the nx0
+#     `all --scope all` plan: ACQUIRE 24 < cargo test 29 < RELEASE 30), so they
+#     use the `cargo (test|nextest run)` alternation instead.
+# The probe reads the header off the already-captured PLAN_TEST_FULL — no extra
+# verify.sh invocation. That "no extra invocation" property is exactly why
+# nextest_available_in_plan exists (tests/infra/nextest_absent_lib.sh, task
+# 5644): verify.sh cannot emit the `nextest=` header without genuinely probing,
+# and the worst case forks cargo up to 4x plus two sleeps. The idiom's home is
+# now that lib rather than a sibling suite.
+#
+# The lib's extractor is `|| true`-guarded, which CONVERTS an aborting capture
+# into a quiet "unavailable" rather than eliminating the failure. A wrong answer
+# still fails loudly here, but for a reason that has to be preserved
+# deliberately: the else arm below asserts the fallback shape POSITIVELY
+# ("cargo-test fallback lines carry NO --config-file" requires `cargo test` to
+# be present AND --config-file to be absent), so on a nextest-present host it
+# fails on both counts. The ordering and no---no-run asserts are unguarded
+# anyway — they use the `cargo (test|nextest run)` alternation and hold on both
+# host shapes.
+# Guarded by tests/infra/test_verify_nextest_absent_suites.sh.
+NEXTEST_AVAILABLE=0
+if nextest_available_in_plan "$PLAN_TEST_FULL"; then
+    NEXTEST_AVAILABLE=1
+fi
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "test plan: all nextest run lines carry --config-file with reify-nextest-occt path" \
+        bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run" && ! printf "%s\n" "$1" | grep "cargo nextest run" | grep -v -- "--config-file.*reify-nextest-occt"' \
+        _ "$PLAN_TEST_CMDS"
+else
+    assert "test plan, nextest unavailable: cargo-test fallback lines carry NO --config-file (nextest-only flag)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "cargo test" && ! printf "%s\n" "$1" | grep -q -- "--config-file"' \
+        _ "$PLAN_TEST_CMDS"
+fi
 assert ".config/nextest.toml pins occt max-threads=24" \
     grep -qE 'occt = \{ max-threads = 24 \}' "$REPO_ROOT/.config/nextest.toml"
 assert "gen-nextest-config.sh resolves occt cap to 24 (workstation-class injection NPROC=32/MEM=128: min(24,32,64)=24)" \
@@ -1183,18 +1374,21 @@ assert "all plan: cargo check -p reify-gui ordered BEFORE acquire marker (outsid
         CHK=$(printf "%s\n" "$1" | grep -n "cargo check -p reify-gui" | head -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$CHK" ] && [ "$CHK" -lt "$ACQ" ]
     ' _ "$PLAN_ALL_FULL"
-assert "all plan: every nextest run line BETWEEN acquire and release markers (task 4862 revert: build inside slot)" \
+assert "all plan: every test run line BETWEEN acquire and release markers (task 4862 revert: build inside slot)" \
     bash -c '
         ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # All nextest passes are inside the slot; no --no-run filter needed (post-4862 revert).
-        FIRST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
-        LAST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        # All test passes are inside the slot; no --no-run filter needed (post-4862 revert).
+        FIRST=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | head -1 | cut -d: -f1)
+        LAST=$(printf "%s\n" "$1" | grep -nE "cargo (test|nextest run)" | tail -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$REL" ] && [ -n "$FIRST" ] && [ -n "$LAST" ]
         [ "$FIRST" -gt "$ACQ" ] && [ "$LAST" -lt "$REL" ]
     ' _ "$PLAN_ALL_FULL"
-assert "all plan: NO 'cargo nextest run ... --no-run' line before acquire marker (task 4862 revert: build inside slot)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' _ "$PLAN_ALL_FULL"
+# Vacuity hardening (task 5599): the bare `cargo nextest run` form made this
+# grep match nothing on a nextest-less host, so it passed while asserting
+# nothing. No --no-run line exists in any plan post-4862 on either host.
+assert "all plan: NO 'cargo (test|nextest run) ... --no-run' line before acquire marker (task 4862 revert: build inside slot)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run).*--no-run"' _ "$PLAN_ALL_FULL"
 
 # task 4853: compile-gate ordering on the test path — compile-gate now sits
 # BEFORE @@SEMAPHORE_ACQUIRE@@ as a block-entry load gate for the unified build+test block.
@@ -1420,7 +1614,7 @@ assert "Section E structural: stderr contains compile-gate disabled marker (veri
 assert "Section E: verify.sh compile-gate exits 0 (execute-only entry, gate disabled)" \
     test "$E_RC" -eq 0
 
-# run_compile_gate_psi_capture <psi_proc_path> <mem_proc_path> <timeout_secs>
+# run_compile_gate_psi_capture <psi_proc_path> <mem_proc_path> <timeout_secs> [err_path]
 # Drives `verify.sh compile-gate` (execute-only entry, dispatched before the
 # cargo/npm/tree-sitter pipeline — no make_stub_bin needed) under an injected
 # PSI fixture.  Unlike run_hermetic_compile_gate_capture, this does NOT use
@@ -1429,13 +1623,29 @@ assert "Section E: verify.sh compile-gate exits 0 (execute-only entry, gate disa
 # the `timeout`-wrapped exit code (124 when still holding at the bound).
 # Mirrors run_hermetic_compile_gate_capture's shape (task 4920: proves the
 # admit-mode hold + clock-stop markers on the verify.sh compile-gate path).
+# [err_path] (optional, task 5839): capture the child's stderr to exactly this
+# path and set G_ERR to it, instead of to a private mktemp path.
 run_compile_gate_psi_capture() {
-    local _psi="$1" _mem="$2" _bound="$3"
+    local _psi="$1" _mem="$2" _bound="$3" _err="${4:-}"
     local _tmpdir
     _tmpdir="$(mktemp -d)"
     _TMPDIRS+=("$_tmpdir")
 
-    G_ERR="$_tmpdir/g_err.txt"
+    # Optional explicit capture path (task 5839): Section G2's causal updater
+    # must poll the SAME file the gate writes, and it forks BEFORE this
+    # function runs — at which point $G_ERR still holds the PREVIOUS section's
+    # capture file, which legitimately contains its own HEARTBEAT marker.
+    # Letting the caller pre-create and pass the path removes that stale-marker
+    # hazard.  Omitted → the original private mktemp path (G1's call site is
+    # unchanged).
+    if [ -n "$_err" ]; then
+        G_ERR="$_err"
+    else
+        G_ERR="$_tmpdir/g_err.txt"
+    fi
+    # Idempotent on an already-created file; preserves the "capture file always
+    # exists before the child starts" guarantee _wait_for_marker's
+    # `grep … 2>/dev/null` relies on.
     touch "$G_ERR"
 
     G_RC=0
@@ -1448,6 +1658,205 @@ run_compile_gate_psi_capture() {
         timeout "$_bound" bash "$REPO_ROOT/scripts/verify.sh" compile-gate
     ) 2>"$G_ERR" || G_RC=$?
 }
+
+# run_g2_admit_on_drop_scenario <startup_delay_s> <mem_proc_path> <bound>
+# The G2 "admit-on-drop" arrangement, made causal (task 5839).  Seeds a stuck
+# avg10=99 PSI fixture, spawns an updater that clears it to avg10=10 ONLY once
+# the gate has proven it observed pressure, optionally delays the gate's start
+# by <startup_delay_s> to simulate load-induced startup latency, runs the gate,
+# and reaps the updater.  Sets G_RC / G_ERR.  The updater's own deadline is
+# <bound> + <startup_delay_s>, so it is guaranteed to outlive the gate's
+# `timeout` bound however large the simulated latency gets.
+#
+# The old form used a FIXED `sleep 2` before clearing.  That raced a load-scaled
+# deadline: under heavy load the gate's bash + verify.sh-preamble startup
+# exceeded 2s, so its FIRST poll read an ALREADY-cleared fixture and
+# cpu-admit.sh admitted immediately with _ca_waited=0 — rc=0 and NONE of
+# @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ (Section G0's T5a/T5b root-cause guard
+# pins that behaviour directly).  Observed at task/5644 HEAD=3ae7db94f0, load
+# avg 242.36 on 32 cores: 62/65, with exactly the three G2 marker asserts red
+# and the neighbouring rc==0 assert green.
+#
+# Scaling the sleep with load_tolerance_factor would only WIDEN the window — the
+# same whack-a-mole load_tolerance_lib.sh's own header exists to end.  The delay
+# is a wall-clock guess about ANOTHER process's startup latency, so it can
+# always be lost on a hot enough box; only a causal wait removes the race.
+#
+# Synchronising on @@REIFY_CLOCK_HEARTBEAT@@ (not STOP) is deliberate:
+# lib_clock_stop.sh emits STOP from clock_enter_wait and only then stamps
+# last_hb, so a HEARTBEAT can only ever follow a STOP on the same stream —
+# observing it banks BOTH markers before the fixture is touched, leaving only
+# START causally dependent on the clear.
+run_g2_admit_on_drop_scenario() {
+    local _startup_delay="$1" _mem="$2" _bound="$3"
+    # Normalise the delay once: it feeds BOTH the updater's deadline arithmetic
+    # and the sleep below, and a non-numeric value must degrade to "no delay"
+    # rather than abort the suite inside $(( … )) under `set -e`.
+    local _delay="${_startup_delay:-0}"
+    case "$_delay" in ''|*[!0-9]*) _delay=0 ;; esac
+    local _tmpdir
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    local _psi="$_tmpdir/psi" _err="$_tmpdir/g2_err.txt"
+    printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_psi"
+    # Pre-create so the updater's poll and the gate's capture are provably the
+    # SAME file from the start — $G_ERR still holds the PREVIOUS section's
+    # capture file at this point, and that file legitimately contains its own
+    # HEARTBEAT marker (G1 asserts exactly that), so an updater polling $G_ERR
+    # would match a stale marker and silently reinstate the race being fixed.
+    : > "$_err"
+
+    # The updater's deadline is the gate's bound PLUS the simulated startup
+    # latency, because the updater's clock starts here while the gate's `timeout`
+    # only starts after the sleep below.  Sharing one bound would silently shrink
+    # the updater's headroom as _delay grows, and a caller passing a delay near
+    # the bound would get an updater that gave up while the gate was still
+    # holding — surfacing as an opaque rc=124 instead of the helper's own
+    # diagnostic.  Offsetting makes the updater outlive the gate's bound by
+    # construction, at ANY delay, so the invariant is enforced rather than
+    # documented as a _delay << _bound precondition.
+    local _updater_deadline=$(( _bound + _delay ))
+    _clear_psi_fixture_on_marker "$_err" '@@REIFY_CLOCK_HEARTBEAT@@' \
+        "$_updater_deadline" "$_psi" 10.00 &
+    local _updater=$!
+
+    # Simulated gate-startup latency (0 in production use).  It cannot affect
+    # correctness: the updater cannot clear before the gate emits a heartbeat,
+    # and the gate cannot emit one before it starts — so the arrangement holds
+    # at ANY startup latency, which is the whole point of the fix.  Written as
+    # an explicit `if` rather than `[ … ] && sleep …` so a zero delay can never
+    # make this the function's non-zero-returning last statement under `set -e`.
+    if [ "$_delay" -gt 0 ]; then
+        sleep "$_delay"
+    fi
+
+    run_compile_gate_psi_capture "$_psi" "$_mem" "$_bound" "$_err"
+
+    kill "$_updater" 2>/dev/null || true
+    wait "$_updater" 2>/dev/null || true
+}
+
+# ===========================================================================
+# Section G0: G2 harness/updater contracts (task 5839)
+# ===========================================================================
+# Pins the harness contracts Section G2's causal updater depends on (T3a-T3c),
+# the root cause that forces the updater to be causal at all (T5a/T5b), and a
+# late-start regression witness for the fix itself (T5c-T5f).  The whole section
+# costs TWO gate spawns plus one real hold: T3a/T3b and T3c each drive an
+# ALREADY-QUIET PSI fixture and admit on the first poll (~0.3s apiece), T5a/T5b
+# re-read the T3a/T3b run rather than repeating it, and only the T5c-T5f witness
+# holds — bounded by the same load-scaled deadline Section G2 uses.
+#
+# Why the explicit-capture-path contract is a CORRECTNESS requirement, not
+# ergonomics: run_compile_gate_psi_capture assigns G_ERR INSIDE the call, but
+# G2 must fork its updater BEFORE that call — at which point $G_ERR still holds
+# the PREVIOUS section's capture file, which legitimately contains its own
+# HEARTBEAT marker (G1 asserts exactly that).  An updater polling $G_ERR would
+# match G1's stale marker, fire immediately, and silently reinstate the very
+# race being fixed — a fix that LOOKS causal but is not.  Pre-creating the path
+# and passing it in makes the updater and the gate provably agree on one file.
+echo ""
+echo "--- Section G0: G2 harness/updater contracts (task 5839) ---"
+
+_G0_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_G0_TMPDIR")
+_G0_MEM_QUIET="$_G0_TMPDIR/mem-quiet"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_G0_MEM_QUIET"
+# Below the gate's threshold (85), so the gate admits on its FIRST poll.
+_G0_PSI_QUIET="$_G0_TMPDIR/psi-quiet"
+printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_G0_PSI_QUIET"
+
+# --- T3a/T3b: the optional 4th [err_path] argument is honoured ---
+_G0_EXPLICIT="$_G0_TMPDIR/g0_explicit_err.txt"
+: > "$_G0_EXPLICIT"
+
+G_RC=0
+G_ERR=""
+run_compile_gate_psi_capture "$_G0_PSI_QUIET" "$_G0_MEM_QUIET" \
+    "$(_load_scaled_deadline 30 120)" "$_G0_EXPLICIT"
+# Saved before T3c overwrites G_RC — T5a's root-cause guard reads THIS run's
+# exit code rather than paying for a third identical spawn (see T5a/T5b).
+_G0_EXPLICIT_RC="$G_RC"
+
+assert "T3a: explicit [err_path] is honoured (G_ERR is the caller's pre-created path, not a private mktemp)" \
+    test "$G_ERR" = "$_G0_EXPLICIT"
+assert "T3b: quiet fixture admits on the first poll (exit 0; got ${G_RC})" \
+    test "$G_RC" -eq 0
+assert "T3b: the caller's explicit capture file exists after the run" \
+    test -f "$_G0_EXPLICIT"
+
+# --- T3c: 3-arg back-compat — G1's untouched call site keeps a PRIVATE file ---
+G_RC=0
+G_ERR=""
+run_compile_gate_psi_capture "$_G0_PSI_QUIET" "$_G0_MEM_QUIET" \
+    "$(_load_scaled_deadline 30 120)"
+
+assert "T3c: 3-arg form still assigns a capture path (G_ERR non-empty)" \
+    test -n "$G_ERR"
+assert "T3c: 3-arg form's capture file exists" \
+    test -f "$G_ERR"
+assert "T3c: 3-arg form's capture file is PRIVATE (not the explicit path from T3a)" \
+    test "$G_ERR" != "$_G0_EXPLICIT"
+
+# --- T5a/T5b: ROOT-CAUSE GUARD — the exact 5839 failure signature ---
+# The load-independent proof of WHY the fix must be causal rather than a longer
+# sleep, shaped like Section E's own "load-robustness root-cause guard" below.
+# A gate whose FIRST poll reads a below-threshold fixture takes cpu-admit.sh's
+# uncontended fast path with _ca_waited=0: clock_enter_wait (the sole STOP
+# emitter) and clock_maybe_heartbeat are never reached, and clock_exit_wait
+# emits START only when WAITED=1 — so it exits 0 having emitted NO clock marker
+# at all.  The architect measured exactly this at base HEAD=c89bac9267 under
+# G2's env (MAX_WAIT=2, POLL=1, CLOCK_HEARTBEAT_SECS=1): rc=0, zero markers,
+# empty stderr.  That is precisely what a wall-clock updater which WINS the
+# race hands to Section G2 — the rc==0 assert green, all three marker asserts
+# red — i.e. the whole bug, in one pair of asserts.
+#
+# NO EXTRA SPAWN: this guard reads the T3a/T3b run — byte-identical fixtures,
+# env and bound — rather than starting a third `verify.sh compile-gate` child.
+# The rc comes from _G0_EXPLICIT_RC (saved before T3c clobbered G_RC) and the
+# stderr from $_G0_EXPLICIT, which already holds exactly the text T5b greps.
+# The load-independence argument is unchanged: cpu_admit reads only the injected
+# PSI/mem fixtures, never a loadavg axis, so the observation is the same whoever
+# made it.  This suite is re-run wholesale by
+# test_verify_nextest_absent_suites.sh's S4, so a redundant spawn is paid twice.
+assert "T5a: G0 root-cause: an already-cleared PSI fixture admits on the first poll (exit 0; got ${_G0_EXPLICIT_RC}) — same run as T3b" \
+    test "$_G0_EXPLICIT_RC" -eq 0
+assert "T5b: G0 root-cause: that admit emits NO clock marker at all (the 5839 failure signature)" \
+    bash -c '! grep -qF "@@REIFY_CLOCK_" "$1"' _ "$_G0_EXPLICIT"
+
+# --- T5c-T5f: LATE-START REGRESSION WITNESS ---
+# Drives the G2 arrangement with the gate's start deliberately delayed, so the
+# updater has every chance to clear the fixture first.  The delay is NOT a tuned
+# threshold: it is strictly greater than the 2s the old fixed-sleep updater
+# waited, and per T5b ANY gate start after that clear deterministically yields
+# rc=0 with zero markers.  This scenario therefore fails 3 of its 4 asserts
+# against the old arrangement and passes against the causal one — a real
+# regression witness, not a timing coincidence.  Being a simulated startup
+# latency rather than an anti-hang deadline it stays FIXED and un-load-scaled,
+# matching this file's HOLD_S / C_HOLD_S convention (header lines 55-63).
+_G0_LATE_START_S=4
+
+G_RC=0
+G_ERR=""
+# `|| G_RC=$?` covers BOTH states: with run_g2_admit_on_drop_scenario still
+# undefined, bash's command-not-found 127 lands in G_RC — so T5c is genuinely
+# RED rather than spuriously green on the pre-reset 0 — and `set -e` is
+# neutralised so T5d-T5f still run instead of aborting the suite.  Once the
+# helper exists it returns 0 and G_RC keeps the value the harness assigned.
+run_g2_admit_on_drop_scenario "$_G0_LATE_START_S" "$_G0_MEM_QUIET" \
+    "$(_load_scaled_deadline 30 120)" || G_RC=$?
+
+assert "T5c: G0-late: admits once PSI drops despite a ${_G0_LATE_START_S}s-delayed gate start (exit 0; got ${G_RC})" \
+    test "$G_RC" -eq 0
+assert_marker "T5d: G0-late: G_ERR captured the CLOCK_STOP marker (reason=psi_pressure)" \
+    "$G_ERR" '@@REIFY_CLOCK_STOP@@ reason=psi_pressure'
+assert_marker "T5e: G0-late: G_ERR captured the CLOCK_HEARTBEAT marker" \
+    "$G_ERR" '@@REIFY_CLOCK_HEARTBEAT@@'
+assert_marker "T5f: G0-late: G_ERR captured the CLOCK_START marker (reason=psi_pressure)" \
+    "$G_ERR" '@@REIFY_CLOCK_START@@ reason=psi_pressure'
 
 # ===========================================================================
 # Section G: compile-gate PSI hold + admit-on-drop (execution; task 4920)
@@ -1462,8 +1871,9 @@ run_compile_gate_psi_capture() {
 #     still holding, well past the old MAX_WAIT=2s), stderr has STOP+HEARTBEAT,
 #     never an admit/fairness-floor message (removed) nor START.
 # G2 (admit-on-drop): same stuck start, a background updater clears the
-#     fixture to a low avg10 after ~2s → exit 0, STOP+HEARTBEAT+START all
-#     present (balanced), no fairness message.
+#     fixture to a low avg10 once the gate's FIRST heartbeat proves it observed
+#     the pressure (task 5839 — causal, never on wall-clock) → exit 0,
+#     STOP+HEARTBEAT+START all present (balanced), no fairness message.
 # RED today: compile_gate() sets no _ca_clock_reason → admits-on-timeout at
 # MAX_WAIT=2s → the bounded `timeout` never fires, no STOP marker at all.
 # ===========================================================================
@@ -1496,24 +1906,13 @@ assert "G1: stderr does NOT match admit/fairness-floor message (removed — neve
 assert "G1: stderr does NOT contain the CLOCK_START marker (never admitted)" \
     bash -c '! grep -qF "@@REIFY_CLOCK_START@@" "$1"' _ "$G_ERR"
 
-# G2: same stuck-fixture start, a background updater clears it to avg10=10
-# after ~2s → the hold admits on the PSI drop, not on a timeout.
-G_PSI_2="$_G_TMPDIR/psi-g2"
-printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
-    > "$G_PSI_2"
-(
-    sleep 2
-    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
-        > "$G_PSI_2"
-) &
-_G2_UPDATER=$!
-
+# G2: same stuck-fixture start; the updater clears it to avg10=10 only once the
+# gate has PROVEN it observed pressure (task 5839 — the old fixed `sleep 2`
+# raced the load-scaled deadline).  The hold therefore admits on the PSI drop,
+# not on a timeout, at any gate-startup latency.
 G_RC=0
 G_ERR=""
-run_compile_gate_psi_capture "$G_PSI_2" "$G_MEM_QUIET" "$(_load_scaled_deadline 30 120)"
-
-kill "$_G2_UPDATER" 2>/dev/null || true
-wait "$_G2_UPDATER" 2>/dev/null || true
+run_g2_admit_on_drop_scenario 0 "$G_MEM_QUIET" "$(_load_scaled_deadline 30 120)"
 
 assert "G2: admits once PSI drops (exit 0; got ${G_RC})" \
     test "$G_RC" -eq 0

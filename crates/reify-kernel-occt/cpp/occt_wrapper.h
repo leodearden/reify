@@ -162,6 +162,34 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 /// `BRepBuilderAPI_Copy` fails.
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes);
 
+// --- Single-pass n-ary fuse (task 5213, Lever 1) ---
+
+/// Fuse every shape in `shapes` into a single result in ONE BRepAlgoAPI_Fuse
+/// pass (SetArguments/SetTools), replacing the O(N²) pairwise-accumulator loop
+/// the pattern realizers used.  Empty input throws; a single element is
+/// returned unchanged; a fully-disjoint result is rewrapped as a watertight
+/// TopoDS_CompSolid of the separate solids (preserving volume and component
+/// count).  Source shapes in the vec remain valid after the call.
+std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes);
+
+// --- Boolean-op-pass counter (task 5213) ---
+
+/// Zero the CALLING THREAD's boolean-op-pass count.  The counter is per-thread;
+/// other threads' counts are untouched.
+void reset_boolean_pass_count();
+
+/// Read the calling thread's count of completed OCCT boolean passes — only the
+/// passes this thread performed itself.  Incremented once per successful Build()
+/// in boolean_fuse/boolean_cut/boolean_common and once per single-pass
+/// fuse_shape_list — so a K-instance pattern reads as exactly 1, not K−1.
+uint64_t boolean_pass_count();
+
+/// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
+/// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+/// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
+/// fuse/pattern result's real type rather than assuming Solid (task 5213).
+rust::String shape_type_name(const OcctShape& shape);
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
@@ -812,6 +840,13 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
+/// Create a flat circular face (disk) centred at (cx,cy,cz) with its plane
+/// normal aligned to (nx,ny,nz) — the oriented profile used to sweep a pipe onto
+/// a path's start frame. gp_Ax2(P, N) builds a valid frame for any unit normal.
+std::unique_ptr<OcctShape> make_oriented_circle_face(double radius, double cx, double cy,
+                                                     double cz, double nx, double ny,
+                                                     double nz);
+
 /// Create an open lateral cylindrical face (no caps) centred on the Z axis with
 /// base at the origin.  U ∈ [0, 2π] (full revolution), V ∈ [0, height].
 /// Both radius and height must be finite and positive.
@@ -895,6 +930,18 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
 /// constraining orientation (BRepOffsetAPI_MakePipeShell + SetMode).
 /// `spine` is the path the section follows; `guide` biases section
 /// orientation via SetMode(guide, /*KeepContact=*/Standard_False).
+///
+/// `profile` must be a wire, a vertex, or a single-wire face — a face is
+/// reduced to its outer wire before `Add`, since BRepFill_Section accepts only
+/// a wire or a vertex (an EDGE is rejected). A face with any other wire count
+/// is rejected too: a holed face (>1 wire) has no single-wire representation
+/// and dropping the holes would silently produce the wrong part, while an
+/// unbounded face (0 wires, as from make_half_space) has no bounding wire to
+/// sweep at all. `spine` and `guide` must each be a Wire; both are checked by
+/// role up front so a mistyped handle is diagnosed by name instead of through
+/// OCCT's argument-less TopoDS::Wire downcast failure. The result follows
+/// BRepOffsetAPI_MakePipe's convention: a face profile yields a SOLID, a wire
+/// profile a SHELL.
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide);
@@ -904,6 +951,14 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
 /// profile is added as a section via `.Add(...)`. If a second guide is
 /// present, it is applied via `SetMode(aux, /*KeepContact=*/false)`
 /// as an auxiliary-orientation constraint.
+///
+/// Each profile is normalized to a section wire before `Add` (a face is
+/// reduced to its outer wire; a holed or unbounded face is rejected), since
+/// BRepFill_Section accepts only a wire or a vertex. Each guide must be a Wire
+/// and is checked by role, as in make_pipe_shell. As there, the result is
+/// solidified when every section was a face, and left as the raw SHELL for
+/// mixed or all-wire section sets. Rejection diagnostics are attributed to
+/// `loft_guided_profiles`, not to make_pipe_shell.
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides);
 
@@ -948,6 +1003,10 @@ std::unique_ptr<OcctShape> make_triangle_face(
 /// parameter of the wire's composite curve). Throws std::runtime_error if the
 /// shape is not a wire or the start-tangent has zero magnitude.
 Point3 wire_start_tangent(const OcctShape& wire);
+
+/// Return the start point of a wire (the 3D point at the first parameter of the
+/// wire's composite curve). Throws std::runtime_error if the shape is not a wire.
+Point3 wire_start_point(const OcctShape& wire);
 
 // --- Queries ---
 
@@ -1427,6 +1486,10 @@ bool is_connected(const OcctShape& shape);
 ///  && !IsOpenYmax() && !IsOpenZmin() && !IsOpenZmax()`.
 bool is_bounded(const OcctShape& shape);
 
+/// True iff `shape` wraps a null (`IsNull() == true`) TopoDS_Shape.
+/// A trivial inline null-handle check that cannot throw (no wrap_occt_call).
+bool shape_is_null(const OcctShape& shape);
+
 // --- Test fixture helpers ---
 // These functions build deliberately malformed or exotic shapes that are only
 // useful for conformance integration tests. They are gated by `#[cfg(has_occt)]`
@@ -1480,6 +1543,14 @@ std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z)
 /// Build a CompSolid containing one 10×10×10 mm box solid.
 /// The returned shape has TopAbs_ShapeType() == TopAbs_COMPSOLID.
 std::unique_ptr<OcctShape> make_compsolid_for_test();
+
+/// Build a default-constructed OcctShape whose `.shape` member is a null
+/// (`IsNull() == true`) TopoDS_Shape — a NON-null unique_ptr wrapping null
+/// topology. Supplies the exact crash input for the geometry-query FFI
+/// hardening tests (get_shape boundary + query_volume/centroid/bbox/
+/// inertia_tensor); such a shape cannot be constructed from Rust because
+/// `OcctShape` is opaque. Default construction cannot throw.
+std::unique_ptr<OcctShape> make_null_shape_for_test();
 
 /// Apply a rotation+translation placement using `BRepBuilderAPI_Transform`
 /// with `Copy=Standard_False` — encoding the transform into `TopLoc_Location`

@@ -347,6 +347,14 @@ parameters are unit-less in the joint's local frame.
 
 ### 3.2 `std.geometry.primitive`
 
+**Note on the signatures below:** these describe the target `std.geometry` stdlib
+API — the structured/typed argument forms designers should expect. The
+compiler's current lowering for a few of these constructors (`polygon`,
+`line_segment`, `arc`, `interp`, `bezier`) accepts only flat positional
+coordinate arguments rather than the structured types shown; each is annotated
+below with a `// current compiler form:` comment giving the form that compiles
+today.
+
 **3D solids:**
 
 ```
@@ -406,6 +414,8 @@ kernel error instead of a diagnostic.
 fn rectangle(width: Length, height: Length) -> Surface
 fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
+// current compiler form: polygon(x1, y1, x2, y2, ...) — variadic flat
+// coordinate pairs, at least 6 args (3 points), even count; see geometry.rs:1570
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
@@ -418,10 +428,17 @@ the caller's explicit vertex coordinates, not auto-centred.
 
 ```
 fn line_segment<N: Nat>(start: Point<N,Length>, end: Point<N,Length>) -> Curve
+// current compiler form: line_segment(x1, y1, z1, x2, y2, z2) — 6 flat
+// scalars; see geometry_curve.rs:22
 fn arc(center: Point3<Length>, radius: Length, start_angle: Angle, end_angle: Angle) -> Curve
+// current compiler form: arc(cx, cy, cz, radius, start_angle, end_angle, ax,
+// ay, az) — 9 flat args (adds an explicit axis ax/ay/az); see geometry_curve.rs:47
 fn helix(radius: Length, pitch: Length, height: Length) -> Curve
 fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
+// current compiler form: same list -> flat-args divergence as `polygon` /
+// `line_segment` above (flat coordinate args, not a structured List<Point<N,Length>>)
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
+// current compiler form: same list -> flat-args divergence as `interp` above
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
 
 // Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
@@ -516,6 +533,8 @@ fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3
 ```
 
 Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
+
+**Performance — single-pass fuse (task 5213):** when a multi-instance pattern is realized as a merged solid on the OCCT kernel (`linear_pattern`, `linear_pattern_2d`, `circular_pattern`, `arbitrary_pattern`), all instances are fused in ONE n-ary boolean pass rather than one pairwise fuse per instance — turning the former O(N²) accumulation into a single OCCT arrangement pass, with identical union semantics (overlapping instances still merge; disjoint instances stay separate). This makes dense replicated workloads — perforated plates, sieves, vent grids — practical. See `examples/perforated_plate.ri` for a worked `difference(plate, union_all(linear_pattern_2d, linear_pattern_2d))` sieve.
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `mirror(geometry, plane: Plane)`, `circular_pattern(geometry, axis: Axis, ...)`, and `arbitrary_pattern(geometry, transforms: List<Transform<3>>)` are implemented by this PRD.
 
@@ -958,8 +977,9 @@ trait HydraulicPort : FluidPort + MechanicalPort {
 
 ```
 // Base trait — every material-conforming structure satisfies this contract.
-// Note: density shown as Density (aspirational dimensioned type); shipped MaterialSpec
-// uses density : Real pending dimensional-type tightening (#3111-family).
+// Note: density : Density is SHIPPED, not aspirational — the dimensional-type
+// tightening has landed. Every param declaration below — name, type, default and
+// trait base — matches materials_mechanical.ri; comments here are editorial.
 trait MaterialSpec {
     param density : Density
     param name : String
@@ -968,10 +988,13 @@ trait MaterialSpec {
 // Canonical first-class material value type (shipped in materials_mechanical.ri,
 // task #1876 / #2411). Use MaterialSpec above for trait-typed params; use this struct
 // when you want a concrete material value (e.g. Material(name: "steel", ...)).
-structure def Material {
+// The `: Visual` base and the additive `appearance` param (neutral-grey default)
+// arrived with task β #4761; existing no-appearance constructors remain valid.
+structure def Material : Visual {
     param name : String
-    param density : Real
-    param youngs_modulus : Real
+    param density : Density
+    param youngs_modulus : Pressure
+    param appearance : Appearance = Appearance()
 }
 
 trait TemperatureDependent {
@@ -984,48 +1007,61 @@ trait TemperatureDependent {
 ```
 // Dimensioned-type note: the Pressure/Energy param types shown below (youngs_modulus,
 // yield_strength, ultimate_tensile_strength, compressive_strength, shear_modulus,
-// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are the target of the
-// deferred #3111-family dimensional tightening and are currently Real placeholders in the
-// shipped stdlib. The thermal/electrical/optical/fracture dimensioned types shown in §6.3–§6.5
-// have been realized by tasks #3112/#3113/#3115 (ThermalExpansion, ElectricResistivity,
-// DielectricStrength, AbsorptionCoeff, FractureToughness). Do not downgrade the Pressure/Energy
-// types shown here — they remain the documented aspiration pending #3111.
+// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are SHIPPED, not
+// aspirational — the dimensional tightening has landed. Every param declaration in this
+// fence — name, type, default and trait base — matches materials_mechanical.ri. Inline
+// comments are editorial and are NOT pinned to the .ri text: some are condensed from a
+// block comment above the trait there (e.g. fracture_toughness, damping_ratio,
+// loss_factor), so a "verbatim" audit should compare declarations, not comments.
+// The thermal/electrical/optical/fracture
+// dimensioned types shown in §6.3–§6.5 have been realized by tasks #3112/#3113/#3115
+// (ThermalExpansion, ElectricResistivity, DielectricStrength, AbsorptionCoeff,
+// FractureToughness). Do not downgrade the Pressure/Energy types shown here.
+//
+// The params still typed Real in this section — poissons_ratio, hardness_value,
+// elongation_at_break, reduction_of_area, damping_ratio, loss_factor — are GENUINELY
+// dimensionless (ratios, fractions, and scale-dependent instrument readings) and are
+// correct as written. Do not "fix" them to a dimensioned type; each carries its
+// rationale inline below.
+//
+// Being declared with a dimensioned type does not imply anything reads it: see
+// "Declared-only material properties" immediately after §6.3 for the register.
 
 // Elastic, Strong, Hard, Ductile are free-standing (no MaterialSpec base) — deliberate
 // design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
 // slot rather than inheriting from the base trait directly.
 trait Elastic {
-    param youngs_modulus : Pressure  // shipped: Real (aspiration pending #3111)
-    param poissons_ratio : Real
-    param shear_modulus : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param youngs_modulus : Pressure
+    param poissons_ratio : Real // dimensionless
+    param shear_modulus : Pressure = undef // optional — omit when not independently measured
     constraint 0 < poissons_ratio < 0.5
 }
 trait Strong {
-    param yield_strength : Pressure  // shipped: Real (aspiration pending #3111)
-    param ultimate_tensile_strength : Pressure  // shipped: Real (aspiration pending #3111)
-    param compressive_strength : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param yield_strength : Pressure
+    param ultimate_tensile_strength : Pressure
+    param compressive_strength : Pressure = undef // optional — omit when not reported
     constraint ultimate_tensile_strength >= yield_strength
 }
 trait Hard {
-    param hardness_value : Real
+    param hardness_value : Real // dimensionless — scale-dependent (Rockwell/Brinell/Vickers/Shore)
     param hardness_scale : HardnessScale
 }
 enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
 trait FatigueRated : MaterialSpec {
-    param fatigue_limit : Pressure = undef  // shipped: Real (aspiration pending #3111)
-    param fatigue_strength_at : Pressure = undef  // shipped: Real (aspiration pending #3111)
-    param fatigue_cycles : Int = undef
+    param fatigue_limit : Pressure = undef        // optional — stress amplitude for unlimited cycles
+    param fatigue_strength_at : Pressure = undef  // optional — stress amplitude at fatigue_cycles
+    param fatigue_cycles : Int = undef            // optional — cycle count for fatigue_strength_at
 }
 trait FractureTough : MaterialSpec {
     param fracture_toughness : FractureToughness  // Pa·√m — tightened from Scalar<> by task #3115
 }
 trait Ductile {
-    param elongation_at_break : Real
-    param reduction_of_area : Real = undef
+    param elongation_at_break : Real // dimensionless
+    param reduction_of_area : Real = undef // optional — omit when not reported
 }
 trait ImpactResistant : MaterialSpec {
-    param charpy_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
-    param izod_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
+    param charpy_impact : Energy = undef  // optional — energy absorbed in Charpy test (J)
+    param izod_impact : Energy = undef    // optional — energy absorbed in Izod test (J)
 }
 trait Damping : MaterialSpec {
     param damping_ratio : Real  // fraction of critical damping (dimensionless)
@@ -1053,6 +1089,56 @@ trait Refractory : ThermallyCharacterized {
     constraint max_service_temperature >= 1500.0K
 }
 ```
+
+#### Declared-only material properties (no production readers)
+
+Some material params above are *declared* with a dimensioned type but are never
+*read*. A dimensioned type is evidence of intent, not of consumption, so the gap is
+registered here rather than left for a reader to infer. See
+`INV-SF-3 declared-intent-consumed-or-diagnosed` in
+`docs/legibility/design-invariants.md` — that file is the single normative copy of
+the rule, cited here by slug and deliberately not restated.
+
+"Reader" below means a **production** reader: a Rust/host consumer, or a live DSL
+`constraint`/expression that uses the value. The sweep rule is stated generically
+rather than as a path list, so it does not drift as files move — **a hit is not a
+reader if it is** a declaration (including a re-declaration with a default), a
+comment, an identifier appearing only in a name (a test fn name, a diagnostic
+string), anything under `examples/**`, or anything inside a `tests/` tree or a
+`#[cfg(test)]` body — including test fixtures such as
+`reify-test-support/src/fixtures.rs`, which declares these params in fixture DSL
+rather than reading them. Re-running the sweep therefore yields many hits for both
+properties below; none of them is a reader.
+
+| Property | Declared at | Production readers | Owner |
+|---|---|---|---|
+| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
+| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
+
+**`thermal_conductivity` is deliberately absent from that table.** The name is
+declared at two independent sites, and they differ:
+
+- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:148`) is
+  **not** declared-only — `structural_physical.ri:150` carries
+  `constraint thermal_conductivity > 0W/(m*K)`, a live DSL reader. For this site
+  the zero-reader claim holds only when scoped to **Rust/host** readers.
+- `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a
+  *separate* param that merely shares the name, and it has no reader of its own:
+  no constraint in `materials_thermal.ri`, and its only non-test Rust hit is
+  inside a `#[cfg(test)]` body.
+
+The second site is nonetheless **not** registered above. The ratified ruling in
+**#5801** names both declaration sites and treats `thermal_conductivity` as one
+property that it explicitly does not own, so adding a row against #5801 would
+assign it an ownership it declines. Splitting the two sites — and deciding whether
+the trait-scoped one needs its own owner — is #5801's call, not this reference's;
+it is recorded here so the distinction is not silently lost.
+
+This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
+and the matching §10 out-of-scope entry, both of which listed `thermal_conductivity`
+among the properties with "zero production readers repo-wide". That PRD's §2.4
+correction 2, its ο signal and its §10 entry were amended to match in the same
+change as this register, so no superseded claim is left standing there.
 
 ### 6.4 `std.materials.electrical`
 
@@ -1797,11 +1883,11 @@ fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
 
 `min_clearance` computes the minimum separation distance between `a` and `b` using OCCT's `BRepExtrema_DistShapeShape`. Returns `0mm` when the bodies intersect.
 
-**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
+**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
 
 ### 13.6 Worked examples
 
-The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
+The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
 
 **Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
 

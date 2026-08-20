@@ -277,6 +277,12 @@ impl Engine {
             // to UnifiedDag; REIFY_BUILD_SCHEDULER=legacy is the kill-switch.
             // Tests override post-construction via `set_build_scheduler`.
             build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
+            // Task #5105 δ (INV-GEO-1): mesh-contract enforcement posture at
+            // kernel-seam site 1, read ONCE from the environment. `from_env`
+            // fails closed — it defaults to Enforce, and only
+            // REIFY_MESH_CONTRACT=warn downgrades. Tests override
+            // post-construction via `set_mesh_contract_mode`.
+            mesh_contract_mode: reify_ir::geometry::MeshContractMode::from_env(),
             demand: DemandRegistry::new(),
             // Task 4532: passive observed-demand side-channel + would-prune
             // measurement. Both ALWAYS present (not cfg-gated) — the GUI prod
@@ -347,6 +353,10 @@ impl Engine {
             // cached handle satisfies the request under the partial-order
             // rule.
             realization_cache: crate::realization_cache::RealizationCache::new(),
+            // Task 4152: zeroed eval-cache accumulator. Folded forward by
+            // `eval_cached` and surfaced (alongside the live realization
+            // counter) by `Engine::cache_stats`.
+            cumulative_eval_cache_totals: crate::EvalCacheTotals::default(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -390,12 +400,28 @@ impl Engine {
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
-    /// each." Migration is in progress, not yet complete: this task (5040)
-    /// routes the 3 paired sites in `engine_eval.rs` through this helper,
-    /// but `engine_edit.rs` and `concurrent.rs` still bump the counters by
-    /// hand pending their own migration tasks. See
-    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the live
-    /// call-site inventory.
+    /// each."
+    ///
+    /// **The migration is complete** — this is now the sole writer of both
+    /// `next_snapshot_id` and `next_version_id`. All five live
+    /// paired-allocation sites route through it: `engine_edit.rs`'s
+    /// `edit_param` and `edit_source`, and `engine_eval.rs`'s `eval` (two
+    /// sites) and `dispatch_merged_cluster_solve`.
+    ///
+    /// **One allowlisted exception survives**: `engine_eval.rs`'s
+    /// `eval_cached` re-stamps `next_snapshot_id` alone — reusing the
+    /// caller-supplied `version` — behind a `// version-id-gate: allow`
+    /// comment, since routing through here would spuriously bump
+    /// `next_version_id` too.
+    ///
+    /// The discipline is self-enforcing, not aspirational:
+    /// `crates/reify-eval/tests/version_id_discipline_gate.rs` scans
+    /// `crates/reify-eval/src/` for raw `self.next_*_id` use outside this
+    /// allocator and its readers, which is why `docs/invariants.md`
+    /// records INV-BUILD-2 as `enforced(type+lint)`. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the settled
+    /// contract statement — the gate test above is the live source of
+    /// truth for the call-site set.
     pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
         let snapshot_id = SnapshotId(self.next_snapshot_id);
         self.next_snapshot_id += 1;
@@ -643,6 +669,43 @@ impl Engine {
         &self.realization_cache
     }
 
+    /// Cache counters for this engine (task 4152).
+    ///
+    /// **This method is UNGATED**, unlike the neighbouring
+    /// [`realization_cache`](Self::realization_cache) accessor: it returns only
+    /// `usize` counters by value and never exposes a kernel-internal
+    /// `GeometryHandleId`, so there is nothing here to keep out of production
+    /// builds.
+    ///
+    /// The four fields have two different time bases:
+    ///
+    /// - [`realization_entries`](crate::CacheStats::realization_entries) is
+    ///   **live** — read straight off the current
+    ///   [`RealizationCache`](crate::realization_cache::RealizationCache). It is
+    ///   a monotonic lifetime count of new terminal realizations that survives
+    ///   both cache eviction and [`clear_realization_cache`](Self::clear_realization_cache),
+    ///   which is what makes it usable as a re-mesh-avoidance signal across
+    ///   `edit_param` / `edit_source` (both of which flush the cache).
+    /// - `cache_hits` / `cache_misses` / `early_cutoffs` are **cumulative
+    ///   totals** across every [`Engine::eval_cached`](crate::Engine::eval_cached)
+    ///   call on this engine — not the last call's figures. For a single call's
+    ///   own numbers, read `CachedEvalResult::stats` instead.
+    ///
+    /// Only the `build()` family can move `realization_entries`: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub fn cache_stats(&self) -> crate::CacheStats {
+        // Assembled field-by-field, deliberately not by functional update from
+        // the accumulator: the accumulator holds only the three eval-cache
+        // counters, so `realization_entries` has exactly one source (the live
+        // cache) and cannot be shadowed by a stale accumulated copy.
+        crate::CacheStats {
+            cache_hits: self.cumulative_eval_cache_totals.hits,
+            cache_misses: self.cumulative_eval_cache_totals.misses,
+            early_cutoffs: self.cumulative_eval_cache_totals.early_cutoffs,
+            realization_entries: self.realization_cache.realization_entries(),
+        }
+    }
+
     /// Flush the per-engine [`RealizationCache`](crate::realization_cache::RealizationCache),
     /// dropping every cached `(entity_id, repr_kind, demanded_tol) →
     /// GeometryHandleId` entry.
@@ -681,16 +744,43 @@ impl Engine {
     /// **What this method does NOT touch**: `eval_state`, `snapshot`,
     /// `cache`, `journal`, `feature_tag_table`, `topology_attribute_table`,
     /// `param_overrides`, registered solvers/kernels, or any other engine
-    /// state. The reset is single-purpose: only `realization_cache` is
-    /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
+    /// state. The reset is single-purpose: only `realization_cache`'s entries
+    /// are dropped, via
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
+    ///
+    /// **What this method does NOT reset**: the cache's
+    /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
+    /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
+    /// It is a monotonic count of realizations PERFORMED over the engine's
+    /// lifetime, not of entries currently resident, so it deliberately survives
+    /// the flush (task 4152) — `clear` empties the buckets in place and cannot
+    /// reach the counter, so this holds by construction rather than by a
+    /// save/restore convention here. Since `edit_param` and `edit_source` both
+    /// flush here, resetting it would zero the metric on every edit. Pinned by
+    /// `realization_entries_survives_clear_realization_cache` in
+    /// `tests/tolerance_wiring_e2e.rs` and by
+    /// `clear_empties_the_cache_but_preserves_realization_entries` in
+    /// `src/realization_cache.rs`.
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
     /// in `tests/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
-        self.realization_cache = crate::realization_cache::RealizationCache::new();
+        // Task 4152: `RealizationCache::clear` drops every entry in place and
+        // structurally cannot reach the monotonic `realization_entries`
+        // counter, so the lifetime metric survives the flush by construction.
+        // Do NOT "simplify" this back to a reseat
+        // (`self.realization_cache = RealizationCache::new()`): that zeroes the
+        // counter, and `edit_param`/`edit_source` flush on every edit, so the
+        // metric would be unusable across edits.
+        self.realization_cache.clear();
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
+    ///
+    /// **No compute trampolines are registered.** Call
+    /// [`Self::register_production_compute_fns`] on the returned engine unless you
+    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
+    /// posture doc, `reify-cli/src/main.rs:450-471`).
     ///
     /// This is the standard constructor for production use. For tests that
     /// require an isolated or empty prelude, use `Engine::with_prelude`.
@@ -708,6 +798,11 @@ impl Engine {
     /// Construct an Engine using the inventory-driven multi-kernel registry
     /// (v0.2 entry point per `docs/prds/v0_2/multi-kernel.md` "Resolved
     /// design decisions").
+    ///
+    /// **No compute trampolines are registered.** Call
+    /// [`Self::register_production_compute_fns`] on the returned engine unless you
+    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
+    /// posture doc, `reify-cli/src/main.rs:450-471`).
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
     /// once at startup, picks the **BRep-preferring lex-smallest** entry (see
@@ -1964,6 +2059,27 @@ impl Engine {
         self.last_dispatch_count
     }
 
+    /// Returns the number of geometry-backed realizations currently tracked in
+    /// `realization_handles` — the GHR-δ validity oracle populated by `build()`
+    /// / `build_snapshot()` (via `post_process_geometry_handle_cells`) and,
+    /// per the load-bearing build↔tessellate asymmetry that
+    /// `reset_per_build_state` preserves (task ι, #5069), left INTACT across
+    /// `tessellate_realizations()` / `tessellate_snapshot()`.
+    ///
+    /// Lets an out-of-crate integration test observe build-surface population
+    /// (`> 0` after a geometry-bearing `build`) versus tessellate-surface
+    /// preservation (unchanged after a following `tessellate_realizations`)
+    /// hermetically, without an OCCT kernel. Mirrors the gated
+    /// `last_dispatch_count()` reader convention.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn realization_handles_len(&self) -> usize {
+        self.realization_handles.len()
+    }
+
     /// **Test-instrumentation only — not a stable public surface.**
     ///
     /// Force the build-time [`crate::BuildScheduler`] selection, bypassing
@@ -1979,16 +2095,39 @@ impl Engine {
         self.build_scheduler = scheduler;
     }
 
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Force the mesh-contract (INV-GEO-1) enforcement posture used at
+    /// kernel-seam site 1, bypassing
+    /// [`reify_ir::geometry::MeshContractMode::from_env`] (task #5105 δ).
+    /// Lets integration tests pin `Warn` or `Enforce` deterministically
+    /// WITHOUT mutating process env — `std::env::set_var` is `unsafe` in
+    /// Rust 2024 and races other parallel tests. Mirrors the
+    /// `set_build_scheduler` seam directly above.
+    ///
+    /// Governs every entry point that reaches site 1: `build` /
+    /// `build_snapshot` (via `RealizationOpsInput::with_mesh_contract_mode`)
+    /// AND `tessellate_realizations` / `tessellate_snapshot` (forwarded as an
+    /// explicit `tessellate_from_values` parameter).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_mesh_contract_mode(&mut self, mode: reify_ir::geometry::MeshContractMode) {
+        self.mesh_contract_mode = mode;
+    }
+
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
     ///
-    /// Called at the start of every `build()` / `build_snapshot()` (alongside
-    /// clearing `realization_handles`), so the count reported afterwards
-    /// reflects only the revalidation reads since the most recent build —
-    /// mirroring the reset-at-operation-start discipline of the `last_*`
-    /// counters. Takes `&self` because the counter is an `AtomicUsize`
-    /// (interior mutability); the reader below observes it. Always available
-    /// (NOT test-gated) since the reset site in `engine_build.rs` is production
-    /// code.
+    /// The counter is reset at the start of every build/tessellate surface so
+    /// the count reported afterwards reflects only the revalidation reads since
+    /// the most recent build — mirroring the reset-at-operation-start discipline
+    /// of the `last_*` counters. Takes `&self` because the counter is an
+    /// `AtomicUsize` (interior mutability); the reader below observes it.
+    ///
+    /// As of #5069 this reset is inlined directly into
+    /// `Engine::reset_per_build_state` (engine_build.rs — production code), the
+    /// single per-build choke-point, so this standalone helper has no remaining
+    /// call sites. It is retained — `#[allow(dead_code)]` — for its GHR-δ §5
+    /// reset-discipline documentation and symmetry with the paired reader below.
+    #[allow(dead_code)]
     pub(crate) fn reset_geometry_revalidation_slow_path_count(&self) {
         self.geometry_revalidation_slow_path
             .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2242,13 +2381,17 @@ impl Engine {
     ///     divergence from `current_eval_version()` that this site
     ///     deliberately avoids). This equals the *current eval* version in
     ///     eval-only flows, but the two notions are not the same guarantee:
-    ///     `engine_edit.rs` and `concurrent.rs` still bump `next_version_id`
-    ///     by hand (migration in progress — see `allocate_snapshot_version`'s
-    ///     doc), so a non-eval allocation occurring between an eval and a
-    ///     drain would stamp drained events with a version that does not
-    ///     correspond to that eval. Pre-existing exposure — the prior inline
-    ///     `next_version_id.saturating_sub(1)` formula had the identical
-    ///     coupling — left unchanged by this reader (task 5047 / δ).
+    ///     `engine_edit.rs`'s `edit_param` and `edit_source` still
+    ///     *allocate* versions on non-eval paths — now via
+    ///     `allocate_snapshot_version()` rather than by hand — so a
+    ///     non-eval allocation occurring between an eval and a drain would
+    ///     stamp drained events with a version that does not correspond to
+    ///     that eval. (The allowlisted `eval_cached` re-stamp is
+    ///     snapshot-only and never advances `next_version_id`, so it cannot
+    ///     contribute to this desync.) Pre-existing exposure — the prior
+    ///     inline `next_version_id.saturating_sub(1)` formula had the
+    ///     identical coupling — left unchanged by this reader (task 5047 /
+    ///     δ).
     ///   - `timestamp = Instant::now()` at drain time.
     ///
     /// # Drain site
@@ -2990,6 +3133,51 @@ fn kernel_pin_diagnostics<'a>(
 mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
+
+    // ── `Engine::cache_stats()` public surface (task 4152, step-03) ──
+
+    /// `Engine::cache_stats()` is an UNGATED public method returning
+    /// `CacheStats` by value, and a freshly-constructed engine reports zeros
+    /// across the board — including the additive `realization_entries` field,
+    /// which is publicly readable and starts at 0.
+    ///
+    /// Ungated (unlike [`Engine::realization_cache`], which is
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]`) because it
+    /// exposes only `usize` counters — never a kernel-internal
+    /// `GeometryHandleId`.
+    #[test]
+    fn fresh_engine_cache_stats_reports_all_zero() {
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        // `CacheStats::default()` zeroes the additive field too — the
+        // workspace's only `CacheStats` construction idiom is `Default` (there
+        // are no `CacheStats { .. }` literals outside `cache_stats()` itself),
+        // which is what makes the added field non-breaking.
+        assert_eq!(
+            crate::CacheStats::default().realization_entries,
+            0,
+            "a default CacheStats must report zero realizations"
+        );
+
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Returned by value: bind it and let the engine borrow end.
+        let stats: crate::CacheStats = engine.cache_stats();
+
+        assert_eq!(
+            stats.realization_entries, 0,
+            "a fresh engine has realized and cached no geometry"
+        );
+        assert_eq!(stats.cache_hits, 0, "a fresh engine has no eval-cache hits");
+        assert_eq!(
+            stats.cache_misses, 0,
+            "a fresh engine has no eval-cache misses"
+        );
+        assert_eq!(
+            stats.early_cutoffs, 0,
+            "a fresh engine has no early cutoffs"
+        );
+    }
 
     // ── VolumeMesh-demand registry unit tests (task 4743 — realization α) ──
 

@@ -121,7 +121,7 @@
 //! when the module declares no `auto:` type-args). End-to-end source-level
 //! resolution is therefore live. Functions in this module remain unit-tested
 //! against compiler-built registries in addition to the integration coverage
-//! in `crates/reify-compiler/tests/auto_type_arg_lowering_tests.rs`.
+//! in `crates/reify-compiler/tests/harness_auto_binding/auto_type_arg_lowering_tests.rs`.
 //!
 //! Phase D (topology trigger / re-resolution on registry change) is
 //! explicitly deferred to a follow-up task.
@@ -636,6 +636,19 @@ pub fn enumerate_candidates(
             bounds_str = joined_bounds,
             names = names_list,
         );
+        // NOTE: severity is intentionally NOT pinned by any
+        // `dfs_phase_a_overflow_on_*_param` test — neither
+        // `dfs_phase_a_overflow_on_first_param_halts_before_recursion` nor
+        // `dfs_phase_a_overflow_on_second_param_halts_against_second_param`
+        // asserts on `diagnostics[0].severity` (the contract lives here, in
+        // production code, not in test coverage). A future refactor that
+        // flips `Diagnostic::error` below to `Diagnostic::warning` would be
+        // caught by none of the overflow tests — review such a change with
+        // care. The sibling `dfs_phase_a_empty_pool_on_first_param_halts_before_recursion`
+        // test does pin `Severity::Error`, but only for the separate
+        // `AutoTypeParamNoCandidate` diagnostic built by
+        // `emit_no_candidate_zero_rejections` on the empty-pool path — it is
+        // not a canary for this overflow construction site.
         diagnostics.push(
             Diagnostic::error(message)
                 .with_code(DiagnosticCode::AutoTypeParamPoolOverflow)

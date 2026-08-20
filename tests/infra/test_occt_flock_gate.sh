@@ -165,7 +165,14 @@ _ERR14="$(mktemp)"
 # target the slot file to actually block the wrapper.
 ( flock -x 9; sleep 10 ) 9>>"${_LOCK14}.slot-1" &
 _HOLDER14=$!
-sleep 0.2  # give the holder time to acquire before we proceed
+# Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
+# the holder actually holds slot-1, instead of a fixed `sleep 0.2` grace that a
+# saturated host can outrun (holder unscheduled ⇒ wrapper finds slot FREE ⇒
+# acquires instantly ⇒ got 0 instead of the expected exit 75).  Wrapped in
+# `assert` so a transient confirm-failure yields a clear FAIL naming the root
+# cause instead of tripping `set -e` and aborting the whole suite.
+assert "Test 14: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK14}.slot-1"
 
 _START14="$(date +%s)"
 _EXIT14=0
@@ -203,22 +210,35 @@ echo "--- Test 15: REIFY_OCCT_TEST_TIMEOUT measured post-lock, not from wrapper 
 
 _LOCK15="$(mktemp)"
 
-# Spawn a holder that holds slot-1 for 4 seconds.
+# Spawn a holder that holds slot-1 for 6 seconds.
 # The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
 # target the slot file to actually block the wrapper.
-# _START15 is recorded ~0.2s after holder spawn, so the effective wait from
-# _START15's perspective is ~3.8s; adding 1s command gives ~4.8s, which
-# truncates to 4 (satisfying the lower bound ≥ 4).  With 3s holder the
-# wait is ~2.8s, total ~3.8s → truncates to 3 → spurious failure on CI.
-( flock -x 9; sleep 4 ) 9>>"${_LOCK15}.slot-1" &
+# The causal flock-probe barrier below records _START15 at HOLDER-CONFIRMED
+# time, so the `elapsed >= 4` assert measures (remaining_hold − confirm_latency
+# + 1s command).  Hold bumped 4s→6s for margin: with a bounded confirm latency
+# (≤~2s under load) remaining_hold is ≥4s ⇒ elapsed ≥5s ⇒ truncates to ≥4 with
+# ≥1s margin; 6s < LOCK_WAIT(10s) leaves headroom so no spurious exit-75.
+( flock -x 9; sleep 6 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
-sleep 0.2  # give holder time to acquire
+# Causal flock-probe barrier (task 5258): block until the holder holds slot-1.
+# Wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
+assert "Test 15: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK15}.slot-1"
 
 _START15="$(date +%s)"
 _EXIT15=0
+# Stderr captured (name distinct from test_lane_x_flock.sh's $_ERR15), mirroring
+# Test 14's own $_ERR14 redirect just above. DEFENCE IN DEPTH: WAIT=10 vs a 6s
+# holder normally acquires, but the note below records that under load the holder
+# can extend past the deadline -- and on that path slot_acquire emits a column-0
+# @@REIFY_SLOT_TIMEOUT@@ sentinel which, unredirected, would ride this file's
+# output into the merge-gate verify log and make dark-factory classify the WHOLE
+# verify as SEMAPHORE_TIMEOUT (task 6024 Section D). Nothing asserts on the
+# captured bytes -- the redirect IS the fix.
+_ERR15O="$(mktemp)"
 # REIFY_OCCT_CONCURRENCY=1 pins N=1 so the single holder on slot-1 blocks the wrapper.
 REIFY_OCCT_LOCK="$_LOCK15" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=10 REIFY_OCCT_TEST_TIMEOUT=1 \
-    "$WRAPPER" sleep 5 || _EXIT15=$?
+    "$WRAPPER" sleep 5 2>"$_ERR15O" || _EXIT15=$?
 _END15="$(date +%s)"
 _ELAPSED15=$(( _END15 - _START15 ))
 
@@ -235,6 +255,8 @@ rm -f "$_LOCK15" "${_LOCK15}.slot-1"
 # (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3 decision D4)
 assert "Test 15: wrapper exits 124 (internal timeout killed the command, got $_EXIT15)" \
     test "$_EXIT15" -eq 124
+
+rm -f "$_ERR15O"
 
 assert "Test 15: elapsed ≥ 4s — timer started post-lock, not at wrapper launch (elapsed=${_ELAPSED15}s)" \
     test "$_ELAPSED15" -ge 4
@@ -282,91 +304,273 @@ assert "Test 17: NO 'cargo nextest run ... --no-run' line in the plan (task 4862
 assert "Test 17: debug full-workspace nextest pass uses unified 60m outer timeout (η/4521 floor 798.9s × 4.5, task 4520; build inside slot, task 4862)" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
 
-# -- Test 17b: release pass uses the same unified 60m outer timeout (task 4520) ------
+# -- Test 17b: release pass uses the cold-aware 90m release inner timeout (task 5382) ------
 echo ""
-echo "--- Test 17b: release nextest pass uses unified 60m timeout (η/4521 floor 798.9s × 4.5 → 60m, retiring 75m, task 4520) ---"
+echo "--- Test 17b: release nextest pass uses cold-aware 90m release inner timeout (task 5382; debug stays 60m) ---"
 
-# The release pass (--release) was previously assigned 75m (a larger budget on the
-# LIGHTER pass — load-inconsistent band-aid lineage). Task 4520/ζ′ unifies both passes
-# to the single re-derived 60m: the debug --workspace pass is the HEAVIER compile (all
-# crates) yet already clears 60m battle-tested (task 4453), so the lighter
-# release-sensitive-subset pass clears 60m a fortiori. The --release token in the
-# regex discriminates this assertion from Test 17's --workspace assertion.
-# Task 4862 revert: the single combined build+exec pass carries the unified 60m timeout.
-assert "Test 17b: release nextest pass uses unified 60m outer timeout (not 75m, task 4520; build inside slot, task 4862)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
+# The release pass (--release) carries its OWN cold-aware inner budget, DECOUPLED from the
+# debug pass. The prior unified 60m (task 4520/ζ′) was derived from η/4521's floor (798.9s)
+# measured cold-TARGET / WARM-sccache — it NEVER included a cold-SCCACHE native-kernel relink
+# of OCCT/OpenVDB/gmsh/manifold, which pushes the combined release build+exec pass past 60m
+# and SIGTERM'd it at the inner timeout (esc-5370-2, false "integration_skew"). Task 5382
+# reintroduces a release-specific inner budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE (default 90m);
+# the debug --workspace pass keeps REIFY_VERIFY_TEST_TIMEOUT (60m, asserted by Test 17).
+# The merge OUTER wall that must not preempt these two inner budgets is
+# merge_verify_cold_command_timeout_secs (sibling task 5383) — its comment block in
+# dark-factory-orchestrator.yaml is the SINGLE SOURCE for what that relationship does and
+# does NOT model, and T10 below mechanises it. Deliberately no arithmetic restated here:
+# the duplicated copy drifted once already (esc-5382-1 amendment review). The --release
+# token in the regex discriminates this assertion from Test 17's --workspace assertion.
+assert "Test 17b: release nextest pass uses cold-aware 90m release inner timeout (task 5382; not 60m)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
 
 # -- Tests T1–T7: host-relative compile timeout knobs (task 4621) ---------------
 # Pure hermetic plan-string assertions via `--print-plan` oracle + grep.
 # Each test runs verify.sh with a specific REIFY_VERIFY_*_TIMEOUT env and
 # checks that the rendered timeout token in the plan output matches.
 #
-# T1–T3: REIFY_VERIFY_TEST_TIMEOUT (test compile budget, default 60m)
+# T1–T3: REIFY_VERIFY_TEST_TIMEOUT (debug/base nextest budget, default 60m)
 # T4–T5: REIFY_VERIFY_CLIPPY_TIMEOUT (clippy+gui-feature check budget, default 45m)
 # T6–T7: REIFY_VERIFY_CHECK_TIMEOUT (cargo check budget, default 30m)
+# T8–T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE (release-pass inner budget, default 90m; task 5382)
+# T10:   merge OUTER wall ≥ debug_inner + release_inner relationship guard (task 5382)
 #
-# RED (T1, T4, T6) until step-6 impl; GREEN guards (T2, T3, T5, T7) already pass.
+# Task 4621 knobs: RED (T1, T4, T6) until step-6 impl; GREEN guards (T2, T3, T5, T7).
+# Task 5382: T1 (now decoupling), Test 17b, T2 (release token), T8, T9 are RED until the
+# release knob lands; T10 is a GREEN relationship guard (sibling 5383 already sized the
+# outer wall to 10800 ≥ 9000).
 echo ""
 echo "--- Tests T1–T7 (task 4621): host-relative compile timeout knobs ---"
 
-# T1: REIFY_VERIFY_TEST_TIMEOUT=90m → both debug (--workspace) and release
-#     nextest passes render `timeout --kill-after=60 90m`.
-#     RED: current code always emits 60m regardless of this env.
-_T1_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=90m bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>/dev/null | grep -v '^#')"
+# T1 (updated for task 5382 DECOUPLING): REIFY_VERIFY_TEST_TIMEOUT=95m drives ONLY the DEBUG
+#     (--workspace) nextest pass → `timeout --kill-after=60 95m`, while the RELEASE (--release)
+#     pass keeps its OWN default 90m (REIFY_VERIFY_TEST_TIMEOUT_RELEASE explicitly unset, so it
+#     falls to its own default regardless of ambient env). This proves the base knob no longer
+#     drives the release pass. 95m ≠ the release default 90m so the two tokens are
+#     distinguishable. RED against current code: the release pass currently follows the unified
+#     base knob → would render 95m.
+_T1_ERR="$(mktemp)"
+_T1_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T1_ERR" | grep -v '^#')"
 export _T1_PLAN
-assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: debug nextest pass uses 90m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T1_PLAN\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run --workspace'"
-assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: release nextest pass uses 90m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T1_PLAN\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
+assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: debug nextest pass uses 95m outer timeout" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 95m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
+assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: release nextest pass keeps its OWN default 90m (decoupled, task 5382)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T1_PLAN" "$_T1_ERR"
+rm -f "$_T1_ERR"
 
-# T2: REIFY_VERIFY_TEST_TIMEOUT unset → both passes use 60m (workstation default preserved).
+# T2: REIFY_VERIFY_TEST_TIMEOUT unset → debug pass uses 60m; release pass uses its OWN
+#     default 90m (task 5382 decoupled the release inner budget from the base knob).
 #     Guard: Tests 17/17b already check this via TEST_PLAN_SEGS; this is a direct re-check.
 assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: debug nextest pass uses default 60m" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
-assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses default 60m" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
+assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses its own default 90m (task 5382)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
 
 # T3: Malformed REIFY_VERIFY_TEST_TIMEOUT=banana → falls back to 60m (validation guard).
+_T3_ERR="$(mktemp)"
 _T3_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>/dev/null | grep -v '^#')"
+    --profile both --scope all --print-plan 2>"$_T3_ERR" | grep -v '^#')"
 export _T3_PLAN
 assert "T3: REIFY_VERIFY_TEST_TIMEOUT=banana (malformed): falls back to 60m default" \
-    bash -c "printf '%s\n' \"\$_T3_PLAN\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T3_PLAN" "$_T3_ERR"
+rm -f "$_T3_ERR"
 
 # T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m → cargo clippy AND gui-feature cargo check
 #     both render `timeout --kill-after=60 70m` in verify.sh lint --print-plan.
 #     RED: current code always emits 45m.
+_T4_ERR="$(mktemp)"
 _T4_PLAN="$(REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T4_ERR" | grep -v '^#')"
 export _T4_PLAN
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: clippy pass uses 70m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T4_PLAN\" | grep -qE 'timeout --kill-after=60 70m .*cargo clippy'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo clippy' "$_T4_PLAN" "$_T4_ERR"
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: gui-feature cargo check uses 70m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T4_PLAN\" | grep -qE 'timeout --kill-after=60 70m .*cargo check -p reify-gui'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo check -p reify-gui' "$_T4_PLAN" "$_T4_ERR"
+rm -f "$_T4_ERR"
 
 # T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset → clippy uses 45m (workstation default preserved).
+_T5_ERR="$(mktemp)"
 _T5_PLAN="$(env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T5_ERR" | grep -v '^#')"
 export _T5_PLAN
 assert "T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset: clippy pass uses default 45m" \
-    bash -c "printf '%s\n' \"\$_T5_PLAN\" | grep -qE 'timeout --kill-after=60 45m .*cargo clippy'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo clippy' "$_T5_PLAN" "$_T5_ERR"
+rm -f "$_T5_ERR"
 
 # T6: REIFY_VERIFY_CHECK_TIMEOUT=50m → cargo check --workspace --tests renders
 #     `timeout --kill-after=60 50m` in verify.sh typecheck --print-plan.
 #     RED: current code always emits 30m.
+_T6_ERR="$(mktemp)"
 _T6_PLAN="$(REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T6_ERR" | grep -v '^#')"
 export _T6_PLAN
 assert "T6: REIFY_VERIFY_CHECK_TIMEOUT=50m: cargo check --workspace --tests uses 50m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T6_PLAN\" | grep -qE 'timeout --kill-after=60 50m .*cargo check --workspace'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 50m .*cargo check --workspace' "$_T6_PLAN" "$_T6_ERR"
+rm -f "$_T6_ERR"
 
 # T7: REIFY_VERIFY_CHECK_TIMEOUT unset → check uses 30m (workstation default preserved).
+_T7_ERR="$(mktemp)"
 _T7_PLAN="$(env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T7_ERR" | grep -v '^#')"
 export _T7_PLAN
 assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
-    bash -c "printf '%s\n' \"\$_T7_PLAN\" | grep -qE 'timeout --kill-after=60 30m .*cargo check --workspace'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 30m .*cargo check --workspace' "$_T7_PLAN" "$_T7_ERR"
+rm -f "$_T7_ERR"
+
+# -- Tests T8–T10 (task 5382): release-pass cold-aware inner timeout knob --------
+# The release nextest pass carries its OWN inner budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE
+# (default 90m), decoupled from the debug/base REIFY_VERIFY_TEST_TIMEOUT (60m). The 60m
+# unified budget was measured cold-TARGET / WARM-sccache and SIGTERM'd the release pass on
+# a cold-SCCACHE native-kernel relink (esc-5370-2). T8/T9 exercise the new knob via the
+# same --print-plan oracle as T1–T7; T10 is a GREEN relationship guard tying the two inner
+# budgets to sibling task 5383's merge OUTER wall.
+echo ""
+echo "--- Tests T8–T10 (task 5382): release-pass cold-aware inner timeout knob ---"
+
+# T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m drives ONLY the RELEASE (--release) nextest
+#     pass → `timeout --kill-after=60 100m`, while the DEBUG (--workspace) pass keeps its
+#     default 60m (REIFY_VERIFY_TEST_TIMEOUT explicitly unset). Proves the release knob is
+#     release-only. RED against current code: no release knob exists, so release renders 60m.
+_T8_ERR="$(mktemp)"
+_T8_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T8_ERR" | grep -v '^#')"
+export _T8_PLAN
+assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: release nextest pass uses 100m outer timeout" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T8_PLAN" "$_T8_ERR"
+assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: debug nextest pass stays default 60m (release knob is release-only)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T8_PLAN" "$_T8_ERR"
+rm -f "$_T8_ERR"
+
+# T9: malformed REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana → the release pass falls back to its
+#     90m default (mirrors T3's malformed-fallback guard through the shared
+#     _resolve_timeout_knob validator). RED against current code: release renders 60m.
+_T9_ERR="$(mktemp)"
+_T9_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T9_ERR" | grep -v '^#')"
+export _T9_PLAN
+assert "T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana (malformed): release pass falls back to 90m default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T9_PLAN" "$_T9_ERR"
+rm -f "$_T9_ERR"
+
+# T10: GREEN relationship guard — the merge OUTER wall (merge_verify_cold_command_timeout_secs,
+#      sibling task 5383) must be ≥ the sum of the two TERMINAL nextest inner budgets (debug
+#      60m=3600s + release 90m=5400s = 9000s), so the outer merge wall can never SIGTERM the
+#      release native-kernel pass before its own inner budget is reached.
+#      THIS IS NOT A WORST-CASE SUM. The wall bounds EXPECTED cold merge-verify duration; the
+#      full set of inner ceilings for the command it bounds sums to ~2x the wall and always has
+#      (clippy 45m x2, check 30m, the release pre-builds, ...). What is asserted here is a
+#      NECESSARY-CONDITION lower bound over a deliberately chosen SUBSET — the two passes that
+#      run back-to-back at the END of the plan, where a wall below their sum would make the
+#      release inner budget unreachable BY CONSTRUCTION. The release PRE-BUILD is deliberately
+#      excluded: its cost is transferred FROM the release nextest pass (which then runs against
+#      a warm release cone), so folding it in would double-count the same cold native-kernel
+#      compile — and an earlier revision that did fold it in produced a bogus "300s margin"
+#      that read as a binding cap on REIFY_VERIFY_PREBUILD_TIMEOUT (esc-5382-1 amendment
+#      review). The pre-build's own budget is asserted by T11–T13 instead.
+#      The authoritative prose for this model lives in the merge_verify_cold_command_timeout_secs
+#      comment block in dark-factory-orchestrator.yaml — keep this comment a summary of it.
+#      DISTINCT from 5383's test_merge_verify_cold_outer_timeout.sh (which pins the outer value
+#      ≥ 10800 as an absolute floor), so it is not lockstep duplication.
+#      WALLCLOCK-GUARD SAFETY: the comparison uses the lower-bound `-ge` (never -le/-lt) and the
+#      operand vars carry NO ELAPSED/_S/_MS/_NS/SECONDS suffix, so
+#      tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire.
+echo ""
+echo "--- Test T10 (task 5382): merge outer wall >= debug_inner + release_inner (relationship guard) ---"
+
+_T10_VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
+_T10_ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+
+# Extract the debug inner default (minutes) from the base-knob resolution line. The trailing
+# space after REIFY_VERIFY_TEST_TIMEOUT ensures this does NOT match the _RELEASE line.
+# `|| true` keeps a NO-MATCH extraction from tripping `set -o pipefail`/`set -e` (the release
+# knob is absent until step-2 lands); emptiness is caught by the `test -n` asserts below.
+_debug_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
+# Extract the release inner default (minutes) from the release-knob resolution line.
+_release_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
+# NB the merge-path RELEASE pre-build budget (REIFY_VERIFY_PREBUILD_TIMEOUT) is intentionally
+# NOT extracted or summed here — see the subset rationale in this test's header comment.
+# Extract the merge outer wall (seconds) from the yaml key.
+_outer_budget="$(grep -oE '^merge_verify_cold_command_timeout_secs:[[:space:]]*[0-9]+' "$_T10_ORCH_YAML" | grep -oE '[0-9]+' | head -n1 || true)"
+
+assert "T10: debug inner default extracted from verify.sh (non-empty minutes)" \
+    test -n "$_debug_inner_min"
+assert "T10: release inner default extracted from verify.sh (non-empty minutes)" \
+    test -n "$_release_inner_min"
+assert "T10: merge outer wall extracted from dark-factory-orchestrator.yaml (non-empty seconds)" \
+    test -n "$_outer_budget"
+
+# Default any absent extraction to 0 so the arithmetic below cannot abort the suite under
+# set -e during the RED window (the release knob is absent until the step-2 impl lands).
+# Non-emptiness is asserted above; this is purely an anti-abort backstop.
+_inner_budget_total=$(( ${_debug_inner_min:-0} * 60 + ${_release_inner_min:-0} * 60 ))
+_outer_budget="${_outer_budget:-0}"
+
+assert "T10: merge outer wall (${_outer_budget}s) >= debug_inner + release_inner (${_inner_budget_total}s from ${_debug_inner_min:-?}m + ${_release_inner_min:-?}m) so the wall cannot preempt either terminal nextest pass before its own inner budget is reached" \
+    test "$_outer_budget" -ge "$_inner_budget_total"
+
+# -- Tests T11–T13 (task 5382, esc-5382-1): merge-path RELEASE pre-build budget -----
+# The two `cargo build --release -p {reify-audit,reify-cli}` pre-builds render ONLY on the
+# merge/background path and only when not already inside an infra suite, so the plan oracle
+# needs DF_VERIFY_ROLE=merge AND `env -u REIFY_INFRA_SUITE_ACTIVE` (this suite itself sets
+# that variable, which would otherwise suppress the whole block and make T11–T13 vacuous).
+# esc-5382-1: reify-cli was SIGTERM'd mid-`Compiling reify-runtime` by the former fixed 10m
+# ceiling on a cold merge lane, with zero failing assertions — same class as esc-5370-2.
+# REIFY_RELEASE_DELTA_SKIP is unset alongside REIFY_INFRA_SUITE_ACTIVE in each capture below:
+# that knob is consulted ONLY when DF_VERIFY_ROLE=merge (scripts/verify.sh, the
+# _RELEASE_DELTA_SKIP decision block), and when it is 1 on a delta-clean tree the release
+# nextest pass is replaced by the frozen `echo 'RELEASE-PASS: skipped (delta-clean)'` marker —
+# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. It is
+# default-OFF today but is slated for activation in the orchestrator's verify_env by the
+# sibling sweep task (#5280), so pinning the plan shape here is a live concern, not a
+# hypothetical. T1/T2/T8/T9 need no such pin: they do not set the merge role.
+echo ""
+echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware timeout ---"
+
+# T11: default → both release pre-builds render the 45m pre-build budget (was a fixed 10m).
+_T11_ERR="$(mktemp)"
+_T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
+    DF_VERIFY_ROLE=merge \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T11_ERR" | grep -v '^#')"
+export _T11_PLAN
+assert "T11: default: reify-cli release pre-build uses the 45m pre-build budget (not the former fixed 10m)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
+assert "T11: default: reify-audit release pre-build uses the same 45m pre-build budget" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-audit' "$_T11_PLAN" "$_T11_ERR"
+rm -f "$_T11_ERR"
+
+# T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m drives the pre-builds ONLY — the two nextest passes
+#      keep their own 60m/90m defaults. Proves the pre-build knob is pre-build-scoped.
+_T12_ERR="$(mktemp)"
+_T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+    -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T12_ERR" | grep -v '^#')"
+export _T12_PLAN
+assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: reify-cli pre-build uses 40m" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 40m .*cargo build --release -p reify-cli' "$_T12_PLAN" "$_T12_ERR"
+assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: debug nextest pass stays default 60m (pre-build knob is pre-build-only)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T12_PLAN" "$_T12_ERR"
+assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: release nextest pass stays default 90m (pre-build knob is pre-build-only)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T12_PLAN" "$_T12_ERR"
+rm -f "$_T12_ERR"
+
+# T13: malformed REIFY_VERIFY_PREBUILD_TIMEOUT=banana → falls back to the 45m default via the
+#      shared _resolve_timeout_knob validator (mirrors T3/T9's malformed-fallback guard).
+_T13_ERR="$(mktemp)"
+_T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T13_ERR" | grep -v '^#')"
+export _T13_PLAN
+assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 45m default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
+rm -f "$_T13_ERR"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
@@ -602,7 +806,14 @@ _ERR22="$(mktemp)"
 _HOLDER22A=$!
 ( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-2" &
 _HOLDER22B=$!
-sleep 0.2  # give both holders time to acquire before we proceed
+# Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
+# BOTH holders hold their slots, instead of a fixed `sleep 0.2` grace a saturated
+# host can outrun.  Two calls reuse the single-slot helper (one per slot); each
+# is wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
+assert "Test 22: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK22}.slot-1"
+assert "Test 22: background holder confirmed holding slot-2 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK22}.slot-2"
 
 _START22="$(date +%s)"
 _EXIT22=0

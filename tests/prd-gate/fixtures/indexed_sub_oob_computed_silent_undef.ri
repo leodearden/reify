@@ -1,0 +1,21 @@
+// Fixture (γ decompose-phase ADVERSARY premise, indexed-sub-instantiation §7 ε
+// out-of-range baseline): a COMPUTED out-of-range index (`k = 1 + 4`, static
+// count 2) is SILENT today — `reify eval` exits 0 with `Rig.d5 = undef`; the
+// only trace is an `info: dynamic collection index: idlers[<expr>].od` note on
+// stderr. This is the baseline for ε's eval-time
+// E_INDEXED_SUB_INDEX_OUT_OF_RANGE deliverable; post-ε this fixture must fail
+// at eval with that diagnostic.
+module indexed_sub_oob_computed_silent_undef
+
+structure def Pulley {
+    param od : Length = 36mm
+    let body = cylinder(od / 2, 8mm)
+}
+
+structure def Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+
+    let k = 1 + 4
+    let d5 = idlers[k].od
+}

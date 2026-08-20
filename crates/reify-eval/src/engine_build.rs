@@ -41,6 +41,24 @@ use crate::topology_attribute_propagation::{
 };
 use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
 
+/// The four build/tessellate entry-point "surfaces" whose per-build engine
+/// state is reset unconditionally by [`Engine::reset_per_build_state`]
+/// (task ι, #5069). The variant selects the surface-dependent reset arms:
+/// `realization_handles` clears only on the two build surfaces;
+/// `achieved_repr_tol` clears only on the two tessellate surfaces (the
+/// load-bearing build↔tessellate asymmetry — see `reset_per_build_state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuildSurface {
+    /// [`Engine::build`] / `build_with_geometry_output`.
+    Build,
+    /// [`Engine::build_snapshot`].
+    BuildSnapshot,
+    /// [`Engine::tessellate_realizations`].
+    TessellateRealizations,
+    /// [`Engine::tessellate_snapshot`].
+    TessellateSnapshot,
+}
+
 /// Map a kernel registry name to the [`KernelId`] used to tag the handles that
 /// kernel produces (task 4048).
 ///
@@ -342,6 +360,21 @@ struct RealizationOpsInput<'a> {
     // unsafe in edition 2024). Production callers pass
     // `crate::dispatcher::long_chain_threshold_from_env()`.
     long_chain_threshold: Duration,
+    // Task #5105 δ (INV-GEO-1): mesh-contract enforcement posture consulted
+    // at the tessellate→ingest handoff below. Threaded from the caller
+    // (`Engine::mesh_contract_mode`, itself read once from the env at
+    // construction) rather than read here, so the e2e locking tests can
+    // inject either posture deterministically — env mutation is unsafe in
+    // edition 2024, exactly as for `long_chain_threshold` above.
+    mesh_contract_mode: reify_ir::geometry::MeshContractMode,
+    // Task #5196 step-12: the module-STATIC term of the L2 selector gate —
+    // `module_binds_selector(module)`, computed ONCE per build above the
+    // template loop and threaded per-iteration (same shape as
+    // `long_chain_threshold` / `mesh_contract_mode` above). The gate on the
+    // per-realization tie-scan below ORs this with the runtime
+    // `values_contain_selector(values)` probe. Hoisting it here also removes
+    // the per-realization recompute of what is a module-global answer.
+    module_binds_selector: bool,
 }
 
 impl<'a> RealizationOpsInput<'a> {
@@ -403,6 +436,20 @@ impl<'a> RealizationOpsInput<'a> {
             long_chain_threshold: Duration::from_millis(
                 crate::dispatcher::LONG_CHAIN_DEFAULT_THRESHOLD_MS,
             ),
+            // Fail-closed default, matching `MeshContractMode::from_env()`
+            // with the env var unset — so a call site that omits the override
+            // (the `run`/`run_demand` test wrapper) still enforces INV-GEO-1
+            // rather than silently opting out of it. Production call sites
+            // override with `Engine::mesh_contract_mode`, which honours the
+            // `REIFY_MESH_CONTRACT` break-glass.
+            mesh_contract_mode: reify_ir::geometry::MeshContractMode::Enforce,
+            // Fail-OPEN default (task #5196 step-12): a call site that omits
+            // `.with_module_binds_selector(...)` always runs the tie-scan, so
+            // the tessellate/query paths and the `run`/`run_demand` test
+            // wrapper stay behaviourally identical to before the gate existed.
+            // Only the two build paths (`build_snapshot`,
+            // `build_with_geometry_output`) opt in with a real answer.
+            module_binds_selector: true,
         }
     }
 
@@ -460,6 +507,25 @@ impl<'a> RealizationOpsInput<'a> {
     /// initializer in [`Self::new`] for why).
     fn with_long_chain_threshold(mut self, v: Duration) -> Self {
         self.long_chain_threshold = v;
+        self
+    }
+
+    /// Override the mesh-contract (INV-GEO-1) enforcement posture at the
+    /// tessellate→ingest handoff (default
+    /// [`reify_ir::geometry::MeshContractMode::Enforce`], the fail-closed
+    /// posture — see the comment above this field's initializer in
+    /// [`Self::new`]).
+    fn with_mesh_contract_mode(mut self, v: reify_ir::geometry::MeshContractMode) -> Self {
+        self.mesh_contract_mode = v;
+        self
+    }
+
+    /// Override the module-static term of the L2 selector gate (default
+    /// `true`, fail-open — see the comment above this field's initializer in
+    /// [`Self::new`]). Build paths pass [`module_binds_selector`], computed
+    /// once per build.
+    fn with_module_binds_selector(mut self, v: bool) -> Self {
+        self.module_binds_selector = v;
         self
     }
 }
@@ -1248,12 +1314,22 @@ fn populate_attribute_history(
     }
 }
 
-/// Emit one `Severity::Warning` per non-zero topology-correspondence-loss
-/// counter found in `attribute_history`.
+/// Per-realization accumulator for topology-correspondence-loss counters
+/// (task #5196 L4 summarization).
 ///
-/// Called by `Engine::execute_realization_ops` immediately after
-/// `populate_attribute_history` — both live at the same call site where
-/// `attribute_history` and `diagnostics` are already in scope.
+/// Each op's `AttributeHistory` is folded into the tally via
+/// [`accumulate`](Self::accumulate) instead of emitting a `Diagnostic`
+/// immediately; [`flush`](Self::flush) then emits ONE `Diagnostic::info`
+/// per non-zero `(op_kind, counter)` entry, carrying the SUMMED count
+/// across every op accumulated since the tally was created (or last
+/// flushed) and a realization-scoped context — no per-op suffix.
+///
+/// Motivation: the GUI's `groupDiagnostics` only dedups byte-identical
+/// messages. The prior per-op emission (one diagnostic per op, each
+/// context-suffixed `"{realization_id} op {op_idx}"`) never collapsed, so a
+/// realization with N boolean ops produced N near-identical Info lines.
+/// Accumulating across the whole realization and flushing once yields at
+/// most one line per `(op_kind, counter)` per realization.
 ///
 /// Covers all five unconsumed counters across the three op families:
 /// - `Boolean`: `silent_drop_count`
@@ -1264,86 +1340,110 @@ fn populate_attribute_history(
 /// `Loft` and `None` are explicit no-ops: `LoftOpHistoryRecords` has no
 /// counters by design, and `None` means no history was returned.
 ///
-/// Each warning carries [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`]
-/// and a message of the form:
+/// Each flushed diagnostic carries
+/// [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] and a
+/// message of the form:
 /// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`.
 ///
 /// The geometry is valid; only persistent-naming correspondence tracking is
-/// degraded. Severity is `Warning` (never `Error`) per the task-2574 convention
-/// that auxiliary-metadata degradation must not regress the realization to Failed.
-fn diagnose_topology_correspondence_drops(
-    attribute_history: &AttributeHistory,
-    context: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    use reify_core::DiagnosticCode;
-    // Single canonical emit path: guarantees every warning uses the same
-    // message format ("topology correspondence dropped: {op_kind}
-    // {counter}={count} context={context}") and the same code, with no risk
-    // of the five call sites drifting from each other.
-    let mut emit = |op_kind: &str, counter: &str, count: u32| {
-        if count > 0 {
+/// degraded. Severity is `Info` (never `Error`; downgraded from `Warning` to
+/// `Info` by task #5196 — a healthy multi-boolean model was flooding
+/// Warning-severity diagnostics with routine bookkeeping noise) per the
+/// task-2574 convention that auxiliary-metadata degradation must not regress
+/// the realization to Failed.
+///
+/// `BTreeMap` (not `HashMap`) keeps `flush`'s emission order deterministic.
+#[derive(Default)]
+struct TopologyCorrespondenceDropTally {
+    counts: BTreeMap<(&'static str, &'static str), u32>,
+}
+
+impl TopologyCorrespondenceDropTally {
+    /// Fold `attribute_history`'s non-zero topology-correspondence-loss
+    /// counters into the tally, keyed by `(op_kind, counter_name)`.
+    ///
+    /// Exhaustive over the same three op families / five counters the
+    /// pre-L4 single-shot emitter covered (see the struct doc); the match
+    /// itself is unchanged from that emitter, only the action per non-zero
+    /// counter changes (accumulate instead of push a `Diagnostic`).
+    fn accumulate(&mut self, attribute_history: &AttributeHistory) {
+        let counts = &mut self.counts;
+        let mut add = |op_kind: &'static str, counter: &'static str, count: u32| {
+            if count > 0 {
+                *counts.entry((op_kind, counter)).or_insert(0) += count;
+            }
+        };
+        match attribute_history {
+            AttributeHistory::Boolean(h) => {
+                add("boolean", "silent_drop_count", h.silent_drop_count);
+            }
+            // Each sweep variant gets its own arm so op_kind is determined
+            // exhaustively without a nested re-match or a `_ => "sweep"`
+            // wildcard that would silently mislabel any future
+            // AttributeHistory variant sharing this arm.
+            AttributeHistory::Extrude(h) => {
+                add("extrude", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "extrude",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "extrude",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::Revolve(h) => {
+                add("revolve", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "revolve",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "revolve",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::Sweep(h) => {
+                add("sweep", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "sweep",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "sweep",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::LocalFeature(h) => {
+                add("local_feature", "silent_drop_count", h.silent_drop_count);
+            }
+            AttributeHistory::Loft(_) | AttributeHistory::None => {
+                // No counters in LoftOpHistoryRecords; None means no history returned.
+            }
+        }
+    }
+
+    /// Emit one `Diagnostic::info` per non-zero tally entry — carrying the
+    /// SUMMED count and `context` verbatim (typically `"{realization_id}"`,
+    /// realization-scoped, no per-op suffix) — then clear the tally so a
+    /// stray extra `flush` with no intervening `accumulate` emits nothing.
+    fn flush(&mut self, context: &str, diagnostics: &mut Vec<Diagnostic>) {
+        use reify_core::DiagnosticCode;
+        for (&(op_kind, counter), &count) in self.counts.iter() {
             diagnostics.push(
-                Diagnostic::warning(format!(
+                Diagnostic::info(format!(
                     "topology correspondence dropped: {op_kind} {counter}={count} context={context}"
                 ))
                 .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
             );
         }
-    };
-    match attribute_history {
-        AttributeHistory::Boolean(h) => {
-            emit("boolean", "silent_drop_count", h.silent_drop_count);
-        }
-        // Each sweep variant gets its own arm so op_kind is determined
-        // exhaustively without a nested re-match or a `_ => "sweep"` wildcard
-        // that would silently mislabel any future AttributeHistory variant
-        // sharing this arm.
-        AttributeHistory::Extrude(h) => {
-            emit("extrude", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "extrude",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "extrude",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::Revolve(h) => {
-            emit("revolve", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "revolve",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "revolve",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::Sweep(h) => {
-            emit("sweep", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "sweep",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "sweep",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::LocalFeature(h) => {
-            emit("local_feature", "silent_drop_count", h.silent_drop_count);
-        }
-        AttributeHistory::Loft(_) | AttributeHistory::None => {
-            // No counters in LoftOpHistoryRecords; None means no history returned.
-        }
+        self.counts.clear();
     }
 }
 
@@ -2995,10 +3095,162 @@ impl Engine {
     /// .sum()` because the gated `last_dispatch_count()` accessor is unreachable
     /// from a production (non-`test-instrumentation`) build. Zeroing both here
     /// makes it structurally impossible for the two resets to drift out of lockstep.
+    ///
+    /// As of #5069 the two tally resets are inlined directly into
+    /// [`Self::reset_per_build_state`] (the single per-build choke-point), so
+    /// this standalone helper has no remaining call sites. It is retained —
+    /// `#[allow(dead_code)]` — for the doc-linked lockstep-invariant contract
+    /// referenced by [`Self::bump_dispatch`] and [`Self::reset_per_build_state`].
+    #[allow(dead_code)]
     #[inline]
     fn reset_dispatch_tallies(&mut self) {
         self.last_dispatch_count = 0;
         self.last_dispatch_count_by_realization.clear();
+    }
+
+    /// Reset all per-build engine state UNCONDITIONALLY at the entry to a
+    /// build/tessellate `surface` (task ι, #5069 — INV-BUILD-1). This is the
+    /// SINGLE choke-point that supersedes every hand-copied gated/ungated reset
+    /// block plus the scattered `realization_handles.clear()` +
+    /// `reset_geometry_revalidation_slow_path_count()` pairs, and folds in
+    /// [`Self::reset_dispatch_tallies`].
+    ///
+    /// # Enforcement: exhaustive destructure (no `..`)
+    ///
+    /// The body opens with an EXHAUSTIVE `let Engine { .. } = self` destructure
+    /// carrying NO `..` rest pattern, so a newly-added `Engine` field cannot
+    /// compile until an author classifies it here (reset-every-surface,
+    /// reset-on-build, reset-on-tessellate, or must-survive). This is the
+    /// type-level mechanism that flips INV-BUILD-1 to `enforced(type)`; it
+    /// mirrors the exhaustive-literal drift-guard in
+    /// `crates/reify-compute-contract/src/elastic_result.rs` (:617/641/674).
+    /// It is exactly what forced the classification of `realization_projection_store`
+    /// (β/#4508), a memoization field added after the design list was written,
+    /// and then again of `mesh_contract_mode` (#5105 δ), which landed on main
+    /// mid-task and could not compile until classified below.
+    ///
+    /// # Classification
+    ///
+    /// - **reset-EVERY-surface**: `topology_attribute_table`, `swept_kind_table`
+    ///   (per-build attribute tables), the two dispatch tallies
+    ///   (`last_dispatch_count` + `last_dispatch_count_by_realization`, in
+    ///   lockstep), and `geometry_revalidation_slow_path` (`AtomicUsize`).
+    /// - **reset-on-BUILD-surfaces** (`Build` / `BuildSnapshot`):
+    ///   `realization_handles` — the GHR-δ validity oracle, documented "cleared
+    ///   at the START of every build()".
+    /// - **reset-on-TESSELLATE-surfaces** (`TessellateRealizations` /
+    ///   `TessellateSnapshot`): `achieved_repr_tol`.
+    /// - **MUST-SURVIVE** (bound `field: _`): every remaining field —
+    ///   engine-scoped caches/stores (`realization_cache` task 2874,
+    ///   `realization_projection_store`, `warm_pool`, `morph_*`, persistent
+    ///   cache), registries/kernels/solvers, all eval-state, snapshot/version
+    ///   counters, journal, config (including the INV-GEO-1
+    ///   `mesh_contract_mode` posture, set once from the environment —
+    ///   sweeping it would silently restore `Enforce` and destroy the
+    ///   `REIFY_MESH_CONTRACT=warn` break-glass after the first build), and
+    ///   hooks. Clearing any of these here would be a regression.
+    ///
+    /// The build↔tessellate ASYMMETRY is load-bearing: the CLI
+    /// combined-constraint arm (`reify-cli/src/main.rs`) runs `build()` →
+    /// `tessellate_realizations()` → `check()`, and a full-union reset (making
+    /// tessellate clear `realization_handles`, or build clear `achieved_repr_tol`
+    /// after a preceding tessellate) would silently degrade every
+    /// `Conforms`/DFM/`RepresentationWithin` verdict on a both-kinds module.
+    fn reset_per_build_state(&mut self, surface: BuildSurface) {
+        // EXHAUSTIVE — no `..`. Every `Engine` field is listed and classified.
+        let Engine {
+            // ── reset-EVERY-surface ──────────────────────────────────────
+            topology_attribute_table,
+            swept_kind_table,
+            last_dispatch_count,
+            last_dispatch_count_by_realization,
+            geometry_revalidation_slow_path,
+            // ── reset-on-BUILD-surfaces ──────────────────────────────────
+            realization_handles,
+            // ── reset-on-TESSELLATE-surfaces ─────────────────────────────
+            achieved_repr_tol,
+            // ── MUST-SURVIVE (regression if swept) ───────────────────────
+            constraint_checker: _, // language-level checker (engine-scoped)
+            geometry_kernels: _,   // registered kernels
+            default_kernel_name: _, // default-kernel selection
+            solver: _,             // fallback constraint solver
+            cache: _,              // node cache (engine-scoped config)
+            prelude: _,            // 'static compiled prelude
+            prelude_functions: _,  // pre-flattened prelude fns
+            structure_registry: _, // SIR structure meta (eval state)
+            param_overrides: _,    // set_param_and_invalidate overrides
+            eval_state: _,         // consolidated eval state
+            build_scheduler: _,    // build-scheduler selection (config)
+            mesh_contract_mode: _, // INV-GEO-1 mesh-contract posture (config, set once from env)
+            demand: _,             // demand registry
+            observed_demand: _,    // passive observed-demand side-channel
+            last_demand_prune_measurement: _, // GUI prune-measurement DTO
+            next_snapshot_id: _,   // monotonic snapshot id counter
+            next_version_id: _,    // monotonic version id counter
+            last_eval_set: _,      // last eval/edit eval set
+            last_guard_phase_group_evals: _, // edit instrumentation
+            last_role_flip_probes: _,        // edit instrumentation
+            last_diff_value_cells: _,        // edit_source diff snapshot
+            last_param_override_type_kind_rejections: _, // eval instrumentation
+            last_param_override_dimension_rejections: _, // eval instrumentation
+            last_sub_component_unknown_structure_errors: _, // eval instrumentation
+            realization_projection_store: _, // β/#4508 memoization store (as realization_cache)
+            journal: _,            // event journal
+            functions: _,          // last-eval user fns
+            compiled_purposes: _,  // last-eval compiled purposes
+            active_purposes: _,    // active-purpose injected-constraint map
+            active_purpose_bindings: _, // active-purpose (param,entity) bindings
+            active_tolerance_scope: _,  // active tolerance scope
+            active_objective_map: _,    // active purpose objectives
+            active_purpose_let_cells: _, // active-purpose injected let cells
+            meta_map: _,           // last-eval template meta
+            objectives: _,         // last-eval template objectives
+            centrality_synthesized_scopes: _, // η centrality provenance
+            compiled_fields: _,    // last-eval/edit compiled fields
+            max_unfold_depth: _,   // recursion guard (config)
+            max_unfold_nodes: _,   // recursion guard (config)
+            optimization_registry: _, // @optimized constraint impls
+            compute_registry: _,   // @optimized compute trampolines
+            solvers: _,            // named solver registry
+            warm_pool: _,          // warm-start state pool (cross-edit)
+            realization_cache: _,  // task 2874 engine-scoped realization cache
+            cumulative_eval_cache_totals: _, // task 4152 lifetime eval-cache totals
+            solver_progress_sink: _, // per-iteration progress hook
+            active_solve_cancel: _,  // in-flight solve cancellation hook
+            morph_producer: _,     // mesh-morph producer hook
+            morph_source: _,       // per-realization morph source side-table
+            capture_undef_causes: _, // undef-cause capture toggle (config)
+            capture_repr_tol: _,   // repr-tol capture toggle (config)
+            last_undef_causes: _,  // last-eval undef causes
+            persistent_cache_dir: _,   // on-disk persistent cache root (config)
+            persistent_hit_count: _,   // persistent-cache hit counter
+            persistent_miss_count: _,  // persistent-cache miss counter
+            // cfg-gated test-instrumentation fields — same predicate as the
+            // struct definition so the destructure stays exhaustive in every
+            // build configuration without an `..`.
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            test_registry_override: _, // test-only capability-registry override
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            panic_on_eval_cells: _,    // test-only force-panic cell set
+        } = self;
+
+        // reset-EVERY-surface (folds in reset_dispatch_tallies +
+        // reset_geometry_revalidation_slow_path_count).
+        *topology_attribute_table = TopologyAttributeTable::default();
+        *swept_kind_table = SweptKindTable::default();
+        *last_dispatch_count = 0;
+        last_dispatch_count_by_realization.clear();
+        geometry_revalidation_slow_path.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // surface-dependent arms — the load-bearing build↔tessellate asymmetry.
+        match surface {
+            BuildSurface::Build | BuildSurface::BuildSnapshot => {
+                realization_handles.clear();
+            }
+            BuildSurface::TessellateRealizations | BuildSurface::TessellateSnapshot => {
+                achieved_repr_tol.clear();
+            }
+        }
     }
 
     /// Bump BOTH dispatch-attribution counters in lockstep at the single
@@ -3060,18 +3312,15 @@ impl Engine {
         module: &CompiledModule,
         format: ExportFormat,
     ) -> Option<BuildResult> {
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // build of the same module reports its own per-build dispatch tally
-        // (and reports 0 when fully served from the RealizationCache).
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
-        // GHR-δ §5: clear the realization→handle validity map and reset the
-        // revalidation slow-path counter at the start of every build surface;
-        // the per-template `post_process_geometry_handle_cells` below
-        // repopulates the map with this build's resolved handles.
-        self.realization_handles.clear();
-        self.reset_geometry_revalidation_slow_path_count();
+        // Reset all per-build engine state at the entry to this build surface
+        // through the single exhaustive-destructure choke-point (#5069,
+        // INV-BUILD-1): zeroes both dispatch tallies in lockstep, clears the
+        // GHR-δ realization→handle validity map (repopulated below by the
+        // per-template `post_process_geometry_handle_cells`), resets the
+        // revalidation slow-path counter, and clears the per-build attribute
+        // tables (`topology_attribute_table` / `swept_kind_table` — formerly
+        // reset gated inside the geometry block below).
+        self.reset_per_build_state(BuildSurface::BuildSnapshot);
         // γ (task 4739): demand-prune Pending producer. On the warm/selective
         // path (full_scope OFF) flip every pruned-Final cached node to Pending
         // so a hidden body's value is never served as a silently-stale Final
@@ -3170,8 +3419,10 @@ impl Engine {
                 .map(|t| vec![None; t.realizations.len()])
                 .collect();
 
-            self.topology_attribute_table = TopologyAttributeTable::default();
-            self.swept_kind_table = SweptKindTable::default();
+            // The per-build attribute tables (`topology_attribute_table` /
+            // `swept_kind_table`) are now cleared unconditionally at the top of
+            // this surface by `reset_per_build_state` (#5069); the formerly
+            // kernel-gated reset that sat here is removed.
             // Task 3441: cross-template `GeomRef::Sub` threading.  As each
             // template's realizations complete, snapshot its `named_steps`
             // under the template name so a subsequent template that has
@@ -3191,6 +3442,16 @@ impl Engine {
                 HashMap::new();
             // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
+            // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
+            // mesh-contract posture into a local BEFORE the `&mut self`
+            // borrows taken by `RealizationOpsInput::new` below, then thread
+            // it per-iteration.
+            let mesh_contract_mode = self.mesh_contract_mode;
+            // Task #5196 step-12: the module-STATIC term of the L2 selector
+            // gate. Module-GLOBAL, so it is resolved ONCE here — above the
+            // template loop — and threaded per-iteration, exactly like the two
+            // locals above.
+            let module_binds_selector_flag = module_binds_selector(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3299,7 +3560,15 @@ impl Engine {
                         // bound to `morph_io` just above the call.
                         .with_morph_io(morph_io)
                         // GR-034: resolved once at entry (see above).
-                        .with_long_chain_threshold(long_chain_threshold),
+                        .with_long_chain_threshold(long_chain_threshold)
+                        // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                        // tessellate→ingest handoff, resolved once at entry (see above).
+                        .with_mesh_contract_mode(mesh_contract_mode)
+                        // Task #5196 step-12: the module-static term of the
+                        // L2 selector gate, resolved once above the template
+                        // loop. Only the build paths opt in; tessellate/query
+                        // keep the fail-open `true` default.
+                        .with_module_binds_selector(module_binds_selector_flag),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -3712,16 +3981,21 @@ impl Engine {
             Vec::new()
         };
 
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // build of the same module reports its own per-build dispatch tally
-        // (and reports 0 when fully served from the RealizationCache). Mirrors
-        // the reset at the top of `build_snapshot` / `tessellate_realizations`
-        // / `tessellate_snapshot` — must run BEFORE `check()` because no
-        // dispatcher call should be counted against the build that hasn't
-        // entered the per-realization op loop yet.
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
+        // Reset all per-build engine state through the single exhaustive-
+        // destructure choke-point (#5069, INV-BUILD-1), placed here — AFTER the
+        // relate-solve sub-build (which mutates transient state and must precede
+        // the resets) and BEFORE `check()`. It zeroes both dispatch tallies in
+        // lockstep, clears the GHR-δ realization→handle validity map (documented
+        // "cleared at the START of every build()"; repopulated below by the
+        // per-template `post_process_geometry_handle_cells`), resets the
+        // revalidation slow-path counter, and clears the per-build attribute
+        // tables. Keeping the handles clear BEFORE `check()` preserves the
+        // load-bearing contract that build's own GD&T/DFM pass reads THIS
+        // build's (freshly-cleared) map — the asymmetry the CLI combined-
+        // constraint arm depends on. No dispatcher call is counted against the
+        // build until the per-realization op loop, so the dispatch reset here
+        // is byte-identical to the prior pre-`check()` placement.
+        self.reset_per_build_state(BuildSurface::Build);
         // Task 4355 β: capture declaration-order execution order for the
         // assert_dag_complete gate.  Realizations are visited in the same
         // order as the build loop below (templates × realizations in
@@ -3735,12 +4009,6 @@ impl Engine {
             .iter()
             .flat_map(|t| t.realizations.iter().map(|r| r.id.clone()))
             .collect();
-        // GHR-δ §5: clear the realization→handle validity map and reset the
-        // revalidation slow-path counter at the start of the build; the
-        // per-template `post_process_geometry_handle_cells` below repopulates
-        // the map with this build's resolved handles.
-        self.realization_handles.clear();
-        self.reset_geometry_revalidation_slow_path_count();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -3920,8 +4188,10 @@ impl Engine {
                 .map(|t| vec![None; t.realizations.len()])
                 .collect();
 
-            self.topology_attribute_table = TopologyAttributeTable::default();
-            self.swept_kind_table = SweptKindTable::default();
+            // The per-build attribute tables (`topology_attribute_table` /
+            // `swept_kind_table`) are now cleared unconditionally at the top of
+            // this surface by `reset_per_build_state` (#5069); the formerly
+            // kernel-gated reset that sat here is removed.
             // Task 3441: cross-template `GeomRef::Sub` threading.  As each
             // template's realizations complete, snapshot its `named_steps`
             // under the template name so a subsequent template that has
@@ -3963,6 +4233,16 @@ impl Engine {
 
             // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
+            // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
+            // mesh-contract posture into a local BEFORE the `&mut self`
+            // borrows taken by `RealizationOpsInput::new` below, then thread
+            // it per-iteration.
+            let mesh_contract_mode = self.mesh_contract_mode;
+            // Task #5196 step-12: the module-STATIC term of the L2 selector
+            // gate. Module-GLOBAL, so it is resolved ONCE here — above the
+            // template loop — and threaded per-iteration, exactly like the two
+            // locals above.
+            let module_binds_selector_flag = module_binds_selector(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4189,7 +4469,15 @@ impl Engine {
                         // bound to `morph_io` just above the call.
                         .with_morph_io(morph_io)
                         // GR-034: resolved once at entry (see above).
-                        .with_long_chain_threshold(long_chain_threshold),
+                        .with_long_chain_threshold(long_chain_threshold)
+                        // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                        // tessellate→ingest handoff, resolved once at entry (see above).
+                        .with_mesh_contract_mode(mesh_contract_mode)
+                        // Task #5196 step-12: the module-static term of the
+                        // L2 selector gate, resolved once above the template
+                        // loop. Only the build paths opt in; tessellate/query
+                        // keep the fail-open `true` default.
+                        .with_module_binds_selector(module_binds_selector_flag),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -5133,6 +5421,11 @@ impl Engine {
         let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
         // GR-034: resolve once per eval-loop entry; threaded per-iteration.
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
+        // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
+        // mesh-contract posture into a local BEFORE the `&mut self` borrows
+        // taken by `RealizationOpsInput::new` below, then thread it
+        // per-iteration.
+        let mesh_contract_mode = self.mesh_contract_mode;
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
@@ -5201,7 +5494,10 @@ impl Engine {
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
                     // GR-034: resolved once at entry (see above).
-                    .with_long_chain_threshold(long_chain_threshold),
+                    .with_long_chain_threshold(long_chain_threshold)
+                    // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                    // tessellate→ingest handoff, resolved once at entry (see above).
+                    .with_mesh_contract_mode(mesh_contract_mode),
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
@@ -5535,13 +5831,13 @@ impl Engine {
     /// tessellation precision), whereas `build` applies it at the
     /// realization-cache key.
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // call against the same module reports its own per-build dispatch
-        // tally (and reports 0 when fully served from the RealizationCache).
-        // Mirrors `build` / `build_snapshot` / `tessellate_snapshot`.
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
+        // Per-build state reset is deferred to the post-`check()` position below
+        // (`reset_per_build_state(TessellateRealizations)`) so the attribute-table
+        // reset stays AFTER `check()`→`eval()`, preserving the shell-extract
+        // mid-surface fold ordering. No `realization_handles` arm fires on a
+        // tessellate surface, and `check()`→`eval()` issues no per-realization
+        // geometry dispatch, so deferring the dispatch-tally reset past `check()`
+        // is byte-identical.
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -5583,12 +5879,16 @@ impl Engine {
         // `BuildResult.values` — a reader of either map sees the same
         // kernel-resolved Bool answers (when a kernel is configured).
         let mut values = check_result.values;
-        self.topology_attribute_table = TopologyAttributeTable::default();
-        self.swept_kind_table = SweptKindTable::default();
-        // Determinacy β (task 4198): clear the achieved-tol map at the start
-        // of each tessellate_realizations call so stale entries from a prior
-        // call do not leak into the new result.
-        self.achieved_repr_tol.clear();
+        // Reset all per-build engine state through the single exhaustive-
+        // destructure choke-point (#5069, INV-BUILD-1), placed AFTER `check()`
+        // so the `topology_attribute_table` reset preserves the shell-extract
+        // mid-surface fold ordering. Clears the per-build attribute tables and
+        // the `achieved_repr_tol` map (Determinacy β / task 4198 — stale entries
+        // from a prior call must not leak into the new result), zeroes both
+        // dispatch tallies in lockstep, and resets the revalidation slow-path
+        // counter. `realization_handles` is intentionally PRESERVED on a
+        // tessellate surface — the load-bearing build↔tessellate asymmetry.
+        self.reset_per_build_state(BuildSurface::TessellateRealizations);
         // β (task 4738) step-2: demand-scoped plan for the tessellate_realizations
         // path. `demand_scoped_unified_pass()` replaces the inline
         // `run_unified_pass` call; the returned `demand_seed_tess` threads into
@@ -5629,6 +5929,9 @@ impl Engine {
             unified_pass_tess.as_ref(),
             &realization_read_cells_tess,
             demand_seed_tess.as_ref(),
+            // Task #5105 δ (INV-GEO-1): forward the Engine's posture so the
+            // `set_mesh_contract_mode` seam governs the tessellate path too.
+            self.mesh_contract_mode,
         );
 
         TessellateResult {
@@ -6004,6 +6307,17 @@ impl Engine {
         // (not &DemandRegistry) keeps the fn self-contained and matches how
         // the seed is produced once by the caller's helper.
         demand_seed: Option<&HashSet<NodeId>>,
+        // Task #5105 δ (INV-GEO-1): mesh-contract enforcement posture for the
+        // tessellate→ingest handoff, forwarded from `tessellate_realizations` /
+        // `tessellate_snapshot` (each passes `self.mesh_contract_mode`, itself
+        // seeded from `MeshContractMode::from_env()` at Engine construction).
+        // Threaded explicitly — like `dispatch_count` and `capture_repr_tol` —
+        // rather than re-read from the env here, so the
+        // `Engine::set_mesh_contract_mode` test seam governs this path exactly
+        // as it governs `build` / `build_snapshot`. (`long_chain_threshold` is
+        // still env-read inline below because it is a perf-diagnostic knob that
+        // cannot abort a build; this one can.)
+        mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -6278,7 +6592,10 @@ impl Engine {
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
                     // GR-034: resolved once at entry (see above).
-                    .with_long_chain_threshold(long_chain_threshold),
+                    .with_long_chain_threshold(long_chain_threshold)
+                    // Task #5105 δ (INV-GEO-1): mesh-contract posture for the
+                    // tessellate→ingest handoff, resolved once at entry (see above).
+                    .with_mesh_contract_mode(mesh_contract_mode),
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
@@ -6482,8 +6799,9 @@ impl Engine {
     /// 1. **Probes ONLY when `is_terminal_realization && demanded_tol.is_some()
     ///    && realization_name.is_some()`.** A guard-fail (or a plain cache
     ///    miss) returns `false` with zero side effects on `outputs` — no
-    ///    push/insert on any output view, no `topology_attribute_table`
-    ///    eviction. Pinned by
+    ///    push/insert on any output view, and the fail-closed
+    ///    `topology_attribute_table` debug_assert (invariant #4) never runs.
+    ///    Pinned by
     ///    `probe_realization_cache_guard_requires_terminal_named_and_tol`.
     /// 2. **Primary lookup at `demanded_repr`; `BRep` fallback on a
     ///    non-`BRep` miss.** A `demanded_repr == BRep` demand never falls
@@ -6500,13 +6818,27 @@ impl Engine {
     ///    `probe_realization_cache_primary_hit_applies_full_side_effect_set`
     ///    (single hit) and, cold-vs-warm,
     ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
-    /// 4. **The 4349 cross-kernel eviction is a documented interim
-    ///    trade-off, not a fix** — see the `Cross-kernel collision guard
-    ///    (task 4349)` comment at the `topology_attribute_table.remove(...)`
-    ///    call site below for the mechanism and trade-off. Retiring it is
-    ///    follow-up task θ's job, gated on #4351 — this task lands the
-    ///    mechanism only, so INV-BUILD-3 stays `proposed`. Pinned by
-    ///    `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`.
+    /// 4. **On a hit, the cache-served handle has NO `topology_attribute_table`
+    ///    entry — enforced fail-closed.** After #4351's `KernelHandle`
+    ///    re-key, cross-kernel collision at this table is impossible by
+    ///    construction, so task 4349's defensive eviction (retired by task
+    ///    θ / #5064) is replaced with a direct
+    ///    `debug_assert!(outputs.topology_attribute_table.lookup(cached_handle).is_none(), ...)`
+    ///    of the #3226 spec ("a cache-served handle has no entries in the
+    ///    table on the second build"): loud in debug on a genuine contract
+    ///    violation, permissive-by-absence in release (the assert compiles
+    ///    out). INV-BUILD-3 and the engine-build share of INV-GEO-2 are
+    ///    `enforced(test)` via this assert plus the cold/warm parity test;
+    ///    the release-mode share of this empty-table sub-postcondition (the
+    ///    assert compiles out) leans on INV-BUILD-1, still `proposed` — see
+    ///    the call-site comment below and the INV-BUILD-3 note in
+    ///    `docs/invariants.md`.
+    ///    Pinned by
+    ///    `probe_realization_cache_debug_asserts_no_entry_at_cache_served_handle`
+    ///    (fail-closed panic on a stale same-handle entry) and
+    ///    `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`
+    ///    (a cross-kernel sibling entry is preserved, not collaterally
+    ///    evicted).
     #[allow(clippy::too_many_arguments)]
     fn probe_realization_cache(
         realization_cache: &RealizationCache<KernelHandle>,
@@ -6600,27 +6932,45 @@ impl Engine {
                     }
                 });
             if let Some((cached_handle, resolved_repr)) = cache_probe {
-                // Cross-kernel collision guard (task 4349), re-keyed by task
-                // #4351: `TopologyAttributeTable` is now keyed by the full
-                // `KernelHandle` (kernel + kernel-local id) rather than a bare
-                // `GeometryHandleId`, so this eviction removes exactly the
-                // cached handle's own entry and no longer collaterally evicts
-                // a different kernel's sibling entry that happens to share the
-                // same numeric id.
+                // Fail-closed cross-kernel collision assert (task 4349,
+                // retired to this form by task θ / #5064): `TopologyAttributeTable`
+                // is keyed by the full `KernelHandle` (kernel + kernel-local
+                // id) rather than a bare `GeometryHandleId` (#4351), so a
+                // different kernel's sibling entry that happens to share the
+                // same numeric id can no longer collide with `cached_handle`
+                // here — collision at this table is impossible by
+                // construction.
                 //
-                // We defensively remove any entry at `cached_handle` from the
-                // table rather than asserting it is already absent. This is a
-                // no-op in the common case (the per-build reset already
-                // cleared the table) and enforces the #3226 spec ("a
-                // cache-served handle has no entries in those tables on the
-                // second build") when a stale entry from a prior build
-                // happens to still be present at this exact handle.
+                // That makes the #3226 spec ("a cache-served handle has no
+                // entries in those tables on the second build") directly
+                // assertable rather than needing a defensive eviction to
+                // enforce it: any stale entry surviving to this point at the
+                // exact cache-served handle is a genuine contract violation
+                // (a per-build reset or op-loop population bug), not a
+                // false-positive cross-kernel collision — so it should panic
+                // loudly in debug rather than being silently swept away.
+                // Release stays permissive-by-absence: the assert compiles
+                // out, matching the tautological `debug_assert_eq!` below.
                 //
-                // DO NOT retire this eviction — downstream task #5064 removes
-                // it and installs a fail-closed assert once the surrounding
-                // invariants are strong enough to guarantee the table is
-                // already empty at this point.
-                outputs.topology_attribute_table.remove(cached_handle);
+                // Release-mode reliance (reviewer_comprehensive #1, θ amend
+                // pass): with the assert compiled out, a stale same-kernel/
+                // same-id entry surviving ACROSS builds (e.g. a per-build-
+                // reset regression, or a kernel-local id counter re-minting
+                // id 1 on a later build) would be served silently in
+                // release. That failure mode is guarded only by INV-BUILD-1
+                // ("per-build engine state resets exactly once per
+                // build/tessellate entry point" — docs/invariants.md),
+                // which is status `proposed` (type-level enforcement via a
+                // `reset_per_build_state` exhaustive destructure is future
+                // work, not yet test-enforced) — this assert is a debug-mode
+                // detector, not a release backstop.
+                debug_assert!(
+                    outputs.topology_attribute_table.lookup(cached_handle).is_none(),
+                    "INV-BUILD-3 / INV-GEO-2 (PRD engine-build-hardening §4 D6, \
+                     #3226 spec): cache-served handle {cached_handle:?} must \
+                     have no topology_attribute_table entry on the second \
+                     build",
+                );
                 outputs.step_handles.push(cached_handle);
                 outputs.named_steps.insert(name.to_string(), cached_handle);
                 // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
@@ -6725,11 +7075,11 @@ impl Engine {
     /// helper delegates to [`Self::probe_realization_cache`], which — on a
     /// hit — applies the realization's cold-path success side effects
     /// (`step_handles` push, `named_steps` + `named_step_reprs` insert,
-    /// `produced_repr_out` write, and the task-4349 cross-kernel
-    /// `topology_attribute_table` eviction) and returns early, before this
-    /// helper's `RealizationOutputs` destructure ever runs. See that
+    /// `produced_repr_out` write, and the fail-closed
+    /// `topology_attribute_table` debug_assert) and returns early, before
+    /// this helper's `RealizationOutputs` destructure ever runs. See that
     /// method's `# Invariants` doc (INV-BUILD-3) for the full
-    /// guard/fallback/side-effect/eviction contract and its pinning tests.
+    /// guard/fallback/side-effect/assert contract and its pinning tests.
     ///
     /// **Known limitation** (recorded as a design decision): a cache-hit
     /// short-circuit skips per-op `topology_attribute_table` population,
@@ -6742,8 +7092,8 @@ impl Engine {
     /// queries today, so this is documented (not regressed) in scope; a
     /// follow-up task can either cache the table entries alongside the
     /// handle or skip the table reset for engines with non-empty cache.
-    /// (The task-4349 cross-kernel `GeometryHandleId` collision guard that
-    /// partially compensates for this on a cache-hit now lives on
+    /// (The fail-closed `topology_attribute_table` debug_assert that
+    /// verifies this on a cache-hit now lives on
     /// [`Self::probe_realization_cache`] — see that method's doc.)
     fn execute_realization_ops(
         input: RealizationOpsInput<'_>,
@@ -6777,6 +7127,8 @@ impl Engine {
             is_terminal_realization,
             morph_io,
             long_chain_threshold,
+            mesh_contract_mode,
+            module_binds_selector: module_binds_selector_flag,
         } = input;
         if Self::probe_realization_cache(
             realization_cache,
@@ -6947,6 +7299,13 @@ impl Engine {
         // plan is captured by clone into this Option. Used after the loop to
         // emit the at-most-one LongChainRealization diagnostic.
         let mut longest_chain_plan: Option<DispatchPlan> = None;
+        // task #5196 L4: per-realization accumulator for
+        // topology-correspondence-loss counters. Mirrors `longest_chain_plan`
+        // immediately above — accumulated per-op inside the loop, flushed
+        // once after it (see the `topology_drop_tally.flush` call below) —
+        // so a realization with N ops sharing a counter emits ONE summed
+        // diagnostic instead of N near-identical per-op lines.
+        let mut topology_drop_tally = TopologyCorrespondenceDropTally::default();
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -7655,34 +8014,51 @@ impl Engine {
                                                 break 'convert;
                                             }
                                         };
-                                        // Task #5103 (kernel-seam β, INV-GEO-1): check the
+                                        // Tasks #5103 (β) / #5105 (δ), INV-GEO-1: check the
                                         // interchange Mesh against the mesh contract
                                         // (PRD docs/prds/kernel-seam-contracts.md §4 site 1)
                                         // right after it's produced by the Tessellate
-                                        // (BRep→Mesh) source. WARN-default during rollout —
-                                        // on a violation, push a Severity::Warning diagnostic
-                                        // and fall through to ingest as normal; never abort
-                                        // the build here. The fail-closed enforce flip
-                                        // (reading a policy env var and aborting instead) is
-                                        // task δ's scope, not β's. Scoped to the tessellate
-                                        // producer only — the MarchingCubes (Voxel→Mesh)
-                                        // producer is task γ's domain and is backstopped by
-                                        // PRD site 2 (Manifold-ingest validation).
+                                        // (BRep→Mesh) source. β wired this warn-only; δ makes
+                                        // it mode-governed and flips the default to ENFORCE.
+                                        //
+                                        // Enforce (default): feed the violation into the
+                                        // existing `conversion_error`/`break 'convert` abort
+                                        // path, which pushes the Severity::Error diagnostic,
+                                        // sets `kernel_error_out`, and triggers the
+                                        // intermediate-cache rollback — no parallel abort
+                                        // machinery. Note this aborts BEFORE the ingest below.
+                                        //
+                                        // Warn (`REIFY_MESH_CONTRACT=warn`, break-glass):
+                                        // push a Severity::Warning and fall through to ingest
+                                        // as normal, never aborting — the pre-δ behavior.
+                                        //
+                                        // Scoped to the tessellate producer only — the
+                                        // MarchingCubes (Voxel→Mesh) producer is task γ's
+                                        // domain and is backstopped by PRD site 2
+                                        // (Manifold-ingest validation).
                                         if !from_marching_cubes
                                             && let Err(violation) =
                                                 mesh.validate(per_stage_tol)
                                         {
-                                            diagnostics.push(
-                                                Diagnostic::warning(
-                                                    violation
-                                                        .into_geometry_error(source_name)
-                                                        .to_string(),
-                                                )
-                                                .with_label(DiagnosticLabel::new(
-                                                    realization_span,
-                                                    "in this realization",
-                                                )),
-                                            );
+                                            let message = violation
+                                                .into_geometry_error(source_name)
+                                                .to_string();
+                                            match mesh_contract_mode {
+                                                reify_ir::geometry::MeshContractMode::Enforce => {
+                                                    conversion_error = Some(message);
+                                                    break 'convert;
+                                                }
+                                                reify_ir::geometry::MeshContractMode::Warn => {
+                                                    diagnostics.push(
+                                                        Diagnostic::warning(message).with_label(
+                                                            DiagnosticLabel::new(
+                                                                realization_span,
+                                                                "in this realization",
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
+                                            }
                                         }
                                         // Ingest into the target kernel (`&mut`).
                                         // For a Manifold kernel this is Mesh→Mesh;
@@ -7722,6 +8098,20 @@ impl Engine {
                                                     ),
                                                     id: handle.id,
                                                 };
+                                                // **Task 4152: this is the UNCOUNTED
+                                                // insert.** Plain `insert`, so it does
+                                                // not move
+                                                // `CacheStats::realization_entries`.
+                                                // These are per-step conversion
+                                                // intermediates *within* one
+                                                // realization (keyed
+                                                // `"{entity}#conv-step{N}"`), not
+                                                // realizations — the OCCT→gmsh
+                                                // VolumeMesh route passes through here,
+                                                // so counting them would break the
+                                                // "one body, one entry" contract. The
+                                                // terminal site below uses
+                                                // `insert_terminal`.
                                                 realization_cache.insert(
                                                     &intermediate_entity,
                                                     terminal_to,
@@ -8006,18 +8396,18 @@ impl Engine {
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
                             }
-                            // task 4545: surface topology-correspondence-loss counters
-                            // from the kernel history record as structured Warnings.
-                            // Called immediately after `populate_attribute_history`
-                            // (independent of its Result) so the warning is emitted
-                            // even when population also warns. Severity::Warning only
-                            // — geometry is valid, only persistent-naming tracking
-                            // is degraded (task-2574 auxiliary-metadata convention).
-                            diagnose_topology_correspondence_drops(
-                                &attribute_history,
-                                &format!("{realization_id} op {op_idx}"),
-                                diagnostics,
-                            );
+                            // task 4545: accumulate topology-correspondence-loss
+                            // counters from the kernel history record. Called
+                            // immediately after `populate_attribute_history`
+                            // (independent of its Result) so the counters are
+                            // folded in even when population also warns. Flushed
+                            // ONCE per realization (task #5196 L4 summarization,
+                            // see `topology_drop_tally.flush` after the op loop)
+                            // rather than emitted per-op, at Severity::Info
+                            // (task #5196; was Severity::Warning) — geometry is
+                            // valid, only persistent-naming tracking is degraded
+                            // (task-2574 auxiliary-metadata convention).
+                            topology_drop_tally.accumulate(&attribute_history);
                             // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
                             // propagation for non-BRep kernels.  Runs immediately after
                             // `populate_attribute_history` (BRep-first ordering per design
@@ -8178,6 +8568,17 @@ impl Engine {
         {
             diagnostics.push(diag);
         }
+        // task #5196 L4: flush the per-realization silent-drop tally
+        // accumulated during the op loop above into at most one
+        // `Diagnostic::info` per `(op_kind, counter)`, summed across every
+        // op in this realization. Mirrors the long-chain diagnostic
+        // immediately above — flushed unconditionally here, BEFORE the
+        // `rolled_back` determination, so a realization that accumulated
+        // drops on its early (successful) ops still surfaces them even if a
+        // later op in the same realization fails (matching the pre-L4
+        // per-op emission, which was likewise unconditional on eventual
+        // rollback).
+        topology_drop_tally.flush(&format!("{realization_id}"), diagnostics);
         // Discard intermediate handles from partially-failed realizations
         let rolled_back =
             had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
@@ -8240,6 +8641,33 @@ impl Engine {
             {
                 swept_kind_table.record(last_id, kind);
             }
+            // task #5196 L2 gate: the tie-scan below is about *selector-
+            // resolution* stability, so it is vacuous work when this module
+            // binds no selector at all (e.g. the litter-tray multi-boolean
+            // model, which binds none).
+            //
+            // TWO terms, OR'd, short-circuiting on the first. The LOAD-BEARING
+            // one is `module_binds_selector_flag` — the module-STATIC walk of
+            // every `CompiledExpr` reachable from any template, computed once
+            // per build and threaded in (it is a module-global answer, so
+            // recomputing it per realization would be pure waste). The runtime
+            // `values_contain_selector(values)` probe is a secondary
+            // belt-and-braces term.
+            //
+            // The runtime probe alone would be fail-CLOSED, not fail-open: the
+            // `ValueMap` carries no anonymous sub-expression entries, so a
+            // selector ctor consumed inline as a call argument
+            // (`fillet(b, edges(b), 2mm)` — the dominant idiom) leaves no
+            // trace in it; and a declared selector cell that a realization
+            // consumes is hydrated to `Value::List<Geometry>` rather than
+            // staying a `Value::Selector`. See the section header above
+            // `expr_contains_selector_ctor` for the full analysis and the
+            // residual gap.
+            //
+            // Off the build path (tessellate/query, the `run`/`run_demand`
+            // test wrapper) the flag keeps its fail-open `true` default, so
+            // those paths run the scan exactly as they did before the gate.
+            if module_binds_selector_flag || values_contain_selector(values) {
             // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
             // fragility detection for local_index reassignment. The
             // topology_attribute_table is fully populated for this realization
@@ -8328,6 +8756,7 @@ impl Engine {
                     diagnostics,
                 );
             }
+            } // task #5196 L2 gate: values_contain_selector(values)
             // ── Task 4743 (α): VolumeMesh realization call edge ───────────────
             //
             // Demand is computed module-statically in `compute_demanded_reprs`
@@ -8646,7 +9075,25 @@ impl Engine {
                                 false, // require_hex_wedge
                                 &realization_ops,
                                 &realization_step_ids,
-                                |_swept| unreachable!("gmsh_2d unreachable: force_tet=true"),
+                                // Task 5218: de-stub the swept 2-D producer edge
+                                // — wire the real op-stream cross-section
+                                // producer as gmsh_2d. Still gated: swept_kind is
+                                // None and force_tet is true, so dispatch
+                                // short-circuits to tet_path before this closure
+                                // is ever invoked. The edge-selection activation
+                                // (swept_kind lookup, force_tet/require_hex_wedge
+                                // from ElementTypePref, sweep_step wiring, storing
+                                // the Swept outcome) is contract C-5, owned by
+                                // task 4746.
+                                |swept| {
+                                    crate::sweep_classifier::build_swept_2d_mesh(
+                                        swept,
+                                        &realization_ops,
+                                        &realization_step_ids,
+                                        reify_solver_elastic::SweepElementTarget::HexPreferred,
+                                        &reify_solver_elastic::Mesh2dOptions::default(),
+                                    )
+                                },
                                 |_params, _mesh| {
                                     unreachable!("sweep_step unreachable: force_tet=true")
                                 },
@@ -8857,7 +9304,15 @@ impl Engine {
                     // the entity+tol key — intermediate lets are intra-build
                     // scratch and must not pollute the cross-build cache.
                     let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
-                    realization_cache.insert(
+                    // **Task 4152: this is the COUNTED insert.** `insert_terminal`
+                    // is `insert` plus a bump of the monotonic
+                    // `CacheStats::realization_entries` lifetime counter when the
+                    // insert is accepted. This site is the one the counter is
+                    // defined by: a terminal realization that genuinely produced
+                    // and cached new geometry. The conversion-intermediate insert
+                    // (search `intermediate_cache_inserts`) stays on plain
+                    // `insert` and is deliberately NOT counted.
+                    realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,
                         tol,
@@ -11158,13 +11613,17 @@ impl Engine {
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
-        // Task ε (3436) step-12: reset the dispatch-count instrumentation
-        // counter at the entry to every build/tessellate surface so a second
-        // call against the same module reports its own per-build dispatch
-        // tally (and reports 0 when fully served from the RealizationCache).
-        // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
-        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
-        self.reset_dispatch_tallies();
+        // Reset all per-build engine state through the single exhaustive-
+        // destructure choke-point (#5069, INV-BUILD-1). Placed at the TOP:
+        // `tessellate_snapshot` uses `check_constraints_against_templates` (no
+        // `eval()`, no shell-extract fold), so resetting the attribute tables
+        // before the `eval_state.as_ref()?` early-return is benign — the tables
+        // are empty pre-eval. Zeroes both dispatch tallies in lockstep, resets
+        // the revalidation slow-path counter, and clears the per-build attribute
+        // tables + `achieved_repr_tol` (Determinacy β / task 4198).
+        // `realization_handles` is intentionally PRESERVED on a tessellate
+        // surface — the load-bearing build↔tessellate asymmetry.
+        self.reset_per_build_state(BuildSurface::TessellateSnapshot);
         // γ (task 4739): demand-prune Pending producer — THE primary warm
         // pruning surface. On the warm/selective path (full_scope OFF) flip
         // every pruned-Final cached node to Pending so a hidden body's value is
@@ -11253,11 +11712,8 @@ impl Engine {
         // routing — same pattern as the `tessellate_realizations` mirror.
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
-        self.topology_attribute_table = TopologyAttributeTable::default();
-        self.swept_kind_table = SweptKindTable::default();
-        // Determinacy β (task 4198): clear the achieved-tol map at the start
-        // of each tessellate_snapshot call (mirrors tessellate_realizations).
-        self.achieved_repr_tol.clear();
+        // (Per-build attribute tables + `achieved_repr_tol` were reset at the
+        // TOP of this surface by `reset_per_build_state(TessellateSnapshot)`.)
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -11279,6 +11735,9 @@ impl Engine {
             unified_pass_snap.as_ref(),
             &realization_read_cells_snap,
             demand_seed_snap.as_ref(),
+            // Task #5105 δ (INV-GEO-1): mirror of the `tessellate_realizations`
+            // forward above.
+            self.mesh_contract_mode,
         );
 
         Some(TessellateResult {
@@ -11502,6 +11961,326 @@ fn collect_centroids_with_failure_summary(
         )));
     }
     (centroids, diags)
+}
+
+// ── L2 selector-presence gate (task #5196 step-8, corrected at step-12) ──────
+//
+// The gate on the per-realization local-index-reassignment tie-scan in
+// [`Engine::execute_realization_ops`]. That scan warns about
+// *selector-resolution* stability, so it is vacuous work on a build that
+// binds no selector at all (e.g. the litter-tray multi-boolean model).
+//
+// The gate has TWO terms, OR'd:
+//
+//   1. [`module_binds_selector`] — the LOAD-BEARING signal. A module-static
+//      walk of every `CompiledExpr` reachable from any template, looking for
+//      a selector-ctor `FunctionCall`. Computed ONCE per build and threaded
+//      in via `RealizationOpsInput::module_binds_selector`.
+//
+//   2. [`values_contain_selector`] — a secondary belt-and-braces term over
+//      the runtime `ValueMap`.
+//
+// Term 2 CANNOT carry the gate alone, and step-8's doc claiming otherwise was
+// wrong in the worst possible direction — it was fail-CLOSED on the dominant
+// selector idiom, not fail-open. Two independent reasons:
+//
+//   (a) The `ValueMap` has no entries for anonymous sub-expressions. The
+//       compiler's only ANF hoist (`phase_hoist_nested_selector_ctors`) lifts
+//       selector ctors ONLY out of `StructureInstanceCtor` field values —
+//       `hoist_in_expr`'s catch-all is literally `_ => {}`
+//       (crates/reify-compiler/src/hoist_nested_selectors.rs). So in the
+//       curated-modify idiom `fillet(b, edges(b), 2mm)` the ctor sits in
+//       ordinary `FunctionCall` ARGUMENT position, never earns a cell, and no
+//       `Value::Selector` is ever written anywhere.
+//   (b) Even a DECLARED selector let can be invisible: once a realization
+//       consumes it, `hydrate_value_cell_in_loop` branch (b) resolves the
+//       cell to `Value::List<Geometry>` rather than leaving a
+//       `Value::Selector` behind.
+//
+// Under term 2 alone, `DiagnosticCode::TopologyAttributeLocalIndexReassigned`
+// was therefore unreachable for exactly the models whose selector resolution
+// is at risk of shuffling.
+//
+// RESIDUAL GAP, stated honestly: term 1 walks `CompiledExpr` trees reachable
+// from `module.templates` only. A selector ctor that exists *exclusively*
+// inside a module-level `CompiledFunction` body, a `CompiledField` source
+// expr, or a `CompiledPurpose` is not seen by term 1 (see
+// [`module_binds_selector`] for why walking `module.functions` is actively
+// harmful). Term 2 still covers the sub-case where such a ctor's *result*
+// lands in a value cell. What survives both terms is a selector ctor that is
+// (i) declared only outside any template AND (ii) consumed inline so its
+// result never reaches `values`. That is a bounded gap on an advisory
+// `Severity::Info` diagnostic, not a silent correctness loss.
+
+/// True iff `expr`'s tree contains a selector-ctor `FunctionCall` at ANY
+/// position.
+///
+/// Leaf test is the compiler's OWN predicate,
+/// [`reify_compiler::topology_selector_result_type`] — the same one
+/// `is_hoistable_selector_ctor` uses — so this gate and the ANF hoist cannot
+/// drift apart on what counts as a selector ctor. The difference is
+/// positional: the hoist tests only `StructureInstanceCtor` field values,
+/// this tests EVERY expression position. That positional restriction is
+/// precisely the bug being fixed.
+///
+/// Traversal reuses [`reify_ir::CompiledExpr::walk`], the canonical
+/// pre-order walk, per its own doc contract ("All callers that need to visit
+/// expression nodes should use this method rather than implementing their own
+/// match on `CompiledExprKind`"). That contract is what makes this
+/// future-proof: `walk` is exhaustive over every `CompiledExprKind` variant
+/// with no `_ =>` catch-all, so a newly-added variant is a compile error
+/// *there* rather than a silent fail-closed hole here.
+///
+/// Two positions `walk` deliberately does not reach are covered explicitly
+/// below, since for this predicate they are real carriers:
+/// `StructureInstanceCtor::lets` (skipped by `walk` because it references
+/// template-local cells) and a `Value::Lambda` body embedded in a `Literal`
+/// (skipped because `walk` treats `Literal` as a leaf).
+fn expr_contains_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
+    fn is_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
+        match &expr.kind {
+            reify_ir::CompiledExprKind::FunctionCall { function, .. } => matches!(
+                reify_compiler::topology_selector_result_type(&function.name),
+                Some(reify_core::Type::Selector(_))
+            ),
+            _ => false,
+        }
+    }
+
+    let mut found = false;
+    expr.walk(&mut |node| {
+        if found {
+            return;
+        }
+        if is_selector_ctor(node) {
+            found = true;
+            return;
+        }
+        match &node.kind {
+            // `walk` skips `lets` (it references template-local cells), so
+            // descend them here.
+            reify_ir::CompiledExprKind::StructureInstanceCtor { lets, .. } => {
+                if lets.iter().any(|(_, e)| expr_contains_selector_ctor(e)) {
+                    found = true;
+                }
+            }
+            // `walk` treats `Literal` as a leaf, but `Value::Lambda` embeds a
+            // whole `CompiledExpr` body inside one. (Guard rather than a
+            // nested `if` per `clippy::collapsible_match`; a failed guard
+            // falls through to the no-op `_` arm, same as the `if` did.)
+            reify_ir::CompiledExprKind::Literal(reify_ir::Value::Lambda { body, .. })
+                if expr_contains_selector_ctor(body) =>
+            {
+                found = true;
+            }
+            _ => {}
+        }
+    });
+    found
+}
+
+/// The `args` slice of a compiled geometry op, or empty for the one arm that
+/// has none.
+///
+/// Exhaustive by construction (no `_ =>` catch-all) so a newly-added
+/// `CompiledGeometryOp` arm is a compile error rather than a silently
+/// unwalked expression carrier.
+fn geometry_op_arg_exprs(
+    op: &reify_compiler::CompiledGeometryOp,
+) -> &[(String, reify_ir::CompiledExpr)] {
+    use reify_compiler::CompiledGeometryOp as Op;
+    match op {
+        Op::Primitive { args, .. }
+        | Op::Modify { args, .. }
+        | Op::Transform { args, .. }
+        | Op::Pattern { args, .. }
+        | Op::Curve { args, .. }
+        | Op::Profile { args, .. }
+        | Op::Surface { args, .. }
+        | Op::Sweep { args, .. }
+        | Op::Isosurface { args, .. } => args,
+        // The sole arm carrying no `CompiledExpr`: pure `GeomRef` operands.
+        Op::Boolean { .. } => &[],
+    }
+}
+
+/// True iff any `CompiledExpr` reachable from any of `module`'s templates
+/// contains a selector-ctor `FunctionCall` (see
+/// [`expr_contains_selector_ctor`]).
+///
+/// Module-GLOBAL by design, not per-realization: a `fillet` in realization R2
+/// may consume geometry realized in R1, so a per-realization op-walk would
+/// reintroduce a fail-closed gap at the realization boundary. Short-circuits
+/// on the first hit.
+///
+/// # Coverage
+///
+/// Every `TopologyTemplate` field whose type transitively holds a
+/// `CompiledExpr` is walked. Enumerated from the struct rather than inherited
+/// from a plan document, because two prior revisions of this task were wrong
+/// about which collections carry the relevant expressions:
+///
+/// - `value_cells[*].default_expr`
+/// - `constraints[*]` — `.expr` and `.arg_bindings[*]`
+/// - `realizations[*].operations[*]` — see [`geometry_op_arg_exprs`]
+/// - `sub_components[*]` — `.args`, `.guard_state` (`GuardState::Compiled`),
+///   `.pose`, `.auto_pose.params`, `.keyed_member_overrides[*]`
+/// - `relations[*]` — a bare `Vec<CompiledExpr>`
+/// - `ports[*]` — `.members[*].default_expr`, `.constraints[*]`, `.frame_expr`
+/// - `guarded_groups[*]` — `.guard_expr`, `.members`, `.constraints`,
+///   `.else_members`, `.else_constraints`
+/// - `objective` — `.terms[*].expr`
+/// - `match_arm_groups[*].arms[*].guard_expr`
+/// - `forall_templates[*].body` — `Constraint{body_expr}` / `Connect{params}`
+/// - `assoc_fns[*].function` — `.param_defaults[*]`, `.body.let_bindings[*]`,
+///   `.body.result_expr`
+///
+/// `guarded_groups` is stored FLAT: nesting is a `parent_guard` back-pointer
+/// to the enclosing group's `guard_value_cell`, not containment, so a flat
+/// iteration visits every group at every depth exactly once. It is also a
+/// collection wholly separate from `value_cells` — walking only `value_cells`
+/// would miss `where <cond> { let fs = faces(u) }` entirely and re-create the
+/// exact fail-closed hole this function exists to close, one layer up.
+///
+/// # Deliberate exclusions
+///
+/// - `module.functions` — `compile_with_stdlib` compiles the ENTIRE stdlib
+///   into every module's `functions`. Walking it would make this predicate
+///   universally true and turn the gate back into a no-op, which is strictly
+///   worse than the bounded gap documented at the top of this section.
+/// - `module.fields` / `module.compiled_purposes` — same stdlib-contamination
+///   risk class, and neither is a template-reachable expression carrier.
+/// - `template.annotations` — carries `reify_ast::Expr`, an UNCOMPILED AST
+///   expression evaluated at materialization; not a `CompiledExpr` channel.
+/// - `template.connections`, `.assoc_types`, `.type_params` — no
+///   `CompiledExpr` anywhere in their types.
+/// - `module.trait_defs`, `module.constraint_defs` — hold raw
+///   `reify_ast::Expr` / AST decls, deliberately un-lowered.
+fn module_binds_selector(module: &reify_compiler::CompiledModule) -> bool {
+    fn cell_binds(cell: &reify_compiler::ValueCellDecl) -> bool {
+        cell.default_expr
+            .as_ref()
+            .is_some_and(expr_contains_selector_ctor)
+    }
+    fn constraint_binds(c: &reify_compiler::CompiledConstraint) -> bool {
+        expr_contains_selector_ctor(&c.expr)
+            || c.arg_bindings
+                .iter()
+                .any(|(_, e)| expr_contains_selector_ctor(e))
+    }
+    fn fn_binds(f: &reify_compiler::CompiledFunction) -> bool {
+        f.param_defaults
+            .iter()
+            .flatten()
+            .any(expr_contains_selector_ctor)
+            || f.body
+                .let_bindings
+                .iter()
+                .any(|(_, e)| expr_contains_selector_ctor(e))
+            || expr_contains_selector_ctor(&f.body.result_expr)
+    }
+
+    module.templates.iter().any(|template| {
+        template.value_cells.iter().any(cell_binds)
+            || template.constraints.iter().any(constraint_binds)
+            || template.realizations.iter().any(|r| {
+                r.operations.iter().any(|op| {
+                    geometry_op_arg_exprs(op)
+                        .iter()
+                        .any(|(_, e)| expr_contains_selector_ctor(e))
+                })
+            })
+            || template.sub_components.iter().any(|sub| {
+                sub.args.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    || sub
+                        .guard_state
+                        .compiled()
+                        .is_some_and(expr_contains_selector_ctor)
+                    || sub.pose.as_ref().is_some_and(expr_contains_selector_ctor)
+                    || sub.auto_pose.as_ref().is_some_and(|ap| {
+                        ap.params.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    })
+                    || sub
+                        .keyed_member_overrides
+                        .iter()
+                        .any(|(_, args)| args.iter().any(|(_, e)| expr_contains_selector_ctor(e)))
+            })
+            || template.relations.iter().any(expr_contains_selector_ctor)
+            || template.ports.iter().any(|p| {
+                p.members.iter().any(cell_binds)
+                    || p.constraints.iter().any(constraint_binds)
+                    || p.frame_expr
+                        .as_ref()
+                        .is_some_and(expr_contains_selector_ctor)
+            })
+            || template.guarded_groups.iter().any(|g| {
+                expr_contains_selector_ctor(&g.guard_expr)
+                    || g.members.iter().any(cell_binds)
+                    || g.constraints.iter().any(constraint_binds)
+                    || g.else_members.iter().any(cell_binds)
+                    || g.else_constraints.iter().any(constraint_binds)
+            })
+            || template.objective.as_ref().is_some_and(|o| {
+                o.terms
+                    .iter()
+                    .any(|t| expr_contains_selector_ctor(&t.expr))
+            })
+            || template
+                .match_arm_groups
+                .iter()
+                .any(|g| g.arms.iter().any(|a| expr_contains_selector_ctor(&a.guard_expr)))
+            || template.forall_templates.iter().any(|ft| {
+                use reify_compiler::CompiledForallBody as Body;
+                match &ft.body {
+                    Body::Constraint { body_expr, .. } => expr_contains_selector_ctor(body_expr),
+                    Body::Connect { params, .. } => {
+                        params.iter().any(|(_, e)| expr_contains_selector_ctor(e))
+                    }
+                }
+            })
+            || template.assoc_fns.iter().any(|af| fn_binds(&af.function))
+    })
+}
+
+/// True iff `value` is a [`reify_ir::Value::Selector`], or contains one
+/// nested inside a composite variant.
+///
+/// The SECONDARY term of the L2 gate — see the section header above for why
+/// it cannot be the primary one. Recurses through every composite `Value`
+/// variant a selector is known to reach: `List`, `Set`, `Map` (both keys and
+/// values), `Option`, `Field`'s `lambda` (a `Restricted` field's lambda holds
+/// `Value::List[inner_field, region]`, where `region` can itself be a
+/// selector), `Lambda`'s `captures` (itself a whole nested `ValueMap`), and
+/// `StructureInstance`'s `fields`.
+///
+/// The remaining `_ => false` catch-all covers `Value`'s large scalar tail
+/// (`Int`, `Real`, `String`, `Tensor`, `Point`, `Frame`, …), where a selector
+/// cannot occur. The earlier claim that the uncovered set was merely
+/// "single-composite scalar-wrapper variants" was false — `Lambda.captures`
+/// and `StructureInstance.fields` are both genuine composite carriers and are
+/// now walked explicitly.
+fn value_contains_selector(value: &reify_ir::Value) -> bool {
+    match value {
+        reify_ir::Value::Selector(_) => true,
+        reify_ir::Value::List(items) => items.iter().any(value_contains_selector),
+        reify_ir::Value::Set(items) => items.iter().any(value_contains_selector),
+        reify_ir::Value::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| value_contains_selector(k) || value_contains_selector(v)),
+        reify_ir::Value::Option(inner) => inner.as_deref().is_some_and(value_contains_selector),
+        reify_ir::Value::Field { lambda, .. } => value_contains_selector(lambda),
+        reify_ir::Value::Lambda { captures, .. } => values_contain_selector(captures),
+        reify_ir::Value::StructureInstance(data) => {
+            data.fields.iter().any(|(_, v)| value_contains_selector(v))
+        }
+        _ => false,
+    }
+}
+
+/// True iff any value bound in `values` is or contains a
+/// [`reify_ir::Value::Selector`] (see [`value_contains_selector`]).
+fn values_contain_selector(values: &ValueMap) -> bool {
+    values.iter().any(|(_, v)| value_contains_selector(v))
 }
 
 // ── dispatch_volume_mesh ──────────────────────────────────────────────────────
@@ -12186,8 +12965,201 @@ mod post_process_cross_sub_value_cells_tests;
 //
 // RED: `diagnose_topology_correspondence_drops` does not exist yet.
 // These tests drive the pure helper over hand-built AttributeHistory values
-// to verify the expected Warning diagnostics (one per non-zero counter).
+// to verify the expected Info diagnostics (one per non-zero counter; Info as
+// of task #5196, was Warning).
 // No OCCT kernel is required — all counters are plain u32 fields.
 
 #[cfg(test)]
 mod diagnose_topology_correspondence_drops_tests;
+
+// ── reset_per_build_state per-surface classification unit tests (task ι, #5069) ─
+//
+// White-box pin (direct private-field access from this submodule of the crate
+// root) for `Engine::reset_per_build_state(BuildSurface)`. Seeds every reset
+// CLASS and representative must-survive fields, then asserts the per-surface
+// classification for each `BuildSurface` variant:
+//   - reset-EVERY-surface   → cleared on all 4 surfaces.
+//   - reset-on-BUILD        → `realization_handles` cleared ONLY on Build*/
+//     preserved on Tessellate* (the load-bearing asymmetry, leaf d).
+//   - reset-on-TESSELLATE    → `achieved_repr_tol` cleared ONLY on Tessellate*/
+//     preserved on Build*.
+//   - MUST-SURVIVE          → untouched on all 4 (regression if swept).
+//
+// RED until step-3: `BuildSurface` and `reset_per_build_state` do not exist.
+#[cfg(test)]
+mod reset_per_build_state_tests {
+    use super::*;
+    use reify_constraints::SimpleConstraintChecker;
+    use std::sync::atomic::Ordering;
+
+    /// A fresh kernel-less `Engine` with one seeded entry in every per-build
+    /// reset class plus representative must-survive fields.
+    fn seeded_engine() -> Engine {
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let rid = RealizationNodeId::new("Seed", 0);
+
+        // ── reset-EVERY-surface ───────────────────────────────────────────
+        engine.last_dispatch_count = 7;
+        engine
+            .last_dispatch_count_by_realization
+            .insert(rid.clone(), 3);
+        engine
+            .geometry_revalidation_slow_path
+            .store(5, Ordering::Relaxed);
+        engine.topology_attribute_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+            TopologyAttribute {
+                feature_id: FeatureId::Realization(rid.clone()),
+                role: Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+        engine.swept_kind_table.record(
+            GeometryHandleId(2),
+            SweptKind::Revolve {
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: 1.0,
+                profile: GeometryHandleId(0),
+            },
+        );
+
+        // ── reset-on-BUILD-surface ────────────────────────────────────────
+        engine.realization_handles.insert(rid.clone(), GeometryHandleId(9));
+
+        // ── reset-on-TESSELLATE-surface ───────────────────────────────────
+        engine
+            .achieved_repr_tol
+            .insert("Seed#realization[0]".to_string(), 1.5);
+
+        // ── MUST-SURVIVE (regression if swept) ────────────────────────────
+        engine.realization_cache.insert(
+            &rid.entity,
+            ReprKind::BRep,
+            1e-6,
+            NO_OPTIONS,
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+        engine.next_snapshot_id = 42;
+        engine.persistent_hit_count = 9;
+        engine.capture_repr_tol = true;
+        // Seeded to the NON-default `Warn` deliberately (#5069 step-6): both
+        // `MeshContractMode::default()` and `from_env()` yield `Enforce`, so a
+        // mis-classification into a reset arm would read back as the same value
+        // the fixture started with — an INVISIBLE no-op that neither this pin
+        // nor the byte-identical corpus differential could catch. `Warn` (the
+        // `REIFY_MESH_CONTRACT=warn` break-glass posture) is destroyed by a
+        // sweep, so it makes the classification observable.
+        engine.mesh_contract_mode = reify_ir::geometry::MeshContractMode::Warn;
+
+        engine
+    }
+
+    /// The reset-EVERY-surface class must be empty/zero after any surface.
+    fn assert_every_surface_cleared(engine: &Engine, surface: BuildSurface) {
+        assert_eq!(
+            engine.last_dispatch_count, 0,
+            "last_dispatch_count is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.last_dispatch_count_by_realization.is_empty(),
+            "last_dispatch_count_by_realization is reset-EVERY-surface ({surface:?})"
+        );
+        assert_eq!(
+            engine.geometry_revalidation_slow_path.load(Ordering::Relaxed),
+            0,
+            "geometry_revalidation_slow_path is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.topology_attribute_table.is_empty(),
+            "topology_attribute_table is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.swept_kind_table.is_empty(),
+            "swept_kind_table is reset-EVERY-surface ({surface:?})"
+        );
+    }
+
+    /// Representative must-survive fields are untouched on every surface.
+    fn assert_must_survive(engine: &Engine, surface: BuildSurface) {
+        assert_eq!(
+            engine.realization_cache.len(),
+            1,
+            "realization_cache (task 2874) MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.next_snapshot_id, 42,
+            "next_snapshot_id MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.persistent_hit_count, 9,
+            "persistent_hit_count MUST survive ({surface:?})"
+        );
+        assert!(
+            engine.capture_repr_tol,
+            "capture_repr_tol MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.mesh_contract_mode,
+            reify_ir::geometry::MeshContractMode::Warn,
+            "mesh_contract_mode is construction-time config (#5105 δ) → MUST survive \
+             ({surface:?}); sweeping it would reset the REIFY_MESH_CONTRACT=warn \
+             break-glass to Enforce after the first build"
+        );
+    }
+
+    /// Build surfaces clear `realization_handles` and PRESERVE `achieved_repr_tol`.
+    #[test]
+    fn build_surfaces_clear_handles_preserve_repr_tol() {
+        for surface in [BuildSurface::Build, BuildSurface::BuildSnapshot] {
+            let mut engine = seeded_engine();
+            engine.reset_per_build_state(surface);
+
+            assert_every_surface_cleared(&engine, surface);
+            assert!(
+                engine.realization_handles.is_empty(),
+                "realization_handles is reset-on-BUILD → cleared on {surface:?}"
+            );
+            assert_eq!(
+                engine.achieved_repr_tol.len(),
+                1,
+                "achieved_repr_tol is reset-on-TESSELLATE → PRESERVED on build surface {surface:?}"
+            );
+            assert_must_survive(&engine, surface);
+        }
+    }
+
+    /// Tessellate surfaces clear `achieved_repr_tol` and PRESERVE
+    /// `realization_handles` — the load-bearing asymmetry (leaf d).
+    #[test]
+    fn tessellate_surfaces_clear_repr_tol_preserve_handles() {
+        for surface in [
+            BuildSurface::TessellateRealizations,
+            BuildSurface::TessellateSnapshot,
+        ] {
+            let mut engine = seeded_engine();
+            engine.reset_per_build_state(surface);
+
+            assert_every_surface_cleared(&engine, surface);
+            assert!(
+                engine.achieved_repr_tol.is_empty(),
+                "achieved_repr_tol is reset-on-TESSELLATE → cleared on {surface:?}"
+            );
+            assert_eq!(
+                engine.realization_handles.len(),
+                1,
+                "realization_handles is reset-on-BUILD → PRESERVED on tessellate surface \
+                 {surface:?} (load-bearing build↔tessellate asymmetry, leaf d)"
+            );
+            assert_must_survive(&engine, surface);
+        }
+    }
+}

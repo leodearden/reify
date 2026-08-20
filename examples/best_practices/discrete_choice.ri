@@ -1,0 +1,67 @@
+module discrete_choice
+
+// discrete_choice.ri — IDIOM: encode a binary (+-1) choice for the solver with
+// a dimensionless free auto and a quadratic constraint, until CP-SAT is wired.
+//
+//     param side : Real = auto(free)
+//     constraint side * side == 1        // side is +1 or -1, nothing else
+//
+// ANTI-PATTERN this replaces: hard-coding one of the two alternatives and
+// hand-editing the file to try the other, so the choice never appears in the
+// model at all and nothing downstream can reason about it.
+//
+// SYNTAX — `auto` is legal ONLY as a binding VALUE, never as a declaration
+// keyword and never in an operand position:
+//     param side : Real = auto(free)     // correct
+//     param r    : Length = auto         // correct (strict)
+//     let   r    : Length = auto         // correct
+//     auto  side : Real                  // PARSE ERROR — "syntax error"
+// The last form does not parse: `auto_keyword` is deliberately not a member of
+// `_expression` in tree-sitter-reify/grammar.js, so `auto` cannot start a
+// member declaration. Verified against a built `reify check`, which rejects
+// both `auto side : Real` and `auto fillet_radius : Length` outright.
+//
+// WHY auto(free) AND NOT STRICT auto — measured, both ways:
+//     param side : Real = auto         + constraint side * side == 1
+//         -> side = undef, and
+//            "error: strict auto parameter resolution is not uniquely
+//             determined — consider using auto(free) for exploration"
+//     param side : Real = auto(free)   + constraint side * side == 1
+//         -> side = -0.9999999999999973
+// A strict `auto` triggers a perturbation-based uniqueness re-solve. `s*s == 1`
+// has TWO roots by construction, so that re-solve cannot converge and the whole
+// parameter goes undef. `auto(free)` skips the uniqueness check. Same reasoning
+// as `examples/continuous_cost_min.ri` (see its "Why auto(free), not strict
+// auto" note).
+//
+// BE HONEST ABOUT WHAT THIS DOES: the idiom ENCODES the discrete choice, it
+// does not ENUMERATE it. The continuous Nelder-Mead solver converges to ONE
+// root from one start (-1 above, not "-1 and +1"). Which root you get is not
+// something to rely on. To pin a particular alternative, add a constraint that
+// discriminates between them; to explore both, you currently need two runs.
+// Real branch-and-bound over discrete variables is what CP-SAT will bring.
+//
+// Dimensionality: `side` must be dimensionless (`Real`), because it is compared
+// against the bare integer `1`. `Real` resolves to a dimensionless scalar, and
+// a dimensionless-vs-Int comparison is explicitly permitted — the same
+// constraint written against a `Length` would not typecheck.
+//
+// SHARP EDGE — the resolved root is only approximately +-1
+// (-0.9999999999999973, not -1.0), and `==` here is exact float equality. The
+// solver's own residual tolerance accepts that at solve time, so this file
+// evaluates clean. But feeding `side` into a geometry consumer — e.g.
+//     let mount = translate(box(w,w,w), side * arm_len, 0mm, 0mm)
+// — adds a post-solve exact re-check of the same constraint, which the residual
+// does NOT survive: eval then reports "constraint ... violated" while still
+// resolving `side` to -0.999.... Measured directly: identical files with and
+// without that one geometry cell differ exactly in whether the violation is
+// reported. So keep the +-1 encoding on the value surface, and if a downstream
+// consumer needs the sign, give it a tolerance band rather than exact equality
+// until CP-SAT can represent the choice properly.
+
+structure def DiscreteChoice {
+    // THE IDIOM: one dimensionless free auto, one quadratic constraint.
+    // The solver may pick either root; nothing else satisfies the constraint.
+    param side : Real = auto(free)
+    constraint side * side == 1
+}

@@ -1,0 +1,13 @@
+// Fixture (γ decompose-phase premise, builtin-signature-registry leaf
+// tau2-orientation): member access on a builtin call result —
+// `orient_to_axis_angle(q).angle` — parses under tree-sitter-reify with
+// 0 ERROR nodes. Grammar probe only: the TYPING of `.angle` (Angle via the
+// nominal AxisAngle structure) is the PRD's post-state and is NOT asserted
+// here.
+
+module orient_axis_angle_member_parses
+
+structure OrientAxisAngleMemberParses {
+    let q = orient_identity()
+    let ang = orient_to_axis_angle(q).angle
+}

@@ -80,6 +80,19 @@ assert "all plan: check_event_inventory.sh index < psi-gate index" \
 # ===========================================================================
 # Test 3: Preservation — plan still contains all expected components
 # ===========================================================================
+# RUNNER-AGNOSTIC TEST-PASS ASSERTS (task 5604). The two asserts below that
+# name the test pass accept BOTH runner spellings via the ERE alternation
+# `cargo (test|nextest run)`, because the property actually under test here (a
+# --workspace pass exists and carries no --exclude, i.e. OCCT is folded into
+# the pool per task 4451) holds identically on either runner path. Rationale
+# and verify.sh's two emission branches: see the "WHY THE FALLBACK IS
+# SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh,
+# which is the canonical copy and is what pins this suite (S6, floor 40).
+# Hard-coding `cargo nextest run` made the positive half FAIL and the negative
+# half pass VACUOUSLY on a nextest-less host. Both halves use `grep -qE`: the
+# alternation is ERE, so plain `grep -q` would match the group literally.
+# Runner identity itself is pinned by the `nextest=N` plan header, which
+# test_verify_nextest_probe.sh owns.
 echo ""
 echo "--- Test 3: preservation — all expected components still present ---"
 
@@ -96,7 +109,7 @@ assert "merge test plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nex
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$MERGE_TEST_PLAN"
 
 assert "merge test plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$MERGE_TEST_PLAN"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$MERGE_TEST_PLAN"
 
 assert "all plan: contains cargo clippy (rust lint gate for action=all)" \
     bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy"' _ "$ALL_PLAN"
@@ -114,7 +127,7 @@ assert "all plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nextest po
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$ALL_PLAN"
 
 assert "all plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$ALL_PLAN"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$ALL_PLAN"
 
 # ===========================================================================
 # Test 4: bounded overlap — action=all: node lane is BACKGROUNDED and joined
@@ -195,6 +208,8 @@ assert "plain test plan: npm run typecheck present and before psi-gate" \
 # ===========================================================================
 # Test 6: task #4624 — reify-audit release pre-step ordered BEFORE run_all.sh
 #          and run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1
+#          (task 5273 γ: the same line also carries REIFY_RUN_ALL_CONTENT_SKIP=1,
+#          the merge-tier content-addressed skip engine's activation key)
 #
 # task 5125: the pre-step + run_all.sh pairing MOVED to the merge tier
 # (DF_VERIFY_ROLE=merge) — the wholesale pool suite no longer runs on the
@@ -240,6 +255,15 @@ assert "merge-all plan: reify-audit pre-step line does not contain '20m' (timeou
 # (d) run_all.sh plan line carries REIFY_AUDIT_NO_COLD_BUILD=1 (backstop armed)
 assert "merge-all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
     bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$MERGE_ALL_PLAN"
+
+# (d2) task 5273 (merge-gate-riders γ): the run_all.sh plan line ALSO carries
+#      REIFY_RUN_ALL_CONTENT_SKIP=1 — the merge-tier content-addressed per-member
+#      skip engine's activation key. Purely additive substring grep, parallel to
+#      (d); the pre-existing token asserts stay green when the line gains this
+#      one extra env token. RED until step-16 adds the flag to verify.sh's
+#      run_all plan-line env prefix.
+assert "merge-all plan: run_all.sh line carries REIFY_RUN_ALL_CONTENT_SKIP=1 (content-skip engine, task 5273)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_RUN_ALL_CONTENT_SKIP=1"' _ "$MERGE_ALL_PLAN"
 
 # (e) task 5125: role=task ALL_PLAN (--include-infra, no DF_VERIFY_ROLE) no
 #     longer carries the wholesale suite — it moved to the merge tier above.

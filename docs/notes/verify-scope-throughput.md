@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 14 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 14 | 14 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 14 | 14 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 14 | 3 |
+| (a) docs-only | `docs/note.md` | — | 18 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 18 | 17 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 18 | 17 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 18 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 14 |  0 |
-| reify-doc  | 14 | 14 |
-| reify-eval | 14 | 14 |
-| gui-only   | 14 |  3 |
+| docs-only  | 18 |  0 |
+| reify-doc  | 18 | 17 |
+| reify-eval | 18 | 17 |
+| gui-only   | 18 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -100,6 +100,105 @@ the `RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only branch stays 0 and
 gui-only branch stays 3 (the Rust-infra lint block is not emitted under those branch
 scopes). The Plan-Step Counts table and the machine sentinel move 13 → 14 in lockstep._
 
+_Counts bumped 2026-07-24 (task 5300): added
+`./scripts/check-harness-baseline-registration.sh --from-git` (the diff-scoped
+harness-layout baseline-registration drift gate) to `build_plan` inside the
+`RUN_RUST=1` block in `scripts/verify.sh`, immediately after
+`check-infra-classification-manifest.sh`. Net change: +1 non-comment plan line
+wherever `RUN_RUST=1` — every `scope=all` plan, and `scope=branch` for the
+`RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only branch stays 0 and
+gui-only branch stays 3 (`RUN_RUST=0` there, so the gate is not emitted). The
+machine sentinel moves 15 → 16 for those cells._
+
+_Counts bumped 2026-08-03 (task 5076): added
+`scripts/check-compute-trampoline-registration.sh` (the INV-FEA-1
+compute-trampoline delegation grep gate) to the `DO_LINT` Rust-infra lint block
+in `scripts/verify.sh`, beside `check-nan-safe-ordering.sh`. Net change: +1
+non-comment plan line wherever that block runs — every `scope=all` plan, and
+`scope=branch` for the `RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only
+branch stays 0 and gui-only branch stays 3 (the Rust-infra lint block is not
+emitted under those branch scopes). The machine sentinel moves 16 → 17 for
+those cells. The human-readable "Plan-Step Counts" table had drifted stale at
+14 (it was last updated by task 5093 and missed the 5300 bump); it is
+re-synced to 17 here, restoring the table↔sentinel lockstep that task 5125
+established as the standing convention._
+
+_Counts bumped again 2026-08-03 (task 5076, second of two): `add_test_passes()`
+now emits a gui-feature TEST-EXECUTION pass (`-p reify-gui --features gui`) at
+the tail of the profile loop, inside the `@@SEMAPHORE_ACQUIRE@@` /
+`@@SEMAPHORE_RELEASE@@` bracket. This is the execution half of the same
+INV-FEA-1 gap the lint-side grep gate above closes statically: reify-gui's
+`#[cfg(feature = "gui")]` code was reached by NO workspace pass (all run without
+`--features gui`) and was only COMPILE-checked, so a change flipping
+`engine.rs`'s gui arm to `MorphRegistration::Unavailable` compiled clean and
+passed every pass silently. Net change: +1 non-comment plan line wherever
+`add_test_passes()` emits — every `scope=all` plan, and `scope=branch` for the
+`RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only branch stays 0 and
+gui-only branch stays 3 (`RUN_RUST=0` there). The sentinel and the table move
+17 → 18 in lockstep for those cells. It is emitted ONCE per plan rather than
+per profile — `--features` is a feature axis, not a profile axis — so
+`--profile both` does not double it; and it is skipped for
+`DF_VERIFY_ROLE=offline`, whose plan runs the heavy `#[ignore]` partition only,
+so neither of those shapes sees the +1._
+
+_Counts corrected 2026-08-05 (task 5076, review amendment): the gui-feature
+TEST-EXECUTION pass above is no longer emitted unconditionally. It is now
+narrowed on the same affected-crate axis every other narrowed pass uses —
+emitted unconditionally for `scope=all` (the merge gate never narrows), emitted
+whenever the affected-crate closure is unavailable (the `ALL` sentinel, an empty
+changed-file list, or a malformed override — fail wide), and otherwise emitted
+only when `reify-gui` is in that closure. A `--features gui`
+build is a distinct feature-unification of the dependency graph, so it shares
+artifacts with no other pass and costs 20m42s cold / ~137s warm on its own; a
+`-p reify-doc` branch plan was paying that for code no reify-doc change can
+reach, while the SAME plan already narrowed reify-gui's ungated tests away.
+Membership is tested against `affected_crates()`'s REVERSE-dependency closure
+rather than a hand-listed trigger set, so a change to an indirect dependency
+(`reify-syntax`, `reify-ir`, …) cannot fall out of the trigger: measured on this
+tree, `crates/reify-eval/src/lib.rs` and `crates/reify-mesh-morph/src/lib.rs`
+both yield closures containing `reify-gui`, and `crates/reify-doc/src/lib.rs`
+does not. Net change: −1 non-comment plan line for the `scope=branch` cells of
+shapes (b) and (c), 18 → 17. **Both** of those cells move even though a real
+reify-eval change WOULD pull in reify-gui: `plan_for_shape_narrowed` drives them
+through `REIFY_AFFECTED_CRATES_OVERRIDE` with a literal single-crate list
+(`reify-eval`), not the real closure, so the fixture's `AFFECTED` is exactly
+`reify-eval` and lacks `reify-gui`. Every `scope=all` cell stays 18 (narrowing
+is structurally unreachable there), docs-only branch stays 0 and gui-only branch
+stays 3 (`RUN_RUST=0`). The table and the sentinel move in lockstep._
+
+_Counts UNCHANGED 2026-08-13 (task 6030): the amendment above described the
+gui-feature pass's unconditional arm as `NARROW_ACTIVE=0`, i.e. as the merge
+gate. That equivalence was never true — `NARROW_ACTIVE` is a
+narrowing-ACTIVATION flag, not a scope oracle, and it is also 0 on the
+`--scope staged` per-commit-hook tier (`hooks/project-checks` execs
+`verify.sh all --profile debug --scope staged --include-infra`), which was
+therefore paying the `--features gui` link for closures that cannot reach
+`reify-gui`. The emission condition now reads `SCOPE` and a separate
+`AFFECTED_CLOSURE` directly. The three arms, their fail-wide taxonomy and the
+measurements behind them are documented ONCE, on the decision itself — the
+"NARROWED on the same affected-crate axis" bullet in `scripts/verify.sh`'s
+`add_test_passes` — and are deliberately not restated here._
+
+_What matters for THIS note. First, `NARROW_ACTIVE`, `AFFECTED`,
+`AFFECTED_ALL_FLAGS` and the `--workspace` coupling on
+staged-without-`--narrow` are all value-identical to before, so **the
+THROUGHPUT-COUNTS sentinel does NOT move** and no cell of the table above
+changes: all four shapes are captured only at `--scope all` and `--scope
+branch`, and this change is confined to `--scope staged`. Confirmed by running
+`tests/infra/test_verify_throughput.sh` green rather than by asserting it.
+Second, the saving is NARROWER than "every commit" — only a staged diff whose
+paths ALL map to crates and whose reverse closure excludes `reify-gui` takes the
+narrowed arm. Measured on a hermetic fixture at `--scope staged` with no
+override: a scripts-only staged diff yields the `ALL` sentinel and a
+`tests/infra`-only one yields an EMPTY closure, and both still fail wide and keep
+paying the link. Reclaiming the `tests/infra`-only shape is NOT a one-line
+change: an empty closure is genuinely overloaded, since `decide_scope`'s
+git-failure fail-wide paths also return `RUN_RUST=1` with an empty
+`CHANGED_FILES_RAW`, so "provably no crates" would first need a distinct
+closure-available sentinel to tell it apart from "the diff could not be read".
+The merge gate remains unconditional by contract, so a hook-tier skip is
+LATENCY, never a coverage hole._
+
 ## Heavy-Work Narrowed Markers
 
 `scope=all` always produces: `cargo clippy --workspace` and
@@ -122,7 +221,7 @@ For shape (c), the scope=branch plan equals scope=all minus: replacing
 `--workspace` with `-p reify-eval` in clippy/nextest (narrowing). Task 4451:
 the gated pass is gone; reify-eval runs in the single nextest pool.
 
-For shape (d), 13 of the 16 scope=all steps are Rust; branch scope drops
+For shape (d), 15 of the 18 scope=all steps are Rust; branch scope drops
 all of them and retains only the 3 GUI npm steps.
 
 ## Wall-Clock Measurements
@@ -138,7 +237,7 @@ real  0.233 s
 
 The branch scope detects that only docs were changed, produces an empty plan
 (0 steps), and exits immediately.  The equivalent scope=all run would proceed
-to execute all 16 steps including `cargo clippy --workspace` (≈ 20 s warm)
+to execute all 18 steps including `cargo clippy --workspace` (≈ 20 s warm)
 and `cargo nextest run --workspace` (≈ 10+ min warm; task 4451: OCCT crates
 are now in the pool, bounded by the nextest occt group max-threads=4).
 
@@ -152,18 +251,40 @@ Scripting overhead only — plan is printed but no steps execute.
 
 ## Delta as Evidence
 
-- **docs-only branch:** saves all 16 steps. Verify exits in < 0.3 s.
-- **non-OCCT crate branch (reify-doc):** narrows `--workspace` clippy and
-  nextest to `-p reify-doc`.  16 vs 16 plan steps (same count; savings are
-  wall-clock from skipping unaffected crate compilation).
-- **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
-  to `-p reify-eval` (task 4451: gated pass folded into the nextest pool).
-  16 vs 16 plan steps.
-- **gui-only branch:** skips all Rust steps; runs only the GUI npm steps.
-  3 vs 16 plan steps.
+Counts are deliberately NOT restated here.  The Plan-Step Counts table and its
+THROUGHPUT-COUNTS sentinel above are the single authoritative copy, and only
+the sentinel is checked by `tests/infra/test_verify_throughput.sh`'s drift
+guard — so a third hand-maintained copy in this narrative can (and did, between
+the 2026-08-03 and 2026-08-05 amendments) fall out of lockstep with both while
+every gate stays green.  Read the counts off the table; this section states
+only WHAT each shape drops, which is the qualitative half of the evidence.
 
-No numeric improvement threshold is asserted here.  The step counts and the
-absent/narrowed heavy-work markers are the evidence.
+- **docs-only branch:** saves every step — the plan is empty.  Verify exits in
+  < 0.3 s.
+- **non-OCCT crate branch (reify-doc):** narrows `--workspace` clippy and
+  nextest to `-p reify-doc`, and — since 2026-08-05 (task 5076) — drops the
+  `--features gui` test-execution pass, whose affected-crate closure does not
+  reach `reify-gui`.  The remaining savings are wall-clock, from skipping
+  unaffected crate compilation.
+- **staged per-commit-hook tier (`--scope staged`, no `--narrow`):** since
+  2026-08-13 (task 6030) the `--features gui` drop applies here too, on the same
+  closure-membership test — this tier is `hooks/project-checks`' own invocation.
+  It drops for a staged diff whose paths ALL map to crates and whose closure
+  excludes `reify-gui`; a scripts-only or `tests/infra`-only staged diff still
+  pays it, because its closure comes back unavailable and fails wide.  Nothing
+  ELSE narrows on this tier: clippy and the workspace nextest pass keep
+  `--workspace`, so this shape is absent from the table above and its plan-step
+  counts are untouched.
+- **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
+  to `-p reify-eval` (task 4451: gated pass folded into the nextest pool), and
+  the `--features gui` pass likewise dropped — the fixture drives `AFFECTED`
+  through `REIFY_AFFECTED_CRATES_OVERRIDE` with the literal single-crate list
+  `reify-eval`, so its closure lacks `reify-gui` even though a real reify-eval
+  change would pull it in.
+- **gui-only branch:** skips all Rust steps; runs only the GUI npm steps.
+
+No numeric improvement threshold is asserted here.  The step counts (per the
+table) and the absent/narrowed heavy-work markers are the evidence.
 
 ## Orchestrator Context
 

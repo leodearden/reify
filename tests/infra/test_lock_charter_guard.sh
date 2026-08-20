@@ -49,6 +49,10 @@ run_list_extensions() {
     GUARD_OUT="$(bash "$SCRIPT" --list-extensions 2>/dev/null)" && GUARD_RC=$? || GUARD_RC=$?
 }
 
+run_list_extensionless() {
+    GUARD_OUT="$(bash "$SCRIPT" --list-extensionless 2>/dev/null)" && GUARD_RC=$? || GUARD_RC=$?
+}
+
 # ---------------------------------------------------------------------------
 # Set up a temp dir for C-P3 on-disk probes; cleaned up on exit.
 # ---------------------------------------------------------------------------
@@ -212,29 +216,66 @@ echo ""
 echo "--- Cycle 4: --list-extensions drift guard + coherence ---"
 
 # Canonical OQ#2 allowlist — sorted-unique, one extension per line.
-# This is the pinned shared α/γ test vector (PRD §11 Q1).
+# This is the pinned shared α/γ test vector (PRD §11 Q2 — the allowlist-
+# completeness question; §11 Q1 is the separate predicate-transport one).
+# Pinned in BYTE order, for the same reason Cycle 8's CANONICAL_EXTLESS is: γ's
+# Tier-2 comparison is against Python sorted() (code-point order), so the emitter
+# pins LC_ALL=C and this vector must match that, not the ambient-locale order.
+# Invisible on today's all-lowercase vector — the two orderings are md5-identical
+# — but the list already carries hyphenated members and glibc collation ignores
+# punctuation at the primary level, so it will not stay invisible forever.
+#
+# `csv` (the 59th entry, added #6067) mirrors dark_factory 43410b3418 and is
+# dark-factory-evidenced only — reify tracks zero .csv files.  Its behavioural
+# coverage is the coherence loop below, which classifies every emitted extension;
+# the incident narrative lives with _EXTS in scripts/lock-charter-guard.sh, not
+# here.  Per-entry test cycles are deliberately NOT the convention: widening the
+# allowlist costs exactly three pin edits — _EXTS, this CANONICAL_EXTS, and
+# lcl_canonical_extensions() in tests/infra/lock_charter_harness_lib.sh — and no
+# bespoke cycle, because this block's equality assertion is already strictly
+# stronger than any single-entry presence check.
 CANONICAL_EXTS="c
 cc
 cjs
+conf
 cpp
 css
+csv
 cts
 cxx
+diff
+envrc
+example
+example-systemd-config
 gcode
+gitattributes
+gitignore
+gitkeep
+gitmodules
+golden
+grammar
 h
 hh
 hpp
 html
+icns
+ico
+jq
 js
 json
 jsonc
+jsonl
 jsx
 lock
+log
+manifest
 md
 mjs
 mts
+npmrc
 png
 py
+python-version
 ri
 rs
 scss
@@ -243,10 +284,13 @@ sh
 step
 stl
 svg
+template
+timer
 toml
 ts
 tsx
 txt
+typed
 yaml
 yml"
 
@@ -260,6 +304,347 @@ while IFS= read -r _ext; do
     run_classify "f.$_ext"
     assert "--list-extensions coherence: classify 'f.$_ext' exits 0" test "$GUARD_RC" -eq 0
 done <<< "$GUARD_OUT"
+
+# ---------------------------------------------------------------------------
+# Cycle 5 — newly-allowlisted extensions ACCEPT (#5726)
+#
+# 22 extensions that a git-ls-files sweep found on real tracked files across
+# reify + dark-factory, but which _EXTS misclassified as directories.  The
+# originating symptom: declaring tests/infra/run-all-classification.manifest in
+# a lock charter was REJECTed as a directory.
+#
+# The 12 reify-evidenced extensions below use REAL tracked paths (verified with
+# git ls-files --error-unmatch).  The other 10 are dark-factory-evidenced and
+# use literal path strings — valid inputs because C-P3 forbids any stat, the
+# same property Cycle 1 case E1 relies on.
+#
+# step-1: verify RED; step-2 GREEN by expanding _EXTS.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 5: newly-allowlisted extensions ACCEPT (#5726) ---"
+
+for _ext_path in \
+    "deploy/systemd/orchestrator-reify.service.d/warm-lane.conf" \
+    ".envrc" \
+    ".gitignore" \
+    "crates/reify-doc/tests/snapshots/.gitkeep" \
+    "crates/reify-fdm/tests/fixtures/toolpath_bracket.golden" \
+    "gui/src/editor/reify.grammar" \
+    "gui/src-tauri/icons/icon.icns" \
+    "gui/src-tauri/icons/icon.ico" \
+    "scripts/reify-audit-snapshot-filter.jq" \
+    "tests/infra/run-all-classification.manifest" \
+    "tree-sitter-reify/.npmrc" \
+    "deploy/systemd/reify-warm-lane-gc.timer" \
+    "orchestrator/tests/fixtures/expected.diff" \
+    ".env.example" \
+    "deploy/orchestrator.example-systemd-config" \
+    ".gitattributes" \
+    ".gitmodules" \
+    "logs/agent-events.jsonl" \
+    "logs/orchestrator.log" \
+    ".python-version" \
+    "orchestrator/templates/task-brief.template" \
+    "fused_memory/py.typed"
+do
+    run_classify "$_ext_path"
+    assert "classify '$_ext_path' exits 0 (ACCEPT)" test "$GUARD_RC" -eq 0
+    assert "classify '$_ext_path' stdout contains ACCEPT" test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
+# Cycle 6 — dotted directory segments still REJECT (anti-dotfile-rule pin, #5726)
+#
+# Cycle 5 widened _EXTS with entries that read like dotfile names (gitignore,
+# envrc, npmrc, python-version).  The tempting generalisation — "a final segment
+# starting with a dot is a FILE" — is REJECTED, and this block pins that.
+#
+# All five paths below are real, untracked DIRECTORIES in the main checkout
+# (.worktrees is the orchestrator's entire worktree pool).  A blanket dotfile
+# rule would flip every one of them to ACCEPT and admit an over-wide charter:
+# exactly the failure the guard exists to prevent.  The allowlist stays
+# enumerated for this reason.
+#
+# Being untracked, two of them do not exist in a freshly-seeded warm lane — so
+# these assertions deliberately do not depend on the filesystem, and C-P3
+# guarantees they cannot: the verdict is identical either way.
+#
+# Green on arrival (these REJECT both before and after the Cycle 5 expansion),
+# so per G6 the pin was shown to FIRE rather than assumed to: inserting
+# `case "$seg" in .*) return 0 ;; esac` at the top of _is_file_path() in a
+# scratch copy of the guard fails all 10 assertions below.  Mutant not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 6: dotted directory segments still REJECT (#5726) ---"
+
+for _dot_dir in \
+    ".worktrees" \
+    ".task" \
+    ".claude" \
+    ".cargo" \
+    ".taskmaster"
+do
+    run_classify "$_dot_dir"
+    assert "anti-dotfile pin: classify '$_dot_dir' exits 1 (REJECT)" test "$GUARD_RC" -eq 1
+    assert "anti-dotfile pin: classify '$_dot_dir' stdout contains REJECT" test "${GUARD_OUT#*REJECT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
+# Cycle 7 — extensionless tracked-file basenames ACCEPT (dark_factory:3248 mirror)
+#
+# Cycle 6 pins that a DOT does not make a segment a file.  This cycle pins the
+# complementary hole it left open: the absence of a dot did make a segment a
+# directory, unconditionally — so seven real, tracked reify files were
+# undeclarable.  The originating symptom is the exact mirror of #5726's:
+# declaring hooks/project-checks in a lock charter was REJECTed as a directory.
+#
+# PROVENANCE of the pinned vector — sweep of BOTH repos' tracked corpora, run
+# 2026-07-31, mode-160000 gitlinks excluded.  Kept byte-identical to the copies
+# in the _EXTLESS header (scripts/lock-charter-guard.sh) and in Cycle 9's
+# executable form below; the -z + FS="\t" shape is tab-split-not-whitespace-split
+# on purpose, so a tracked path containing a space is not truncated at it (see
+# Cycle 9's comment for why that matters there):
+#     git ls-files -s -z \
+#       | awk 'BEGIN { RS = "\0"; FS = "\t" }
+#              $1 !~ /^160000 / { n = split($2, s, "/"); print s[n] }' \
+#       | grep -v '\.' | LC_ALL=C sort -u
+#   reify (@ab664afb9c): 7 names — LICENSE cargo cargo-audit-orphans pre-commit
+#                        pre-merge-commit project-checks reference-transaction
+#   dark-factory (main @8d276d3c5f): 5 names — Dockerfile LICENSE pre-commit
+#                        pre-merge-commit project-checks
+#   union: the 8 names pinned as CANONICAL_EXTLESS in Cycle 8.
+# The gitlink exclusion is DARK-FACTORY-RELEVANT ONLY: reify tracks zero
+# mode-160000 entries, while dark-factory tracks two (graphiti, mem0) whose
+# submodule mount points are extensionless and must NEVER be admitted as files.
+# The filter is applied on the reify side regardless — it is the documented
+# invariant, and it future-proofs any later vendoring.
+#
+# Also measured in the same sweep: ZERO directory-name collisions for any of the
+# 8 names across ALL path components (not just leaves) of either corpus — 177
+# distinct reify directory names, 97 dark-factory.  So admitting these as
+# final-segment ACCEPTs cannot make a real directory declarable.
+#
+# The 7 reify cases use REAL tracked paths (verified with git ls-files
+# --error-unmatch); Dockerfile and deploy/Dockerfile are dark-factory-evidenced
+# literals, exactly as Cycle 5 mixes the two.  C-P3 forbids any stat, so a
+# literal is as valid an input as a real path — the same property case E1 relies
+# on.  The bare-basename and deep-path cases pin that the predicate keys on the
+# FINAL SEGMENT at any depth, not on the whole string and not on depth 1.
+#
+# step-1: verify RED (measured @ab664afb9c: every path below exits 1 / "REJECT
+# <path>"); step-2 GREEN by adding _EXTLESS to the guard.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 7: extensionless tracked-file basenames ACCEPT (dark_factory:3248) ---"
+
+for _extless_path in \
+    "LICENSE" \
+    "hooks/pre-commit" \
+    "hooks/pre-merge-commit" \
+    "hooks/project-checks" \
+    "hooks/reference-transaction" \
+    "scripts/agent-bin/cargo" \
+    "scripts/cargo-audit-orphans" \
+    "Dockerfile" \
+    "deploy/Dockerfile" \
+    "a/b/c/project-checks"
+do
+    run_classify "$_extless_path"
+    assert "extensionless: classify '$_extless_path' exits 0 (ACCEPT)" test "$GUARD_RC" -eq 0
+    assert "extensionless: classify '$_extless_path' stdout contains ACCEPT" \
+        test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
+# Cycle 8 — --list-extensionless emitter + over-accept pins
+#
+# (a) EMITTER — the drift guard for _EXTLESS, mirroring Cycle 4's for _EXTS.
+#     Its reason to exist is γ-side: dark_factory:3248 needs a machine-readable
+#     α vector to compare against, exactly as --list-extensions gives it one for
+#     the extension list.  Pinned in BYTE order (uppercase first), not the
+#     ambient-locale order this host would otherwise produce — γ's counterpart
+#     is Python sorted(), which is code-point order, so byte order is what the
+#     two sides must agree on.  The emitter pins LC_ALL=C for that reason.
+#
+# (c) OVER-ACCEPT PINS — green on arrival, so per G6 they were SHOWN to fire
+#     rather than assumed to.  Three scratch mutants of the guard, each a
+#     plausible refactor that leaves all of Cycle 7 green (canonical-8 still
+#     ACCEPT, 8/8, under every one):
+#       A. relocate the _EXTLESS loop below the `ext` extraction and compare
+#          "$ext" instead of "$seg"  → flips .cargo .pre-commit .LICENSE
+#          x.cargo foo.LICENSE (5 assertions RED).  This is the trap the
+#          _EXTLESS header warns about: "${seg##*.}" on .cargo yields cargo.
+#       B. loosen [ "$seg" = "$x" ] to [[ "$seg" == "$x"* ]]  → flips
+#          pre-commit-hooks cargo-lib project-checks-old (3 RED).
+#       C. reverse it to [[ "$x" == "$seg"* ]]  → flips hooks/pre (1 RED).
+#     Every pin below is covered by at least one mutant; none is vacuous.
+#     Mutants not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 8: --list-extensionless emitter + over-accept pins ---"
+
+# Canonical extensionless-basename allowlist — sorted-unique BYTE order, one per
+# line.  Shared α/γ test vector; γ's mirror is dark_factory:3248.
+CANONICAL_EXTLESS="Dockerfile
+LICENSE
+cargo
+cargo-audit-orphans
+pre-commit
+pre-merge-commit
+project-checks
+reference-transaction"
+
+run_list_extensionless
+assert "--list-extensionless exits 0" test "$GUARD_RC" -eq 0
+assert "--list-extensionless stdout matches canonical extensionless allowlist" \
+    test "$GUARD_OUT" = "$CANONICAL_EXTLESS"
+
+# (b) Coherence: every emitted basename is ACCEPTed by classify.
+while IFS= read -r _el; do
+    [ -z "$_el" ] && continue
+    run_classify "$_el"
+    assert "--list-extensionless coherence: classify '$_el' exits 0" test "$GUARD_RC" -eq 0
+done <<< "$GUARD_OUT"
+
+# (c) Over-accept pins — the match is on the FULL segment and is EXACT.
+for _near_miss in \
+    ".cargo" \
+    ".pre-commit" \
+    ".LICENSE" \
+    "x.cargo" \
+    "foo.LICENSE" \
+    "pre-commit-hooks" \
+    "cargo-lib" \
+    "project-checks-old" \
+    "hooks/pre"
+do
+    run_classify "$_near_miss"
+    assert "extensionless over-accept pin: classify '$_near_miss' exits 1 (REJECT)" \
+        test "$GUARD_RC" -eq 1
+    assert "extensionless over-accept pin: classify '$_near_miss' stdout contains REJECT" \
+        test "${GUARD_OUT#*REJECT}" != "$GUARD_OUT"
+done
+
+# (d) ACCEPTED-LIMITATION pin (PRD §10) — a trailing directory slash does NOT
+#     rescue the classification.  Both α and γ strip trailing slashes BEFORE
+#     segmentation, so `hooks/project-checks/` — written with an explicit,
+#     unambiguous directory marker — still ACCEPTs.  That is knowingly wrong and
+#     knowingly kept: an α-only special case would manufacture a fresh α/γ
+#     divergence, which is the exact failure class this whole seam exists to
+#     prevent, so closing it is a JOINT α/γ decision (§10).
+#
+#     Pinned here because an accepted limitation with no test behind it is
+#     indistinguishable from an untested accident: without these assertions a
+#     future contributor could "fix" it α-only and nothing would fire, and
+#     conversely a later joint flip would land with no signal that this file
+#     records the old behaviour.  RED here is not "the guard is broken" — it is
+#     "§10 changed, go read it and check γ changed too".
+#
+#     Distinct from Cycle 1's trailing-slash REJECTs (crates/, a/b/c/), which
+#     cover segments outside BOTH allowlists; these are the allowlisted-basename
+#     case, which is the one §10 flags.
+for _slashed in \
+    "hooks/project-checks/" \
+    "LICENSE/" \
+    "scripts/agent-bin/cargo/" \
+    "Dockerfile//"
+do
+    run_classify "$_slashed"
+    assert "accepted limitation (PRD §10): classify '$_slashed' exits 0 (trailing slash stripped)" \
+        test "$GUARD_RC" -eq 0
+    assert "accepted limitation (PRD §10): classify '$_slashed' stdout contains ACCEPT" \
+        test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
+# ---------------------------------------------------------------------------
+# Cycle 9 — live-corpus drift alarm (standing guard against a stale _EXTLESS)
+#
+# Every other cycle in this file pins a fixed string vector.  This one sweeps the
+# ACTUAL tracked corpus and asserts _EXTLESS still covers it, because the failure
+# mode being defended against is not a wrong entry — it is a MISSING one, and a
+# pinned vector cannot notice a file that landed after it was written.
+#
+# That failure mode has now produced the same incident twice: #5726 (22 tracked
+# extensions the list misclassified as directories) and dark_factory:3248 (these
+# 8 basenames).  Both were found by a human running a manual sweep.  This block
+# converts that sweep into a standing CI signal.
+#
+# A RED here means a new extensionless tracked file has landed.  The fix is to
+# add its basename to BOTH _EXTLESS in scripts/lock-charter-guard.sh AND γ's
+# EXTENSIONLESS_FILENAMES (dark-factory shared/src/shared/locking.py +
+# fused-memory/.../lock_charter_guard.py) — the two must stay byte-identical or
+# the cross-source drift comparison goes RED on the γ side instead.
+#
+# SUBSET, not equality, and deliberately so: Dockerfile is dark-factory-evidenced
+# only, so reify's tracked corpus is a strict subset of the shared vector.  An
+# equality assertion would fail here permanently and would also fight the shared
+# nature of the list.  Over-coverage is the safe direction — an entry with no
+# reify file behind it costs nothing, a missing entry costs a rejected charter.
+#
+# The mode-160000 filter is carried even though reify tracks zero gitlinks: it is
+# the documented invariant (dark-factory's graphiti/mem0 submodule mount points
+# are extensionless and must never be admitted), and it keeps this sweep correct
+# if reify ever vendors a submodule.
+#
+# Host-dependence is confined to this block by the rev-parse probe below, which
+# SKIPs cleanly outside a git checkout — the file header's "no skip guard, the
+# predicate is host-independent (C-P3)" promise holds for Cycles 1-8, which stay
+# pure-string.
+#
+# Green on arrival (7 reify names ⊂ the 8 pinned).  Per G6 it was shown to FIRE
+# rather than assumed to: deleting `project-checks` from _EXTLESS in a scratch
+# copy of the guard turns this block RED with
+#   FAIL: live-corpus drift: 'project-checks' present in --list-extensionless
+# Mutant not committed.
+#
+# The tab-split parse below was likewise shown to matter rather than argued to:
+# in a scratch repo tracking `docs/my file.md` and `LICENSE`, the old
+# whitespace-split form emits `LICENSE` AND the phantom `my`, the -z/FS="\t" form
+# emits `LICENSE` only.  Scratch repo not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 9: live-corpus drift alarm (_EXTLESS covers tracked corpus) ---"
+
+if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "  SKIP: $REPO_ROOT is not a git checkout — live-corpus sweep unavailable"
+else
+    run_list_extensionless
+    assert "live-corpus drift: --list-extensionless exits 0" test "$GUARD_RC" -eq 0
+    _emitted="$GUARD_OUT"
+
+    # Tracked, non-gitlink, dotless final segments.
+    #
+    # Split on the TAB, not on whitespace.  `git ls-files -s` emits
+    # "<mode> SP <sha> SP <stage> TAB <path>", so the whitespace-splitting
+    # `awk '{print $4}'` form truncates any tracked path containing a space at
+    # that space: "docs/my file.md" -> "docs/my", whose final segment "my" has no
+    # dot, survives the grep, and then FAILS the presence assertion below against
+    # a basename that exists nowhere.  A standing alarm must not be able to RED
+    # against a phantom name — the reader would go looking for a file that isn't
+    # there.  Neither repo tracks such a path today (measured:
+    # `git ls-files | grep -c ' '` -> 0 in both), so this is hardening against
+    # corpus growth, which is precisely what this block exists for.  -z also makes
+    # the git->awk hop newline-safe.  The `^160000 ` anchor still matches the mode
+    # because $1 is now the whole "<mode> SP <sha> SP <stage>" prefix.
+    _tracked_extless="$(
+        git -C "$REPO_ROOT" ls-files -s -z \
+            | awk 'BEGIN { RS = "\0"; FS = "\t" }
+                   $1 !~ /^160000 / { n = split($2, s, "/"); print s[n] }' \
+            | grep -v '\.' \
+            | LC_ALL=C sort -u
+    )"
+
+    # Non-vacuity: the sweep must actually find something, or every assertion
+    # below would pass by finding nothing to check.
+    assert "live-corpus drift: sweep found at least one tracked extensionless basename" \
+        test -n "$_tracked_extless"
+
+    while IFS= read -r _name; do
+        [ -z "$_name" ] && continue
+        assert "live-corpus drift: '$_name' present in --list-extensionless" \
+            test "$(printf '%s\n' "$_emitted" | grep -cxF "$_name")" -eq 1
+    done <<< "$_tracked_extless"
+fi
 
 # ---------------------------------------------------------------------------
 test_summary

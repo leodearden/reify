@@ -37,6 +37,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_ambient (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 echo "=== offline/gate heavy-test partition drift-guard tests (task 4917 / A6) ==="
 
 # ---------------------------------------------------------------------------
@@ -69,15 +76,51 @@ esac
 NOT_PATTERN='-E "not ('
 
 # ---------------------------------------------------------------------------
-# Detect nextest availability once (role/knob-invariant; probed directly
-# against real verify.sh -- always defined, unlike the driver helpers below).
+# Detect nextest availability once, via the shared detector in
+# tests/infra/nextest_absent_lib.sh (task 5644) -- the same plan-header parse
+# seven suites had each open-coded. Still probed directly against real
+# verify.sh, so it is always defined, unlike the driver helpers below.
+#
+# This probe makes its own dedicated --print-plan capture (read by nothing else
+# in this file), so it takes the AMBIENT form rather than
+# nextest_available_in_plan.
+#
+# The dropped `env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task` pin.
+# nextest_available_ambient runs verify.sh with no env prefix, so this only
+# preserves behaviour if NEXTEST is genuinely role/knob-invariant -- verified in
+# the source: verify.sh's `NEXTEST=0; if cargo nextest --version ...` probe
+# derives NEXTEST from cargo-nextest resolvability ALONE, reading neither
+# DF_VERIFY_ROLE nor REIFY_GATE_EXCLUDE_HEAVY, and the plan header interpolates
+# that same $NEXTEST.
+#
+# UNDER THE NEXTEST-ABSENT HARNESS. This suite is S3 in
+# tests/infra/test_verify_nextest_absent_suites.sh, so it also runs as a child
+# of nx_run. Its "ambient" env IS the harness env there (HOME/PATH already
+# redirected by the parent), and nextest_available_ambient's un-prefixed
+# `bash "$verify" --print-plan` inherits it exactly as the old open-coded
+# capture did -- reading nextest=0, NEXTEST_AVAILABLE=0, unchanged.
+#
+# WHAT THE SHARED PATH TRADES -- not a free robustness win. The lib's extractor
+# is `|| true`-guarded, so it does not remove the old failure mode, it CONVERTS
+# it: where the old unguarded capture aborted the suite under `set -o pipefail`,
+# this one answers "not available" and carries on. That moves the failure TOWARD
+# vacuous green, not away from it, and dropping the role pin supplies a concrete
+# trigger -- an ambient unrecognized role now short-circuits the probe
+# (`DF_VERIFY_ROLE=bogus bash scripts/verify.sh test --scope all --print-plan`
+# exits 64 with nothing on stdout, measured), where the pinned form was immune.
+#
+# What makes that acceptable is NOT the guard -- it is the else arm of every
+# NEXTEST_AVAILABLE branch below. A false "not available" on a nextest-present
+# host routes assertion (b) into `_gate_lacks ... "$NOT_PATTERN"` and assertions
+# (c)/(d) into `_offline_lacks '-E "('`, all three of which then fail loudly
+# against a plan that DOES carry the -E expression. Those else arms are this
+# probe's only detector of a wrong answer: do not delete them as dead weight on
+# a nextest-present host.
 # ---------------------------------------------------------------------------
-_PROBE_HEADER="$(env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task \
-    bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep '^# verify.sh plan')"
 NEXTEST_AVAILABLE=0
-case "$_PROBE_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_ambient "$REPO_ROOT/scripts/verify.sh"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 # ===========================================================================
@@ -435,9 +478,23 @@ fi
 echo ""
 echo "--- Assertion (d): heavy (+) smoke partition -- no overlap, no orphan ---"
 
-assert "offline plan: no orphan -- every heavy atom is present in the emitted -E expression" \
-    _no_orphan_ok
+# The orphan check parses the emitted -E expression, which only exists on the
+# nextest plan -- the cargo-test fallback (nextest=0, a host without
+# cargo-nextest installed) has no -E support at all, so the property is
+# genuinely nextest-only and cannot be recovered by widening a grep (task
+# 5599). Guarded with the same NEXTEST_AVAILABLE idiom already used for
+# assertions (b) and (c-bis) above; guarded by
+# tests/infra/test_verify_nextest_absent_suites.sh.
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline plan: no orphan -- every heavy atom is present in the emitted -E expression" \
+        _no_orphan_ok
+else
+    assert 'offline plan, nextest unavailable: no -E expression exists to orphan-check (cargo-test fallback has no -E support)' \
+        _offline_lacks '-E "('
+fi
 
+# NOT guarded: reads the REIFY_HEAVY_NEXTEST_FILTER env manifest, not the
+# emitted plan, so it holds on both hosts.
 assert "REIFY_HEAVY_NEXTEST_FILTER has no overlap with solver_gate_smoke" \
     _no_overlap_ok
 
@@ -452,11 +509,18 @@ assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (r
 echo ""
 echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms ---"
 
-assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
-    _atom_count_is_6
+# Both parse atoms out of the ACTUAL emitted offline -E expression -- nextest-
+# only, same reasoning as assertion (d)'s orphan check above (task 5599).
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
+        _atom_count_is_6
 
-assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
-    _resolve_atoms_ok
+    assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
+        _resolve_atoms_ok
+else
+    assert 'offline plan atoms, nextest unavailable: no -E expression exists to parse atoms from (cargo-test fallback has no -E support)' \
+        _offline_lacks '-E "('
+fi
 
 # ---------------------------------------------------------------------------
 # Non-vacuity self-check: the guard's own resolve-to-disk / orphan / overlap
@@ -466,8 +530,14 @@ assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/te
 echo ""
 echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
 
-assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
-    assert_guard_rejects
+# Nextest-only: assert_guard_rejects mutates and re-checks the emitted -E
+# expression, which does not exist on the cargo-test fallback (task 5599).
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
+        assert_guard_rejects
+else
+    echo "  (skipped: nextest unavailable -- no -E expression to break and re-check)"
+fi
 
 # ---------------------------------------------------------------------------
 # Dump self-check: a forced oracle miss emits the full raw plan (header incl

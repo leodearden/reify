@@ -1937,9 +1937,8 @@ mod tests {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-refs-xfile-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-refs-xfile-");
+        let tmp_dir = guard.path().to_path_buf();
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
 
@@ -1973,8 +1972,6 @@ mod tests {
             .references(ref_params(main_uri.clone(), Position::new(2, 15), true))
             .await
             .unwrap();
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
 
         let locations =
             locations.expect("cross-file references should resolve for the imported Hole use");
@@ -2010,9 +2007,8 @@ mod tests {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-rename-xfile-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-rename-xfile-");
+        let tmp_dir = guard.path().to_path_buf();
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
 
@@ -2055,8 +2051,6 @@ mod tests {
             .rename(rename_params(main_uri.clone(), 2, 15, "Bore"))
             .await
             .unwrap();
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
 
         // (a) assertions: a cross-module structure use is now a rename target.
         match prepared {
@@ -2286,7 +2280,8 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with a custom stdlib directory
-        let tmp_dir = std::env::temp_dir().join(format!("reify-lsp-stdlib-{}", std::process::id()));
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-stdlib-");
+        let tmp_dir = guard.path().to_path_buf();
         let custom_stdlib = tmp_dir.join("custom-stdlib");
         std::fs::create_dir_all(&custom_stdlib).unwrap();
 
@@ -2339,9 +2334,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Clean up
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-
         // Should resolve to custom-stdlib/mymod.ri
         let response = goto_result.expect("goto-def should resolve Widget from custom stdlib");
         match response {
@@ -2366,8 +2358,8 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with two .ri files
-        let tmp_dir = std::env::temp_dir().join(format!("reify-lsp-test-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-test-");
+        let tmp_dir = guard.path().to_path_buf();
 
         // Write the target file: parts.ri
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2412,9 +2404,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Clean up temp directory
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-
         // Verify the result points to parts.ri
         let response = goto_result.expect("goto-def should return a result for imported symbol");
         match response {
@@ -2439,9 +2428,8 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with multiple .ri files
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-concurrent-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-concurrent-");
+        let tmp_dir = guard.path().to_path_buf();
 
         // Write three target files
         std::fs::write(
@@ -2535,9 +2523,6 @@ structure Assembly {
                 partial_result_params: Default::default(),
             }),
         );
-
-        // Clean up temp directory
-        let _ = std::fs::remove_dir_all(&tmp_dir);
 
         // Assert all 3 completed and returned correct locations
         let resp1 = r1.unwrap().expect("request 1 should return a result");
@@ -2658,9 +2643,8 @@ structure Assembly {
         let server = service.inner();
 
         // Create a temporary workspace
-        let tmp_dir =
-            std::env::temp_dir().join(format!("reify-lsp-docstore-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-docstore-");
+        let tmp_dir = guard.path().to_path_buf();
 
         // Write parts.ri on disk with ONLY Hole (no Plate)
         let disk_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2720,9 +2704,6 @@ structure Assembly {
             .await
             .unwrap();
 
-        // Clean up
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-
         // Should resolve to parts.ri line 0 (from editor content, not disk).
         // Disk version doesn't have Plate, so this proves DocumentStore is used.
         let response = goto_result
@@ -2755,10 +2736,8 @@ structure Assembly {
     fn build_workspace_docs_walks_ri_files_and_applies_open_override() {
         use std::path::Path;
 
-        let tmp = std::env::temp_dir()
-            .join(format!("reify-lsp-bwd-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp); // clean slate
-        std::fs::create_dir_all(&tmp).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-bwd-");
+        let tmp = guard.path().to_path_buf();
 
         // Two .ri files at root level.
         std::fs::write(tmp.join("a.ri"), "file_a_on_disk").unwrap();
@@ -2780,9 +2759,6 @@ structure Assembly {
         open.insert(a_path.clone(), "file_a_open".to_string());
 
         let docs = build_workspace_docs(Path::new(&tmp), &open);
-
-        // Clean up before assertions so a panic doesn't leave the dir behind.
-        let _ = std::fs::remove_dir_all(&tmp);
 
         // Collect the (path-suffix, content) pairs for easy assertions.
         let collected: Vec<(String, String)> = docs
@@ -2855,10 +2831,8 @@ structure Assembly {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp = std::env::temp_dir()
-            .join(format!("reify-lsp-refs-closed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-refs-closed-");
+        let tmp = guard.path().to_path_buf();
 
         // parts.ri — the HOME file; will be opened in LSP.
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2898,8 +2872,6 @@ structure Assembly {
             .await
             .unwrap();
 
-        let _ = std::fs::remove_dir_all(&tmp);
-
         let locations = locations.expect(
             "references on Hole declaration should return Some(locations), not None",
         );
@@ -2938,10 +2910,8 @@ structure Assembly {
         let (service, _socket) = test_service();
         let server = service.inner();
 
-        let tmp = std::env::temp_dir()
-            .join(format!("reify-lsp-rename-closed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-rename-closed-");
+        let tmp = guard.path().to_path_buf();
 
         // parts.ri — the HOME file; will be opened in LSP.
         let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
@@ -2980,8 +2950,6 @@ structure Assembly {
             .rename(rename_params(parts_uri.clone(), 0, 10, "Bore"))
             .await
             .unwrap();
-
-        let _ = std::fs::remove_dir_all(&tmp);
 
         let changes = edit
             .expect("rename returns a WorkspaceEdit")

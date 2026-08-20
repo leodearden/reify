@@ -118,6 +118,7 @@ fn constraint_id(entity: &str, index: u32) -> reify_core::ConstraintNodeId {
 /// actually reaching the target, never from a seed/target coincidence.
 fn base_problem(t_id: &ValueCellId, objective: Option<ObjectiveSet>) -> ResolutionProblem {
     ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: t_id.clone(),
             param_type: Type::Scalar { dimension: DimensionVector::LENGTH },

@@ -251,14 +251,26 @@ const DIVERGENCE_LIMIT: usize = 3;
 /// trailing partial chunk is split by index — first 3 entries contribute to
 /// the angular norm, remaining ≤2 to the linear norm.  This is a degraded
 /// best-effort guard so a caller bug doesn't panic in release; in dev a
-/// `debug_assert!` will catch the misuse loudly.  Pinned by
-/// `position_rotation_norms_partial_chunk_partitions_by_index` below.
+/// `debug_assert!` will catch the misuse loudly.  The guard-free summation
+/// itself lives in [`position_rotation_norms_by_index`] so the malformed-
+/// input fallback can be pinned by a test that runs in both profiles;
+/// pinned by `position_rotation_norms_partial_chunk_partitions_by_index`
+/// below.
 fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
     debug_assert!(
         r.len().is_multiple_of(6),
         "residual length {} is not a multiple of 6 — caller is misusing the stacked-twist contract",
         r.len()
     );
+    position_rotation_norms_by_index(r)
+}
+
+/// Assertion-free core of [`position_rotation_norms`]: sums a stacked-twist
+/// residual into `(angular_norm, linear_norm)` by chunking into groups of 6
+/// and partitioning each chunk by index (first 3 → angular, remaining ≤2 →
+/// linear). No `debug_assert!` on `r.len()`, so malformed (non-multiple-of-6)
+/// input is exercised directly here rather than through the guarded wrapper.
+fn position_rotation_norms_by_index(r: &[f64]) -> (f64, f64) {
     let mut ang2 = 0.0;
     let mut lin2 = 0.0;
     for chunk in r.chunks(6) {
@@ -1508,15 +1520,16 @@ mod tests {
 
     /// Documented best-effort behavior on malformed input: the trailing
     /// partial chunk is split by index — first 3 entries contribute to
-    /// `ang2`, remaining (up to 2) to `lin2`.  Test runs only in release
-    /// since debug_assert! would panic on the misuse.
-    #[cfg(not(debug_assertions))]
+    /// `ang2`, remaining (up to 2) to `lin2`.  Exercises the assertion-free
+    /// `position_rotation_norms_by_index` core directly (rather than the
+    /// `debug_assert!`-guarded `position_rotation_norms` wrapper) so this
+    /// coverage is profile-invariant instead of release-only.
     #[test]
     fn position_rotation_norms_partial_chunk_partitions_by_index() {
         // 8-element residual: full 6-chunk + 2-element partial.  The
         // partial's indices 0..2 are angular, so both go to ang2.
         let r = [3.0_f64, 4.0, 0.0, 0.0, 0.0, 0.0, 5.0, 12.0];
-        let (ang, lin) = super::position_rotation_norms(&r);
+        let (ang, lin) = super::position_rotation_norms_by_index(&r);
         // ang2 = 3² + 4² + 5² + 12² = 9 + 16 + 25 + 144 = 194 → sqrt ≈ 13.9284
         assert!((ang - 194.0_f64.sqrt()).abs() < 1e-12);
         // lin2 = 0 → 0
@@ -1529,7 +1542,7 @@ mod tests {
             .copied()
             .chain([1.0, 2.0, 3.0, 4.0])
             .collect::<Vec<f64>>();
-        let (ang2, lin2) = super::position_rotation_norms(&r2);
+        let (ang2, lin2) = super::position_rotation_norms_by_index(&r2);
         // ang² = 1 + 4 + 9 = 14 → sqrt ≈ 3.7417
         assert!((ang2 - 14.0_f64.sqrt()).abs() < 1e-12);
         // lin² = 16 → 4

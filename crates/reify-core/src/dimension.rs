@@ -269,16 +269,29 @@ impl DimensionVector {
     // Added for the Compliant-Joints/Flexures PRD (v0.3, task α).
     // Index layout reminder: 0=Length 1=Mass 2=Time 7=Angle(rad).
 
-    /// Rotational stiffness: N·m/rad = kg·m²·s⁻²·rad⁻¹
+    /// Rotational stiffness: N·m/rad² = kg·m²·s⁻²·rad⁻²
     ///
-    /// Spring coefficient for revolute joints (spring_force = -k·Δθ gives N·m torque).
+    /// Spring coefficient for revolute joints: k = τ/θ. Reify's torque carries an
+    /// explicit Angle⁻¹ ([`TORQUE`](Self::TORQUE), slot 7 = -1), so dividing it by
+    /// an angle puts k at slot 7 = -2. The two identities that fix this are pinned
+    /// executably below: k·θ = Torque and k·θ² = Energy — both close ONLY at rad⁻².
+    ///
+    /// Re-dimensioned from rad⁻¹ by task #5799, ruled by Leo 2026-07-29. The
+    /// original rad⁻¹ came from reading "spring_force = -k·Δθ gives N·m torque"
+    /// as SI-literal N·m (= Energy's spelling) rather than as Reify's N·m/rad;
+    /// that conflation is the bug, so do not restore that phrasing.
     pub const ROTATIONAL_STIFFNESS: DimensionVector =
-        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)]);
-    /// Rotational damping: N·m·s/rad = kg·m²·s⁻¹·rad⁻¹
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -2)]);
+    /// Rotational damping: N·m·s/rad² = kg·m²·s⁻¹·rad⁻²
     ///
-    /// Damping coefficient for revolute joints (damping_force = -c·θ̇ gives N·m torque).
+    /// Damping coefficient for revolute joints: c = τ/θ̇. Angular velocity is
+    /// rad·s⁻¹, and Reify's τ is N·m/rad ([`TORQUE`](Self::TORQUE), slot 7 = -1),
+    /// so c lands at slot 7 = -2. Pinned executably below by c·θ̇ = Torque.
+    ///
+    /// Re-dimensioned from rad⁻¹ by task #5799, ruled by Leo 2026-07-29 — same
+    /// SI-literal misreading as [`ROTATIONAL_STIFFNESS`](Self::ROTATIONAL_STIFFNESS).
     pub const ROTATIONAL_DAMPING: DimensionVector =
-        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -1)]);
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -2)]);
     /// Translational stiffness: N/m = kg·s⁻² — dimensionally identical to `STIFFNESS`.
     ///
     /// Spring coefficient for prismatic joints (spring_force = -k·Δx gives N force).
@@ -292,6 +305,39 @@ impl DimensionVector {
     /// Damping coefficient for prismatic joints (damping_force = -c·ẋ gives N force).
     pub const TRANSLATIONAL_DAMPING: DimensionVector =
         DimensionVector::from_exps(&[(1, 1), (2, -1)]);
+
+    // ─── Angle-units surface convergence (task η / PRD v0_6) ────────────────────
+
+    /// Torque: N·m/rad = kg·m²·s⁻²·rad⁻¹ — Force·Length/Angle.
+    ///
+    /// Distinct from `ENERGY` (J = N·m) precisely by the Angle⁻¹ slot; see
+    /// `torque_dim_differs_from_energy_dim_via_angle_slot` below.
+    ///
+    /// TORQUE is the SOLE holder of this vector. It briefly shared one with
+    /// `ROTATIONAL_STIFFNESS` — task η registered `Torque` in ALIAS POSITION per
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` §6 D4, deliberately a
+    /// name addition rather than a re-dimensioning — until task #5799 (ruled by
+    /// Leo 2026-07-29) moved rotational stiffness to rad⁻², which is where
+    /// k = τ/θ actually puts it. The two vectors now differ in slot 7, so this
+    /// row's POSITION in `NAMED_DIMENSIONS` is no longer load-bearing:
+    /// `canonical_name()`'s forward first-match scan finds `"Torque"` for a
+    /// torque vector wherever the row sits.
+    ///
+    /// Do not "fix" a future collision by adding another alias row. A
+    /// dimension-checked reader compares vectors, not names — `accept_arg` keys
+    /// on `*dimension == spec.dimension` (`reify-eval/src/arg_acceptance.rs`) and
+    /// `ArgSpec.type_name` is display-only — so an alias row cannot separate two
+    /// quantities that share a vector. That is the ruling's core argument, and it
+    /// is pinned executably by the separation tests in
+    /// `crates/reify-compiler/tests/flexure_dimension_types.rs`.
+    ///
+    /// Spelled out slot-by-slot rather than as an alias of another constant ON
+    /// PURPOSE — no other named quantity is definitionally N·m/rad. (Contrast
+    /// [`TRANSLATIONAL_STIFFNESS`](Self::TRANSLATIONAL_STIFFNESS), which IS
+    /// defined as `= STIFFNESS` because there the identity is definitional: both
+    /// are N/m.)
+    pub const TORQUE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)]);
 
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
@@ -503,14 +549,30 @@ pub const FORCE: DimensionVector = {
 /// This table drives both:
 /// - [`DimensionVector::canonical_name`] — dimension → name direction (linear scan forward).
 /// - `resolve_dimension_type` in `crates/reify-compiler/src/type_resolution.rs` — name → dimension
-///   direction (linear scan backward).
+///   direction (linear scan forward).
+///
+/// Both directions are FIRST-MATCH, which is why ENTRY ORDER IS LOAD-BEARING: an
+/// alias row (`TranslationalStiffness`, `Curvature`, `Momentum`, `Torque`) is placed
+/// AFTER the canonical row it shares a vector with, so `canonical_name()` keeps
+/// returning the canonical name while the alias name still resolves in the
+/// name→dim direction. Inserting one BEFORE its canonical row would silently
+/// change every reverse-lookup consumer's output.
 ///
 /// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
 /// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
 ///
-/// The slice contains 34 entries, one per named singleton, in the same order as the
-/// original `canonical_name` match arms (LENGTH .. FORCE_DENSITY).
+/// Composition: the leading run (LENGTH .. FORCE_DENSITY) is one row per named
+/// singleton, in the same order as the original `canonical_name` match arms;
+/// everything after it was appended by a later task, including the alias rows
+/// noted above.
+///
+/// NO entry count is quoted here, deliberately. Nothing derives one — every
+/// consumer iterates the slice — so a number in this comment is pure maintenance
+/// debt that silently rots on the next addition. It already has: the original
+/// "34 entries" claim was stale before task η even touched it, and a subsequent
+/// reviewer then mis-derived a replacement by hand. Count the rows if you need
+/// the number; do not re-enshrine one here.
 pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
@@ -570,6 +632,12 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // alias precedent (task 3603 / GHR-α).
     (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
     (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
+    // Added as an alias row by task η, when Torque shared a vector with
+    // RotationalStiffness and this row's position decided which name
+    // canonical_name() reported. Task #5799 (ruled 2026-07-29) moved rotational
+    // stiffness to rad⁻², so Torque is now the sole holder of kg·m²·s⁻²·rad⁻¹ and
+    // the position is no longer load-bearing. See the `DimensionVector::TORQUE` docs.
+    (DimensionVector::TORQUE, "Torque"),
     (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
     (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
     (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
@@ -1530,6 +1598,81 @@ mod tests {
         );
     }
 
+    /// Executable pin for the `DimensionVector::TORQUE` contract — see that
+    /// constant's docs.
+    /// Asserts, in order: (a) the exponent slots, spelled literally; (b) that
+    /// TORQUE and ROTATIONAL_STIFFNESS are DISTINCT vectors; (c) that exactly
+    /// one `"Torque"` row exists; (d) that a torque vector reports itself as
+    /// `"Torque"`.
+    ///
+    /// Task η's version of this test framed (b) and (d) as CONTINGENT — the
+    /// intended loud failure at the decision point about re-dimensioning
+    /// `ROTATIONAL_STIFFNESS`. That decision point has been reached and ruled
+    /// (task #5799, Leo 2026-07-29: rotational stiffness is rad⁻²), so the
+    /// contingency is discharged and all four assertions are now definitional.
+    #[test]
+    fn torque_is_the_sole_holder_of_the_force_length_per_angle_vector() {
+        // (a) Exponent slots, pinned literally: kg·m²·s⁻²·rad⁻¹.
+        let t = DimensionVector::TORQUE;
+        assert_eq!(
+            t.0[0],
+            Rational::new(2, 1),
+            "TORQUE slot 0 (Length) should be 2"
+        );
+        assert_eq!(t.0[1], Rational::ONE, "TORQUE slot 1 (Mass) should be 1");
+        assert_eq!(
+            t.0[2],
+            Rational::new(-2, 1),
+            "TORQUE slot 2 (Time) should be -2"
+        );
+        assert_eq!(
+            t.0[7],
+            Rational::new(-1, 1),
+            "TORQUE slot 7 (Angle) should be -1"
+        );
+        for (i, slot) in t.0.iter().enumerate() {
+            if !matches!(i, 0 | 1 | 2 | 7) {
+                assert_eq!(*slot, Rational::ZERO, "TORQUE slot {i} should be ZERO");
+            }
+        }
+
+        // (b) Separation — torque and rotational stiffness are DIFFERENT quantities
+        // and must not share a vector. They differ in slot 7: τ is rad⁻¹, k is rad⁻².
+        assert_ne!(
+            DimensionVector::TORQUE,
+            DimensionVector::ROTATIONAL_STIFFNESS,
+            "TORQUE (N·m/rad) and ROTATIONAL_STIFFNESS (N·m/rad²) must stay distinct \
+             vectors — task #5799 separated them per Leo's 2026-07-29 ruling, because \
+             a dimension-checked reader compares vectors and could never tell two \
+             colliding quantities apart"
+        );
+
+        // (c) Exactly one "Torque" row. Position is NOT asserted: since #5799 the
+        // vectors differ, so TORQUE is the sole holder and the forward first-match
+        // scan finds it wherever the row sits. Pinning a now-arbitrary ordering
+        // would be a false invariant that fails on a harmless table reshuffle.
+        let torque_rows: Vec<usize> = super::NAMED_DIMENSIONS
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name))| *name == "Torque")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            torque_rows.len(),
+            1,
+            "NAMED_DIMENSIONS should contain exactly one \"Torque\" row, found {torque_rows:?}"
+        );
+
+        // (d) dim→name output — a torque vector reports itself as "Torque".
+        assert_eq!(
+            DimensionVector::TORQUE.canonical_name(),
+            Some("Torque"),
+            "canonical_name() for a torque vector must be \"Torque\"; before #5799 it \
+             returned \"RotationalStiffness\" because the two vectors collided and the \
+             RotationalStiffness row won the forward first-match scan"
+        );
+    }
+
     #[test]
     fn acceleration_canonical_name_is_acceleration() {
         let a = DimensionVector::ACCELERATION;
@@ -1792,26 +1935,102 @@ mod tests {
     // Four new pub const DimensionVectors for compliant-joint/flexure types (task α,
     // Phase-1 of docs/prds/v0_3/compliant-joints-flexures.md):
     //
-    //   ROTATIONAL_STIFFNESS  = N·m/rad   = kg·m²·s⁻²·rad⁻¹  (index: 0=+2,1=+1,2=-2,7=-1)
-    //   ROTATIONAL_DAMPING    = N·m·s/rad = kg·m²·s⁻¹·rad⁻¹  (index: 0=+2,1=+1,2=-1,7=-1)
-    //   TRANSLATIONAL_STIFFNESS = N/m     = kg·s⁻²             (index: 1=+1,2=-2; == STIFFNESS)
-    //   TRANSLATIONAL_DAMPING = N·s/m     = kg·s⁻¹             (index: 1=+1,2=-1)
+    //   ROTATIONAL_STIFFNESS  = N·m/rad²   = kg·m²·s⁻²·rad⁻²  (index: 0=+2,1=+1,2=-2,7=-2)
+    //   ROTATIONAL_DAMPING    = N·m·s/rad² = kg·m²·s⁻¹·rad⁻²  (index: 0=+2,1=+1,2=-1,7=-2)
+    //   TRANSLATIONAL_STIFFNESS = N/m      = kg·s⁻²            (index: 1=+1,2=-2; == STIFFNESS)
+    //   TRANSLATIONAL_DAMPING = N·s/m      = kg·s⁻¹            (index: 1=+1,2=-1)
+    //
+    // The two rotational slot-7 exponents were -1 until task #5799 (ruled by Leo
+    // 2026-07-29) re-dimensioned them to -2; see the constants' docs.
 
     #[test]
     fn rotational_stiffness_has_correct_exponents() {
-        // N·m/rad = kg·m²·s⁻²·rad⁻¹
+        // N·m/rad² = kg·m²·s⁻²·rad⁻²
         assert_eq!(
             DimensionVector::ROTATIONAL_STIFFNESS,
-            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -1)])
+            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (7, -2)])
         );
     }
 
     #[test]
     fn rotational_damping_has_correct_exponents() {
-        // N·m·s/rad = kg·m²·s⁻¹·rad⁻¹
+        // N·m·s/rad² = kg·m²·s⁻¹·rad⁻²
         assert_eq!(
             DimensionVector::ROTATIONAL_DAMPING,
-            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -1)])
+            DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -1), (7, -2)])
+        );
+    }
+
+    // ─── Task #5799 (ruled by Leo 2026-07-29): the rotational-stiffness/damping
+    //     ARITHMETIC IDENTITIES ────────────────────────────────────────────────
+    //
+    // These four tests encode the ruling's actual ARGUMENT, not merely its
+    // resulting exponent literal. `rotational_stiffness_has_correct_exponents`
+    // above is a literal echo of the constant it guards: it would pass for any
+    // typo the constant also contained. The identities below close ONLY at
+    // rad⁻², so they are the executable statement of WHY rad⁻² is the unique
+    // correct answer — putting the reasoning in code instead of in a comment,
+    // which is precisely the failure mode that produced the rad⁻¹ bug.
+
+    /// τ = k·θ — rotational stiffness times an angle must be a TORQUE.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. Reify's τ is N·m/rad (slot 7 = -1,
+    /// `DimensionVector::TORQUE`), so k = τ/θ forces slot 7 = -2 on k. At the
+    /// pre-ruling rad⁻¹ this product yields ENERGY, not TORQUE.
+    #[test]
+    fn rotational_stiffness_closes_the_torque_identity() {
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS.mul(&DimensionVector::ANGLE),
+            DimensionVector::TORQUE,
+            "τ = k·θ must close: RotationalStiffness · Angle should be Torque \
+             (N·m/rad² · rad = N·m/rad). Task #5799, ruled 2026-07-29."
+        );
+    }
+
+    /// U = ½·k·θ² — rotational stiffness times an angle SQUARED must be ENERGY.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. The ½ is a pure number and carries
+    /// no dimension. At the pre-ruling rad⁻¹ this product yields an unnamed
+    /// vector (N·m·rad) matching nothing in `NAMED_DIMENSIONS`.
+    #[test]
+    fn rotational_stiffness_closes_the_energy_identity() {
+        assert_eq!(
+            DimensionVector::ROTATIONAL_STIFFNESS.mul(&DimensionVector::ANGLE.pow(2)),
+            DimensionVector::ENERGY,
+            "U = ½·k·θ² must close: RotationalStiffness · Angle² should be Energy \
+             (N·m/rad² · rad² = J). Task #5799, ruled 2026-07-29."
+        );
+    }
+
+    /// τ = c·θ̇ — rotational damping times an angular velocity must be a TORQUE.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. `ANGULAR_VELOCITY` is rad·s⁻¹, so
+    /// c must be kg·m²·s⁻¹·rad⁻² for the product to land on N·m/rad.
+    #[test]
+    fn rotational_damping_closes_the_torque_identity() {
+        assert_eq!(
+            DimensionVector::ROTATIONAL_DAMPING.mul(&DimensionVector::ANGULAR_VELOCITY),
+            DimensionVector::TORQUE,
+            "τ = c·θ̇ must close: RotationalDamping · AngularVelocity should be Torque \
+             (N·m·s/rad² · rad·s⁻¹ = N·m/rad). Task #5799, ruled 2026-07-29."
+        );
+    }
+
+    /// A torque vector must report itself as `"Torque"`.
+    ///
+    /// Task #5799, ruled by Leo 2026-07-29. Pre-ruling, `TORQUE` and
+    /// `ROTATIONAL_STIFFNESS` were byte-identical and `canonical_name()`'s
+    /// forward first-match scan handed torque values the misleading name
+    /// `"RotationalStiffness"`. Once the vectors diverge, TORQUE is the sole
+    /// holder of (0,2)(1,1)(2,-2)(7,-1) and the scan finds it regardless of
+    /// row position.
+    #[test]
+    fn torque_vector_canonical_name_is_torque() {
+        assert_eq!(
+            DimensionVector::TORQUE.canonical_name(),
+            Some("Torque"),
+            "a torque vector must report \"Torque\", not the name of a different \
+             physical quantity. Task #5799, ruled 2026-07-29."
         );
     }
 
@@ -1879,9 +2098,9 @@ mod tests {
 
     #[test]
     fn flexure_dims_distinct_from_energy_and_dynamic_viscosity() {
-        // ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — differs by angle slot.
+        // ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻²) ≠ ENERGY (kg·m²·s⁻²) — differs by angle slot.
         assert_ne!(DimensionVector::ROTATIONAL_STIFFNESS, DimensionVector::ENERGY);
-        // ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — time AND angle differ.
+        // ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻²) ≠ ENERGY (kg·m²·s⁻²) — time AND angle differ.
         assert_ne!(DimensionVector::ROTATIONAL_DAMPING, DimensionVector::ENERGY);
         // TRANSLATIONAL_DAMPING (kg·s⁻¹) ≠ DYNAMIC_VISCOSITY (kg·m⁻¹·s⁻¹) — length slot differs.
         assert_ne!(

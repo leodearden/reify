@@ -166,10 +166,35 @@ regardless; BRE-fails are the accepted cost of uncertainty.
 A pure, LLM-free check over a single declared path string:
 
 - **C-P1 (reject predicate).** A path is a **directory declaration** (rejected) iff,
-  after stripping a trailing `/`, its final path segment has **no recognized code
-  extension** (allowlist: `.rs .ri .toml .cpp .h .hpp .c .md .json .yaml .yml .lock .py
-  .sh .ts .tsx .js .txt .step .stl …`). `crates/`, `crates/reify-eval/src`,
+  after stripping a trailing `/`, its final path segment **both** (i) has **no recognized
+  code extension** (allowlist: `.rs .ri .toml .cpp .h .hpp .c .md .json .yaml .yml .lock
+  .py .sh .ts .tsx .js .txt .step .stl …`) **and** (ii) is not itself a member of the
+  enumerated **extensionless-basename allowlist**. `crates/`, `crates/reify-eval/src`,
   `crates/reify-eval/tests`, `examples`, `compute_targets`, `modal` → **reject**.
+  - **Clause (ii) is normative, not an implementation detail.** Real tracked files
+    routinely carry no extension at all (`LICENSE`, `hooks/pre-commit`,
+    `hooks/project-checks`, `Dockerfile`); with clause (i) alone they were
+    *undeclarable*. The allowlist is **enumerated, never heuristic** — in particular the
+    tempting generalisations "a dotless segment naming a real file" (needs a stat,
+    forbidden by C-P3) and "match the post-dot token" (would admit dotted *directories*
+    such as `.cargo`) are both rejected.
+  - The match is against the **whole final segment** and is **exact** — not a prefix,
+    substring, or suffix. `pre-commit-hooks` and `cargo-lib` are plausible directory
+    names and stay rejected.
+  - Membership is fixed by a **measured sweep**, not judgement: the tracked corpora of
+    both repos, submodule gitlinks (mode 160000) excluded, restricted to dotless final
+    segments. The canonical command is pinned verbatim in the `_EXTLESS` header of
+    `scripts/lock-charter-guard.sh` and re-run as a standing CI alarm by Cycle 9 of
+    `tests/infra/test_lock_charter_guard.sh`; re-run it rather than re-deriving it, since
+    the NUL/tab-delimited parse it uses is load-bearing against tracked paths containing
+    spaces. Admitting them is safe only because the same sweep shows **zero
+    directory-name collisions** for any member across *all* path components of either
+    corpus — *tracked* path components, which is the universe a charter declares from
+    (an untracked scratch directory is not something a `metadata.files` entry names, and
+    C-P3 forbids the stat that would be needed to consult one). Growing the list means
+    re-running the sweep and updating α and γ in lockstep.
+  - Emitted for cross-implementation comparison by
+    `scripts/lock-charter-guard.sh --list-extensionless` (see §11 Q2).
 - **C-P2 (accept predicate).** A file-level path (`crates/x/src/foo.rs`,
   `examples/foo.ri`, `crates/x/tests/foo_e2e.rs`) → **accept**. An **empty** `files` list
   (`[]`) → **accept** (the deliberate "defer to architect" value).
@@ -232,6 +257,20 @@ A pure, LLM-free check over a single declared path string:
 2. **Under-declaration is the safe error direction** (BRE acquires-before-edit);
    over-declaration is the cardinal sin (serializes dispatch + spurious BRE). Authoring
    bias is therefore "name only high-confidence anchors, else `[]`."
+   - *Amended 2026-07-31 (#5890).* This item is what `scripts/lock-charter-guard.sh`'s
+     header means by "PRD §5.2" — §5 is a numbered list with no literal §5.2 subsection,
+     so the citation resolves to **item 2**, not a subsection.
+   - The principle stands, but the original **blanket conservative-reject of every
+     extension-less segment over-shot it**. Seven real tracked reify files
+     (`LICENSE`, `hooks/pre-commit`, `hooks/pre-merge-commit`, `hooks/project-checks`,
+     `hooks/reference-transaction`, `scripts/agent-bin/cargo`,
+     `scripts/cargo-audit-orphans`) could not be named in a charter *at all*. That is
+     **non-declaration, not under-declaration**: under-declaration means naming a
+     high-confidence subset and letting BRE acquire the rest, whereas these paths had no
+     spelling the guard would accept, so the honest author's only option was `[]`.
+   - The fix stays on the safe side of the same principle because it is bounded by
+     **enumeration plus a measured zero-collision result** (C-P1 clause (ii)) rather than
+     by a heuristic that could widen under future inputs.
 3. **Deterministic guard, not LLM.** Directory-vs-file is a syntactic property; a pure
    predicate (C-P1) is robust, driftless, and runs identically at both enforcement sites.
 4. **Guard at BOTH sites.** `/prd` decompose (primary — where over-wide values
@@ -408,6 +447,18 @@ are the dark-factory external-deps.
   that would make set-to-plan's released-module window fully safe, but out of scope here.
 - **The 28 hand-narrowed precursor tasks** — already done tactically; this PRD supersedes
   the need to repeat that by hand.
+- **Trailing-slash spellings of extensionless-allowlist members** (accepted 2026-07-31,
+  #5890). Both α and γ strip trailing slashes *before* segmentation, so once C-P1 clause
+  (ii) admits `hooks/project-checks`, the string `hooks/project-checks/` — written with an
+  explicit, unambiguous directory slash — is **also accepted**. The author's clearest
+  possible signal of directory intent is discarded before the predicate ever sees it.
+  Not fixed here, deliberately: an α-only special case would **create** a fresh α/γ
+  divergence, which is precisely the class of bug this seam keeps having, so closing it is
+  a joint α/γ decision or nothing. The exposure is bounded — every allowlist member is a
+  real file with zero directory-name collisions in either corpus (C-P1), so the
+  mis-accepted string still names a file. Note this cuts the *opposite* way from the
+  §5 item 2 principle: here the guard is momentarily over-permissive rather than
+  over-conservative, which is why it is recorded as a limitation rather than absorbed.
 
 ---
 
@@ -418,9 +469,30 @@ are the dark-factory external-deps.
    ~10 lines of pure logic. **Suggested:** reify ships the canonical script + the spec in
    the PRD; γ re-implements against the spec with a shared test vector (avoids a fused-
    memory→reify runtime dependency). Decide during γ.
-2. **Exact extension allowlist** (C-P1). Confirm completeness against real
-   `metadata.files` corpora (`.ri .rs .toml .cpp .h .md .json .yaml .py .sh .ts .step
-   .stl …`). Decide during α.
+2. **Exact allowlists** (C-P1). Confirm completeness against real `metadata.files`
+   corpora. Decide during α. **There are now two vectors, not one** (amended 2026-07-31,
+   #5890), and each has its own completeness question:
+   - the **extension** allowlist (`.ri .rs .toml .cpp .h .md .json .yaml .py .sh .ts
+     .step .stl …`), emitted by `scripts/lock-charter-guard.sh --list-extensions`;
+   - the **extensionless-basename** allowlist (C-P1 clause (ii)), emitted by
+     `--list-extensionless`. γ's mirror of it is `dark_factory:3248`.
+
+   Completeness is not a one-time answer for either: the extension vector has already
+   been found stale **twice**, by two different mechanisms — once by a manual sweep
+   (36→58, `dark_factory:3117`, 2026-07-28) and once by γ's own corpus guard going RED
+   plus reconciliation review on the α side (58→59, reify #6067 / dark-factory
+   43410b3418, 2026-08-07, adding `csv`). A reify-corpus sweep would not have caught
+   the latter, since reify tracks zero `.csv` files; the full incident narrative is
+   owned by `scripts/lock-charter-guard.sh`'s header, not restated here. The basename
+   vector has been found stale **once** (0→8, `dark_factory:3248`). The live-corpus
+   subset alarm in `tests/infra/test_lock_charter_guard.sh` (Cycle 9), which re-runs
+   the sweep in CI and goes RED when a tracked extensionless basename is missing from
+   the α vector, is the standing defence for the **extensionless-basename** vector
+   only — there is no live-corpus drift alarm for the extension vector on the α side
+   yet (γ has one — `test_every_tracked_extension_is_allowlisted`, which is what
+   caught `csv`; the α mirror is tracked as reify #6068). A RED in that Cycle 9 alarm
+   is fixed by updating α **and** γ together — the emitters exist so the two can be
+   compared byte-for-byte rather than by eye.
 3. **ε hide-point.** Precise architect-input field to suppress (`plan_tools.create_plan`
    args vs the briefing prompt assembly) — confirm at ε impl (§6 ⚠️).
 4. **set-to-plan event shape.** Whether the release emits per-module `lock_released` (as

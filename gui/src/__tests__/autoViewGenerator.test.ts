@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
 import {
   generateDefaultView,
   generateAllGeometryView,
@@ -6,7 +6,28 @@ import {
   defaultVisibilityFor,
 } from '../stores/autoViewGenerator';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
-import type { EntityTreeNode } from '../types';
+import type { DisplayDirective, EntityTreeNode, MeshData } from '../types';
+
+// `computePaneGroups` lives in App.tsx, whose module graph reaches the Tauri
+// bridge and (via `./viewport`) three.js at import time. Mocked as App.test.tsx
+// does so this store-level suite can compose the two halves of the #5195
+// routing path (visibility map × pane bucketing) without rendering App.
+// The viewport stub covers exactly App.tsx's imports from './viewport'
+// (`DualViewport`, `MultiViewport`); without it three's lottie_canvas module
+// calls `HTMLCanvasElement.getContext` at import and jsdom throws.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock('../viewport', () => ({
+  Viewport: () => document.createElement('div'),
+  DualViewport: () => document.createElement('div'),
+  MultiViewport: () => document.createElement('div'),
+}));
+// eslint-disable-next-line import/first
+import { computePaneGroups } from '../App';
 
 // ---------------------------------------------------------------------------
 // Local fixture builder
@@ -21,6 +42,16 @@ function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }):
     freshness: 'final',
     children: [],
     ...overrides,
+  };
+}
+
+/** Minimal `MeshData`; mirrors App.test.tsx's `makeMesh`. */
+function makeMesh(entityPath: string): MeshData {
+  return {
+    entity_path: entityPath,
+    vertices: new Float32Array([0, 0, 0]),
+    indices: new Uint32Array([0]),
+    normals: null,
   };
 }
 
@@ -372,6 +403,63 @@ describe('anchored type-name matching (regression for substring-match bug)', () 
 });
 
 // ---------------------------------------------------------------------------
+// #5195 step-5: "Geometry" is the spelling the backend actually emits
+// ---------------------------------------------------------------------------
+
+/**
+ * The `Solid` source spelling and the `Geometry` source spelling BOTH resolve
+ * to the backend's `Type::Geometry`, whose `Display` emits the literal string
+ * `"Geometry"` — never `"Solid"`. So the geometry-type rule could not fire on
+ * any real value-cell node until `Geometry` joined the pattern.
+ */
+describe('defaultVisibilityFor — "Geometry" type_name (#5195)', () => {
+  it('let with type_name="Geometry" → "hidden" (the spelling Type::Geometry actually Displays)', () => {
+    const node = makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Geometry' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('let with type_name="Option<Geometry>" → "hidden" (wrapper tolerance)', () => {
+    const node = makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Option<Geometry>' });
+    expect(defaultVisibilityFor(node)).toBe('hidden');
+  });
+
+  it('let with type_name="GeometryReference" → "show" (word boundary rejects substring)', () => {
+    const node = makeNode({ entity_path: 'Root.ref', kind: 'let', type_name: 'GeometryReference' });
+    expect(defaultVisibilityFor(node)).toBe('show');
+  });
+
+  it('generateDefaultView hides a "Geometry"-typed let while leaving a "GeometryReference" let shown', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Geometry' }),
+          makeNode({ entity_path: 'Root.ref', kind: 'let', type_name: 'GeometryReference' }),
+        ],
+      }),
+    ];
+    const view = generateDefaultView(tree);
+    expect(view.visibility['Root.body']).toBe('hidden');
+    expect(view.visibility['Root.ref']).toBe('show');
+  });
+
+  it('generatePurposeViews manufacturing_ready: let with type_name="Geometry" → "ghost" (shared helper stays in sync)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'Geometry' }),
+        ],
+      }),
+    ];
+    const [view] = generatePurposeViews(tree, ['manufacturing_ready']);
+    expect(view.visibility['Root.body']).toBe('ghost');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // default_visible: aux hidden-by-default (step-5 T6)
 // ---------------------------------------------------------------------------
 
@@ -415,5 +503,257 @@ describe('defaultVisibilityFor — default_visible field (T6 aux hidden-by-defau
     const view = generateDefaultView(tree);
     expect(view.visibility['Asm#realization[0]']).toBe('show');
     expect(view.visibility['Asm#realization[1]']).toBe('hidden');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5195 step-7: DisplayOutput explicit routing
+// ---------------------------------------------------------------------------
+
+/**
+ * When a design declares one or more `DisplayOutput`s, the author has named
+ * something they definitely want to see. Routing is therefore ADDITIVE: a
+ * named subject is forced to 'show' (outranking even its own
+ * `default_visible === false`), but a realization that is NOT a subject keeps
+ * its own default rules — routing never hides anything.
+ *
+ * It must be additive because `DisplayOutput` is OVERLOADED: the same
+ * occurrence carries layer-3 appearance overrides AND multi-pane routing, and
+ * `collect_display_routing` (gui/src-tauri/src/engine.rs) emits a
+ * `DisplayDirective` for EVERY DisplayDeferred occurrence, reading `pane`
+ * from the hydrated instance where it is ALWAYS present (defaulted to 0). A
+ * directive therefore proves nothing about visibility intent — an
+ * appearance-only `DisplayOutput(subject:, style:)` is byte-identical on the
+ * wire to an explicit `pane: 0`. An exhaustive `subject ? 'show' : 'hidden'`
+ * rule made styling one body delete every other body from the viewport.
+ *
+ * Scoped to realization nodes (the things that carry meshes) and to the
+ * auto:default view; the All-Geometry escape hatch and user views are
+ * untouched.
+ */
+describe('DisplayOutput explicit routing (#5195)', () => {
+  const subjectTree = () => [
+    makeNode({
+      entity_path: 'P',
+      kind: 'structure',
+      children: [
+        makeNode({ entity_path: 'P.width', kind: 'param', type_name: 'Length' }),
+        makeNode({ entity_path: 'P#realization[0]', kind: 'realization', default_visible: true }),
+        makeNode({ entity_path: 'P#realization[1]', kind: 'realization', default_visible: true }),
+      ],
+    }),
+  ];
+
+  it('defaultVisibilityFor: subject realization → "show"', () => {
+    const node = makeNode({ entity_path: 'P#realization[0]', kind: 'realization', default_visible: true });
+    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
+  });
+
+  it('defaultVisibilityFor: non-subject realization keeps its own default → "show"', () => {
+    const node = makeNode({ entity_path: 'P#realization[1]', kind: 'realization', default_visible: true });
+    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
+  });
+
+  it('defaultVisibilityFor: routing outranks default_visible:false on a subject', () => {
+    const node = makeNode({ entity_path: 'P#realization[0]', kind: 'realization', default_visible: false });
+    expect(defaultVisibilityFor(node, new Set(['P#realization[0]']))).toBe('show');
+  });
+
+  it('defaultVisibilityFor: routing never reaches a non-realization node, even one named as a subject', () => {
+    // The subject set contains the node's OWN path, so the path lookup in rule
+    // -1 succeeds and `node.kind === 'realization'` is the only thing left
+    // holding it back. Both nodes below resolve to 'hidden' under the normal
+    // rules, so deleting the kind guard would flip them to 'show' — an
+    // arrangement where the subject set and the node path never intersect
+    // cannot detect that, since a param resolves to 'show' either way.
+    const letGeometry = makeNode({
+      entity_path: 'P.body',
+      kind: 'let',
+      type_name: 'Geometry',
+    });
+    expect(defaultVisibilityFor(letGeometry, new Set(['P.body']))).toBe('hidden');
+
+    const hiddenParam = makeNode({
+      entity_path: 'P.width',
+      kind: 'param',
+      type_name: 'Length',
+      default_visible: false,
+    });
+    expect(defaultVisibilityFor(hiddenParam, new Set(['P.width']))).toBe('hidden');
+  });
+
+  it('generateDefaultView: subject forced show; non-subject keeps its own rule', () => {
+    const view = generateDefaultView(subjectTree(), new Set(['P#realization[0]']));
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    // ADDITIVE: realization[1] is not a subject, but its own default_visible is
+    // true, so routing leaves it alone rather than deleting it from the view.
+    expect(view.visibility['P#realization[1]']).toBe('show');
+    // Non-realization nodes keep their normal rules.
+    expect(view.visibility['P']).toBe('show');
+    expect(view.visibility['P.width']).toBe('show');
+  });
+
+  it('generateDefaultView: an EMPTY subject set means no DisplayOutputs → normal rules', () => {
+    const view = generateDefaultView(subjectTree(), new Set());
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    expect(view.visibility['P#realization[1]']).toBe('show');
+  });
+
+  it('generateDefaultView: an omitted subject set behaves exactly as before', () => {
+    const view = generateDefaultView(subjectTree());
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    expect(view.visibility['P#realization[1]']).toBe('show');
+  });
+
+  it('generateAllGeometryView stays the escape hatch — routing does not reach it', () => {
+    const view = generateAllGeometryView(subjectTree());
+    expect(view.visibility['P#realization[0]']).toBe('show');
+    expect(view.visibility['P#realization[1]']).toBe('show');
+  });
+
+  // -------------------------------------------------------------------------
+  // Additive-routing regressions (#5195 step-12)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mirrors the real `examples/appearance_viewport_egress.ri`: a top-level
+   * `AppearanceViewportEgress` whose own `param geometry` is the RAL9001-styled
+   * DisplayOutput subject, plus an INDEPENDENT `sub raw = RawEgress()` with its
+   * own geometry realization that no DisplayOutput ever names.
+   *
+   * `collect_display_routing` (gui/src-tauri/src/engine.rs) pushes a
+   * `DisplayDirective` for that appearance-only
+   * `DisplayOutput(subject:, style:)` — it has no `pane:` argument at all,
+   * yet arrives on the wire with `pane: 0` because the
+   * hydrated instance always carries a defaulted `pane`. The paired engine-side
+   * pin is engine_tests.rs::…display_output_defaults_pane_and_raw_stays_visible.
+   */
+  it('appearance-only DisplayOutput does not delete sibling bodies (examples/appearance_viewport_egress.ri shape)', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'AppearanceViewportEgress',
+        kind: 'structure',
+        children: [
+          // B1/B3: the steel body carrying the RAL9001 layer-3 override — the subject.
+          makeNode({
+            entity_path: 'AppearanceViewportEgress#realization[0]',
+            kind: 'realization',
+            has_mesh: true,
+            default_visible: true,
+          }),
+          // B2: the material-less raw box, never named by any DisplayOutput.
+          makeNode({
+            entity_path: 'AppearanceViewportEgress.raw',
+            kind: 'sub',
+            children: [
+              makeNode({
+                entity_path: 'AppearanceViewportEgress.raw#realization[0]',
+                kind: 'realization',
+                has_mesh: true,
+                default_visible: true,
+              }),
+            ],
+          }),
+        ],
+      }),
+    ];
+    const view = generateDefaultView(
+      tree,
+      new Set(['AppearanceViewportEgress#realization[0]']),
+    );
+    expect(view.visibility['AppearanceViewportEgress#realization[0]']).toBe('show');
+    // The regression: styling one body must not delete the other.
+    expect(view.visibility['AppearanceViewportEgress.raw#realization[0]']).toBe('show');
+  });
+
+  /**
+   * Pins the OUTLINE PAIR the newly-live `Geometry` token produces (#5195
+   * amendment). Since #4954 a geometry binding emits two sibling nodes; rule 2
+   * fires on the value-cell one for every geometry `let`, consumed or not, so a
+   * plain `let body` in a non-Physical structure yields value cell 'hidden' +
+   * realization 'show'.
+   *
+   * Deliberate, and not a viewport bug: meshes key on `#realization[N]` and
+   * `engineStore.syncDemand` filters on `'#realization['`, so a value cell's
+   * visibility reaches neither the renderer nor demand pruning — only
+   * DesignTree's per-row glyph. `param geometry` is a `param`, so the finished
+   * part's own row is untouched. The real-tree shape these hand-built nodes
+   * stand in for (`type_name: 'Geometry'`, let vs param) is pinned by
+   * engine_tests.rs::examples_m5_geometry_flange_hides_consumed_intermediates.
+   */
+  it('a geometry value cell and its realization sibling render as hidden + shown', () => {
+    const tree = [
+      makeNode({
+        entity_path: 'W',
+        kind: 'structure',
+        children: [
+          // The #4954 value-cell half of `let body = box(...)`: no mesh.
+          makeNode({ entity_path: 'W.body', kind: 'let', type_name: 'Geometry' }),
+          // The realization half: carries the mesh, consumed by nothing.
+          makeNode({
+            entity_path: 'W#realization[0]',
+            kind: 'realization',
+            has_mesh: true,
+            default_visible: true,
+          }),
+          // `param geometry` is a param, so rule 2 never reaches it.
+          makeNode({ entity_path: 'W.geometry', kind: 'param', type_name: 'Geometry' }),
+        ],
+      }),
+    ];
+    const view = generateDefaultView(tree);
+    expect(view.visibility['W.body']).toBe('hidden');
+    expect(view.visibility['W#realization[0]']).toBe('show');
+    expect(view.visibility['W.geometry']).toBe('show');
+  });
+
+  it('a non-subject consumed intermediate stays hidden (primary #5195 observable survives)', () => {
+    // Guards the inverse over-correction: making routing additive must not
+    // un-hide the engine-classified intermediates (body/hole/holes on the m5
+    // flange). Those carry default_visible:false and rule 0 still owns them.
+    const node = makeNode({
+      entity_path: 'BoltFlange#realization[0]',
+      kind: 'realization',
+      has_mesh: true,
+      default_visible: false,
+    });
+    expect(defaultVisibilityFor(node, new Set(['BoltFlange#realization[3]']))).toBe('hidden');
+  });
+
+  it('a subject routed to pane >= 1 does not blank pane 0 (generateDefaultView ∘ computePaneGroups)', () => {
+    // The COMPOSITION is the thing that broke, so this test runs it rather than
+    // re-asserting `generateDefaultView` alone: every pane shares ONE visibility
+    // map (App.tsx `get entityVisibility()`), while computePaneGroups buckets
+    // unrouted meshes into pane 0 via `subjectMap.get(path) ?? 0` (App.tsx:213).
+    // Under the old exhaustive rule, routing realization[0] to pane 1 hid
+    // realization[1] — which is exactly the mesh computePaneGroups puts in pane
+    // 0 — so design-main rendered empty.
+    const displayPanes: DisplayDirective[] = [{ subject: 'P#realization[0]', pane: 1 }];
+    const meshes: Record<string, MeshData> = {
+      'P#realization[0]': makeMesh('P#realization[0]'),
+      'P#realization[1]': makeMesh('P#realization[1]'),
+    };
+
+    const view = generateDefaultView(
+      subjectTree(),
+      new Set(displayPanes.map((d) => d.subject)),
+    );
+    const { groups, dropped } = computePaneGroups(displayPanes, meshes);
+    expect(dropped).toEqual([]);
+
+    // Pane 0 (design-main) holds the UNROUTED body …
+    const pane0 = groups.find((g) => g.pane === 0);
+    expect(pane0).toBeDefined();
+    expect(Object.keys(pane0!.meshes)).toEqual(['P#realization[1]']);
+    // … and the shared visibility map must not have hidden it. This pairing is
+    // the regression: a non-empty pane-0 bucket whose only member is 'hidden'
+    // renders as a blank viewport.
+    expect(view.visibility['P#realization[1]']).toBe('show');
+
+    // The routed subject lands in pane 1 and is shown there.
+    const pane1 = groups.find((g) => g.pane === 1);
+    expect(pane1).toBeDefined();
+    expect(Object.keys(pane1!.meshes)).toEqual(['P#realization[0]']);
+    expect(view.visibility['P#realization[0]']).toBe('show');
   });
 });

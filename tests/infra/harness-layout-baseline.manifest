@@ -1,0 +1,500 @@
+# tests/infra/harness-layout-baseline.manifest
+#
+# GRANDFATHER BASELINE (the C2 ratchet) for the harness-layout contract —
+# task #5265, PRD docs/prds/merge-gate-compile-cost.md §5 C1/C2, leaf B1.
+# Read by tests/infra/test_harness_kloc_cap.sh (rule (b), "no re-accretion").
+#
+# FORMAT: one repo-relative `crates/<crate>/tests/<file>.rs` path per line.
+# Comment lines (^\s*#) and blank lines are ignored (same stripping style as
+# run-all-classification-lib.sh).
+#
+# WHAT IT LISTS: every top-level standalone `tests/*.rs` across the 5
+# CONSOLIDATABLE crates (reify-cli, reify-syntax, reify-kernel-occt,
+# reify-eval, reify-compiler) that is currently sanctioned by grandfathering.
+# On the current pre-consolidation tree these are the un-consolidated
+# standalone integration binaries; the guard treats a baseline-listed file as
+# sanctioned so it is GREEN today, while a stray un-grandfathered file is
+# flagged immediately.
+#
+# INTENTIONALLY EXCLUDED (never listed here):
+#   - the 7 override binaries (determinism, analytical_validation,
+#     modal_benchmarks, buckling_smoke, fea_diagnostics_e2e, tensegrity_t0a,
+#     representation_within_assertion) — allow-listed by stem in the guard;
+#   - any `harness_<subsystem>.rs` — governed by the kLOC cap (rule (a)), not
+#     the re-accretion rule.
+#
+# THIS IS A RATCHET, NOT A PERMANENT ALLOW-LIST. Each consolidation leaf
+# REMOVES its now-consolidated files from this baseline IN THE SAME DIFF that
+# consolidates them (mirroring the mandatory same-diff
+# run-all-classification.manifest row rule; esc-4914-162). The baseline shrinks
+# leaf-by-leaf and the guard stays green at every intermediate step; shrinking
+# toward empty == consolidation progress. Grandfathering a NEW row here for a
+# new standalone test binary in one of these 5 crates is SUPERSEDED (Leo
+# 2026-07-22, esc-5056-11: "actually start using the ratchet") — this baseline
+# is a shrinking ratchet, not an allow-list to grow. The sanctioned remedy is
+# consolidating the new test into a harness_<subsystem>/ compile unit, per C1;
+# see scripts/check-harness-baseline-registration.sh's _hint() for the exact
+# remediation wording (single source of truth — do not restate it here).
+#
+# REGENERATE (from repo root) — regenerate-and-DIFF, never regenerate-and-
+# replace, and NEVER "check the count is unchanged": a ratchet only shrinks, so
+# an unchanged count across a consolidation leaf is the bug, not the check.
+#   git ls-files -- 'crates/reify-cli/tests/*.rs' 'crates/reify-syntax/tests/*.rs' \
+#       'crates/reify-kernel-occt/tests/*.rs' 'crates/reify-eval/tests/*.rs' \
+#       'crates/reify-compiler/tests/*.rs' \
+#     | grep -E '/tests/[^/]+\.rs$' \
+#     | grep -vE '/tests/(tensegrity_t0a|representation_within_assertion|harness_[^/]+)\.rs$' \
+#     | sort
+#
+# `diff` that output against this file's data rows. In steady state they match
+# EXACTLY, because the guard pins BOTH directions: a live standalone with no row
+# fails rule (b), and a row with no live file fails the orphan-row scan in
+# tests/infra/test_harness_kloc_cap.sh. A mismatch is therefore actionable — it
+# is never a prompt to re-baseline this file wholesale:
+#   listed here, absent from the output -> ORPHAN row: the file was consolidated
+#     and its row was not removed. Delete the row (the consolidating leaf owed
+#     it in the same diff).
+#   in the output, absent here -> a NEW un-grandfathered standalone. Consolidate
+#     it per C1; do NOT add a row — growing this baseline is superseded, above.
+#
+# HISTORICAL, NOT MAINTAINED — the first snapshot, kept only to date this
+# baseline's origin: on base commit e6595a38 it was reify-cli 73, reify-syntax
+# 61, reify-kernel-occt 48, reify-eval 395, reify-compiler 290 = 867 total.
+# Landed consolidation leaves have shrunk it far below that (and three of those
+# five crates to zero rows). The LIVE count is whatever the recipe above prints,
+# and the guard's row scans already report it (`rows=N`) — deliberately not
+# restated here, so it cannot go stale again.
+crates/reify-compiler/tests/add_sub_operand_guard_tests.rs
+crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs
+crates/reify-compiler/tests/alias_dfs_diagnostic_tests.rs
+crates/reify-compiler/tests/ambient_default_injection_tests.rs
+crates/reify-compiler/tests/ambient_default_material_integration_gate.rs
+crates/reify-compiler/tests/analysis_stress_fn_compile.rs
+crates/reify-compiler/tests/and_or_operand_guard_tests.rs
+crates/reify-compiler/tests/anisotropic_bar_example_tests.rs
+crates/reify-compiler/tests/aspect_massive_tests.rs
+crates/reify-compiler/tests/assoc_type_projection_reduction_tests.rs
+crates/reify-compiler/tests/boolean_arg_cross_sub_diagnostic_tests.rs
+crates/reify-compiler/tests/boundary1_consumer.rs
+crates/reify-compiler/tests/boundary2_producer.rs
+crates/reify-compiler/tests/buckling_stdlib_compile.rs
+crates/reify-compiler/tests/builtin_arg_signature_tests.rs
+crates/reify-compiler/tests/cfg_check_entry_tests.rs
+crates/reify-compiler/tests/cfg_import_gating_tests.rs
+crates/reify-compiler/tests/chained_comparison_tests.rs
+crates/reify-compiler/tests/collection_compile_tests.rs
+crates/reify-compiler/tests/collection_sub_tests.rs
+crates/reify-compiler/tests/comparison_operand_guard_tests.rs
+crates/reify-compiler/tests/compile_api_tests.rs
+crates/reify-compiler/tests/compile_builder_smoke_tests.rs
+crates/reify-compiler/tests/compound_unit_resolution_tests.rs
+crates/reify-compiler/tests/connect_compile_tests.rs
+crates/reify-compiler/tests/constant_compile_tests.rs
+crates/reify-compiler/tests/constants_example_tests.rs
+crates/reify-compiler/tests/constitutive_stdlib_compile.rs
+crates/reify-compiler/tests/constraint_def_compile_tests.rs
+crates/reify-compiler/tests/constraint_inst_tests.rs
+crates/reify-compiler/tests/constructor_hash_tests.rs
+crates/reify-compiler/tests/coupling_motionvalue_integration_gate.rs
+crates/reify-compiler/tests/curvature_arg_aware_typing.rs
+crates/reify-compiler/tests/datum_constructor_tests.rs
+crates/reify-compiler/tests/datum_projection_tests.rs
+crates/reify-compiler/tests/deep_dot_chain_tests.rs
+crates/reify-compiler/tests/deprecated_use_tests.rs
+crates/reify-compiler/tests/determinacy_compile_tests.rs
+crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs
+crates/reify-compiler/tests/display_annotation_tests.rs
+crates/reify-compiler/tests/display_style_appearance_tests.rs
+crates/reify-compiler/tests/doc_propagation_tests.rs
+crates/reify-compiler/tests/dynamics_stdlib_compile.rs
+crates/reify-compiler/tests/entity_overload_tests.rs
+crates/reify-compiler/tests/examples_smoke.rs
+crates/reify-compiler/tests/expr_error_sentinel_tests.rs
+crates/reify-compiler/tests/fea_supertrait_conformance_tests.rs
+crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
+crates/reify-compiler/tests/field_compile_tests.rs
+crates/reify-compiler/tests/field_op_typing_tests.rs
+crates/reify-compiler/tests/fields_stdlib_compile.rs
+crates/reify-compiler/tests/flexure_dimension_types.rs
+crates/reify-compiler/tests/flexures_stdlib_compile.rs
+crates/reify-compiler/tests/forall_statement_lower_tests.rs
+crates/reify-compiler/tests/forall_statement_stub_tests.rs
+crates/reify-compiler/tests/generate_combinator_tests.rs
+crates/reify-compiler/tests/generic_enum_pattern_binder_tests.rs
+crates/reify-compiler/tests/ground_sugar_tests.rs
+crates/reify-compiler/tests/guard_compilation.rs
+crates/reify-compiler/tests/half_space_compile_tests.rs
+crates/reify-compiler/tests/hoist_nested_selector_ctors.rs
+crates/reify-compiler/tests/imperial_units_tests.rs
+crates/reify-compiler/tests/implicit_conversion_tests.rs
+crates/reify-compiler/tests/implies_type_check_tests.rs
+crates/reify-compiler/tests/import_resolve_tests.rs
+crates/reify-compiler/tests/import_warning_tests.rs
+crates/reify-compiler/tests/index_access_selector_coercion_tests.rs
+crates/reify-compiler/tests/io_traits_tests.rs
+crates/reify-compiler/tests/joint_dof_self_check_tests.rs
+crates/reify-compiler/tests/keyed_forall_lower_tests.rs
+crates/reify-compiler/tests/keyed_sub_resolution_tests.rs
+crates/reify-compiler/tests/kinematic_stdlib_compile.rs
+crates/reify-compiler/tests/lambda_compile_tests.rs
+crates/reify-compiler/tests/list_helper_selector_coercion_tests.rs
+crates/reify-compiler/tests/m11_annotations_solver_hint_tests.rs
+crates/reify-compiler/tests/m9_error_cases.rs
+crates/reify-compiler/tests/material_struct_tests.rs
+crates/reify-compiler/tests/math_construction_signatures_tests.rs
+crates/reify-compiler/tests/math_signatures.rs
+crates/reify-compiler/tests/math_transcendental_signatures.rs
+crates/reify-compiler/tests/mechanism_nondriving_joint_compile.rs
+crates/reify-compiler/tests/meta_compile_tests.rs
+crates/reify-compiler/tests/modal_mechanism_compile.rs
+crates/reify-compiler/tests/modal_options_validation_tests.rs
+crates/reify-compiler/tests/modify_kind_public_api.rs
+crates/reify-compiler/tests/module_dag_tests.rs
+crates/reify-compiler/tests/mul_div_operand_guard_tests.rs
+crates/reify-compiler/tests/mul_div_static_runtime_parity.rs
+crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
+crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs
+crates/reify-compiler/tests/nominal_marker_typing_tests.rs
+crates/reify-compiler/tests/numeric_and_range_literals_example.rs
+crates/reify-compiler/tests/occurrence_compile_tests.rs
+crates/reify-compiler/tests/optimized_annotation_tests.rs
+crates/reify-compiler/tests/option_compile_tests.rs
+crates/reify-compiler/tests/option_recovery_resolution_tests.rs
+crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs
+crates/reify-compiler/tests/param_default_type_mismatch_tests.rs
+crates/reify-compiler/tests/parse_length_signatures.rs
+crates/reify-compiler/tests/parse_with_stdlib_tests.rs
+crates/reify-compiler/tests/physical_constants_tests.rs
+crates/reify-compiler/tests/polymorphic_zero_tests.rs
+crates/reify-compiler/tests/port_compile_tests.rs
+crates/reify-compiler/tests/ports_prelude_test.rs
+crates/reify-compiler/tests/ports_stdlib_compile.rs
+crates/reify-compiler/tests/pragma_compile_tests.rs
+crates/reify-compiler/tests/prelude_context_tests.rs
+crates/reify-compiler/tests/prepass_consolidation_tests.rs
+crates/reify-compiler/tests/printer_print_envelope_example_tests.rs
+crates/reify-compiler/tests/process_stdlib_compile.rs
+crates/reify-compiler/tests/purpose_compile_tests.rs
+crates/reify-compiler/tests/qualified_access_compile_tests.rs
+crates/reify-compiler/tests/quantifier_compile_tests.rs
+crates/reify-compiler/tests/real_dimensionless_unification_tests.rs
+crates/reify-compiler/tests/recursive_detection_tests.rs
+crates/reify-compiler/tests/recursive_structure_tests.rs
+crates/reify-compiler/tests/relate_block_check_tests.rs
+crates/reify-compiler/tests/relate_threading_tests.rs
+crates/reify-compiler/tests/relation_check_tests.rs
+crates/reify-compiler/tests/reserved_name_lint_tests.rs
+crates/reify-compiler/tests/robustness_examples_tests.rs
+crates/reify-compiler/tests/rounded_primitives_tests.rs
+crates/reify-compiler/tests/same_module_structure_ctor_compile.rs
+crates/reify-compiler/tests/selector_composition_tests.rs
+crates/reify-compiler/tests/self_datum_projection_tests.rs
+crates/reify-compiler/tests/self_keyword_tests.rs
+crates/reify-compiler/tests/shadowing_warning_tests.rs
+crates/reify-compiler/tests/silent_defaults_tests.rs
+crates/reify-compiler/tests/si_units_tests.rs
+crates/reify-compiler/tests/solid_param_tests.rs
+crates/reify-compiler/tests/stackup_stdlib_tests.rs
+crates/reify-compiler/tests/standard_gravity_tests.rs
+crates/reify-compiler/tests/standard_joint_library_tests.rs
+crates/reify-compiler/tests/standard_stock_tests.rs
+crates/reify-compiler/tests/stdlib_determinacy_purposes.rs
+crates/reify-compiler/tests/stdlib_loader_tests.rs
+crates/reify-compiler/tests/string_interp_lowering_tests.rs
+crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs
+crates/reify-compiler/tests/structure_in_purpose_ambient_tests.rs
+crates/reify-compiler/tests/subbody_objective_ignored_tests.rs
+crates/reify-compiler/tests/sub_placement_lowering_tests.rs
+crates/reify-compiler/tests/sub_structure_existence_tests.rs
+crates/reify-compiler/tests/task_1570_tests.rs
+crates/reify-compiler/tests/tensegrity_stdlib_tests.rs
+crates/reify-compiler/tests/termination_check_tests.rs
+crates/reify-compiler/tests/test_marker_compile_tests.rs
+crates/reify-compiler/tests/tolerancing_tests.rs
+crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
+crates/reify-compiler/tests/trajectory_stdlib_compile.rs
+crates/reify-compiler/tests/undef_literal_compile_tests.rs
+crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs
+crates/reify-compiler/tests/user_defined_unit_tests.rs
+crates/reify-compiler/tests/value_mod_compile_tests.rs
+crates/reify-compiler/tests/value_pow_compile_tests.rs
+crates/reify-compiler/tests/variant_construction_check_tests.rs
+crates/reify-compiler/tests/vec3_type_tests.rs
+crates/reify-compiler/tests/visibility_compile_tests.rs
+crates/reify-compiler/tests/wrong_receiver_member_tests.rs
+crates/reify-compiler/tests/zone_slab_compile_tests.rs
+crates/reify-compiler/tests/zv_shaped_ramp_example_tests.rs
+crates/reify-eval/tests/achieved_repr_tol.rs
+crates/reify-eval/tests/ad_hoc_selector_smoke_tests.rs
+crates/reify-eval/tests/affine_apply_e2e.rs
+crates/reify-eval/tests/affine_tapered_spacer_gate.rs
+crates/reify-eval/tests/ambient_default_material_integration_gate.rs
+crates/reify-eval/tests/annotation_materialization_eval.rs
+crates/reify-eval/tests/appearance_resolve_e2e.rs
+crates/reify-eval/tests/apply_transform_e2e.rs
+crates/reify-eval/tests/arbitrary_pattern_transform_e2e.rs
+crates/reify-eval/tests/aspect_massive_eval.rs
+crates/reify-eval/tests/as_printed_zones_test_fixtures.rs
+crates/reify-eval/tests/assert_dag_complete_gate.rs
+crates/reify-eval/tests/auto_backtracking_e2e.rs
+crates/reify-eval/tests/auto_binding_sites_remaining_resolution.rs
+crates/reify-eval/tests/auto_sub_override_resolution.rs
+crates/reify-eval/tests/auto_type_param_completion_e2e.rs
+crates/reify-eval/tests/auto_type_param_determinism_tests.rs
+crates/reify-eval/tests/auto_type_param_topology_trigger_tests.rs
+crates/reify-eval/tests/auto_type_param_value_population_e2e.rs
+crates/reify-eval/tests/bom_report_eval.rs
+crates/reify-eval/tests/boolean_ops_e2e.rs
+crates/reify-eval/tests/boundary2_consumer.rs
+crates/reify-eval/tests/boundary4_geometry.rs
+crates/reify-eval/tests/boundary5_engine.rs
+crates/reify-eval/tests/cancellation_compute_dispatch.rs
+crates/reify-eval/tests/centered_primitives_e2e.rs
+crates/reify-eval/tests/centrality_default.rs
+crates/reify-eval/tests/chained_comparison_eval.rs
+crates/reify-eval/tests/chamfer_e2e.rs
+crates/reify-eval/tests/circular_pattern_angle.rs
+crates/reify-eval/tests/collection_sub_eval.rs
+crates/reify-eval/tests/compile_geometry_op_characterization.rs
+crates/reify-eval/tests/compose_example_smoke.rs
+crates/reify-eval/tests/compute_cache_key_population.rs
+crates/reify-eval/tests/compute_contract_reexport_compat.rs
+crates/reify-eval/tests/compute_dispatch_registry.rs
+crates/reify-eval/tests/cone_primitive_e2e.rs
+crates/reify-eval/tests/conformance_runtime.rs
+crates/reify-eval/tests/connect_eval.rs
+crates/reify-eval/tests/constraint_def_eval.rs
+crates/reify-eval/tests/continuous_cost_min_example_e2e.rs
+crates/reify-eval/tests/cost_aggregation_eval.rs
+crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs
+crates/reify-eval/tests/cost_subtree_aggregate_eval.rs
+crates/reify-eval/tests/coupling_approximated.rs
+crates/reify-eval/tests/cross_kernel_attribute_collision_e2e.rs
+crates/reify-eval/tests/cross_kernel_handoff.rs
+crates/reify-eval/tests/cross_sub_geometry_e2e.rs
+crates/reify-eval/tests/curve_constructors_e2e.rs
+crates/reify-eval/tests/datum_projection_eval_tests.rs
+crates/reify-eval/tests/determinacy_integration_gate.rs
+crates/reify-eval/tests/determinacy_intrinsics.rs
+crates/reify-eval/tests/determinacy_predicates.rs
+crates/reify-eval/tests/dfm_fits_build_volume_e2e.rs
+crates/reify-eval/tests/differential_field_ops_e2e.rs
+crates/reify-eval/tests/dimensionless_real_arithmetic_e2e.rs
+crates/reify-eval/tests/dimensionless_unification_example_e2e.rs
+crates/reify-eval/tests/drivebelt_trait_bounds.rs
+crates/reify-eval/tests/dynamics_body_mass_props.rs
+crates/reify-eval/tests/e2e_bracket.rs
+crates/reify-eval/tests/e2e_meta.rs
+crates/reify-eval/tests/edit_source.rs
+crates/reify-eval/tests/engine_eval_commit_migration.rs
+crates/reify-eval/tests/ensure_openvdb_kernel.rs
+crates/reify-eval/tests/eval_cached_diagnostics.rs
+crates/reify-eval/tests/eval_instrumentation_counters.rs
+crates/reify-eval/tests/eval_param_overrides.rs
+crates/reify-eval/tests/evaluate_profile_eval_e2e.rs
+crates/reify-eval/tests/extrude_e2e.rs
+crates/reify-eval/tests/extrude_infinite_e2e.rs
+crates/reify-eval/tests/extrude_symmetric_e2e.rs
+crates/reify-eval/tests/failed_propagation.rs
+crates/reify-eval/tests/fallback_recovery_e2e.rs
+crates/reify-eval/tests/fdm_bracket_e2e.rs
+crates/reify-eval/tests/fdm_progressive_refinement_e2e.rs
+crates/reify-eval/tests/fdm_slice_e2e.rs
+crates/reify-eval/tests/feature_accessor_eval.rs
+crates/reify-eval/tests/feature_datum_tests.rs
+crates/reify-eval/tests/feature_id_boundary_e2e.rs
+crates/reify-eval/tests/field_eval_tests.rs
+crates/reify-eval/tests/field_import_provenance.rs
+crates/reify-eval/tests/field_source_kinds_smoke.rs
+crates/reify-eval/tests/fields_restrict_e2e.rs
+crates/reify-eval/tests/fields_stdlib_eval.rs
+crates/reify-eval/tests/fillet_curated_edges_e2e.rs
+crates/reify-eval/tests/fillet_e2e.rs
+crates/reify-eval/tests/fn_eval.rs
+crates/reify-eval/tests/fn_field_example_smoke.rs
+crates/reify-eval/tests/fn_param_default_eval_tests.rs
+crates/reify-eval/tests/forall_runtime_re_elaboration.rs
+crates/reify-eval/tests/forward_kinematics_e2e.rs
+crates/reify-eval/tests/freshness_only_production_trigger.rs
+crates/reify-eval/tests/freshness_only_propagation.rs
+crates/reify-eval/tests/freshness_pending_compute_dispatch.rs
+crates/reify-eval/tests/freshness_propagation.rs
+crates/reify-eval/tests/from_samples_example_smoke.rs
+crates/reify-eval/tests/gcode_import_eval_e2e.rs
+crates/reify-eval/tests/gdt_legality.rs
+crates/reify-eval/tests/generate_eval.rs
+crates/reify-eval/tests/generic_enum_erasure_e2e.rs
+crates/reify-eval/tests/generic_stdlib_fn_e2e.rs
+crates/reify-eval/tests/gravity_load.rs
+crates/reify-eval/tests/gravity_self_weight_e2e.rs
+crates/reify-eval/tests/grounding_tests.rs
+crates/reify-eval/tests/guard_eval.rs
+crates/reify-eval/tests/half_space_e2e.rs
+crates/reify-eval/tests/hoist_selector_round_trip.rs
+crates/reify-eval/tests/hoist_selector_template_lets.rs
+crates/reify-eval/tests/implies_e2e.rs
+crates/reify-eval/tests/imported_field_e2e.rs
+crates/reify-eval/tests/imported_field_smoke_e2e.rs
+crates/reify-eval/tests/incremental_integration.rs
+crates/reify-eval/tests/incremental.rs
+crates/reify-eval/tests/input_shape_eval_e2e.rs
+crates/reify-eval/tests/input_shape_tots_compute_node.rs
+crates/reify-eval/tests/integration_corner_cases.rs
+crates/reify-eval/tests/integration_full_v01.rs
+crates/reify-eval/tests/interactive_edit_loop.rs
+crates/reify-eval/tests/isosurface_iso_option_e2e.rs
+crates/reify-eval/tests/isosurface_wiring_e2e.rs
+crates/reify-eval/tests/joint_drive_expansion_boundary.rs
+crates/reify-eval/tests/joint_origin_offset_e2e.rs
+crates/reify-eval/tests/journal.rs
+crates/reify-eval/tests/keyed_forall_eval.rs
+crates/reify-eval/tests/keyed_identity_reelaboration.rs
+crates/reify-eval/tests/keyed_sub_eval.rs
+crates/reify-eval/tests/kleene_e2e.rs
+crates/reify-eval/tests/load_case.rs
+crates/reify-eval/tests/loft_guided_e2e.rs
+crates/reify-eval/tests/long_chain_diagnostic.rs
+crates/reify-eval/tests/m10_combined.rs
+crates/reify-eval/tests/m10_geometric_types.rs
+crates/reify-eval/tests/m11_field_calculus.rs
+crates/reify-eval/tests/m11_full_integration.rs
+crates/reify-eval/tests/m5_integration.rs
+crates/reify-eval/tests/m6_data_carrying_enum.rs
+crates/reify-eval/tests/m8_3_stdlib_integration.rs
+crates/reify-eval/tests/m8_4_stdlib_integration.rs
+crates/reify-eval/tests/m8_m11_regression_checkpoint.rs
+crates/reify-eval/tests/m8_stdlib_integration.rs
+crates/reify-eval/tests/m9_combined.rs
+crates/reify-eval/tests/m9_constraint_def.rs
+crates/reify-eval/tests/m9_integration.rs
+crates/reify-eval/tests/m9_trait_conformance.rs
+crates/reify-eval/tests/manifold_cross_kernel_real.rs
+crates/reify-eval/tests/manifold_ingest_attribute_forwarding_e2e.rs
+crates/reify-eval/tests/match_block_decls_e2e.rs
+crates/reify-eval/tests/material_field_cancellation.rs
+crates/reify-eval/tests/materials_starter_library.rs
+crates/reify-eval/tests/merged_cluster_solve.rs
+crates/reify-eval/tests/mesh_contract_handoff_diagnostic.rs
+crates/reify-eval/tests/meta_eval_integration.rs
+crates/reify-eval/tests/mid_surface_fold_e2e.rs
+crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs
+crates/reify-eval/tests/money_acceptance_sweep_eval.rs
+crates/reify-eval/tests/money_arithmetic_eval.rs
+crates/reify-eval/tests/morph_arm_e2e.rs
+crates/reify-eval/tests/morph_producer_seam.rs
+crates/reify-eval/tests/node_traits_boundary.rs
+crates/reify-eval/tests/no_stale_undef_edit_path_gate.rs
+crates/reify-eval/tests/no_stale_undef_invariant_gate.rs
+crates/reify-eval/tests/nurbs_surface_e2e.rs
+crates/reify-eval/tests/observed_demand_measurement.rs
+crates/reify-eval/tests/occurrence_eval.rs
+crates/reify-eval/tests/offset_curve_e2e.rs
+crates/reify-eval/tests/only_run_on_final_inputs_gating.rs
+crates/reify-eval/tests/opaque_state_lifecycle.rs
+crates/reify-eval/tests/optimized_registry_tests.rs
+crates/reify-eval/tests/option_recovery_map_or_e2e.rs
+crates/reify-eval/tests/param_default_sibling_let_order.rs
+crates/reify-eval/tests/parse_length_e2e.rs
+crates/reify-eval/tests/pattern_single_pass_e2e.rs
+crates/reify-eval/tests/pattern_spacing_units_e2e.rs
+crates/reify-eval/tests/persistent_cache_compute_round_trip.rs
+crates/reify-eval/tests/pinned_support.rs
+crates/reify-eval/tests/pointwise_field_combinators_e2e.rs
+crates/reify-eval/tests/polymorphic_zero_eval.rs
+crates/reify-eval/tests/ports_breadth_integration_eval.rs
+crates/reify-eval/tests/ports_mechanical_thread_eval.rs
+crates/reify-eval/tests/pragma_override_routing.rs
+crates/reify-eval/tests/prelude_sub_elaboration.rs
+crates/reify-eval/tests/pressure_load.rs
+crates/reify-eval/tests/printer_print_envelope_e2e.rs
+crates/reify-eval/tests/printer_z_compliant_mount_e2e.rs
+crates/reify-eval/tests/profile_2d_e2e.rs
+crates/reify-eval/tests/progressive_emission.rs
+crates/reify-eval/tests/purpose_activation.rs
+crates/reify-eval/tests/qualified_access_eval.rs
+crates/reify-eval/tests/query_capability_gating.rs
+crates/reify-eval/tests/r3b_carried_topology_selector_resolution.rs
+crates/reify-eval/tests/realization_cache_alloc_rotating_options_hash.rs
+crates/reify-eval/tests/realization_cache_alloc.rs
+crates/reify-eval/tests/recursive_unfold.rs
+crates/reify-eval/tests/region_resolution_boundary.rs
+crates/reify-eval/tests/relate_mounted_joint_sweep_e2e.rs
+crates/reify-eval/tests/relate_mount_origin_e2e.rs
+crates/reify-eval/tests/relate_solve_e2e.rs
+crates/reify-eval/tests/relational_selectors_v2.rs
+crates/reify-eval/tests/resolution.rs
+crates/reify-eval/tests/resolve_order.rs
+crates/reify-eval/tests/result_carried_topology.rs
+crates/reify-eval/tests/result_fallback_e2e.rs
+crates/reify-eval/tests/result_fallback_orthogonality_boundary.rs
+crates/reify-eval/tests/result_match_e2e.rs
+crates/reify-eval/tests/result_recovery_e2e.rs
+crates/reify-eval/tests/rigid_mass_props_autoderive_gui_path.rs
+crates/reify-eval/tests/rigid_moment_of_inertia_autoderive_smoke.rs
+crates/reify-eval/tests/robustness_floor_signal.rs
+crates/reify-eval/tests/rotate_e2e.rs
+crates/reify-eval/tests/rounded_primitives_e2e.rs
+crates/reify-eval/tests/scale_non_uniform_e2e.rs
+crates/reify-eval/tests/scope_coupling.rs
+crates/reify-eval/tests/self_keyword_eval.rs
+crates/reify-eval/tests/snapshot_cache_divergence_gate.rs
+crates/reify-eval/tests/snapshot_graph.rs
+crates/reify-eval/tests/solve_elastic_static_body_e2e.rs
+crates/reify-eval/tests/solver_optimality_unproven.rs
+crates/reify-eval/tests/solver_pragma_dispatch.rs
+crates/reify-eval/tests/solver_progress_emit_e2e.rs
+crates/reify-eval/tests/spatial_ops_smoke.rs
+crates/reify-eval/tests/specialization_scope_e2e.rs
+crates/reify-eval/tests/spec_param_override_resolution.rs
+crates/reify-eval/tests/spec_shape_physical_golden.rs
+crates/reify-eval/tests/std_fields_surface_e2e.rs
+crates/reify-eval/tests/stdlib_constants_e2e.rs
+crates/reify-eval/tests/stdlib_doc_surface.rs
+crates/reify-eval/tests/stdlib_prelude_tests.rs
+crates/reify-eval/tests/step_schema_e2e.rs
+crates/reify-eval/tests/structure_ctor_named_arg_binding.rs
+crates/reify-eval/tests/structure_in_purpose_ambient_eval.rs
+crates/reify-eval/tests/structure_instance_e2e.rs
+crates/reify-eval/tests/sub_placement_assembly_gate.rs
+crates/reify-eval/tests/sub_placement_surfacing.rs
+crates/reify-eval/tests/tessellation.rs
+crates/reify-eval/tests/test_runner.rs
+crates/reify-eval/tests/thin_walled_bracket_e2e.rs
+crates/reify-eval/tests/tolerance_combine.rs
+crates/reify-eval/tests/tolerance_dispatch_budget.rs
+crates/reify-eval/tests/tolerance_import_promise.rs
+crates/reify-eval/tests/tolerance_member_access_e2e.rs
+crates/reify-eval/tests/tolerance_scope.rs
+crates/reify-eval/tests/tolerance_wiring_e2e.rs
+crates/reify-eval/tests/toolhead_motor_sizing_e2e.rs
+crates/reify-eval/tests/trajectory_gcode_dialect_eval.rs
+crates/reify-eval/tests/tube_pipe_e2e.rs
+crates/reify-eval/tests/type_hygiene_integration_gate.rs
+crates/reify-eval/tests/undef_boundary_suite.rs
+crates/reify-eval/tests/undef_cause_capture.rs
+crates/reify-eval/tests/undef_cause_op_contract.rs
+crates/reify-eval/tests/undef_tracer.rs
+crates/reify-eval/tests/underdetermined.rs
+crates/reify-eval/tests/unfold_commit_parity.rs
+crates/reify-eval/tests/unified_dag_boundary_cases.rs
+crates/reify-eval/tests/unified_dag_cycle_contract.rs
+crates/reify-eval/tests/unified_dag_differential_corpus.rs
+crates/reify-eval/tests/unified_dag_edit_path.rs
+crates/reify-eval/tests/unified_dag_geometry_executors.rs
+crates/reify-eval/tests/unified_dag_warm_path.rs
+crates/reify-eval/tests/unit_expressions_e2e.rs
+crates/reify-eval/tests/value_cell_type_invariants.rs
+crates/reify-eval/tests/value_eval_consumes_minted_selector.rs
+crates/reify-eval/tests/value_eval_unresolved_consumer.rs
+crates/reify-eval/tests/value_pow_eval_tests.rs
+crates/reify-eval/tests/version_id_discipline_gate.rs
+crates/reify-eval/tests/volume_mesh_realization_e2e.rs
+crates/reify-eval/tests/voxel_to_mesh_e2e.rs
+crates/reify-eval/tests/warm_determinacy_predicate.rs
+crates/reify-eval/tests/warm_pool_drain_steady_state.rs
+crates/reify-eval/tests/warm_state_budget_config.rs
+crates/reify-eval/tests/warm_state_donation.rs
+crates/reify-eval/tests/wedge_e2e.rs
+crates/reify-eval/tests/zone_constructors_e2e.rs
+crates/reify-eval/tests/zone_slab_e2e.rs
+crates/reify-eval/tests/zv_shaped_ramp_db_reduction.rs

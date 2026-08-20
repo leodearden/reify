@@ -1,0 +1,730 @@
+#!/usr/bin/env bash
+# Plan-shape guard for task 5287 (PRD verify-retry-failed-only, task α) —
+# scripts/verify.sh must honor a dark-factory-supplied "failed-only" retry
+# subset so a merge-gate retry re-runs ONLY the did-not-pass tests against the
+# warm _merge-verify target/, instead of a full recompile + full ~20,280-test
+# run.
+#
+# Seam (CLAUDE.md): "reify ships the primitive, dark-factory wires the
+# invocation." verify.sh BUILDS the exact-match nextest filterset expression
+# and owns the tree-OID guard / loud full-fallback / size ceiling; DF (D2) owns
+# the subset CONTENT (the newline-delimited exact test-id file) and sets the
+# consumed envs. This test locks in the primitive, at PLAN-BUILD time.
+#
+# What α delivers (this test's scope):
+#   - subset consumption: REIFY_VERIFY_RETRY_SCOPE=failed_only + a matching
+#     attempt-0 sidecar tree_oid ⇒ append ` -E 'test(=id1) | test(=id2) | …'`
+#     (EXACT `test(=…)` only — never substring — PRD §6.3 soundness) to the
+#     NEXTEST=1 cargo line, built once from the DF-written filter file (INV-5).
+#   - tree-OID eligibility gate: a mismatched / absent sidecar tree_oid ⇒ no
+#     subset fragment (full verify).
+#   - byte-identical default: no REIFY_VERIFY_RETRY_* envs ⇒ plan unchanged.
+# (The three LOUD full-fallback reasons — tree drift / no subset / subset too
+# large — the per-profile filter precedence, and the attempt-0 sidecar stamp
+# are added by the later steps of this same test file.)
+#
+# SCOPE BOUNDARY: α owns this fast hermetic plan-shape unit test. Sibling task δ
+# (tests/infra/test_verify_retry_failed_only.sh) owns the @@REIFY_RETRY_SCOPE@@
+# honest marker and the B1-B6 e2e boundary test that exercises the REAL nextest
+# run — complementary levels, NOT G7 lock-step duplication.
+#
+# Hermetic: drives ONLY `verify.sh … --print-plan` (verify.sh builds the plan
+# and exits 0 — no cargo build, no tests executed). The subset-vs-fallback
+# decision is made at build time, so --print-plan is a faithful oracle of
+# whether the `-E` subset applied. Command-shape assertions that depend on
+# nextest being installed are guarded on a NEXTEST_AVAILABLE probe of the plan
+# header's `nextest=` token (sibling idiom, test_verify_test_threads.sh).
+# Host-independent invariants — the byte-identical default and Test 2's
+# tree-drift loud line — are asserted unconditionally; Test 3/4's 'no subset'
+# / 'subset too large' loud lines only exist on the nextest path (NEXTEST-
+# guarded) — a nextest-less host short-circuits to the single 'retry refused:
+# no nextest' line instead (verify.sh, gated on _RETRY_SUBSET_ELIGIBLE),
+# asserted in the else arms. Temp sidecar / filter files are pointed at via
+# the REIFY_VERIFY_ATTEMPT_SIDECAR /
+# REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE* envs for full hermeticity.
+#
+# Pinned mechanically by S9 in tests/infra/test_verify_nextest_absent_suites.sh
+# (floor 16).
+#
+# Mirrors:
+#   - tests/infra/test_verify_test_threads.sh (task 5264) — the direct
+#     structural precedent (env→nextest fragment in emit_nextest_pass,
+#     --print-plan oracle + NEXTEST availability probe).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+[ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
+source "$SCRIPT_DIR/test_helpers.sh"
+
+# For nextest_available_ambient (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || { echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
+VERIFY="$REPO_ROOT/scripts/verify.sh"
+
+echo "=== verify.sh retry-subset plan-shape tests (task 5287, PRD verify-retry-failed-only α) ==="
+
+# --- Hermetic fixtures -------------------------------------------------------
+# A temp attempt-0 sidecar (tree_oid=deadbeef) and a 2-line exact-id filter
+# file, both outside target/ and pointed at via the testability-knob envs so
+# nothing touches the real repo state.
+_TMP="$(mktemp -d "${TMPDIR:-/tmp}/reify-retry-subset.XXXXXX")"
+trap 'rm -rf "$_TMP"' EXIT
+
+SIDECAR="$_TMP/attempt.json"
+printf '{"tree_oid":"deadbeef","profiles":"debug","timestamp":"2026-07-20T00:00:00Z"}\n' > "$SIDECAR"
+
+FILTER="$_TMP/filter.txt"
+ID1="reify_core::foo::test_alpha"
+ID2="reify_core::bar::test_beta"
+printf '%s\n%s\n' "$ID1" "$ID2" > "$FILTER"
+
+# --- nextest availability probe ----------------------------------------------
+#
+# The probe itself is nextest_available_ambient, from
+# tests/infra/nextest_absent_lib.sh (task 5602) — the same plan-header parse
+# three other suites had each open-coded.
+#
+# Note what does NOT happen here: this suite does not build a nextest-absent
+# simulation and must not. It deliberately tests against the host's REAL nextest
+# state, so forcing absence would silently drop every assert the
+# NEXTEST_AVAILABLE guards below protect. Consolidation here means sharing the
+# DETECTOR, not adopting the harness. (The task description lists this file as a
+# fourth hand-rolled simulation harness; it never was one — corrected in
+# esc-5602-4.)
+#
+# ONE capture serves both readers. PLAN_DEFAULT is captured here because Test
+# 1's byte-identical-default assert reads it, and the availability answer is
+# then read back OUT of it via nextest_available_in_plan rather than by running
+# --print-plan a second time.
+#
+# That second run would not have been free, which is the reason for the shared
+# capture: verify.sh cannot emit the `nextest=` header without genuinely
+# probing (`if cargo nextest --version >/dev/null 2>&1`), and its own comment
+# records that the worst case — cargo-nextest present but every probe failing —
+# forks cargo up to 4x and sleeps up to 2*REIFY_NEXTEST_PROBE_RETRY_SLEEP
+# before hard-failing. Reading the captured plan is what is actually free.
+PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NEXTEST_AVAILABLE=0
+if nextest_available_in_plan "$PLAN_DEFAULT"; then
+    NEXTEST_AVAILABLE=1
+fi
+echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
+
+# Shared fallback-refusal helper for the 5 host-guarded 'retry refused' STDERR
+# asserts below (_assert_no_subset_loud's else arm + both Test 4 ceiling else
+# arms). Byte-identical across every case: probed empirically, all five emit
+# exactly `verify.sh: retry refused: no nextest — cargo-test fallback has no -E
+# filterset support (full verify)` and nothing else, because every fixture
+# here uses the matching deadbeef sidecar (tree-OID eligibility=1). Matches
+# the bare-substring style of the sibling 'retry refused: no subset' asserts;
+# the four refusal reasons have distinct suffixes so there is no cross-
+# matching risk.
+_err_has_no_nextest_refusal() {
+    printf '%s\n' "$1" | grep -qF -- "retry refused: no nextest"
+}
+
+# Compound variant for Test 4(b)'s else arm below — the "vacuity twin": on the
+# fallback host the plain negative ("no 'subset too large' line") passes for
+# the wrong reason, because the too-large path never ran at all. Anding in the
+# positive fallback-line conjunct makes the assert genuinely host-appropriate:
+# it goes red if verify.sh's own loud line were ever suppressed.
+_err_no_nextest_refusal_and_not_too_large() {
+    _err_has_no_nextest_refusal "$1" \
+        && ! printf '%s\n' "$1" | grep -qF -- "retry refused: subset too large"
+}
+
+# ---------------------------------------------------------------------------
+# Test 1: SUBSET APPLICATION + TREE-OID ELIGIBILITY GATE + DEFAULT-INVARIANT.
+#   (a) TREE_OID matches the sidecar (deadbeef) ⇒ the debug `cargo nextest run`
+#       line carries the exact-match filterset `test(=id1)` / `test(=id2)`, and
+#       the bare-substring form `test(<id1>)` (no `=`) is ABSENT (soundness).
+#   (b) TREE_OID mismatches (cafef00d) ⇒ the nextest line has NO `test(=` retry
+#       fragment (the eligibility gate blocks the subset → full verify).
+#   (c) DEFAULT plan (no REIFY_VERIFY_RETRY_* envs) ⇒ NO `test(=` fragment on
+#       any cargo line (byte-identical to today).
+# RED at base: emit_nextest_pass has no retry handling, so (a) finds no fragment.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 1: failed_only subset applies under a matching tree_oid; gate blocks a mismatch; default unchanged ---"
+
+PLAN_MATCH="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+
+PLAN_MISMATCH="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=cafef00d \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "match: debug nextest line carries exact-match filterset test(=$ID1)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_MATCH" "$ID1"
+
+    assert "match: debug nextest line carries exact-match filterset test(=$ID2)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_MATCH" "$ID2"
+
+    assert "match: bare-substring form test($ID1) (no '='') is ABSENT (exact-match soundness, PRD §6.3)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test($2)"' \
+        _ "$PLAN_MATCH" "$ID1"
+
+    assert "mismatch (tree drift): debug nextest line has NO test(= retry fragment (eligibility gate blocks)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(="' \
+        _ "$PLAN_MISMATCH"
+fi
+
+assert "default: NO test(= retry fragment on any cargo line (byte-identical default)" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -qF -- "test(="' \
+    _ "$PLAN_DEFAULT"
+
+# ---------------------------------------------------------------------------
+# Test 2: LOUD tree-drift full-fallback. Under scope=failed_only, when the
+# subset is refused because the sidecar tree_oid does not match (or the sidecar
+# is absent), verify.sh must say so LOUDLY — never silently narrow-or-widen
+# (PRD §4.3 / INV-4 storm escape). The diagnostic is a build-time `echo >&2`,
+# so it appears in --print-plan STDERR and is host-independent (asserted
+# UNCONDITIONALLY — not NEXTEST-guarded). `2>&1 >/dev/null` captures STDERR
+# while dropping the (large) plan STDOUT.
+# RED after impl-subset-apply: the eligibility gate already blocks the subset
+# on a mismatch/absent sidecar, but emits no loud line.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 2: refused subset emits a LOUD 'retry refused: tree drift' line ---"
+
+STDERR_MISMATCH="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=cafef00d \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
+
+assert "tree_oid mismatch (deadbeef sidecar vs cafef00d wanted): STDERR carries 'retry refused: tree drift'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: tree drift"' \
+    _ "$STDERR_MISMATCH"
+
+# Absent sidecar (nonexistent path) under scope=failed_only — same refusal,
+# same loud line (the on-disk sidecar the retry tree-pins against is missing).
+MISSING_SIDECAR="$_TMP/nonexistent-sidecar.json"
+STDERR_ABSENT="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$MISSING_SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
+
+assert "absent sidecar under scope=failed_only: STDERR carries 'retry refused: tree drift'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: tree drift"' \
+    _ "$STDERR_ABSENT"
+
+# ---------------------------------------------------------------------------
+# Test 3: LOUD no-subset full-fallback. Under scope=failed_only with a MATCHING
+# sidecar (so the tree-OID gate is satisfied), a filter file that is absent /
+# empty / unset must ALSO refuse the subset loudly (distinct 'retry refused: no
+# subset' substring) and run FULL — never a silent whole-suite run masquerading
+# as a subset. Both the fragment-absence check and the 'no subset' loud line
+# only apply on the nextest path (NEXTEST-guarded); on a nextest-less host
+# verify.sh short-circuits to the single 'retry refused: no nextest' line
+# instead (verify.sh, gated on _RETRY_SUBSET_ELIGIBLE), which the else arm of
+# _assert_no_subset_loud asserts.
+# RED after impl-tree-drift-loud: an absent/empty/unset filter already yields no
+# fragment, but no loud line.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 3: absent/empty/unset filter file emits a LOUD 'retry refused: no subset' line ---"
+
+# DRY assertion helper: a refused (eligible-but-no-usable-subset) run must have
+# no fragment on the debug nextest line AND a loud 'no subset' STDERR line.
+_assert_no_subset_loud() {
+    local _label="$1" _plan="$2" _err="$3"
+    if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+        assert "no-subset ($_label): debug nextest line has NO test(= fragment (full pass)" \
+            bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(="' \
+            _ "$_plan"
+        assert "no-subset ($_label): STDERR carries 'retry refused: no subset'" \
+            bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: no subset"' \
+            _ "$_err"
+    else
+        assert "no-subset ($_label), nextest unavailable: STDERR carries the fallback refusal 'retry refused: no nextest'" \
+            _err_has_no_nextest_refusal "$_err"
+    fi
+}
+
+_ERR="$_TMP/err.txt"
+
+# (i) filter env → a nonexistent path.
+PLAN_NF="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$_TMP/nonexistent-filter.txt" \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+_assert_no_subset_loud "nonexistent filter file" "$PLAN_NF" "$(cat "$_ERR")"
+
+# (ii) filter env → an existing but EMPTY file (no non-blank lines).
+EMPTY_FILTER="$_TMP/empty-filter.txt"
+: > "$EMPTY_FILTER"
+PLAN_EF="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$EMPTY_FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+_assert_no_subset_loud "empty filter file" "$PLAN_EF" "$(cat "$_ERR")"
+
+# (iii) filter env unset entirely (base + both per-profile variants) — matching
+# sidecar, so eligibility holds, but there is no subset to run.
+PLAN_UF="$(env -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+_assert_no_subset_loud "filter env unset" "$PLAN_UF" "$(cat "$_ERR")"
+
+# ---------------------------------------------------------------------------
+# Test 4: SUBSET-SIZE CEILING (a construction-bug backstop: a subset ≈ the whole
+# suite means DF built a bad subset — INV-4 storm escape, PRD §4.3/§11). The
+# ceiling is a tunable heuristic, NOT a first-principles number, so this test
+# INJECTS a small ceiling (REIFY_VERIFY_RETRY_MAX_SUBSET=3) and asserts the
+# RELATION — n>ceiling ⇒ loud fallback, n<=ceiling ⇒ subset applies — never a
+# magic production value.
+# RED after impl-no-subset-loud: no ceiling exists, so 4 IDs still apply.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 4: subset larger than REIFY_VERIFY_RETRY_MAX_SUBSET falls back loudly ---"
+
+# (a) 4 IDs with ceiling=3 ⇒ 4 > 3 ⇒ refuse loudly, run FULL.
+FILTER4="$_TMP/filter4.txt"
+printf 'c1::m::t1\nc1::m::t2\nc1::m::t3\nc1::m::t4\n' > "$FILTER4"
+PLAN_BIG="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER4" \
+    REIFY_VERIFY_RETRY_MAX_SUBSET=3 \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+ERR_BIG="$(cat "$_ERR")"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "ceiling (4 IDs > 3): debug nextest line has NO test(= fragment (full pass)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(="' \
+        _ "$PLAN_BIG"
+    assert "ceiling (4 IDs > 3): STDERR carries 'retry refused: subset too large'" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
+        _ "$ERR_BIG"
+else
+    assert "ceiling (4 IDs > 3), nextest unavailable: STDERR carries the fallback refusal 'retry refused: no nextest'" \
+        _err_has_no_nextest_refusal "$ERR_BIG"
+fi
+
+# (b) 2 IDs with ceiling=3 ⇒ 2 <= 3 ⇒ subset applies, no 'too large' line.
+PLAN_SMALL="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    REIFY_VERIFY_RETRY_MAX_SUBSET=3 \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+ERR_SMALL="$(cat "$_ERR")"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "ceiling (2 IDs <= 3): debug nextest line carries the subset test(=$ID1)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_SMALL" "$ID1"
+    assert "ceiling (2 IDs <= 3): debug nextest line carries the subset test(=$ID2)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_SMALL" "$ID2"
+    assert "ceiling (2 IDs <= 3): STDERR has NO 'retry refused: subset too large' line" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
+        _ "$ERR_SMALL"
+else
+    assert "ceiling (2 IDs <= 3), nextest unavailable: STDERR carries 'retry refused: no nextest' AND still has NO 'subset too large' line" \
+        _err_no_nextest_refusal_and_not_too_large "$ERR_SMALL"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 5: PER-PROFILE filter precedence (_DEBUG / _RELEASE) with base fallback.
+# Each profile's nextest pass resolves its own subset, so a --profile both retry
+# must apply the debug-specific IDs to the debug pass and the release-specific
+# IDs to the release pass — with the base var as the fallback when a per-profile
+# var is unset. The debug pass is the `cargo nextest run` line WITHOUT the
+# ` --release` token; the release pass is the one WITH it. NEXTEST-guarded
+# (command shape).
+# RED after impl-ceiling: only the base var is honored, so the _DEBUG/_RELEASE
+# files are ignored (debug line lacks test(=alpha::a)).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 5: per-profile _DEBUG/_RELEASE filter precedence (+ base-var fallback) ---"
+
+DBGID="alpha::a"
+RELID="beta::b"
+FDEBUG="$_TMP/fdebug.txt";   printf '%s\n' "$DBGID" > "$FDEBUG"
+FRELEASE="$_TMP/frelease.txt"; printf '%s\n' "$RELID" > "$FRELEASE"
+
+# (a) per-profile vars set (no base): debug pass ⇒ alpha::a, release ⇒ beta::b.
+PLAN_PP="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG="$FDEBUG" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE="$FRELEASE" \
+    bash "$VERIFY" test --profile both --scope all --print-plan 2>/dev/null)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "per-profile: DEBUG nextest line (no --release) carries test(=$DBGID)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$DBGID"
+    assert "per-profile: DEBUG nextest line does NOT carry the release id test(=$RELID)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$RELID"
+    assert "per-profile: RELEASE nextest line (--release) carries test(=$RELID)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$RELID"
+    assert "per-profile: RELEASE nextest line does NOT carry the debug id test(=$DBGID)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$DBGID"
+fi
+
+# (b) base var only (no per-profile): BOTH passes use the base file's IDs.
+PLAN_BASE_BOTH="$(env -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --profile both --scope all --print-plan 2>/dev/null)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "base fallback: DEBUG nextest line carries base test(=$ID1)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_BASE_BOTH" "$ID1"
+    assert "base fallback: RELEASE nextest line carries base test(=$ID1)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_BASE_BOTH" "$ID1"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 6: attempt-0 sidecar STAMP — plan SHAPE (mirroring test_reify_bin_freshness
+# Check 18; comment lines are stripped via `grep -v '^#'` so indices count
+# command leaves only, per that idiom).
+# Contract asserted here: a full attempt-0 merge plan emits a line writing the
+# reify-verify-attempt.json sidecar — schema {tree_oid, profiles, timestamp},
+# tree_oid via `git rev-parse HEAD:` — positioned AFTER the pre-build poles
+# (lint/compile wave, gui block, run_all.sh) and BEFORE every test-phase pole
+# (psi-gate, and hence compile-gate and the first nextest pass); a
+# scope=failed_only retry and a per-task plan emit none.
+# WHY that position — the full survives/does-not-survive matrix — lives at ONE
+# site: add_test_passes' head comment in scripts/verify.sh (task 5548, PRD
+# verify-retry-failed-only α2). Do not restate it here.
+# Level split: these are SHAPE asserts; Test 6b below EXECUTES the extracted
+# stamp line hermetically, and sibling task δ's e2e boundary test owns the
+# real-nextest end-to-end write — so this is not G7 duplication.
+# RED at base (task 5548 not yet applied): the stamp is the LAST line of
+# add_test_passes, so the ordering asserts below and Test 6b both fail.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 6: attempt-0 merge plan stamps reify-verify-attempt.json before the first pass (survives red); retry & task do not ---"
+
+MERGE_PLAN="$(DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+assert "merge attempt-0: a plan line writes reify-verify-attempt.json via 'git rev-parse HEAD:'" \
+    bash -c 'printf "%s\n" "$1" | grep -F "reify-verify-attempt.json" | grep -qF "git rev-parse HEAD:"' \
+    _ "$MERGE_PLAN"
+
+# Keys are matched in their QUOTED JSON form ("profiles":, not bare profiles) so
+# a silent field rename — e.g. back to the out-of-spec "planned_profiles" — fails
+# here instead of passing on a substring. PRD §4.1/§244 own this schema; DF's D2b
+# pins its fixtures to these bytes.
+assert "merge attempt-0: sidecar stamp line writes PRD §4.1 keys {tree_oid, profiles, timestamp}" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep -F "reify-verify-attempt.json" | head -1)
+        printf "%s\n" "$L" | grep -qF "\"tree_oid\":" && \
+        printf "%s\n" "$L" | grep -qF "\"profiles\":" && \
+        printf "%s\n" "$L" | grep -qF "\"timestamp\":"
+    ' _ "$MERGE_PLAN"
+
+# Primary ordering anchor: the stamp must precede the EARLIEST test-phase pole,
+# not merely the first nextest pass. psi-gate and compile-gate sit between
+# run_all.sh and the first nextest line, so pinning against nextest alone would
+# still pass if the stamp were relocated below them — silently losing
+# psi-gate/compile-gate survival (which Test 6b cannot catch either: it replays
+# only the nextest pole). Unconditional: add_test_passes emits the psi-gate line
+# regardless of nextest availability, so a missing index is a real FAIL.
+assert "merge attempt-0: sidecar stamp index < psi-gate index (stamp precedes the EARLIEST test-phase pole)" \
+    bash -c '
+        STAMP_IDX=$(printf "%s\n" "$1" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)
+        PSI_IDX=$(printf "%s\n" "$1" | grep -nF "./scripts/verify.sh psi-gate" | head -1 | cut -d: -f1)
+        [ -n "$STAMP_IDX" ] && [ -n "$PSI_IDX" ] && [ "$STAMP_IDX" -lt "$PSI_IDX" ]
+    ' _ "$MERGE_PLAN"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "merge attempt-0: sidecar stamp index < first cargo nextest run index (stamp BEFORE the first pass, survives a red test pole)" \
+        bash -c '
+            STAMP_IDX=$(printf "%s\n" "$1" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)
+            FIRST_NEXTEST_IDX=$(printf "%s\n" "$1" | grep -nE "(^| )cargo nextest run " | head -1 | cut -d: -f1)
+            [ -n "$STAMP_IDX" ] && [ -n "$FIRST_NEXTEST_IDX" ] && [ "$STAMP_IDX" -lt "$FIRST_NEXTEST_IDX" ]
+        ' _ "$MERGE_PLAN"
+fi
+
+# Companion: the stamp must still land AFTER the pre-build poles (lint/compile
+# wave, gui block, run_all.sh) — it only moved above the FIRST nextest pass,
+# not to the very top of the plan. Vacuously PASSES when RUNALL_IDX is empty
+# (the run_all.sh plan line is suppressed under REIFY_INFRA_SUITE_ACTIVE —
+# verify.sh ~:2110 — so a nested-suite caller must not spuriously FAIL this
+# secondary sanity check).
+assert "merge attempt-0: sidecar stamp index > run_all.sh index (still after the pre-build poles), or vacuous if absent" \
+    bash -c '
+        RUNALL_IDX=$(printf "%s\n" "$1" | grep -nF "run_all.sh" | head -1 | cut -d: -f1)
+        STAMP_IDX=$(printf "%s\n" "$1" | grep -nF "reify-verify-attempt.json" | head -1 | cut -d: -f1)
+        [ -z "$RUNALL_IDX" ] && exit 0
+        [ -n "$STAMP_IDX" ] && [ "$STAMP_IDX" -gt "$RUNALL_IDX" ]
+    ' _ "$MERGE_PLAN"
+
+# ---------------------------------------------------------------------------
+# Test 6b: RED-ATTEMPT-0 SURVIVAL — executed, not merely positional. Rebuilds the
+# real merge plan with REIFY_VERIFY_ATTEMPT_SIDECAR pointed at a sandbox path,
+# extracts the {stamp line, first `cargo nextest run` line} sub-sequence IN PLAN
+# ORDER (derived from the plan's own grep -n indices, never hardcoded — that
+# order IS the property under test), and replays it in a sandbox CWD through a
+# minimal first-failure-exit loop mirroring the real executor's per-command
+# dispatch (verify.sh:2442-2480), with the nextest line substituted by `false` as
+# a simulated RED test pole. This proves the pin is USABLE after a red pole, not
+# merely early; the last two asserts close the loop on the user-observable signal
+# by feeding the red-written pin back through the real, UNMODIFIED drift guard.
+# At base the order is [nextest, stamp], so the replay hits `false` first and
+# never reaches the stamp — RED structurally, not cosmetically.
+# Fixture choices that are not self-evident:
+#  - bare `eval` stands in for the executor's `reaper_run_in_pgroup` (which it
+#    reserves for all but `_VERIFY_NODE_BG_PID` lines): the stamp is a
+#    side-effect-only file write with no process-group semantics to exercise.
+#  - GIT_DIR points at this worktree's real gitdir so the replayed `git rev-parse
+#    HEAD:` returns the REAL tree OID (not the `|| echo unknown` sentinel) from a
+#    sandbox CWD that has no .git of its own.
+#  - the stamp fixture asserts UNCONDITIONALLY (it is emitted regardless of
+#    nextest availability); only the replay is NEXTEST_AVAILABLE-gated, since a
+#    nextest-less host legitimately emits `cargo test` — that branch echoes an
+#    explicit skip note rather than asserting nothing.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 6b: a RED attempt-0 (simulated failing test pole) still leaves a usable tree-OID pin ---"
+
+RED_DIR="$_TMP/red"
+mkdir -p "$RED_DIR/target"
+# Deliberately NOT named reify-verify-attempt.json: that is verify.sh's own
+# DEFAULT relative path, and $RED_DIR is also the replay's CWD below, so a
+# same-named override would resolve to the exact same file the default would
+# use — making this fixture unable to distinguish "the override was honored"
+# from "the override was silently ignored and the writer fell back to its
+# default". A distinctly-named sidecar under target/ (still satisfying the
+# `test -d target` guard) closes that gap.
+RED_SIDECAR="$RED_DIR/target/red-pin.json"
+
+RED_PLAN="$(REIFY_VERIFY_ATTEMPT_SIDECAR="$RED_SIDECAR" \
+    DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+# Anchor on "tree_oid" (part of the printf's own format string) rather than the
+# sidecar filename: RED_SIDECAR is deliberately renamed off the default above,
+# so the plan's redirect target no longer contains the literal
+# "reify-verify-attempt.json" substring that MERGE_PLAN's extraction (above)
+# relies on. "tree_oid" uniquely identifies the stamp line regardless of the
+# configured sidecar path — a claim the uniqueness assert below ENFORCES rather
+# than merely recording in prose, so a future second tree_oid-bearing plan line
+# fails loudly instead of silently redirecting `head -1` at the wrong fixture and
+# replaying against it.
+RED_STAMP_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nF "tree_oid" | head -1 | cut -d: -f1)" || true
+RED_STAMP_LINE="$(printf '%s\n' "$RED_PLAN" | grep -F "tree_oid" | head -1)" || true
+RED_NEXTEST_IDX="$(printf '%s\n' "$RED_PLAN" | grep -nE "(^| )cargo nextest run " | head -1 | cut -d: -f1)" || true
+
+# The stamp-line fixture is unconditional: it is emitted independently of
+# nextest availability, so its absence is a real FAIL, not a silent skip
+# (contrast the nextest-gated block below, which legitimately skips on a
+# nextest-less host).
+assert "red-attempt-0 fixture: RED_PLAN carries a stamp line" \
+    bash -c '[ -n "$1" ]' _ "$RED_STAMP_IDX"
+
+# Enforce the head -1 precondition: exactly ONE plan line mentions tree_oid, so
+# the extraction above cannot silently pick a different line than the stamp.
+assert "red-attempt-0 fixture: exactly one tree_oid line in RED_PLAN (head -1 is unambiguous)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cF "tree_oid")" -eq 1 ]' \
+    _ "$RED_PLAN"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ] && [ -n "$RED_NEXTEST_IDX" ]; then
+    # Order the replay sequence from the plan's OWN indices — never hardcode
+    # which comes first, since that is exactly the property under test.
+    if [ "$RED_STAMP_IDX" -lt "$RED_NEXTEST_IDX" ]; then
+        REPLAY_SEQ=("$RED_STAMP_LINE" "false")
+    else
+        REPLAY_SEQ=("false" "$RED_STAMP_LINE")
+    fi
+
+    REPO_GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir)"
+    EXPECT_TREE="$(git -C "$REPO_ROOT" rev-parse HEAD:)"
+
+    RED_RC=0
+    (
+        cd "$RED_DIR"
+        export GIT_DIR="$REPO_GIT_DIR"
+        for _c in "${REPLAY_SEQ[@]}"; do
+            eval "$_c" || { _rc=$?; exit "$_rc"; }
+        done
+    ) || RED_RC=$?
+
+    assert "red-attempt-0: the simulated failing test pole really failed (nonzero replay exit)" \
+        bash -c '[ "$1" -ne 0 ]' _ "$RED_RC"
+
+    assert "red-attempt-0: the tree-OID pin file EXISTS despite the failure" \
+        bash -c 'test -f "$1"' _ "$RED_SIDECAR"
+
+    assert "red-attempt-0: the pin holds the REAL tree_oid (not the || echo unknown sentinel)" \
+        bash -c '
+            grep -qF "\"tree_oid\":\"$2\"" "$1" && ! grep -qF "\"tree_oid\":\"unknown\"" "$1"
+        ' _ "$RED_SIDECAR" "$EXPECT_TREE"
+
+    # Close the loop on the user-observable signal: feed the red-written
+    # sidecar back into a FRESH scope=failed_only merge plan and assert the
+    # real (unmodified) drift guard now takes the eligible branch. Reuses the
+    # existing FILTER/ID1 fixture (:69-72).
+    LOOP_ERR="$RED_DIR/loop-err.txt"
+    LOOP_PLAN="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+        REIFY_VERIFY_RETRY_TREE_OID="$EXPECT_TREE" \
+        REIFY_VERIFY_ATTEMPT_SIDECAR="$RED_SIDECAR" \
+        REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+        DF_VERIFY_ROLE=merge bash "$VERIFY" test --scope all --print-plan 2>"$LOOP_ERR")" || true
+
+    assert "red-attempt-0: retry against the red-written pin does NOT log 'retry refused: tree drift'" \
+        bash -c '! grep -qF "retry refused: tree drift" "$1"' \
+        _ "$LOOP_ERR"
+
+    assert "red-attempt-0: retry against the red-written pin applies the subset (debug nextest line carries test(=$ID1))" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$LOOP_PLAN" "$ID1"
+else
+    echo "(skipped Test 6b: nextest unavailable)"
+fi
+
+# (b) A retry (scope=failed_only) merge run must NOT re-stamp (DF re-runs a full
+# attempt-0 for a new tree; a full-fallback retry deliberately does not stamp).
+MERGE_RETRY_PLAN="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+assert "merge retry (scope=failed_only): NO reify-verify-attempt.json stamp line" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "reify-verify-attempt.json"' \
+    _ "$MERGE_RETRY_PLAN"
+
+# (c) A per-task plan (role=task) must be byte-unchanged — no stamp line.
+TASK_PLAN="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+assert "task plan: NO reify-verify-attempt.json stamp line (per-task plans unchanged)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "reify-verify-attempt.json"' \
+    _ "$TASK_PLAN"
+
+# ---------------------------------------------------------------------------
+# Test 7: retry-subset × heavy-exclude COMPOSITION (reviewer_comprehensive).
+# The retry fragment ` -E 'test(=…)'` is emitted next to the gate fragment
+# `_GATE_HEAVY_EXCLUDE` ` -E "not (heavy)"`. nextest 0.9.136 combines multiple
+# `-E`/--filterset expressions with a set UNION (OR), NOT an intersection — so
+# on merge+REIFY_GATE_EXCLUDE_HEAVY=1 the emitted `(not heavy) OR {subset}`
+# degrades to the whole non-heavy suite, silently defeating the "re-run ONLY
+# the did-not-pass tests" contract in exactly its target configuration (the
+# gate-exclude knob and the failed-only retry co-occur on merge by design).
+# The fix folds both filtersets into a SINGLE `-E '(not (heavy)) & {subset}'`
+# term; a single-`-E` invariant (count==1) structurally prevents the union
+# from recurring. The real heavy atom is drawn from the single source of truth
+# (scripts/heavy-test-filter-lib.sh, mirroring test_verify_gate_exclude_heavy)
+# so the fixture cannot silently drift.
+# RED at current HEAD (after impl-doc-envs): emit_nextest_pass appends
+# `${_GATE_HEAVY_EXCLUDE}` and `${_retry_filter_frag}` as TWO separate `-E`
+# fragments, so (a) finds 2 and (c) still sees the standalone `-E "not (`.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 7: retry subset folds into a SINGLE -E with the heavy filter (never a 2nd -E union) ---"
+
+# Real heavy atom from the single source of truth — the fixture cannot drift.
+HEAVY_LIB="$REPO_ROOT/scripts/heavy-test-filter-lib.sh"
+[ -f "$HEAVY_LIB" ] || { echo "ERROR: $HEAVY_LIB not found (task 4912/A1 not landed?)"; exit 1; }
+# shellcheck source=scripts/heavy-test-filter-lib.sh
+source "$HEAVY_LIB"
+HEAVY_ATOM="binary(determinism)"
+case "${REIFY_HEAVY_NEXTEST_FILTER:-}" in
+    *"$HEAVY_ATOM"*) ;;
+    *) echo "ERROR: fixture atom '$HEAVY_ATOM' not in REIFY_HEAVY_NEXTEST_FILTER — drifted from $HEAVY_LIB"; exit 1 ;;
+esac
+# The OLD (pre-fold) standalone gate fragment: a double-quoted `-E "not (`.
+# After the fold the heavy negation lives INSIDE a single-quoted combined term,
+# so this exact literal must be ABSENT on the folded line (but PRESENT on the
+# retry-inactive regression line). Defined as a literal (real double-quote) and
+# passed as an arg, mirroring test_verify_gate_exclude_heavy.sh's NOT_PATTERN.
+NOT_DQ='-E "not ('
+
+# The single config where the union bug bites: merge + heavy-exclude + an
+# eligible retry (matching sidecar tree_oid + within-ceiling 2-line subset).
+PLAN_FOLD="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1 \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NLINE_FOLD="$(printf '%s\n' "$PLAN_FOLD" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    # (a) ANTI-UNION CRUX: exactly ONE ` -E ` on the folded line, never two.
+    assert "fold: merge+heavy+retry debug nextest line has EXACTLY ONE ' -E ' (no 2nd -E union)" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -oF -- " -E " | wc -l)" -eq 1 ]' \
+        _ "$NLINE_FOLD"
+
+    # (b) the single -E term intersects BOTH groups (gate `not (heavy)` & subset).
+    assert "fold: single -E term carries the heavy negation 'not (' AND the real heavy atom ($HEAVY_ATOM)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "not (" && printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$NLINE_FOLD" "$HEAVY_ATOM"
+    assert "fold: single -E term carries BOTH exact retry ids test(=$ID1) and test(=$ID2)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "test(=$2)" && printf "%s\n" "$1" | grep -qF -- "test(=$3)"' \
+        _ "$NLINE_FOLD" "$ID1" "$ID2"
+    assert "fold: gate and retry are INTERSECTED (a '& (test(=' join is present, not a union)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "& (test(="' \
+        _ "$NLINE_FOLD"
+
+    # (c) OLD broken shape absent: the heavy negation must NOT survive as its own
+    #     double-quoted `-E "not (` fragment (that WAS the union-bug second -E).
+    assert "fold: OLD standalone double-quote fragment ($NOT_DQ) is ABSENT (heavy negation folded in)" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$NLINE_FOLD" "$NOT_DQ"
+fi
+
+# (d) REGRESSION / byte-identical: merge+heavy with retry INACTIVE (no
+# REIFY_VERIFY_RETRY_SCOPE) must be untouched — the standalone double-quoted
+# `-E "not (` fragment stays, and there is exactly one ` -E ` (the non-retry
+# gate path is not folded).
+PLAN_INACTIVE="$(DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1 \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NLINE_INACTIVE="$(printf '%s\n' "$PLAN_INACTIVE" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "regression: merge+heavy, retry INACTIVE — line keeps standalone $NOT_DQ fragment" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$NLINE_INACTIVE" "$NOT_DQ"
+    assert "regression: merge+heavy, retry INACTIVE — line has EXACTLY ONE ' -E ' (untouched)" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -oF -- " -E " | wc -l)" -eq 1 ]' \
+        _ "$NLINE_INACTIVE"
+fi
+
+# Secondary robustness: offline role + eligible retry folds the POSITIVE heavy
+# select `(heavy)` with the subset while PRESERVING the non-filterset
+# `--run-ignored all` flag. Offline emits a single (release) nextest line.
+PLAN_OFFLINE="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    DF_VERIFY_ROLE=offline \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NLINE_OFFLINE="$(printf '%s\n' "$PLAN_OFFLINE" | grep -E "(^| )cargo nextest run " | head -1)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline fold: nextest line has EXACTLY ONE ' -E ' (positive heavy select folded with subset)" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -oF -- " -E " | wc -l)" -eq 1 ]' \
+        _ "$NLINE_OFFLINE"
+    assert "offline fold: gate & retry intersected ('& (test(=' present)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "& (test(="' \
+        _ "$NLINE_OFFLINE"
+    assert "offline fold: non-filterset flag --run-ignored all PRESERVED" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "--run-ignored all"' \
+        _ "$NLINE_OFFLINE"
+fi
+
+test_summary

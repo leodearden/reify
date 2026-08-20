@@ -780,6 +780,33 @@ describe('Viewport FEA wiring', () => {
     expect(screen.queryByTestId('fea-mode-toolbar')).toBeNull();
   });
 
+  // ── (b2)/(b3): per-pane toolbar addressability (#5670) ────────────────────
+  // Every pane now owns a keyed FeaModeStore, so every pane renders its own
+  // toolbar. Viewport must forward its viewportId into <FeaModeToolbar> or the
+  // resulting N selects are indistinguishable to the debug bridge, which
+  // resolves them with a document-wide querySelectorAll and hard-fails on >1.
+  it('(b2) forwards viewportId into the FEA toolbar as data-viewport-id', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true); // the channel select is gated behind store.state.enabled
+    render(() => <Viewport meshes={{}} viewportId="pane-1" feaModeStore={store as any} />);
+    expect(screen.getByTestId('fea-mode-toolbar').getAttribute('data-viewport-id')).toBe('pane-1');
+    expect(screen.getByTestId('fea-mode-channel-select').getAttribute('data-viewport-id')).toBe(
+      'pane-1',
+    );
+  });
+
+  it('(b3) the forwarded id tracks the prop — not hard-coded to design-main', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => <Viewport meshes={{}} viewportId="design-main" feaModeStore={store as any} />);
+    expect(screen.getByTestId('fea-mode-toolbar').getAttribute('data-viewport-id')).toBe(
+      'design-main',
+    );
+    expect(screen.getByTestId('fea-mode-channel-select').getAttribute('data-viewport-id')).toBe(
+      'design-main',
+    );
+  });
+
   it('(c) setColorize called with correct MeshColorize when feaModeStore.enabled toggles true', () => {
     const store = createFeaModeStore(); // enabled=false initially
     render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);

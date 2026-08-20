@@ -1,0 +1,33 @@
+// Fixture: precision-nominal α (task 6166) — FILLET BLEND regime probe.
+//
+// Copies the pnrg_envelope_sphere.ri layout verbatim.  READ THAT FIXTURE'S
+// HEADER FIRST — the OK trap and the validity assertion apply here unchanged.
+//
+// This class differs from sphere/cone/torus in one respect that matters for the
+// envelope: the measured deviation is a MAX over the whole realized solid, and
+// the solid is mostly PLANAR (a box).  Planar facets contribute zero chord
+// deviation, so whatever this fixture reports comes from the blend surface — but
+// the blend is a small fraction of the model, and the tessellator budgets
+// deflection globally.  That makes fillet_r/feature_size the regime coordinate:
+// as the blend shrinks relative to the box it gets relatively fewer facets.
+//
+// REGIME PARAMETER: fillet_r / feature_size (blend radius over box edge length).
+// PRD §2 quotes a 0.599 spot value.  `fillet(target, radius)` is the 2-arg
+// all-edges form; `fillet(target, edges(target), radius)` is the curated form.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_fillet_blend
+
+#precision(10mm)
+
+// Subject: a 1 m box with all edges blended.  Default point: fillet_r = 100 mm,
+// feature = 1000 mm  ->  fillet_r/feature = 0.1.
+structure PnrgFilletBlend {
+    let f = fillet(box(1000mm, 1000mm, 1000mm), 100mm)
+}
+
+structure PnrgFilletBlendCheck {
+    param subject : PnrgFilletBlend
+    constraint RepresentationWithin(subject, 0.001mm)
+}

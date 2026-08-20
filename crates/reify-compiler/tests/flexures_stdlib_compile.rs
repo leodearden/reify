@@ -177,7 +177,7 @@ fn rotational_stiffness_alias_removed_builtin_dimension_shadows() {
 /// field flexure compliance contract. Per PRD §4.2:
 ///
 ///   - `effective_stiffness   : RotationalStiffness`    (proper dimensioned
-///                                                       type kg·m²·s⁻²·rad⁻¹
+///                                                       type kg·m²·s⁻²·rad⁻²
 ///                                                       per task α; PRD
 ///                                                       §4.2 spelling)
 ///   - `max_stress            : Pressure`               (at range endpoint)
@@ -296,7 +296,7 @@ fn flexure_compliance_struct_has_correct_param_shape() {
 /// (PRD §11 task λ) — has a well-typed value to return. The defaults
 /// expected (per the module header §6.* sentinel-zero rationale):
 ///
-///   effective_stiffness   = 0N*m/rad (Scalar { ROTATIONAL_STIFFNESS, si_value 0.0 })
+///   effective_stiffness   = 0N*m/rad^2 (Scalar { ROTATIONAL_STIFFNESS, si_value 0.0 })
 ///   max_stress            = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
 ///   max_stress_at_neutral = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
 ///   yield_margin          = 0.0    (Real)
@@ -319,10 +319,10 @@ fn flexure_compliance_struct_has_correct_param_shape() {
 fn flexure_compliance_params_have_literal_defaults() {
     let template = find_structure("FlexureCompliance");
 
-    // effective_stiffness = 0N*m/rad — Scalar{ROTATIONAL_STIFFNESS, si_value 0.0}
+    // effective_stiffness = 0N*m/rad^2 — Scalar{ROTATIONAL_STIFFNESS, si_value 0.0}
     // (task 4547 D2: dimensioned-zero default; was a bare `0.0` under the
     // now-deleted `RotationalStiffness = Real` alias). The compound-unit literal
-    // folds to a single Scalar, same as the `1N*m/rad` fold proven in
+    // folds to a single Scalar, same as the `1N*m/rad^2` fold proven in
     // flexure_dimension_types.rs and the sibling `0Pa` defaults below.
     let effective_stiffness_default = require_default(template, "effective_stiffness");
     match &effective_stiffness_default.kind {
@@ -334,19 +334,19 @@ fn flexure_compliance_params_have_literal_defaults() {
                 *dimension,
                 DimensionVector::ROTATIONAL_STIFFNESS,
                 "effective_stiffness default should carry ROTATIONAL_STIFFNESS \
-                 dimension (= 0N*m/rad); got: {:?}",
+                 dimension (= 0N*m/rad^2); got: {:?}",
                 dimension
             );
             assert_eq!(
                 *si_value, 0.0,
                 "effective_stiffness default si_value should be exactly 0.0 \
-                 (= 0N*m/rad); got: {}",
+                 (= 0N*m/rad^2); got: {}",
                 si_value
             );
         }
         other => panic!(
             "effective_stiffness default should be Literal(Value::Scalar \
-             {{ ROTATIONAL_STIFFNESS, 0.0 }}) (= 0N*m/rad); got: {:?}",
+             {{ ROTATIONAL_STIFFNESS, 0.0 }}) (= 0N*m/rad^2); got: {:?}",
             other
         ),
     }

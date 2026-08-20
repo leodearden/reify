@@ -1,5 +1,12 @@
-# VENDORED_FROM: dark-factory@86e54a8498fda03060c2418b4583d6d1ad4ee97d orchestrator/src/orchestrator/agents/landlock_exec.py
-# Refresh: cp /home/leo/src/dark-factory/orchestrator/src/orchestrator/agents/landlock_exec.py gui/src-tauri/sandbox/landlock_exec.py && update SHA above
+# VENDORED_FROM: dark-factory@408f42d6299ea046ca9f4aa629a371d0055aec29 orchestrator/src/orchestrator/agents/landlock_exec.py
+# Refresh: TARGETED PATCH ONLY — see DIVERGENCE below; a blind cp regresses the GUI sidecar.
+#   Port the upstream hunk by hand, keep the divergence, then bump the SHA above.
+# DIVERGENCE from upstream: this copy KEEPS the blanket ``~/.claude`` grant that
+#   dark-factory removed. Upstream redirects the claude CLI's OAuth/session state to a
+#   per-task CLAUDE_CONFIG_DIR inside the worktree; reify's GUI sidecar sets no such
+#   variable (compute_sidecar_env in gui/src-tauri/src/claude_bridge.rs emits only
+#   REIFY_WORKSPACE / REIFY_LANDLOCK_EXEC / REIFY_DEBUG_PORT), so dropping the grant
+#   would leave that state read-only. Guarded by tests/infra/test_landlock_exec_refer.sh.
 """Landlock-restrict-self wrapper: apply a ruleset, then execvp the inner command.
 
 Analogous to ``bwrap <args> -- <inner_cmd>`` — a standalone executable that an
@@ -17,8 +24,13 @@ Usage::
 
 The ``/`` filesystem is made read-only (exec + read_file + read_dir). Each
 ``--writable`` path is granted full v1 access. ``~/.claude`` is always
-writable (OAuth/session state). ``/dev`` gets WRITE_FILE + RO (for /dev/null
-etc.). Nothing else can be written.
+writable (OAuth/session state) — see DIVERGENCE in the vendor header. ``/dev``
+gets WRITE_FILE + RO (for /dev/null etc.). Nothing else can be written.
+
+On a kernel with Landlock ABI >= 2, every writable root above (``/tmp``,
+``~/.claude`` and each ``--writable`` path) additionally carries REFER, so
+renaming/linking a file across directories inside those roots works; see the
+``FS_REFER`` comment below for why that is not optional.
 """
 
 from __future__ import annotations
@@ -52,6 +64,23 @@ FS_MAKE_SYM = 1 << 12
 FS_V1_ALL = 0
 for _b in range(13):
     FS_V1_ALL |= 1 << _b
+
+# Landlock ABI 2 added REFER: permission to rename/link a file ACROSS
+# directories (reparenting).  It is deliberately NOT part of FS_V1_ALL — an
+# ABI-1 kernel rejects landlock_create_ruleset with EINVAL if it is set.
+#
+# Landlock's back-compat rule denies REFER unconditionally, surfaced to
+# userspace as EXDEV, whenever a ruleset does not handle it.  That is why a
+# same-directory rename succeeds while a cross-directory one fails on the very
+# same filesystem.  rustc's encode_and_write_metadata writes its .rmeta into a
+# temp subdirectory and renames it up one level, so omitting REFER breaks
+# EVERY cargo build/check/test under the sandbox, on untouched dependency
+# crates as much as on edited ones.
+FS_REFER = 1 << 13
+
+# landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION) returns the
+# kernel's ABI version instead of creating a ruleset.
+LANDLOCK_CREATE_RULESET_VERSION = 1
 
 FS_RO = FS_EXECUTE | FS_READ_FILE | FS_READ_DIR
 
@@ -130,9 +159,17 @@ def main(argv: list[str] | None = None) -> int:
 
     libc = ctypes.CDLL('libc.so.6', use_errno=True)
 
-    # Create ruleset covering all v1 fs operations
+    # Grant REFER (cross-directory rename/link) when the kernel supports it.
+    # It must go on handled_access_fs AND on every writable per-path grant:
+    # handling REFER without granting it makes things strictly WORSE, because
+    # Landlock then enforces it explicitly and denies reparenting on every path
+    # that lacks the grant.  Both endpoints of a rename need it.
+    abi = libc.syscall(SYS_landlock_create_ruleset, None, 0, LANDLOCK_CREATE_RULESET_VERSION)
+    fs_writable_all = FS_V1_ALL | FS_REFER if abi >= 2 else FS_V1_ALL
+
+    # Create ruleset covering all v1 fs operations (plus REFER where available)
     attr = _RulesetAttr()
-    attr.handled_access_fs = FS_V1_ALL
+    attr.handled_access_fs = fs_writable_all
     ruleset_fd = libc.syscall(
         SYS_landlock_create_ruleset,
         ctypes.byref(attr),
@@ -150,14 +187,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # Agent scratch (temp files, MCP configs, sysprompt files).
     # /tmp only — avoid /var/tmp so worktrees placed there stay restricted.
-    _add_path(libc, ruleset_fd, '/tmp', FS_V1_ALL)
+    _add_path(libc, ruleset_fd, '/tmp', fs_writable_all)
 
-    # Claude CLI OAuth + session state
-    _add_path(libc, ruleset_fd, os.path.expanduser('~/.claude'), FS_V1_ALL)
+    # Claude CLI OAuth + session state.  REIFY DIVERGENCE — see the vendor
+    # header: upstream dropped this grant in favour of a per-task
+    # CLAUDE_CONFIG_DIR that reify's GUI sidecar never sets.  It gets
+    # fs_writable_all like every other writable root, so a rename that
+    # reparents across directories inside it is not left EXDEV either.
+    _add_path(libc, ruleset_fd, os.path.expanduser('~/.claude'), fs_writable_all)
 
     # Per-invocation writable paths (locked modules, .task, extras)
     for path in ns.writable:
-        _add_path(libc, ruleset_fd, path, FS_V1_ALL)
+        _add_path(libc, ruleset_fd, path, fs_writable_all)
 
     if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         _die('prctl(NO_NEW_PRIVS)')

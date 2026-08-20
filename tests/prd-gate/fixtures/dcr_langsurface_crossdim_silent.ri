@@ -1,0 +1,39 @@
+module dcr_langsurface_crossdim_silent
+
+// D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaves κ (min/max cross-dimension + inverse-trig discipline) and θ
+// (`safety_factor` at both entry points).
+//
+// MEASURED at decompose (2026-07-28, main efba5a8036) — `reify eval` EXIT 0,
+// zero diagnostics, every value silently wrong:
+//
+//   min(10mm, 5kg)                       = 0.01                 (bare Real; the
+//     `d1 == d2` arm falls through to blind `as_f64`,
+//     crates/reify-stdlib/src/numeric.rs:62-66)
+//   max(10mm, 5kg)                       = 5
+//   asin(3mm)                            = 0.0030000045 rad     (any-dimension
+//     Scalar taken as the ratio via `unary_f64`, crates/reify-stdlib/src/trig.rs:20)
+//   atan2(1mm, 1kg)                      = 0.0009999997 rad
+//   safety_factor(sigma_Pa, 250mm)       = 2.5e-9               (should reject)
+//   safety_factor(sigma_Pa, 250.0)       = 2.5e-6               (should reject)
+//   safety_factor(sigma_Pa, 250MPa)      = 2.5                  (the correct answer)
+//
+// This file must EVAL CLEAN (exit 0) today. After κ and θ every wrong-dimension
+// line must exit 1 with a coded diagnostic while `min(10mm, 20mm)`,
+// `min(3, 7.0)`, `asin(0.5)` and `safety_factor(sigma_Pa, 250MPa)` are unchanged.
+
+structure def DcrLangsurfaceCrossdimSilent {
+    let min_crossdim  = min(10mm, 5kg)
+    let max_crossdim  = max(10mm, 5kg)
+    let min_samedim   = min(10mm, 20mm)
+    let min_bare      = min(3, 7.0)
+    let asin_dimd     = asin(3mm)
+    let asin_bare     = asin(0.5)
+    let atan2_crossd  = atan2(1mm, 1kg)
+
+    let e1            = vec3(1.0, 0.0, 0.0)
+    let sigma         = 100000000Pa * outer(e1, e1)
+    let sf_wrong_dim  = safety_factor(sigma, 250mm)
+    let sf_bare       = safety_factor(sigma, 250.0)
+    let sf_correct    = safety_factor(sigma, 250000000Pa)
+}

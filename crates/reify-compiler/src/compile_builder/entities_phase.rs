@@ -35,8 +35,8 @@ use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::{
-    check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_param_default_conformance,
-    check_trait_arg_conformance,
+    ConformanceRegistries, check_expr_mechanism_joint_bound, check_fn_arg_conformance,
+    check_param_default_conformance, check_trait_arg_conformance,
 };
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{
@@ -878,8 +878,16 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
                     &arg_name,
                     &compiled_arg,
                     span,
-                    &template_registry,
-                    &trait_registry,
+                    // task 5465 (family 4): `enum_defs` is `prelude ++
+                    // module-local`, so the walker's general concrete-leaf arm
+                    // can tolerate D1 / F-Mono enum erasure. All three are
+                    // disjoint-field shared borrows alongside the
+                    // `&mut ctx.diagnostics` below.
+                    ConformanceRegistries {
+                        templates: &template_registry,
+                        traits: &trait_registry,
+                        enum_defs: &ctx.resolution_enums,
+                    },
                     &mut ctx.diagnostics,
                 );
             }
@@ -1303,6 +1311,22 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // per call (see doc-comment) requires the full table, not a name-keyed map.
     let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
+    // task 5465 (family 4): `prelude ++ module-local` enum table, threaded into
+    // the conformance walker so its general concrete-leaf arm can tolerate
+    // D1/F-Mono enum erasure (see `WalkCtx.enum_defs`). Bound here next to
+    // `resolution_functions` because the `walk` closure below borrows `ctx`
+    // immutably while `new_diagnostics` is borrowed mutably.
+    let resolution_enums: &[EnumDef] = &ctx.resolution_enums;
+
+    // The templates/traits/enums trio the conformance entry points all take.
+    // Built ONCE here rather than unbundled into three trailing arguments at
+    // every call site (task 5465 amendment: reviewer_comprehensive architecture).
+    let registries = ConformanceRegistries {
+        templates: &template_registry,
+        traits: &trait_registry,
+        enum_defs: resolution_enums,
+    };
+
     // Fast-path gate for type-param bound checking (task-4232 γ D5):
     // compute ONCE whether any function in the resolution table has bounded
     // type-params.  If not (e.g. non-generic sources like bracket_source, or any
@@ -1327,8 +1351,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         check_expr_fn_calls(
             expr,
             resolution_functions,
-            &template_registry,
-            &trait_registry,
+            registries,
             span,
             has_bounded_generic_fns,
             diags,
@@ -1341,7 +1364,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         // (queued in entity.rs at sub-lowering time); value-cell `let c = Foo(...)`
         // bindings lower to StructureInstanceCtor expressions and were NOT checked.
         // Walking every StructureInstanceCtor here closes that gap.
-        check_expr_struct_ctor_args(expr, &template_registry, &trait_registry, span, diags);
+        check_expr_struct_ctor_args(expr, registries, span, diags);
     };
 
     // Walk EVERY CompiledExpr-bearing root field of each entity template via the
@@ -1357,12 +1380,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         // declared cell_type (e.g. `param part : Part = "x"` → rejects String).
         // Geometry/Solid defaults are handled by the Type::Geometry arm of
         // check_param_default_conformance (no separate helper).
-        check_param_default_conformance(
-            template,
-            &template_registry,
-            &trait_registry,
-            &mut new_diagnostics,
-        );
+        check_param_default_conformance(template, registries, &mut new_diagnostics);
     }
 
     // Walk function bodies: param defaults, let-bindings, result expr.
@@ -1445,8 +1463,9 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
 fn check_expr_fn_calls(
     expr: &CompiledExpr,
     functions: &[CompiledFunction],
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
+    // task 5465 (family 4 + amendment): the templates/traits/enums trio,
+    // forwarded verbatim to `check_fn_arg_conformance`.
+    registries: ConformanceRegistries<'_>,
     representative_span: SourceSpan,
     check_bounds: bool,
     diagnostics: &mut Vec<reify_core::Diagnostic>,
@@ -1486,8 +1505,7 @@ fn check_expr_fn_calls(
                 param_name,
                 arg,
                 representative_span,
-                template_registry,
-                trait_registry,
+                registries,
                 diagnostics,
             );
         }
@@ -1533,8 +1551,8 @@ fn check_expr_fn_calls(
                 &f.type_params,
                 &type_args,
                 function_name,
-                template_registry,
-                trait_registry,
+                registries.templates,
+                registries.traits,
                 diagnostics,
                 representative_span,
             );
@@ -1574,8 +1592,9 @@ fn check_expr_fn_calls(
 /// accepted for a `Vector3<Length>` param (loose-quantity rule).
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
+    // task 5465 (family 4 + amendment): the templates/traits/enums trio,
+    // forwarded verbatim to `check_trait_arg_conformance`.
+    registries: ConformanceRegistries<'_>,
     representative_span: SourceSpan,
     diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) {
@@ -1583,29 +1602,46 @@ fn check_expr_struct_ctor_args(
         let CompiledExprKind::StructureInstanceCtor {
             type_name,
             ordered_args,
+            span: ctor_span,
             ..
         } = &node.kind
         else {
             return;
         };
+        // task 5302 (Q1 span anchoring): prefer the ctor call-site's own span
+        // (task 4089 `StructureInstanceCtor.span`, populated from the AST
+        // `FunctionCall` node) so the emitted label anchors at the offending
+        // `Foo(...)` call rather than the representative cell span — which is
+        // `SourceSpan::empty(0)` for fn / forall / guard / objective bodies, and
+        // the whole-declaration span for value cells. Falls back to
+        // `representative_span` for synthetic ctors with no source span. The sub
+        // `=` path keeps its own per-arg `arg_expr.span` via PendingBoundCheck
+        // (entity.rs), so this change only refines the StructureInstanceCtor
+        // (expression) path — no per-arg span is added to `ordered_args`.
+        let anchor_span = ctor_span.unwrap_or(representative_span);
         // Resolve the target template once; skip if not found.
-        let Some(template) = template_registry.get(type_name.as_str()) else {
+        let Some(template) = registries.templates.get(type_name.as_str()) else {
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // Scope to List<TraitObject>, StructureRef, Type::Vector, and Selector/AnySelector
-            // params. Bare TraitObject params are skipped — see fn doc-comment rationale.
+            // task 5302 (struct-ctor-conformance α): check ALL named params EXCEPT
+            // a bare `Type::TraitObject(_)`. This generalizes the original 4584
+            // 4-family allowlist (List<TraitObject> / StructureRef / Vector /
+            // Selector) to every concrete field type, routed through the shared
+            // conformance walker at Warning severity (CTOR_FIELD_CONFORMANCE_SEVERITY).
+            //
+            // Bare TraitObject params stay EXEMPT here (D6): they are deliberate
+            // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
+            // ConstitutiveLaw`) and are already covered by the fn-call / sub-
+            // component paths. REVISIT this exemption once those escape-hatch call
+            // sites are migrated — see docs/prds/struct-ctor-field-type-conformance.md; at that
+            // point the `!matches!(… TraitObject …)` guard can be dropped so bare
+            // trait params are checked too.
             let should_check = template
                 .value_cells
                 .iter()
                 .find(|vc| vc.id.member == arg_name.as_str())
-                .is_some_and(|vc| {
-                    matches!(&vc.cell_type,
-                        Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
-                        || matches!(&vc.cell_type, Type::StructureRef(_))
-                        || matches!(&vc.cell_type, Type::Vector { .. })
-                        || matches!(&vc.cell_type, Type::Selector(_) | Type::AnySelector)
-                });
+                .is_some_and(|vc| !matches!(&vc.cell_type, Type::TraitObject(_)));
             if !should_check {
                 continue;
             }
@@ -1613,9 +1649,8 @@ fn check_expr_struct_ctor_args(
                 type_name,
                 arg_name,
                 compiled_arg,
-                representative_span,
-                template_registry,
-                trait_registry,
+                anchor_span,
+                registries,
                 diagnostics,
             );
         }

@@ -93,11 +93,15 @@ fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
     (field, field_type)
 }
 
-/// Build the unevaluated `gradient(field)` expression shared by the three
+/// Build the unevaluated `gradient(field)` expression shared by the two
 /// String-codomain gradient tests:
 /// - `gradient_of_field_with_non_numeric_lambda`
-/// - `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`
 /// - `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`
+///
+/// (The third sibling, `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`,
+/// was re-expressed onto a NUMERIC-codomain fixture — see
+/// `build_numeric_codomain_string_lambda_grad_expr` — so it no longer trips the
+/// debug-mode codomain guard and now runs profile-invariantly.)
 ///
 /// Returns the `gradient(field)` [`CompiledExpr`] ready to be passed to
 /// `eval_expr`. The caller is responsible for evaluation and any downstream
@@ -111,6 +115,71 @@ fn build_string_codomain_grad_expr() -> CompiledExpr {
 
     let domain_type = Type::dimensionless_scalar();
     let codomain_type = Type::String;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type,
+    )
+}
+
+/// Build the unevaluated `gradient(field)` expression for the profile-invariant
+/// re-expression of `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`
+/// (PRD merge-gate-compile-cost.md §3 W3 task A4).
+///
+/// # Intentional type-incoherence
+///
+/// Unlike `build_string_codomain_grad_expr` (String CODOMAIN — trips the
+/// debug-mode `result_dim` catch-all `debug_assert!` in
+/// `compute_numerical_gradient_at_point`, calculus.rs:681), this fixture
+/// declares a NUMERIC codomain (`Type::dimensionless_scalar()`) while its
+/// lambda body still returns `Value::String("not_a_number")`. The mismatch is
+/// intentional, mirroring the sanctioned pattern documented on
+/// `sample_multi_param_lambda_with_scalar_input_returns_undef`: the runtime
+/// sample()/gradient() path does not consult the declared codomain to decide
+/// whether the lambda's return value is numeric — that is discovered only when
+/// the numerical-differentiation fallback tries `as_f64()` on the actual
+/// runtime return value.
+///
+/// `gradient()`'s codomain derivation (`differential_codomain`, dimensionless
+/// domain paired with dimensionless codomain) keeps the derived gradient
+/// field's codomain at `Type::dimensionless_scalar()` too, so
+/// `compute_numerical_gradient_at_point`'s `result_dim` match takes the safe
+/// `Type::Scalar { dimension }` arm (calculus.rs:679) — never the catch-all
+/// `debug_assert!` at calculus.rs:681. `Value::String::dimension()` falls into
+/// the always-`DIMENSIONLESS` catch-all (`value.rs:1666`), so the debug-only
+/// Tier-1 `assert_eq!` and Tier-2 `eprintln!` dimension checks
+/// (calculus.rs:749-774) both compare `DIMENSIONLESS == DIMENSIONLESS` and stay
+/// silent. The String return still fails `f_plus.as_f64()` (`None`), hitting
+/// the graceful `return Value::Undef` fallback (calculus.rs ~816) —
+/// identically in both profiles.
+///
+/// Returns the `gradient(field)` [`CompiledExpr`] ready to be passed to
+/// `eval_expr`. The caller is responsible for evaluation and any downstream
+/// assertions.
+fn build_numeric_codomain_string_lambda_grad_expr() -> CompiledExpr {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| "not_a_number"  (non-numeric return value; ignores x)
+    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // NUMERIC codomain (unlike build_string_codomain_grad_expr's Type::String) —
+    // see "Intentional type-incoherence" above.
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1044,11 +1113,13 @@ fn gradient_temperature_over_length_returns_field() {
 ///
 /// Build a field whose lambda returns Value::String("not_a_number"). gradient()
 /// construction succeeds because the field has valid domain/source/lambda. At
-/// sampling time the debug guard in `compute_numerical_gradient_at_point` fires
-/// on the unexpected `Type::String` codomain (see
-/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug` for the
-/// debug-mode behaviour; the release-mode behaviour is tested in
-/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`).
+/// sampling time in DEBUG mode, the debug guard in
+/// `compute_numerical_gradient_at_point` fires on the unexpected `Type::String`
+/// codomain (see `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`
+/// for that debug-mode behaviour). The profile-invariant graceful-Undef fallback
+/// for a non-numeric lambda RETURN value — reached once the declared codomain is
+/// itself numeric, so this debug guard never fires — is pinned separately by
+/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`.
 #[test]
 fn gradient_of_field_with_non_numeric_lambda() {
     // gradient(field) succeeds at construction time — domain is scalar, source
@@ -1064,29 +1135,61 @@ fn gradient_of_field_with_non_numeric_lambda() {
     );
 }
 
-/// Sampling a gradient field whose lambda returns a non-numeric value returns Undef
-/// in release mode (where the debug guard is absent).
+/// Sampling a gradient field whose lambda returns a non-numeric value returns
+/// `Value::Undef`, profile-invariantly (both debug and release builds).
 ///
-/// The debug-mode counterpart is
-/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
+/// # Re-expression history (PRD merge-gate-compile-cost.md §3 W3 task A4)
 ///
-/// NOTE: This test is gated on `#[cfg(not(debug_assertions))]` and is therefore
-/// **excluded from `cargo test`** (which compiles with debug_assertions enabled).
-/// It only runs under `cargo test --release`. The orchestrator (`dark-factory-orchestrator.yaml`)
-/// always runs both a debug pass and a release pass, so CI coverage for this test
-/// is preserved. The sibling debug-mode test is
+/// This test was previously gated `#[cfg(not(debug_assertions))]` (release-only):
+/// it used `build_string_codomain_grad_expr`'s String CODOMAIN fixture, which
+/// trips the debug-mode `result_dim` catch-all `debug_assert!` in
+/// `compute_numerical_gradient_at_point` (calculus.rs:681) before any numeric
+/// work begins — see `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`,
+/// which still pins that loud debug-guard contract unchanged.
+///
+/// It now uses `build_numeric_codomain_string_lambda_grad_expr` — a NUMERIC
+/// codomain paired with a still-non-numeric lambda RETURN value (see that
+/// helper's "Intentional type-incoherence" doc for the full mechanism) — so it
+/// exercises the same graceful `as_f64() -> None -> Value::Undef` fallback
+/// (calculus.rs ~816) without ever tripping the debug guard, and now runs
+/// under plain `cargo test` as well as `cargo test --release`.
+///
+/// # Coverage note (code review)
+///
+/// This re-expression is a small, deliberate coverage trade. Before it, the
+/// **release**-mode sample of `build_string_codomain_grad_expr()`'s String
+/// CODOMAIN fixture was also separately pinned, via the
+/// `#[cfg(not(debug_assertions))]` gate this test used to carry: with
+/// `debug_assert!` elided, `compute_numerical_gradient_at_point`'s
+/// `result_dim` match falls through its catch-all `_` arm (calculus.rs:680-687)
+/// to `DimensionVector::DIMENSIONLESS`, and the String return still fails
+/// `as_f64()`, giving `Value::Undef`. That release-only assertion was
+/// deliberately NOT retained here or elsewhere: re-adding any
+/// `#[cfg(not(debug_assertions))]` (or runtime `cfg!(not(debug_assertions))`)
+/// site to this crate would put `reify-expr` back on
+/// `scripts/release-sensitive-crates.txt`, undoing this task's goal (PRD
+/// merge-gate-compile-cost.md §3 W3 task A4).
+///
+/// So, post re-expression, the release-mode path through that specific
+/// catch-all arm is no longer directly asserted by any test in any profile.
+/// It remains covered transitively, not vacuously: `debug_assert!` eliding to
+/// a no-op in release is a language guarantee, not something a test could
+/// regress, and this test pins the identical downstream
+/// `as_f64() -> None -> Value::Undef` fallback that the catch-all arm also
+/// bottoms out in — just reached via the safe `Type::Scalar { dimension }`
+/// arm (calculus.rs:679) instead of the catch-all. The debug-mode contract
+/// for the String-codomain fixture itself remains pinned unchanged by
 /// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
-#[cfg(not(debug_assertions))]
 #[test]
 fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
-    let grad_expr = build_string_codomain_grad_expr();
+    let grad_expr = build_numeric_codomain_string_lambda_grad_expr();
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
         domain: Box::new(Type::dimensionless_scalar()),
-        codomain: Box::new(Type::String),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let sample_expr = make_function_call(
         "sample",
@@ -1100,7 +1203,7 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
     assert_eq!(
         sample_result,
         Value::Undef,
-        "sampling gradient of non-numeric lambda must return Undef in release mode"
+        "sampling gradient of non-numeric lambda must return Undef, profile-invariantly"
     );
 }
 
@@ -1113,10 +1216,13 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
 ///
 /// NOTE: This test is gated on `#[cfg(debug_assertions)]` and is therefore
 /// **excluded from `cargo test --release`**. It only runs under `cargo test`
-/// (debug mode). The orchestrator (`dark-factory-orchestrator.yaml`) always runs both a debug
-/// pass and a release pass, so CI coverage for this test is preserved. The sibling
-/// release-mode test is
-/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`.
+/// (debug mode) — this pins the loud debug-only guard contract for a
+/// non-numeric CODOMAIN specifically, and is retained unchanged. The related
+/// profile-invariant test
+/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef` pins the
+/// graceful-Undef fallback for a non-numeric lambda RETURN value using a
+/// fixture whose declared codomain is numeric, so this debug guard does not
+/// fire there.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "unexpected codomain_type")]

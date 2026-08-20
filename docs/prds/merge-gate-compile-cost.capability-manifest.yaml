@@ -1,0 +1,576 @@
+# Machine-readable twin of merge-gate-compile-cost.capability-manifest.md.
+# Path is PRD-derived (<prd-stem>.capability-manifest.yaml) so commit_planning's
+# stamper locates it from metadata.prd_task_label + metadata.prd_path alone.
+# Schema: shared/src/shared/capability_manifest.py (CapabilityManifestDoc, schema_version 1).
+#
+# MIGRATED 2026-07-28 from the pre-schema hand-stamped format (2026-07-19), which
+# failed CapabilityManifestDoc validation and so was silently skipped by the
+# stamper. The old top-level keys map as follows:
+#   - batches.reify        -> the tasks[] roster itself (task_id per label).
+#   - bindings[].delivered_check (a shell one-liner) -> per-capability
+#     delivered_check descriptors; compound `A && B` one-liners are split into
+#     one capability per conjunct, since a descriptor holds exactly one check.
+#   - manual_checks[]      -> delivered_check {kind: manual, reason: ...} on the
+#     capability it excused (5286/F1, 4935/D-B, 4936/D-D).
+#   - revived_re_premised[] -> the D-B / D-D task entries below (titles + bindings
+#     carry the "was reify-eval-fea-decomposition task B/D" provenance).
+#   - cross_prd_deps[]     -> D-B's `registration-seam-upstream` capability binding
+#     (task 4935 depends_on 5072, compute-fea-hardening A1). The schema has no
+#     dependency field; the real edge lives in the task graph (add_dependency).
+#   - program_milestone "5254" -> no schema field exists; recorded here and in F1's
+#     binding — F1/#5286 is this PRD's single edge into milestone 5254.
+#
+# Check-kind conventions used below:
+#   - The consolidation leaves' batch-local signal is expressed as a
+#     harness-layout-baseline.manifest ratchet grep (`expect: absent` for the
+#     batch's own rows): each leaf removes its consolidated rows in the SAME diff,
+#     so the ratchet is the one layout-name-independent, batch-scoped, mechanical
+#     witness. Verified 2026-07-28: every `expect: absent` grep below is currently
+#     FALSE for a pending/in-progress leaf and TRUE for a done one.
+#   - `kind: script` guards (test_harness_kloc_cap.sh, test_release_scoped_scope.sh)
+#     are green on main by construction (grandfathered baseline), so they are
+#     necessary-not-sufficient: they ride alongside a discriminating grep, never alone.
+#   - BT-1 (`cargo nextest list` #[test]-fn count unchanged) is `kind: manual`
+#     everywhere: it is a before/after delta over a compiled listing, not a
+#     property of the committed tree.
+prd: docs/prds/merge-gate-compile-cost.md
+schema_version: 1
+tasks:
+  - label: "A1"
+    task_id: 5266
+    title: "reify-core release-sensitivity -> profile-invariant (C3); crate exits release-sensitive list"
+    capabilities:
+      - name: "reify-core-absent-from-release-sensitive-list"
+        binding: "capability→producer (this leaf) — release-sensitive site crates/reify-core/src/source_location.rs made profile-invariant per C3 (debug_assert! semantics preserved or consciously unified with recorded rationale, never silently dropped); scripts/release-sensitive-crates.txt loses the row"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^reify-core$"
+          paths: ["scripts/release-sensitive-crates.txt"]
+          expect: absent
+      - name: "release-scope-guard-green"
+        binding: "rejection-mechanism — test_release_scoped_scope.sh asserts the checked-in list == the grep-derived set, so a stale row FAILs the guard"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_release_scoped_scope.sh
+          timeout_secs: 300
+  - label: "A2"
+    task_id: 5267
+    title: "reify-stdlib release-sensitivity -> profile-invariant (C3)"
+    capabilities:
+      - name: "reify-stdlib-absent-from-release-sensitive-list"
+        binding: "capability→producer (this leaf) — crates/reify-stdlib/src/loop_closure_solver.rs made profile-invariant per C3; list row removed"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^reify-stdlib$"
+          paths: ["scripts/release-sensitive-crates.txt"]
+          expect: absent
+      - name: "release-scope-guard-green"
+        binding: "rejection-mechanism — test_release_scoped_scope.sh list-vs-grep-derived-set equality"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_release_scoped_scope.sh
+          timeout_secs: 300
+  - label: "A3"
+    task_id: 5268
+    title: "reify-runtime release-sensitivity -> profile-invariant (C3)"
+    capabilities:
+      - name: "reify-runtime-absent-from-release-sensitive-list"
+        binding: "capability→producer (this leaf) — crates/reify-runtime/src/warm_startable_assert.rs made profile-invariant per C3; list row removed"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^reify-runtime$"
+          paths: ["scripts/release-sensitive-crates.txt"]
+          expect: absent
+      - name: "release-scope-guard-green"
+        binding: "rejection-mechanism — test_release_scoped_scope.sh list-vs-grep-derived-set equality"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_release_scoped_scope.sh
+          timeout_secs: 300
+  - label: "A4"
+    task_id: 5269
+    title: "reify-expr release-sensitivity -> profile-invariant (C3)"
+    capabilities:
+      - name: "reify-expr-absent-from-release-sensitive-list"
+        binding: "capability→producer (this leaf) — crates/reify-expr/tests/field_eval_tests.rs made profile-invariant per C3 (exact file re-derived at dispatch); list row removed"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^reify-expr$"
+          paths: ["scripts/release-sensitive-crates.txt"]
+          expect: absent
+      - name: "release-scope-guard-green"
+        binding: "rejection-mechanism — test_release_scoped_scope.sh list-vs-grep-derived-set equality"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_release_scoped_scope.sh
+          timeout_secs: 300
+  - label: "A5"
+    task_id: 5270
+    title: "reify-mesh-morph release-sensitivity -> profile-invariant (C3)"
+    capabilities:
+      - name: "reify-mesh-morph-absent-from-release-sensitive-list"
+        binding: "capability→producer (this leaf) — crates/reify-mesh-morph/src/diagnostics.rs made profile-invariant per C3; list row removed"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^reify-mesh-morph$"
+          paths: ["scripts/release-sensitive-crates.txt"]
+          expect: absent
+      - name: "release-scope-guard-green"
+        binding: "rejection-mechanism — test_release_scoped_scope.sh list-vs-grep-derived-set equality"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_release_scoped_scope.sh
+          timeout_secs: 300
+  - label: "A6"
+    task_id: 5272
+    title: "ENGINE_VERSION_HASH closure narrowing + C4 closure-drift guard"
+    capabilities:
+      - name: "closure-manifest-consumed-by-hash"
+        binding: "capability→producer (this leaf) — crates/reify-eval/engine_hash_closure.txt is read by crates/reify-eval/build.rs (and engine_hash_algo.rs / persistent_cache.rs), narrowing the hash input from the whole Cargo.lock to reify-eval's dependency closure"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "engine_hash_closure"
+          paths: ["crates/reify-eval/build.rs"]
+          expect: present
+      - name: "closure-drift-guard-green"
+        binding: "rejection-mechanism (G6 branch 4, BT-8) — tests/infra/test_engine_hash_closure.sh recomputes the live closure (cargo tree -p reify-eval -e no-dev) and FAILs when a member is missing from the checked-in manifest; seeded and observed"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_engine_hash_closure.sh
+          timeout_secs: 300
+      - name: "hash-soundness-both-directions"
+        binding: "signal premise (BT-6/BT-7) — out-of-closure dep bump leaves the hash unchanged, in-closure bump changes it; exercised by the leaf's own fixture test"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "a two-sided hash-stability property over synthetic dep bumps; no stable pattern in the committed tree"
+  - label: "B1"
+    task_id: 5265
+    title: "Harness-layout contract (C1) + anti-re-accretion kLOC-cap drift guard (C2)"
+    capabilities:
+      - name: "kloc-cap-guard-live"
+        binding: "capability→producer (this leaf) — tests/infra/test_harness_kloc_cap.sh + tests/infra/harness-layout-baseline.manifest; green on the pre-consolidation tree via the grandfather baseline"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "drift-guard-registered-same-diff"
+        binding: "capability→producer (this leaf) — gate-resident: the guard's run-all-classification.manifest row lands in the SAME diff (overlay drift-guard rule; esc-4914-162)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "test_harness_kloc_cap"
+          paths: ["tests/infra/run-all-classification.manifest"]
+          expect: present
+      - name: "seeded-violation-fires"
+        binding: "rejection-mechanism (G6 branch 4) — a seeded 21-kLOC harness fixture and a seeded stray tests/stray.rs must FAIL the guard; observed, not merely defined"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "the guard's failure behaviour is only observable against a seeded violating tree; the committed tree is green by construction, so no grep discriminates it"
+  - label: "C-cli"
+    task_id: 5274
+    title: "reify-cli 73 standalone test binaries -> 1 harness"
+    capabilities:
+      - name: "cli-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — the C2 ratchet: every consolidated crates/reify-cli/tests/*.rs row is removed from harness-layout-baseline.manifest in the SAME diff, so an empty reify-cli section IS the collapse (replaces the old `ls | wc -l < 10` count assertion, which no grep can express)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-cli/tests/"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — the C2 guard must stay green across the move (harness root under the ~10-20 kLOC cap, no stray un-grandfathered file)"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-and-selectors-preserved"
+        binding: "coverage invariant (BT-1/BT-2/BT-3, derived not assumed) — `cargo nextest list -p reify-cli` #[test]-fn count unchanged; binary count -> 1; the 7 override-named binaries are excluded from consolidation so the 6 name-resolving guards stay green"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "a before/after delta over a compiled `cargo nextest list`, not a property of the committed tree"
+  - label: "C-syntax"
+    task_id: 5275
+    title: "reify-syntax 61 standalone test binaries -> 1 harness"
+    capabilities:
+      - name: "syntax-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet: reify-syntax rows removed from harness-layout-baseline.manifest in the same diff"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-syntax/tests/"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green across the move"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2, derived not assumed) — `cargo nextest list -p reify-syntax` #[test]-fn count unchanged"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`"
+  - label: "C-occt"
+    task_id: 5277
+    title: "reify-kernel-occt 48 standalone test binaries -> 1 harness"
+    capabilities:
+      - name: "occt-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet: reify-kernel-occt rows removed from harness-layout-baseline.manifest in the same diff"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-kernel-occt/tests/"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green across the move"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "name-resolving-guards-stay-green"
+        binding: "coverage invariant (BT-1/BT-2/BT-3) — #[test]-fn count unchanged; the override-named binaries stay standalone so the 6 binary-name-resolving guards keep resolving"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list` plus guard runs; not a property of the committed tree"
+  - label: "EVAL-1"
+    task_id: 5278
+    title: "reify-eval consolidation 1: geometry / kernel / realization subsystem harnesses"
+    capabilities:
+      - name: "eval-geometry-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, batch-local: this batch's geometry_/symbolic_/trait_ rows leave harness-layout-baseline.manifest in the same diff (landed roots: harness_geometry.rs, harness_kernel_realization.rs)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-eval/tests/geometry_"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green; each harness root under the cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — `cargo nextest list -p reify-eval` #[test]-fn count unchanged for this batch"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`"
+  - label: "EVAL-2"
+    task_id: 5281
+    title: "reify-eval consolidation 2: topology-selectors / FEA-solver-e2e harnesses"
+    capabilities:
+      - name: "eval-topology-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, batch-local: topology_/fea_ rows leave the baseline in the same diff (landed roots: harness_topology_selector.rs, harness_fea_solver_e2e.rs)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-eval/tests/topology_"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green; each harness root under the cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — #[test]-fn count unchanged for this batch"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`"
+  - label: "EVAL-3"
+    task_id: 5282
+    title: "reify-eval consolidation 3: engine / tolerance / dynamics / cache + tests/common dedup"
+    capabilities:
+      - name: "eval-tolerance-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, batch-local: this batch's engine_/tolerance_/dynamics_/cache_ rows leave the baseline in the same diff; tolerance_ is the discriminating prefix (6 rows on main 2026-07-28)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-eval/tests/tolerance_"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "release-sensitive-four-stay-standalone"
+        binding: "extent match (anti-over-reach) — the 4 release-sensitive reify-eval integration tests (warm_state_donation, zv_shaped_ramp_db_reduction, input_shape_tots_compute_node, cross_sub_geometry_e2e) are OWNED BY E1 and must stay standalone binaries for relocation; they keep their grandfather rows"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-eval/tests/(warm_state_donation|zv_shaped_ramp_db_reduction|input_shape_tots_compute_node|cross_sub_geometry_e2e)\\.rs$"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: present
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green; each harness root under the cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — #[test]-fn count unchanged for this batch, across the tests/common dedup too"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`; the old sidecar's `for f in <4>; do test -f …; done` all-four conjunct is only partially grep-expressible (the grep above passes if ANY of the four rows survive) — the full four-file assertion is the leaf's own diff review plus E1's dependency on those files"
+  - label: "CMP-1"
+    task_id: 5283
+    title: "reify-compiler consolidation 1 of 6: language-core / traits / auto-binding harnesses"
+    capabilities:
+      - name: "compiler-langcore-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, batch-local: type_/let_/priv_/parametric_/specialization_/spec_ rows leave the baseline in the same diff (landed roots: harness_langcore.rs, harness_traits.rs, harness_auto_binding.rs, harness_patterns.rs)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/(type_|parametric_|specialization_)"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green; each harness root under the cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — `cargo nextest list -p reify-compiler` #[test]-fn count unchanged for this batch"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`"
+  - label: "CMP-2"
+    task_id: 5284
+    title: "reify-compiler consolidation 2 of 6: units-materials / geometry-solver / result-annotation harnesses"
+    capabilities:
+      - name: "compiler-units-materials-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, BATCH-LOCAL: this batch's 61 rows leave the baseline in the same diff; materials_ is the discriminating prefix (9 rows on main 2026-07-28) and carries no carve-out, unlike geometry_ (see below)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/materials_"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "doc-chunk-carve-out-preserved"
+        binding: "extent match (anti-over-reach) — crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs matches this batch's geometry_ prefix but is OWNED BY TASK 5477 (doc-chunk harness), which removes its grandfather row itself; sweeping it here would make 5477's baseline-grandfather-reversed check vacuously green"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/geometry_chunk_smoke\\.rs$"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: present
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green; the 3 harness roots each under the cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — #[test]-fn count unchanged for this batch. The crate-wide ~10-15 aggregate is F1/#5286's signal, NOT this leaf's (re-scoped 2026-07-28, esc-5284-2; the old sidecar's `ls crates/reify-compiler/tests/*.rs | wc -l -le 15` check restated that unreachable aggregate here and is deliberately dropped)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`; the crate-wide binary-count band belongs to F1/#5286"
+  - label: "CMP-3"
+    task_id: 5693
+    title: "reify-compiler consolidation 3 of 6: module / ports / compilation-surface harnesses"
+    capabilities:
+      - name: "compiler-module-ports-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, BATCH-LOCAL: this batch's ~32 rows (ports/port/pragma/purpose/module/connect/compile/import/qualified/alias/prelude/visibility/reserved/deprecated/meta/doc/examples/user/standard/test/task/io/entity/occurrence/sub/subbody prefixes, 23,300 lines @7a21980c88) leave the baseline in the same diff; ports_|module_|import_ are the discriminating prefixes (5 rows on main 2026-07-28). Chained after CMP-2/#5284"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/(ports_|module_|import_)"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green (SUMMARY violations=0); each harness root under the ~20 kLOC cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — `cargo nextest list -p reify-compiler` #[test]-fn count unchanged for this batch; layout-only move (#[path] module includes preserve <file>::<test> selectors)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`"
+  - label: "CMP-4"
+    task_id: 5694
+    title: "reify-compiler consolidation 4 of 6: mechanics / simulation / materials harnesses"
+    capabilities:
+      - name: "compiler-mechanics-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, BATCH-LOCAL: this batch's ~37 rows (trajectory/modal/kinematic/dynamics/mechanism/tensegrity/buckling/flexure/fea/constitutive/material/physical/joint/… prefixes, 20,459 lines @7a21980c88) leave the baseline in the same diff; trajectory_|kinematic_|dynamics_|tensegrity_ are the discriminating prefixes (4 rows on main 2026-07-28) and are distinct from the identically-named override binaries, which reify-compiler does not host. Chained after CMP-3/#5693"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/(trajectory_|kinematic_|dynamics_|tensegrity_)"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green (SUMMARY violations=0); each harness root under the ~20 kLOC cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — #[test]-fn count unchanged for this batch"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`"
+  - label: "CMP-5"
+    task_id: 5695
+    title: "reify-compiler consolidation 5 of 6: type-system / language-semantics harnesses"
+    capabilities:
+      - name: "compiler-typesystem-baseline-rows-cleared"
+        binding: "capability→producer (this leaf) — C2 ratchet, BATCH-LOCAL: this batch's ~69 rows (forall/constraint/tolerancing/shadowing/struct/generic/lambda/field/expr/math/stdlib/… prefixes, 34,771 lines @7a21980c88 — the largest remaining batch) leave the baseline in the same diff; forall_|shadowing_ are the discriminating prefixes (3 rows on main 2026-07-28) and are carve-out-free, unlike the stdlib_ prefix. Chained after CMP-4/#5694"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/(forall_|shadowing_)"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "doc-chunk-carve-out-preserved"
+        binding: "extent match (anti-over-reach) — crates/reify-compiler/tests/harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs matches this batch's stdlib prefix but is OWNED BY TASK 5477, which absorbs it into harness_doc_chunks/ and removes its grandfather row itself"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke\\.rs$"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: present
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green (SUMMARY violations=0); each harness root under the ~20 kLOC cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "test-count-preserved"
+        binding: "coverage invariant (BT-1/BT-2) — #[test]-fn count unchanged for this batch"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`"
+  - label: "CMP-6"
+    task_id: 5696
+    title: "reify-compiler consolidation 6 of 6: diagnostics / robustness remainder harness (closes the CMP-* series)"
+    capabilities:
+      - name: "compiler-diagnostics-remainder-baseline-rows-cleared"
+        binding: "capability→producer (this leaf, TERMINAL) — C2 ratchet, BATCH-LOCAL: this batch's ~22 rows (ambient/boundary/cfg/deep/determinacy/diagnostic/guard/implicit/multi/optimized/param/prepass/robustness/selector/silent/termination/unresolved prefixes, 14,545 lines @7a21980c88) leave the baseline in the same diff; robustness_|termination_|determinacy_ are the discriminating prefixes (3 rows on main 2026-07-28). Sweep-up clause: the true scope is re-derived LIVE at dispatch (every remaining non-harness, non-carved-out top-level tests/*.rs), so late-landing files are not orphaned. Chained after CMP-5/#5695"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^crates/reify-compiler/tests/(robustness_|termination_|determinacy_)"
+          paths: ["tests/infra/harness-layout-baseline.manifest"]
+          expect: absent
+      - name: "kloc-cap-guard-green"
+        binding: "rejection-mechanism — C2 guard green (SUMMARY violations=0); the harness root under the ~20 kLOC cap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_harness_kloc_cap.sh
+          timeout_secs: 180
+      - name: "series-closing-count-in-band"
+        binding: "coverage invariant (BT-1/BT-2) + series close — #[test]-fn count unchanged for this batch; additionally, after this lands the reify-compiler top-level unit count should sit in PRD §3 W1's ~10-15 band (projected ~14-15 while the two 5477-owned files are still standalone). A miss is a real finding for F1/#5286 — report it, do not widen this batch to force the number"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "before/after delta over a compiled `cargo nextest list`; the crate-wide band is F1/#5286's aggregate signal, deliberately NOT a per-leaf gate (esc-5284-2)"
+  - label: "D-B"
+    task_id: 4935
+    title: "reify-eval-fea compile-unit isolation (revived; was reify-eval-fea-decomposition task B, re-premised on compile-unit isolation)"
+    capabilities:
+      - name: "solver-source-moved-to-isolated-compile-unit"
+        binding: "capability→producer (this leaf) — the ~25-35 kLOC move of reify-eval's OCCT/Engine-free solver modules (compute_targets/*, modal_ops, dynamics_*, …) plus their co-located unit tests; producer extent is delivered by B itself, not a downstream task"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "D-B is delivered via `cargo build --workspace` + `cargo tree -p reify-eval-fea -e no-dev` proving the OCCT-free closure — heavy, checked in-verify, not by a dispatch grep"
+      - name: "registration-seam-upstream"
+        binding: "capability→producer — producer:5072 upstream (register_production_compute_fns bundler, compute-fea-hardening A1, pending): the one live unmet upstream dep of D-B. Cross-PRD edge is a real add_dependency (4935 -> 5072), not sidecar metadata — the schema has no dependency field"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "upstream producer capability, not this leaf's own deliverable; asserting it mechanically here would misattribute 5072's work to 4935"
+      - name: "re-premise-soundness"
+        binding: "signal premise (G6 branch 3) — M (4933, done) explicitly allowed a non-CPU reason for the split; compile-unit isolation is that reason. No capability is demanded that the dependency set cannot produce"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "an authoring-time premise judgement over the revived task's history; nothing in the committed tree witnesses it"
+  - label: "D-D"
+    task_id: 4936
+    title: "reify-eval-fea selection proof: relink-wave shrink + OCCT-skip (revived; was reify-eval-fea-decomposition task D)"
+    capabilities:
+      - name: "relink-wave-shrink-measured"
+        binding: "capability→producer (this leaf; BT-4) — measured relink-wave shrink on a reify-eval-fea lib-touch vs the pre-split reify-eval baseline, recorded under docs/measurements/, plus the retained OCCT-skip proof. Depends on D-B (4935)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "D-D's relink-wave shrink is a measured docs/measurements/ artifact — qualitative, not a dispatch grep"
+  - label: "E1"
+    task_id: 5285
+    title: "reify-eval-release-tests leaf crate: reify-eval exits the release-sensitive list, the leaf enters"
+    capabilities:
+      - name: "reify-eval-exits-release-sensitive-list"
+        binding: "capability→producer (this leaf; BT-5) — the 4 release-sensitive integration tests move to the new leaf crate and the 8 src unit tests become profile-invariant (C3), so reify-eval leaves the grep-derived set. This PRD solely owns release-sensitive-crates.txt membership (G4); re-derive the live set at dispatch (5166 may add reify-ir)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^reify-eval$"
+          paths: ["scripts/release-sensitive-crates.txt"]
+          expect: absent
+      - name: "leaf-crate-enters-release-sensitive-list"
+        binding: "capability→producer (this leaf; BT-5) — the release role's --print-plan loses -p reify-eval and gains -p reify-eval-release-tests"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^reify-eval-release-tests$"
+          paths: ["scripts/release-sensitive-crates.txt"]
+          expect: present
+      - name: "release-scope-guard-green"
+        binding: "rejection-mechanism — test_release_scoped_scope.sh asserts list == grep-derived set after the swap"
+        verdict: PASS
+        delivered_check:
+          kind: script
+          script: tests/infra/test_release_scoped_scope.sh
+          timeout_secs: 300
+  - label: "F1"
+    task_id: 5286
+    title: "[TERMINAL] merge-gate-compile-cost workstream complete — gate into milestone 5254"
+    capabilities:
+      - name: "workstream-aggregation-gate"
+        binding: "anti-orphan — consumed by milestone 5254 (add_dependency 5254 -> F1); no-code operational aggregation node (task_kind=deterministic, execution_class=operational). Its checks are the four levers rolled up: per-crate binary counts at target, release-sensitive list shrunk, --print-plan release role no longer selecting -p reify-eval, ENGINE_VERSION_HASH stable across an out-of-closure bump"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "F1 no-code operational aggregation gate; completion is the single edge into milestone 5254"

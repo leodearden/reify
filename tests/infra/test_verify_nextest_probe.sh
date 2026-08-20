@@ -30,14 +30,27 @@
 #         from above). (iv)/(v) together catch an off-by-one in either
 #         direction that cycles (i) (N=2) and (ii) (N=999) don't exercise.
 #
-# Hermeticity: HOME is a temp dir so verify.sh:626 skips `. ~/.cargo/env`
-# (which would re-prepend ~/.cargo/bin — the sole home of the real
-# cargo-nextest — and shadow the shim); PATH="$SHIM_DIR:/usr/bin:/bin"
-# excludes ~/.cargo/bin. The shim `cargo` passes any non-`nextest` subcommand
-# through to the real cargo (captured before PATH is restricted) so incidental
+# Hermeticity: tests/infra/nextest_absent_lib.sh (task 5602). HOME is a temp dir
+# so verify.sh:626 skips `. ~/.cargo/env` (which would re-prepend ~/.cargo/bin —
+# the sole home of the real cargo-nextest — and shadow the shim), and PATH leads
+# with a symlink farm mirroring the cargo bin dir MINUS cargo-nextest, with that
+# directory filtered out of the inherited PATH. The counter-driven `cargo` shim
+# is OVERLAID into that farm, and cargo-nextest's presence is toggled by the
+# lib's add/remove pair — so this suite's two states (present for cycles i, ii,
+# iv, v; absent for iii) are PARAMETERS of the shared harness rather than a
+# reason to fork it.
+#
+# The shim `cargo` passes any non-`nextest` subcommand through to the real cargo
+# (captured from the AMBIENT PATH before the harness is built) so incidental
 # non-nextest cargo calls during plan-building would keep working — though
-# --scope all never reaches the narrowing path that would call `cargo
-# metadata` anyway.
+# --scope all never reaches the narrowing path that would call `cargo metadata`
+# anyway.
+#
+# The farm — rather than the naive PATH="$SHIM_DIR:/usr/bin:/bin" this suite
+# used before consolidation — also keeps the REST of the toolchain resolvable
+# (notably tree-sitter, which lives in ~/.cargo/bin next to cargo-nextest), and
+# carries RUSTUP_HOME across so the redirected HOME does not strand the rustup
+# shim into downloading a fresh toolchain. See the lib's header.
 #
 # Modeled on tests/infra/test_agent_cargo_shim.sh (stub-cargo / hermetic-PATH /
 # counter-file idiom) and tests/infra/test_verify_offline_partition.sh
@@ -67,22 +80,42 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"
+    exit 1
+}
+# shellcheck source=tests/infra/nextest_absent_lib.sh
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 echo "=== verify.sh nextest-probe retry/hard-fail drift-guard (task 4971) ==="
 
-# Capture the REAL cargo's absolute path BEFORE PATH is restricted to the
-# hermetic shim dir below — the shim's pass-through branch execs this directly.
+# Capture the REAL cargo's absolute path from the AMBIENT PATH, BEFORE the
+# harness below rewrites it — the shim's pass-through branch execs this
+# directly. Must precede nextest_absent_init for the same reason it used to
+# precede the hand-rolled PATH assignment.
 _REAL_CARGO="$(command -v cargo)" || {
     echo "ERROR: real cargo not found on the ambient PATH"
     exit 1
 }
 
-WORKDIR="$(mktemp -d)"
-SHIM_DIR="$WORKDIR/shim-bin"
-TMP_HOME="$WORKDIR/home"
-mkdir -p "$SHIM_DIR" "$TMP_HOME"
-trap 'rm -rf "$WORKDIR"' EXIT
+# Builds the farm + temp HOME and registers the cleanup trap (EXIT/INT/TERM/HUP
+# — a strict superset of the bare EXIT trap this suite used to install). This is
+# the only trap in this file, so there is nothing to compose with.
+#
+# BARE CALL, INTENTIONALLY. As of task 5645 nextest_absent_init verifies the
+# observable invariant (cargo-nextest unreachable under the constructed env)
+# and returns non-zero when the simulation would be vacuous — e.g. on a host
+# where a second, non-mirror-source PATH directory still exposes cargo-nextest.
+# Under this file's `set -euo pipefail` that aborts the suite right here with a
+# named harness diagnostic on stderr, which is the wanted outcome: every assert
+# below is meaningless without a genuine simulation. Do NOT add `|| true` — the
+# graceful skip path belongs to test_verify_nextest_absent_suites.sh, which
+# consults nextest_absent_available and reports a HOST PRECONDITION SKIP; this
+# suite has no such path and a swallowed failure would go silently vacuous.
+nextest_absent_init
 
-COUNTER_FILE="$WORKDIR/nextest_probe_counter"
+# Inside the lib's workdir, so the same trap removes it.
+COUNTER_FILE="$NX_WORKDIR/nextest_probe_counter"
 
 # ---------------------------------------------------------------------------
 # Harness helpers
@@ -94,18 +127,24 @@ reset_counter() {
     rm -f "$COUNTER_FILE"
 }
 
-# make_cargo_shim — writes a counter-driven `cargo` wrapper into SHIM_DIR.
-# When $1 == "nextest": increments COUNTER_FILE; while the resulting count is
-# <= ${REIFY_SHIM_FAIL_COUNT:-0} the probe FAILS (stderr marker + exit 1);
-# once the count exceeds the threshold it SUCCEEDS (prints a version line,
-# exit 0) — and keeps succeeding on every later attempt (the counter only
-# grows). Any other subcommand is passed straight through to the real cargo
-# (the $_REAL_CARGO absolute path captured above) so incidental non-nextest
-# cargo calls keep working. Static content — call once; REIFY_SHIM_FAIL_COUNT
-# is read at shim-RUNTIME, not baked in at creation time, so a single shim
-# instance is reused (with reset_counter) across every cycle.
+# make_cargo_shim — OVERLAYS a counter-driven `cargo` wrapper into the harness
+# farm, where it shadows both the filtered cargo bin dir and any other cargo
+# later in PATH (the farm is first). When $1 == "nextest": increments
+# COUNTER_FILE; while the resulting count is <= ${REIFY_SHIM_FAIL_COUNT:-0} the
+# probe FAILS (stderr marker + exit 1); once the count exceeds the threshold it
+# SUCCEEDS (prints a version line, exit 0) — and keeps succeeding on every later
+# attempt (the counter only grows). Any other subcommand is passed straight
+# through to the real cargo (the $_REAL_CARGO absolute path captured above) so
+# incidental non-nextest cargo calls keep working. Static content — call once;
+# REIFY_SHIM_FAIL_COUNT is read at shim-RUNTIME, not baked in at creation time,
+# so a single shim instance is reused (with reset_counter) across every cycle.
+#
+# nextest_absent_farm_put removes the existing farm entry before installing,
+# which matters here: `cargo` is already in the farm as a mirrored SYMLINK, and
+# writing through it would clobber the real binary it points at.
 make_cargo_shim() {
-    cat > "$SHIM_DIR/cargo" <<SHIMEOF
+    local _shim="$NX_WORKDIR/cargo-shim"
+    cat > "$_shim" <<SHIMEOF
 #!/usr/bin/env bash
 if [ "\$1" = "nextest" ]; then
     _count_file="$COUNTER_FILE"
@@ -122,36 +161,28 @@ if [ "\$1" = "nextest" ]; then
 fi
 exec "$_REAL_CARGO" "\$@"
 SHIMEOF
-    chmod +x "$SHIM_DIR/cargo"
+    nextest_absent_farm_put cargo "$_shim"
 }
 
-# make_cargo_nextest_stub — writes an executable presence marker at
-# SHIM_DIR/cargo-nextest so `command -v cargo-nextest` succeeds (binary
-# genuinely present on PATH). verify.sh's probe never execs this directly (it
-# goes through the `cargo` wrapper's nextest-subcommand branch above) — its
-# mere presence is what the fix's genuine-absence disambiguation checks.
-make_cargo_nextest_stub() {
-    cat > "$SHIM_DIR/cargo-nextest" <<'STUBEOF'
-#!/usr/bin/env bash
-echo "cargo-nextest 0.0.0-shim"
-exit 0
-STUBEOF
-    chmod +x "$SHIM_DIR/cargo-nextest"
-}
-
-# remove_cargo_nextest_stub — removes SHIM_DIR/cargo-nextest so
-# `command -v cargo-nextest` fails (genuine absence from PATH), for the
-# regression-guard cycle (iii).
-remove_cargo_nextest_stub() {
-    rm -f "$SHIM_DIR/cargo-nextest"
-}
+# The cargo-nextest presence marker is the lib's
+# nextest_absent_farm_add_nextest_stub / nextest_absent_farm_rm_nextest_stub
+# pair, used directly at the cycle call sites below. Adding it makes
+# `command -v cargo-nextest` succeed (binary genuinely present on PATH);
+# removing it restores genuine absence for the regression-guard cycle (iii).
+# verify.sh's probe never execs the marker directly — it goes through the
+# `cargo` wrapper's nextest-subcommand branch above — so its mere presence is
+# what the fix's genuine-absence disambiguation at scripts/verify.sh:1412
+# checks, which is exactly what the lib's marker provides.
 
 # run_verify [VAR=val ...] -- <verify.sh args...>
-# Drives REAL scripts/verify.sh under the hermetic shim PATH + temp HOME.
+# Drives REAL scripts/verify.sh under the harness (nx_run: farm-first PATH,
+# temp HOME, CARGO_HOME unset, RUSTUP_HOME carried across).
 # DF_VERIFY_ROLE defaults to 'task' (a gate role) and
 # REIFY_NEXTEST_PROBE_RETRY_SLEEP defaults to 0 (no wall-clock cost); both can
 # be overridden by a later VAR=val in the caller's env-args (env applies
-# repeated assignments left-to-right, last wins). Sets globals:
+# repeated assignments left-to-right, last wins — and nx_run passes leading
+# VAR=val through to the same env(1) invocation, so that ordering still holds
+# across the harness's own assignments). Sets globals:
 #   VERIFY_RC      — exit code
 #   VERIFY_STDOUT  — captured stdout
 #   VERIFY_STDERR  — captured stderr
@@ -167,14 +198,12 @@ run_verify() {
     [ "$#" -gt 0 ] && shift  # consume the --
 
     local _stdout_file _stderr_file
-    _stdout_file="$(mktemp -p "$WORKDIR" verify-stdout.XXXXXX)"
-    _stderr_file="$(mktemp -p "$WORKDIR" verify-stderr.XXXXXX)"
+    _stdout_file="$(mktemp -p "$NX_WORKDIR" verify-stdout.XXXXXX)"
+    _stderr_file="$(mktemp -p "$NX_WORKDIR" verify-stderr.XXXXXX)"
 
     VERIFY_RC=0
-    env DF_VERIFY_ROLE=task REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
-        "${env_args[@]}" \
-        HOME="$TMP_HOME" \
-        PATH="$SHIM_DIR:/usr/bin:/bin" \
+    nx_run DF_VERIFY_ROLE=task REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+        "${env_args[@]+"${env_args[@]}"}" \
         bash "$REPO_ROOT/scripts/verify.sh" "$@" \
         >"$_stdout_file" \
         2>"$_stderr_file" \
@@ -228,7 +257,7 @@ echo ""
 echo "--- Cycle (i): transient failure (N=2 < 3 retries) recovers -> nextest=1 ---"
 
 reset_counter
-make_cargo_nextest_stub
+nextest_absent_farm_add_nextest_stub
 run_verify REIFY_SHIM_FAIL_COUNT=2 -- test --scope all --print-plan
 
 assert "(i): verify.sh exits 0 (recovered within the retry budget)" \
@@ -247,7 +276,7 @@ echo ""
 echo "--- Cycle (ii): persistent probe failure hard-fails (cargo-nextest present) ---"
 
 reset_counter
-make_cargo_nextest_stub
+nextest_absent_farm_add_nextest_stub
 run_verify REIFY_SHIM_FAIL_COUNT=999 -- test --scope all --print-plan
 
 assert "(ii): verify.sh exits NON-ZERO (refuses to silently downgrade the plan)" \
@@ -271,7 +300,7 @@ echo ""
 echo "--- Cycle (iii): cargo-nextest genuinely absent -> fallback plan unchanged ---"
 
 reset_counter
-remove_cargo_nextest_stub
+nextest_absent_farm_rm_nextest_stub
 run_verify REIFY_SHIM_FAIL_COUNT=999 REIFY_GATE_EXCLUDE_HEAVY=1 DF_VERIFY_ROLE=task -- \
     test --scope all --print-plan
 
@@ -294,7 +323,7 @@ echo ""
 echo "--- Cycle (iv): boundary recovery on the final permitted retry (fail-count=3) ---"
 
 reset_counter
-make_cargo_nextest_stub
+nextest_absent_farm_add_nextest_stub
 run_verify REIFY_SHIM_FAIL_COUNT=3 -- test --scope all --print-plan
 
 assert "(iv): verify.sh exits 0 (recovers exactly on the 3rd/final retry)" \
@@ -313,7 +342,7 @@ echo ""
 echo "--- Cycle (v): boundary hard-fail one probe past the retry budget (fail-count=4) ---"
 
 reset_counter
-make_cargo_nextest_stub
+nextest_absent_farm_add_nextest_stub
 run_verify REIFY_SHIM_FAIL_COUNT=4 -- test --scope all --print-plan
 
 assert "(v): verify.sh exits NON-ZERO (retry budget exhausted one probe short)" \

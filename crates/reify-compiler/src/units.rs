@@ -4,7 +4,7 @@ use reify_core::field_calculus::{DifferentialOp, differential_codomain};
 /// The complete set of stdlib geometry constructor names recognised by the
 /// compiler. This is the **source of truth** for both [`is_geometry_function`]
 /// (derived via `.contains(&name)`) and the dispatch coverage test in
-/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+/// `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 ///
 /// # Maintenance contract
 ///
@@ -212,6 +212,16 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_core::Type
 /// → `ANGLE`); `edges_at_height` args 1 and 2 (`h`/`tol: Length` → `LENGTH`).
 /// A [`reify_core::DiagnosticCode::ArgTypeMismatch`] error is emitted for any
 /// definite static dimension mismatch at call-site compile time.
+///
+/// Since task 5652 that table is keyed on `(name, arity)`, not `name` alone;
+/// members of THIS family are non-overloaded and so remain arity-agnostic. Rule
+/// and rationale: [`crate::builtin_signatures::builtin_arg_slots`].
+///
+/// Task 5652 also placed the first non-selector geometry keys in that table —
+/// `linear_pattern` / `linear_pattern_2d` (CSG producers in
+/// [`GEOMETRY_FUNCTION_NAMES`], deliberately NOT members of this slice) carry
+/// LENGTH `spacing` slots. Why they must not be added here:
+/// `builtin_signatures::tests::NON_SELECTOR_ARG_SLOT_KEYS`.
 pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // Task 2324 — eval dispatch fully implemented
     "closest_point",

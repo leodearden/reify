@@ -1,0 +1,60 @@
+Ok(
+    LinearPattern {
+        target: GeometryHandleId(
+            70,
+        ),
+        direction: [
+            1.0,
+            0.0,
+            0.0,
+        ],
+        count: 3,
+        spacing: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+    },
+)

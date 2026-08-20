@@ -1,10 +1,17 @@
 // BT7 back-compat fixture — task #4826 (F-inherit ζ regression corpus).
 //
 // Objective-less scope with a two-sided bound `2mm ≤ k ≤ 8mm`.  The solver
-// synthesises a centrality objective → midpoint k = 5mm (0.005 m).
+// synthesises a centrality objective and returns the midpoint of the box AS
+// REPRESENTED: (0.002 + 0.008) / 2 = 0.005 m, exactly.
+//
+// The golden was re-blessed for task #5618 (it previously held
+// 0.005000000000000001 — a 1-ULP Nelder-Mead termination artifact from the old
+// fixed-0.01 seed).  Do not treat the change as a regression; the rationale and
+// the tripwire that would invalidate byte-identity here are recorded in the
+// test file's module header ("Why byte-identity").
 //
 // Golden: crates/reify-eval/tests/golden/bt7_objectiveless_centrality.txt
-// Test:   crates/reify-eval/tests/objective_inheritance_e2e.rs::bt7_objectiveless_centrality_byte_identity
+// Test:   crates/reify-eval/tests/harness_fea_solver_e2e/objective_inheritance_e2e.rs::bt7_objectiveless_centrality_byte_identity
 structure Bar {
     param k: Length = auto
 

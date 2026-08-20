@@ -34,6 +34,8 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -73,29 +75,16 @@ function fail(msg) {
   process.exit(1);
 }
 
-async function rpc(method, args = {}) {
-  const res = await fetch(DEBUG_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: method, arguments: args },
-    }),
-  });
-  const envelope = await res.json();
-  if (envelope.error) throw new Error(`RPC error: ${JSON.stringify(envelope.error)}`);
-  const content = envelope?.result?.content;
-  if (!content || content.length === 0) return null;
-  const textBlock = content.find(c => c.type === 'text');
-  if (!textBlock) return null;
-  try {
-    return JSON.parse(textBlock.text);
-  } catch {
-    return textBlock.text;
-  }
-}
+// The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
+// (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
+// can never run in CI. `rpc()` now reports BOTH failure dialects as the ONE
+// in-band shape `{error: "<msg>"}`: frontend-mediated tools (open_file,
+// editor_content, ... via query_frontend) already answer in-band that way, and
+// Rust-dispatched `isError: true` + plain-text `Error: <msg>` blocks are folded
+// into it. This driver's consumers are property reads that are safe under both
+// shapes, so only the printed diagnostic text changes. A top-level envelope error
+// is a TRANSPORT failure and still throws, so waitForServer keeps polling.
+const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -143,24 +132,12 @@ async function main() {
   console.log('  OK: server ready');
 
   // ── Boot: open MAIN fixture ──────────────────────────────────────────────────
-  // The debug MCP server comes up before the WebKit WebView finishes loading.
-  // The first few frontend-mediated calls (open_file, wait_for_idle) may time
-  // out with "debug-request timed out after 5000ms" while the WebView is still
-  // initialising its EGL/GLX context.  Retry open_file up to 8 times (≤45s)
-  // to give the WebView time to complete its startup sequence.  This is the
-  // primary empirical constant for this smoke — adjust if startup is slower.
+  // The retry budget, the `.ok` verdict and the failure wording live in
+  // ./smokeDriverGuards.mjs, where vitest can cover them; this file needs a live
+  // GUI, so nothing inline here ever could be. `fail` is passed (not `log`) so an
+  // exhausted retry exits 1 naming the underlying RPC error.
   log('Opening diagnostics_main.ri via open_file (with retry for WebView init)…');
-  let openResult = null;
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    openResult = await rpc('open_file', { path: MAIN });
-    console.log(`  open_file attempt ${attempt} result:`, JSON.stringify(openResult));
-    if (openResult && openResult.ok) break;
-    if (attempt < 8) {
-      console.log(`  Retrying in 3s (WebView still initialising)…`);
-      await sleep(3000);
-    }
-  }
-  if (!openResult || !openResult.ok) fail(`open_file failed after retries: ${JSON.stringify(openResult)}`);
+  await openFileWithRetry(rpc, MAIN, { fail });
 
   log('Waiting for engine idle…');
   const idleResult = await rpc('wait_for_idle', { timeout_ms: 15000 });

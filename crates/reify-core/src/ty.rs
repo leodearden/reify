@@ -2,6 +2,8 @@
 //!
 //! ## Point / Vector quantity-slot convention
 //!
+//! ### How the slot is populated
+//!
 //! When `Point3<Q>` / `Vector3<Q>` surface syntax is resolved by the parametric
 //! resolver (`resolve_parameterized_builtin_type` and the substitution path
 //! `resolve_parameterized_builtin_type_with_subst` in
@@ -10,7 +12,7 @@
 //! The resolver treats `Q` as a *dimension expression* — accepting forms like
 //! `Length`, `kg*m/s^2` — and wraps the resolved [`DimensionVector`] in
 //! `Type::Scalar`.  This convention is asserted by the integration tests in
-//! `crates/reify-compiler/tests/parametric_vector_point_resolution_tests.rs`.
+//! `crates/reify-compiler/tests/harness_langcore/parametric_vector_point_resolution_tests.rs`.
 //!
 //! The variant itself does **not** enforce `Type::Scalar` in the `quantity` slot.
 //! `Value::Point::infer_type()` / `Value::Vector::infer_type()` in
@@ -18,12 +20,99 @@
 //! quantities for unit-less component vectors; tests in this crate also construct
 //! those forms directly.  `is_scalar_like_leaf` in
 //! `crates/reify-compiler/src/type_compat.rs` treats `Type::dimensionless_scalar()`, `Type::Int`, and
-//! `Type::Scalar { .. }` symmetrically for compat-rule firing, so the looseness is
-//! intentional.
+//! `Type::Scalar { .. }` symmetrically for compat-rule firing.
 //!
 //! Accepting any `Type` in the `Q` position (mirroring `Tensor` / `Matrix`, which
-//! use `resolve_type_expr_with_aliases`) was considered and deferred (task-2767); the
-//! dimension-expression form is the established surface-syntax contract.
+//! use `resolve_type_expr_with_aliases`) was weighed by task-2767, which chose to
+//! DOCUMENT the dimension-expression form rather than relax it; that remains the
+//! established surface-syntax contract, and the ruling below does not revisit it
+//! (populating the slot and checking it are separate questions).
+//!
+//! ### NORMATIVE: how the slot is CHECKED (task 5766)
+//!
+//! This section is the single normative home of the quantity-slot conformance
+//! rule.  `crates/reify-compiler/src/conformance/mod.rs` implements it as
+//! `quantity_slot_dimension` / `quantity_slots_conflict`; PRD
+//! `docs/prds/v0_6/dimensioned-construction-strictness.md` §12 points here rather
+//! than restating it.
+//!
+//! **The rule — dimensionless-tolerant strict equality.**  For `Type::Vector`,
+//! `Type::Point`, `Type::Matrix` and `Type::Tensor`, an argument's quantity slot
+//! CONFLICTS with a param's — and is rejected as `ArgTypeMismatch` — **iff both
+//! sides name a concrete dimension and those [`DimensionVector`]s differ** (strict
+//! derived `PartialEq`, the same primitive the bare-`Scalar` leaf rule uses).  The
+//! check is TOLERANT — silent — whenever *either* side declines to name one, i.e.
+//! is a dimensionless `Scalar`, a `Type::Int`, or a `Type::ScalarParam`.
+//!
+//! **SEVERITY is inherited from the entry point, not fixed by this rule.**  The
+//! check lives in the walker both conformance entry points share, so it fires at
+//! `CTOR_FIELD_CONFORMANCE_SEVERITY` — Warning at α — when entered through
+//! `check_trait_arg_conformance` (the ctor path, which every `.ri` fixture for
+//! this rule takes), and at `Severity::Error` when entered through
+//! `check_fn_arg_conformance` (the fn-call path).  The Error half is pinned by
+//! `assert_quantity_slot_conflict` in `conformance/mod.rs`'s test module.  In
+//! PRODUCTION that half is currently unreachable for a bare
+//! `fn f(axis: Vector3<Length>)`: `check_expr_fn_calls`
+//! (`compile_builder/entities_phase.rs`) invokes the fn-call entry only for
+//! params satisfying `type_carries_trait_object`, which does not recurse into
+//! quantity slots — so these four arms are reached from a real call only via a
+//! param that also carries a trait object (e.g. `Map<Vector3<Length>, SomeTrait>`).
+//!
+//! **`Type::Field` is HELD LOOSE BY DECISION, on a different axis.**  `Field` has
+//! no quantity slot at all: it carries `domain` / `codomain` `Type` slots, and
+//! BOTH erase to `Real` at every call site (`examples/fea_shell_channels.ri`
+//! supplies `Real -> Real` analytical field defs to `stdlib/solver_elastic.ri`'s
+//! `Field<Point3<Length>, Tensor<2,3,Pressure>>` slots).  There is nothing for a
+//! quantity rule to compare, so a `Field` tightening would be zero-signal and
+//! non-zero-risk.  This is a ruling, not an oversight — do not "fix" the asymmetry
+//! with the other four arms by symmetry.  Pinned by
+//! `field_param_given_erased_analytical_field_stays_clean`
+//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`); the
+//! false-warning count that motivated the arm is recorded once, in the
+//! `Type::Field` arm's own comment in `conformance/mod.rs`.
+//!
+//! **Why tolerant rather than strict.**  The ARG side of these arms is
+//! systematically erased, so strict equality would compare a declaration against a
+//! hole: `point3(…)` is an eval-builtin with no `.ri` return type, so its calls
+//! arrive as `Scalar[m]` / `Int` placeholders; `Matrix<3,3,MomentOfInertia>` is
+//! spelled `List<List<Real>>` at every corpus site; a `Field`'s slots always erase
+//! to `Field<Real, Real>`, which is what produced the false warnings that arm's
+//! comment records.
+//!
+//! **The residual this knowingly leaves.**  A `Vector3<Length>` fed a
+//! *dimensionless* vector stays silent, which is how `vec3(0, 1, 0)` at
+//! `Revolute.axis : Vec3<Length>` (`examples/dynamics/pendulum_idyn.ri`) keeps
+//! compiling.  That is the same bounded-cost class as the `Point` arm's tolerance
+//! of a bare numeric literal, and it is accepted for the same reason: the corpus's
+//! idiomatic spelling for a *direction* is dimensionless even where the stdlib
+//! declares a `Length`.  Several stdlib direction fields are themselves mis-typed
+//! that way (`kinematic.ri`'s `axis`, `ports.ri`'s `Frame3.x_axis/y_axis/z_axis`);
+//! retyping them is a stdlib type-vocabulary ruling of its own, tracked by task
+//! 5848, and is deliberately not folded in here.
+//!
+//! A SECOND residual is specific to the `Matrix`/`Tensor` leg: a `matrix([[…]])`
+//! arg's quantity comes from `matrix_shape` (`math_signatures.rs`), which derives
+//! the whole matrix's quantity from cell `[0][0]` ALONE.  The rule is therefore
+//! only sound for dimension-HOMOGENEOUS literals.  A heterogeneous one — routine
+//! in this domain: a 6x6 stiffness/compliance matrix or a spatial (screw-theory)
+//! Jacobian mixes translational and rotational blocks — can be false-rejected when
+//! `[0][0]` disagrees with the declaration, and, dually, a genuinely wrong matrix
+//! whose `[0][0]` happens to agree sails through.  That inference weakness
+//! pre-dates this rule and was cosmetic while the quantity was never compared;
+//! this ruling makes it load-bearing for a diagnostic.  No corpus site trips it
+//! today (`no_example_emits_ctor_field_conformance_diagnostics` is green).  The
+//! fix — widen `matrix_shape` to detect heterogeneous cells and degrade to
+//! `Type::dimensionless_scalar()`, which would make the slot yield no dimension
+//! and the rule fall silent — is out of this ruling's scope (`math_signatures.rs`
+//! is outside its locks) and is tracked by task 5889.
+//!
+//! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
+//! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and
+//! `Matrix`/`Tensor` arms, and `arg_type_is_unverifiable` is NOT widened to carry
+//! this rule.  The quantity check runs only AFTER an arm's family/arity check has
+//! passed and only on args that actually carry a quantity slot, so a placeholder
+//! scalar never reaches it (still accepted) and a `String` is rejected by the
+//! family check before it (still rejected).
 
 use crate::dimension::DimensionVector;
 
@@ -539,7 +628,7 @@ impl Type {
     /// top of the root-cause diagnostic.
     ///
     /// This cascade is pinned as a regression test at:
-    /// `crates/reify-compiler/tests/type_error_propagation_tests.rs`
+    /// `crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs`
     /// `::nested_compound_error_cascades_through_trait_let_annotation`
     ///
     /// # Follow-up plan
@@ -1623,7 +1712,7 @@ mod tests {
     // They are INTENTIONALLY written so that they PASS on current code (where
     // `is_error()` is top-level-only) and would FAIL if `is_error()` were
     // changed to recurse. Paired with the integration regression test at:
-    //   crates/reify-compiler/tests/type_error_propagation_tests.rs
+    //   crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs
     //   ::nested_compound_error_cascades_through_trait_let_annotation
     //
     // If you are implementing a recursive `contains_error()` helper (option (a)

@@ -1,0 +1,33 @@
+module dcr_reader_ctor_dimension_silent
+
+// D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaves ε (dynamics `cell_f64`), ζ (trajectory `read_scalar_si`/`field_f64`)
+// and η (FDM / as-printed readers).
+//
+// MEASURED at decompose (2026-07-28, main efba5a8036) — `reify eval` EXIT 0,
+// zero Error diagnostics, in every case:
+//
+//   * `MassProperties.mass : Mass` (dynamics.ri:77) accepts a LENGTH and stores
+//     `mass: 2 m`; `dynamics/eval.rs:354` then reads it through the blind
+//     `cell_f64` copy (:55) as 2.0 kg — WHILE the dimension-checking
+//     `cell_mass_f64` (:78) sits unused in the same file.
+//   * `ZVShaper.target_frequency : Frequency` (trajectory.ri:656) accepts
+//     `rad/s` and stores `50 rad*s^-1`; `read_scalar_si`
+//     (trajectory/input_shape.rs:51) discards the dimension and the
+//     Hz -> rad/s marshalling multiplies by 2*pi (input_shape.rs:90-102),
+//     so the shaper is designed for 314 rad/s, a 6.28x error.
+//   * `AsPrintedOptions.line_width : Length` (fdm_as_printed.ri:38) accepts a
+//     bare number; `field_scalar` (as_printed_material.rs:237) reads it as metres.
+//   * `FDMCouponOverride.ex : Option<Pressure>` (fdm_correlations.ri:242)
+//     accepts a LENGTH; `opt_f64` (as_printed_material.rs:317) reads it as Pa.
+//
+// This file must EVAL CLEAN (exit 0) today. After ε/ζ/η each of these must exit
+// 1 with `ArgDimensionMismatch` naming the builtin and the field.
+
+structure def DcrReaderCtorDimensionSilent {
+    let mass_wrong_dim   = MassProperties(mass: 2m, com: point3(0mm, 0mm, 0mm))
+    let shaper_wrong_dim = ZVShaper(target_frequency: 50rad/s, damping_ratio: 0.0)
+    let shaper_correct   = ZVShaper(target_frequency: 50Hz, damping_ratio: 0.0)
+    let printed_bare     = AsPrintedOptions(line_width: 0.4)
+    let coupon_wrong_dim = FDMCouponOverride(ex: 2mm)
+}

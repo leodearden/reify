@@ -17,7 +17,7 @@
 //   N may be any Port (the base trait)
 // The orientation param demonstrates Directionality enum resolution from the
 // implicit prelude.  No concrete conformer is instantiated (PRD §4 decision 4;
-// mirrors Coupling in examples/stdlib/ports_mechanical.ri).
+// mirrors ShaftCoupling in examples/stdlib/ports_mechanical.ri).
 structure def PreludeCoupling<D: RotaryPort, N: Port> {
     param orientation : Directionality = Directionality.Bidi
     port driver : D

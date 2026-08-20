@@ -2,7 +2,7 @@
 //! (task 2379).
 //!
 //! Compile-side structural assertions live in
-//! `crates/reify-compiler/tests/money_arithmetic_tests.rs`; this binary locks
+//! `crates/reify-compiler/tests/harness_units_materials/money_arithmetic_tests.rs`; this binary locks
 //! the runtime end-to-end behaviour: cancellation arithmetic that returns a
 //! bare-MONEY scalar, and cross-currency addition that converts each operand
 //! to SI via its registry factor before summing.

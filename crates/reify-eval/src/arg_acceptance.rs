@@ -1,13 +1,27 @@
 //! Shared value-level acceptance helper for dimensioned builtin arguments.
 //!
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
-//! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`)
-//! and Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ).
+//! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
+//! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
+//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350):
+//! `geometry_ops`' `eval_named_arg_length` (pattern spacing, mirror-plane
+//! origin, circular-pattern axis origin, arbitrary-pattern offsets)
+//! and `resolve_length_scalar_arg`
+//! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
+//! [`length_spec`] so both emit identical rejection text.
+//!
+//! Contract C is NOT yet exhaustive: `sweep_revolve`'s axis origin
+//! (`geometry_ops`' `ox`/`oy`/`oz`, read via the bare-accepting
+//! `eval_named_arg_f64`) is the nearest un-gated LENGTH-semantic position, and
+//! `transform_translate`/`transform_rotate_around`/`curve_*` carry more. Task
+//! 5623 tracks that residual sweep; until it lands, adding a length-semantic
+//! arg here means adding it to that task's triage list too.
 //!
 //! The helper is **value-level only**: it operates on an already-resolved
 //! `reify_ir::Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
-//! Callers (currently `resolve_density_arg`) are responsible for extracting the
-//! value from the expression.
+//! Callers are responsible for extracting the value from the expression
+//! (`resolve_density_arg`/`resolve_spec_arg` evaluate a `CompiledExpr`;
+//! `eval_named_arg_length` goes through `eval_named_arg`).
 
 /// Specification for a single builtin argument — its expected type name, the
 /// required `DimensionVector`, and an optional hint shown in rejection messages.
@@ -74,6 +88,23 @@ pub fn density_spec() -> ArgSpec {
         type_name: "Density",
         dimension: reify_core::DimensionVector::MASS_DENSITY,
         migration_hint: Some("pass a dimensioned Density literal such as `7850kg/m^3`"),
+    }
+}
+
+/// Returns the [`ArgSpec`] for a LENGTH-semantic builtin argument — pattern
+/// spacing, mirror-plane origin, circular-pattern axis origin, or
+/// arbitrary-pattern offset: a `Value::Scalar` with `DimensionVector::LENGTH`
+/// (metres). Mirrors [`density_spec`].
+///
+/// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
+/// **metres** by `Value::as_f64` (the `10` vs `10mm` = 1000× hazard); this spec
+/// drives the eval-layer rejection that closes that hole (task 5214; the
+/// circular-pattern axis origin was added by task 5350).
+pub fn length_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Length",
+        dimension: reify_core::DimensionVector::LENGTH,
+        migration_hint: Some("pass a dimensioned length such as `5mm`"),
     }
 }
 

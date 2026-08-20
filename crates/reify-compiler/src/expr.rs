@@ -202,73 +202,55 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
-/// Returns `true` if `template` declares a member named `name` in any of the
-/// three member categories: value cells, ports, or sub-components.
+/// The **acceptance policy** for an external `obj.member` projection: is it safe
+/// to LOWER this member name to a `Value::StructureInstance` field read?
 ///
-/// This is the single source of truth for "is this member name known?" used at
-/// both the purpose-subject concrete-subject validation path (task-2200) and the
-/// SIR-α entity-scope StructureRef member-access path (task-3540 / ds-sentinel
-/// L4, task #4649). Keeping the two sites in lockstep prevents a future member
-/// category addition (e.g. a new declarable member kind) from silently diverging
-/// between the two diagnostics.
+/// Deliberately NOT the membership authority. That is
+/// [`member_path::resolve_hop`] (task #5424, contract C1-iv), which scans the
+/// full five-container union `value_cells ∪ guarded_groups[].members ∪
+/// sub_components ∪ ports ∪ realizations`. This predicate is narrower on
+/// purpose: it accepts `value_cells ∪ ports ∪ sub_components` only.
+///
+/// The two containers it omits are genuine members the resolver knows about,
+/// but accepting them here would lower to a projection the runtime cannot
+/// materialise — `StructureInstanceData.fields` excludes them, so the read
+/// silently evaluates to `Value::Undef`, exactly the pre-existing class already
+/// documented for ports/subs at the `member_known` note below. Trading today's
+/// loud `StructureMemberNotFound` for a silent undef is what PRD decision D9
+/// forbids, so the widening waits on the constructor/eval materialization half
+/// (#5935). #5425 (β) and #5430 (η) convert this site to the resolver; neither
+/// may widen acceptance before #5935 lands.
+///
+/// Used at both the purpose-subject concrete-subject validation path (task-2200)
+/// and the SIR-α entity-scope StructureRef member-access path (task-3540 /
+/// ds-sentinel L4, task #4649), so the two diagnostics stay in lockstep.
 fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
     template.value_cells.iter().any(|vc| vc.id.member == name)
         || template.ports.iter().any(|p| p.name == name)
         || template.sub_components.iter().any(|sc| sc.name == name)
 }
 
-/// Returns `true` if `name` resolves to a `priv` member of `template`: a
-/// `priv param` (a `Param`-kind value cell marked `Visibility::Private`), a
-/// `priv sub` (`Visibility::Private`), a `priv port` (`is_priv == true`), or a
-/// `priv param` nested inside a block-form `where` guarded group
-/// (`guarded_groups[].members`, task #5171). Sibling to
-/// [`template_has_member`]; gates the E_PRIV_MEMBER_ACCESS check on the
-/// external StructureRef member-access path (task #3978 δ).
-///
-/// The `kind == Param` guard is load-bearing: `value_cells` (and
-/// `guarded_groups[].members`) also hold `let` bindings, and a default
-/// (non-`pub`) `let` is `Visibility::Private` too — but `let`s are never
-/// externally accessible by name, so reporting them here would be an
-/// out-of-scope behaviour change. Only a `priv param` carries `Param` +
-/// `Private`.
-fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
-    template.value_cells.iter().any(|vc| {
-        vc.id.member == name
-            && vc.kind == ValueCellKind::Param
-            && vc.visibility == Visibility::Private
-    }) || template
-        .sub_components
-        .iter()
-        .any(|sc| sc.name == name && sc.visibility == Visibility::Private)
-        || template.ports.iter().any(|p| p.name == name && p.is_priv)
-        || template.guarded_groups.iter().any(|g| {
-            g.members.iter().any(|vc| {
-                vc.id.member == name
-                    && vc.kind == ValueCellKind::Param
-                    && vc.visibility == Visibility::Private
-            })
-        })
-}
-
 /// Returns `true` if `template` declares a port named `port_name` with a
 /// nested `priv param` member named `member` (task #5171). Companion to
-/// [`template_member_is_priv`], but keyed by the port-qualified composite
-/// name `CompiledPort::members` cells actually carry
+/// [`member_path::resolve_hop`]'s `PrivateMember` verdict, but keyed by the
+/// port-qualified composite name `CompiledPort::members` cells actually carry
 /// (`ValueCellId.member == "<port_name>.<member>"`, set in entity.rs's
 /// port-member compilation), rather than a bare top-level member name.
 ///
 /// A separate helper is needed because the two-level `<sub>.<port>.<member>`
-/// access shape never reaches `template_member_is_priv`: the intermediate
-/// `<sub>.<port>` access does not resolve to a `Type::StructureRef` (ports
-/// are absent from `value_cells`), so the `Type::StructureRef` member-access
-/// block's priv gate is never entered for the outer `.<member>`. The
-/// AST-pattern branch in `compile_expr_guarded` (mirroring the cluster /
-/// keyed-sub branches) calls this directly instead.
+/// access shape never reaches the resolver: the intermediate `<sub>.<port>`
+/// access does not resolve to a `Type::StructureRef` (ports are absent from
+/// `value_cells`), so the `Type::StructureRef` member-access block's priv gate
+/// is never entered for the outer `.<member>`. The AST-pattern branch in
+/// `compile_expr_guarded` (mirroring the cluster / keyed-sub branches) calls
+/// this directly instead. Retiring that shape — and with it this helper — is
+/// task η's (#5430), which routes the two-level matchers through
+/// `member_path::resolve_member_path`.
 ///
 /// The `kind == Param` guard mirrors the load-bearing guard on
-/// `template_member_is_priv`'s `value_cells` arm: a port may also declare
-/// `let` members, which default to `Visibility::Private` but are never
-/// externally accessible by name.
+/// `member_path::value_cell_visibility`: a port may also declare `let` members,
+/// which default to `Visibility::Private` but are never externally accessible
+/// by name.
 fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &str) -> bool {
     template.ports.iter().any(|p| {
         // Short-circuit on the name check first so the `format!` allocation
@@ -1064,7 +1046,11 @@ const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &["children", "members", "descendant
 /// If a sibling wildcard kind is ever added (e.g., `"Occurrence"` gains first-class
 /// wildcard status), add it here alongside this constant rather than embedding
 /// another bare string literal at the call site.
-const WILDCARD_STRUCTURE_KIND: &str = "Structure";
+///
+/// `pub(crate)` so `member_path::resolve_hop` — the single member-shape
+/// authority (task 5424) — applies the same wildcard skip rather than
+/// re-embedding the bare `"Structure"` literal.
+pub(crate) const WILDCARD_STRUCTURE_KIND: &str = "Structure";
 
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
@@ -1330,6 +1316,48 @@ pub(crate) fn compile_expr_guarded(
 // not fire and no allow is needed for it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_expr_guarded_with_expected(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    current_guard: Option<&ValueCellId>,
+    lambda_counter: &mut u32,
+    expected_type: Option<&Type>,
+) -> CompiledExpr {
+    // Bound compiler expression-recursion depth (task #5337) — depth cap plus
+    // on-demand stack growth; rationale and tuning live in
+    // `crate::recursion_guard`. Past the cap the expression is poisoned
+    // (Type::Error, anti-cascade). `with_recursion_guard` is the diagnostic
+    // *producer* (it pushes E_EXPR_NESTING_TOO_DEEP, latched to once per
+    // outermost entry), so this site only propagates the poison value —
+    // `propagate_poison`, not `make_poison_literal`.
+    crate::recursion_guard::with_recursion_guard(
+        expr.span,
+        diagnostics,
+        propagate_poison,
+        |diagnostics| {
+            compile_expr_guarded_with_expected_inner(
+                expr,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+                expected_type,
+            )
+        },
+    )
+}
+
+/// Inner body of [`compile_expr_guarded_with_expected`]. All recursion-depth
+/// bounding — the [`RecursionDepthGuard`](crate::recursion_guard::RecursionDepthGuard)
+/// cap and the `stacker::maybe_grow` on-demand stack growth — lives in that
+/// wrapper and is re-applied at every level because this body's recursive calls
+/// go back through it (via `compile_expr_guarded[_with_expected]`), never here.
+#[allow(clippy::too_many_arguments)]
+fn compile_expr_guarded_with_expected_inner(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_ir::EnumDef],
@@ -3106,7 +3134,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // the user's return type wins. This shadow-by-user-fns precedence
                     // is intentional and pinned by the
                     // `user_defined_length_shadows_stdlib_geometry_query` regression
-                    // test in `crates/reify-compiler/tests/structural_physical_spec_shape.rs`.
+                    // test in `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_spec_shape.rs`.
                     //
                     // **Internal-arm precedence (within `NoUserFunctions`).** The arms
                     // below are checked in order: `is_geometry_query_helper` →
@@ -6463,18 +6491,19 @@ fn member_access_on_structure_like(
                 // `obj.member` dot-access (sibling check at the StructureRef
                 // branch). The wildcard "Structure" subject is already excluded
                 // by the enclosing `struct_name != WILDCARD_STRUCTURE_KIND` guard.
-                if template_member_is_priv(template, member) {
-                    return make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            span,
-                            "private member accessed here",
-                        ))
-                        .with_code(DiagnosticCode::PrivMemberAccess),
-                    );
+                //
+                // The verdict AND its rendering both come from the single
+                // member-shape authority (task #5424, C1-iv): this site decides
+                // only what to DO with a `PrivateMember` error, never what
+                // counts as one. `resolve_hop` maps an unknown member to
+                // `UnknownMember` and a wildcard / registry-miss / trait-object
+                // receiver to `Indeterminate`, so neither is treated as priv —
+                // identical to the helper this replaced.
+                if let Err(err @ member_path::MemberPathError::PrivateMember { .. }) =
+                    member_path::resolve_hop(&compiled_obj.result_type, member, scope)
+                    && let Some(diagnostic) = err.to_diagnostic(span)
+                {
+                    return make_poison_literal(diagnostics, diagnostic);
                 }
             }
             // Per-param stamp: encode `purpose_name::param_name` as the entity
@@ -6606,21 +6635,20 @@ fn member_access_on_structure_like(
         // every OTHER priv member kind (top-level param / sub / port): those
         // are already `member_known`, so StructureMemberNotFound never fired
         // for them regardless of order.
+        //
+        // The verdict and its rendering both come from the single member-shape
+        // authority (task #5424, C1-iv). The two explicit guards below are kept
+        // even though `resolve_hop` would independently answer "not priv" for
+        // both (a `TraitObject` receiver → `Indeterminate(TraitObjectReceiver)`,
+        // the wildcard → `Indeterminate(WildcardStructure)`): they document the
+        // ordering contract at this site rather than delegating it.
         if matches!(&compiled_obj.result_type, Type::StructureRef(_))
             && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
-            && template.is_some_and(|t| template_member_is_priv(t, member))
+            && let Err(err @ member_path::MemberPathError::PrivateMember { .. }) =
+                member_path::resolve_hop(&compiled_obj.result_type, member, scope)
+            && let Some(diagnostic) = err.to_diagnostic(span)
         {
-            return make_poison_literal(
-                diagnostics,
-                Diagnostic::error(format!(
-                    "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                ))
-                .with_label(DiagnosticLabel::new(
-                    span,
-                    "private member accessed here",
-                ))
-                .with_code(DiagnosticCode::PrivMemberAccess),
-            );
+            return make_poison_literal(diagnostics, diagnostic);
         }
         if !member_known
             && matches!(&compiled_obj.result_type, Type::StructureRef(_))
@@ -7085,6 +7113,134 @@ fn push_down_expected_for_empty_coll(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The compiler expression-recursion cap fires at
+    /// `MAX_COMPILE_RECURSION_DEPTH`: pre-seeding the thread-local with that
+    /// many live `RecursionDepthGuard`s (pure counter bumps, no real frames)
+    /// makes even a trivial `NumberLiteral` compile to a `Type::Error` poison
+    /// carrying the `ExpressionNestingTooDeep` diagnostic — while without the
+    /// pre-seed the same expr compiles cleanly. Mirrors the
+    /// `trait_requirements.rs` "invoke at MAX+1 directly" test strategy, and
+    /// exercises the cap without real deep recursion.
+    #[test]
+    fn compile_expr_recursion_cap_fires_past_max_depth() {
+        use crate::recursion_guard::{MAX_COMPILE_RECURSION_DEPTH, RecursionDepthGuard};
+
+        let trivial = reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
+            span: reify_core::SourceSpan::new(0, 1),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+
+        // Baseline: with no pre-seeded depth, the trivial expr compiles cleanly
+        // (proves the cap only fires past MAX, not on ordinary input).
+        {
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let compiled =
+                compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
+            assert_ne!(
+                compiled.result_type,
+                Type::Error,
+                "trivial expr should compile without the cap engaged"
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.code
+                    == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+                "no too-deep diagnostic without pre-seeded depth, got: {:?}",
+                diagnostics
+            );
+        }
+
+        // Cap: pre-seed MAX live guards so the real cegwe entry pushes the depth
+        // to MAX+1 and the cap fires — poison result + the too-deep diagnostic.
+        let guards: Vec<RecursionDepthGuard> = (0..MAX_COMPILE_RECURSION_DEPTH)
+            .map(|_| RecursionDepthGuard::enter())
+            .collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let compiled = compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
+        assert_eq!(
+            compiled.result_type,
+            Type::Error,
+            "cap should poison the result once depth exceeds MAX"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "expected the ExpressionNestingTooDeep diagnostic, got: {:?}",
+            diagnostics
+        );
+
+        // Releasing the pre-seeded guards must return the counter to 0 (and
+        // re-arm the report latch), so the NEXT compile on this thread is not
+        // permanently poisoned. Without this re-run, an early-return path that
+        // leaked a count (or dropped the guard eagerly) would go unnoticed.
+        drop(guards);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let compiled = compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
+        assert_ne!(
+            compiled.result_type,
+            Type::Error,
+            "a later compile on the same thread must not inherit the cap"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "the depth counter must return to 0 once the guards drop, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// A WIDE node sitting at the cap boundary reports the too-deep error ONCE,
+    /// not once per over-deep child (the `recursion_guard` reporting contract —
+    /// otherwise a 3-element literal would spam three identical diagnostics into
+    /// the GUI error panel). Every child still fails: the list's element type
+    /// comes out poisoned.
+    #[test]
+    fn compile_expr_recursion_cap_reports_once_for_wide_boundary_node() {
+        use crate::recursion_guard::{MAX_COMPILE_RECURSION_DEPTH, RecursionDepthGuard};
+
+        let num = || reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
+            span: reify_core::SourceSpan::new(0, 1),
+        };
+        // Three children, so pre-latch this node would emit three diagnostics.
+        let wide = reify_ast::Expr {
+            kind: reify_ast::ExprKind::ListLiteral(vec![num(), num(), num()]),
+            span: reify_core::SourceSpan::new(0, 1),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+
+        // MAX-1 pre-seeded guards: the list literal itself enters at exactly MAX
+        // (allowed, so its arm runs and compiles every element), and each child
+        // enters at MAX+1 — the cap fires once per child.
+        let guards: Vec<RecursionDepthGuard> = (0..MAX_COMPILE_RECURSION_DEPTH - 1)
+            .map(|_| RecursionDepthGuard::enter())
+            .collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let _ = compile_expr(&wide, &scope, &enum_defs, &functions, &mut diagnostics);
+        let too_deep = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep))
+            .count();
+        assert_eq!(
+            too_deep, 1,
+            "a wide over-deep node must report once, not once per child: {:?}",
+            diagnostics
+        );
+        drop(guards);
+    }
 
     /// Verify the `unwrap_or_else` safety fallback in `resolve_collection_sub_to_list`:
     /// when `sub_component_types` has no entry for the sub name (as in a manually-constructed

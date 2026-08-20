@@ -173,12 +173,33 @@ namespace occt {
 
 namespace {
 
-/// Call `fn()` inside the standard 3-arm OCCT exception guard.
+/// A contract violation Reify itself detects and diagnoses — either a
+/// PREcondition it validates before handing a shape to OCCT, or a
+/// POSTcondition it checks on the result — as opposed to a failure raised
+/// from inside OCCT.
+///
+/// `wrap_occt_call` gives these their own catch arm so they surface as
+/// "<op>: <message>" — the "OCCT <op>: unexpected: …" framing is reserved for
+/// genuine OCCT-originated or otherwise unforeseen exceptions, and labelling a
+/// well-understood contract violation that way misattributes it.
+///
+/// Messages thrown as a ContractViolation must NOT repeat the op name:
+/// `wrap_occt_call` already prefixes it, and a hand-written prefix duplicates
+/// it in the text the user reads.
+struct ContractViolation : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+/// Call `fn()` inside the standard 4-arm OCCT exception guard.
 ///
 /// Catch arms:
-///   - Standard_Failure  → "OCCT <name>: <GetMessageString()>"
-///   - std::exception    → "OCCT <name>: unexpected: <what()>"
-///   - catch-all         → "OCCT <name>: unknown C++ exception"
+///   - Standard_Failure   → "OCCT <name>: <GetMessageString()>"
+///   - ContractViolation  → "<name>: <what()>"   (Reify-authored diagnostic)
+///   - std::exception     → "OCCT <name>: unexpected: <what()>"
+///   - catch-all          → "OCCT <name>: unknown C++ exception"
+///
+/// The ContractViolation arm must precede the std::exception arm — it derives
+/// from std::runtime_error, so the broader arm would otherwise shadow it.
 ///
 /// Return type is deduced from `fn()` via `decltype`, so this helper works
 /// uniformly across all wrapper return types (double, Point3, BBox,
@@ -190,11 +211,128 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
         return fn();
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT ") + name + ": " + e.GetMessageString());
+    } catch (ContractViolation const& e) {
+        throw std::runtime_error(std::string(name) + ": " + e.what());
     } catch (std::exception const& e) {
         throw std::runtime_error(std::string("OCCT ") + name + ": unexpected: " + e.what());
     } catch (...) {
         throw std::runtime_error(std::string("OCCT ") + name + ": unknown C++ exception");
     }
+}
+
+/// Canonical display name for a `TopAbs_ShapeEnum` ("Solid", "Face", …, or
+/// "Shape" for the abstract fallback). Single source for both the
+/// `shape_type_name` FFI entry point and error messages built in this file.
+static const char* topabs_name(TopAbs_ShapeEnum type) {
+    switch (type) {
+        case TopAbs_COMPOUND:  return "Compound";
+        case TopAbs_COMPSOLID: return "CompSolid";
+        case TopAbs_SOLID:     return "Solid";
+        case TopAbs_SHELL:     return "Shell";
+        case TopAbs_FACE:      return "Face";
+        case TopAbs_WIRE:      return "Wire";
+        case TopAbs_EDGE:      return "Edge";
+        case TopAbs_VERTEX:    return "Vertex";
+        default:               return "Shape";
+    }
+}
+
+/// Reduce a swept-section profile to the shape `BRepFill_Section` accepts.
+///
+/// `BRepOffsetAPI_MakePipeShell::Add` funnels every section through
+/// `BRepFill_Section`, which stores only a `TopoDS_Wire` or a `TopoDS_Vertex`.
+/// Anything else — including a `TopAbs_FACE` and a bare `TopAbs_EDGE` — raises
+/// `Standard_Failure "BRepFill_Section: bad shape type of section"`. Faces are
+/// the profile kind the Reify compiler actually produces (`circle(r)` lowers to
+/// `CircleProfile` → `make_circle_face`), so they are reduced here to their
+/// outer wire rather than rejected.
+///
+/// A face is accepted only when it has EXACTLY ONE wire:
+///   - 0 wires — an unbounded face, as `make_half_space` builds from a bare
+///     `gp_Pln`. `BRepTools::OuterWire` returns a NULL wire for it, and
+///     letting that reach `Add` SEGFAULTS the process (measured — see the
+///     inline note on the guard below). This is a crash guard, not a
+///     politeness guard.
+///   - >1 wires — a holed face. It has no single-wire representation, so it is
+///     rejected rather than silently reduced: keeping only the outer wire
+///     would delete the holes, and — since a face profile is then solidified —
+///     yield a filled-in solid that looks plausible but is the wrong part.
+/// Every profile the compiler emits today (`CircleProfile` / `RectangleProfile`
+/// / `EllipseProfile` / `PolygonProfile`) is single-wire, but an extracted face
+/// (`extract_faces`, `BRepKind::Face`) is `Surface`-typed and can be either.
+static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
+    switch (profile.ShapeType()) {
+        case TopAbs_FACE: {
+            const TopoDS_Face face = TopoDS::Face(profile);
+            int wire_count = 0;
+            for (TopExp_Explorer exp(face, TopAbs_WIRE); exp.More(); exp.Next()) {
+                ++wire_count;
+            }
+            // Both messages below deliberately avoid naming BRepFill_Section:
+            // they are user-facing diagnostics, and the OCCT internals are
+            // documented for maintainers in this helper's doc comment.
+            if (wire_count == 0) {
+                // MEASURED, not assumed: with this branch removed and a
+                // half-space face fed to sweep_guided (see
+                // sweep_guided_rejects_unbounded_face_profile), the process
+                // dies with SIGSEGV — BRepTools::OuterWire returns a NULL
+                // wire, and the null TopoDS_Shape reaching maker.Add() is
+                // dereferenced inside BRepFill_Section rather than raising a
+                // catchable Standard_NullObject. wrap_occt_call cannot convert
+                // a segfault into a Rust Err, so this guard is the ONLY thing
+                // standing between a DSL selector and a hard kernel crash.
+                // Do not weaken it to a `> 1`-only check.
+                throw ContractViolation(
+                    "section profile face has no bounding wire (an unbounded "
+                    "face, e.g. a half-space boundary plane); a swept section "
+                    "must be a bounded profile");
+            }
+            if (wire_count > 1) {
+                throw ContractViolation(
+                    "section profile face has " + std::to_string(wire_count - 1)
+                    + " inner wire(s); a swept section is a single wire, so a "
+                      "holed profile cannot be swept — its hole(s) would be "
+                      "silently discarded");
+            }
+            return ::BRepTools::OuterWire(face);
+        }
+        case TopAbs_WIRE:
+        case TopAbs_VERTEX:
+            return profile;
+        default:
+            // Reject with a diagnostic that names the offending type, rather
+            // than letting OCCT's opaque "bad shape type of section" surface.
+            // wrap_occt_call prefixes the calling op's name, so it is
+            // deliberately omitted here to avoid duplicating it.
+            throw ContractViolation(
+                std::string("unsupported profile shape type '")
+                + topabs_name(profile.ShapeType())
+                + "'; section profile must be a Wire, a Vertex, or a Face "
+                  "(reduced to its outer wire)");
+    }
+}
+
+/// Downcast a spine/guide argument to `TopoDS_Wire`, rejecting anything else
+/// with a Reify-authored diagnostic that names the offending type.
+///
+/// `BRepOffsetAPI_MakePipeShell` takes its spine — and the auxiliary wire given
+/// to `SetMode` — as a `TopoDS_Wire`. A bare `TopoDS::Wire(shape)` downcast on
+/// anything else raises OCCT's `Standard_TypeMismatch`, whose text names no
+/// argument and frequently carries no message at all. These arguments are
+/// reachable with the wrong type by exactly the route that makes a bad profile
+/// reachable: `extract_edges` / `extract_faces` mint `Curve`/`Surface`-typed
+/// handles a selector can hand to any op, so they get the same contract
+/// treatment as the section profile.
+///
+/// `role` names the argument as the DSL author wrote it (e.g. "sweep path"),
+/// not as the C++ parameter is spelled.
+static TopoDS_Wire require_wire(const TopoDS_Shape& shape, const char* role) {
+    if (shape.ShapeType() != TopAbs_WIRE) {
+        throw ContractViolation(
+            std::string(role) + " has unsupported shape type '"
+            + topabs_name(shape.ShapeType()) + "'; it must be a Wire");
+    }
+    return TopoDS::Wire(shape);
 }
 
 } // anonymous namespace
@@ -433,6 +571,46 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
     });
 }
 
+// --- Boolean-op-pass counter (task 5213) ---
+
+// PER-THREAD count of completed OCCT boolean passes, incremented once per
+// successful Build() in boolean_fuse/boolean_cut/boolean_common and once in the
+// single-pass fuse_shape_list.  Each thread observes only the boolean passes it
+// performed itself, and reset_boolean_pass_count() zeroes the CALLING thread's
+// count only.  Deterministic (an exact integer, not a tolerance) and non-flaky:
+// it lets tests assert that a K-instance pattern performs exactly ONE boolean
+// pass rather than K−1.  It is a TEST-OBSERVABILITY hook, NOT a progress-
+// reporting one: production callers drive OCCT through OcctKernelHandle's
+// dedicated worker thread, so a reporter on any other thread reads a permanent
+// 0.  A cross-thread progress signal would need its own process-global
+// aggregate, deliberately not added here because nothing consumes one today.
+//
+// Per-thread rather than process-global because task #5277 folded all
+// reify-kernel-occt integration tests into ONE `harness_occt` binary: a
+// process-global counter is contaminated by any concurrently-scheduled test
+// that performs a boolean, so a reset→operate→read window could no longer be
+// trusted.  Per-thread storage restores the isolation that per-binary processes
+// used to provide, and does so in every execution mode (plain `cargo test`,
+// `--test-threads=1`, and nextest's process-per-test) rather than only under
+// the last.  It is sound because all four increment sites run synchronously on
+// the calling thread immediately after the corresponding Build() returns, so no
+// pass is ever attributed to a thread other than the one that performed it.
+//
+// `static` (internal linkage) matches the file's convention for file-scope
+// state (cf. g_step_export_mutex): nothing outside this TU names the variable —
+// only the two accessors below — so exporting the TLS symbol would needlessly
+// widen the ABI surface and force the general-dynamic TLS access model
+// (a __tls_get_addr call) at every increment site instead of local-exec.
+static thread_local uint64_t t_boolean_pass_count = 0;
+
+void reset_boolean_pass_count() {
+    t_boolean_pass_count = 0;
+}
+
+uint64_t boolean_pass_count() {
+    return t_boolean_pass_count;
+}
+
 // --- Compound assembly ---
 
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
@@ -465,6 +643,116 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
     });
 }
 
+// --- Single-pass n-ary fuse (task 5213, Lever 1) ---
+
+// Fuse every member of `shapes` into a single result in ONE BOP pass.
+//
+// Mirrors the BRepAlgoAPI_Splitter SetArguments/SetTools idiom (see
+// `split_shape`): the first shape becomes the sole argument and the rest become
+// the tools, so `BRepAlgoAPI_Fuse::Build()` arranges all of them in a single
+// OCCT boolean pass (≈O(N log N) bbox interference + irreducible face work)
+// instead of the O(N²) pairwise-accumulator loop the pattern realizers used.
+//
+//   - empty list → std::runtime_error (nonsensical)
+//   - 1 element  → returned as-is (no BOP; identity)
+//   - N elements → single-pass fuse
+//
+// The general BOP path (SetArguments/SetTools) always wraps its output in a
+// TopoDS_COMPOUND, regardless of whether the inputs merged.  We normalize that
+// wrapper to the tightest topology-preserving type: a COMPOUND holding one
+// solid (overlapping inputs merged into a single body) is unwrapped to that
+// bare SOLID, while a COMPOUND holding multiple solids (fully-DISJOINT inputs)
+// is rewrapped as a TopoDS_COMPSOLID — a bare compound is not
+// watertight-queryable (`is_watertight` excludes COMPOUND), whereas a COMPSOLID
+// preserves total volume and per-solid component count while passing the
+// SOLID|COMPSOLID|SHELL type guard.  Defined here — ahead of the four pattern
+// realizers below — so they can share this one helper.
+TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
+    if (shapes.IsEmpty()) {
+        throw std::runtime_error("fuse_shape_list: input shape list must not be empty");
+    }
+    if (shapes.Extent() == 1) {
+        // Single instance: no boolean pass, return it unchanged.
+        return shapes.First();
+    }
+    TopTools_ListOfShape args, tools;
+    TopTools_ListIteratorOfListOfShape it(shapes);
+    args.Append(it.Value());
+    it.Next();
+    for (; it.More(); it.Next()) {
+        tools.Append(it.Value());
+    }
+    BRepAlgoAPI_Fuse fuse;
+    fuse.SetArguments(args);
+    fuse.SetTools(tools);
+    fuse.Build();
+    if (!fuse.IsDone()) {
+        throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
+    }
+    // One completed boolean pass, regardless of instance count (task 5213).
+    t_boolean_pass_count += 1;
+    TopoDS_Shape result = fuse.Shape();
+    // The general BOP path (SetArguments/SetTools) always wraps its output in a
+    // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
+    // preserves the union's topology so downstream repr/query code sees the
+    // true kind:
+    //   - exactly one solid  → the bare SOLID (overlapping inputs merged into a
+    //     single body).  Returning a COMPSOLID here would misclassify one solid
+    //     as a multi-body aggregate (task 5213 repr-coherence amendment).
+    //   - two or more solids → a COMPSOLID (disjoint multi-body union) which,
+    //     unlike a bare COMPOUND, passes the is_watertight SOLID|COMPSOLID|SHELL
+    //     guard and reports the correct per-solid component count.
+    //   - no solids          → leave the compound untouched.
+    if (result.ShapeType() == TopAbs_COMPOUND) {
+        TopTools_ListOfShape solids;
+        for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
+            solids.Append(ex.Current());
+        }
+        if (solids.Extent() == 1) {
+            return TopoDS::Solid(solids.First());
+        }
+        if (solids.Extent() > 1) {
+            TopoDS_CompSolid cs;
+            BRep_Builder builder;
+            builder.MakeCompSolid(cs);
+            for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
+                builder.Add(cs, TopoDS::Solid(sit.Value()));
+            }
+            return cs;
+        }
+    }
+    return result;
+}
+
+std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
+    return wrap_occt_call("fuse_all", [&]() {
+        if (shapes.shapes.empty()) {
+            throw std::runtime_error("fuse_all: input shape list must not be empty");
+        }
+        TopTools_ListOfShape list;
+        for (const auto& shape : shapes.shapes) {
+            list.Append(shape);
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = fuse_shape_list(list);
+        return result;
+    });
+}
+
+// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
+// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+// "Vertex", or "Shape" for the abstract fallback).  Lets the Rust side stamp
+// the correct BRepKind on a fuse/pattern result instead of assuming Solid: a
+// single-pass fuse yields a SOLID (overlapping inputs), a COMPSOLID (disjoint
+// inputs, rewrapped by fuse_shape_list), or — in the 1-element identity path —
+// the sole input shape unchanged, which may be any kind (task 5213 amendment).
+rust::String shape_type_name(const OcctShape& shape) {
+    return wrap_occt_call("shape_type_name", [&]() -> rust::String {
+        // Delegates to topabs_name so the enum -> name table exists once.
+        return rust::String(topabs_name(shape.shape.ShapeType()));
+    });
+}
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
@@ -474,6 +762,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = fuse.Shape();
         return result;
@@ -487,6 +776,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = cut.Shape();
         return result;
@@ -500,6 +790,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = common.Shape();
         return result;
@@ -2100,8 +2391,10 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
         }
         double ndx = dx / mag, ndy = dy / mag, ndz = dz / mag;
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each translated copy)
+        // into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 1; i < count; ++i) {
             double dist = spacing * static_cast<double>(i);
@@ -2112,16 +2405,11 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("linear_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("linear_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2152,12 +2440,14 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
         }
         double ndx2 = dx2 / mag2, ndy2 = dy2 / mag2, ndz2 = dz2 / mag2;
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every grid instance (original at index 0, then each translated
+        // copy) into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 0; i < count1; ++i) {
             for (uint32_t j = 0; j < count2; ++j) {
-                if (i == 0 && j == 0) continue; // skip the original
+                if (i == 0 && j == 0) continue; // original already appended
                 double tx = static_cast<double>(i) * spacing1 * ndx1
                           + static_cast<double>(j) * spacing2 * ndx2;
                 double ty = static_cast<double>(i) * spacing1 * ndy1
@@ -2171,17 +2461,12 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
                 if (!transform.IsDone()) {
                     throw std::runtime_error("linear_pattern_2d: transform failed");
                 }
-                BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-                fuse.Build();
-                if (!fuse.IsDone()) {
-                    throw std::runtime_error("linear_pattern_2d: fuse failed");
-                }
-                accumulated = fuse.Shape();
+                instances.Append(transform.Shape());
             }
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2196,7 +2481,10 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         }
         gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(ax, ay, az));
 
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each rotated copy)
+        // into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 1; i < count; ++i) {
             double angle_i = total_angle * static_cast<double>(i) / static_cast<double>(count);
@@ -2207,16 +2495,11 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("circular_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("circular_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2237,8 +2520,10 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
             throw std::runtime_error("arbitrary_pattern: flat_transforms.size() != num_transforms * 7");
         }
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each transformed
+        // copy) into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 0; i < num_transforms; ++i) {
             // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz]
@@ -2258,16 +2543,11 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("arbitrary_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("arbitrary_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2721,6 +3001,42 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     });
 }
 
+std::unique_ptr<OcctShape> make_oriented_circle_face(double radius, double cx, double cy,
+                                                     double cz, double nx, double ny,
+                                                     double nz) {
+    return wrap_occt_call("make_oriented_circle_face", [&]() {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error(
+                "make_oriented_circle_face: radius must be finite and positive");
+        }
+        // Build the profile directly on the caller's start frame: a circle
+        // centred at (cx,cy,cz) whose plane normal is (nx,ny,nz). gp_Ax2(P, N)
+        // constructs a valid orthonormal frame for ANY unit normal (including
+        // -Z), so there is no antiparallel singularity — positioning the circle
+        // here achieves both the translate-to-start-point and the
+        // rotate-normal-onto-tangent that MakePipe requires of the profile.
+        gp_Ax2 axes(gp_Pnt(cx, cy, cz), gp_Dir(nx, ny, nz));
+        Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
+        BRepBuilderAPI_MakeEdge edgeBuilder(circle);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_oriented_circle_face: MakeEdge failed");
+        }
+        TopoDS_Edge edge = edgeBuilder.Edge();
+        BRepBuilderAPI_MakeWire wireBuilder(edge);
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_oriented_circle_face: MakeWire failed");
+        }
+        TopoDS_Wire wire = wireBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_oriented_circle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height) {
     return wrap_occt_call("make_cylindrical_face", [&]() {
         if (!(std::isfinite(radius) && radius > 0.0)) {
@@ -2972,6 +3288,26 @@ std::unique_ptr<OcctShape> make_helix_wire(
         BRepBuilderAPI_MakeEdge edgeBuilder(line2d, cylinder, 0.0, param_end);
         if (!edgeBuilder.IsDone()) {
             throw std::runtime_error("make_helix_wire: MakeEdge failed");
+        }
+        // The edge above is built from a Geom2d_Line pcurve on a cylindrical
+        // surface and carries only that curve-on-surface, with no Geom_Curve
+        // 3D representation. Downstream sweep consumers
+        // (BRepOffsetAPI_MakePipe behind GeometryOp::Sweep) require the 3D
+        // curve and otherwise throw an empty-message Standard_Failure, so
+        // derive it from the existing pcurve+surface. Without this a helix()
+        // wire cannot be used as a sweep spine (#5342). BRepLib.hxx is already
+        // included above for OrientClosedSolid.
+        //
+        // BuildCurves3d returns false if the 3D-curve derivation fails. If it
+        // did, MakeWire below would still succeed (it only needs the topology,
+        // not the 3D curve) and the wire would look valid, but the missing
+        // curve would re-surface downstream as exactly the same opaque
+        // empty-message Standard_Failure inside BRepOffsetAPI_MakePipe that
+        // this call is meant to eliminate. Surface it as a clear named error
+        // here at wire-construction time instead.
+        if (!BRepLib::BuildCurves3d(edgeBuilder.Edge())) {
+            throw std::runtime_error(
+                "make_helix_wire: BuildCurves3d failed to derive 3D curve");
         }
         BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
         if (!wireBuilder.IsDone()) {
@@ -3243,16 +3579,45 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide) {
     return wrap_occt_call("make_pipe_shell", [&]() {
-        // Spine and guide must both be wires; profile may be an edge,
-        // wire, or face.
-        BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(spine.shape));
-        maker.Add(profile.shape);
+        // Spine and guide must both be wires. The profile must be a wire, a
+        // vertex, or a face (reduced to its outer wire below) — an EDGE is
+        // NOT accepted, since BRepFill_Section holds only a wire or a vertex.
+        //
+        // Both wire arguments are checked UP FRONT, before the maker is built,
+        // so each is diagnosed by its DSL-level role name rather than through
+        // an opaque TopoDS::Wire downcast failure at the point of use.
+        const TopoDS_Wire spine_wire = require_wire(spine.shape, "sweep path");
+        const TopoDS_Wire guide_wire = require_wire(guide.shape, "sweep guide");
+        const bool profile_was_face = (profile.shape.ShapeType() == TopAbs_FACE);
+        BRepOffsetAPI_MakePipeShell maker(spine_wire);
+        maker.Add(section_profile_to_wire(profile.shape));
         // SetMode(auxWire, KeepContact) — KeepContact=false keeps the
         // section's centre free while using the guide to bias orientation.
-        maker.SetMode(TopoDS::Wire(guide.shape), Standard_False);
+        maker.SetMode(guide_wire, Standard_False);
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakePipeShell failed");
+        }
+        // Mirror BRepOffsetAPI_MakePipe's own convention: a face profile
+        // sweeps to a SOLID, a wire profile to a SHELL. That gives
+        // sweep_guided parity with sweep for every profile the compiler can
+        // produce (it admits only Surface profiles) and honours the declared
+        // signature `sweep_guided(profile: Surface, ...) -> Solid`.
+        // The gate is the input's face-ness because only a face carries the
+        // enclosed region the end caps close over; a bare wire section has no
+        // such region. The false branch is pinned by
+        // sweep_guided_produces_valid_shape, which asserts the wire-profile
+        // result is NOT closed — flipping this to an unconditional MakeSolid()
+        // fails there.
+        //
+        // ContractViolation, not std::runtime_error: this is a postcondition
+        // Reify checks on a well-understood input class, so it must not be
+        // framed as an "unexpected" OCCT exception. The op name is omitted —
+        // wrap_occt_call prefixes it.
+        if (profile_was_face && !maker.MakeSolid()) {
+            throw ContractViolation(
+                "MakeSolid failed — the face profile swept to a shell that "
+                "could not be capped into a solid");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
@@ -3273,16 +3638,48 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         // The first guide is the spine; each profile is added as a
         // section. An optional second guide provides auxiliary
         // orientation via SetMode(aux, /*KeepContact=*/false).
-        BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(guides.shapes[0]));
+        //
+        // Both guides are wire-checked by role for the same reason as
+        // make_pipe_shell's spine/guide: a mistyped handle otherwise surfaces
+        // as OCCT's argument-less TopoDS::Wire downcast failure.
+        BRepOffsetAPI_MakePipeShell maker(
+            require_wire(guides.shapes[0], "loft spine (first guide)"));
+        bool all_sections_were_faces = true;
         for (const auto& profile : profiles.shapes) {
-            maker.Add(profile);
+            if (profile.ShapeType() != TopAbs_FACE) {
+                all_sections_were_faces = false;
+            }
+            maker.Add(section_profile_to_wire(profile));
         }
         if (guides.shapes.size() >= 2) {
-            maker.SetMode(TopoDS::Wire(guides.shapes[1]), Standard_False);
+            maker.SetMode(
+                require_wire(guides.shapes[1], "loft auxiliary guide (second guide)"),
+                Standard_False);
         }
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakePipeShell (loft_guided) failed");
+        }
+        // Same face -> solid rule as make_pipe_shell, for the same reason: the
+        // declared signature is
+        // `loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid`
+        // and the Rust layer registers the result under the default
+        // BRepKind::Solid repr, so an all-face section set — the only kind a
+        // DSL call can supply — must close into a real solid rather than be
+        // mislabelled as one. Mixed or all-wire section sets keep the raw
+        // shell: a wire section carries no enclosed region to cap. That false
+        // branch is pinned by loft_guided_smooth_surface_between_profiles
+        // (all-wire) and loft_guided_mixed_face_and_wire_sections_yield_shell
+        // (mixed), both of which assert the result is NOT closed — flipping
+        // this to an unconditional MakeSolid() fails there.
+        //
+        // ContractViolation for the same reason as make_pipe_shell: a checked
+        // postcondition, not an unforeseen OCCT exception. Op name omitted —
+        // wrap_occt_call prefixes it.
+        if (all_sections_were_faces && !maker.MakeSolid()) {
+            throw ContractViolation(
+                "MakeSolid failed — the face sections lofted to a shell that "
+                "could not be capped into a solid");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
@@ -3457,6 +3854,21 @@ Point3 wire_start_tangent(const OcctShape& wire_shape) {
     });
 }
 
+Point3 wire_start_point(const OcctShape& wire_shape) {
+    return wrap_occt_call("wire_start_point", [&]() {
+        TopoDS_Wire w = TopoDS::Wire(wire_shape.shape);
+        if (w.IsNull()) {
+            throw std::runtime_error("wire_start_point: shape is not a wire");
+        }
+        BRepAdaptor_CompCurve adaptor(w);
+        double u = adaptor.FirstParameter();
+        gp_Pnt p;
+        gp_Vec v;
+        adaptor.D1(u, p, v);
+        return Point3{ p.X(), p.Y(), p.Z() };
+    });
+}
+
 // --- Queries ---
 
 // Compute volume from triangle mesh using surface UV → 3D evaluation.
@@ -3499,6 +3911,14 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
 
 double query_volume(const OcctShape& shape) {
     return wrap_occt_call("query_volume", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The
+        // ShapeType() fallback below dereferences the TShape handle and would
+        // SIGSEGV on a null shape (wrap_occt_call catches C++ exceptions, not
+        // the hardware signal). Primary guard is get_shape (Rust boundary);
+        // this covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_volume: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         double vol = props.Mass();
@@ -3513,6 +3933,12 @@ double query_volume(const OcctShape& shape) {
 
 double query_area(const OcctShape& shape) {
     return wrap_occt_call("query_area", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_area: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         return props.Mass();
@@ -3521,6 +3947,12 @@ double query_area(const OcctShape& shape) {
 
 double query_edge_length(const OcctShape& shape) {
     return wrap_occt_call("query_edge_length", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_edge_length: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::LinearProperties(shape.shape, props);
         return props.Mass();
@@ -4065,6 +4497,12 @@ double curve_curvature_at(const OcctShape& shape, double px, double py, double p
 
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Pre-fix this returns Ok(origin) for a null shape;
+        // refuse loudly instead. Primary guard is get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_centroid: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
@@ -4081,6 +4519,13 @@ Point3 query_centroid(const OcctShape& shape) {
 /// need the geometric centroid of the surface.
 Point3 query_face_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_face_centroid", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Reached from the Centroid dispatch for Face-repr
+        // handles, so pre-fix a null-topology face returns Ok(origin); refuse
+        // loudly instead. Primary guard is get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_face_centroid: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
@@ -4090,6 +4535,11 @@ Point3 query_face_centroid(const OcctShape& shape) {
 
 BBox query_bbox(const OcctShape& shape) {
     return wrap_occt_call("query_bbox", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_bbox: shape has null/empty topology");
+        }
         Bnd_Box box;
         BRepBndLib::Add(shape.shape, box);
         double xmin, ymin, zmin, xmax, ymax, zmax;
@@ -4463,6 +4913,14 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     // guard to avoid re-wrapping the intentional symmetry-check diagnostic.
     GProp_GProps props;
     wrap_occt_call("query_inertia_tensor", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before VolumeProperties
+        // (see query_volume). Guard lives inside the wrap_occt_call lambda so
+        // the throw is caught and mapped to a catchable Err; the MatrixOfInertia
+        // math below stays outside the lambda by design. Primary guard is
+        // get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_inertia_tensor: shape has null/empty topology");
+        }
         BRepGProp::VolumeProperties(shape.shape, props);
     });
     gp_Mat m = props.MatrixOfInertia();
@@ -4632,6 +5090,15 @@ static void collect_compound_leaves(
             parts.push_back(child);
         }
     }
+}
+
+bool shape_is_null(const OcctShape& shape) {
+    // Trivial inline null-handle check: TopoDS_Shape::IsNull() reads the TShape
+    // handle and cannot throw, so no wrap_occt_call/Result is needed. Used by
+    // the Rust get_shape boundary to reject a non-null OcctShape wrapping null
+    // topology before it reaches the geometry-query FFI, where dereferencing
+    // the null TShape (e.g. query_volume's ShapeType() fallback) would SIGSEGV.
+    return shape.shape.IsNull();
 }
 
 bool is_connected(const OcctShape& shape) {
@@ -5015,6 +5482,21 @@ std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z)
         result->shape = vertex_maker.Vertex();
         return result;
     });
+}
+
+std::unique_ptr<OcctShape> make_null_shape_for_test() {
+    // A default-constructed OcctShape whose `.shape` member is a null
+    // (IsNull()==true) TopoDS_Shape — a NON-null unique_ptr wrapping null
+    // topology. This is the exact crash input for the geometry-query FFI: it
+    // passes get_shape's null-UniquePtr check (the pointer is non-null) yet
+    // dereferences to a null TShape, so e.g. query_volume's ShapeType()
+    // fallback would SIGSEGV without the null/empty-topology guards. Such a
+    // shape cannot be constructed from Rust (OcctShape is opaque); the sibling
+    // insert_null_shape only injects a null UniquePtr, which get_shape already
+    // rejects via ptr.as_ref(). Default construction of TopoDS_Shape cannot
+    // throw, so no wrap_occt_call is needed and the bridge fn returns a plain
+    // UniquePtr (no Result).
+    return std::make_unique<OcctShape>();
 }
 
 std::unique_ptr<OcctShape> make_edge_for_test() {
@@ -5983,13 +6465,13 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                     (ax == cx && ay == cy && az == cz) ||
                     (bx == cx && by == cy && bz == cz);
 
-                // Fallback for non-coincident degenerates. Unlike the
-                // equality check above this is NOT proven FMA-immune (this
-                // TU's default -ffp-contract=fast vs check_contract's
-                // unfused Rust), but only a thin non-coincident sliver —
-                // which no current fixture emits — could diverge. Pinning
-                // -ffp-contract=off (build.rs, outside this task's locked
-                // scope) is tracked as follow-up #5241.
+                // Fallback for non-coincident degenerates. This TU is
+                // compiled with -ffp-contract=off (build.rs), so this
+                // float (b-a)×(c-a) cross product is unfused and
+                // bit-matches check_contract's unfused Rust arithmetic
+                // regardless of whether target FMA codegen is enabled —
+                // closing the residual divergence risk (task #5241,
+                // follow-up to #5164) by construction.
                 float abx = bx - ax, aby = by - ay, abz = bz - az;
                 float acx = cx - ax, acy = cy - ay, acz = cz - az;
                 float cross_x = aby * acz - abz * acy;

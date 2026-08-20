@@ -1,5 +1,6 @@
 use super::*;
 
+pub(crate) mod display;
 pub(crate) mod materialize;
 pub(crate) mod schema;
 

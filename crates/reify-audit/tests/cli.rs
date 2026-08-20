@@ -106,20 +106,6 @@ fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
     })
 }
 
-/// Bind an OS-assigned port, record it, then drop the listener so the port
-/// is closed before the binary connects. Returns a URL pointing at the freed
-/// port suitable for "connection refused" tests.
-///
-/// TOCTOU: another process could reclaim the freed port before the binary
-/// connects. In practice ephemeral ports are not immediately reused and this
-/// idiom is widely accepted for this purpose.
-fn closed_port_url() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let port = listener.local_addr().expect("local_addr").port();
-    drop(listener);
-    format!("http://127.0.0.1:{port}/mcp")
-}
-
 /// Recursively copy the directory tree at `src` into `dst` (creating `dst`).
 /// Used to lift the committed `tests/fixtures/ptodo/` tree into a throwaway
 /// git repo so its root-relative paths escape the live `crates/reify-audit/`
@@ -140,14 +126,19 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 }
 
 /// `git init` + add + commit every file under `dir` (identity + gpgsign
-/// disabled, mirroring `tests/real_git_ops.rs`). After this, `git -C <dir>
-/// ls-files` returns every fixture path so `RealGitOps::ls_files` enumerates
-/// them for the PTODO structural sweep.
+/// disabled). After this, `git -C <dir> ls-files` returns every fixture path
+/// so `RealGitOps::ls_files` enumerates them for the PTODO structural sweep.
+///
+/// Builds every invocation through `common::git_env::git_cmd`, as does
+/// `tests/real_git_ops.rs` — both now share the single
+/// `reify_audit::git_env` constructor. That is load-bearing, not tidiness:
+/// under a git hook, `GIT_INDEX_FILE` (a *temporary* index, especially for
+/// `git commit --only`) and `GIT_DIR` are exported into the whole process
+/// tree and override `-C <tempdir>`, so a bare `git -C <tempdir> add .`
+/// writes the PARENT repository's index instead of this one.
 fn git_init_commit_all(dir: &Path) {
     let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let status = common::git_env::git_cmd(dir)
             .args(args)
             .status()
             .expect("git command failed to spawn");
@@ -561,11 +552,9 @@ mod cli {
         let dir = tmp.path();
         let runs_db = write_empty_runs_db(dir);
 
-        // Find a closed port to guarantee connection refused.
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let unreachable_url = format!("http://127.0.0.1:{port}/mcp");
+        // An endpoint that refuses connections by construction — see
+        // `common::net` for why port 0 has no TOCTOU window.
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -780,13 +769,13 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--pattern", "P1",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -812,14 +801,19 @@ mod cli {
             serde_json::Value::Array(findings)
         );
 
-        // Fallback breadcrumb must appear on stderr.
+        // Fallback breadcrumb must appear on stderr, pinned to the endpoint
+        // under test. Loose substrings will not do: the binary independently
+        // emits "tasks.db unreachable at ... advisory lanes degraded", so a
+        // bare `contains("unreachable")`/`contains("degrad")` is satisfied
+        // whether or not the jcodemunch arm ever ran.
+        let breadcrumb = format!("jcodemunch unreachable at '{unreachable_url}'");
         assert!(
-            stderr.contains("jcodemunch"),
-            "stderr must contain fallback breadcrumb mentioning 'jcodemunch'; stderr:\n{stderr}"
+            stderr.contains(&breadcrumb),
+            "stderr must contain the fail-soft breadcrumb `{breadcrumb}`; stderr:\n{stderr}"
         );
         assert!(
-            stderr.contains("degrad") || stderr.contains("unreachable") || stderr.contains("Noop"),
-            "stderr breadcrumb must describe fail-soft degradation; stderr:\n{stderr}"
+            stderr.contains("P1 degraded to zero findings"),
+            "stderr breadcrumb must describe the fail-soft degradation; stderr:\n{stderr}"
         );
     }
 
@@ -836,12 +830,12 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -883,6 +877,120 @@ mod cli {
         );
     }
 
+    /// Regression lock (#5830): the URL minted for "jcodemunch is
+    /// unreachable" tests must be unreachable BY CONSTRUCTION, not merely
+    /// unowned at the instant it is minted.
+    ///
+    /// The adversary here is the real one: `spawn_mock_mcp_on` is the same
+    /// in-suite responder whose ephemeral-port recycling closed the failure
+    /// chain in the observed flake. It answers `initialize` with a
+    /// well-formed JSON-RPC result AND an assigned `Mcp-Session-Id`, so
+    /// `RealJCodemunchOps::new` returns `Ok`, the fail-soft `Err(e)`
+    /// breadcrumb arm never runs, and
+    /// `default_sweep_survives_unreachable_jcodemunch`'s breadcrumb
+    /// assertion blows up. Same fixture and argv as that test, and the same
+    /// assertion set, so this lock is strictly stronger than the test it
+    /// shadows; the only difference is the deliberate hijack.
+    ///
+    /// The session header is load-bearing for THIS lock's adversary, not
+    /// incidental: without it the client now rejects the handshake, the
+    /// hijacker stops being a convincing jcodemunch, and the lock quietly
+    /// degrades into a duplicate of the test it is meant to shadow.
+    #[test]
+    fn unreachable_jcodemunch_url_cannot_be_hijacked_by_a_racing_mcp_responder() {
+        let url = common::net::unreachable_mcp_url();
+        let (_addr, hijack) = common::net::try_hijack_url(&url);
+        // Stand a REAL MCP responder at the address the URL names, if the
+        // hijack landed. `|_args| None` suffices: the breadcrumb hinges on
+        // `initialize` succeeding, which the mock always answers happily.
+        let mock = hijack.map(|listener| spawn_mock_mcp_on(listener, |_args| None));
+        let hijacked = mock.is_some();
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--jcodemunch-url", &url,
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit default sweep against a hijacked jcodemunch url");
+
+        // Tear the mock down BEFORE asserting so a failing assertion cannot
+        // leak the accept thread into the rest of the run.
+        if let Some(mock) = mock {
+            mock.stop();
+        }
+
+        let code = out.status.code().unwrap_or(99);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_ne!(
+            code, 125,
+            "default sweep must NOT exit 125 under a racing MCP responder on \
+             {url} (hijack landed: {hijacked}); got {code}\nstderr:\n{stderr}"
+        );
+        assert!(
+            code >= 1,
+            "default sweep must exit non-zero (P5 finding expected) under a \
+             racing MCP responder on {url} (hijack landed: {hijacked}); got \
+             {code}\nstderr:\n{stderr}"
+        );
+
+        // P5 must still fire and find the phantom-done task.
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            p5_high.is_some(),
+            "P5PhantomDone/High/3242 must survive a racing MCP responder on \
+             {url} (hijack landed: {hijacked}); findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+
+        // Assert the WHOLE breadcrumb, pinned to the endpoint under test.
+        // Two loose substrings would not do: the binary also emits an
+        // unrelated "tasks.db unreachable at ..." PTODO diagnostic for this
+        // tempdir project root, so a bare `contains("unreachable")` is
+        // satisfied whether or not the jcodemunch arm ever ran.
+        let breadcrumb = format!("jcodemunch unreachable at '{url}'");
+        assert!(
+            stderr.contains(&breadcrumb),
+            "the fail-soft breadcrumb `{breadcrumb}` must survive a racing MCP \
+             responder on {url} (hijack landed: {hijacked}); stderr:\n{stderr}"
+        );
+    }
+
+    /// Regression lock (#5830), socket layer: a client must still be refused
+    /// at the exact address the unreachable-jcodemunch URL names, even while
+    /// a racing binder holds that address.
+    ///
+    /// Phrased against the outcome ("still refused") rather than against
+    /// "the bind failed", so it holds for any fix that removes the
+    /// time-of-check/time-of-use window rather than over-fitting to one.
+    #[test]
+    fn unreachable_jcodemunch_url_refuses_connections_even_under_a_racing_binder() {
+        let url = common::net::unreachable_mcp_url();
+        // `_hijack` is deliberately bound (not `_`) so any listener that DID
+        // land stays alive across the connect below — that is the adversary.
+        let (addr, _hijack) = common::net::try_hijack_url(&url);
+        assert!(
+            TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_err(),
+            "a client must be refused at {addr} even while a racing binder \
+             holds the address named by {url}"
+        );
+    }
+
     /// `--pattern P1 --no-jcodemunch` keeps P1 inert (Noop) and exits 0.
     ///
     /// Verifies the offline escape hatch: even after step-6 activates real
@@ -896,14 +1004,14 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--pattern", "P1",
                 "--no-jcodemunch",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -944,14 +1052,14 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--task", "42",
                 "--pre-done",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -1220,13 +1328,13 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--pattern", "P5",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -1528,6 +1636,155 @@ mod cli {
         );
     }
 
+    /// The SHIPPED binary must honour its own `--project-root` over an
+    /// ambient `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`.
+    ///
+    /// This is the production half of the hook-environment defect. Git
+    /// exports those three vars into a hook's whole process tree, and for
+    /// `git commit --only` `GIT_INDEX_FILE` names a *temporary* index. An
+    /// unsanitized `git -C <root> ls-files` then reads the PARENT repo's
+    /// index instead of the fixture repo's, so the PTODO sweep enumerates a
+    /// different file set — silently, with no error. Observed as a divergent
+    /// finding set: exit `Some(1)` where `Some(2)` was expected.
+    ///
+    /// Deliberately a near-clone of
+    /// `ptodo_fixture_tree_emits_three_kinds_and_suppresses_allowlist_and_escape`:
+    /// same fixture tree, same helpers, same expectations. The ONLY delta is
+    /// the three poison vars, which makes "a hook environment changes
+    /// nothing" the literal claim under test.
+    ///
+    /// The poison is applied to the CHILD ONLY via `.env(..)`. This test
+    /// never touches its own process environment — `std::env::set_var` is
+    /// process-global and would race sibling tests under `cargo test`'s
+    /// thread-per-test model.
+    #[test]
+    fn ptodo_fixture_sweep_survives_ambient_hook_git_env() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ptodo");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        // A decoy repo standing in for the parent repo a hook would point at,
+        // built by the shared helper so the poisoned variable list has exactly
+        // one home on the test side (`common::git_env::hook_git_env`) rather
+        // than one copy here and one in the replay harness.
+        let decoy = common::git_env::decoy_repo();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let mut cmd = Command::new(bin);
+        cmd.args([
+            "--pattern",
+            "PTODO",
+            "--no-jcodemunch",
+            "--project-root",
+            repo.path().to_str().unwrap(),
+            "--tasks-file",
+            tasks_file.to_str().unwrap(),
+            "--runs-db",
+            runs_db.to_str().unwrap(),
+        ]);
+        common::git_env::poison_with_hook_git_env(&mut cmd, &decoy);
+
+        let out = cmd
+            .output()
+            .expect("invoke reify-audit --pattern PTODO under poisoned git env");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // Same expectations as the clean-env test — that is the point.
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "PTODO fixture sweep must exit 2 under an ambient hook git env exactly as it \
+             does without one (2 High untracked findings); got {:?}\nstderr: {}",
+            out.status.code(),
+            stderr
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            4,
+            "PTODO fixture sweep must emit exactly 4 findings under an ambient hook git \
+             env (an unsanitized ls-files reads the decoy index and enumerates a \
+             different file set); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        let severity_of = |path: &str, kind_prefix: &str| -> Option<&str> {
+            findings.iter().find_map(|f| {
+                if f["task_id"].as_str() == Some(path)
+                    && f["summary"].as_str().is_some_and(|s| s.starts_with(kind_prefix))
+                {
+                    f["severity"].as_str()
+                } else {
+                    None
+                }
+            })
+        };
+        assert_eq!(
+            severity_of("scenario01_untracked.rs", "untracked:"),
+            Some("High"),
+            "untracked must be High under an ambient hook git env"
+        );
+        assert_eq!(
+            severity_of("scenario07_ignore_blocker_prose.rs", "untracked:"),
+            Some("High"),
+            "blocker-prose untracked must be High under an ambient hook git env"
+        );
+        assert_eq!(
+            severity_of("scenario04_malformed_cite.rs", "malformed-cite:"),
+            Some("Medium"),
+            "malformed-cite must stay Medium under an ambient hook git env"
+        );
+        assert_eq!(
+            severity_of("scenario05_phantom_tracking.rs", "phantom-tracking:"),
+            Some("Medium"),
+            "phantom-tracking must stay Medium under an ambient hook git env"
+        );
+
+        // Keep every TempDir guard alive until the assertions are done.
+        drop(repo);
+        drop(aux);
+        drop(decoy);
+    }
+
+    /// The fixture-repo helpers must survive a real *ambient* hook git
+    /// environment, not just a per-child one.
+    ///
+    /// `ptodo_fixture_sweep_survives_ambient_hook_git_env` above poisons only
+    /// the spawned binary, so it proves the PRODUCTION path. It cannot prove
+    /// the helper path: `git_init_commit_all` runs in the *test* process,
+    /// whose environment that test deliberately leaves clean. Under a real
+    /// hook both are poisoned — which is how `git ["add", "."] exited
+    /// Some(128)` was observed, the fixture repo's `add` colliding with the
+    /// parent repository's `index.lock`.
+    ///
+    /// So re-run the `cli::ptodo_*` git-fixture tests in a child process that
+    /// has the poison ambient. The name of this test is deliberately outside
+    /// the `ptodo_` filter prefix so the replay cannot select itself; the
+    /// helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is the second line of
+    /// defence.
+    ///
+    /// The floor of 5 is the selection measured today (`--list` with this
+    /// filter names `ptodo_degrades_fail_soft_when_tasks_db_absent`,
+    /// `ptodo_env_override_redirects_tasks_db`,
+    /// `ptodo_fixture_sweep_survives_ambient_hook_git_env`,
+    /// `ptodo_fixture_tree_emits_three_kinds_and_suppresses_allowlist_and_escape`
+    /// and `ptodo_orphaned_cite_resolved_against_default_tasks_db`). It exists
+    /// because libtest exits 0 on a zero-match filter: without the floor, a
+    /// rename here would silently downgrade this harness to a vacuous pass.
+    /// Adding a `ptodo_*` test raises the selection freely; losing one fails.
+    #[test]
+    fn hook_env_replay_of_ptodo_git_fixture_tests() {
+        common::git_env::replay_self_under_hook_git_env(&["cli::ptodo_"], 5);
+    }
+
     /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a
     /// repo with a cited marker and an untracked marker but NO
     /// `.taskmaster/tasks/tasks.db` must (1) emit the EXACT §6.7 breadcrumb on
@@ -1798,6 +2055,13 @@ mod cli {
 // blocking HTTP server stands in for fused-memory; it speaks just enough of
 // MCP streamable-HTTP to answer `initialize`, `notifications/initialized`,
 // and a single `tools/call get_task` per session.
+//
+// "Just enough" now includes assigning a session id: the `initialize`
+// response carries an `Mcp-Session-Id` header (see [`MOCK_SESSION_ID`]),
+// because `JcodemunchClient` treats an initialize response with no
+// server-assigned session as a hard `Protocol` failure. The mock answers
+// the header but does not police it — see
+// [`write_response_with_session`] for why enforcement is off the table.
 
 /// Read a complete HTTP/1.1 request from `stream` and return its body as a
 /// JSON Value. Assumes Content-Length is present (which `ureq` always sets
@@ -1825,16 +2089,50 @@ fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
     serde_json::from_slice(&buf).ok()
 }
 
+/// The session id this mock assigns on `initialize`.
+///
+/// `JcodemunchClient` requires the server to assign one — an `initialize`
+/// response with no `Mcp-Session-Id` header is a hard `Protocol` failure —
+/// so without this the mock would no longer stand in for a live seam at
+/// all. Deliberately not 32 lowercase hex, so it can never be confused
+/// with a client-minted id.
+const MOCK_SESSION_ID: &str = "mock-mcp-session";
+
 fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
+    write_response_with_session(stream, status, None, body)
+}
+
+/// As [`write_response`], but additionally emits an `Mcp-Session-Id`
+/// response header when `session` is `Some`.
+///
+/// Only the `initialize` arm needs it: assigning the session is the
+/// server's job, and every later request carries the id back on the
+/// request side. The mock deliberately does NOT *enforce* the contract
+/// (no 404 on an inbound id, no 400 on a missing one) — the same responder
+/// backs the `--fused-memory-url` loader tests, and `fused_memory_client`
+/// still mints its own id and sends it on `initialize`, so enforcement
+/// would turn all of those red. The jcodemunch-side contract is locked
+/// gate-resident by the hermetic unit tests in `jcodemunch_client.rs`,
+/// which assert the request headers directly.
+fn write_response_with_session(
+    stream: &mut TcpStream,
+    status: u16,
+    session: Option<&str>,
+    body: &[u8],
+) {
     let status_text = match status {
         200 => "OK",
         202 => "Accepted",
         _ => "OK",
     };
-    let header = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut header = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
     );
+    if let Some(session) = session {
+        header.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
+    }
+    header.push_str("\r\n");
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body);
 }
@@ -1850,18 +2148,35 @@ struct MockServer {
     handle: Option<thread::JoinHandle<()>>,
 }
 
-/// Spawn a one-shot mock MCP server. `task_responder` is given the
-/// `tools/call` arguments and returns the JSON-RPC `result` value to send
-/// back (or `None` to return an error envelope). Returns a [`MockServer`]
-/// handle; the caller calls [`MockServer::stop`] (or lets it drop) to tear
-/// down. The accept loop also uses a short `set_nonblocking` poll so it
-/// wakes periodically to check the stop flag even without a wakeup
-/// connection — that way a stop request can't hang the test runner.
+/// Spawn a one-shot mock MCP server on an OS-assigned ephemeral port.
+/// `task_responder` is given the `tools/call` arguments and returns the
+/// JSON-RPC `result` value to send back (or `None` to return an error
+/// envelope). Returns a [`MockServer`] handle; the caller calls
+/// [`MockServer::stop`] (or lets it drop) to tear down.
+///
+/// Thin wrapper over [`spawn_mock_mcp_on`], which takes an already-bound
+/// listener so a caller can place the responder at a *chosen* address.
 fn spawn_mock_mcp<F>(task_responder: F) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    spawn_mock_mcp_on(listener, task_responder)
+}
+
+/// Spawn a one-shot mock MCP server on an ALREADY-BOUND `listener`, deriving
+/// the advertised `addr`/`url` from `listener.local_addr()`. Lets a caller
+/// stand a real MCP responder at a specific address (e.g. to play the
+/// adversary in a port-recycling regression lock) rather than at whatever
+/// ephemeral port the OS hands out.
+///
+/// The accept loop uses a short `set_nonblocking` poll so it wakes
+/// periodically to check the stop flag even without a wakeup connection —
+/// that way a stop request can't hang the test runner.
+fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
     let addr = listener.local_addr().expect("local_addr");
     let url = format!("http://127.0.0.1:{}/mcp/", addr.port());
     let stop = Arc::new(AtomicBool::new(false));
@@ -1919,7 +2234,12 @@ where
                             "serverInfo": {"name": "mock-mcp", "version": "0.1"}
                         }
                     });
-                    write_response(&mut stream, 200, resp.to_string().as_bytes());
+                    write_response_with_session(
+                        &mut stream,
+                        200,
+                        Some(MOCK_SESSION_ID),
+                        resp.to_string().as_bytes(),
+                    );
                 }
                 "notifications/initialized" => {
                     write_response(&mut stream, 202, b"");
@@ -2237,12 +2557,9 @@ mod http_loader {
         let dir = tmp.path();
         let runs_db = write_empty_runs_db(dir);
 
-        // Find a port that's almost certainly closed: bind, get its port,
-        // then drop the listener so subsequent connects refuse.
-        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = throwaway.local_addr().expect("addr").port();
-        drop(throwaway);
-        let url = format!("http://127.0.0.1:{port}/mcp/");
+        // An endpoint that refuses connections by construction — see
+        // `common::net` for why port 0 has no TOCTOU window.
+        let url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)

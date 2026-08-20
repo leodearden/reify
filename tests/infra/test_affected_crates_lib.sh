@@ -255,6 +255,30 @@ _check_mixed_contains_reify_doc() {
 assert "mixed tests/infra + crate diff contains reify-doc" _check_mixed_contains_reify_doc
 
 # ---------------------------------------------------------------------------
+# Amendment (code-review follow-up, task 6277): --locked non-mutation check.
+#
+# --locked's whole purpose is refusing to rewrite Cargo.lock rather than
+# silently updating it (scripts/affected-crates-lib.sh _reverse_closure).
+# Must run against the REAL cargo, so it is placed here — before the
+# cargo-failure stub section below redefines cargo() for the rest of this
+# shell (see that section's own placement comment). This only holds while
+# the repo's Cargo.lock is valid/in-sync, which every closure assertion
+# above already depends on (each needs a real `cargo metadata` to succeed).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Amendment (task 6277): affected_crates does not mutate Cargo.lock ---"
+
+_check_cargo_lock_unchanged() {
+    local before after
+    [ -f "$REPO_ROOT/Cargo.lock" ] || return 1
+    before="$(cat "$REPO_ROOT/Cargo.lock")"
+    affected_crates crates/reify-core/src/lib.rs >/dev/null
+    after="$(cat "$REPO_ROOT/Cargo.lock")"
+    [ "$before" = "$after" ]
+}
+assert "affected_crates leaves Cargo.lock byte-for-byte unchanged" _check_cargo_lock_unchanged
+
+# ---------------------------------------------------------------------------
 # Step 11: C5 metadata-failure fail-wide + C4 global precedes crates in list
 # ---------------------------------------------------------------------------
 echo ""
@@ -273,5 +297,37 @@ assert "cargo metadata failure -> ALL" _check_cargo_fail_all
 
 assert "global anywhere in list -> ALL" \
     test "$(affected_crates crates/reify-cli/src/main.rs Cargo.lock)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# Amendment (code-review follow-up, task 6277): argv coverage for --locked.
+#
+# The C5 cargo-failure->ALL assertion above proves the fallback fires on any
+# cargo error, but it passes identically whether or not --locked is on the
+# invocation — a future revert of the flag would be silently green here.
+# This records the literal argv _reverse_closure hands to cargo so a revert
+# fails loudly and specifically.
+#
+# Placed LAST: like the stub above, cargo() gets redefined in the current
+# shell (assert invokes checkers directly, not in a subshell) and is never
+# unset, so nothing after this point may rely on the real cargo.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Amendment (task 6277): cargo metadata invoked with --locked ---"
+
+_check_cargo_invoked_with_locked() {
+    local argv_file
+    argv_file="$(mktemp "${TMPDIR:-/tmp}/reify-cargo-argv.XXXXXX")" || return 1
+    # shellcheck disable=SC2317  # invoked indirectly, via _reverse_closure
+    cargo() { printf '%s\n' "$*" >"$argv_file"; return 1; }
+    affected_crates crates/reify-core/src/lib.rs >/dev/null
+    local recorded
+    recorded="$(cat "$argv_file" 2>/dev/null)"
+    rm -f "$argv_file"
+    case "$recorded" in
+        metadata*--locked*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+assert "_reverse_closure invokes cargo metadata with --locked" _check_cargo_invoked_with_locked
 
 test_summary

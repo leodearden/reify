@@ -9,6 +9,34 @@ Project specialization for the generic `/prd` skill (`~/.claude/skills/prd/`, �
 - **PRD path:** `docs/prds/<vM_N>/<slug>.md`, where `<vM_N>` is the milestone dir (`v0_3`, `v0_4`, `v0_5`); root-level `docs/prds/` for version-agnostic foundations.
 - **Substrate-confirmed metadata field:** `grammar_confirmed` (bool): true iff the task's mechanism uses existing grammar, false if it queues grammar work.
 
+## Landing PRD artifacts (author-mode Stage 10 / decompose Step 5.5)
+
+Commit the PRD `.md`, its `.capability-manifest.md`, the `.capability-manifest.yaml` sidecar and any `.ri` fixtures **directly on `main` in project_root, in ONE commit**. Do **not** route them through the orchestrator merge queue, and do **not** use `scripts/land.sh`.
+
+Both branch routes stamp `DF_VERIFY_ROLE=merge`, which makes `scripts/verify.sh` force `--scope all` (contract C2, `verify.sh:778`) and `--profile both` (`:602`); dark-factory's INV-1 (`verify.py:5499`, DF task 2883) additionally refuses the docs-only trivial pass at merge role and escalates it to the full global gate, because an adoptable merge verdict must never be stamped from zero evidence. A docs-only merge therefore costs a full cold debug+release workspace build — reify budgets `merge_verify_cold_command_timeout_secs: 10800` (3 h). A commit on `main` instead runs `hooks/pre-commit` → `verify.sh all --profile debug --scope staged --include-infra` with `DF_VERIFY_ROLE` unset (role `task`, so no C2 force), where `decide_scope` classifies `docs/*|*.md|*.yaml|*.yml` **plus `tests/prd-gate/fixtures/*.ri`** (task #5536) as no-heavy-checks: seconds — so the one-commit landing really is seconds *including* the fixtures.
+
+This is **sanctioned**, not a main-gate violation: `hooks/pre-commit` runs `project-checks` on `main` and then calls `main_gate_mark`, so `hooks/reference-transaction` logs the ref move as SANCTIONED. The `CLAUDE.md` invariant forbids moving `main` *without* a gate (`merge --no-verify`, `update-ref`, `reset`, `commit-tree`) — a hook-gated commit is not that.
+
+Sequence — **flip first, commit the stamped sidecar once**:
+
+1. Write the artifacts as untracked files at their canonical paths.
+2. File the batch (`planning_mode=True`), wire deps, then `commit_planning` — it stamps the on-disk sidecar **in place** and copies `delivered_checks` into producer metadata. Never land an unstamped sidecar and stamp afterwards.
+3. `git add <each exact file path>`.
+4. `git commit --only <same exact paths> -F <msgfile>`.
+
+Traps:
+
+- **Never `--no-verify` on `main`.** `reify.mainGate.enforce` is `true`; `--no-verify` skips `pre-commit`, so no sentinel is marked, `hooks/reference-transaction` sees an UNSANCTIONED main move and **hard-aborts the transaction**. This is dark-factory's docs-only-commit habit — it is fatal here.
+- **Never `git checkout -b` in project_root** — it moves the running orchestrator's checkout off `main`.
+- Confirm `HEAD == main` before committing; the offline lane can leave project_root on another branch.
+- **Never `git add -A` or a directory** — project_root is a shared hot checkout with concurrent `/prd` sessions and the orchestrator; a directory add sweeps their untracked files into your commit. List every path explicitly. (`--only` in step 4 likewise ignores foreign *staged* state; a pathspec commit alone fails on untracked files, which is why step 3 exists.)
+- `pre-commit` can exceed a default 2-minute tool timeout — pass `timeout >= 300000`.
+- **Re-baselining (or renaming) an EXISTING `.ri` fixture that a Rust test reads** still escalates `pre-commit` to the full workspace suite, **by design**: those fixtures are runtime inputs to compiled test targets, and a hook-gated commit on `main` has no later gate. That edit belongs on a task branch through the merge queue, not in the docs-landing commit. Adding NEW fixtures does not. The set is small and named in exactly one place — `_RUST_COUPLED_RI_FIXTURES` in `scripts/verify.sh`; read it there rather than trusting a copy (most `stdlib_ns_*` / `compiler_type_hygiene_*` fixtures are **not** members).
+
+Landing PRD `.md` and manifest/sidecar via *separate* vehicles is how `resolution-unification` and `stdlib-namespace` ended up with their `.md` on `main` and their manifest halves stranded untracked in project_root (2026-07-25). One commit, all artifacts.
+
+Committing in place also obviates the branch-landing sidecar dance (copying `commit_planning`'s `yaml.dump`-rewritten sidecar back into the branch and `cmp`-ing every file to avoid a dirty tracked file in project_root): the on-disk and committed copies are identical by construction.
+
 ## Provenance & portfolio
 
 This skill operationalizes the **2026-05-12 architecture audit**: ~19/44 mechanism clusters fit the **incomplete/ill-formed implementation chain** pattern (memory `preferences_implementation_chain_naming`). The dominant prevention is discipline at PRD-authoring and decomposition time, before any task reaches the orchestrator.
@@ -122,6 +150,20 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 
 **Worked case — esc-4914-162 (2026-07-01):** task 4914 landed `crates/reify-solver-elastic/tests/solver_gate_smoke.rs` (gate-resident smoke binary, offline-deep-test-lane PRD task A3) without its drift-guard registrations (`test_run_all_classification.sh` + `test_no_new_wallclock_upper_bounds.sh`), turning main RED for every subsequent merge; the registration (A6) was ordered after A3 by PRD prose only, not a hard `add_dependency` edge — the A3-before-A6 failure this check exists to catch.
 
+## Docs-truth gate (language/stdlib/tooling surface)
+
+**Trigger:** the PRD adds or changes anything a `.ri` author can observe — grammar/syntax, builtins or stdlib functions and their signatures, geometry/query/transform semantics, diagnostics, or CLI/GUI behavior a design session relies on (collectively: language surface).
+
+**Author-mode rule:** the PRD must carry deliverable leaves for all four of:
+1. **Doc-chunk update, registry-verified.** The affected `crates/reify-mcp/src/tools/chunks/*.md` chunk(s) updated in this PRD, with every documented signature verified against the compiler arms/registries (`crates/reify-compiler/src/{geometry,geometry_curve,geometry_transform,geometry_modify,geometry_boolean}.rs`, the `units.rs` name registries). Acceptance: each documented signature compiles as written in a smoke `.ri`.
+2. **Exemplar-corpus update.** If the change introduces or alters an authoring idiom, a leaf adds/updates a worked example under `examples/best_practices/` (auto-compile-gated by `crates/reify-compiler/tests/examples_smoke.rs`; keep normative claims in code/constraints, not comments) plus its `INDEX.md` line. Where the new feature enables a cleaner idiom than existing corpus or stdlib code uses, updating those exemplars is in scope for this PRD. (Corpus seeded by task #5397.)
+3. **reify-design cheatsheet index update.** A one-line index entry in `.claude/skills/reify-design/SKILL.md` pointing at the corpus file — not an inline playbook.
+4. **Discoverability acceptance.** The leaf's signal includes intent-level findability: an author who knows the *goal* (e.g. "check two parts don't collide") but not the feature name finds the mechanism from the chunks or the corpus index — the right topic chunk / index line names the capability in intent terms.
+
+**Decompose-mode rule:** reject a leaf batch where a language-surface capability leaf has no same-PRD doc-chunk leaf, or where the doc leaves are ordered by prose only — wire them same-diff or as real `add_dependency` edges.
+
+**Worked case — 2026-07-24 language review:** ~40% of the printer_v01 dogfood session's CLI spend went to probing what the language can do. The static interference/clearance oracle (`interferes`/`min_clearance`/`intersects`/`distance`) had ZERO chunk presence and the session shipped mechanically-checkable interferences (#5389); phantom chunk signatures `rotate(geo,axis,angle)` / `translate(geo,vector)` cost live probe cycles (#5347/#5364). Each was language surface that landed without its doc leaf.
+
 ## Capability Manifest — reify evidence forms
 
 Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf* for reify. **Manifest path:** `docs/prds/<vM_N>/<slug>.capability-manifest.md` (commit beside the PRD).
@@ -163,6 +205,7 @@ Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf*
 - `feedback_prd_grammar_gate` — G3 source.
 - `feedback_orchestrator_narrow_locks_favor_upfront_design` — why G5 tilts toward H.
 - `feedback_commit_prds_before_referencing_tasks` — author commits before decompose references.
+- topic `docs-prd-landing` (canonical, 2026-07-25) — the "Landing PRD artifacts" section above. It **supersedes five contradictory predecessors** (2026-06-02 / 06-24 / 07-01 / 07-06 / 07-11), all deleted. If you recall a "land docs via the merge queue", "`scripts/land.sh`", or "`git merge --ff-only`" landing procedure, it is deleted and wrong — follow the section above.
 - `feedback_planning_mode_scope` — why decompose uses planning_mode=True.
 - `procedural_fused_memory_two_phase_writes` — submit_task + resolve_ticket (planning_mode=False only).
 - `preferences_bookmark_task_pattern` — bookmark/deferred-batch lifecycle.

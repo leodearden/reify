@@ -41,6 +41,7 @@
         crate::sweep_classifier::SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
+            profile: GeometryHandleId(0),
         }
     }
 
@@ -243,6 +244,115 @@
                 );
             }
             other => panic!("subcase B: expected Err(OperationFailed), got {other:?}"),
+        }
+    }
+
+    // ── Task 5218 step-11: build_swept_2d_mesh as the real gmsh_2d closure ──
+    // Integration proof: dispatch a Some(Extrude) referencing a RectangleProfile
+    // with the REAL producer wired as gmsh_2d. The producer must build a valid
+    // boundary and reach mesh_swept_profile_2d (never fall back to tet via an
+    // EmptyBoundary/DegenerateBoundary short-circuit). With Gmsh available the
+    // realization is Swept; in a stub build Gmsh is unavailable and the swept
+    // path deterministically falls back to Tet — the strict-Swept assertion is
+    // gated on that so the test is deterministic in both build configs.
+    //
+    // The gate is the SPECIFIC Err(GmshUnavailable) variant, not `is_err()` /
+    // `!is_ok()`. Gating on success would conflate "Gmsh is absent from this
+    // build" with "Gmsh ran and failed": a genuine Err(GmshFailed(_)) in a
+    // libgmsh build would silently take the lenient stub branch, skipping the
+    // strict Ok(Swept(_)) assertion this test exists to make, and a real 2-D
+    // meshing regression would pass unnoticed. Branching on the variant sends
+    // every other error — GmshFailed included — into the strict branch, where
+    // it fails loudly.
+
+    #[test]
+    fn dispatch_swept_kind_with_real_producer_reaches_mesher_and_realizes_swept() {
+        use std::cell::Cell;
+
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            reify_ir::GeometryOp::RectangleProfile {
+                width: reify_ir::Value::length(0.04),
+                height: reify_ir::Value::length(0.02),
+            },
+            reify_ir::GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: reify_ir::Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = crate::sweep_classifier::SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: reify_ir::Value::length(0.01),
+            profile: profile_handle,
+        };
+
+        // Recorded inside the gmsh_2d closure: whether the producer validated a
+        // boundary (anything but ProfileUnresolvable/EmptyBoundary/
+        // DegenerateBoundary) and whether this build simply has no Gmsh linked
+        // (the one outcome that licenses the lenient Tet-fallback assertion
+        // below). ProfileUnresolvable is load-bearing in that list: it is how a
+        // producer-side resolution failure now reports, so omitting it would let
+        // an unresolvable profile silently satisfy `reached_mesher`.
+        let reached_mesher = Cell::new(false);
+        let gmsh_unavailable = Cell::new(false);
+
+        let result = dispatch_volume_mesh(
+            Some(&kind),
+            false, // force_tet — exercise the real swept path
+            false, // require_hex_wedge
+            &ops,
+            &handles,
+            |swept| {
+                let r = crate::sweep_classifier::build_swept_2d_mesh(
+                    swept,
+                    &ops,
+                    &handles,
+                    reify_solver_elastic::SweepElementTarget::HexPreferred,
+                    &reify_solver_elastic::Mesh2dOptions::default(),
+                );
+                reached_mesher.set(!matches!(
+                    &r,
+                    Err(Mesh2dError::EmptyBoundary)
+                        | Err(Mesh2dError::DegenerateBoundary)
+                        | Err(Mesh2dError::ProfileUnresolvable(_))
+                ));
+                gmsh_unavailable.set(matches!(&r, Err(Mesh2dError::GmshUnavailable)));
+                r
+            },
+            |_params, _mesh| Ok(make_swept_mesh(2)),
+            || Ok(make_empty_volume_mesh()),
+        );
+
+        assert!(
+            reached_mesher.get(),
+            "the real producer must build a valid boundary and forward to \
+             mesh_swept_profile_2d — never fall back via \
+             ProfileUnresolvable/EmptyBoundary/DegenerateBoundary"
+        );
+        if gmsh_unavailable.get() {
+            assert!(
+                matches!(result, Ok(VolumeMeshOutcome::Tet(_))),
+                "with gmsh unavailable (stub build), the swept path falls back to Tet \
+                 (not via EmptyBoundary); got {result:?}"
+            );
+        } else {
+            // Gmsh IS linked in this build, so the 2-D mesh must actually have
+            // been produced. A GmshFailed(_) lands here too and fails loudly,
+            // which is the point: it is a real meshing regression, not a
+            // build-config difference to be tolerated.
+            match result {
+                Ok(VolumeMeshOutcome::Swept(mesh3d)) => {
+                    assert_eq!(
+                        mesh3d.layers, 2,
+                        "swept realization must carry the sweep_step mock's layers"
+                    );
+                }
+                other => panic!(
+                    "gmsh_2d returned something other than Err(GmshUnavailable), so Gmsh is \
+                     linked in this build and the swept path must realize Ok(Swept(_)); got {other:?}"
+                ),
+            }
         }
     }
 

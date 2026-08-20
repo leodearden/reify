@@ -231,6 +231,48 @@ fn joint_force_value_is_empty_marker_trait() {
     );
 }
 
+// Closed-set pin only: per-structure trait-bound conformance is already
+// asserted individually by the sibling tests below (e.g.
+// `scalar_force_has_one_real_param_and_refines_joint_force_value`); this
+// test's sole new signal is that the refinement set is closed at exactly
+// six members. The scan is deliberately scoped to std/dynamics only (via
+// `load_stdlib_module()`) — a refiner declared in another stdlib module
+// would not be caught here.
+#[test]
+fn joint_force_value_refinement_set_is_exactly_six_structures() {
+    let module = load_stdlib_module();
+    let mut refiners: Vec<&str> = module
+        .templates
+        .iter()
+        .filter(|t| {
+            t.entity_kind == EntityKind::Structure
+                && t.trait_bounds
+                    .iter()
+                    .any(|b| b.as_str() == "JointForceValue")
+        })
+        .map(|t| t.name.as_str())
+        .collect();
+    refiners.sort();
+
+    assert_eq!(
+        refiners,
+        vec![
+            "CylForce",
+            "PlanarForce",
+            "ScalarForce",
+            "ScalarTorque",
+            "SphereForce",
+            "ZeroForce",
+        ],
+        "JointForceValue's refinement set is the marker-trait encoding of the \
+         PRD's tagged union (see the TAGGED-UNION NOTE above `trait \
+         JointForceValue`) and must stay exactly these six structure_defs; \
+         adding, removing, or migrating a member to a data-carrying enum must \
+         be a deliberate, reviewed change, not silent drift — got {:?}",
+        refiners
+    );
+}
+
 // ─── JointForceValue variants ─────────────────────────────────────────────────
 
 #[test]

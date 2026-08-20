@@ -154,6 +154,28 @@ _default_slow_timeout_seconds_for_file() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper (task 5984): extract the [profile.default] table's global test-threads
+# pool cap — section-scoped to that table only (the /^\[/ reset excludes the
+# [[profile.default.overrides]] blocks that follow), mirroring
+# _default_slow_timeout_seconds_for_file above and test_occt_gated_scope.sh's
+# _DEFAULT_TT_AWK. Prints the integer (e.g. "16") or an empty string if the key
+# is absent. Feeds Assertion I.
+# Usage: _default_test_threads_for_file <file>
+# ---------------------------------------------------------------------------
+_default_test_threads_for_file() {
+    local file="$1"
+    awk '
+        /^\[profile\.default\]/ { f = 1; next }
+        /^\[/ { f = 0 }
+        f && /^test-threads[[:space:]]*=/ {
+            match($0, /[0-9]+/)
+            print substr($0, RSTART, RLENGTH)
+            exit
+        }
+    ' "$file"
+}
+
+# ---------------------------------------------------------------------------
 # Precompute priority values from nextest.toml (in current shell, not subshell).
 # This makes assertions simple test -n / test -gt checks on already-resolved values.
 # ---------------------------------------------------------------------------
@@ -437,18 +459,74 @@ assert "determinism heavy ceiling (${HS_DET}s = period ${SP_DET:-unset}s * termi
     bash -c "[ -n '${HS_DET:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_DET:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
 
 assert "tensegrity_t0a heavy ceiling (${HS_T0A}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_T0A:-}' ] && [ '${HS_T0A:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_T0A:-}' ] && [ '${HS_T0A:-0}' -lt 3600 ]"
 
 assert "fea_diagnostics_e2e heavy ceiling (${HS_FEA}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_FEA:-}' ] && [ '${HS_FEA:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_FEA:-}' ] && [ '${HS_FEA:-0}' -lt 3600 ]"
 
 assert "representation_within_assertion heavy ceiling (${HS_REPR}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_REPR:-}' ] && [ '${HS_REPR:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_REPR:-}' ] && [ '${HS_REPR:-0}' -lt 3600 ]"
 
 assert "analytical_validation heavy ceiling (${HS_ANAL}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_ANAL:-}' ] && [ '${HS_ANAL:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_ANAL:-}' ] && [ '${HS_ANAL:-0}' -lt 3600 ]"
 
 assert "determinism heavy ceiling (${HS_DET}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_DET:-}' ] && [ '${HS_DET:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_DET:-}' ] && [ '${HS_DET:-0}' -lt 3600 ]"
+
+# ---------------------------------------------------------------------------
+# Assertion I (task 5984): CO-PRESERVATION of BOTH sed anchors in ONE generate.
+#
+# Extends Assertion C's one-generate-many-assertions pattern.  As of task 5984
+# gen-nextest-config.sh rewrites TWO anchors in a single sed pass:
+#   ^occt = { max-threads = N }$   (the occt test-group cap, task 4503/4621)
+#   ^test-threads = N$            (the global [profile.default] pool cap)
+#
+# Both anchored substitutions fail SAFE by construction: if a future edit breaks
+# an anchor the substitution silently no-ops and the generated config keeps the
+# in-file literal.  That is the right failure mode at runtime — but it is
+# INVISIBLE, and for the global pool cap it would mean the cap quietly stops
+# tracking the host.  This assertion is what converts that silent no-op into a
+# loud CI failure: ONE generate carrying BOTH env overrides must produce a
+# single config in which BOTH rewritten values AND all five priority overrides
+# hold together.  A sed edit that rewrites one anchor while dropping or
+# clobbering the other cannot pass here.
+#
+# Compile-free (gen-nextest-config.sh only runs sed, never cargo).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion I (task 5984): one generate rewrites BOTH the occt cap and the global test-threads cap, preserving the priority overrides ---"
+
+_CO_CFG="$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 REIFY_NEXTEST_TEST_THREADS=5 bash "$GEN_CFG")"
+
+_CO_OCCT="$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match($0,/[0-9]+/);print substr($0,RSTART,RLENGTH);exit}' "$_CO_CFG")"
+_CO_TT="$(_default_test_threads_for_file "$_CO_CFG")"
+_CO_T0A="$(_priority_for_file "$_CO_CFG" reify-eval tensegrity_t0a)"
+_CO_FEA="$(_priority_for_file "$_CO_CFG" reify-eval-fea-tests fea_diagnostics_e2e)"
+_CO_REPR="$(_priority_for_file "$_CO_CFG" reify-eval representation_within_assertion)"
+_CO_ANAL="$(_priority_for_file "$_CO_CFG" reify-solver-elastic analytical_validation)"
+_CO_DET="$(_priority_for_file "$_CO_CFG" reify-solver-elastic determinism)"
+
+assert "gen-nextest-config.sh (MAX_THREADS=7 + TEST_THREADS=5 in ONE generate): [test-groups] occt max-threads = 7 (got '${_CO_OCCT:-unset}')" \
+    test "${_CO_OCCT:-}" = "7"
+
+assert "gen-nextest-config.sh (MAX_THREADS=7 + TEST_THREADS=5 in ONE generate): [profile.default] test-threads = 5 (got '${_CO_TT:-unset}') — the co-preservation conjunct" \
+    test "${_CO_TT:-}" = "5"
+
+assert "gen-nextest-config.sh (both caps rewritten): tensegrity_t0a priority override still resolves" \
+    test -n "${_CO_T0A:-}"
+
+assert "gen-nextest-config.sh (both caps rewritten): fea_diagnostics_e2e priority override still resolves" \
+    test -n "${_CO_FEA:-}"
+
+assert "gen-nextest-config.sh (both caps rewritten): representation_within_assertion priority override still resolves" \
+    test -n "${_CO_REPR:-}"
+
+assert "gen-nextest-config.sh (both caps rewritten): analytical_validation priority override still resolves" \
+    test -n "${_CO_ANAL:-}"
+
+assert "gen-nextest-config.sh (both caps rewritten): determinism priority override still resolves" \
+    test -n "${_CO_DET:-}"
+
+rm -f "$_CO_CFG"
 
 test_summary

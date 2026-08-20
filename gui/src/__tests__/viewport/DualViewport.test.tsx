@@ -5,6 +5,7 @@ import { createStore, reconcile } from 'solid-js/store';
 import type { MeshData } from '../../types';
 import { createViewportStore } from '../../stores/viewportStore';
 import type { ViewportState } from '../../stores/viewportStore';
+import { createFeaModeStore } from '../../stores/feaModeStore';
 
 // ── Mock Viewport ────────────────────────────────────────────────────────────
 // Capture rendered instances by viewportId so we can assert mesh sources.
@@ -1050,21 +1051,57 @@ describe('DualViewport feaDiagnostics threading (γ)', () => {
   });
 });
 
-// ── δ: feaModeStore wiring ────────────────────────────────────────────────────
+
+// ── δ: feaModeStore wiring, re-pointed by #5670 ──────────────────────────────
 //
-// Regression test for the feaModeStore dead-code bug (task 4885): DualViewport
-// must instantiate createFeaModeStore() and forward it to the design-main
-// Viewport so that contour/deformed-shape rendering paths are live.
+// Task 4885 fixed a dead-code bug by having DualViewport instantiate its own
+// createFeaModeStore() and forward it to design-main. #5670 keeps the *forward*
+// and moves the *ownership*: App owns one viewportId-keyed registry serving
+// both the DualViewport and MultiViewport branches, so DualViewport becomes a
+// pure passthrough — matching MultiViewport's "enforces no pane policy,
+// synthesizes no defaults" contract.
 //
-// Without the fix, props.feaModeStore === undefined on the design-main Viewport
-// and all B5/B6 PRD FEA render paths are permanently dead.
-//
-// GREEN on branch task/4885 (impl: commit e3ff203f90).
-// RED on main (wiring absent → designProps.feaModeStore === undefined).
+// Why the change: a component-local store made single-pane and multi-pane mode
+// two different owners of "the" FEA state, so flipping a file between layouts
+// silently reset the user's channel/palette/warp selection, and the single
+// __REIFY_DEBUG__.feaMode slot had two competing writers.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('DualViewport feaModeStore wiring (δ / task 4885)', () => {
-  it('design-main Viewport receives a real feaModeStore created by DualViewport', async () => {
+describe('DualViewport feaModeStore wiring (δ / task 4885, re-pointed by #5670)', () => {
+  it('forwards the INJECTED feaModeStore to design-main by identity', async () => {
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['mesh/A']);
+    const defPreviewStore = makeDefPreviewStore();
+    const viewportStore = makeViewportStore();
+    // Constructed here, in the test, so identity below is unambiguous.
+    const injected = createFeaModeStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => false}
+        designViewportActive={() => true}
+        defName={() => null}
+        onForceExpand={vi.fn()}
+        feaModeStore={injected}
+      />
+    ));
+
+    const designProps = capturedViewportPropsByid['design-main'];
+    expect(designProps).toBeDefined();
+    // Reference identity, not mere presence: a re-introduced component-local
+    // createFeaModeStore() would still satisfy "is defined" while quietly
+    // orphaning the store App registered on the debug context and handed to
+    // whatever else needs it. It must be the caller's instance.
+    expect(designProps.feaModeStore).toBe(injected);
+    // Still a real store — the 4885 dead-code guarantee is unchanged.
+    expect(typeof designProps.feaModeStore.setEnabled).toBe('function');
+    expect(designProps.feaModeStore.state.enabled).toBe(false);
+  });
+
+  it('synthesizes NO default store — omitting the prop leaves design-main without FEA UI', async () => {
     const { DualViewport } = await importDualViewport();
     const engineStore = makeEngineStore(['mesh/A']);
     const defPreviewStore = makeDefPreviewStore();
@@ -1082,20 +1119,20 @@ describe('DualViewport feaModeStore wiring (δ / task 4885)', () => {
       />
     ));
 
-    // The design-main Viewport must receive a real feaModeStore so that the
-    // colorize/bake and warp-deformed rendering effects are not dead-coded.
+    // The inverse of the identity case above: this is what actually pins
+    // "DualViewport no longer creates a store of its own". <Viewport> gates its
+    // FEA overlay on the prop, so undefined here means no toolbar renders.
     const designProps = capturedViewportPropsByid['design-main'];
     expect(designProps).toBeDefined();
-    expect(designProps.feaModeStore).toBeDefined();
-    expect(typeof designProps.feaModeStore.setEnabled).toBe('function');
-    expect(designProps.feaModeStore.state.enabled).toBe(false);
+    expect(designProps.feaModeStore).toBeUndefined();
   });
 
-  it('def-preview Viewport does NOT receive feaModeStore (FEA only on design canvas)', async () => {
+  it('def-preview Viewport does NOT receive feaModeStore even when one is injected', async () => {
     const { DualViewport } = await importDualViewport();
     const engineStore = makeEngineStore(['mesh/A']);
     const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'Name');
     const viewportStore = makeViewportStore();
+    const injected = createFeaModeStore();
 
     render(() => (
       <DualViewport
@@ -1106,41 +1143,50 @@ describe('DualViewport feaModeStore wiring (δ / task 4885)', () => {
         designViewportActive={() => true}
         defName={() => 'Name'}
         onForceExpand={vi.fn()}
+        feaModeStore={injected}
       />
     ));
 
-    // The def-preview pane is not FEA-colorized; it must not receive a feaModeStore.
-    // Assert the pane actually rendered before checking the negative (avoids vacuous pass).
+    // Definition-preview geometry never carries FEA scalar channels, so the
+    // exclusion is deliberate and survives #5670's "every pane gets a store"
+    // generalization — def-preview is not a model pane.
+    // Assert the pane rendered before checking the negative (avoids vacuous pass).
     expect(capturedViewportPropsByid['def-preview']).toBeDefined();
     expect(capturedViewportPropsByid['def-preview']?.feaModeStore).toBeUndefined();
   });
 });
 
-// ── ε: feaMode debug-context registration (task 4981) ────────────────────────
+// ── ε: feaMode debug-context registration moved to App (#5670) ───────────────
 //
-// DualViewport must register the FeaModeStore instance it creates onto
-// window.__REIFY_DEBUG__.feaMode via registerDebugPanel, mirroring how
-// MenuBar/DesignTree/ConstraintPanel register their own component-local
-// handles. This lets debug-bridge handlers (e.g. set_fea_channel) verify
-// channel-change propagation against real store state instead of re-reading
-// the DOM value the handler just wrote.
+// Task 4981 had DualViewport register its component-local FeaModeStore onto
+// window.__REIFY_DEBUG__.feaMode. #5670 moves that ownership to App, which
+// registers the whole keyed registry (`feaModes`) plus the legacy `feaMode`
+// mirror from a single writer.
 //
-// RED until DualViewport.tsx calls registerDebugPanel('feaMode', feaModeStore).
+// This describe is the *inverse* of the 4981 one: DualViewport must now
+// register nothing. A lingering registration here would be a second writer to
+// slots App already owns — and because Solid runs a child's onMount before its
+// parent's, DualViewport's would land FIRST and then App's would overwrite it,
+// or on unmount DualViewport's identity-guarded cleanup would evict a slot it
+// no longer owns. Either way the single-writer invariant the unified registry
+// buys would be gone.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('DualViewport feaMode debug-context registration', () => {
+describe('DualViewport feaMode debug-context registration (owned by App since #5670)', () => {
   afterEach(() => {
     delete (window as any).__REIFY_DEBUG__;
   });
 
-  it('registers the feaModeStore on __REIFY_DEBUG__.feaMode, forwards the SAME instance to design-main, and unregisters it on unmount', async () => {
-    // Minimal stub — registerDebugPanel only checks for the global's presence.
+  it('touches neither __REIFY_DEBUG__.feaMode nor .feaModes on mount or unmount', async () => {
+    // Minimal stub — registerDebugPanel only checks for the global's presence,
+    // so if DualViewport still called it, the slot would be populated here.
     (window as any).__REIFY_DEBUG__ = { stores: {} as any, testMode: () => false };
 
     const { DualViewport } = await importDualViewport();
     const engineStore = makeEngineStore(['mesh/A']);
     const defPreviewStore = makeDefPreviewStore();
     const viewportStore = makeViewportStore();
+    const injected = createFeaModeStore();
 
     const { unmount } = render(() => (
       <DualViewport
@@ -1151,22 +1197,26 @@ describe('DualViewport feaMode debug-context registration', () => {
         designViewportActive={() => true}
         defName={() => null}
         onForceExpand={vi.fn()}
+        feaModeStore={injected}
       />
     ));
 
-    const registered = (window as any).__REIFY_DEBUG__.feaMode;
-    expect(registered).toBeDefined();
-    expect(registered.state.channel).toBe('vonMises');
-    expect(typeof registered.setChannel).toBe('function');
+    // Even handed a store, DualViewport must not publish it — publishing is
+    // App's job, and App does it for BOTH branches from one registry.
+    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+    expect((window as any).__REIFY_DEBUG__.feaModes).toBeUndefined();
 
-    // Same instance forwarded to the design-main Viewport — not a lookalike copy.
-    const designProps = capturedViewportPropsByid['design-main'];
-    expect(designProps).toBeDefined();
-    expect(designProps.feaModeStore).toBe(registered);
+    // Pre-populate both slots as App would, then unmount: DualViewport must
+    // evict nothing. registerDebugPanel's cleanup is identity-guarded, so a
+    // surviving DualViewport registration would only be caught here if it had
+    // registered the same instance — which is exactly the scenario App creates
+    // by passing its registry's design-main store down.
+    (window as any).__REIFY_DEBUG__.feaMode = injected;
+    (window as any).__REIFY_DEBUG__.feaModes = { 'design-main': injected };
 
     unmount();
 
-    // Identity-guarded unregister on cleanup.
-    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+    expect((window as any).__REIFY_DEBUG__.feaMode).toBe(injected);
+    expect((window as any).__REIFY_DEBUG__.feaModes).toEqual({ 'design-main': injected });
   });
 });

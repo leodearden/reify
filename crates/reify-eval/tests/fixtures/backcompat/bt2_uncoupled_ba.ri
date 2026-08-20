@@ -7,9 +7,13 @@
 // `reify eval` output is cell-id-SORTED, so the BA ordering must produce
 // BYTE-IDENTICAL stdout to the AB ordering (INV-2 declaration-order independence).
 //
+// The expected values and why B.b is 0.0055000000000000005 rather than 0.0055
+// are documented once, on the AB counterpart — see bt2_uncoupled_ab.ri.  Both
+// were re-blessed for task #5618.
+//
 // Shared golden: crates/reify-eval/tests/golden/bt2_uncoupled.txt
 // Counterpart:   tests/fixtures/backcompat/bt2_uncoupled_ab.ri
-// Test:          crates/reify-eval/tests/objective_inheritance_e2e.rs::bt2_uncoupled_declaration_order_independence
+// Test:          crates/reify-eval/tests/harness_fea_solver_e2e/objective_inheritance_e2e.rs::bt2_uncoupled_declaration_order_independence
 structure B {
     param b: Length = auto
 

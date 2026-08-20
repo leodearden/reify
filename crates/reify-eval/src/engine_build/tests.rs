@@ -2652,11 +2652,12 @@ structure Assembly {
             _tolerance: f64,
         ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
             *self.tessellate_count.lock().unwrap() += 1;
-            Ok(reify_ir::Mesh {
-                vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                indices: vec![0, 1, 2],
-                normals: None,
-            })
+            // Task #5105 δ (INV-GEO-1): a closed tetra, NOT the open triangle
+            // this fixture used to return. Site 1 now enforces the mesh
+            // contract by default, and a lone triangle fails it (open_edges=3)
+            // — which has nothing to do with what these routing/caching tests
+            // assert. Shared with the other mock producers to avoid drift.
+            Ok(reify_test_support::mocks::minimal_valid_mesh(false))
         }
 
         fn extract_faces(
@@ -8217,6 +8218,7 @@ structure Assembly {
             None,              // unified_pass: LegacyMultiPass (no schedule)
             &std::collections::HashSet::new(), // realization_read_cells: empty
             None,              // demand_seed: full scope (not testing selective demand)
+            reify_ir::geometry::MeshContractMode::Enforce, // mesh_contract_mode: production default
         );
     }
 
@@ -8281,6 +8283,7 @@ structure Assembly {
             None,          // unified_pass: LegacyMultiPass (no schedule)
             &std::collections::HashSet::new(), // realization_read_cells: empty
             None,          // demand_seed: full scope (not testing selective demand)
+            reify_ir::geometry::MeshContractMode::Enforce, // mesh_contract_mode: production default
         );
     }
 
@@ -8759,7 +8762,8 @@ structure Assembly {
             assert!(
                 topology_attribute_table.lookup(seeded).is_some(),
                 "guard case [{label}] must NOT evict the pre-seeded \
-                 topology_attribute_table entry (eviction only runs on a hit)"
+                 topology_attribute_table entry (the hit body — the \
+                 fail-closed debug_assert — only runs on a hit)"
             );
         }
     }
@@ -9082,28 +9086,81 @@ structure Assembly {
         state
     }
 
-    /// Regression test for cross-kernel `GeometryHandleId` collision at the
-    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349).
+    /// step-1 (RED, task θ / #5064): the fail-closed `debug_assert!` that
+    /// replaces the task-4349 defensive eviction on `probe_realization_cache`
+    /// must PANIC when a stale `topology_attribute_table` entry is present at
+    /// the EXACT cache-served handle on a cache hit — the #3226 spec's
+    /// precondition ("a cache-served handle has no entries in the table on
+    /// the second build") does not hold, so the fail-closed assert must say
+    /// so loudly instead of silently papering over it via eviction.
+    ///
+    /// This is a same-handle stale leftover, NOT a cross-kernel collision —
+    /// contrast with the re-shaped
+    /// `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`
+    /// below, which pins the genuine cross-kernel-sibling case (preserved,
+    /// not evicted).
+    ///
+    /// RED against current main: the task-4349 eviction at
+    /// `outputs.topology_attribute_table.remove(cached_handle)` silently
+    /// removes this entry before any assert can observe it, so no panic
+    /// occurs and this `#[should_panic]` test fails until task θ's impl step
+    /// installs the fail-closed assert.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must have no topology_attribute_table entry on the second build")]
+    fn probe_realization_cache_debug_asserts_no_entry_at_cache_served_handle() {
+        use reify_ir::{FeatureId, Role};
+
+        run_cross_kernel_cache_hit_short_circuit("StaleHandleEntity", |state, realization_id| {
+            // Record a stale entry at the SAME handle the helper pre-seeds
+            // into `realization_cache` as the cached terminal
+            // (`{Occt, GeometryHandleId(1)}`) — simulating a leftover the
+            // per-build reset / op-loop population failed to clear before
+            // this cache hit.
+            state.topology_attribute_table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(1),
+                },
+                TopologyAttribute {
+                    feature_id: FeatureId::from(realization_id),
+                    role: Role::Side,
+                    local_index: 0,
+                    user_label: None,
+                    mod_history: Vec::new(),
+                },
+            );
+        });
+    }
+
+    /// Regression guard for cross-kernel `GeometryHandleId` collision at the
+    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349,
+    /// re-shaped by task θ / #5064 now that #4351 has made the collision
+    /// impossible by construction).
     ///
     /// # Background
     ///
     /// OCCT and Manifold both mint `GeometryHandleId(1)` for their first
-    /// geometry handle (each kernel's counter starts at 1). Within a single
-    /// build a Manifold op can record
-    /// `topology_attribute_table.record(GeometryHandleId(1), attr)` while a
-    /// later cache-hit short-circuit returns the cached
-    /// `{Occt, GeometryHandleId(1)}` from a prior build. The former
-    /// `debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())`
-    /// fires because key `GeometryHandleId(1)` is occupied by the Manifold
-    /// entry — two distinct `KernelHandle`s collapsing onto one kernel-blind key.
+    /// geometry handle (each kernel's counter starts at 1). Before #4351's
+    /// `KernelHandle` re-key, `TopologyAttributeTable` was keyed by the bare
+    /// `GeometryHandleId`, so a Manifold sibling's entry at id `1` collided
+    /// with an OCCT cache-served handle that also happened to be id `1` —
+    /// two distinct kernel handles collapsing onto one kernel-blind key.
+    /// Task 4349's defensive eviction papered over this; task θ retired that
+    /// eviction (see the fail-closed
+    /// `probe_realization_cache_debug_asserts_no_entry_at_cache_served_handle`
+    /// test above) once #4351 made the collision structurally impossible.
     ///
-    /// # Invariant (build-mode independent)
+    /// # Invariant (post-#4351 / post-θ)
     ///
-    /// After the cache-hit short-circuit, `topology_attribute_table.lookup(id)`
-    /// for the cached handle must return `None` — regardless of debug vs release
-    /// build mode.  The `None` post-condition is the meaningful guarantee; in
-    /// debug builds the former `debug_assert!` also fired before the fix, but
-    /// the test's value is not limited to that panic path.
+    /// After the cache-hit short-circuit: the cache-served
+    /// `{Occt, GeometryHandleId(1)}` slot reads `None` (the #3226 spec — a
+    /// cache-served handle has no entries in the table on the second build;
+    /// naturally true here since nothing ever wrote to that key), AND a
+    /// `{Manifold, GeometryHandleId(1)}` sibling entry recorded earlier in
+    /// the SAME build is PRESERVED — proving the `KernelHandle` key keeps
+    /// the two kernels' id-1 handles independently addressable rather than
+    /// collapsing them, so there is no collateral eviction left to perform.
     #[test]
     fn cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision() {
         use reify_ir::{FeatureId, Role};
@@ -9111,12 +9168,14 @@ structure Assembly {
         let state = run_cross_kernel_cache_hit_short_circuit(
             "CrossKernelEntity2",
             |state, realization_id| {
-                // Pre-seed topology_attribute_table at GeometryHandleId(1),
-                // simulating a cross-kernel sibling Mesh op that recorded its
-                // first handle's attribute earlier in this same build.
+                // Pre-seed topology_attribute_table at a Manifold sibling
+                // sharing the numeric id 1 with the Occt cache-served
+                // handle — a genuine cross-kernel sibling now that
+                // KernelHandle keys the table (#4351), not a same-handle
+                // stale-entry case (that's the should_panic test above).
                 state.topology_attribute_table.record(
                     KernelHandle {
-                        kernel: KernelId::Occt,
+                        kernel: KernelId::Manifold,
                         id: GeometryHandleId(1),
                     },
                     TopologyAttribute {
@@ -9130,7 +9189,7 @@ structure Assembly {
             },
         );
 
-        // Post-condition: the cached handle must read None from topology_attribute_table.
+        // The cache-served Occt handle has no entry (#3226 spec).
         assert!(
             state
                 .topology_attribute_table
@@ -9139,9 +9198,23 @@ structure Assembly {
                     id: GeometryHandleId(1),
                 })
                 .is_none(),
-            "topology_attribute_table must have no entry for the cached handle id \
-             after cache-hit short-circuit: cross-kernel sibling's colliding entry \
-             must be removed (not left behind as a foreign kernel's attribute)"
+            "topology_attribute_table must have no entry for the cache-served \
+             handle after the cache-hit short-circuit"
+        );
+        // The Manifold sibling — a distinct KernelHandle that merely shares
+        // the numeric id — must survive untouched: no collateral eviction.
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1),
+                })
+                .is_some(),
+            "a cross-kernel sibling entry sharing the numeric id must be \
+             preserved, not collaterally evicted — the KernelHandle key \
+             keeps it independently addressable from the Occt cache-served \
+             handle"
         );
     }
 
@@ -9675,5 +9748,345 @@ structure Assembly {
         assert!(
             matches!(result, Err(QueryError::QueryFailed(_))),
             "expected QueryFailed for missing zmax"
+        );
+    }
+
+    // ── value_contains_selector / values_contain_selector unit tests (task #5196 L2 gate, step-7) ──
+    //
+    // RED: neither helper exists yet — this module does not compile until
+    // step-8 adds `value_contains_selector(&Value) -> bool` and
+    // `values_contain_selector(&ValueMap) -> bool` to `engine_build.rs`.
+    //
+    // These back the L2 gate (step-8): the per-realization local-index-
+    // reassignment tie-scan (`detect_local_index_reassignment_diagnostics`) is
+    // about *selector-resolution* stability, so it is vacuous work on a build
+    // whose module binds no selector at all (e.g. the litter-tray
+    // multi-boolean model, which binds none). `value_contains_selector`
+    // recurses through the container `Value` variants — `List`/`Set`/`Map`/
+    // `Option`/`Field` — mirroring `invariants::value_is_or_contains_undef`'s
+    // shape (plus a `Field` arm, since a selector can be carried inside a
+    // `Field`'s `lambda`, e.g. a `Restricted` region), widened at step-12 with
+    // `Lambda { captures }` and `StructureInstance { fields }` arms.
+    //
+    // STATUS after step-12: these two helpers are no longer the gate's primary
+    // signal. The runtime `ValueMap` probe alone is fail-CLOSED — it cannot see
+    // a selector ctor passed inline as a call argument, nor a selector cell a
+    // realization has hydrated to `Value::List<Geometry>`. The load-bearing
+    // term is the module-STATIC `module_binds_selector` walk, pinned by the
+    // step-11 group below; the probe is a secondary belt-and-braces term. The
+    // gate's engine-level two-sided control lives in
+    // `tests/harness_engine/topology_diagnostic_denoise_e2e.rs`.
+
+    /// A top-level `Value::Selector` and one nested one level inside a
+    /// `Value::List` must both be detected; a plain non-selector scalar must
+    /// not be.
+    #[test]
+    fn value_contains_selector_detects_top_level_and_nested_selector() {
+        use reify_core::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::Value;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        let sv = SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::All)
+            .expect("SelectorValue::leaf must succeed for matching kind/query");
+
+        // Top-level selector.
+        assert!(
+            value_contains_selector(&Value::Selector(sv.clone())),
+            "a top-level Value::Selector must be detected"
+        );
+
+        // Selector nested one level inside a Value::List.
+        let nested = Value::List(vec![Value::Int(1), Value::Selector(sv)]);
+        assert!(
+            value_contains_selector(&nested),
+            "a Value::Selector nested inside a Value::List must be detected"
+        );
+
+        // Plain scalar, no selector anywhere → false.
+        assert!(
+            !value_contains_selector(&Value::Int(42)),
+            "a non-selector, non-container Value must not be detected as a selector"
+        );
+    }
+
+    /// A `ValueMap` holding only non-selector values (a scalar, a string, and
+    /// a selector-free nested list) must report `false` — the zero-selector /
+    /// litter-tray case the L2 gate skips.
+    ///
+    /// Deliberately carries NO `Value::Lambda` and no `Value::StructureInstance`,
+    /// so step-12's two widened arms cannot flip this negative case (checked at
+    /// step-15).
+    #[test]
+    fn values_contain_selector_false_for_map_of_non_selector_values() {
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Design", "w"), Value::Real(1.0));
+        values.insert(
+            ValueCellId::new("Design", "label"),
+            Value::String("box".to_string()),
+        );
+        values.insert(
+            ValueCellId::new("Design", "items"),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+        );
+
+        assert!(
+            !values_contain_selector(&values),
+            "a ValueMap of only non-selector values must not trigger the selector gate"
+        );
+    }
+
+    // ── L2 gate correctness: module-STATIC selector walk (task #5196 step-11) ──
+    //
+    // RED on two axes: `module_binds_selector` does not exist yet (step-12 adds
+    // it, so group (a) does not compile), and `value_contains_selector`'s
+    // `_ => false` catch-all still swallows `Value::Lambda { captures }` and
+    // `Value::StructureInstance(..).fields` (so group (b) fails).
+    //
+    // WHY the runtime `ValueMap` probe alone cannot carry the gate. The
+    // compiler's only ANF hoist (`phase_hoist_nested_selector_ctors`) lifts
+    // selector ctors ONLY out of `StructureInstanceCtor` field values —
+    // `hoist_in_expr`'s catch-all is literally `_ => {}`
+    // (crates/reify-compiler/src/hoist_nested_selectors.rs). So in the dominant
+    // curated-modify idiom `fillet(b, edges(b), 2mm)` the selector ctor sits in
+    // ordinary `FunctionCall` ARGUMENT position, never earns its own value cell,
+    // and NO `Value::Selector` reaches `values`. The step-8 gate then evaluates
+    // FALSE and `DiagnosticCode::TopologyAttributeLocalIndexReassigned` becomes
+    // unreachable for exactly the models whose selector resolution is at risk —
+    // the check is fail-CLOSED on its most important input, not fail-open.
+    //
+    // Every fixture below is REAL DSL source compiled through
+    // `parse_and_compile_with_stdlib`, which asserts zero Error-severity
+    // diagnostics — so a silently mis-typed fixture panics rather than
+    // masquerading as a passing test.
+
+    /// (a) The load-bearing new signal: a selector ctor in ordinary
+    /// `FunctionCall` ARGUMENT position — the curated 3-arg
+    /// `fillet(target, edges, radius)` / `chamfer(target, edges, distance)`
+    /// form (crates/reify-compiler/src/geometry_modify.rs) — must be seen by
+    /// the module-static walk.
+    ///
+    /// This is the assertion that pins the review finding: today's
+    /// `values_contain_selector` misses this shape entirely, because the
+    /// field-only ANF hoist never lifts an argument-position selector into a
+    /// value cell. Note the arity: the 2-arg `fillet(target, radius)` form
+    /// takes NO selector at all, so it is not a selector-bearing call.
+    #[test]
+    fn module_binds_selector_true_for_selector_ctor_in_call_argument_position() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let filleted = parse_and_compile_with_stdlib(
+            r#"structure def CuratedFillet {
+    let b = box(20mm, 20mm, 20mm)
+    let f = fillet(b, edges(b), 2mm)
+}"#,
+        );
+        assert!(
+            module_binds_selector(&filleted),
+            "the 3-arg curated `fillet(b, edges(b), 2mm)` binds a selector ctor in \
+             ordinary FunctionCall ARGUMENT position — the idiom the compiler's \
+             field-only ANF hoist never lifts into a value cell, and hence the one \
+             a runtime-ValueMap-only gate is fail-CLOSED on"
+        );
+
+        let chamfered = parse_and_compile_with_stdlib(
+            r#"structure def CuratedChamfer {
+    let b = box(20mm, 20mm, 20mm)
+    let c = chamfer(b, edges(b), 1mm)
+}"#,
+        );
+        assert!(
+            module_binds_selector(&chamfered),
+            "the equivalent 3-arg `chamfer(b, edges(b), 1mm)` spelling must be \
+             detected for the same reason as `fillet`"
+        );
+    }
+
+    /// (a) The let-bound bare form — a selector ctor that DOES earn its own
+    /// value cell — must also be seen. This is the one shape the runtime
+    /// `ValueMap` probe can (sometimes) catch; the static walk must not
+    /// regress it.
+    #[test]
+    fn module_binds_selector_true_for_let_bound_bare_selector_ctor() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def BareSelectorLet {
+    let u = union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+    let fs = faces(u)
+}"#,
+        );
+        assert!(
+            module_binds_selector(&module),
+            "a let-bound bare `faces(u)` selector ctor must be detected by the \
+             module-static walk"
+        );
+    }
+
+    /// (a) A selector ctor declared inside a GUARDED GROUP member must be
+    /// seen.
+    ///
+    /// Guarded-group members live in `TopologyTemplate.guarded_groups[*].members`
+    /// / `.else_members` (crates/reify-compiler/src/types.rs), a collection
+    /// entirely SEPARATE from `value_cells` — a walk that visits only
+    /// `value_cells` reintroduces the exact fail-closed hole this step exists to
+    /// close, one layer up. (Independently, `mint_symbolic_topology_selectors_into_values`
+    /// also walks only `value_cells`, so a guarded-group selector let is never
+    /// minted into the `ValueMap` either: BOTH gate terms were blind to this
+    /// shape before this step.)
+    #[test]
+    fn module_binds_selector_true_for_selector_ctor_in_guarded_group_member() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def GuardedSelector {
+    param mode : Int = 1
+    let u = union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+    where mode == 1 {
+        let fs = faces(u)
+    }
+}"#,
+        );
+        assert!(
+            module_binds_selector(&module),
+            "a selector ctor bound inside a `where` guarded-group member must be \
+             detected — guarded_groups[*].members is a separate collection from \
+             value_cells, so a value_cells-only walk misses it entirely"
+        );
+    }
+
+    /// (a) The negative control: the selector-free multi-boolean litter-tray
+    /// fixture (capstone case A's source) must report FALSE, so the gate
+    /// genuinely closes on the model that motivated task #5196.
+    ///
+    /// Without this, a `module_binds_selector` stubbed to a constant `true`
+    /// would satisfy every other assertion in group (a).
+    #[test]
+    fn module_binds_selector_false_for_selector_free_multi_boolean_model() {
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def LitterTrayDeck {
+    let a = union(box(20mm, 20mm, 20mm), box(20mm, 20mm, 20mm))
+    let b = union(a, box(20mm, 20mm, 20mm))
+    let c = union(b, box(20mm, 20mm, 20mm))
+}"#,
+        );
+        assert!(
+            !module_binds_selector(&module),
+            "the selector-free chained-union litter-tray model binds no selector \
+             ctor anywhere, so the module-static gate must close on it"
+        );
+    }
+
+    /// (b) Widened runtime arms: a selector nested inside
+    /// `Value::Lambda { captures }` (itself a `ValueMap`) or inside
+    /// `Value::StructureInstance(..).fields` must be detected.
+    ///
+    /// Both are realistic composite carriers swallowed today by
+    /// `value_contains_selector`'s `_ => false` catch-all — and both were
+    /// mischaracterised by the step-8 doc as mere "single-composite
+    /// scalar-wrapper variants".
+    #[test]
+    fn value_contains_selector_detects_selector_in_lambda_captures_and_structure_fields() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{RealizationNodeId, Type, ValueCellId};
+        use reify_ir::Value;
+        use reify_ir::value::{
+            GeometryHandleRef, LeafQuery, SelectorValue, StructureInstanceData,
+        };
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        let sv = SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::All)
+            .expect("SelectorValue::leaf must succeed for matching kind/query");
+
+        // Lambda captures — an entire nested ValueMap.
+        let mut captures = ValueMap::new();
+        captures.insert(
+            ValueCellId::new("Design", "sel"),
+            Value::Selector(sv.clone()),
+        );
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), ValueCellId::new("Design", "x"))],
+            body: Box::new(reify_ir::CompiledExpr::literal(
+                Value::Real(0.0),
+                Type::dimensionless_scalar(),
+            )),
+            captures,
+        };
+        assert!(
+            value_contains_selector(&lambda),
+            "a Value::Selector inside a Value::Lambda's `captures` ValueMap must be \
+             detected (today's `_ => false` catch-all swallows it)"
+        );
+
+        // StructureInstance fields.
+        let fields = [("region".to_string(), Value::Selector(sv))]
+            .into_iter()
+            .collect();
+        let instance = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: reify_ir::StructureTypeId(0),
+            type_name: "Holder".to_string(),
+            version: 1,
+            fields,
+        }));
+        assert!(
+            value_contains_selector(&instance),
+            "a Value::Selector inside a Value::StructureInstance's `fields` map must \
+             be detected (today's `_ => false` catch-all swallows it)"
+        );
+    }
+
+    /// (c) Runtime positive control: compile REAL DSL source, run the REAL
+    /// evaluator against a mock kernel, and assert the predicate against the
+    /// `ValueMap` the evaluator actually produces — rather than against a
+    /// hand-built map.
+    ///
+    /// A bare, UNCONSUMED `let fs = faces(u)` is expected to hold a
+    /// `Value::Selector` (minted via `build_leaf_selector`; precedent:
+    /// `crates/reify-eval/tests/no_stale_undef_edit_path_gate.rs`), so the
+    /// selector is deliberately left unconsumed here. A selector cell that IS
+    /// consumed by a realization resolves one step further to
+    /// `Value::List<Geometry>` rather than staying a `Selector`
+    /// (`hydrate_value_cell_in_loop` branch (b)) — which is itself further
+    /// evidence that the runtime `ValueMap` probe cannot carry the gate alone.
+    #[test]
+    fn values_contain_selector_true_for_evaluated_unconsumed_selector_let() {
+        use reify_test_support::{
+            MockConstraintChecker, MockGeometryKernel, parse_and_compile_with_stdlib,
+        };
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def EvaluatedSelectorLet {
+    let u = union(box(10mm, 10mm, 10mm), box(5mm, 5mm, 5mm))
+    let fs = faces(u)
+}"#,
+        );
+
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        let result = engine.eval(&module);
+
+        assert!(
+            values_contain_selector(&result.values),
+            "the REAL evaluator must land a Value::Selector in `values` for an \
+             unconsumed `let fs = faces(u)`, proving the gate's open branch is \
+             reachable through the evaluator and not only through hand-built \
+             ValueMaps; got values:\n{:#?}",
+            result.values
         );
     }

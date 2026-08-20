@@ -5,6 +5,8 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod cache;
+pub mod cache_divergence;
+pub use cache_divergence::{SnapshotCacheDivergence, check_snapshot_cache_divergence};
 // Task α (#5038): commit_cell_result primitive + DeterminacyRule/TraceSource/
 // CacheLeg (PRD eval-cell-commit-substrate.md §2.1–2.4). pub(crate) — no
 // external callers yet; migration leaves γ/δ/ε/ι wire it in from within the crate.
@@ -16,9 +18,13 @@ pub(crate) mod cell_commit;
 pub(crate) mod detectors;
 pub mod compute_cache_key;
 pub mod compute_targets;
+/// The registration selector for
+/// [`Engine::register_production_compute_fns`][crate::Engine::register_production_compute_fns],
+/// re-exported at the crate root so downstream consumers (CLI / GUI /
+/// test_runner — tasks A2/A3/A4) name it as `reify_eval::MorphRegistration`
+/// (mirrors the `shell_extract_compute` re-export below).
+pub use compute_targets::MorphRegistration;
 pub use compute_cache_key::compute_cache_key;
-mod concurrent;
-pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 pub mod demand;
 pub mod observed_demand;
 pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
@@ -481,6 +487,23 @@ pub struct Engine {
     /// a specific scheduler without mutating process env. Consulted only at
     /// the δ wiring site in `Engine::build` (engine_build.rs).
     build_scheduler: BuildScheduler,
+    /// Mesh-contract (INV-GEO-1) enforcement posture at kernel-seam site 1,
+    /// the tessellate→ingest conversion handoff in `execute_realization_ops`
+    /// (task #5105 δ; PRD `docs/prds/kernel-seam-contracts.md` §4). Set once
+    /// at construction from
+    /// [`reify_ir::geometry::MeshContractMode::from_env`] — which defaults to
+    /// `Enforce` after the δ flip; `REIFY_MESH_CONTRACT=warn` is the
+    /// break-glass downgrade. The `#[cfg(any(test, feature =
+    /// "test-instrumentation"))]` setter `Engine::set_mesh_contract_mode`
+    /// (engine_admin.rs) overrides it DIRECTLY so integration tests can pin
+    /// either posture without mutating process env. Threaded into the build
+    /// path via `RealizationOpsInput::with_mesh_contract_mode`
+    /// (engine_build.rs), since the consuming `execute_realization_ops` is a
+    /// free fn with no `self`; the tessellate paths
+    /// (`tessellate_realizations` / `tessellate_snapshot`) forward this field
+    /// as an explicit `tessellate_from_values` parameter for the same reason,
+    /// so ALL four entry points honour the seam identically.
+    mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
     /// Observed-demand registry (selective-demand precondition, task 4532).
@@ -644,10 +667,13 @@ pub struct Engine {
     /// cell's `kernel_handle` is still valid: the `GeometryKernel` trait has no
     /// `is_valid` API and snapshots carry no kernel reference (plan.json design
     /// decision), so a dedicated `realization_ref → handle` map is the precise,
-    /// cheap (HashMap) identity to compare against. Cleared and rebuilt at the
-    /// start of every `build()` / `build_snapshot()` and populated by
-    /// `post_process_geometry_handle_cells`; empty before the first build.
-    /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
+    /// cheap (HashMap) identity to compare against. Cleared on the BUILD
+    /// surfaces only (`build()` / `build_snapshot()`) by `reset_per_build_state`
+    /// (#5069) and repopulated by `post_process_geometry_handle_cells`;
+    /// PRESERVED across the tessellate surfaces — the load-bearing
+    /// build↔tessellate asymmetry, so a build→tessellate→check sequence still
+    /// reads this build's handles. Empty before the first build. Consulted by
+    /// `engine_eval::revalidate_geometry_handle` on read (S16).
     realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
     /// β (task 4508): memoization store for realized geometry content.
     ///
@@ -661,17 +687,20 @@ pub struct Engine {
     realization_projection_store: crate::realization_content::RealizationProjectionStore,
     /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
     /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
-    /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
-    /// / `build_snapshot()`; incremented by the `&self` read entry point
-    /// `read_value_revalidated` (S16) on every non-`Fresh` outcome.
+    /// `Undef`) since the last reset. Reset to 0 on EVERY build/tessellate
+    /// surface by `reset_per_build_state` (#5069 — widened from build-only);
+    /// incremented by the `&self` read entry point `read_value_revalidated`
+    /// (S16) on every non-`Fresh` outcome.
     ///
     /// `AtomicUsize` (not a plain `usize` like the sibling `last_*` counters)
     /// because the read entry point borrows `&self`: interior mutability lets it
     /// bump the counter without `&mut self`, and `AtomicUsize: Sync` preserves
     /// `Engine: Sync` (the kernel/checker trait objects are `Send + Sync`). Read
-    /// via `geometry_revalidation_slow_path_count` and reset via
-    /// `reset_geometry_revalidation_slow_path_count` (engine_admin.rs; reader
-    /// test-gated, mirroring the `last_*` reset+reader pair).
+    /// via `geometry_revalidation_slow_path_count`; the reset is inlined into
+    /// `reset_per_build_state` (#5069). The standalone
+    /// `reset_geometry_revalidation_slow_path_count` (engine_admin.rs) is
+    /// retained but uncalled, reader test-gated (mirroring the `last_*`
+    /// reset+reader pair).
     ///
     /// NOTE (GHR-δ): the only thing that bumps this counter today is the
     /// integration suite — `read_value_revalidated` has no production caller yet
@@ -683,9 +712,10 @@ pub struct Engine {
     /// User-defined functions from the last eval() call.
     /// Stored so that edit_param() and other incremental paths can evaluate
     /// expressions containing UserFunctionCall nodes.
-    /// Wrapped in Arc so per-call clones in eval(), edit_param(), and
-    /// prepare_concurrent_edit() become O(1) refcount bumps rather than deep
-    /// copies of the entire compiled function tree (task #1997).
+    /// Wrapped in Arc so per-call clones in eval() and edit_param() become
+    /// O(1) refcount bumps rather than deep copies of the entire compiled
+    /// function tree (task #1997). (The concurrent-edit path that also shared
+    /// this Arc was removed with the dead concurrent stack, task ο.)
     functions: Arc<[CompiledFunction]>,
     /// Compiled purpose declarations from the last eval() call.
     /// Stored so activate_purpose/deactivate_purpose can look up purposes by name.
@@ -808,9 +838,11 @@ pub struct Engine {
     /// Populated by `Engine::execute_realization_ops` for primitive ops
     /// (Box / Cylinder / Sphere) via `seed_primitive_attributes_for_handle`
     /// (task 6, #2574); auto-population for sweep / local-feature / boolean
-    /// ops lands in PRD tasks 5 / 7 / 8. Cleared and repopulated on each
+    /// ops lands in PRD tasks 5 / 7 / 8. Cleared UNCONDITIONALLY on each
     /// `build()` / `build_snapshot()` / `tessellate_realizations()` /
-    /// `tessellate_snapshot()` call (per-build, not per-realization). Task 2
+    /// `tessellate_snapshot()` call by `reset_per_build_state` (#5069 — the
+    /// per-build reset is now surface-independent, no longer gated on a
+    /// registered kernel; per-build, not per-realization). Task 2
     /// (#2570) wires selector lookup against this table; tasks 9-10 retire
     /// `feature_tag_table` once the attribute path covers all selector
     /// vocabulary.
@@ -822,9 +854,11 @@ pub struct Engine {
     /// Populated by `Engine::execute_realization_ops` after a successful
     /// realization completes — the realization's last `step_handles` entry is
     /// the key, and the value is whatever `classify_swept_body(...)` returns
-    /// for the parallel `(ops, handles)` slice. Cleared and repopulated on
+    /// for the parallel `(ops, handles)` slice. Cleared UNCONDITIONALLY on
     /// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
-    /// `tessellate_snapshot()` call (per-build, not per-realization). Exposed
+    /// `tessellate_snapshot()` call by `reset_per_build_state` (#5069 — no
+    /// longer gated on a registered kernel; per-build, not per-realization).
+    /// Exposed
     /// via `Engine::swept_kind_table()` for GUI / mesh-morphing consumers
     /// that want to look up a Phase A `SweptKind` for a realized body.
     ///
@@ -920,6 +954,17 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// Running totals of the per-call eval-cache counters, folded in at the end
+    /// of every [`Engine::eval_cached`] call (task 4152).
+    ///
+    /// Deliberately NOT a [`CacheStats`]: the public struct's fourth field,
+    /// `realization_entries`, has no meaning here (it is a lifetime count
+    /// already owned by [`Engine::realization_cache`], so accumulating it too
+    /// would double-count). Storing only the three fields this actually
+    /// accumulates makes that a compile error rather than a silently-discarded
+    /// write. [`Engine::cache_stats`] assembles the public [`CacheStats`]
+    /// field-by-field from this plus the live realization counter.
+    cumulative_eval_cache_totals: EvalCacheTotals,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///
@@ -1039,10 +1084,10 @@ pub struct Engine {
     /// `kernel.measure_mesh_deviation(placed_id, &mesh)` is inserted under the
     /// occurrence's `entity_path`.
     ///
-    /// Cleared at the start of each `tessellate_realizations()` /
-    /// `tessellate_snapshot()` call, mirroring the
-    /// `feature_tag_table` / `topology_attribute_table` / `swept_kind_table`
-    /// reset-at-entry pattern.
+    /// Cleared on the TESSELLATE surfaces only (`tessellate_realizations()` /
+    /// `tessellate_snapshot()`) by `reset_per_build_state` (#5069); PRESERVED
+    /// across the build surfaces — the load-bearing build↔tessellate asymmetry,
+    /// the converse of `realization_handles`.
     ///
     /// A missing key means the occurrence was never realized / tessellated, or
     /// its mesh was empty, or the kernel returned `None` (non-OCCT) — this is
@@ -1071,12 +1116,49 @@ pub struct Engine {
     persistent_miss_count: u64,
 }
 
+/// Engine-lifetime running totals of the three eval-cache counters (task 4152).
+///
+/// Private accumulator behind `Engine::cumulative_eval_cache_totals`, folded
+/// in at the end of every [`Engine::eval_cached`] call and read back out by
+/// [`Engine::cache_stats`].
+///
+/// This exists so the accumulator can hold ONLY the counters that are genuinely
+/// accumulable. The public [`CacheStats`] additionally carries
+/// `realization_entries`, which is a lifetime count owned by the
+/// [`RealizationCache`] and read live — accumulating it here would double-count,
+/// so there is deliberately no field for it to be written into.
+#[derive(Debug, Clone, Default)]
+struct EvalCacheTotals {
+    hits: usize,
+    misses: usize,
+    early_cutoffs: usize,
+}
+
 /// Statistics about cache behavior during a cached evaluation.
 #[derive(Debug, Clone, Default)]
 pub struct CacheStats {
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub early_cutoffs: usize,
+    /// Number of NEW geometry-[`RealizationCache`] **terminal** entries created
+    /// over the engine's lifetime — incremented when a realization genuinely
+    /// produced and cached new geometry, NOT on a cache hit.
+    ///
+    /// This is the re-mesh-avoidance signal (PRD
+    /// `docs/prds/v0_4/fea-result-model.md` B9): two load cases sharing one body
+    /// must move it by exactly 1, because the second case reuses the first's
+    /// cached volume mesh rather than re-meshing.
+    ///
+    /// **Monotonic lifetime count, not a live cache size.** It is never
+    /// decremented — not by cache eviction, not by
+    /// [`Engine::clear_realization_cache`], and not across the implicit
+    /// invalidation that `edit_param`/`edit_source` perform. See
+    /// [`RealizationCache::realization_entries`] for the full contract and for
+    /// why `RealizationCache::len()` is deliberately not this signal.
+    ///
+    /// Only [`Engine::build`]-family entry points can move it: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub realization_entries: usize,
 }
 
 /// Result of a cached evaluation, wrapping EvalResult with stats.
@@ -1276,8 +1358,6 @@ pub struct TessellateResult {
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
-// Concurrent edit structs and Engine methods live in concurrent.rs.
-
 /// Controls how `guard_state_fingerprint` handles guard cells absent from the value map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GuardLookup {
@@ -1325,7 +1405,6 @@ fn guard_state_fingerprint(
 //   engine_eval.rs      — eval, eval_cached, evaluate_let_bindings
 //   engine_edit.rs      — set_param_and_invalidate, edit_param, edit_check
 //   engine_build.rs     — build, build_snapshot, tessellate_*, execute_realization_ops
-//   concurrent.rs       — prepare_concurrent_edit, apply_concurrent_edit, …
 
 /// Canonical construction point for an [`reify_expr::EvalContext`] with meta-map binding.
 ///
@@ -1352,8 +1431,8 @@ pub(crate) fn eval_ctx_with_meta<'a>(
 ///
 /// Filters out templates with empty `meta` blocks and clones each
 /// non-empty entry into the returned `Arc`-wrapped HashMap so the result
-/// can be cheaply shared (Arc::clone) with `ConcurrentEditSetup` and
-/// other consumers without deep-copying the inner string maps.
+/// can be cheaply shared (Arc::clone) with its consumers without
+/// deep-copying the inner string maps.
 ///
 /// Centralised in `lib.rs` so future shape changes (interning, additional
 /// filter rules) land in exactly one place — see task 2216 / esc-397-72
@@ -1400,7 +1479,7 @@ pub(crate) fn build_meta_map(
 /// # Performance
 /// The merged table is built once per `eval()`/`edit_source()` call into a
 /// local `Vec`, then sealed by `.into()`. Subsequent clones (e.g. in
-/// `prepare_concurrent_edit`, `edit_param`) are O(1) refcount bumps.
+/// `edit_param`) are O(1) refcount bumps.
 pub(crate) fn merge_functions(
     module: &CompiledModule,
     prelude: &[CompiledFunction],
@@ -2190,64 +2269,6 @@ structure S {
         );
     }
 
-    // ── Arc-sharing invariant: Engine.meta_map ────────────────────────────────
-
-    /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
-    /// `ConcurrentEditSetup.meta_map` must share the *same* Arc as
-    /// `Engine.meta_map` (i.e. `Arc::ptr_eq` returns true, and `strong_count >= 2`).
-    ///
-    /// Expected compile-failure before step-2 impl: `Engine.meta_map` is
-    /// `HashMap<String, HashMap<String, String>>`, not `Arc<...>`, so
-    /// `Arc::ptr_eq(&engine.meta_map, ...)` is a type error.
-    #[test]
-    fn meta_map_arc_shared_with_concurrent_setup() {
-        use reify_core::{ModulePath, Type, ValueCellId};
-        use reify_ir::Value;
-        use reify_test_support::mocks::MockConstraintChecker;
-        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, literal};
-        use std::sync::Arc;
-
-        let meta_entries = {
-            let mut m = std::collections::HashMap::new();
-            m.insert("color".to_string(), "blue".to_string());
-            m
-        };
-
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(
-                TopologyTemplateBuilder::new("Widget")
-                    .meta(meta_entries)
-                    .param(
-                        "Widget",
-                        "width",
-                        Type::dimensionless_scalar(),
-                        Some(literal(Value::Real(1.0))),
-                    )
-                    .build(),
-            )
-            .build();
-
-        let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
-        engine.eval(&module);
-
-        let cell = ValueCellId::new("Widget", "width");
-        let setup = engine
-            .prepare_concurrent_edit(cell, Value::Real(2.0))
-            .expect("prepare_concurrent_edit must succeed after eval");
-
-        // Before step-2 this does not compile:
-        //   error[E0308]: expected `&Arc<_>`, found `&HashMap<_, _>`
-        assert!(
-            Arc::ptr_eq(&engine.meta_map, &setup.meta_map),
-            "Engine.meta_map and ConcurrentEditSetup.meta_map must share the same Arc (not deep clone)"
-        );
-        assert!(
-            Arc::strong_count(&engine.meta_map) >= 2,
-            "strong_count must be >= 2 (engine + setup both hold a ref); got {}",
-            Arc::strong_count(&engine.meta_map)
-        );
-    }
-
     #[test]
     fn build_meta_map_filters_empty_and_preserves_non_empty_meta() {
         use reify_core::ModulePath;
@@ -2285,51 +2306,9 @@ structure S {
         );
     }
 
-    // ── Arc-sharing invariant: Engine.functions ───────────────────────────────
-
-    /// Arc-sharing invariant: after `prepare_concurrent_edit`, the
-    /// `ConcurrentEditSetup.functions` must share the *same* Arc allocation as
-    /// `Engine.functions` (i.e. `Arc::ptr_eq` returns true, and
-    /// `Arc::strong_count >= 2`). This proves the per-call clone is O(1)
-    /// (a refcount bump), not an O(N) deep clone of the entire function table.
-    ///
-    /// Expected compile-failure before impl-1: `Engine.functions` was
-    /// `Vec<CompiledFunction>`, not `Arc<[CompiledFunction]>`, so
-    /// `Arc::ptr_eq(&engine.functions, &setup.functions)` was a type error
-    /// (`error[E0308]: mismatched types`). Both fields must be Arc'd before
-    /// this test can compile (task #1997).
-    #[test]
-    fn prepare_concurrent_edit_shares_functions_arc_with_engine() {
-        use reify_test_support::bracket_compiled_module;
-        use reify_test_support::mocks::MockConstraintChecker;
-        use std::sync::Arc;
-
-        let module = bracket_compiled_module();
-        let checker = MockConstraintChecker::new();
-        let mut engine = Engine::new(Box::new(checker), None);
-        engine.eval(&module);
-
-        let cell = ValueCellId::new("Bracket", "width");
-        let setup = engine
-            .prepare_concurrent_edit(cell, Value::length(0.1))
-            .expect("prepare_concurrent_edit must succeed after eval");
-
-        assert!(
-            Arc::ptr_eq(&engine.functions, &setup.functions),
-            "ConcurrentEditSetup.functions must share the same Arc allocation as \
-            Engine.functions — proves the per-call clone is O(1) Arc::clone, not a \
-            deep clone of the function table (task #1997)"
-        );
-        assert!(
-            Arc::strong_count(&engine.functions) >= 2,
-            "strong_count must be >= 2 (engine + setup both hold a ref); got {}",
-            Arc::strong_count(&engine.functions)
-        );
-    }
-
     // ── Arc-sharing invariant: ResolutionProblem.functions (task #2286) ───────
 
-    /// Shared harness for the three `ResolutionProblem.functions`-sharing sentinel
+    /// Shared harness for the two `ResolutionProblem.functions`-sharing sentinel
     /// tests. Builds the common spy-solver + thickness/limit module fixture, runs
     /// `engine.eval(&module)` once (populating the spy with the eval-path problem),
     /// then calls `drive(&mut engine, limit_id)` to trigger the variant-specific
@@ -2361,8 +2340,8 @@ structure S {
         let captured = spy.captured_problem();
 
         // Template: auto thickness, regular param limit (default 2mm),
-        // constraint: thickness > limit.  This shape supports all three triggers
-        // (eval / edit_param(limit) / prepare+resolve_concurrent_edit(limit)).
+        // constraint: thickness > limit.  This shape supports both triggers
+        // (eval / edit_param(limit)).
         let template = TopologyTemplateBuilder::new("S")
             .auto_param("S", "thickness", Type::length())
             .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
@@ -2387,8 +2366,8 @@ structure S {
         // Drive the engine into the variant-specific code path.
         drive(&mut engine, limit_id);
 
-        // The spy now holds the most-recent ResolutionProblem (eval, edit_param, or
-        // resolve_concurrent_edit, depending on the trigger).
+        // The spy now holds the most-recent ResolutionProblem (eval or edit_param,
+        // depending on the trigger).
         let guard = captured.lock().unwrap();
         let problem = guard
             .as_ref()
@@ -2416,7 +2395,7 @@ structure S {
     ///
     /// Note: the shared helper builds a 2-param (thickness + limit) module rather
     /// than the minimal 1-param shape the eval invariant alone would require. This
-    /// is intentional — the fixture is shared across all three trigger variants;
+    /// is intentional — the fixture is shared across both trigger variants;
     /// see the comment at the top of `assert_problem_shares_functions_arc` for details.
     #[test]
     fn eval_resolution_problem_shares_functions_arc_with_engine() {
@@ -2434,31 +2413,6 @@ structure S {
         use reify_test_support::mm;
         assert_problem_shares_functions_arc("edit_param", |engine, limit_id| {
             engine.edit_param(limit_id, mm(3.0)).unwrap();
-        });
-    }
-
-    /// Arc-sharing invariant: after `resolve_concurrent_edit()`, the
-    /// `ResolutionProblem.functions` passed to the solver must share the *same*
-    /// Arc allocation as `Engine.functions`. This covers the inline construction
-    /// site in `concurrent.rs` (task #2286).
-    #[test]
-    fn resolve_concurrent_edit_resolution_problem_shares_functions_arc_with_engine() {
-        use reify_test_support::mm;
-        use std::collections::{HashMap, HashSet};
-        assert_problem_shares_functions_arc("resolve_concurrent_edit", |engine, limit_id| {
-            let setup = engine
-                .prepare_concurrent_edit(limit_id, mm(3.0))
-                .expect("prepare_concurrent_edit must succeed after eval");
-            let mut result = ConcurrentEditResult {
-                values: setup.values.clone(),
-                snapshot_values: setup.snapshot_values.clone(),
-                node_results: Vec::new(),
-                actual_eval_set: Vec::new(),
-                skipped: HashSet::new(),
-                resolved_params: HashMap::new(),
-                diagnostics: Vec::new(),
-            };
-            engine.resolve_concurrent_edit(&setup, &mut result);
         });
     }
 

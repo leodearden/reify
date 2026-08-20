@@ -269,6 +269,21 @@ export interface DimensionLadder {
   dimension: string;
   /** Selectable units, in picker display order. */
   units: UnitOption[];
+  /**
+   * Curated derived-unit label for this dimension (PRD
+   * display-unit-preference §4) — equals the `is_default` rung's label.
+   * Optional/additive: mirrors the `derived_unit_name` serde field from
+   * `reify_core::display_units` for forthcoming L4/L5 consumers; existing
+   * picker consumers ignore it (task #5232).
+   */
+  derived_unit_name?: string;
+  /**
+   * Per-dimension auto-scaling policy (PRD display-unit-preference §5), or
+   * `null`/absent when the dimension is excluded from auto-scaling.
+   * Optional/additive: mirrors the `auto_scale` serde field; existing
+   * consumers ignore it (task #5232).
+   */
+  auto_scale?: { enabled: boolean; band_lo: number; band_hi: number } | null;
 }
 
 /** Canonical dimension name -> its selectable unit ladder, as returned by `get_unit_ladders`. */
@@ -712,9 +727,17 @@ export interface EntityTreeNode {
    * Whether this realization node is visible by default.
    * Mirrors Rust `EntityTreeNode.default_visible`.
    * - Absent or `true` → visible (all non-realization nodes and product realizations).
-   * - Explicit `false` → hidden by default (aux body or aux-subtree descendant).
+   * - Explicit `false` → hidden by default, for any of three reasons: the
+   *   realization is `aux`, it descends from an `aux sub` subtree, or it is a
+   *   consumed intermediate — some sibling realization in the same template
+   *   takes it as an operand, so it is construction geometry rather than the
+   *   finished part (#5195).
    * Only explicit `false` triggers hidden-by-default; undefined/absent preserves
    * all existing visibility behavior.
+   *
+   * Hidden-by-default is a starting state, not a restriction: the outline lists
+   * these nodes and toggling one reveals it, and the All-Geometry view shows
+   * everything regardless.
    */
   default_visible?: boolean;
   /** Child nodes (value cells, sub-components, ports, realizations). */

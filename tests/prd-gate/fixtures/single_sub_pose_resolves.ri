@@ -1,0 +1,19 @@
+// Fixture (γ decompose-phase premise, indexed-sub-instantiation PRD probe #13):
+// single-sub posing substrate — one instantiation-arm sub with an `at` pose
+// passes `reify check` (exit 0) and `reify eval` (exit 0, no error).
+// NOTE (enumerator-verified 2026-07-25): eval's top-level print shows
+// `Rig.p.body = undef` even for the LANDED examples/sub_placement_assembly.ri
+// — realization/posing surfaces via the `reify build` kernel walk, which the
+// grammar/check/ir harness cannot probe. The probeable substrate claim is
+// "resolves + evaluates without error"; the ApplyTransform/composition-walk
+// evidence is the landed sub-placement example goldens.
+module single_sub_pose_resolves
+
+structure def P {
+    param r : Length = 5mm
+    let body = cylinder(r, 10mm)
+}
+
+structure def Rig {
+    sub p = P() at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+}

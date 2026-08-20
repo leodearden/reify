@@ -1,0 +1,30 @@
+module dcr_fn_force_param_already_rejects
+
+// D3 decompose-phase VACUITY GUARD for PRD
+// `docs/prds/v0_6/dimension-checked-readers.md` leaf ι.
+//
+// PRD §9 phrases ι's signal partly as "`critical_load(result, 1mm)` exits 1".
+// `critical_load` is a `.ri` fn with `reference_load : Force`
+// (crates/reify-compiler/stdlib/solver_buckling_fns.ri:74-79), so it is already
+// covered by `resolve_function_overload`'s strict `param_ty == arg_ty` gate
+// (crates/reify-compiler/src/type_compat.rs:1155/:1194-1200) — that half of the
+// signal is ALREADY TRUE and delivers nothing.
+//
+// MEASURED at decompose (2026-07-28, main efba5a8036) with this fixture:
+//   `reify eval`  -> EXIT 1, "error: no matching overload for
+//                    scale_load(Scalar[m]), candidates:
+//                    scale_load(Scalar[m*kg*s^-2]) -> Scalar[m*kg*s^-2]"
+//   `reify check` -> identical, EXIT 1
+//
+// ι's genuinely un-gated target is therefore the BARE eval_builtin
+// `envelope_critical_load` (crates/reify-stdlib/src/fea.rs:1455) — it has NO
+// `.ri` declaration (grep: zero hits in crates/reify-compiler/stdlib/*.ri) and
+// is called directly from `.ri` (examples/buckling_multi_case_smoke.ri:57), so
+// no overload gate applies and `args[1]`'s dimension is propagated verbatim.
+
+fn scale_load(reference_load : Force) -> Force { reference_load * 2.0 }
+
+structure def DcrFnForceParamAlreadyRejects {
+    let ok  = scale_load(1kN)
+    let bad = scale_load(1mm)
+}
