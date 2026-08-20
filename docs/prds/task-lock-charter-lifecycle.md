@@ -22,7 +22,7 @@ all serialized behind ~3–4 hot-module lock-holders. Root cause: many tasks dec
 their real edit footprint. A four-line investigation established the mechanics
 (`reference_orchestrator_module_lock_semantics_dir_overgreed`):
 
-- Lock conflict is pure path-prefix math (`shared/locking.py:20-27 modules_conflict`);
+- Lock conflict is pure path-prefix math (`shared/locking.py` `modules_conflict`);
   `normalize_lock(depth)` truncates to `lock_depth` components (`dark-factory-orchestrator.yaml:13`
   `lock_depth: 4`, `max_per_module: 1`).
 - The over-wide dirs are written at **creation time** (PRD decompose / human-decompose
@@ -131,10 +131,10 @@ never skip the architect even when a valid plan exists at workflow start.
   release half is **already implemented** — `scheduler.py handle_blast_radius_expansion`
   computes `stale = current ∖ needed` and calls `release_subset` + emits
   `lock_released`/`reason:'plan_refinement'` (landed `6f29517823`, 2026-04-21), and all
-  three plan-complete call sites (`workflow.py:2448/2560/2720`) invoke it on **any**
+  three plan-complete call sites in `workflow.py` invoke it on **any**
   `plan_modules != self.modules`, narrowing included. δ's **real residual** is therefore
   (a) **persist the tightened set to `metadata.files`** on the *success* branch (today
-  only the acquire-failure/requeue branch at `scheduler.py:3466-3469` writes metadata
+  only the acquire-failure/requeue branch's `update_task(... {'files': needed})` writes metadata
   back; the success-path release is in-memory only, so an orchestrator restart re-reads
   the over-declared `metadata.files` and the over-claim returns), and (b) **observability**
   for ζ. **The existing in-memory release is dormant under anchoring** — it only fires
@@ -216,7 +216,7 @@ A pure, LLM-free check over a single declared path string:
   `release_subset` + `lock_released`/`plan_refinement`, landed `6f29517823`). δ's
   residual is **(i) persisting** that tightened set to `metadata.files` on the *success*
   branch (the success path is in-memory only; only the requeue branch at
-  `scheduler.py:3466-3469` writes metadata back, so the tightening does not survive an
+  `scheduler.py`'s `update_task(... {'files': needed})` writes metadata back, so the tightening does not survive an
   orchestrator restart), and **(ii)** the observability ζ asserts on.
 - **C-S2 (ordering — never release before acquiring).** Release happens only **after**
   the task holds a superset of `plan.files`. If BRE must first acquire `plan ∖ held` and
@@ -300,11 +300,11 @@ them would spurious-block; G3/G6 are done by direct code-trace, per the
 
 | Capability | Status | Evidence (jun18 trace) |
 |---|---|---|
-| Lock conflict = path-prefix; `normalize_lock(depth)`; `lock_depth:4`, `max_per_module:1` | ✅ | `shared/locking.py:20-27,30-38`; `dark-factory-orchestrator.yaml:13` |
+| Lock conflict = path-prefix; `normalize_lock(depth)`; `lock_depth:4`, `max_per_module:1` | ✅ | `shared/locking.py` `modules_conflict` / `normalize_lock`; `dark-factory-orchestrator.yaml:13` |
 | BRE acquire exists (`plan ∖ held`) | ✅ | `scheduler.py` `handle_blast_radius_expansion` (~:3395), the requeue branch |
-| In-memory release half (`held ∖ plan`) **already exists** (δ corrected to store-writeback + observability) | ✅ corrected 2026-06-18 | `scheduler.py:3418 handle_blast_radius_expansion` (`stale = current ∖ needed` → `release_subset` + `lock_released`/`plan_refinement`, `6f29517823` 2026-04-21); called from `workflow.py:2448/2560/2720` on any `plan_modules != self.modules`. **Residual:** success path is in-memory only — only the requeue branch (`scheduler.py:3466-3469`) writes `metadata.files` back, so tightening is lost on restart |
+| In-memory release half (`held ∖ plan`) **already exists** (δ corrected to store-writeback + observability) | ✅ corrected 2026-06-18 | `scheduler.py` `handle_blast_radius_expansion` (`stale = current ∖ needed` → `release_subset` + `lock_released`/`plan_refinement`, `6f29517823` 2026-04-21); called from the three `workflow.py` plan-complete sites on any `plan_modules != self.modules`. **Residual:** success path is in-memory only — only the requeue branch (`scheduler.py` `update_task(... {'files': needed})`) writes `metadata.files` back, so tightening is lost on restart |
 | Task-creation path = `submit_task`/`commit_planning`; `modules→files` migration | ✅ | fused-memory `task_interceptor` / `commit_planning`; `fabfa367f5` + `migrate_metadata_modules_to_files.py` |
-| Architect plan input / where `metadata.files` is read (the ε hide-point) | ⚠️ confirm | `orchestrator/src/orchestrator/mcp/plan_tools.py` `create_plan` (:404) / `update_plan_metadata` (:503); `BriefingAssembler.build_plan_tightening_prompt` is in **`workflow.py:216`** (no standalone `briefing.py`) — **precise hide-point to be confirmed at ε impl** |
+| Architect plan input / where `metadata.files` is read (the ε hide-point) | ⚠️ confirm | `orchestrator/src/orchestrator/mcp/plan_tools.py` `create_plan` / `update_plan_metadata`; `BriefingAssembler.build_plan_tightening_prompt` — **precise hide-point to be confirmed at ε impl** |
 | No diff-vs-charter merge gate (so charter is convention; under-declare safe via BRE only) | ✅ | grep: reify `hooks/pre-merge-commit` = full-workspace verify; no scope gate |
 
 **G3 verdict: PASS** with one ⚠️ (the exact architect input field to suppress for ε)
@@ -398,8 +398,8 @@ integration gate (ζ).
   in `handle_blast_radius_expansion` (`6f29517823`); δ's residual is to **persist** the
   tightened set to `metadata.files` on the *success* branch (today only the requeue branch
   `:3466-3469` writes metadata back, so a restart re-reads the over-declared charter) **plus**
-  the observability ζ asserts on. The DF architect should start from `scheduler.py:3418` +
-  the three `workflow.py:2448/2560/2720` call sites.
+  the observability ζ asserts on. The DF architect should start from `scheduler.py`'s
+  `handle_blast_radius_expansion` + its three `workflow.py` plan-complete call sites.
   *Signal (leaf):* after a task's architect plan completes, `get_scheduler_state` shows
   its held modules **= `plan.files`** (`held ∖ plan` released via `lock_released` events)
   **and the persisted `metadata.files` equals `plan.files`** (survives a scheduler
