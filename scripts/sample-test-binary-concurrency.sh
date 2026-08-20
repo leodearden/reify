@@ -73,6 +73,35 @@
 #   nonzero_samples > 0   ->  peak is a real observation of that window.
 #
 # Report both, always, together.
+#
+# ---------------------------------------------------------------------------
+# WHY THE PATTERN LIST IS SPLIT WITH GLOBBING OFF (defect (c), measured).
+#
+# DEPS_GLOB is a SPACE-SEPARATED LIST of patterns, so it has to be word-split —
+# but its default, `*/target/*/deps/*`, is itself a live glob.  An unquoted
+# `for glob in $DEPS_GLOB` therefore got pathname expansion as well, and
+# whenever the sampler's cwd happened to contain a matching tree the loop
+# variable bound to REAL RELATIVE PATHS instead of the pattern.  A relative path
+# can never match an absolute /proc/<pid>/exe target, so the sampler silently
+# counted zero.  Measured on one identical fixture: peak=1 from a lane root,
+# peak=0 from /home/leo/src/warm-lanes/worktrees.
+#
+# This is a HOST-WIDE instrument that may be launched from any directory, so its
+# result MUST be cwd-independent — and a cwd-induced zero is textually
+# indistinguishable from the genuine defect-(b) INCONCLUSIVE window above, i.e.
+# it corrupts the one reading this script exists to make trustworthy.
+#
+# The split is therefore done ONCE, at parse time, under `set -f`: that
+# suppresses pathname expansion while leaving word-splitting intact, which is
+# exactly the half we need and exactly the half we must keep.  `set +f` restores
+# globbing immediately afterwards — that restore is load-bearing, not cosmetic:
+# REIFY_SAMPLER_PIDS_CMD is a caller-supplied command that may legitimately rely
+# on globbing.  Splitting once rather than per-pid also removes a per-sample cost
+# blowup that contradicted the 0.28 s/pass figure above.
+#
+# A whitespace-only --deps-glob is rejected for the same reason: it passes a
+# naive non-empty check but splits to ZERO patterns, after which every sample
+# counts 0 forever — the same silent-wrong-measurement class.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -100,6 +129,17 @@ done
 case "$DURATION" in (''|*[!0-9]*) _die "--duration must be a non-negative integer, got '$DURATION'" ;; esac
 case "$INTERVAL" in (''|*[!0-9]*) _die "--interval must be a non-negative integer, got '$INTERVAL'" ;; esac
 [ -n "$DEPS_GLOB" ] || _die "--deps-glob must be non-empty"
+
+# Split the pattern LIST once, here, with pathname expansion disabled — see the
+# header block on defect (c).  `set -f` kills globbing but NOT word-splitting.
+set -f
+# shellcheck disable=SC2206
+DEPS_GLOBS=( $DEPS_GLOB )
+set +f
+# Restored above so a glob-dependent REIFY_SAMPLER_PIDS_CMD keeps working; this
+# script uses no other glob, so returning to the default is safe.
+[ "${#DEPS_GLOBS[@]}" -gt 0 ] || \
+    _die "--deps-glob must contain at least one non-whitespace pattern, got '$DEPS_GLOB'"
 
 # Injection seams (testability; the contract guard drives both).  Defaults are
 # the real host: /proc, and the argv prefilter described above.
@@ -137,7 +177,11 @@ _confirmed_count() {
         exe="$(readlink "$PROC_ROOT/$pid/exe" 2>/dev/null || echo "")"
         [ -n "$exe" ] || continue
         matched=0
-        for glob in $DEPS_GLOB; do
+        # Iterate the pre-split ARRAY, never the raw string (defect (c)).  The
+        # `case` pattern stays UNQUOTED on purpose: case patterns undergo neither
+        # pathname expansion nor field splitting, so $glob was never the bug
+        # there — quoting it would turn pattern matching into literal comparison.
+        for glob in "${DEPS_GLOBS[@]}"; do
             # shellcheck disable=SC2254
             case "$exe" in ($glob) matched=1; break ;; esac
         done
