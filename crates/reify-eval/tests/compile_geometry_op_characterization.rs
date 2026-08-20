@@ -582,10 +582,13 @@ const ALL_TRANSFORM: [TransformKind; 7] = [
 /// unit tests; ApplyTransform uses an identity-rotation `lit_transform`.
 fn transform_case(k: TransformKind) -> CompiledGeometryOp {
     let args = match k {
+        // Translation components are LENGTH-semantic (task 5623) — `lit_len`.
+        // The golden below is unchanged: `Value::length(0.01).as_f64()` and
+        // `Value::Real(0.01).as_f64()` are both `0.01`.
         TransformKind::Translate => vec![
-            ("dx".to_string(), lit(0.01)),
-            ("dy".to_string(), lit(0.02)),
-            ("dz".to_string(), lit(0.03)),
+            ("dx".to_string(), lit_len(0.01)),
+            ("dy".to_string(), lit_len(0.02)),
+            ("dz".to_string(), lit_len(0.03)),
         ],
         TransformKind::Rotate => vec![
             ("ax".to_string(), lit(0.0)),
@@ -594,10 +597,12 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("angle".to_string(), lit(1.0)),
         ],
         TransformKind::Scale => vec![("factor".to_string(), lit(2.0))],
+        // Only the PIVOT is LENGTH-semantic (task 5623); ax/ay/az/angle stay
+        // on `lit`. Golden unchanged.
         TransformKind::RotateAround => vec![
-            ("px".to_string(), lit(0.05)),
-            ("py".to_string(), lit(0.0)),
-            ("pz".to_string(), lit(0.0)),
+            ("px".to_string(), lit_len(0.05)),
+            ("py".to_string(), lit_len(0.0)),
+            ("pz".to_string(), lit_len(0.0)),
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
@@ -1249,9 +1254,11 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
                 ("ay".to_string(), lit(0.0)),
                 ("az".to_string(), lit(1.0)),
                 ("angle".to_string(), lit(1.0)),
-                ("ox".to_string(), lit(0.0)),
-                ("oy".to_string(), lit(0.0)),
-                ("oz".to_string(), lit(0.0)),
+                // Only the axis ORIGIN is LENGTH-semantic (task 5623);
+                // ax/ay/az/angle stay on `lit`. Golden unchanged.
+                ("ox".to_string(), lit_len(0.0)),
+                ("oy".to_string(), lit_len(0.0)),
+                ("oz".to_string(), lit_len(0.0)),
             ],
         ),
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
@@ -1448,29 +1455,35 @@ const ALL_CURVE: [CurveKind; 6] = [
 /// degree-1 / 2-point curve).
 fn curve_case(k: CurveKind) -> CompiledGeometryOp {
     let args = match k {
+        // Both endpoints are LENGTH-gated (task 5623). The golden below is
+        // unchanged: `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         CurveKind::LineSegment => vec![
-            ("x1".to_string(), lit(0.0)),
-            ("y1".to_string(), lit(0.0)),
-            ("z1".to_string(), lit(0.0)),
-            ("x2".to_string(), lit(0.01)),
-            ("y2".to_string(), lit(0.02)),
-            ("z2".to_string(), lit(0.03)),
+            ("x1".to_string(), lit_len(0.0)),
+            ("y1".to_string(), lit_len(0.0)),
+            ("z1".to_string(), lit_len(0.0)),
+            ("x2".to_string(), lit_len(0.01)),
+            ("y2".to_string(), lit_len(0.02)),
+            ("z2".to_string(), lit_len(0.03)),
         ],
+        // Centre and radius are LENGTH-gated (task 5623); the two angles and the
+        // ax/ay/az unit vector stay deliberately bare. Golden below unchanged.
         CurveKind::Arc => vec![
-            ("cx".to_string(), lit(0.0)),
-            ("cy".to_string(), lit(0.0)),
-            ("cz".to_string(), lit(0.0)),
-            ("radius".to_string(), lit(0.01)),
+            ("cx".to_string(), lit_len(0.0)),
+            ("cy".to_string(), lit_len(0.0)),
+            ("cz".to_string(), lit_len(0.0)),
+            ("radius".to_string(), lit_len(0.01)),
             ("start_angle".to_string(), lit(0.0)),
             ("end_angle".to_string(), lit(1.0)),
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
         ],
+        // radius / pitch / height are all LENGTH-gated (task 5623); `pitch` is a
+        // rise per turn, not an angle. Golden below unchanged.
         CurveKind::Helix => vec![
-            ("radius".to_string(), lit(0.01)),
-            ("pitch".to_string(), lit(0.005)),
-            ("height".to_string(), lit(0.05)),
+            ("radius".to_string(), lit_len(0.01)),
+            ("pitch".to_string(), lit_len(0.005)),
+            ("height".to_string(), lit_len(0.05)),
         ],
         // 2 points → 6 coords.
         CurveKind::InterpCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.02, 0.03]),

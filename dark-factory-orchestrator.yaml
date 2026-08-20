@@ -297,7 +297,38 @@ verify_env:
   # 2×48≈96 GiB < 125). N=2 restores that headroom. Paired with the new memory-PSI
   # admission gate (task 4861) and the pending 4839 revert (task 4862 — build back
   # inside the slot).
-  REIFY_TEST_SEMAPHORE_CONCURRENCY: "2"
+  # 2→1 (Leo, 2026-08-19): back to the lib/PRD default. The knob was only ever
+  # tuned ABOVE 1 to relieve exit-75 slot-starvation (the esc-3891-45/4673-31/4552
+  # cluster, see the head of this block). That justification is spent: the
+  # clock-stop seam (tasks 4837/4838, both done) turned a slot-starved wait into a
+  # graceful in-process hold excluded from verify_command_timeout_secs, which the
+  # 3→2 note above already recorded as "N's starvation downside is gone" — it just
+  # stopped at 2 rather than carrying the same reasoning down to 1.
+  # Three things now argue FOR 1:
+  #  (a) N=1 is the design point, not a fallback. lib_test_semaphore.sh defaults to
+  #      1, and docs/prds/test-run-concurrency-semaphore.md §5 D3 calls it "the
+  #      throughput-optimal point for a startup-dominated suite (wide single runs
+  #      amortize per-test init best) and the conservative host-load point
+  #      (1 task ≈ 1× nproc, +merge ≈ 2×)".
+  #  (b) N=2 was quietly violating the occt headroom basis. .config/nextest.toml
+  #      states it as "bounds concurrent verify runs to ≤2 (1 task slot at default
+  #      N=1 + 1 exempt merge); worst case 2 × 24 OCCT × ~2 GiB = 96 GiB < 125 GiB".
+  #      The 3→2 note's own "proven at N=2: 2×48≈96 GiB" arithmetic counts 2 runs
+  #      TOTAL and silently drops the exempt merge that the 2→3 note above had
+  #      explicitly flagged — so the real N=2 worst case is 3 × 48 ≈ 144 GiB > 125.
+  #      N=1 is the value that makes the documented basis true.
+  #  (c) Task 4862 made this slot the memory bound ON PURPOSE. verify.sh's
+  #      @@SEMAPHORE_ACQUIRE@@ block: "the held slot's whole-block serialization is
+  #      the only implicit bound on concurrent RSS-heavy link waves" (reify test
+  #      binaries statically link OCCT/OpenVDB/gmsh/manifold, ~1-3 GiB RSS per
+  #      link). Lowering N strengthens exactly the mechanism 4862 chose.
+  # ACCEPTED COST: task-role test phases now serialize host-wide (1 task + 1 exempt
+  # merge). The wait is graceful, but a waiting task still occupies a warm lane and
+  # an agent slot — so the signal to revisit is LANE OCCUPANCY / queue depth, not
+  # exit-75 (which the clock-stop seam has already made unreachable here).
+  # Nothing pins this value: every semaphore test (test_test_run_semaphore.sh,
+  # test_verify_semaphore_e2e.sh) sets its own N explicitly rather than reading it.
+  REIFY_TEST_SEMAPHORE_CONCURRENCY: "1"
   REIFY_TEST_SEMAPHORE_WAIT: "unlimited"
   REIFY_PSI_GATE_MAX_WAIT: "unlimited"
 
@@ -725,38 +756,49 @@ sandbox:
   enabled: true
   backend: landlock
 
-# Sandbox companion (task γ6a): toolchain-cache redirect. Covers 6 of the 9
-# dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
-# debugger, simple_task, architect, reviewer_comprehensive, judge. NOT
-# covered: merger, steward, deep_reviewer.
-#   merger is uncovered on a rationale task 5836 INVERTED, not merely made
-#   stale: the exclusion turned on keeping the merge agent's CARGO_HOME equal
-#   to the verify subprocess cache path, and 5836 moved verify_env onto
-#   /tmp/reify-agent-cargo-home while merger, carrying no override, still
-#   resolves the DEFAULT ~/.cargo. Deliberately NOT fixed by 5836, whose scope
-#   is the verify/agent seam. Filed as #6275; until that lands the exclusion
-#   stands on a rationale that no longer holds.
-#   The full re-analysis — the roles.py cites showing the exposure is
-#   reachable rather than theoretical, why re-adding merger must also extend
-#   CACHE_REDIRECT_ROLES, and what measurement it owes — lives in ONE place,
-#   the header of tests/infra/test_sandbox_cache_writability_seam.sh (SECOND
-#   COUPLING). Do not restate it here; the two copies drifted once already.
+# Sandbox companion (task γ6a): toolchain-cache redirect. Covers 7 of the 9
+# dispatch roles in DF's ROLES registry (roles.py, the `ROLES` dict) —
+# implementer, debugger, simple_task, architect, reviewer_comprehensive,
+# judge, merger. NOT covered: steward, deep_reviewer.
+#   merger was added by task 6275, which re-evaluated an exclusion whose
+#   rationale task 5836 had INVERTED (5836 moved verify_env.CARGO_HOME onto
+#   /tmp, the very divergence the exclusion existed to prevent) and resolved
+#   it by redirecting merger rather than restoring the exclusion.
+#   That is the conclusion only. The full re-analysis — why ADD beat
+#   restore-the-exclusion, the roles.py cites showing the exposure is
+#   reachable rather than theoretical, and merger's own measured exposure —
+#   lives in ONE place, the header of
+#   tests/infra/test_sandbox_cache_writability_seam.sh (SECOND COUPLING). Do
+#   not restate it here; the two copies drifted once already, and repairing
+#   that drift is what #6275 had to spend a commit on.
+#   The covered/uncovered split above is no longer prose-only: that suite's
+#   block (C) pins it mechanically (KNOWN_DISPATCH_ROLES minus
+#   CACHE_REDIRECT_ROLES == UNCOVERED_DISPATCH_ROLES), so adding or removing
+#   a role here without updating both sides now fails a test.
 #   EFFECT IS NOT UNIFORM, and no entry here is merely "pending the DF-side
 #   sandboxed=True flip": workflow.py:_build_agent_env merges
 #   role_env_overrides.get(role.name, {}) LAST for EVERY role, sandboxed or
-#   not. Per role, as of task 5858:
+#   not. Per role, as of tasks 5858 and 6275:
 #     implementer / debugger / simple_task — roles.py sandboxed=True TODAY;
 #       the redirect is what keeps them building at all.
 #     architect — NOT sandboxed yet, but has unrestricted Bash
-#       (roles.py:401), so this entry is LIVE from the next orchestrator
-#       restart: it moves the architect's ad-hoc cargo/npm off the warm
-#       ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp pair. Accepted
-#       because that /tmp cache is already warmed by the three sandboxed
-#       roles above (so the architect inherits a warm cache, not a cold
-#       one), and its exposure to the tmpfiles age-deletion gap below is
+#       (roles.py, ARCHITECT.allowed_tools), so this entry is LIVE from the
+#       next orchestrator restart: it moves the architect's ad-hoc cargo/npm
+#       off the warm ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp
+#       pair. Accepted because that /tmp cache is already warmed by the three
+#       sandboxed roles above (so the architect inherits a warm cache, not a
+#       cold one), and its exposure to the tmpfiles age-deletion gap below is
 #       exactly the one implementer already carries.
+#     merger — NOT sandboxed either, but likewise has unrestricted Bash
+#       (roles.py, MERGER.allowed_tools) and a system prompt that directs it
+#       to run tests after resolving a conflict, so this entry is LIVE from
+#       the next orchestrator restart, on the conflict-resolution path.
+#       Accepted on exactly the architect's grounds (the /tmp pair is already
+#       warm, so merger inherits a warm cache rather than paying a cold
+#       start) and carrying exactly the same tmpfiles age-deletion
+#       exposure.
 #     reviewer_comprehensive / judge — read-only tool grants
-#       (_READ_ONLY_TOOLS, roles.py:106; Bash scoped to `git:*`), so neither
+#       (roles.py, _READ_ONLY_TOOLS; Bash scoped to `git:*`), so neither
 #       can invoke cargo or npm at all. Genuinely inert today AND after a
 #       sandboxed=True flip; kept as defense-in-depth against a future
 #       tool-grant widening, NOT because either would otherwise die on a
@@ -764,7 +806,8 @@ sandbox:
 #   The key is `reviewer_comprehensive`, NOT the collapsed `reviewer` (which
 #   validates silently against DF's KNOWN_ROLE_NAMES yet delivers nothing).
 #   The full coupling analysis — that trap, why `judge` is safe despite
-#   workflow.py:10358, and what this seam still cannot observe — lives in
+#   workflow.py's "do not add 'judge' to role_env_overrides" comment, and
+#   what this seam still cannot observe — lives in
 #   ONE place, the header of
 #   tests/infra/test_sandbox_cache_writability_seam.sh (the file whose
 #   assertions enforce it). Do not restate it here; the two copies drifted
@@ -839,18 +882,102 @@ sandbox:
 #       Restart-tier, so this lands INERT and the operator picks when that
 #       one-time cost is paid.
 #       Full analysis lives in the seam-guard header, not here.
+#   XDG_CACHE_HOME (task 5909): compute_write_set() grants ~/.cache/uv but
+#   NOTHING under ~/.cache/tree-sitter, so a sandboxed role's grammar probe
+#   dies writing ~/.cache/tree-sitter/lock (the failure behind tasks
+#   5894/5904/5897 — test_prd_capability_check.sh, test_prd_gate_corpus.sh,
+#   test_prd_gate_compiler_type_hygiene.sh).
+#     WHY THIS VARIABLE: tree-sitter 0.26.8 (on PATH at
+#     /home/leo/.cargo/bin/tree-sitter) exposes no tree-sitter-specific
+#     cache-dir env var, so XDG_CACHE_HOME is the only lever — MEASURED on
+#     this host to relocate its lib/ + lock/ dirs and to create the whole
+#     tree when the root is absent (no provisioning step needed).
+#     UPSTREAM: cross-repo task 5896 adds the ~/.cache/tree-sitter
+#     carve-out to compute_write_set() directly; landing it retires this
+#     leg of the redirect (same shape as dark_factory:3162 above for
+#     ~/.cargo/~/.npm).
+#     DELIBERATELY NOT SEEDED: unlike CARGO_HOME/npm_config_cache, this dir
+#     gets no pre-seed and no tmpfiles `x` age-clean exclusion in
+#     scripts/setup-agent-cache-redirect.sh — the tree-sitter cache is
+#     DERIVED and self-healing (a missing lib/*.so is simply recompiled
+#     from grammar source), so neither fix the seeder exists to provide
+#     applies. Adding a third seeder destination would also turn
+#     tests/infra/test_agent_cache_redirect.sh's G2/G3 ("exactly two
+#     destination dirs", "conf paths == seeder destinations") red for no
+#     benefit — do not "complete the pattern" here.
+#   UV_CACHE_DIR (task 5909, COUNTER-redirect, NOT another /tmp redirect):
+#   XDG_CACHE_HOME above is a GENERAL variable and uv honours it too;
+#   compute_write_set() row 7 already grants ~/.cache/uv — 159G measured
+#   on this host, the LARGEST single entry under ~/.cache — so without this
+#   pin the XDG_CACHE_HOME redirect would silently move uv's cache OFF its
+#   own grant and into /tmp, where this block's KNOWN GAPS tmpfiles rule
+#   (`D /tmp 1777 root root 30d`) both wipes at boot and age-deletes
+#   contents mid-uptime — the same partial-gutting hazard already
+#   documented above for the cargo registry, on a cache that currently has
+#   a working grant. Pinning UV_CACHE_DIR (uv's highest-precedence cache
+#   override) back at its granted path contains that collateral.
+#   Deliberately NOT pinning SCCACHE_DIR even though ~/.cache/sccache
+#   exists and would also follow the XDG redirect: ~/.cache/sccache is NOT
+#   in compute_write_set(), so a sandboxed role cannot write it today
+#   regardless — pinning it back at ~/.cache/sccache would name an
+#   UNGRANTED path and be strictly worse than letting it follow the
+#   redirect. (sccache is a client/server daemon; storage lives with the
+#   already-running server, which this yaml points at a redis backend via
+#   sccache.backend_env.)
+#   PER-ROLE EFFECT OF THIS PAIR (task 5909, count updated by 6275; the
+#   anchor now feeds SEVEN roles, not the three it fed when these two keys
+#   were written): both keys ride the shared `&sandbox_cache_env` anchor, so
+#   they reach every aliased role — including any role added to the alias
+#   list later, which is how `merger` picked this pair up without 6275
+#   naming either key.
+#   The split is NOT the same as the CARGO_HOME/npm_config_cache split
+#   recorded above, so it is recorded separately rather than by reference:
+#     implementer / debugger / simple_task — load-bearing, the whole point:
+#       without the redirect their grammar probe dies on ~/.cache/tree-sitter.
+#     architect — LIVE from the next restart (unrestricted Bash), and unlike
+#       the cargo/npm pair it lands COLD: /tmp/reify-agent-xdg-cache is
+#       DELIBERATELY NOT SEEDED (see above), so the architect does not
+#       inherit a warm shared cache the way it does for ~/.cargo/~/.npm — it
+#       trades a warm ~/.cache for an empty one. ACCEPTED: every dir this
+#       moves is derived and self-healing, and the one entry that is both
+#       large and genuinely granted (~/.cache/uv) is pinned back by
+#       UV_CACHE_DIR above.
+#     merger — LIVE from the next restart on the conflict-resolution path,
+#       and COLD for exactly the architect's reason: it rides the same
+#       unseeded /tmp/reify-agent-xdg-cache. Accepted on the same grounds
+#       (every dir moved is derived and self-healing, and ~/.cache/uv is
+#       pinned back by UV_CACHE_DIR), and the cold start is cheaper here
+#       than for architect because merger dispatches on ~1% of invocations
+#       — see the seam guard's MEASURED EXPOSURE note.
+#     reviewer_comprehensive / judge — inert, same read-only tool grants that
+#       make their CARGO_HOME/npm_config_cache entries inert.
+#   BONUS, not a regression: because XDG_CACHE_HOME is general rather than
+#   tree-sitter-specific, the redirect also relocates ~/.cache/claude-cli-nodejs
+#   (26G) and ~/.cache/reify, NEITHER of which is in compute_write_set()
+#   either — so for the sandboxed three it widens the writable cache surface
+#   past the one dir that motivated it.
 #   Restart-tier: inert until the orchestrator restarts (companion task
-#   γ6b). Reify-side seam guard:
+#   γ6b; XDG_CACHE_HOME/UV_CACHE_DIR ride the same tier — config loads once
+#   at startup, no hot-reload). Reify-side seam guard:
 #   tests/infra/test_sandbox_cache_writability_seam.sh.
 role_env_overrides:
   implementer: &sandbox_cache_env
     CARGO_HOME: /tmp/reify-agent-cargo-home
     npm_config_cache: /tmp/reify-agent-npm-cache
+    XDG_CACHE_HOME: /tmp/reify-agent-xdg-cache
+    # Counter-redirect, not a /tmp target on purpose: pins uv back at its
+    # own compute_write_set ~/.cache/uv grant so it does not silently
+    # follow XDG_CACHE_HOME above into /tmp's tmpfiles 30d wipe/age-clean.
+    # See the UV_CACHE_DIR paragraph above. Hardcoded absolute path
+    # (role_env_overrides values are not known to undergo env
+    # interpolation) — do not write $HOME/${HOME} here.
+    UV_CACHE_DIR: /home/leo/.cache/uv
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
   architect: *sandbox_cache_env
   reviewer_comprehensive: *sandbox_cache_env
   judge: *sandbox_cache_env
+  merger: *sandbox_cache_env
 
 # Escalation
 escalation:

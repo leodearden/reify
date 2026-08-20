@@ -1418,12 +1418,12 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # field the sentinel would be indistinguishable from a genuine starvation
     # abort, so a merely-degraded pool would read on the wire exactly like the
     # infra-hold class task #6024 exists to make identifiable -- inverted.
-    # ACCEPTED TEMPORARY STATE: dark-factory's detector is presence-anchored and
-    # does not gate on this field yet, so until it does, a soft pool deadline in
-    # the output of an ALREADY-FAILING verify is attributed to SEMAPHORE_TIMEOUT
-    # rather than to the real cause. Bounds, why emitting anyway is still the
-    # right trade, and what closes it: docs/notes/verify-pipeline-knobs.md,
-    # "known false-positive window".
+    # CLOSED (dark-factory task 4212, 2026-08-19): dark-factory's detector now
+    # parses this field and gates the SEMAPHORE_TIMEOUT arm on it, so a soft
+    # pool deadline in the output of an ALREADY-FAILING verify is no longer
+    # misattributed to SEMAPHORE_TIMEOUT -- it falls through to per-tool
+    # dispatch instead. Detail: docs/notes/verify-pipeline-knobs.md,
+    # "Slot-acquisition-timeout sentinel".
     _H2_POOL_TIMEOUT_DISPOSITION="soft"
 
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure

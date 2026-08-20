@@ -2,6 +2,11 @@
 # Shared test helpers for reify shell test files.
 # Provides assert() and test_summary() with PASS/FAIL counters.
 #
+# assert()'s output shape: "  PASS: <desc>" / "  FAIL: <desc>", where line 1 is
+# byte-identical (parsed by run_all.sh's cause_hint) and any line 2+ of a
+# MULTI-LINE <desc> is prefixed with `  | ` -- see _assert_emit_desc below for
+# why that prefix, and not indentation, is the property that matters.
+#
 # Usage:  source "$(dirname "${BASH_SOURCE[0]}")/test_helpers.sh"
 #   or:   source "$REPO_ROOT/tests/infra/test_helpers.sh"
 #
@@ -21,6 +26,30 @@ _REIFY_TEST_HELPERS_SH_SOURCED=1
 PASS=0
 FAIL=0
 
+# Emits "<label><desc>" with line 1 byte-identical and lines 2+ carrying the
+# same `  | ` prefix assert already applies to a failing checker's captured
+# output in its on-FAIL dump below. WHY: dark-factory's slot-timeout/semaphore
+# classifier is `^[ \t]*`-anchored, so a multi-line $desc puts a child's captured
+# @@REIFY_SLOT_TIMEOUT@@ sentinel at COLUMN 0 and misclassifies the whole merge
+# verify as semaphore starvation (task 6353; the structural fix
+# tests/infra/test_slot_timeout_marker.sh Section E names). `  | ` is a
+# NON-whitespace prefix, which is what actually defeats that anchor --
+# indentation alone does NOT.
+#
+# The single-line branch keeps the ORIGINAL `echo` verbatim: it is the
+# 99.9%-common path across the 150+ files that source this library, so it must
+# stay both byte-identical (test_run_all.sh / dark-factory's cause_hint parse
+# "  FAIL: <desc>") and FORK-FREE -- no printf|sed pipeline per assert. `echo`
+# rather than `printf` on that branch also keeps a desc containing backslashes
+# or `%` byte-for-byte unchanged.
+_assert_emit_desc() {
+    local _label="$1" _desc="$2"
+    case "$_desc" in
+        *$'\n'*) printf '%s\n' "$_label$_desc" | sed '2,$s/^/  | /' ;;
+        *)       echo "$_label$_desc" ;;
+    esac
+}
+
 assert() {
     local desc="$1"
     shift
@@ -39,11 +68,16 @@ assert() {
     # dump is possible, but the checker's actual PASS/FAIL result is preserved.
     _f="$(mktemp "${TMPDIR:-/tmp}/reify-assert.XXXXXX")" || _f=""
     local _target="${_f:-/dev/null}"
+    # NOTE: only the emitting `echo` is delegated to _assert_emit_desc (which
+    # pipes on the multi-line branch only). "$@" itself keeps running directly
+    # in THIS shell with a redirect, and the PASS/FAIL counter increments stay
+    # outside any pipeline, so both the no-subshell invariant (esc-4959-57) and
+    # the parent-shell counters are untouched.
     if "$@" >"$_target" 2>&1; then
-        echo "  PASS: $desc"
+        _assert_emit_desc "  PASS: " "$desc"
         PASS=$((PASS + 1))
     else
-        echo "  FAIL: $desc"
+        _assert_emit_desc "  FAIL: " "$desc"
         FAIL=$((FAIL + 1))
         # Dump captured evidence ONLY on FAIL, after the byte-identical
         # "  FAIL: $desc" line, so an all-green suite stays byte-for-byte
