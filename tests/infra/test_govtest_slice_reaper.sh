@@ -482,4 +482,122 @@ _expect_reap_survives_failing_systemctl() {
 assert "D5: systemctl failing every call => still exit 0 (fail-soft)" \
     _expect_reap_survives_failing_systemctl
 
+# ---------------------------------------------------------------------------
+# Block E — govtest_slice_teardown: the function that closes the CLEAN-EXIT
+# leak.
+#
+# The leak it replaces: test_cpu_load_governance.sh's _cleanup_all consulted
+# three `_ROW4_*_CREATED` flags before stopping anything, but the parent
+# slice is vivified from FOUR call sites and only TWO of them set the flag.
+# The two that do sit behind branches additionally requiring `taskset` and a
+# readable Cpus_allowed_list; the two that don't are gated on cgroup support
+# alone. On a host with governance but no `taskset`, the parent was therefore
+# created and never stopped — on a fully green exit.
+#
+# So the assertions below pin UNCONDITIONALITY, which is exactly the property
+# the flag mechanism lacked: teardown must issue all three stops with no
+# precondition and after no "create" call of any kind. That state — nothing
+# recorded as created — is precisely where the old code stopped nothing.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block E: govtest_slice_teardown unconditional teardown ---"
+
+cat > "$_STUB_ROOT/teardown.sh" <<'DRIVEREOF'
+#!/bin/bash
+set -euo pipefail
+# shellcheck source=tests/infra/govtest_slice_reaper_lib.sh
+source "$GOVTEST_DRIVER_LIB"
+_rc=0
+govtest_slice_teardown "$1" || _rc=$?
+exit "$_rc"
+DRIVEREOF
+chmod +x "$_STUB_ROOT/teardown.sh"
+
+# _stub_teardown <bindir> <pid>  — truncate log, run teardown, set _REAP_RC.
+_stub_teardown() {
+    local bindir="$1" pid="$2"
+    : > "$_REAP_LOG"
+    _REAP_RC=0
+    GOVTEST_STUB_LOG="$_REAP_LOG" \
+    GOVTEST_DRIVER_LIB="$REAPER_LIB" \
+    PATH="$bindir" \
+    "$BASH" "$_STUB_ROOT/teardown.sh" "$pid" >/dev/null 2>"$_REAP_STDERR" || _REAP_RC=$?
+    return 0
+}
+
+_E_WANT="reify-govtest4242-agents.slice
+reify-govtest4242-merge.slice
+reify-govtest4242.slice"
+
+# E1/E2 — all three stops, in children-then-parent order, with nothing
+# created first. The ORDER preserves the rationale _cleanup_all already
+# carried: stop the confined-quota parent LAST, after its children, so no
+# quota'd empty parent unit is left behind.
+_expect_teardown_stops() {
+    local pid="$1" want="$2" got
+    _stub_teardown "$_STUB_ROOT/bin-ok" "$pid"
+    if [ "$_REAP_RC" -ne 0 ]; then
+        echo "govtest_slice_teardown rc=$_REAP_RC, want 0"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    got="$(_reap_stopped_units)"
+    if [ "$got" != "$want" ]; then
+        printf 'stopped:\n%s\n--- want ---\n%s\n--- full stub log ---\n' "$got" "$want"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+assert "E1/E2: teardown 4242 stops all three units, children-then-parent, with nothing created first" \
+    _expect_teardown_stops 4242 "$_E_WANT"
+
+# E3 — teardown derives ONLY from its argument. It must never enumerate, and
+# never touch another run's units: it fires from an EXIT trap while other
+# lanes' governance runs may be mid-measurement in the same systemd session.
+_expect_teardown_scoped_to_pid() {
+    _stub_teardown "$_STUB_ROOT/bin-ok" 4242
+    local lines
+    # `wc -l`, deliberately NOT `grep -c . || echo 0`: grep prints "0" AND
+    # exits 1 on an empty file, so the `||` fallback appends a SECOND "0",
+    # the two-line value breaks `[ -ne ]` with rc=2, and `if` reads that as
+    # false — which made this assertion pass vacuously against a missing
+    # implementation.
+    lines="$(wc -l < "$_REAP_LOG" 2>/dev/null || echo 0)"
+    lines="${lines//[[:space:]]/}"
+    if [ "${lines:-0}" -ne 3 ]; then
+        printf 'expected exactly 3 stub invocations (3 stops, no enumeration), got %s:\n' "$lines"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    if grep -qv '^--user stop reify-govtest4242' "$_REAP_LOG"; then
+        printf 'stub log contains an invocation outside pid 4242:\n'
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "E3: teardown touches only pid 4242's units and never enumerates" \
+    _expect_teardown_scoped_to_pid
+
+# E4/E5 — teardown runs INSIDE the EXIT trap, so a non-zero return would
+# overwrite the governance suite's real exit status and report a passing run
+# as failed. Neither a missing systemctl nor a systemd fault may do that.
+_expect_teardown_rc0() {
+    local bindir="$1"
+    _stub_teardown "$bindir" 4242
+    if [ "$_REAP_RC" -ne 0 ]; then
+        echo "rc=$_REAP_RC, want 0"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+assert "E4: systemctl absent from PATH => teardown exits 0" \
+    _expect_teardown_rc0 "$_STUB_ROOT/bin-none"
+assert "E5: systemctl failing every call => teardown still exits 0 (EXIT-trap safe)" \
+    _expect_teardown_rc0 "$_STUB_ROOT/bin-fail"
+
 test_summary
