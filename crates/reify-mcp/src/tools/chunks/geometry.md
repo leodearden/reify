@@ -129,6 +129,10 @@ When in doubt, prefer the `_centered` variant over a manual
 **Units:** every `translate` component is length-semantic, so all three must be dimensioned —
 `0mm`, not `0`. A bare number would be read as SI **metres** (1000× a plausible mm value), so it is
 rejected outright with a diagnostic. `-h/2` is fine as-is: dividing a length by a bare number
-preserves the length. The same rule applies to `rotate_around`'s pivot, `revolve`'s axis origin, and
-`line_segment` / `arc` / `helix` coordinates and radii. Direction vectors, counts and angles stay
-dimensionless.
+preserves the length. The same rule applies to `rotate_around`'s pivot, `revolve`'s axis origin,
+`line_segment` / `arc` / `helix` coordinates and radii, the `interp` / `bezier` coordinate triples
+(every argument), and `nurbs`' control-point coordinates. Direction vectors, counts and angles stay
+dimensionless — and so does `nurbs`' dimensionless tail: its `degree` and `n_points` are counts, its
+weights are rational blending factors and its knots are parameter-space values, so those must NOT be
+dimensioned. Only the control-point coordinates in the middle are lengths:
+`nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)`.
