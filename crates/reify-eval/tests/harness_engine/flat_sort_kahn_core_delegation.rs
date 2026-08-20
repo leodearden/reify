@@ -208,8 +208,8 @@ fn compute_eval_set_is_the_kahn_core() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::differential::{
-    GOLDEN_CORPUS, SEED_CORPUS, assert_edit_matches_cold, assert_equivalent_or_allowed, build_case,
-    build_case_keep_engine,
+    GOLDEN_CORPUS, SEED_CORPUS, assert_cell_definite, assert_edit_matches_cold,
+    assert_equivalent_or_allowed, build_case, build_case_keep_engine,
 };
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ModulePath, Severity, Type};
@@ -303,32 +303,50 @@ fn flat_sort_reorder_preserves_corpus_results() {
 }
 
 /// The stale-Undef violations that are PRE-EXISTING on `build()` over this
-/// corpus, measured on BOTH the pre-delegation level sort and the delegated core
-/// and found byte-identical — so they are order-INVARIANT and demonstrably not
-/// caused by task 5045's reorder. Keyed `"<case>/<cell>"`, sorted.
+/// corpus. Keyed `"<case>/<cell>"`, sorted. **Now EMPTY** — and deliberately kept
+/// as a named, exact-equality baseline rather than an inline `is_empty()`, because
+/// an empty baseline is the *precise* regression detector for the defect it used
+/// to record (see below): the moment it comes back, this gate names both cells.
 ///
-/// Both cells are outputs of `tensegrity_t_prism.ri`'s `@optimized`
-/// `form_find_free` ComputeNode, reached through the optimized trampoline on the
-/// `build()` surface. No pre-existing gate covers this combination:
-/// `no_stale_undef_invariant_gate` walks `examples/*.ri` through `eval()`, and
-/// `unified_dag_differential_corpus` builds this very case but never runs the
-/// stale-Undef checker over it. This test is the first thing to look, which is
-/// why it is the first thing to see them.
+/// ## History — what used to be here, and why it is gone (task 5578)
 ///
-/// Filed as a follow-up (see the task 5045 iteration log); NOT fixed here — the
-/// owning code is the `@optimized` compute-dispatch/exemption path in
-/// `invariants.rs`/`engine_build.rs`, outside this task's declared file scope.
+/// This list carried `golden:tensegrity_t_prism/TPrism.{forces,solved}` and
+/// attributed them to "the `@optimized` compute-dispatch/exemption path in
+/// `invariants.rs`/`engine_build.rs`". **That attribution was wrong.** Neither
+/// production file was at fault; the defect was in THIS harness's own wiring:
+///
+/// `common/differential.rs`'s `fresh_engine` — the single engine-construction
+/// site every build helper routes through — never called
+/// `reify_eval::compute_targets::register_compute_fns`. With no trampoline
+/// registered for `solver::form_find_free`, `engine_eval.rs`'s `@optimized`
+/// dispatch takes its documented else-branch: push a codeless Error diagnostic
+/// ("no registered compute trampoline (falling back to body-inlining)") and
+/// body-inline the fn. `form_find_free`'s body is the never-run sentinel
+/// `{ FormFindResult() }` (`crates/reify-compiler/stdlib/tensegrity.ri`), whose
+/// five params are ALL required with no defaults — so `TPrism.form` became a
+/// non-Undef struct whose every field is Undef, and its two FieldAccess
+/// consumers (`form.nodes` / `form.member_forces`) folded to Undef with all of
+/// their declared reads RESOLVED. That is exactly the causeless staleness §6.1
+/// exists to catch, so the checker was right to report it and `invariants.rs`
+/// clause 5 was right not to exempt it: a consumer of a properly-dispatched
+/// compute result left Undef IS a genuine violation, and widening the exemption
+/// would have blinded the checker to real mis-scheduling forever.
+///
+/// Corroboration that the checker/build path were never implicated:
+/// `no_stale_undef_invariant_gate.rs`'s `examples/` sweep — which DOES register
+/// the trampolines — has always been green on this very file, and
+/// `tests/golden/tensegrity_t_prism.txt` shows both cells fully resolved. Same
+/// defect class as task 4458 one layer up (`cmd_build` skipping
+/// `configured_eval_engine` ⇒ `Error + exit 0`).
 ///
 /// This list is asserted by EXACT equality, matching the differential harness's
 /// own `CorpusCase::allowed` convention: a NEW violation fails the gate (the
 /// regression signal this test exists for), and a STALE entry also fails it, so
 /// whoever fixes the underlying defect is told to delete the entry rather than
 /// leaving a blanket exemption behind. Never widen this to a prefix/blanket
-/// match.
-const PREEXISTING_STALE_UNDEF: &[&str] = &[
-    "golden:tensegrity_t_prism/TPrism.forces",
-    "golden:tensegrity_t_prism/TPrism.solved",
-];
+/// match — and never re-add these two entries to make a red run pass: their
+/// return means `register_compute_fns` was dropped from `fresh_engine` again.
+const PREEXISTING_STALE_UNDEF: &[&str] = &[];
 
 #[test]
 fn flat_sort_reorder_leaves_no_stale_undef() {
@@ -381,6 +399,40 @@ fn flat_sort_reorder_leaves_no_stale_undef() {
          full detail:\n  {}",
         details.join("\n  ")
     );
+}
+
+/// The POSITIVE companion to `flat_sort_reorder_leaves_no_stale_undef` (task 5578).
+///
+/// "Zero stale-Undef violations" is, on its own, satisfiable by degrading in the
+/// OTHER direction: leave the PRODUCER (`TPrism.form`) Undef too, and clause 4
+/// exempts both consumers — which is precisely how this defect could have hidden
+/// itself. Pinning the two cells DEFINITE cannot be satisfied that way, so this
+/// is strictly stronger than the negative assertion above and fails LOUDLY if the
+/// `@optimized` `solver::form_find_free` trampoline ever silently degrades back
+/// to body-inlining its all-required-params `FormFindResult()` sentinel.
+///
+/// `assert_cell_definite` is reused for exactly its documented purpose: it exists
+/// because an equivalence gate "would otherwise silently compare two identical
+/// failures" — the same two-identical-FAILURE-modes false pass this test blocks.
+#[test]
+fn optimized_compute_outputs_are_definite_on_build_surface() {
+    let case = GOLDEN_CORPUS
+        .iter()
+        .find(|c| c.name == "golden:tensegrity_t_prism")
+        .expect(
+            "GOLDEN_CORPUS must carry the tensegrity_t_prism idiom — it is the only \
+             corpus case that exercises an @optimized compute dispatch",
+        );
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        let result = build_case(case, scheduler);
+        for member in ["solved", "forces"] {
+            assert_cell_definite(
+                &result,
+                &ValueCellId::new("TPrism", member),
+                &format!("optimized form_find_free output under {scheduler:?}"),
+            );
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
