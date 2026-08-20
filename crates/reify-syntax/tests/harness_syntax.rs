@@ -70,6 +70,8 @@ mod guard_tests;
 mod imaginary_literal_lowering_tests;
 #[path = "harness_syntax/import_tests.rs"]
 mod import_tests;
+#[path = "harness_syntax/indexed_sub_instantiation_parser_tests.rs"]
+mod indexed_sub_instantiation_parser_tests;
 #[path = "harness_syntax/interpolated_string_tests.rs"]
 mod interpolated_string_tests;
 #[path = "harness_syntax/joint_with_lowering_tests.rs"]

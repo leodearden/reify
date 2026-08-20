@@ -394,6 +394,45 @@ pub struct SubDecl {
     /// accepted but semantically invalid — the compiler (T2) must reject it
     /// with a diagnostic (PRD §10).
     pub pose_expr: Option<Expr>,
+    /// Binder of the indexer clause — the `i` in `sub idlers[i in 0..4] = …`
+    /// (indexed-sub-instantiation.md §3.1, task α). The CST field is named
+    /// `binder`; the `index_` prefix here ties it to `index_domain` and
+    /// disambiguates from the unrelated `where_clause` and quantifier binders
+    /// elsewhere in the AST.
+    ///
+    /// `Some(_)` only for the indexed instantiation form; `None` for the bare
+    /// instantiation, collection, and specialization arms. Paired with
+    /// `index_domain`: both are `Some` or both are `None`. The grammar makes the
+    /// clause one indivisible `optional(seq(…))` (PRD §9.1 Q1 is decided at α
+    /// as: no binder-omission form), but the type does not encode the pairing,
+    /// so it is enforced at the single producer: `ts_parser::lower_sub` lowers
+    /// the two halves JOINTLY and, if the domain expression fails to lower,
+    /// drops BOTH halves and emits a diagnostic rather than emitting a
+    /// half-populated pair. A consumer may therefore rely on the pairing (β's
+    /// domain typing does), and any new producer must uphold it.
+    ///
+    /// A `SpannedIdent` rather than a bare `String` because the span must cover
+    /// the binder token ALONE for an unused-binder (`W_UNUSED`-conventions)
+    /// diagnostic to underline exactly it.
+    ///
+    /// Parsed and stored here (task α); binder scoping is first consumed by
+    /// task β.
+    ///
+    /// A populated pair always travels with an interim `#5482` diagnostic —
+    /// rationale at the `TODO(#5482)` site in `ts_parser::lower_sub`.
+    pub index_binder: Option<SpannedIdent>,
+    /// Domain expression of the indexer clause — the `0..4` in
+    /// `sub idlers[i in 0..4] = …` (indexed-sub-instantiation.md §3.1, task α).
+    /// The CST field is named `domain`.
+    ///
+    /// `Some(_)` only for the indexed instantiation form; see `index_binder`
+    /// for the pairing invariant. α stores this **syntactically only** — it is
+    /// any `$._expression`, not yet checked to be a range. Typing it as
+    /// `Range<Int>` and deriving the collection count cell from it are task β's
+    /// job; α deliberately leaves `is_collection == false` so an indexed sub
+    /// cannot reach the existing collection-sub compile path with no count cell
+    /// and no element template.
+    pub index_domain: Option<Expr>,
     /// Inline relate-block relations from the trailing `at … where { }` form
     /// (geometric-relations v0_6, design §4/§5; task δ 4384). Empty unless the
     /// sub carries an inline `where { … }` relate-block after its `at <pose>`

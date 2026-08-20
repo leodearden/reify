@@ -351,6 +351,8 @@ fn match_arm_sub_pose_is_lowered() {
             keyed_members: vec![],
             is_aux: false,
             pose_expr: Some(ident_expr("kind")),
+            index_binder: None,
+            index_domain: None,
             relate_relations: vec![],
             span: zero_span(),
             content_hash: ContentHash(0),
@@ -440,5 +442,98 @@ fn match_arm_sub_pose_is_lowered() {
     assert!(
         comp.pose.is_some(),
         "match-arm sub with `at <pose>` must lower to SubComponentDecl.pose = Some(…); got None"
+    );
+}
+
+// ── Interim α→β behaviour of the indexed-sub instantiation form ──────────────
+
+/// What an indexed sub does DOWNSTREAM of reify-syntax, in the α→β window.
+///
+/// The rejection itself — why it exists, what it says, where it is spanned — is
+/// pinned once, in reify-syntax
+/// (`harness_syntax::indexed_sub_instantiation_parser_tests`), with the
+/// rationale at the `TODO(#5482)` site in `lower_sub`. This test deliberately
+/// asserts only what that crate cannot see: that the rejection survives the
+/// compile pipeline, and the elaboration shape it is guarding against.
+///
+/// That shape is UNREACHABLE in practice — α rejects at parse time, so no user
+/// reaches it. It is pinned to make β's elaboration a visible, deliberate change
+/// rather than a silent one, and β (#5482) turns it into a real N-instance
+/// assertion when it deletes the rejection and derives the count cell.
+#[test]
+fn indexed_sub_is_rejected_with_interim_diagnostic_and_elaborates_to_one_instance() {
+    let source = r#"structure Leg {
+    param h: Length = 10mm
+}
+structure Rig {
+    sub legs[k in 0..3] = Leg()
+}"#;
+    // `compile_source_with_stdlib` cannot be used here: it routes through
+    // `parse_with_stdlib_or_panic`, which PANICS on any parse error, so it
+    // would abort rather than fail informatively now that α rejects at parse
+    // time. The `_allow_parse_errors` variant forwards the parse diagnostics
+    // and still compiles the (here complete) AST, so the rejection and the
+    // elaboration shape can both be asserted in one test.
+    let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
+
+    // Filter on the `#5482` cite, not on `Severity::Error` alone — an unrelated
+    // future compile error on this snippet must not fail a test whose message
+    // blames β. Filtering on the cite rather than the full wording also keeps
+    // the wording contract in ONE crate (reify-syntax), where it is pinned.
+    //
+    // Severity is still required, because the same parse error appears TWICE by
+    // design: `compile_source_with_stdlib_allow_parse_errors` prepends it as
+    // `Diagnostic::error` (reify-test-support helpers.rs), while
+    // `compile_builder::pre_pass::forward_parse_errors` independently pushes it
+    // as `Diagnostic::warning("parse error: …")`. That duplication is the
+    // helper's contract, not a bug to "fix".
+    let rejections: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .filter(|d| d.message.contains("#5482"))
+        .map(|d| d.message.clone())
+        .collect();
+    assert_eq!(
+        rejections.len(),
+        1,
+        "INTERIM PIN (α→β window): reify-syntax's `#5482` rejection must survive \
+         the compile pipeline as exactly one error diagnostic. If this failed \
+         because β started elaborating, that is progress — replace this pin with \
+         a real N-instance assertion instead of deleting it. Got: {rejections:?} \
+         (all diagnostics: {:?})",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let rig = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Rig")
+        .expect("Rig template not found");
+
+    let legs: Vec<_> = rig
+        .sub_components
+        .iter()
+        .filter(|s| s.name == "legs")
+        .collect();
+    assert_eq!(
+        legs.len(),
+        1,
+        "INTERIM PIN (α→β window, #5482): `sub legs[k in 0..3] = Leg()` currently \
+         elaborates to exactly ONE instance because α stores the indexer \
+         syntactically and no compiler pass reads it. β must turn this into the \
+         range's worth of instances (or an explicit rejection); when it does, \
+         replace this pin. Got {} `legs` sub_components.",
+        legs.len()
+    );
+    assert!(
+        !legs[0].is_collection,
+        "α must leave is_collection == false on an indexed sub — flipping it \
+         would route the sub into the collection-sub path with no count cell and \
+         no element template"
     );
 }
