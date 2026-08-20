@@ -1000,3 +1000,100 @@ fn diag_per_file_timing() {
         eprintln!("DIAG {d:?} {f}");
     }
 }
+
+// ── Task 5578: the build() SURFACE ───────────────────────────────────────────
+//
+// Everything above drives `engine.eval()`. That leaves half the coverage gap
+// open: `build()` runs `eval()` and then the realization/export stages on top,
+// and it is the surface a user actually invokes. Task 5578's defect lived
+// exactly there — an `@optimized` compute dispatch that silently degraded on a
+// build — and was invisible to the eval sweep because the eval sweep's per-file
+// engine wiring DOES call `register_compute_fns` while the differential
+// harness's did not.
+//
+// The registration switch is therefore not a convenience knob: it is what makes
+// the seeded self-test below able to reproduce the defect in miniature, and what
+// makes the real sweep's "no trampoline-missing diagnostic" assertion mean
+// something. Same guard shape as task 4458's
+// `crates/reify-cli/tests/harness_cli/cli_build_fea.rs`, one layer down.
+
+/// The substring `engine_eval.rs` emits when an `@optimized` annotation names a
+/// target with no registered compute trampoline. It does NOT abort the eval:
+/// the dispatch pushes this codeless Error diagnostic and then BODY-INLINES the
+/// fn, whose stdlib body is a never-run sentinel (for the solver fns, a bare
+/// struct ctor with all-required, no-default params). Every downstream field
+/// read of that sentinel is Undef while its declared reads read as resolved —
+/// i.e. a stale-Undef violation attributed to innocent scheduling code.
+const TRAMPOLINE_MISSING: &str = "no registered compute trampoline";
+
+/// A miniature reproduction of the task-5578 defect, used ONLY by the seeded
+/// self-test below: the T-prism topology (verified valid — lifted from
+/// `examples/tensegrity_t_prism.ri`) reduced to one `@optimized`
+/// `form_find_free` call plus one FieldAccess consumer of its result.
+///
+/// Built on a DELIBERATELY unregistered engine this must produce both halves of
+/// the failure signature: the trampoline-missing diagnostic AND a stale-Undef
+/// violation on `solved`. Built on a registered engine it must produce neither
+/// — which is what `build_surface_probe_is_clean_when_registered` pins, so the
+/// self-test can never pass for the wrong reason (e.g. a probe that is stale
+/// under BOTH arms).
+const OPTIMIZED_PROBE_SRC: &str = r#"structure def SeededOptimizedProbe {
+    let prism = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),
+            point3(-0.5m, 0.866m, 1m),
+            point3(-0.5m, -0.866m, 1m),
+            point3(0.866m, 0.5m, 0m),
+            point3(-0.866m, 0.5m, 0m),
+            point3(0m, -1m, 0m)
+        ],
+        struts: [[0, 4], [1, 5], [2, 3]],
+        cables: [
+            [0, 1], [1, 2], [2, 0],
+            [3, 4], [4, 5], [5, 3],
+            [0, 3], [1, 4], [2, 5]
+        ]
+    )
+    let group_ids = [0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]
+    let seeds = [-1.0, 1.0, 1.0]
+    let reference_group = 1
+    let form = form_find_free(prism, group_ids, seeds, reference_group)
+    let solved = form.nodes
+}"#;
+
+/// The mandatory anti-silent-accept self-test for the build()-surface sweep —
+/// the exact counterpart of `seeded_stale_undef_violation_is_reported` at the
+/// top of this file, whose doc explains why a helper that always returns
+/// `vec![]` "would otherwise make every downstream corpus test in this suite
+/// vacuously green".
+///
+/// Rather than fabricating post-eval state, this one reproduces THIS VERY BUG
+/// in miniature: run the probe through a real `build()` on an engine with the
+/// compute trampolines deliberately NOT registered, and require BOTH halves of
+/// the observed failure signature. That pins the exact failure mode task 5578
+/// fixes and can never go vacuously green — a helper returning empty vectors
+/// fails here immediately.
+#[test]
+fn seeded_build_surface_sweep_reports_a_planted_violation() {
+    let (violations, diagnostics) = build_surface_violations(OPTIMIZED_PROBE_SRC, false);
+
+    assert!(
+        diagnostics.iter().any(|d| d.contains(TRAMPOLINE_MISSING)),
+        "building the @optimized probe on an UNregistered engine must emit the \
+         {TRAMPOLINE_MISSING:?} diagnostic — without it the probe is not \
+         exercising the @optimized dispatch at all and this self-test proves \
+         nothing. got diagnostics: {diagnostics:#?}"
+    );
+
+    let solved = ValueCellId::new("SeededOptimizedProbe", "solved");
+    assert!(
+        violations.iter().any(|v| v.cell == solved),
+        "building the @optimized probe on an UNregistered engine must leave \
+         `SeededOptimizedProbe.solved` stale-Undef (the body-inlined \
+         `FormFindResult()` sentinel has all-required params, so every field \
+         read of it folds to Undef while its one declared read resolves) — a \
+         `build_surface_violations` that never reports would make the sweep \
+         below vacuously green. got {:?}",
+        violations.iter().map(|v| &v.cell).collect::<Vec<_>>()
+    );
+}
