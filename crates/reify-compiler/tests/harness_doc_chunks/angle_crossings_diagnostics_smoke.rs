@@ -51,8 +51,11 @@
 //! sketch (lines 26-29, which are abbreviated by design, not verbatim), and
 //! `units.md`'s paraphrase of the error SHAPE. Those are read, not executed.
 
+use reify_core::ModulePath;
 use reify_core::diagnostics::DiagnosticCode;
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_test_support::{
+    compile_source_with_stdlib, compile_source_with_stdlib_allow_parse_errors, errors_only,
+};
 
 /// The best-practices exemplar whose `CANONICAL COPY` block this module pins,
 /// read out of the repo's `examples/` tree at compile time.
@@ -420,4 +423,89 @@ fn transcribed_compile_diagnostics_match_the_real_compiler() {
             expected_code
         );
     }
+}
+
+/// The one parse-layer transcription equals what the real parser emits, and
+/// the exemplar's rendered form round-trips from it.
+///
+/// This entry is structurally different from the other three and the
+/// difference is easy to get wrong: `Parse error: ` is **not** parser output.
+/// The parser produces the bare `syntax error: rad`
+/// (`crates/reify-syntax/src/ts_parser.rs:511` and its sibling ERROR arms), and
+/// the prefix is CLI presentation added at `crates/reify-cli/src/main.rs:195`.
+/// So this test asserts the bare message against the library layer and then
+/// RECONSTRUCTS the exemplar's rendered line from it — rather than expecting a
+/// prefix the library never emits.
+#[test]
+fn transcribed_parse_diagnostic_matches_the_real_parser() {
+    // Filter by "not a compile-layer entry" rather than by the prefix itself,
+    // so the prefix assertion below stays non-vacuous: if the CLI renamed its
+    // prefix and the exemplar followed, this still selects the same entry and
+    // the assertion fires.
+    let parse_layer: Vec<TranscribedDiagnostic> = canonical_copy_entries()
+        .into_iter()
+        .filter(|entry| entry.renderer != "error")
+        .collect();
+    assert_eq!(
+        parse_layer.len(),
+        1,
+        "expected exactly one parse-layer transcription in the CANONICAL COPY block; \
+         got {parse_layer:#?}"
+    );
+    let entry = &parse_layer[0];
+
+    assert_eq!(
+        entry.renderer, CLI_PARSE_ERROR_PREFIX,
+        "the exemplar renders this entry with the `{}` prefix, which is emitted by \
+         crates/reify-cli/src/main.rs:195 — not by the parser. If the CLI renamed it, \
+         the transcription at examples/best_practices/angle_crossings.ri is now showing \
+         a form no `reify check` run produces.",
+        CLI_PARSE_ERROR_PREFIX
+    );
+
+    let source = fixture_for(&entry.declaration);
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    let messages: Vec<&str> = parsed.errors.iter().map(|e| e.message.as_str()).collect();
+    assert!(
+        !parsed.errors.is_empty(),
+        "`{}` is transcribed as a parse failure, but it parsed clean. If the spaced \
+         unit literal became legal, the CANONICAL COPY block in \
+         examples/best_practices/angle_crossings.ri must be rewritten in this same diff.",
+        entry.declaration
+    );
+
+    let Some(matched) = parsed.errors.iter().find(|e| e.message == entry.message) else {
+        panic!(
+            "the CANONICAL COPY block transcribes, for `{}`:\n  {}\nbut the parser \
+             produced:\n  {:#?}\nThe parser wording changed: re-measure with \
+             `reify check` and update the CANONICAL COPY block in \
+             examples/best_practices/angle_crossings.ri, then let \
+             crates/reify-mcp/src/tools/chunks/units.md follow.",
+            entry.declaration, entry.message, messages
+        )
+    };
+
+    // Round trip: the parser's bare message plus the CLI's presentation prefix
+    // must reconstruct, byte for byte, the line the exemplar actually shows.
+    // This is what justifies transcribing a CLI-rendered form in a file whose
+    // gate runs at the library layer.
+    let rendered = format!("{DIAGNOSTIC_ARROW}{CLI_PARSE_ERROR_PREFIX}: {}", matched.message);
+    assert!(
+        ANGLE_CROSSINGS_EXEMPLAR.contains(&rendered),
+        "the exemplar should transcribe `{rendered}` — the parser's own message under \
+         the CLI's prefix — but that exact text is not in the file."
+    );
+
+    // And the rejection must survive to the caller as a Severity::Error, i.e. a
+    // reader who runs this source actually sees it. Mirrors
+    // `enums_chunk_option_smoke.rs:571-581`: the plain
+    // `compile_source_with_stdlib` panics on parse errors, so a negative test
+    // must use the `_allow_parse_errors` variant to observe them rather than
+    // die on them.
+    let compiled = compile_source_with_stdlib_allow_parse_errors(source);
+    assert!(
+        !errors_only(&compiled).is_empty(),
+        "the parse error must reach the caller as a Severity::Error diagnostic; \
+         parse errors seen: {messages:#?}"
+    );
 }
