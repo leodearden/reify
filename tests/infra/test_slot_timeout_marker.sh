@@ -2956,6 +2956,8 @@ echo "--- G2f: controls on the exec-position anchor ---"
 # capture. Controls-first still holds: these sit above the arm they guard.
 G_CTRL_ENVKV="$TMPG/ctrl-exec-env-quoted-kv.cmds"
 G_CTRL_WRAP="$TMPG/ctrl-exec-wrapper-shadowed.cmds"
+G_CTRL_CMDSTART="$TMPG/ctrl-exec-command-start.cmds"
+G_CTRL_TESTHEAD="$TMPG/ctrl-exec-test-builtin-head.cmds"
 
 # The real in-tree shape, at test_slot_event_log.sh:98-102 (joined logical line
 # 59): that section's own forced-acquire control, run at CONCURRENCY=1 against
@@ -2981,11 +2983,42 @@ printf '%s\n' \
     'timeout 600 bash "$G_WRAPPER" "$G_PROBE" --pool 2>"$G_ERR" || _rc=$?' \
     > "$G_CTRL_WRAP"
 
+# THE RECALL HALF. A site can be a command word without being the LINE's first
+# word and without following an exec verb -- after `&&`/`||`/`;`/`|`/`&`, or as
+# the head of an `if`/`while`/`until`/`then`/`do`/`else` clause. All three lines
+# below are genuine invocations; a scan that cannot see them stays green while
+# a new unredirected site sits in plain sight, which is the same SILENT class
+# as the quoted-assignment hole G2f1 pins. Three separate lines, so the count
+# also says WHICH boundary class regressed.
+printf '%s\n' \
+    'cd "$G_DIR" && "$G_PROBE" bash -c true' \
+    'if "$G_PROBE" bash -c true; then :; fi' \
+    'export G_X=1; "$G_PROBE" bash -c true' \
+    > "$G_CTRL_CMDSTART"
+
+# ITS LOAD-BEARING MIRROR, and the reason the boundary set is COMMAND-START
+# rather than any blank. `test -f "$X"`, `[ -f "$X" ]`, a `case` subject and a
+# `grep` argument all put the token after a WORD, not after a command start, so
+# none of them is an exec position. Measured on the real tree when the anchor
+# was first written: admitting a bare blank boundary turns test_run_all.sh from
+# 70 site matches into 101, and 29 of the 31 extra read as unredirected -- 29
+# false REDs on a file whose real sites are all correctly captured. This
+# fixture is what keeps any future widening from re-buying that.
+printf '%s\n' \
+    'test -f "$G_PROBE" && echo yes' \
+    'if [ -f "$G_PROBE" ]; then :; fi' \
+    '[ -x "$G_PROBE" ] || exit 1' \
+    'case "$G_PROBE" in *) :;; esac' \
+    'grep -q "$G_PROBE" "$G_LOG"' \
+    > "$G_CTRL_TESTHEAD"
+
 # Built exactly as the G3/G1 loop below builds it, so these controls exercise
 # the predicate the real arm uses rather than a lookalike.
 G_CTRL_EXEC_RE="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_CTRL_SITE}"
 G2F1_N="$(_g_sites "$G_CTRL_ENVKV" "$G_CTRL_EXEC_RE")"
 G2F2_N="$(_g_sites "$G_CTRL_WRAP" "$G_CTRL_EXEC_RE")"
+G2F3_N="$(_g_sites "$G_CTRL_CMDSTART" "$G_CTRL_EXEC_RE")"
+G2F4_N="$(_g_sites "$G_CTRL_TESTHEAD" "$G_CTRL_EXEC_RE")"
 
 # Counts only, precomputed into plain variables, `test` as the checker -- the
 # same E1/D1 output-safety discipline as every other assert in this section.
@@ -2993,6 +3026,10 @@ assert "G2f1: an exec verb followed by a QUOTED assignment word still reaches it
     test "$G2F1_N" -eq 1
 assert "G2f2: ... but a site SHADOWED by an intervening quoted command word is NOT one (a blanket relaxation would flag it; got $G2F2_N sites)" \
     test "$G2F2_N" -eq 0
+assert "G2f3: a site that is the command word after &&, after ;, or at the head of an if clause is still an exec position (got $G2F3_N of 3 sites)" \
+    test "$G2F3_N" -eq 3
+assert "G2f4: ... but a token after a WORD is not -- test -f, [ -f, a case subject and a grep argument are all non-sites (got $G2F4_N sites)" \
+    test "$G2F4_N" -eq 0
 
 echo ""
 echo "--- G2g: capture attribution is COMMAND-scoped, not line-scoped ---"
