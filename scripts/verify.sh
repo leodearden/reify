@@ -70,8 +70,18 @@
 #   REIFY_PSI_GATE_THRESHOLD        — CPU avg10 % ceiling; dispatch waits until below this
 #                                      value. Default: 50.
 #   REIFY_PSI_GATE_WINDOW           — minimum inter-dispatch spacing in seconds.  Default: 20.
-#   REIFY_PSI_GATE_MAX_WAIT         — give-up timeout (seconds); exits 75 (EX_TEMPFAIL) so
-#                                      the orchestrator retries.  Default: 1800.
+#   REIFY_PSI_GATE_MAX_WAIT         — give-up timeout (seconds), OR "unlimited" (THE
+#                                      DEFAULT) for a continuous clock-stopped hold.
+#                                      NOTE: a finite value exits 75 (EX_TEMPFAIL), and
+#                                      dark-factory does NOT requeue that — verify.py
+#                                      _classify_failure falls exit-75 through to
+#                                      unknown_test_failure → debugfix loop → BLOCKED
+#                                      (docs/prds/verify-admission-wait-clock-stop.md §2
+#                                      verified this directly in DF source; the older
+#                                      "so the orchestrator retries" claim here was
+#                                      false). Default "unlimited" for parity with
+#                                      dark-factory-orchestrator.yaml's verify_env — see
+#                                      psi_gate() below and task 6393.
 #   REIFY_PSI_GATE_DISABLE          — set to 1 to bypass entirely (no wait, no dispatch touch).
 #                                      Emergency break-glass; does not affect coordination state.
 #   REIFY_PSI_GATE_POLL             — recheck interval in seconds.  Default: 5.
@@ -309,8 +319,11 @@ source "$SCRIPT_DIR/affected-crates-lib.sh"
 # Clock-stop mode (PRD verify-admission-wait-clock-stop §3, task 4837):
 #   REIFY_TEST_SEMAPHORE_WAIT=unlimited  — continuous blocking wait on the semaphore;
 #                                          never exits 75 (EX_TEMPFAIL). Activates
-#                                          clock-stop marker emission. Keep FINITE in
-#                                          dark-factory-orchestrator.yaml until task 4838 deploys DF.
+#                                          clock-stop marker emission. THE DEFAULT since
+#                                          task 6393; the "keep FINITE until task 4838
+#                                          deploys DF" gating is spent (deployed
+#                                          2026-06-27). A finite value is still honoured
+#                                          when set explicitly.
 #   REIFY_CLOCK_HEARTBEAT_SECS           — interval (s) between @@REIFY_CLOCK_HEARTBEAT@@
 #                                          emissions inside the semaphore poll loop.
 #                                          Default 30.  Reduce in tests for faster runs.
@@ -432,7 +445,8 @@ usage() {
 # Environment knobs (see header comment block for full doc):
 #   REIFY_PSI_GATE_THRESHOLD    — avg10 ceiling to allow dispatch (default 50)
 #   REIFY_PSI_GATE_WINDOW       — min seconds between dispatches (default 20)
-#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout in seconds (default 1800)
+#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout in seconds, or "unlimited"
+#                                 (the default: continuous clock-stopped hold)
 #   REIFY_PSI_GATE_POLL         — recheck interval in seconds (default 5)
 #   REIFY_PSI_GATE_PROC_PATH    — PSI source path (default /proc/pressure/cpu)
 #   REIFY_PSI_GATE_DISPATCH_FILE— coordination timestamp file
@@ -449,7 +463,7 @@ psi_gate() {
     # HEARTBEAT interval: REIFY_CLOCK_HEARTBEAT_SECS (default 30).
     local _ca_threshold="${REIFY_PSI_GATE_THRESHOLD:-50}"
     local _ca_window="${REIFY_PSI_GATE_WINDOW:-20}"
-    local _ca_max_wait="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
+    local _ca_max_wait="${REIFY_PSI_GATE_MAX_WAIT:-unlimited}"
     local _ca_poll="${REIFY_PSI_GATE_POLL:-5}"
     local _ca_proc_path="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
     local _ca_dispatch="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
@@ -1893,7 +1907,11 @@ add_test_passes() {
 
     # PSI gate: must pass before any cargo test work starts.
     # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
-    # and REIFY_PSI_GATE_*; exit 75 (EX_TEMPFAIL) propagates → orchestrator retries.
+    # and REIFY_PSI_GATE_*. At the default REIFY_PSI_GATE_MAX_WAIT=unlimited the gate
+    # HOLDS (clock-stopped, heartbeating) and never exits 75. Under an explicitly
+    # FINITE MAX_WAIT it exits 75 and that propagates — which dark-factory does NOT
+    # requeue: verify.py _classify_failure routes exit-75 to unknown_test_failure →
+    # debugfix → BLOCKED (PRD verify-admission-wait-clock-stop §2).
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
 
