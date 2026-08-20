@@ -398,9 +398,17 @@ _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 # sentinel its ONLY classification route. Pinned behaviourally by
 # tests/infra/test_slot_timeout_marker.sh Section C (C1/C2/C5).
 #
-# Scope: identical to the clock rule -- the concurrent-pool re-emission sites
-# below, the path every per-task/merge verify actually drives. NOT the
-# `--scope host-infra` (H9) runner and NOT the legacy all-serial path.
+# Scope: identical to the clock rule, and stated as the set of SITES rather
+# than a single path, because there are two -- everything that re-emits
+# through the shared helpers below: the concurrent-pool Phase-3 replay, AND
+# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry loop (:1440 / :1452). Naming the
+# subset site explicitly matters more for this family than it did for the
+# clock one it borrows its phrasing from: that subset run IS dark-factory's
+# OWN retry (see the note at its call site) and therefore runs ON the
+# DF-parsed stream, so it is the path that most NEEDS the rule, not an
+# incidental extra a reader should have to infer. NOT the `--scope host-infra`
+# (H9) runner and NOT the legacy all-serial path -- neither re-emits through
+# these helpers at all.
 _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 
 # Rule 3 (task #6389) -- dark-factory's OTHER slot anchor: the per-wrapper
@@ -412,6 +420,15 @@ _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 # all, so a prefix rewrite is STRUCTURALLY INAPPLICABLE to them. They are a
 # second, independent route to the same SEMAPHORE_TIMEOUT verdict, and closing
 # only the sentinel half would leave the classification fully reachable.
+#
+# The three-name allowlist is DF's, transcribed here, so two sets must agree.
+# That it still equals reify's ACTUAL set of deadline-line emitters is
+# MACHINE-CHECKED (test_slot_timeout_marker.sh A6f/A6g derive both sides -- the
+# allowlist back out of this very expression, the emitters out of scripts/*.sh
+# -- so a fourth reify wrapper landing without a widened alternation turns RED
+# rather than silently escaping the rule). The DF half -- that DF's own
+# allowlist has not grown past these three -- is cross-repo and stays a
+# documented manual re-verification against verify_classify.py.
 #
 # MEASURED GROUNDING (esc-5623): the archived verify log that DF mislabelled as
 # a semaphore starvation contained ZERO anchored sentinels and exactly THREE of
@@ -438,23 +455,74 @@ _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 # runner's own starvation, and DF's failing-leg scoping means a member that
 # actually aborts on rc=75 still fails loudly with its own FAIL detail.
 #
-# Scope: the same as rules 1 and 2 -- the concurrent-pool re-emission sites
-# below only, NOT `--scope host-infra` (H9) and NOT the legacy all-serial path.
-# run_all's OWN H9 Lane-X acquire failure line uses basename `run_all.sh`,
-# which is outside DF's three-name allowlist, and is deliberately untouched.
+# Scope: the same as rules 1 and 2 -- the concurrent-pool Phase-3 replay and
+# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry site (:1440 / :1452, dark-factory's
+# own retry, on the DF-parsed stream), i.e. everything routed through the two
+# shared helpers below; NOT `--scope host-infra` (H9) and NOT the legacy
+# all-serial path. run_all's OWN H9 Lane-X acquire failure line uses basename
+# `run_all.sh`, which is outside DF's three-name allowlist, and is
+# deliberately untouched.
 _RA_SLOT_BASENAME_SANITIZE='s/\(lib_test_semaphore\|cargo-test-occt-gated\|lib_lane_x_flock\)\.sh: failed to acquire /\1.sh[quoted]: failed to acquire /g'
 
-# _ra_emit_sanitized <captured-output-file>
+# THE APPLIED CHAIN, hoisted to exactly one definition (task #6389).
+#
+# Both re-emission helpers below sanitize, and they MUST sanitize identically:
+# _ra_emit_sanitized feeds the per-member replay and _ra_collect_fail_detail
+# feeds the Summary FAILED region that verify.sh / dark-factory's merge-gate
+# block reason quote verbatim. Written out as two independent `sed -e ... -e
+# ... -e ...` chains they agreed only by inspection -- a fourth rule wired into
+# one site and forgotten at the other would leave the other quietly
+# unsanitized, and nothing would notice. One shared array makes that drift
+# STRUCTURALLY impossible rather than merely tested-for, and
+# tests/infra/test_slot_timeout_marker.sh A6 resolves each helper's chain
+# through THIS definition (A6a) and asserts the two helpers' derived, ordered
+# rule lists are identical (A6e) -- so re-inlining a divergent chain at either
+# site is RED, not merely discouraged.
+#
+# Still separate `-e` expressions rather than one combined script: each rule
+# stays independently readable, independently commented, and independently
+# extractable BY NAME, which is what lets A6 report exactly which rules run.
+_RA_SANITIZE_SED=(-e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" -e "$_RA_SLOT_BASENAME_SANITIZE")
+
+# _ra_note_slot_rewrite <captured-output-file> [member-name]
+#   Debuggability breadcrumb for $_RA_SLOT_BASENAME_SANITIZE (task #6389).
+#
+#   The sentinel rewrite announces itself -- `@@REIFY_QUOTED_SLOT_TIMEOUT@@`
+#   is visibly not the live token. The BASENAME rewrite deliberately does not:
+#   `lib_test_semaphore.sh[quoted]: failed to acquire ...` reads the same
+#   whether it came from a member quoting the line in assertion prose or from
+#   a member that hit a REAL rc=75 deadline and continued. run_all's own fd-2
+#   pool sentinel covers the runner's own starvation and DF's failing-leg
+#   scoping covers the abort-loudly case, but neither leaves a breadcrumb for
+#   that middle case -- so leave one here: one line, on run_all's OWN fd 2,
+#   naming the member and the count, so a human grepping a slow merge-verify
+#   log can tell a neutralized line from an untouched one.
+#
+#   Deliberately NOT anchored and deliberately not on stdout: it carries no
+#   `@@` token and no `<basename>.sh: failed to acquire ` literal, so it
+#   matches neither of DF's two slot patterns (pinned by H4b), and routing it
+#   to stderr keeps it out of the stdout block structure that run_all's own
+#   header/RESULT contracts are parsed from. Fail-open like every other
+#   diagnostic on this path (INV-4): an unreadable file or a failed write is a
+#   silent no-op and never changes an exit code.
+_ra_note_slot_rewrite() {
+    local _n
+    _n="$(grep -acE -- '(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock)\.sh: failed to acquire ' "$1" 2>/dev/null || true)"
+    [ "${_n:-0}" -gt 0 ] 2>/dev/null || return 0
+    echo "INFO: run_all.sh neutralized ${_n} captured slot-deadline line(s) from ${2:-$(basename "$1")} (see _RA_SLOT_BASENAME_SANITIZE)" >&2 || return 0
+}
+
+# _ra_emit_sanitized <captured-output-file> [member-name]
 #   cat a captured per-test output file to stdout with the marker families
-#   above neutralized. A missing file is a silent no-op, preserving the prior
-#   `cat "$f" 2>/dev/null || true` re-emit semantics exactly.
-#   The rules are CHAINED as separate `-e` expressions rather than combined
-#   into one: each stays independently readable, independently commented, and
-#   independently extractable by name (test_slot_timeout_marker.sh A6 reads
-#   this chain out of source to derive exactly which rules are applied).
+#   above neutralized, via the single shared $_RA_SANITIZE_SED chain. A
+#   missing file is a silent no-op, preserving the prior
+#   `cat "$f" 2>/dev/null || true` re-emit semantics exactly. The optional
+#   member name is diagnostics-only -- it labels the fd-2 breadcrumb above
+#   and never affects what is emitted to stdout.
 _ra_emit_sanitized() {
     [ -f "$1" ] || return 0
-    sed -e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" -e "$_RA_SLOT_BASENAME_SANITIZE" "$1" 2>/dev/null || true
+    _ra_note_slot_rewrite "$1" "${2:-}"
+    sed "${_RA_SANITIZE_SED[@]}" "$1" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -478,10 +546,13 @@ _ra_emit_sanitized() {
 # Sanitized with the SAME rule chain as _ra_emit_sanitized, and for a sharper
 # reason: this region is what verify.sh and dark-factory's merge-gate block
 # reason quote VERBATIM, so a marker token surviving here is quoted straight
-# into a block reason. Applying the rules at both sites is also what keeps the
-# two paths from drifting -- pinned by test_slot_timeout_marker.sh H3 and by
-# test_run_all.sh's T30e for the clock family. The collector's own grep anchors
-# are a SEPARATE contract from the sanitizer and are deliberately untouched.
+# into a block reason. It applies the SAME $_RA_SANITIZE_SED array as
+# _ra_emit_sanitized -- one definition, referenced twice -- so the two paths
+# cannot drift by construction rather than by inspection; that both sites
+# reference it is pinned by test_slot_timeout_marker.sh A6e, and the resulting
+# behaviour by H3 (slot family) and test_run_all.sh's T30e (clock family). The
+# collector's own grep anchors are a SEPARATE contract from the sanitizer and
+# are deliberately untouched.
 #
 # Fail-open: a missing/unreadable captured file, or zero matches, is a
 # silent no-op -- this is pure observability layered on the failure path and
@@ -495,7 +566,7 @@ _ra_collect_fail_detail() {
     [ -f "$_file" ] || return 0
 
     local _matched
-    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed -e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" -e "$_RA_SLOT_BASENAME_SANITIZE" || true)"
+    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed "${_RA_SANITIZE_SED[@]}" || true)"
     [ -n "$_matched" ] || return 0
 
     local _count
@@ -1377,7 +1448,7 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
             # nested invocations.
             env -u REIFY_RUN_ALL_MEMBER_SUBSET \
                 bash "$INFRA_DIR/$_ra_subset_base" > "$_ra_subset_tmp" 2>&1 || _ra_subset_rc=$?
-            _ra_emit_sanitized "$_ra_subset_tmp"
+            _ra_emit_sanitized "$_ra_subset_tmp" "$_ra_subset_base"
             if [ "$_ra_subset_rc" -eq 0 ]; then
                 echo "  RESULT: PASS ($_ra_subset_base)"
             else
@@ -1876,9 +1947,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             else
                 echo "--- attempt 1 (serial) ---"
             fi
-            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out" "$_h2_name"
             echo "--- attempt 2 (serial retry) ---"
-            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.retry.out"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.retry.out" "$_h2_name"
             _h2_rc="${_h2_retry_rc[$_h2_name]}"
             if [ "$_h2_rc" -eq 0 ]; then
                 echo "  RESULT: PASS ($_h2_name) [flaky: passed on serial retry]"
@@ -1890,7 +1961,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
                 _ra_collect_fail_detail "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out"
             fi
         else
-            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out" "$_h2_name"
             _h2_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
             if [ "$_h2_rc" -eq 0 ]; then
                 echo "  RESULT: PASS ($_h2_name)"
