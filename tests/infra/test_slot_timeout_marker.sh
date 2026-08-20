@@ -2548,12 +2548,18 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
     #            leak. Shape at test_run_all_content_skip.sh:80-87 and :380-388,
     #            and test_verify_env_ambient_isolation.sh:172-178.
     #   body     a line ending in "bash -c" plus a quote -- an inline script
-    #            body, closed by a line starting with that quote. MEASURED
-    #            load-bearing, not defensive: without this kind the CE2 site in
-    #            test_test_run_semaphore.sh reads 1 unredirected instead of 0,
-    #            because its capture sits on the closing line of the body. Same
-    #            class as SCOPE (3) of Section F -- but a false RED here, not a
-    #            merely spurious roster entry.
+    #            body, closed by a line starting with that quote, whose capture
+    #            sits on that closing line. A real in-tree shape
+    #            (test_test_run_semaphore.sh) -- but an HONEST NOTE, because the
+    #            earlier claim here was measured on a file Section G does not
+    #            read: that file is a BEHAVIOURAL D_MEMBERS entry and is never
+    #            in G_MEMBERS, so no member scanned today reaches this branch.
+    #            MEASURED: stubbing the branch out leaves all eight per-member
+    #            counts byte-identical. It is kept because the shape is one a
+    #            static-only member can adopt at any time and the alternative
+    #            is a false RED (same class as SCOPE (3) of Section F, but
+    #            louder), and G2c3/G2c4 below are the live guard that keeps the
+    #            branch exercised rather than merely present.
     #   subshell a line ending in a bare ( -- the shape SCOPE (1) of Section F
     #            names, captured on the closing ) line. 8 of the 11 sites in
     #            test_verify_semaphore_e2e.sh are captured only this way.
@@ -2677,8 +2683,11 @@ assert "G2b: the same site capturing to a file is NOT flagged (got $G2B_N unredi
 # flagged.
 G_CTRL_SUB_CAP="$TMPG/ctrl-subshell-captured.cmds"
 G_CTRL_SUB_BARE="$TMPG/ctrl-subshell-bare.cmds"
+G_CTRL_BODY_CAP="$TMPG/ctrl-body-captured.cmds"
+G_CTRL_BODY_BARE="$TMPG/ctrl-body-bare.cmds"
 G_CTRL_MERGE_BARE="$TMPG/ctrl-merge-stdout-inherited.cmds"
 G_CTRL_MERGE_SUBST="$TMPG/ctrl-merge-stdout-diverted.cmds"
+G_CTRL_MERGE_PIPE="$TMPG/ctrl-merge-stdout-piped.cmds"
 
 # The shape at test_verify_semaphore_e2e.sh: the invocation is inside a
 # subshell and the capture is on the subshell's CLOSING line, several lines
@@ -2697,6 +2706,22 @@ printf '%s\n' \
     ') || _C_RC=$?' \
     > "$G_CTRL_SUB_BARE"
 
+# The INLINE-BODY block kind, the third opener _g_scan recognises and until now
+# the only one with no control of its own. Same closer-stamped shape as the
+# subshell pair above (the capture sits on the line that CLOSES the body), so
+# the same two halves apply. Double-quoted printf args here because a
+# single-quoted shell string cannot contain the very quote the fixture needs.
+printf '%s\n' \
+    "bash -c '" \
+    '    bash "$G_PROBE" --pool' \
+    "' 2>\"\$G_ERR\" || _rc=\$?" \
+    > "$G_CTRL_BODY_CAP"
+printf '%s\n' \
+    "bash -c '" \
+    '    bash "$G_PROBE" --pool' \
+    "' || _rc=\$?" \
+    > "$G_CTRL_BODY_BARE"
+
 # The merge rule and its STDOUT PRECONDITION. `2>&1` is a diversion only if
 # stdout is itself diverted; with stdout inherited it is the leak, not a fix
 # (the same reason D4's grammar rejects it outright). The positive shape is at
@@ -2712,20 +2737,38 @@ printf '%s\n' \
     '    bash "$G_PROBE" --pool 2>&1' \
     ')" || _rc=$?' \
     > "$G_CTRL_MERGE_SUBST"
+# A PIPE is a stdout diversion too, and it is the third way the precondition
+# can be met. `cmd 2>&1 | reader` sends both streams into the pipe -- the
+# pipeline fds are installed before the command's own redirections -- so the
+# site does not leak, and flagging it would be a false RED that pressures a
+# reader into adding a redundant redirect. Same argument the G_SCAN preamble
+# makes for the forwarding-lib indirection.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>&1 | grep -q "$G_MARKER"' \
+    > "$G_CTRL_MERGE_PIPE"
 
 G2C1_N="$(_g_unredirected "$G_CTRL_SUB_CAP" "$G_CTRL_SITE")"
 G2C2_N="$(_g_unredirected "$G_CTRL_SUB_BARE" "$G_CTRL_SITE")"
+G2C3_N="$(_g_unredirected "$G_CTRL_BODY_CAP" "$G_CTRL_SITE")"
+G2C4_N="$(_g_unredirected "$G_CTRL_BODY_BARE" "$G_CTRL_SITE")"
 G2D1_N="$(_g_unredirected "$G_CTRL_MERGE_BARE" "$G_CTRL_SITE")"
 G2D2_N="$(_g_unredirected "$G_CTRL_MERGE_SUBST" "$G_CTRL_SITE")"
+G2D3_N="$(_g_unredirected "$G_CTRL_MERGE_PIPE" "$G_CTRL_SITE")"
 
 assert "G2c1: a site whose capture is on its enclosing SUBSHELL's closing line is NOT flagged (got $G2C1_N unredirected)" \
     test "$G2C1_N" -eq 0
 assert "G2c2: ... but the same site in a subshell whose closer carries NO redirect still IS (block tolerance is not blanket; got $G2C2_N unredirected)" \
     test "$G2C2_N" -eq 1
+assert "G2c3: a site whose capture is on its enclosing inline BODY's closing line is NOT flagged (got $G2C3_N unredirected)" \
+    test "$G2C3_N" -eq 0
+assert "G2c4: ... but the same site in a body whose closer carries NO redirect still IS (got $G2C4_N unredirected)" \
+    test "$G2C4_N" -eq 1
 assert "G2d1: a bare 2>&1 with stdout INHERITED is flagged -- merging into the re-emitted stream is the leak, not a fix (got $G2D1_N unredirected)" \
     test "$G2D1_N" -eq 1
 assert "G2d2: ... but the same 2>&1 inside a multi-line command substitution is NOT, because stdout is diverted there (got $G2D2_N unredirected)" \
     test "$G2D2_N" -eq 0
+assert "G2d3: ... and neither is a 2>&1 whose stdout is diverted by a PIPE -- both streams go into the pipe, not to fd 2 (got $G2D3_N unredirected)" \
+    test "$G2D3_N" -eq 0
 
 # --- G2e: THE TIER-SEPARATION PIN. Green on arrival by design, kept as a
 # standing regression guard: Section G's laxer DIVERSION grammar must not have
@@ -2867,6 +2910,59 @@ assert "G2f1: an exec verb followed by a QUOTED assignment word still reaches it
     test "$G2F1_N" -eq 1
 assert "G2f2: ... but a site SHADOWED by an intervening quoted command word is NOT one (a blanket relaxation would flag it; got $G2F2_N sites)" \
     test "$G2F2_N" -eq 0
+
+echo ""
+echo "--- G2g: capture attribution is COMMAND-scoped, not line-scoped ---"
+
+# THE ATTRIBUTION HAZARD, and why it needs controls of its own. G2a-G2d ask
+# whether a redirect is RECOGNISED; G2g asks whether it belongs to the command
+# under test at all. A `2>` merely PRESENT somewhere on a line says nothing --
+# a shell line can hold several commands, and only the segment the site (or the
+# block closer) actually sits in can capture it. All three fixtures below are
+# genuinely leaking sites, so all three must be FLAGGED; a predicate that reads
+# the whole line accepts every one of them and G1 stays green over a real leak.
+# That is the same silent-pass class as the exec-anchor hole G2f pins, on the
+# other half of the predicate.
+G_CTRL_ATTR_SAME="$TMPG/ctrl-attr-same-line.cmds"
+G_CTRL_ATTR_CLOSER="$TMPG/ctrl-attr-closer.cmds"
+G_CTRL_ATTR_REVERSED="$TMPG/ctrl-attr-reversed-merge.cmds"
+
+# SAME-LINE: the site is backgrounded and the `2>/dev/null` belongs to the
+# `echo` after the `&`. The site's own stderr still reaches the inherited fd 2.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool & echo $! 2>/dev/null' \
+    > "$G_CTRL_ATTR_SAME"
+
+# CLOSER LINE: the subshell closes with NO redirect -- the `2>/dev/null` on
+# that line belongs to the `kill` in the `||` branch, which runs only after the
+# subshell has already written to fd 2. The block-scope rule must not read it
+# as the subshell's own capture.
+printf '%s\n' \
+    '_C_RC=0' \
+    '(' \
+    '    bash "$G_PROBE" --pool' \
+    ') || kill "$G_PID" 2>/dev/null' \
+    > "$G_CTRL_ATTR_CLOSER"
+
+# ORDER WITHIN THE SEGMENT: `2>&1 >file` is the classic reversed pair. fd 2 is
+# pointed at whatever fd 1 is AT THAT MOMENT -- the inherited stdout -- and only
+# then is fd 1 moved to the file. Stderr leaks; the same two tokens in the
+# other order (G2d1s mirror, `>file 2>&1`) do not. The merge rule therefore has
+# to compare POSITIONS, not merely observe that both tokens are present.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>&1 >"$G_OUT"' \
+    > "$G_CTRL_ATTR_REVERSED"
+
+G2G1_N="$(_g_unredirected "$G_CTRL_ATTR_SAME" "$G_CTRL_SITE")"
+G2G2_N="$(_g_unredirected "$G_CTRL_ATTR_CLOSER" "$G_CTRL_SITE")"
+G2G3_N="$(_g_unredirected "$G_CTRL_ATTR_REVERSED" "$G_CTRL_SITE")"
+
+assert "G2g1: a redirect belonging to ANOTHER command on the same line does not capture the site (got $G2G1_N unredirected)" \
+    test "$G2G1_N" -eq 1
+assert "G2g2: ... nor does one belonging to another command on the block CLOSER line (got $G2G2_N unredirected)" \
+    test "$G2G2_N" -eq 1
+assert "G2g3: ... and a REVERSED 2>&1 >file still leaks, because fd 2 is aimed at the inherited stdout first (got $G2G3_N unredirected)" \
+    test "$G2G3_N" -eq 1
 
 for _g_i in "${!G_MEMBERS[@]}"; do
     _g_m="${G_MEMBERS[$_g_i]}"
