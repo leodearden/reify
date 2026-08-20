@@ -212,7 +212,39 @@ pub fn compute_hover_in_context(
 /// Visibility (`pub`) is deliberately not rendered, matching the sibling fn/trait/enum
 /// hover arms. Task #6341.
 fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> String {
-    format!("type {} = {}", t.name, t.type_expr)
+    format!(
+        "type {}{} = {}",
+        t.name,
+        format_type_params(&t.type_params),
+        t.type_expr
+    )
+}
+
+/// Render a type-parameter list as `<T, U: Numeric, V: A + B = Int>`, or the empty
+/// string when there are none (so a zero-param alias never emits a bare `<>`).
+///
+/// `reify_ast::TypeParamDecl` has no `Display` impl, so each entry is formatted by
+/// hand: bounds are joined with `" + "` (matching the trait-refinement join in the
+/// Trait hover arm) and a default is appended via `TypeExpr`'s `Display`. Task #6341.
+fn format_type_params(params: &[reify_ast::TypeParamDecl]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let entries: Vec<String> = params
+        .iter()
+        .map(|p| {
+            let mut entry = p.name.clone();
+            if !p.bounds.is_empty() {
+                entry.push_str(": ");
+                entry.push_str(&p.bounds.join(" + "));
+            }
+            if let Some(default) = &p.default {
+                entry.push_str(&format!(" = {default}"));
+            }
+            entry
+        })
+        .collect();
+    format!("<{}>", entries.join(", "))
 }
 
 /// Create a Hover with markdown content.
