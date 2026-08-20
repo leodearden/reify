@@ -2281,4 +2281,44 @@ echo ""
 # observes real behaviour -- and their direct sites are what seeds the
 # closure in the first place.
 
+
+echo ""
+echo "=== G: every deadline-capable SITE inside a static-only roster member diverts its stderr (static) ==="
+
+# G0 FIRST -- the COMPLETENESS assert, before any per-member check.
+#
+# Section G's per-member checks below run off a hand-declared table (G_MEMBERS
+# and its index-aligned site targets). A hand-declared table over a DERIVED
+# roster is exactly the silent-drift shape task 6255 was filed to close, one
+# level down: Section F can start deriving a ninth static-only member and
+# Section G would simply never look at it, staying green while its coverage
+# quietly stopped being total. G0 is what makes that growth LOUD -- it compares
+# the members Section G declares coverage for against the static-only slice of
+# D_ROSTER, re-derived here from D_ROSTER_MODE (which is itself derived from
+# D_MEMBERS membership, so there is no hand-typed classification anywhere in
+# this chain). A new static-only member turns G0 RED until a human declares its
+# site target, which is the correct outcome: what site is deadline-capable in a
+# new suite is a judgement, not something this scanner can guess.
+#
+# Basenames only in the description, and both difference lists are precomputed
+# into plain variables above the assert -- never a $(...) inside the
+# description text -- so this assert can never itself become an instance of
+# what Section E's E1 forbids (E1 scans SCRIPT_DIR/*.sh, which includes this
+# file).
+G_DERIVED_STATIC="$(
+    for _g_i in "${!D_ROSTER[@]}"; do
+        [ "${D_ROSTER_MODE[$_g_i]}" = "static-only" ] || continue
+        printf '%s\n' "${D_ROSTER[$_g_i]}"
+    done | sort
+)"
+G_DECLARED_SORTED="$(printf '%s\n' "${G_MEMBERS[@]}" | sort)"
+# uncovered: a static-only roster member Section G declares no site for.
+# stale: a G_MEMBERS entry that is no longer a static-only roster member
+# (renamed, deleted, or promoted into D_MEMBERS and hence behavioural).
+G_UNCOVERED="$(comm -23 <(printf '%s\n' "$G_DERIVED_STATIC") <(printf '%s\n' "$G_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
+G_STALE="$(comm -13 <(printf '%s\n' "$G_DERIVED_STATIC") <(printf '%s\n' "$G_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
+
+assert "G0: Section G covers EVERY static-only roster member -- the declared coverage list equals the static-only slice of D_ROSTER (uncovered: ${G_UNCOVERED:-<none>}) (stale: ${G_STALE:-<none>})" \
+    test "$G_DECLARED_SORTED" = "$G_DERIVED_STATIC"
+
 test_summary
