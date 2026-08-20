@@ -226,24 +226,84 @@ fn compilation_inputs() -> Vec<String> {
     inputs
 }
 
-/// SHA-256 of a file, via the `sha256sum` binary.
+/// One hashing attempt with one binary.
 ///
-/// Reuses the same subprocess mechanism as `shell_stamp_is_current`, so this
-/// introduces no new build-dependency and its behaviour on a host without
-/// `sha256sum` is already characterised. Returns `None` when the binary is
-/// missing or the call fails.
-fn sha256_of(path: &str) -> Option<String> {
-    let output = std::process::Command::new("sha256sum")
+/// Three outcomes, deliberately distinguished — the caller's retry and its
+/// `UNAVAILABLE` decision both hinge on telling them apart:
+///   `Ok(Some(hash))` hashed;
+///   `Ok(None)`       the binary is not on PATH — a permanent fact about this
+///                    host, so trying again is pointless;
+///   `Err(())`        the binary exists but THIS attempt failed (fork pressure,
+///                    EMFILE, a signal) — transient, so worth retrying.
+fn try_hasher(bin: &str, args: &[&str], path: &str) -> Result<Option<String>, ()> {
+    let output = match std::process::Command::new(bin)
+        .args(args)
         .arg(path)
         .stderr(std::process::Stdio::null())
         .output()
-        .ok()?;
+    {
+        Ok(o) => o,
+        // ENOENT means "no such binary": a permanent property of this host.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
     if !output.status.success() {
-        return None;
+        return Err(());
     }
-    // sha256sum output format: "<hash>  <filename>\n"
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    stdout.split_whitespace().next().map(|s| s.to_string())
+    // sha256sum / `shasum -a 256` output format: "<hash>  <filename>\n"
+    let stdout = String::from_utf8(output.stdout).map_err(|_| ())?;
+    match stdout.split_whitespace().next() {
+        Some(h) if !h.is_empty() => Ok(Some(h.to_string())),
+        _ => Err(()),
+    }
+}
+
+/// SHA-256 of a file, via `sha256sum` or `shasum -a 256`.
+///
+/// TWO hashers, and a bounded retry, for two distinct reasons (`#5629` review):
+///
+/// 1. The shell side of this contract —
+///    `scripts/tree-sitter-freshness.sh` -> `compute_sha256` ->
+///    `portable_sha256` in `scripts/lib.sh` — supports BOTH binaries. With
+///    `sha256sum` only here, a shasum-only host (macOS is the canonical case)
+///    makes the two sides disagree: every stamp says `UNAVAILABLE` while the
+///    script computes a real fingerprint, so every archive is permanently
+///    unattestable and the guard is silently a no-op for that whole checkout.
+///
+/// 2. `UNAVAILABLE` must mean "no hasher on this host" and nothing else.
+///    Without the retry, one momentary subprocess failure during one build
+///    mints the sentinel for a fingerprint dir — and a dir cargo will not
+///    rebuild never gets it rewritten, so that one spike disables attestation
+///    for that dir indefinitely, then propagates into every lane CoW-seeded
+///    from that base.
+///
+/// Returns `None` only when neither binary produced a hash after the retries;
+/// the loop exits immediately (no sleeps) when neither is on PATH at all.
+fn sha256_of(path: &str) -> Option<String> {
+    const HASHERS: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
+    const ATTEMPTS: u32 = 3;
+
+    for attempt in 0..ATTEMPTS {
+        let mut retryable = false;
+        for (bin, args) in HASHERS {
+            match try_hasher(bin, args, path) {
+                Ok(Some(hash)) => return Some(hash),
+                Ok(None) => {} // not on PATH — fall through to the next binary
+                Err(()) => retryable = true, // present but failed — a retry may win
+            }
+        }
+        // Nothing failed transiently, so nothing can change on a retry: the
+        // host simply has no hasher. Return now rather than sleeping twice.
+        if !retryable {
+            return None;
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(
+                100 * u64::from(attempt + 1),
+            ));
+        }
+    }
+    None
 }
 
 /// Attest what was just compiled.
@@ -260,11 +320,18 @@ fn sha256_of(path: &str) -> Option<String> {
 /// nothing useful there. Only these hashes distinguish "built from these bytes"
 /// from "merely newer".
 ///
-/// On a host without `sha256sum`, writes the literal `UNAVAILABLE` rather than
+/// On a host with no usable hasher, writes the literal `UNAVAILABLE` rather than
 /// omitting the stamp: an ABSENT stamp means "unproven", which would make
 /// `scripts/tree-sitter-freshness.sh ensure` force a rebuild on every single run.
 /// `UNAVAILABLE` instead maps to a clean skip. A write failure warns but never
 /// fails the build.
+///
+/// The sentinel is DELIBERATELY expensive to reach: it permanently disables
+/// attestation for this fingerprint dir (cargo never rebuilds a dormant dir, so
+/// the stamp is never rewritten) and propagates through CoW lane seeding. That is
+/// why `sha256_of` retries a transient subprocess failure and tries both hashers
+/// before conceding — reaching here should mean the host genuinely has neither
+/// `sha256sum` nor `shasum`, matching the freshness script's FAIL POLICY.
 fn write_inputs_stamp(out_dir: &str) {
     let stamp_path = std::path::Path::new(out_dir).join("tree_sitter_inputs.stamp");
 
