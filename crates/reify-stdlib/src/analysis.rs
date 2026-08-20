@@ -904,6 +904,95 @@ mod tests {
             result
         );
     }
+    /// `eig_ascending_cmp` must be a genuine TOTAL ORDER on NaN/±Inf-bearing
+    /// values, not merely "usually right".
+    ///
+    /// Mirrors the sanctioned INV-FEA-3 precedent
+    /// `crates/reify-solver-elastic/src/interpolation.rs`'s
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`:
+    /// the comparator is a NAMED fn precisely so this test can pin THAT exact
+    /// comparator rather than re-testing `f64::total_cmp`'s own documentation.
+    ///
+    /// The `Equal`-only-on-identical-bits leg is what makes this a real
+    /// regression pin: `partial_cmp(..).unwrap_or(Ordering::Equal)` reports
+    /// `Equal` for every NaN-vs-anything pair, so reverting the body to that
+    /// fragment breaks this test.
+    ///
+    /// RED before the comparator lands: compile error (symbol missing).
+    #[test]
+    fn eig_ascending_cmp_is_a_total_order_on_nan_bearing_values() {
+        use std::cmp::Ordering;
+
+        let sample = [
+            f64::NAN,
+            -0.0,
+            0.0,
+            1.0,
+            -1.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -f64::NAN,
+        ];
+
+        // antisymmetry: cmp(a,b) == cmp(b,a).reverse()
+        for a in sample.iter() {
+            for b in sample.iter() {
+                assert_eq!(
+                    eig_ascending_cmp(a, b),
+                    eig_ascending_cmp(b, a).reverse(),
+                    "antisymmetry violated for ({a:?}, {b:?})"
+                );
+            }
+        }
+
+        // transitivity of Less
+        for a in sample.iter() {
+            for b in sample.iter() {
+                for c in sample.iter() {
+                    if eig_ascending_cmp(a, b) == Ordering::Less
+                        && eig_ascending_cmp(b, c) == Ordering::Less
+                    {
+                        assert_eq!(
+                            eig_ascending_cmp(a, c),
+                            Ordering::Less,
+                            "transitivity violated for ({a:?} < {b:?} < {c:?})"
+                        );
+                    }
+                }
+            }
+        }
+
+        // totality: Equal ONLY for bit-identical values.
+        for a in sample.iter() {
+            for b in sample.iter() {
+                let equal = eig_ascending_cmp(a, b) == Ordering::Equal;
+                assert_eq!(
+                    equal,
+                    a.to_bits() == b.to_bits(),
+                    "Equal must hold exactly on bit-identical values, but \
+                     cmp({a:?}, {b:?}) == {:?} with bits {:#x} vs {:#x}",
+                    eig_ascending_cmp(a, b),
+                    a.to_bits(),
+                    b.to_bits()
+                );
+            }
+        }
+
+        // sorting under this comparator terminates and is non-decreasing.
+        let mut v: Vec<f64> = sample.to_vec();
+        v.sort_by(eig_ascending_cmp);
+        for w in v.windows(2) {
+            assert_ne!(
+                eig_ascending_cmp(&w[0], &w[1]),
+                Ordering::Greater,
+                "sorted sequence must be non-decreasing under the same comparator, \
+                 got {:?} before {:?}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
     // ── rotate_stress_3x3 kernel tests (step-1) ─────────────────────────────
 
     /// Identity rotation is a no-op: `R = I` ⟹ `R·σ·Rᵀ = σ`, bit-for-bit.
