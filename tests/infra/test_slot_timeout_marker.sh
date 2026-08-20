@@ -3189,13 +3189,32 @@ TMPH="$(mktemp -d)"; _TMPDIRS+=("$TMPH")
 # `.out`). Tokens come from $SP via an UNQUOTED heredoc, so no live token is
 # ever contiguous in THIS file's source; `\$\$` stays literal and expands at
 # fixture runtime.
+#
+# It also emits all FOUR GROUNDED SHAPES of dark-factory's OTHER slot anchor --
+# the per-wrapper `<basename>.sh: failed to acquire ... within Ns` deadline
+# lines. That anchor is a SEPARATE half of the same classification (H2): those
+# lines carry no `@@` token at all, so no prefix rewrite can reach them, and
+# the 5623 mislabel was driven by exactly this half with ZERO sentinels
+# present. The four shapes are transcribed from their real emitters:
+#   1. bare column-0, with the real HG-2 multi-line-continuation trailing `))`
+#      (scripts/lib_test_semaphore.sh)
+#   2. leading-whitespace         (scripts/lib_lane_x_flock.sh)
+#   3. `ERROR: `-prefixed -- the sole grounded source of that prefix
+#      (scripts/cargo-test-occt-gated.sh)
+#   4. the `within unlimiteds` wart REIFY_TEST_SEMAPHORE_WAIT=unlimited
+#      produces, which DF's `\S+s\b` deliberately covers
+# Split across stdout and stderr, as the two real streams are.
 _write_slot_fixture() {  # <path> <exit_code>
     cat > "$1" <<SLOTFIXEOF
 #!/usr/bin/env bash
 echo "${SP}TIMEOUT@@ reason=fixture slots=1 waited=0 disposition=fatal lock=/tmp/x"
 echo "  PASS: fixture: stdout quotes ${SP}TIMEOUT@@ reason=fixture in assertion prose"
+echo "lib_test_semaphore.sh: failed to acquire test slot within 0s (LOCK=/tmp/l, N=1))"
+echo "  lib_lane_x_flock.sh: failed to acquire Lane-X lock within 1s (LOCK=/tmp/m)"
 echo "${SP}TIMEOUT@@ reason=fixture slots=1 waited=0 disposition=fatal lock=/tmp/x.\$\$" >&2
 echo "  PASS: fixture: stderr quotes ${SP}TIMEOUT@@ reason=fixture in assertion prose" >&2
+echo "ERROR: cargo-test-occt-gated.sh: failed to acquire OCCT slot within 1800s (LOCK=/o, N=1)" >&2
+echo "lib_test_semaphore.sh: failed to acquire test slot within unlimiteds (LOCK=/x, N=8)" >&2
 SLOTFIXEOF
     echo "exit $2" >> "$1"
     chmod +x "$1"
@@ -3230,5 +3249,59 @@ assert "H1a: the member's sentinels were rewritten to the neutralized QUOTED for
     _has_text "$H_OUT" "${QSP}TIMEOUT@@"
 assert "H1b: ZERO re-emitted lines still match DF's live sentinel anchor (got $H1_LIVE_N)" \
     test "$H1_LIVE_N" -eq 0
+
+echo ""
+echo "--- H2: the BASENAME deadline half, DF's other slot anchor ---"
+
+# POSIX-ERE TRANSCRIPTION of dark-factory's live `_SLOT_ACQUIRE_DEADLINE_RE`
+# (orchestrator/src/orchestrator/verify_classify.py). Two deliberate spelling
+# differences, both verified to preserve match semantics over the four grounded
+# shapes above: `[[:blank:]]*` for `^[ \t]*` (GNU grep -E does not honour `\t`
+# inside a bracket expression -- the same trap Section D's D_ANCHOR records),
+# and `([^[:alnum:]]|$)` for the trailing `\b`, which is if anything LOOSER --
+# the safe direction for an assertion that a count is ZERO.
+# CROSS-REPO: this is a transcription, not the source of truth. If either side
+# moves -- DF's allowlist growing past three basenames, or a wrapper's message
+# changing -- both this anchor and run_all.sh's $_RA_SLOT_BASENAME_SANITIZE must
+# be re-verified against verify_classify.py.
+H_DF_ANCHOR='^[[:blank:]]*(ERROR: )?(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock)\.sh: failed to acquire .{1,40}? within [^[:space:]]+s([^[:alnum:]]|$)'
+
+H2_LIVE_N="$(grep -acE -- "$H_DF_ANCHOR" "$H_OUT" || true)"
+
+assert "H2a: ZERO re-emitted lines still match DF's live basename-deadline anchor (got $H2_LIVE_N)" \
+    test "$H2_LIVE_N" -eq 0
+
+# H2b: the rewrite must NEUTRALIZE, not destroy. A human reading the verify log
+# still needs the emitting script, the verb, and the operator-controlled lock
+# path -- so each of the three basenames keeps all three. Literal checks only,
+# so a rewrite that silently dropped a field turns this RED.
+assert "H2b1: the lib_test_semaphore deadline line stays human-readable (basename kept)" \
+    _has_text "$H_OUT" "lib_test_semaphore.sh"
+assert "H2b2: ... its LOCK= field survives the rewrite" \
+    _has_text "$H_OUT" "LOCK=/tmp/l"
+assert "H2b3: the lib_lane_x_flock deadline line stays human-readable (basename kept)" \
+    _has_text "$H_OUT" "lib_lane_x_flock.sh"
+assert "H2b4: ... its LOCK= field survives the rewrite" \
+    _has_text "$H_OUT" "LOCK=/tmp/m"
+assert "H2b5: the cargo-test-occt-gated deadline line stays human-readable (basename kept)" \
+    _has_text "$H_OUT" "cargo-test-occt-gated.sh"
+assert "H2b6: ... its LOCK= field survives the rewrite" \
+    _has_text "$H_OUT" "LOCK=/o"
+assert "H2b7: the shared verb survives on all three" \
+    _has_text "$H_OUT" "failed to acquire"
+
+# H2c: THE INDENT-IS-NOT-ENOUGH CONTROL, and the reason the chosen transform
+# inserts a token rather than shifting the line. DF's anchor tolerates leading
+# horizontal whitespace (`^[ \t]*`), so the obvious cheap "just indent it"
+# simplification neutralizes NOTHING -- this assertion is what makes that a
+# machine-checked fact instead of a comment, and turns RED the day someone
+# swaps the rewrite for an indent. Also doubles as H2a's positive control: an
+# absence-assert with a typo'd anchor is green forever.
+H2C_IN="$TMPH/h2c-indented.out"
+printf '  lib_test_semaphore.sh: failed to acquire test slot within 0s (LOCK=/tmp/l, N=1)\n' > "$H2C_IN"
+H2C_N="$(grep -acE -- "$H_DF_ANCHOR" "$H2C_IN" || true)"
+
+assert "H2c: a merely INDENTED deadline line still matches DF's anchor, so indentation is not a defence (got $H2C_N)" \
+    test "$H2C_N" -eq 1
 
 test_summary
