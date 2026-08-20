@@ -148,6 +148,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, TOP_LEVEL_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_entity_names(&mut items, ctx);
         }
         CursorContext::StructureBody { ref structure_name } => {
@@ -155,6 +156,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_scoped_members(&mut items, ctx, structure_name);
             push_entity_names(&mut items, ctx);
         }
@@ -164,6 +166,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             if let Some(name) = structure_name {
                 push_scoped_members(&mut items, ctx, name);
             } else {
@@ -177,6 +180,7 @@ pub fn compute_completions_in_context(
         }
         CursorContext::TypePosition => {
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_entity_names(&mut items, ctx);
         }
     }
@@ -215,6 +219,45 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
         items.push(CompletionItem {
             label: ty.to_string(),
             kind: Some(CompletionItemKind::CLASS),
+            ..Default::default()
+        });
+    }
+}
+
+/// Push user-declared type aliases as CLASS-kind completions.
+///
+/// Reads `CompiledModule.type_aliases`, which holds only the OPEN DOCUMENT's own
+/// aliases — prelude-seeded aliases are filtered out by the compiler's
+/// `TypeAliasRegistry::into_compiled`, so no stdlib alias can leak into the list.
+///
+/// `detail` reuses the hover formatter so both surfaces render the same signature
+/// string. That formatter needs the parsed declaration (for `type_params` and the
+/// `type_expr` surface spelling), so the parsed list is searched by name first;
+/// the two fallbacks cover a compiled alias with no matching parsed declaration.
+/// Task #6341.
+fn push_type_alias_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
+    for alias in &ctx.compiled.type_aliases {
+        let detail = ctx
+            .parsed
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                reify_ast::Declaration::TypeAlias(t) if t.name == alias.name => {
+                    Some(crate::hover::format_type_alias_signature(t))
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                alias
+                    .type_expr
+                    .as_ref()
+                    .map(|e| format!("type {} = {e}", alias.name))
+            })
+            .unwrap_or_else(|| format!("type {}", alias.name));
+        items.push(CompletionItem {
+            label: alias.name.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some(detail),
             ..Default::default()
         });
     }

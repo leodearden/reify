@@ -228,8 +228,11 @@ pub fn compute_hover_in_context(
 /// matches all six `TypeExprKind` variants exhaustively, so this render cannot fail.
 ///
 /// Visibility (`pub`) is deliberately not rendered, matching the sibling fn/trait/enum
-/// hover arms. Task #6341.
-fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> String {
+/// hover arms.
+///
+/// Exposed as `pub(crate)` so completion can reuse it for an alias item's `detail`,
+/// keeping the hover and completion surfaces byte-identical. Task #6341.
+pub(crate) fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> String {
     format!(
         "type {}{} = {}",
         t.name,
