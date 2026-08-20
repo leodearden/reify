@@ -68,6 +68,17 @@ const ANGLE_CROSSINGS_EXEMPLAR: &str = include_str!(concat!(
     "/../../examples/best_practices/angle_crossings.ri"
 ));
 
+/// The served `units` language-reference chunk, read from `reify-mcp`'s source
+/// tree at compile time — the same cross-crate read-by-path
+/// `enums_chunk_option_smoke.rs` uses, since `reify-mcp` does not depend on
+/// `reify-compiler` and `language_chunks::get_chunk` is unreachable from here.
+///
+/// `include_str!` again, so a moved or renamed chunk is a build error.
+const UNITS_CHUNK: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/chunks/units.md"
+));
+
 /// The exemplar's `CANONICAL COPY` block transcribes exactly these four
 /// diagnostics, in this order, with this wording.
 ///
@@ -489,6 +500,28 @@ fn transcribed_compile_diagnostics_match_the_real_compiler() {
     }
 }
 
+/// The single parse-layer entry of the exemplar's `CANONICAL COPY` block.
+///
+/// Selected by "not a compile-layer entry" rather than by the `Parse error`
+/// prefix itself. That is what keeps the prefix assertion in
+/// [`transcribed_parse_diagnostic_matches_the_real_parser`] non-vacuous: a CLI
+/// rename that the exemplar dutifully followed still selects this entry, and
+/// the assertion still fires. Selecting *by* the prefix would make that
+/// assertion compare the prefix to itself.
+fn parse_layer_entry() -> TranscribedDiagnostic {
+    let mut parse_layer: Vec<TranscribedDiagnostic> = canonical_copy_entries()
+        .into_iter()
+        .filter(|entry| entry.renderer != "error")
+        .collect();
+    assert_eq!(
+        parse_layer.len(),
+        1,
+        "expected exactly one parse-layer transcription in the CANONICAL COPY block; \
+         got {parse_layer:#?}"
+    );
+    parse_layer.remove(0)
+}
+
 /// The one parse-layer transcription equals what the real parser emits, and
 /// the exemplar's rendered form round-trips from it.
 ///
@@ -502,21 +535,7 @@ fn transcribed_compile_diagnostics_match_the_real_compiler() {
 /// prefix the library never emits.
 #[test]
 fn transcribed_parse_diagnostic_matches_the_real_parser() {
-    // Filter by "not a compile-layer entry" rather than by the prefix itself,
-    // so the prefix assertion below stays non-vacuous: if the CLI renamed its
-    // prefix and the exemplar followed, this still selects the same entry and
-    // the assertion fires.
-    let parse_layer: Vec<TranscribedDiagnostic> = canonical_copy_entries()
-        .into_iter()
-        .filter(|entry| entry.renderer != "error")
-        .collect();
-    assert_eq!(
-        parse_layer.len(),
-        1,
-        "expected exactly one parse-layer transcription in the CANONICAL COPY block; \
-         got {parse_layer:#?}"
-    );
-    let entry = &parse_layer[0];
+    let entry = parse_layer_entry();
 
     assert_eq!(
         entry.renderer, CLI_PARSE_ERROR_PREFIX,
