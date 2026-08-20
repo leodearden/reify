@@ -2536,7 +2536,72 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
         SITE = ENVIRON["G_AWK_SITE"]
         CAP  = ENVIRON["G_AWK_CAP"]
         SQ = sprintf("%c", 39)   # the single quote, built not written
+        DQ = sprintf("%c", 34)   # the double quote, built for symmetry
         n = 0; top = 0; sites = 0; unred = 0
+    }
+
+    # ---- COMMAND SEGMENTATION. Capture attribution has to be COMMAND-scoped,
+    # not LINE-scoped: a `2>` merely present somewhere on a line says nothing
+    # about which of that lines commands it belongs to. Three real shapes are
+    # silent greens under a line-scoped rule, and all three are pinned by G2g:
+    #   `bash "$P" & echo $! 2>/dev/null`   the redirect is the echos
+    #   `) || kill "$pid" 2>/dev/null`      the redirect is the kills
+    #   `bash "$P" 2>&1 >"$OUT"`            reversed pair -- fd 2 is aimed at
+    #                                       the INHERITED stdout, then fd 1
+    #                                       moves; stderr leaks
+    #
+    # nextsep() walks from `from` to the first UNQUOTED command separator and
+    # leaves SEP/SEPLEN describing it. segat() returns the segment HOLDING a
+    # position (a site line); segfrom() the segment STARTING at one (a block
+    # closer, scanned from just past the closing token). SEP survives the call
+    # because a terminating pipe is itself a stdout diversion -- see PASS 2.
+    #
+    # A REDIRECT AMPERSAND IS NOT A SEPARATOR: `2>&1` and `>&2` carry `>` (or
+    # `<`) immediately before the `&`, and bashs `&>` carries `>` immediately
+    # after it. Quote tracking is per-line and deliberately simple; an
+    # unbalanced quote merely stops the scan, which yields the whole remainder
+    # as one segment -- i.e. exactly the old line-scoped behaviour, so it
+    # degrades toward the previous rule and never toward hiding a leak.
+    function nextsep(s, from,   i, c, p, q, ln) {
+        SEP = ""; SEPLEN = 0
+        ln = length(s); q = ""
+        for (i = from; i <= ln; i++) {
+            c = substr(s, i, 1)
+            if (q != "") { if (c == q) q = ""; continue }
+            if (c == "\\") { i++; continue }
+            if (c == SQ || c == DQ) { q = c; continue }
+            if (c == ";") { SEP = ";"; SEPLEN = 1; return i }
+            if (c == "|") {
+                if (substr(s, i + 1, 1) == "|") { SEP = "||"; SEPLEN = 2 }
+                else                            { SEP = "|";  SEPLEN = 1 }
+                return i
+            }
+            if (c == "&") {
+                p = (i > 1) ? substr(s, i - 1, 1) : ""
+                if (p == ">" || p == "<") continue
+                if (substr(s, i + 1, 1) == ">") continue
+                if (substr(s, i + 1, 1) == "&") { SEP = "&&"; SEPLEN = 2 }
+                else                            { SEP = "&";  SEPLEN = 1 }
+                return i
+            }
+        }
+        return 0
+    }
+
+    function segat(s, pos,   from, k) {
+        from = 1
+        while (1) {
+            k = nextsep(s, from)
+            if (k == 0)   return substr(s, from)
+            if (pos < k)  return substr(s, from, k - from)
+            from = k + SEPLEN
+        }
+    }
+
+    function segfrom(s, from,   k) {
+        k = nextsep(s, from)
+        if (k == 0) return substr(s, from)
+        return substr(s, from, k - from)
     }
 
     # ---- PASS 1: block structure. For every line, record the innermost
@@ -2584,7 +2649,16 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
 
         if (isclose) {
             ok = stack[top--]
-            d = ($0 ~ CAP) ? "err" : (bk[ok] == "subst" ? "out" : "none")
+            # Only the CLOSERS OWN segment can capture the block. Scan from
+            # just past the closing token, stepping over the `"` of a `)"` that
+            # closes a `"$( ... )"` so the segment scanner does not read the
+            # rest of the line as quoted text.
+            if (bk[ok] == "body") match($0, "^[[:blank:]]*" SQ)
+            else                  match($0, /^[[:blank:]]*\)/)
+            cfrom = RSTART + RLENGTH
+            if (substr($0, cfrom, 1) == DQ) cfrom++
+            cseg = segfrom($0, cfrom)
+            d = (cseg ~ CAP) ? "err" : (bk[ok] == "subst" ? "out" : "none")
             stamp[ok] = bk[ok] ":" d
             encl[n] = (top > 0) ? stack[top] : 0
         } else if (isopen) {
@@ -2595,23 +2669,32 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
         }
     }
 
-    # ---- PASS 2: a site line is captured iff any of
-    #   (a) it carries a same-line diversion (CAP: 2> to a file or to /dev/null);
-    #   (b) it carries a same-line 2>&1 AND its stdout is itself diverted -- by a
-    #       same-line > that is not part of 2> or >&, by an inline $( on the same
-    #       line, or by an enclosing subst block. Without that precondition 2>&1
+    # ---- PASS 2. Everything below is asked of the sites OWN SEGMENT (segat),
+    # never of the whole line -- see the segmentation block above. A site is
+    # captured iff any of
+    #   (a) its segment carries a diversion (CAP: 2> to a file or to /dev/null);
+    #   (b) its segment carries a 2>&1 AND its stdout is itself diverted -- by a
+    #       `>` EARLIER IN THE SEGMENT that is not part of 2> or >&, by an
+    #       inline $( earlier in the segment, by the segment ending in a PIPE,
+    #       or by an enclosing subst block. Without that precondition 2>&1
     #       merges the sentinel back into the stream run_all Phase 3 re-emits,
-    #       which is the leak and not a fix;
-    #   (c) an enclosing block whose closer carried 2> (stamp ending :err) --
-    #       the subshell and inline-body shapes.
+    #       which is the leak and not a fix. THE ORDER TEST IS THE POINT: the
+    #       same two tokens reversed (`2>&1 >file`) aim fd 2 at the inherited
+    #       stdout and only then move fd 1, so that shape still leaks (G2g3);
+    #   (c) an enclosing block whose closer segment carried 2> (stamp ending
+    #       :err) -- the subshell and inline-body shapes.
     END {
         for (i = 1; i <= n; i++) {
             if (line[i] !~ SITE) continue
             sites++
+            match(line[i], SITE)
+            seg = segat(line[i], RSTART)
+            sep = SEP
             cap = 0
-            if (line[i] ~ CAP) cap = 1
-            else if (line[i] ~ /2>&1/) {
-                if (line[i] ~ /(^|[^2>&])>[^&]/ || line[i] ~ /\$\(/) cap = 1
+            if (seg ~ CAP) cap = 1
+            else if (match(seg, /2>&1/)) {
+                pre = substr(seg, 1, RSTART - 1)
+                if (pre ~ /(^|[^2>&])>[^&]/ || pre ~ /\$\(/ || sep == "|") cap = 1
                 else for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /^subst:/) { cap = 1; break }
             }
             if (!cap) for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /:err$/) { cap = 1; break }
