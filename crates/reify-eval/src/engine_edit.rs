@@ -1732,8 +1732,7 @@ impl Engine {
             // as `Determined` and records a cache entry; keep them in sync when
             // modifying warm Resolution back-prop.  A fifth arm,
             // `resolve_concurrent_edit`, was removed with `concurrent.rs` in
-            // ffb85f0627 (task ο, #5065) — the older "four-site (see concurrent.rs
-            // module header)" phrasing predates that deletion.
+            // ffb85f0627 (task ο, #5065).
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
