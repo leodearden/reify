@@ -10,6 +10,8 @@
 #   plan_capture_complete — completeness check via structural markers
 #   plan_narrow_active    — extract NARROW_ACTIVE value from dump
 #   capture_print_plan    — retry-on-incomplete-capture wrapper
+#   plan_count_noncomment_lines — fork-free non-comment line counter
+#   plan_is_narrowing_axis_line — narrowing-axis line classification (#6391)
 
 set -euo pipefail
 
@@ -267,5 +269,90 @@ assert "plan_count_noncomment_lines: two command lines -> 2" \
 # (d) Single command line -> 1.
 assert "plan_count_noncomment_lines: single command line -> 1" \
     test "$(plan_count_noncomment_lines "cargo clippy --workspace")" = "1"
+
+# ---------------------------------------------------------------------------
+# Section 6: plan_is_narrowing_axis_line — narrowing-axis classification
+# ---------------------------------------------------------------------------
+# Contract (task #6391): rc 0 iff the line's ` -p <crate>` selector is the one
+# substituted from verify.sh's AFFECTED_ALL_FLAGS — i.e. the line sits on the
+# axis that REIFY_AFFECTED_CRATES_OVERRIDE / branch-diff narrowing can move.
+# Every other ` -p `-bearing plan line is a fixed-crate or independently-scoped
+# axis and must classify as OFF-axis.
+#
+# Every case below is a VERBATIM line shape captured from `verify.sh --print-plan`
+# (merge-gate `--profile both --scope all` and narrowing-active `--profile both
+# --scope branch` runs of the same fixture) — not invented. The `cargo test`
+# twin in (g) is the NEXTEST=0 fallback built at scripts/verify.sh:1944+1950.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_is_narrowing_axis_line: narrowing-axis classification ---"
+
+# --- ON-AXIS: one case per AFFECTED_ALL_FLAGS consumption site --------------
+
+# (a) clippy site (verify.sh:2563), non-narrowed twin — scope=all -> --workspace.
+assert "plan_is_narrowing_axis_line (a): clippy --workspace is ON-axis" \
+    plan_is_narrowing_axis_line "timeout --kill-after=60 45m nice -n 5 cargo clippy --workspace --all-targets -- -D warnings"
+
+# (b) clippy site, narrowed — the override's crates substituted in.
+assert "plan_is_narrowing_axis_line (b): clippy -p <affected> is ON-axis" \
+    plan_is_narrowing_axis_line "timeout --kill-after=60 45m nice -n 15 ionice -c 2 -n 7 cargo clippy -p reify-doc -p reify-ir --all-targets -- -D warnings"
+
+# (c) DEBUG nextest site (verify.sh:2133), non-narrowed twin.
+assert "plan_is_narrowing_axis_line (c): nextest --workspace (debug) is ON-axis" \
+    plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 5 cargo nextest run --workspace --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
+
+# (d) DEBUG nextest site, narrowed.
+assert "plan_is_narrowing_axis_line (d): nextest -p <affected> (debug) is ON-axis" \
+    plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 15 ionice -c 2 -n 7 cargo nextest run -p reify-doc -p reify-ir --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
+
+# (e) typecheck site (verify.sh:2414), narrowed.
+assert "plan_is_narrowing_axis_line (e): cargo check -p <affected> --tests is ON-axis" \
+    plan_is_narrowing_axis_line "timeout --kill-after=60 20m cargo check -p reify-doc -p reify-ir --tests"
+
+# (f) typecheck site, non-narrowed twin.
+assert "plan_is_narrowing_axis_line (f): cargo check --workspace --tests is ON-axis" \
+    plan_is_narrowing_axis_line "timeout --kill-after=60 20m cargo check --workspace --tests"
+
+# (g) DEBUG nextest site, NEXTEST=0 `cargo test` fallback twin (verify.sh:1944).
+assert "plan_is_narrowing_axis_line (g): cargo test -p <affected> fallback is ON-axis" \
+    plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 15 ionice -c 2 -n 7 cargo test -p reify-doc -p reify-ir -- --test-threads=1 9<&-"
+
+# --- OFF-AXIS: one case per non-narrowed ` -p `-bearing axis ----------------
+
+# (h) THE load-bearing case. The release-sensitivity pass (verify.sh:2098-2128)
+# is scoped by scripts/release-sensitive-crates.txt and is deliberately NOT
+# narrowed. Its ` -p reify-ir` is exactly what a blanket whole-plan
+# `! grep -qE " -p reify-ir"` conflated with a narrowing leak — the conflation
+# that stalled task 5166 (2026-07-20 -> 2026-08-20).
+assert "plan_is_narrowing_axis_line (h): release-sensitivity nextest pass is OFF-axis" \
+    refute plan_is_narrowing_axis_line "timeout --kill-after=60 90m nice -n 5 cargo nextest run -p reify-eval -p reify-eval-fea-tests -p reify-gui -p reify-ir -p reify-solver-elastic --release --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
+
+# (i) Fixed gui-feature compile check — always `-p reify-gui`, never narrowed.
+assert "plan_is_narrowing_axis_line (i): fixed gui-feature cargo check is OFF-axis" \
+    refute plan_is_narrowing_axis_line "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m nice -n 5 cargo check -p reify-gui --features gui --tests; fi"
+
+# (j) Fixed gui-feature nextest pass — always `-p reify-gui`, never narrowed.
+assert "plan_is_narrowing_axis_line (j): fixed gui-feature nextest pass is OFF-axis" \
+    refute plan_is_narrowing_axis_line "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m nice -n 5 cargo nextest run -p reify-gui --features gui --config-file /tmp/reify-nextest-occt.<print-plan-placeholder>; fi 9<&-"
+
+# (k) Fixed release pre-build — always `-p reify-audit`, never narrowed.
+assert "plan_is_narrowing_axis_line (k): fixed reify-audit release pre-build is OFF-axis" \
+    refute plan_is_narrowing_axis_line "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 45m nice -n 5 cargo build --release -p reify-audit 2>&1; fi"
+
+# (l) Fixed release pre-build — always `-p reify-cli`, never narrowed.
+assert "plan_is_narrowing_axis_line (l): fixed reify-cli release pre-build is OFF-axis" \
+    refute plan_is_narrowing_axis_line "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 45m nice -n 5 cargo build --release -p reify-cli 2>&1; fi"
+
+# (m) Non-cargo tool line — no cargo subcommand at all.
+assert "plan_is_narrowing_axis_line (m): non-cargo tool line is OFF-axis" \
+    refute plan_is_narrowing_axis_line "export LD_LIBRARY_PATH=\"\${REIFY_AMBIENT_LD_LIBRARY_PATH-}\"; ./scripts/check-manifold-deps.sh"
+
+# (n) Comment line (the narrowing header itself).
+assert "plan_is_narrowing_axis_line (n): comment line is OFF-axis" \
+    refute plan_is_narrowing_axis_line "# narrowing — NARROW_ACTIVE=0 affected= closure="
+
+# (o) Empty line.
+assert "plan_is_narrowing_axis_line (o): empty line is OFF-axis" \
+    refute plan_is_narrowing_axis_line ""
 
 test_summary
