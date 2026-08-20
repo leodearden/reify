@@ -134,6 +134,15 @@ pub(crate) fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
 /// - anything else → `None` — a DOF field that is neither an angle, a length,
 ///   nor an orientation has no kind to match against the residual.
 ///
+/// Reachability note: the surface name `Orientation` is not currently
+/// resolvable from `.ri` source — `resolve_type_name`
+/// (`type_resolution.rs:661`) deliberately omits it, so a declared
+/// `with orientation: Orientation` field resolves to `Type::Error`, not
+/// `Type::Orientation(3)`, and never reaches this function. Today the
+/// `Orientation(3)` arm above is exercised only by internally-constructed
+/// `Type` values (e.g. this module's own tests), not by any reachable `.ri`
+/// declaration.
+///
 /// The single source of truth for DOF-kind classification, shared by
 /// [`declared_kinds`] (which sums the classifiable contributions) and the
 /// compile-time wiring in `compile_builder/entities_phase.rs` (which surfaces

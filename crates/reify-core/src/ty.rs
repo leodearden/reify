@@ -293,7 +293,8 @@ pub enum Type {
     /// This variant previously promised "angle for N=2", but the value layer
     /// never made good on it: no value can carry `N != 3`, no stdlib
     /// constructor in the orientation family builds anything but a quaternion,
-    /// and `Orientation(2)` appears only in this file's tag-only unit tests.
+    /// and `Orientation(N != 3)` is constructed only in unit tests (here and
+    /// in `joint_self_check`), never by the value or resolution layers.
     /// The `usize` parameter is therefore vestigial today. Whether SO(2)
     /// should become a first-class type — the sketch-on-plane anchoring
     /// question, `docs/prds/v0_6/constrained-2d-sketch.md:24` — is task
