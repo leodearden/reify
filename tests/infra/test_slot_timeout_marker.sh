@@ -851,6 +851,53 @@ assert "E1: no assert description DUMPS a whole capture file (cat/tail/head/\$(<
     test "$E1_COUNT" -eq 0
 
 echo ""
+echo "--- E4: assert() sanitizes a multi-line description (structural closure) ---"
+
+# E1 above is a STATIC lint keyed on a READER token (`$(cat …)`), so it cannot
+# see the bare-variable shape: a variable holding text captured on an EARLIER
+# line has no reader to key on. E4 is the BEHAVIOURAL pin that closes that gap
+# from the other side -- it drives the real assert() and checks the emitted
+# bytes against D_ANCHOR, the verbatim dark-factory classifier anchor this file
+# owns (l.538). That is what makes it non-duplicative of
+# tests/infra/test_test_helpers.sh's own multi-line coverage: that file pins the
+# `  | ` PREFIX contract, E4 pins the SENTINEL property. A future change that
+# prefixed with plain INDENTATION would satisfy the prefix contract in spirit
+# and still fail here, which is exactly the distinction D2b and the
+# SELF-POLLUTION DISCIPLINE at the top of this file exist to make.
+#
+# Hermetic: no lock, no cargo, no host state -- this file is classified `pool`.
+
+E4_DIR="$TMPE/e4"; mkdir -p "$E4_DIR"
+# The pre-6353 emitter, rebuilt at runtime, is E4b's positive control. Path
+# declared here beside the probe inputs; its body is written below.
+E4_RAW_EMITTER="$E4_DIR/raw_emitter.sh"
+
+# The description every probe drives: line 1 ordinary, line 2 a sentinel-shaped
+# token assembled from SP, so this file still carries no contiguous literal.
+E4_DESC="$(printf 'E4 probe desc\n%sTIMEOUT@@ reason=e4_probe slots=1 waited=1 disposition=soft lock=e4' "$SP")"
+
+# --- E4b/E4c FIRST: the pin's own controls. E4a asserts an ABSENCE, so a
+# typo'd anchor (E4b) or a probe that stopped emitting the token at all (E4c)
+# would leave it green forever -- the same controls-first discipline D2/D4c and
+# E2/E3 above already apply to every absence assert in this file.
+#
+# Every count is precomputed into a PLAIN variable before it reaches an assert
+# description, and no probe output is ever interpolated: an inline `$(...)`
+# here would make this very assert an instance of what Section E forbids, and
+# E1's sweep includes this file.
+E4B_COUNT="$(_e_desc_probe "$E4_RAW_EMITTER" 2>/dev/null || true)"
+assert "E4b: positive control -- the PRE-fix raw emitter IS flagged by D_ANCHOR, so the probe is live (got ${E4B_COUNT:-0}, want 1)" \
+    test "${E4B_COUNT:-0}" -eq 1
+
+E4C_COUNT="$(_e_desc_token_count "$SCRIPT_DIR/test_helpers.sh" 2>/dev/null || true)"
+assert "E4c: non-vacuity -- the sentinel token IS present in the real assert()'s output, just unanchored (got ${E4C_COUNT:-0}, want >=1)" \
+    test "${E4C_COUNT:-0}" -ge 1
+
+E4A_COUNT="$(_e_desc_probe "$SCRIPT_DIR/test_helpers.sh" 2>/dev/null || true)"
+assert "E4a: the REAL assert() emits NO D_ANCHOR-matching line for a multi-line description (got ${E4A_COUNT:-0}, want 0)" \
+    test "${E4A_COUNT:-0}" -eq 0
+
+echo ""
 echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocation closure), not hardcoded ==="
 
 # Section D's D_MEMBERS is a hand-maintained list of suites that force a
