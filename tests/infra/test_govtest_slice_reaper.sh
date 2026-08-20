@@ -23,7 +23,10 @@
 # never contacts the real systemd user session, and never stops a real unit.
 # Process liveness is driven through the REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS
 # seam rather than real host PIDs, so the result does not depend on what else
-# is running on the box.
+# is running on the box.  That seam — and the lifecycle-only seam Block F uses
+# — are both armed by REIFY_GOVTEST_TEST_MODE=1, which this file is the only
+# thing in the repo to set; C7/C8 and F5 pin that the arming key is genuinely
+# required, so a stray var on a production run cannot engage either one.
 #
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
 
@@ -189,7 +192,8 @@ _listing_triple() {
 #   is what stops those from passing vacuously.
 _expect_stale() {
     local self="$1" alive="$2" listing="$3" want="$4" got rc=0
-    got="$(REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$alive" govtest_stale_units "$self" "$listing")" || rc=$?
+    got="$(REIFY_GOVTEST_TEST_MODE=1 REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$alive" \
+        govtest_stale_units "$self" "$listing")" || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "govtest_stale_units returned $rc, want 0"
         return 1
@@ -251,7 +255,8 @@ assert "C5: two distinct dead pids => one deduped parent line each, first-seen o
 # governance suite before a single row ran.
 _expect_stale_rc0() {
     local self="$1" alive="$2" listing="$3" out rc=0
-    out="$(REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$alive" govtest_stale_units "$self" "$listing")" || rc=$?
+    out="$(REIFY_GOVTEST_TEST_MODE=1 REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$alive" \
+        govtest_stale_units "$self" "$listing")" || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "govtest_stale_units returned $rc, want 0"
         return 1
@@ -267,6 +272,56 @@ assert "C6a: empty listing => no output, exit 0" \
     _expect_stale_rc0 999 "$_ALIVE_NONE" ""
 assert "C6b: whitespace-and-blank-lines-only listing => no output, exit 0" \
     _expect_stale_rc0 999 "$_ALIVE_NONE" "$(printf '\n   \n\t\n\n')"
+
+# --- C7/C8: the fake-liveness seam must be ARMING-GATED -------------------
+#
+# Every assertion above passes REIFY_GOVTEST_TEST_MODE=1 alongside the pid
+# list. These two prove the marker is load-bearing rather than decorative.
+#
+# WHY IT MATTERS. Unlike the REIFY_CPU_GOV_TEST_* fixture seams — which
+# redirect a READ and can at worst make a row measure the wrong file — this
+# one replaces the oracle deciding what gets STOPPED, on the production path:
+# govtest_reap_stale runs at the top of every real test_cpu_load_governance.sh
+# run. A stray non-empty pid list with no arming key would make every govtest
+# pid outside that list read DEAD, INVERTING the one-directional fail-safe and
+# letting the sweep stop a live concurrent lane's parent slice mid-measurement.
+#
+# Both cases are host-independent despite using the REAL `kill -0` oracle:
+#   * $$ is this very script, so it is alive by construction; and
+#   * pid_max is capped at 2^22 = 4194304 on 64-bit Linux, so the
+#     $_ALIVE_NONE sentinel can never name a live process.
+# Neither call sets REIFY_GOVTEST_TEST_MODE, and both pass a pid list chosen
+# so the fake oracle — if it were still consulted — would give the OPPOSITE
+# answer to `kill -0`. That is what makes them fail RED against a library
+# that honours the list unconditionally.
+_expect_stale_unarmed() {
+    local self="$1" alive="$2" listing="$3" want="$4" got rc=0
+    got="$(REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$alive" \
+        govtest_stale_units "$self" "$listing")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "govtest_stale_units returned $rc, want 0"
+        return 1
+    fi
+    if [ "$got" != "$want" ]; then
+        printf 'unarmed govtest_stale_units self=%s alive="%s" =>\n%s\n--- want ---\n%s\n' \
+            "$self" "$alive" "$got" "$want"
+        return 1
+    fi
+    return 0
+}
+
+# C7 — the dangerous direction. Without the arming key the fake list is
+# ignored and `kill -0 $$` reports this script alive, so its units survive.
+# A library that consulted the list would call $$ dead and emit its parent.
+assert "C7: pid list WITHOUT the arming key is ignored — a live pid is not reaped" \
+    _expect_stale_unarmed 999 "$_ALIVE_NONE" "$(_listing_triple $$)" ""
+
+# C8 — and the oracle is genuinely `kill -0` rather than a blanket "assume
+# alive": unarmed, a pid above pid_max still reaps. Without this, C7 would
+# also pass against a library that had simply stopped reaping altogether.
+assert "C8: unarmed, the real kill -0 oracle still reaps a pid that cannot exist" \
+    _expect_stale_unarmed 999 "$$" "$(_listing_triple "$_ALIVE_NONE")" \
+        "reify-govtest${_ALIVE_NONE}.slice"
 
 # ---------------------------------------------------------------------------
 # Block D — govtest_reap_stale: the ACTUATOR.
@@ -374,6 +429,7 @@ _stub_reap() {
     GOVTEST_STUB_LISTING_FILE="$_REAP_LISTING" \
     GOVTEST_DRIVER_LIB="$REAPER_LIB" \
     GOVTEST_DRIVER_ADD_SELF="$_REAP_ADD_SELF" \
+    REIFY_GOVTEST_TEST_MODE=1 \
     REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$_REAP_ALIVE" \
     PATH="$bindir" \
     "$BASH" "$_REAP_DRIVER" "$@" >/dev/null 2>"$_REAP_STDERR" || _REAP_RC=$?
@@ -481,6 +537,34 @@ _expect_reap_survives_failing_systemctl() {
 }
 assert "D5: systemctl failing every call => still exit 0 (fail-soft)" \
     _expect_reap_survives_failing_systemctl
+
+# D6 — the reap LOOP itself, driven with more than one line to emit.
+#
+# Every case above happens to produce exactly ONE stop, so none of them can
+# see a loop that terminates after its first iteration. That is not a
+# hypothetical defect shape here: the loop's stdin IS the heredoc carrying the
+# remaining units, so a callee that consumed stdin would swallow the rest and
+# reap only the first of several leaked runs — and the crash-residue this
+# sweep exists for accumulates one run per SIGKILL, so multi-run listings are
+# the NORMAL case, not the exotic one. (C5 covers multi-run for the pure
+# filter, which has no actuator between the lines; E1 does prove a
+# three-iteration loop, but for teardown, not this path.) The library detaches
+# stdin on the stop for exactly this reason; D6 is what would notice if that
+# regressed.
+_D6_LISTING="$(_listing_triple 111)
+$(_listing_triple 777)"
+_D6_WANT="reify-govtest111.slice
+reify-govtest777.slice"
+assert "D6: TWO dead predecessors => two stops, parents only, first-seen order" \
+    _expect_reap_stops "$_STUB_ROOT/bin-ok" "$_ALIVE_NONE" 0 "$_D6_LISTING" \
+        "$_D6_WANT" 999
+
+# D7 — the STEADY STATE, and the only case where the sweep must do nothing
+# while systemctl is present and healthy. It is the state every run should be
+# in once this task lands, so a sweep that stopped something here would be
+# reaping live lanes on every single governance run.
+assert "D7: listing of only live + own units => enumerated, but nothing stopped" \
+    _expect_reap_stops "$_STUB_ROOT/bin-ok" "222" 1 "$(_listing_triple 222)" ""
 
 # ---------------------------------------------------------------------------
 # Block E — govtest_slice_teardown: the function that closes the CLEAN-EXIT
@@ -645,6 +729,7 @@ timeout 60 env \
     PATH="$_STUB_ROOT/bin-ok:$PATH" \
     GOVTEST_STUB_LOG="$_REAP_LOG" \
     GOVTEST_STUB_LISTING_FILE="$_REAP_LISTING" \
+    REIFY_GOVTEST_TEST_MODE=1 \
     REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$_ALIVE_NONE" \
     REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 \
     REIFY_CPU_GOVERN_DISABLE=1 \
@@ -721,5 +806,74 @@ _wire_exited_at_seam() {
 }
 assert "F4: the lifecycle-only seam short-circuits before any cycle (keeps this a pool-cheap drive)" \
     _wire_exited_at_seam
+
+# --- F5: the lifecycle-only seam must be ARMING-GATED ---------------------
+#
+# F1-F4 above pass REIFY_GOVTEST_TEST_MODE=1. F5 is the counterweight: the
+# seam is the one knob in that script able to exit 0 having run ZERO
+# governance rows, and run_all.sh judges a member by EXIT CODE alone (it
+# parses no "Results:" line), so a single stray export — a verify_env entry,
+# an operator shell, a future harness forwarding REIFY_* wholesale — would
+# turn a host-exclusive gate into a silent no-op that still reports success.
+# A comment saying "never set this" is not a guard; this asserts the code is.
+#
+# Two things are required, and the second is what makes it non-vacuous: the
+# refusal must be LOUD (a silent ignore would be its own trap for whoever set
+# the var deliberately) and the suite must actually CONTINUE. "Continued" is
+# proven positively, by the first post-seam output line, not by absence.
+#
+# COST. Past the seam the child is the full ~24s suite — exactly what must not
+# be paid for — so it is stopped the instant it has produced both pieces of
+# evidence, which lands in well under a second. The 300 x 0.1s ceiling is a
+# deadlock backstop, not the expected cost. SIGTERM is enough: this script's
+# EXIT trap demonstrably runs on TERM (only SIGKILL skips it), and the stub
+# systemctl is still first on PATH, so the child's teardown touches no real
+# unit on the way out.
+_DISARM_OUT="$_STUB_ROOT/disarm.out"
+_DISARM_LOG="$_STUB_ROOT/disarm-stub.log"
+_DISARM_LISTING="$_STUB_ROOT/disarm-listing.txt"
+
+_wire_seam_refused_without_arming() {
+    local pid i=0
+    : > "$_DISARM_OUT"
+    : > "$_DISARM_LOG"
+    : > "$_DISARM_LISTING"
+
+    # NOTE: no REIFY_GOVTEST_TEST_MODE here — that omission IS the test.
+    PATH="$_STUB_ROOT/bin-ok:$PATH" \
+    GOVTEST_STUB_LOG="$_DISARM_LOG" \
+    GOVTEST_STUB_LISTING_FILE="$_DISARM_LISTING" \
+    REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 \
+    REIFY_CPU_GOVERN_DISABLE=1 \
+    bash "$SCRIPT_DIR/test_cpu_load_governance.sh" > "$_DISARM_OUT" 2>&1 &
+    pid=$!
+
+    while [ "$i" -lt 300 ]; do
+        if grep -q 'LIFECYCLE_ONLY=1 IGNORED' "$_DISARM_OUT" 2>/dev/null \
+            && grep -q 'Cycle SELF' "$_DISARM_OUT" 2>/dev/null; then
+            break
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+        i=$((i + 1))
+    done
+
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+
+    if ! grep -q 'LIFECYCLE_ONLY=1 IGNORED' "$_DISARM_OUT" 2>/dev/null; then
+        echo "unarmed LIFECYCLE_ONLY was not refused loudly:"
+        head -n 20 "$_DISARM_OUT" 2>/dev/null || true
+        return 1
+    fi
+    if ! grep -q 'Cycle SELF' "$_DISARM_OUT" 2>/dev/null; then
+        echo "unarmed LIFECYCLE_ONLY short-circuited anyway — the suite never reached Cycle SELF:"
+        head -n 20 "$_DISARM_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "F5: LIFECYCLE_ONLY without REIFY_GOVTEST_TEST_MODE is refused loudly and the suite runs on" \
+    _wire_seam_refused_without_arming
 
 test_summary

@@ -19,10 +19,17 @@
 #                                  slices, children before parent
 #
 # Knobs:
+#   REIFY_GOVTEST_TEST_MODE             set to 1 to ARM the test seams below.
+#                                       Nothing else in the repo sets it, so
+#                                       the seams are inert on every real run.
 #   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  space-separated pid list that replaces
 #                                       the `kill -0` liveness oracle (test
 #                                       seam; mirrors the REIFY_CPU_GOV_TEST_*
-#                                       idiom in test_cpu_load_governance.sh)
+#                                       idiom in test_cpu_load_governance.sh).
+#                                       Honoured ONLY when
+#                                       REIFY_GOVTEST_TEST_MODE=1 — see
+#                                       _govtest_pid_alive for why a liveness
+#                                       seam needs a second key.
 #
 # WHY THIS LIVES IN tests/infra/ AND NOT scripts/lib_cgroup.sh
 # The `reify-govtest` prefix is test-private BY CONSTRUCTION:
@@ -103,21 +110,37 @@ govtest_slice_units() {
 # _govtest_pid_alive <pid>
 #   Internal. Return 0 if <pid> is a live process, non-zero otherwise.
 #
-#   When REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS is set and non-empty it REPLACES
-#   the real oracle with a word-membership test against that list. The seam
-#   exists solely so the reaper's liveness logic is testable without real host
-#   pids: a hermetic test cannot make a chosen pid dead on demand, and picking
-#   a "surely dead" fixture pid is exactly the kind of host-dependence that
-#   turns a pool member into a flake. This is the same environment-fixture
-#   idiom test_cpu_load_governance.sh already uses about ten times over
+#   When REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS is set and non-empty AND
+#   REIFY_GOVTEST_TEST_MODE=1, it REPLACES the real oracle with a
+#   word-membership test against that list. The seam exists solely so the
+#   reaper's liveness logic is testable without real host pids: a hermetic
+#   test cannot make a chosen pid dead on demand, and picking a "surely dead"
+#   fixture pid is exactly the kind of host-dependence that turns a pool
+#   member into a flake. This is the same environment-fixture idiom
+#   test_cpu_load_governance.sh already uses about ten times over
 #   (REIFY_CPU_GOV_TEST_PROC_PATH, REIFY_CPU_GOV_TEST_CONFINE_CPUS,
 #   REIFY_CPU_ADMIT_MEM_PROC_PATH, ...) and lib_cgroup.sh uses for
 #   REIFY_CPU_GOVERN_CONTROLLERS_PATH.
+#
+#   WHY THIS SEAM NEEDS A SECOND KEY, UNLIKE THOSE. Every seam listed above
+#   redirects a READ to a fixture; the worst a stray one can do is make a
+#   test measure the wrong file. This one replaces the oracle that decides
+#   what gets STOPPED, and it does so on the PRODUCTION path —
+#   govtest_reap_stale runs at the top of every real test_cpu_load_governance
+#   .sh run. A stray non-empty pid list would make every govtest pid outside
+#   it read DEAD, which does not merely weaken the fail-safe direction
+#   documented on govtest_stale_units, it INVERTS it: the sweep would stop a
+#   live concurrent lane's parent slice mid-measurement. Requiring
+#   REIFY_GOVTEST_TEST_MODE=1 as well means the fake oracle can only engage
+#   under a marker no injection source sets and no production path passes,
+#   so on a real run `kill -0` is the only oracle reachable — whatever else
+#   happens to be exported.
 # ---------------------------------------------------------------------------
 _govtest_pid_alive() {
     local pid="${1:-}"
     [ -n "$pid" ] || return 1
-    if [ -n "${REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS:-}" ]; then
+    if [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ] \
+        && [ -n "${REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS:-}" ]; then
         local fake
         for fake in ${REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS}; do
             [ "$fake" = "$pid" ] && return 0
@@ -242,9 +265,15 @@ govtest_reap_stale() {
 
     [ -n "$listing" ] || return 0
 
+    # `</dev/null` on the stop is STRUCTURAL, not cosmetic: this loop's stdin
+    # IS the heredoc carrying the remaining units, so a callee that read from
+    # stdin would swallow them and silently reap only the first of several
+    # leaked runs. systemctl does not read stdin today; detaching it means a
+    # future one — or a shim/wrapper placed on PATH — cannot turn this into a
+    # truncated sweep. Same reason on govtest_slice_teardown's loop.
     while IFS= read -r unit; do
         [ -n "$unit" ] || continue
-        systemctl --user stop "$unit" 2>/dev/null || true
+        systemctl --user stop "$unit" </dev/null 2>/dev/null || true
         echo "  reaped stale govtest slice: $unit"
     done <<EOF
 $(govtest_stale_units "$self_pid" "$listing")
@@ -293,9 +322,12 @@ govtest_slice_teardown() {
 
     command -v systemctl >/dev/null 2>&1 || return 0
 
+    # `</dev/null` — see govtest_reap_stale: the loop's stdin is the heredoc
+    # listing the units still to stop, so a stdin-consuming callee would strand
+    # the parent slice, which is the one that actually matters.
     while IFS= read -r unit; do
         [ -n "$unit" ] || continue
-        systemctl --user stop "$unit" 2>/dev/null || true
+        systemctl --user stop "$unit" </dev/null 2>/dev/null || true
     done <<EOF
 $(govtest_slice_units "$pid")
 EOF

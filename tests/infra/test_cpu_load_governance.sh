@@ -196,24 +196,36 @@
 #                                       ROW4 confined burns (default: derived at runtime
 #                                       as the LAST confine-cores CPUs of this process's
 #                                       own Cpus_allowed_list; esc-4926-3 ruling)
-#   REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY   set to 1 to exit 0 immediately after the
-#                                       startup stale-slice sweep, with the EXIT
-#                                       trap already installed so teardown still
-#                                       fires (task 5930). Exists so
-#                                       test_govtest_slice_reaper.sh can prove the
-#                                       slice lifecycle is WIRED by driving this
-#                                       script for real, sub-second: a full
+#   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the two seams below (task
+#                                       5930). Both are refused unless this is 1.
+#                                       Nothing in the repo sets it except
+#                                       test_govtest_slice_reaper.sh, so both
+#                                       seams are inert on every real run no
+#                                       matter what else is exported.
+#   REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY   with the arming key, exit 0 immediately
+#                                       after the startup stale-slice sweep, with
+#                                       the EXIT trap already installed so
+#                                       teardown still fires (task 5930). Exists
+#                                       so test_govtest_slice_reaper.sh can prove
+#                                       the slice lifecycle is WIRED by driving
+#                                       this script for real, sub-second: a full
 #                                       REIFY_CPU_GOVERN_DISABLE=1 drive measures
 #                                       ~22s wall / ~46s CPU, far too heavy for a
 #                                       member of run_all.sh's concurrent pool.
 #                                       NEVER set in a normal run — it would make
-#                                       this suite vacuously green.
-#   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  space-separated pid list that replaces the
-#                                       `kill -0` liveness oracle used by the
-#                                       startup sweep (task 5930; consumed in
+#                                       this suite vacuously green, and run_all.sh
+#                                       judges a member by exit code alone. Set
+#                                       WITHOUT the arming key it is refused loudly
+#                                       and the full suite runs.
+#   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  with the arming key, a space-separated pid
+#                                       list that replaces the `kill -0` liveness
+#                                       oracle used by the startup sweep (task
+#                                       5930; consumed in
 #                                       govtest_slice_reaper_lib.sh). Test seam
 #                                       only — same shape as the
-#                                       REIFY_CPU_GOV_TEST_* seams above.
+#                                       REIFY_CPU_GOV_TEST_* seams above, but
+#                                       arming-gated because it selects what gets
+#                                       STOPPED rather than what gets read.
 
 set -euo pipefail
 
@@ -377,10 +389,28 @@ govtest_reap_stale "$$"
 # Lifecycle-only seam (task 5930): exit HERE, after the trap is installed and
 # the sweep has run, so tests/infra/test_govtest_slice_reaper.sh can prove the
 # slice lifecycle is wired by driving this script for real without paying for
-# a full ~22s suite.  Never set in a normal run — see the knob header.
+# a full ~22s suite.
+#
+# TWO KEYS, NOT A COMMENT.  This is the only knob in this file that can make
+# the suite exit GREEN having run zero rows, and run_all.sh judges a member by
+# EXIT CODE alone — it parses no "Results:" line — so a single stray export
+# (a verify_env entry, an operator shell, a future harness that forwards
+# REIFY_* wholesale) would silently turn a host-exclusive governance gate into
+# a no-op that still reports success.  Every other REIFY_CPU_GOV_TEST_* seam
+# redirects a read to a fixture and can at worst make one row measure the
+# wrong thing; this one deletes the whole suite.  So it is armed only in
+# conjunction with REIFY_GOVTEST_TEST_MODE=1, a marker nothing in the repo
+# sets outside test_govtest_slice_reaper.sh's Block F drive.  Disarmed, the
+# request is refused LOUDLY and the full suite runs — the failure mode of a
+# stray var is then a noisy real run, never a quiet vacuous pass.
 if [ "${REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY:-0}" = "1" ]; then
-    echo "REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweep (slice-lifecycle drive only)"
-    exit 0
+    if [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ]; then
+        echo "REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweep (slice-lifecycle drive only)"
+        exit 0
+    fi
+    echo "WARNING: REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 IGNORED — REIFY_GOVTEST_TEST_MODE=1 is not set." >&2
+    echo "WARNING: that seam would exit 0 having run zero governance rows, so it is refused unless" >&2
+    echo "WARNING: explicitly armed.  Running the FULL suite.  If this is a real run, unset the var." >&2
 fi
 
 # ============================================================================
