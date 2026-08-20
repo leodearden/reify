@@ -600,4 +600,126 @@ assert "E4: systemctl absent from PATH => teardown exits 0" \
 assert "E5: systemctl failing every call => teardown still exits 0 (EXIT-trap safe)" \
     _expect_teardown_rc0 "$_STUB_ROOT/bin-fail"
 
+# ---------------------------------------------------------------------------
+# Block F — WIRING. Prove the library is actually used by
+# tests/infra/test_cpu_load_governance.sh rather than sitting orphaned beside
+# it.
+#
+# This DRIVES that script as a child process; it deliberately does not grep
+# its source. A source grep is the documentation-meta-test shape this repo's
+# TDD rules prohibit, and it would not distinguish a call placed before the
+# EXIT trap from one placed after it, nor a live call from one stranded in a
+# dead branch.
+#
+# COST. Driving the script for real is expensive — a full
+# REIFY_CPU_GOVERN_DISABLE=1 run was timed at ~24s wall / ~21s CPU (rc=0, 107
+# passed, 21 SKIP), far too heavy for a member of run_all.sh's concurrent
+# pool. The REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 seam exits the child right
+# after its startup sweep, with the EXIT trap ALREADY installed so teardown
+# still fires. That keeps this sub-second and makes the assertions strictly
+# MORE non-vacuous: in that state the child has created nothing, which is
+# exactly the condition under which the old flag-guarded _cleanup_all stopped
+# nothing at all.
+#
+# PATH here PREPENDS the stub rather than replacing PATH (as Block D does),
+# because the governance script legitimately needs mktemp/python3/etc. before
+# it reaches the sweep. Prepending is enough: the stub shadows the real
+# systemctl, so no real unit is ever touched.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block F: library wired into test_cpu_load_governance.sh ---"
+
+_WIRE_LOG="$_STUB_ROOT/wire.log"
+_WIRE_OUT="$_STUB_ROOT/wire.out"
+_WIRE_RC=0
+_WIRE_STALE_PID=111
+
+# Drive the real script ONCE; every assertion below reads the captured log.
+: > "$_REAP_LOG"
+_listing_triple "$_WIRE_STALE_PID" > "$_REAP_LISTING"
+# REIFY_CPU_GOVERN_DISABLE=1 is inert on the lifecycle-only path (the child
+# exits before governance is used). It is passed as a COST backstop: should
+# the seam ever regress, this degrades to the ~24s measured full run instead
+# of being SIGKILLed at the timeout with nothing learned.
+timeout 60 env \
+    PATH="$_STUB_ROOT/bin-ok:$PATH" \
+    GOVTEST_STUB_LOG="$_REAP_LOG" \
+    GOVTEST_STUB_LISTING_FILE="$_REAP_LISTING" \
+    REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$_ALIVE_NONE" \
+    REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 \
+    REIFY_CPU_GOVERN_DISABLE=1 \
+    bash "$SCRIPT_DIR/test_cpu_load_governance.sh" \
+    > "$_WIRE_OUT" 2>&1 || _WIRE_RC=$?
+cp "$_REAP_LOG" "$_WIRE_LOG"
+
+_wire_exit0() {
+    if [ "$_WIRE_RC" -ne 0 ]; then
+        echo "child test_cpu_load_governance.sh rc=$_WIRE_RC (124 = timeout), want 0"
+        tail -n 30 "$_WIRE_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "F1: driven test_cpu_load_governance.sh exits 0 under the lifecycle-only seam" \
+    _wire_exit0
+
+_wire_stale_reaped() {
+    if ! grep -qxF -- "--user stop reify-govtest${_WIRE_STALE_PID}.slice" "$_WIRE_LOG"; then
+        echo "startup sweep never stopped the canned stale predecessor's parent slice:"
+        cat "$_WIRE_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "F2: the startup sweep is wired — canned dead predecessor's parent slice was stopped" \
+    _wire_stale_reaped
+
+# F3 — the clean-exit fix. The child created NOTHING, so this stop can only
+# come from an unconditional teardown; the flag-guarded predecessor stopped
+# nothing in this state. The child's pid is RECOVERED from the log rather
+# than assumed, since $$ inside the child differs from this script's own pid.
+_wire_own_parent_stopped() {
+    local unit pid pids="" n=0
+    while IFS= read -r unit; do
+        pid="$(govtest_slice_pid "$unit")"
+        [ -n "$pid" ] || continue
+        [ "$pid" = "$_WIRE_STALE_PID" ] && continue
+        case " $pids " in
+            *" $pid "*) ;;
+            *) pids="$pids $pid"; n=$((n + 1)) ;;
+        esac
+    done < <(sed -n 's/^--user stop //p' "$_WIRE_LOG")
+
+    if [ "$n" -ne 1 ]; then
+        printf 'expected exactly ONE non-stale pid in the stop log, found %s (%s):\n' "$n" "$pids"
+        cat "$_WIRE_LOG" 2>/dev/null || true
+        return 1
+    fi
+    local child_pid="${pids# }"
+    if ! grep -qxF -- "--user stop reify-govtest${child_pid}.slice" "$_WIRE_LOG"; then
+        echo "child pid $child_pid appears in the log but its PARENT slice was never stopped:"
+        cat "$_WIRE_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "F3: teardown is unconditional — child stopped its OWN parent slice having created nothing" \
+    _wire_own_parent_stopped
+
+# F4 — pins the seam itself, and with it this test's pool cost. A full run
+# ends by printing test_helpers.sh's "Results: N passed, M failed"; the
+# lifecycle-only path exits before any cycle, so that line must be ABSENT.
+# Asserted on output rather than elapsed time, which would be flaky under
+# concurrent pool load.
+_wire_exited_at_seam() {
+    if grep -q '^Results:' "$_WIRE_OUT"; then
+        echo "child ran the FULL suite — the lifecycle-only seam did not take effect:"
+        tail -n 15 "$_WIRE_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "F4: the lifecycle-only seam short-circuits before any cycle (keeps this a pool-cheap drive)" \
+    _wire_exited_at_seam
+
 test_summary
