@@ -436,50 +436,67 @@ echo "--- Section E: every plain-add() site is accounted for (enumerating) ---"
 # oracle can never enumerate them. Reading the emitter is the only exhaustive
 # view. Fork-free, matching the selective-infra check above.
 #
-# A NEW tool line added with plain `add` lands in _ADD_UNCLASSIFIED and fails
-# here BY NAME, with its text printed — no needle required. To add a genuinely
-# neutral line, extend the case list below and say why.
+# MARKER-BASED, NOT TEXT-INFERRING. An earlier draft of this section inferred
+# neutrality from the payload text (exempt anything matching *cargo*, the
+# sentinels, the builtins). Review demonstrated five bypasses of that form, all
+# realistic, and the first is fatal on its own: `*cargo*` is a substring test
+# over the whole line, so a pure-shell tool line merely NAMING cargo —
+# `add "bash scripts/check-cargo-lock-freshness.sh"`, an obvious future
+# addition given .cargo/config.toml is a verify-pipeline artifact — was
+# exempted and rode through unscrubbed. That is the very class this section
+# exists to catch, so text inference is abandoned here.
+#
+# The rule is now explicit and local: EVERY plain-`add` call site must carry a
+# trailing `# ld-ok: <reason>` marker. No text is interpreted, so no payload
+# can talk its way out. It also forces the author of a new line to state why
+# the line does not need the scrub, which is the judgement the reviewer needs
+# to check — and it puts that rationale at the call site, where the previous
+# design left the neutral cases documented only inside this test.
+#
+# Also closed here, each a demonstrated bypass of the earlier draft:
+#   - `add` is matched ANYWHERE on the line, not only at statement start, so
+#     `if [ ... ]; then add "..."; fi` on one physical line is counted.
+#   - `PLAN+=` is pinned to exactly the two emitter definitions, so neither a
+#     direct array push nor a third emitter (`add_shell() { PLAN+=("$1"); }`)
+#     can bypass the enumeration.
 _ADD_TOTAL=0
-_ADD_UNCLASSIFIED=0
-_ADD_UNCLASSIFIED_TEXT=""
+_ADD_UNMARKED=0
+_ADD_UNMARKED_TEXT=""
+_PLAN_PUSH_TOTAL=0
 while IFS= read -r _line; do
-    # Strip leading whitespace so the `add ` test is anchored at the statement.
     _t="${_line#"${_line%%[![:space:]]*}"}"
+    # Comment lines describe the emitters; they are not call sites.
+    case "$_t" in '#'*) continue ;; esac
+
     case "$_t" in
-        'add "'*|"add '"*) ;;
+        *'PLAN+=('*) _PLAN_PUSH_TOTAL=$((_PLAN_PUSH_TOTAL + 1)) ;;
+    esac
+
+    # add_tool lines are the scrubbed emitter — always fine, never marked.
+    case "$_t" in *'add_tool '*) continue ;; esac
+
+    # Any plain `add "` / `add '` invocation, wherever it sits on the line.
+    case "$_t" in
+        *'add "'*|*"add '"*) ;;
         *) continue ;;
     esac
     _ADD_TOTAL=$((_ADD_TOTAL + 1))
+
     case "$_t" in
-        # Reaches cargo literally — must keep the OCCT export.
-        *cargo*)                  continue ;;
-        # Reaches cargo via a variable, so the literal test above misses it:
-        # `$cmd` is emit_nextest_pass's built nextest/cargo command, and
-        # `${_gui_feat_cmd}` is the task-5076 gui-feature nextest command.
-        *'$cmd 9<&-'*)            continue ;;
-        *'_gui_feat_cmd'*)        continue ;;
-        # Executor sentinels — intercepted by a `case` and never eval'd at all.
-        *'@@SEMAPHORE_'*)         continue ;;
-        # The backgrounded node lane carries _LD_SCRUB inside its own
-        # `{ ... ; } &` braces (it is main-shell eval'd, so a head-of-line
-        # export would leak forward).
-        *'_LD_SCRUB'*)            continue ;;
-        # `wait "$_VERIFY_NODE_BG_PID"` — a builtin, and also main-shell
-        # eval'd; must never take a head-of-line export.
-        *'_VERIFY_NODE_BG_PID'*)  continue ;;
-        # Shell builtins only (echo/test/false) — no external binary to shadow.
-        *"echo 'RELEASE-PASS"*)   continue ;;
-        *"echo 'ERROR(#4624)"*)   continue ;;
+        *'# ld-ok:'*) continue ;;
     esac
-    _ADD_UNCLASSIFIED=$((_ADD_UNCLASSIFIED + 1))
-    _ADD_UNCLASSIFIED_TEXT="$_ADD_UNCLASSIFIED_TEXT
+    _ADD_UNMARKED=$((_ADD_UNMARKED + 1))
+    _ADD_UNMARKED_TEXT="$_ADD_UNMARKED_TEXT
     $_t"
 done < "$REPO_ROOT/scripts/verify.sh"
 
-assert "non-vacuity: found plain add() call sites to classify in scripts/verify.sh (a rename of add() must fail HERE, not silently pass an empty enumeration)" \
+assert "non-vacuity: found plain add() call sites to enumerate in scripts/verify.sh (a rename of add() must fail HERE, not silently pass an empty enumeration)" \
     test "$_ADD_TOTAL" -ge 10
 
-assert "every plain add() site either reaches cargo or is a documented neutral (builtin/sentinel/self-scrubbed) — an unclassified site is a TOOL line that must use add_tool():$_ADD_UNCLASSIFIED_TEXT" \
-    test "$_ADD_UNCLASSIFIED" -eq 0
+assert "PLAN+= appears at exactly the two emitter definitions (add/add_tool) — a third emitter or a direct array push would route around this whole enumeration; got $_PLAN_PUSH_TOTAL" \
+    test "$_PLAN_PUSH_TOTAL" -eq 2
+
+assert "every plain add() site carries a '# ld-ok: <reason>' marker — an unmarked site is presumed a TOOL line and must either use add_tool() or state why it does not need the scrub:$_ADD_UNMARKED_TEXT" \
+    test "$_ADD_UNMARKED" -eq 0
 
 test_summary

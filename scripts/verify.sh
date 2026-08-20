@@ -1510,10 +1510,15 @@ add() { PLAN+=("$1"); }
 # That containment is NOT unconditional. Under the break-glass knob
 # REIFY_PROC_REAPER_DISABLE=1, lib_proc_reaper.sh evaluates each plan line in
 # the MAIN shell instead, so a head-of-line export leaks forward into every
-# later line — including the cargo ones, which would then lose the OCCT dir
-# for the rest of the gate. The knob is unset by default and is documented as
+# later line, cargo lines included. Expect degradation rather than a red gate:
+# .cargo/config.toml's `runner` re-exports the OCCT path before exec and
+# DT_RUNPATH is baked into every bin and test binary, so the Rust lines
+# re-derive it downstream. The knob is unset by default and is documented as
 # break-glass only (docs/notes/orphaned-test-binary-reaper.md); it is called
-# out here so the invariant is not read as absolute.
+# out here so the invariant is not read as absolute. Wrapping the scrub in a
+# subshell would close it, but the run_all.sh line's scrub must stay at the
+# LITERAL head of the line to stay outside test_run_all_ambient_isolation.sh's
+# `then`-anchored ledger window, so that trade is deliberately not taken.
 #
 # The executor also routes any plan line whose text CONTAINS the substring
 # `_VERIFY_NODE_BG_PID` to a main-shell eval. That is two lines today — the
@@ -1526,10 +1531,12 @@ add() { PLAN+=("$1"); }
 # run_all.sh emission site for the ledger-guard constraint.
 #
 # Enforced by tests/infra/test_verify_ld_library_path_scope.sh, which
-# ENUMERATES every plain-`add` call site in this file and fails on any whose
-# payload neither reaches cargo nor appears in its documented neutral
-# allowlist — so a NEW tool plan line added with plain `add` fails the guard
-# even though the guard has never heard of its name. (Before task 5730's
+# ENUMERATES every plain-`add` call site in this file and requires each to
+# carry a trailing `# ld-ok: <reason>` marker — so a NEW tool plan line added
+# with plain `add` fails the guard even though the guard has never heard of
+# its name. The marker is checked, never the payload text: an interim draft
+# inferred neutrality from the text and was defeated by, among others, a
+# pure-shell line merely NAMING cargo. (Before task 5730's
 # review pass the guard was a hardcoded needle list, and this comment
 # overclaimed: the INV-FEA-1 trampoline line added by task 5076 slipped
 # through unscrubbed precisely because no needle named it.)
@@ -1933,7 +1940,7 @@ emit_nextest_pass() {
     # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
     # wedge the slot after the test pass exits (2026-04-20 wedge class).
     # Harmless no-op on the merge-exempt path.
-    add "$cmd 9<&-"
+    add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command; needs OCCT
 }
 
 add_test_passes() {
@@ -2004,7 +2011,7 @@ add_test_passes() {
     # that 4839 band-aided is now fixed properly by the clock-stop seam (task 4838):
     # slot-wait is a graceful continuous in-process hold, not exit-75.
     # The executor calls test_semaphore_acquire here; the printer emits a comment.
-    add "@@SEMAPHORE_ACQUIRE@@"
+    add "@@SEMAPHORE_ACQUIRE@@"  # ld-ok: sentinel — executor intercepts @@SEMAPHORE_*@@ by case, never eval'd
 
     # Emit one combined build+execution nextest pass per profile (slot held).
     # Outer timeout: PER-PROFILE budgets (task 5382 restored the pre-4520 split).
@@ -2077,7 +2084,7 @@ add_test_passes() {
             # classification / runs.db mining / activation leaf ζ (task 5280); do NOT
             # reword it. Default-off => this branch is never taken => plan byte-identical.
             if [ "${_RELEASE_DELTA_SKIP:-0}" -eq 1 ]; then
-                add "echo 'RELEASE-PASS: skipped (delta-clean)'"
+                add "echo 'RELEASE-PASS: skipped (delta-clean)'"  # ld-ok: builtin — echo only, no external binary to shadow
                 continue
             fi
             _rel=" --release"
@@ -2315,14 +2322,14 @@ add_test_passes() {
         else
             _gui_feat_cmd="${CARGO_PRIO}cargo test -p reify-gui --features gui -- --test-threads=${TEST_THREADS:-1}"
         fi
-        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_GUI_FEATURE_TEST_TIMEOUT} ${_gui_feat_cmd}; fi 9<&-"
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_GUI_FEATURE_TEST_TIMEOUT} ${_gui_feat_cmd}; fi 9<&-"  # ld-ok: cargo — MIXED shell+cargo (gui-feature nextest pass, task 5076); needs OCCT
     fi
 
     # Release the semaphore slot after all passes complete.
     # The executor calls test_semaphore_release; the printer emits a comment.
     # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
     # so the failure path needs no explicit release sentinel.
-    add "@@SEMAPHORE_RELEASE@@"
+    add "@@SEMAPHORE_RELEASE@@"  # ld-ok: sentinel — executor intercepts @@SEMAPHORE_*@@ by case, never eval'd
 }
 
 build_plan() {
@@ -2397,9 +2404,9 @@ build_plan() {
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$NARROW_ACTIVE" -eq 1 ]; then
-            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"
+            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"  # ld-ok: cargo — needs OCCT
         else
-            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check --workspace --tests"
+            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check --workspace --tests"  # ld-ok: cargo — needs OCCT
         fi
     fi
 
@@ -2540,15 +2547,15 @@ build_plan() {
     # from the rest of the gate. It goes INSIDE the `{ ... ; } &` braces, which
     # are themselves a background subshell, so it scopes to the npm work alone.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_LD_SCRUB}${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
+        add "{ ${_LD_SCRUB}${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"  # ld-ok: self-scrubbed — carries _LD_SCRUB inside its own { ...; } & braces (main-shell eval, so a head-of-line export would leak forward)
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$NARROW_ACTIVE" -eq 1 ]; then
-            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"
+            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"  # ld-ok: cargo — needs OCCT
         else
-            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"  # ld-ok: cargo — needs OCCT
         fi
     fi
 
@@ -2568,14 +2575,14 @@ build_plan() {
     # gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk; the stub
     # satisfies the existence check without clobbering a real built sidecar.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"  # ld-ok: cargo — MIXED shell+cargo (gui sidecar compile check); needs OCCT
     fi
 
     # Overlap join: wait for the background node lane before infra checks / pole.
     # Maximises the concurrency window (join as late as possible while still
     # preceding the expensive pole and infra checks).
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add 'wait "$_VERIFY_NODE_BG_PID"'
+        add 'wait "$_VERIFY_NODE_BG_PID"'  # ld-ok: builtin — `wait`, and main-shell eval'd; must never take a head-of-line export
     fi
 
     # Plain path: node lane as sequential lines (no foreground rust gate, e.g. action=test).
@@ -2708,7 +2715,7 @@ build_plan() {
         # fixed 10m. These two pre-builds are the merge path's COLD release
         # native-kernel build; 10m SIGTERM'd reify-cli mid-compile with zero failing
         # assertions. See the knob-doc block in the header for the derivation.
-        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"
+        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"  # ld-ok: cargo — needs OCCT
         # Positive assertion: if the Cargo.toml exists but the pre-build did not
         # produce the binary, abort loudly rather than silently degrading to SKIP.
         # Guards against the pre-step being removed or reordered without updating
@@ -2722,7 +2729,7 @@ build_plan() {
         # if-statement's stderr into the already-captured stdout stream
         # (applied to the compound command, so it also covers the internal
         # `>&2` on the echo) without touching the `false` exit code.
-        add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi 2>&1"
+        add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi 2>&1"  # ld-ok: builtin — test/echo/false only
         # task #5133: pre-build reify-cli and stamp target/.reify-bin-sha with
         # build-time HEAD, mirroring the reify-audit pre-build immediately
         # above. The PRD gate tests inside run_all.sh (test_prd_gate_corpus.sh,
@@ -2742,7 +2749,7 @@ build_plan() {
         # never stamps a false HEAD onto a missing binary.
         # task 5139: dropped -q and merged stderr into stdout via 2>&1 (same
         # rationale as the reify-audit pre-step above).
-        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"
+        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"  # ld-ok: cargo — needs OCCT
         add_tool "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
@@ -2992,7 +2999,12 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
             '@@SEMAPHORE_RELEASE@@')
                 printf '# <<< test-run semaphore: RELEASE held slot — clock-stop region ENDS (TEST-EXECUTION gated region finished)\n'
                 ;;
-            './scripts/verify.sh psi-gate')
+            # Glob, not an exact string: task 5730 prefixes this plan line with
+            # the add_tool() loader-path scrub, so an exact match silently went
+            # dead and took both annotation lines below out of --print-plan.
+            # `psi-gate` is the last token of the command, so the trailing `*`
+            # only absorbs a future suffix and cannot also catch compile-gate.
+            *'./scripts/verify.sh psi-gate'*)
                 printf '# PSI gate: contended wait emits @@REIFY_CLOCK_STOP@@/HEARTBEAT/START@@ markers (reason=psi_pressure);\n'
                 printf '#   the clock-stop span is excluded from verify_command_timeout_secs by dark_factory:1916 (task 4838).\n'
                 printf '%s\n' "$_cmd"
