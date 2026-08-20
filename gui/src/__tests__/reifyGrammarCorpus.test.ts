@@ -4423,9 +4423,14 @@ describe('reifyLanguage — fold and indent coverage', () => {
 
     const fold = decl!.type.prop(foldNodeProp)!;
     const range = fold(decl!, EditorState.create({ doc: src }));
-    // The fold must start AFTER the body brace and end at the closing one —
-    // not after `enum`, which would hide the name `Color` too.
-    expect(range).toEqual({ from: src.indexOf('{') + 1, to: src.lastIndexOf('}') });
+    // The exact range is now also covered by the `folds EnumDeclaration to a
+    // non-null range spanning its own brace interior` case in the it.each
+    // below (same node, same call shape), so this test keeps only the claim
+    // that case does not name: the fold must not start at or before the
+    // enum's own NAME — folding from `enum` instead of from `{` (what
+    // `foldInside` would do) would hide `Color` inside the fold arrow.
+    expect(range, 'foldNodeProp returned null').not.toBeNull();
+    expect(range!.from).toBeGreaterThan(src.indexOf('Color'));
   });
 
   /**
@@ -4453,80 +4458,66 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * brace-less arms get their own explicit expected-null test right after it,
    * so that half of the contract is pinned too rather than left implicit.
    */
-  type BehaviorFixture = {
-    /** Source that must parse clean and contain a node named the map key. */
-    src: string;
-  };
+  // `FieldDefinition` and `FieldSource` are two node types nested in the SAME
+  // production (`FieldDefinition`'s body is exactly one `source = <FieldSource
+  // arm>`, reify.grammar:36-39) so one fixture string locates both; hoisted to
+  // a shared const rather than duplicated so editing one cannot silently
+  // change which node the OTHER entry targets.
+  const FIELD_DEFINITION_SRC = 'field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }';
 
-  const BEHAVIOR_FIXTURES: Record<string, BehaviorFixture> = {
+  /**
+   * One minimal, corpus-attested-where-possible source snippet per node type.
+   * A plain `Record<string, string>` rather than a one-field wrapper object —
+   * every entry is written and consumed as a bare source string, so a wrapper
+   * would buy nothing over the map itself.
+   */
+  const BEHAVIOR_FIXTURES: Record<string, string> = {
     // ── BRACE_FIRST_BODIES ──────────────────────────────────────────────
-    Block: { src: 'structure def F { let x = 1mm }' },
+    Block: 'structure def F { let x = 1mm }',
     // Corpus-attested VERBATIM: the braced-arm slice above (`fn g() -> Real
     // { let a = 1.0; a }`).
-    FnBody: { src: 'fn g() -> Real { let a = 1.0; a }' },
-    SpecializationBody: { src: 'structure def S { sub x : Foo<T> { bore = 5mm } }' },
-    PortBody: {
-      src: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
-    },
-    ConnectBody: {
-      src: 'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
-    },
+    FnBody: 'fn g() -> Real { let a = 1.0; a }',
+    SpecializationBody: 'structure def S { sub x : Foo<T> { bore = 5mm } }',
+    PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
+    ConnectBody:
+      'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
     // `import a.b {C, D}` — no separator, matching the RULE this port follows
     // (see the long note on `ImportDeclaration` in reify.grammar).
-    ImportItems: { src: 'import std.mech {Bolt, Nut}' },
+    ImportItems: 'import std.mech {Bolt, Nut}',
     // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
-    KeyedMemberBlock: {
-      src: 'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
-    },
+    KeyedMemberBlock:
+      'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
     // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:32 — the
     // braced-record DOF form.
-    JointDof: {
-      src: 'joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = concentric(a, b)',
-    },
+    JointDof:
+      'joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = concentric(a, b)',
     // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:26 — the
     // block-arm JointBody.
-    JointBody: {
-      src:
-        'joint revolute(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) with angle: Angle in 0deg..120deg = { concentric(a, b)  on(p, stop) }',
-    },
+    JointBody:
+      'joint revolute(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) with angle: Angle in 0deg..120deg = { concentric(a, b)  on(p, stop) }',
     // ── KEYWORD_LED_BODIES ──────────────────────────────────────────────
-    MatchExpression: {
-      src: 'structure def F { let code = match grade { Standard => 1, Reinforced => 2, Premium => 3 } }',
-    },
-    EnumDeclaration: { src: 'enum Grade { Standard, Reinforced, Premium }' },
+    MatchExpression:
+      'structure def F { let code = match grade { Standard => 1, Reinforced => 2, Premium => 3 } }',
+    EnumDeclaration: 'enum Grade { Standard, Reinforced, Premium }',
     // First EnumVariant in this attested string (`Circle { radius: Length }`)
     // carries the braced payload; the sibling `Point` variant is bare and is
     // not what `findFirstNodeNamed` locates here.
-    EnumVariant: { src: 'enum Shape { Circle { radius: Length }, Point }' },
-    MetaBlock: {
-      src: 'structure def F { meta { project = "integration-test", version = "0.1" } }',
-    },
-    SetLiteral: { src: 'structure def F { let s = set { 1, 2 } }' },
-    MapLiteral: { src: 'structure def F { let m = map { 1 => 2 } }' },
-    VariantConstruction: { src: 'structure def F { let s = Circle { radius: 5mm } }' },
+    EnumVariant: 'enum Shape { Circle { radius: Length }, Point }',
+    MetaBlock: 'structure def F { meta { project = "integration-test", version = "0.1" } }',
+    SetLiteral: 'structure def F { let s = set { 1, 2 } }',
+    MapLiteral: 'structure def F { let m = map { 1 => 2 } }',
+    VariantConstruction: 'structure def F { let s = Circle { radius: 5mm } }',
     // First VariantBindingPattern in this attested string is `Circle { radius: r }`.
-    VariantBindingPattern: {
-      src: 'structure def F { let area = match outline { Circle { radius: r } => 3.14159 * r * r, Rect { width: w, height: h } => w * h, Point => 0mm * 0mm } }',
-    },
-    FieldDefinition: {
-      src: 'field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }',
-    },
-    FieldSource: {
-      src: 'field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }',
-    },
-    PurposeDeclaration: {
-      src: 'purpose design_review(subject : Structure) { constraint 1mm > 0mm }',
-    },
-    RelateBlock: { src: 'structure def F { relate { fasten(a.frame, b.frame) } }' },
-    ConstraintDefinition: {
-      src: 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}',
-    },
-    SubRelateBlock: {
-      src: 'structure def F { sub s : T at auto where { concentric(a, b) } }',
-    },
-    MatchArmDeclBlock: {
-      src: 'structure def F { match kind { Hex => sub head : HexHead, Sq => sub head : SqHead } }',
-    },
+    VariantBindingPattern:
+      'structure def F { let area = match outline { Circle { radius: r } => 3.14159 * r * r, Rect { width: w, height: h } => w * h, Point => 0mm * 0mm } }',
+    FieldDefinition: FIELD_DEFINITION_SRC,
+    FieldSource: FIELD_DEFINITION_SRC,
+    PurposeDeclaration: 'purpose design_review(subject : Structure) { constraint 1mm > 0mm }',
+    RelateBlock: 'structure def F { relate { fasten(a.frame, b.frame) } }',
+    ConstraintDefinition: 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}',
+    SubRelateBlock: 'structure def F { sub s : T at auto where { concentric(a, b) } }',
+    MatchArmDeclBlock:
+      'structure def F { match kind { Hex => sub head : HexHead, Sq => sub head : SqHead } }',
   };
 
   it('pins exactly one behavioural fixture per brace-delimited body', () => {
@@ -4589,7 +4580,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
 
   it.each(Object.entries(BEHAVIOR_FIXTURES))(
     'folds %s to a non-null range spanning its own brace interior',
-    (name, { src }) => {
+    (name, src) => {
       expect(countErrorNodes(src), `${name} fixture has error nodes: ${src}`).toBe(0);
 
       const node = findFirstNodeNamed(src, name);
