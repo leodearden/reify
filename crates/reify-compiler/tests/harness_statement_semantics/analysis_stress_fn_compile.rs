@@ -22,7 +22,7 @@
 
 use crate::common::compile_with_stdlib_helper;
 use reify_compiler::{RequirementKind, stdlib_loader};
-use reify_core::{DimensionVector, Severity, Type};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 
 /// `.ri` fixture: a 3×3 uniaxial Pressure tensor via `matrix([[..Pa..]])`.
 /// Uses SI `MPa` (6e6 Pa) literals — these are available via the prelude.
@@ -218,12 +218,9 @@ fn assert_result_param_dimension(member: &str, expected: DimensionVector) {
     );
 }
 
-/// RULING Q7 posture 2 (task 6165): the five stress-bearing params on
-/// `AnalysisResult` must be `Scalar<PRESSURE>` (via the `Stress` alias) —
-/// NOT the dimension-agnostic `Real` placeholder.
-///
-/// RED until step-2 retypes them: today `Real` resolves to
-/// `Scalar<DIMENSIONLESS>` (`type_resolution.rs:592`).
+/// RULING Q7 posture 2 (task 6165): pins that the five stress-bearing params
+/// on `AnalysisResult` are `Scalar<PRESSURE>` (via the `Stress` alias) — NOT
+/// the dimension-agnostic `Real` placeholder.
 #[test]
 fn analysis_result_von_mises_stress_is_scalar_pressure() {
     assert_result_param_dimension("von_mises_stress", DimensionVector::PRESSURE);
@@ -256,7 +253,6 @@ fn analysis_result_max_shear_stress_is_scalar_pressure() {
 /// `safety_factor_value` STAYS `Real` (dimensionless) — the regression fence
 /// on the "stays Real" half of RULING Q7 posture 2 (task 6165), so a future
 /// agent does not retype it to `Stress` by symmetry with its five siblings.
-/// GREEN today; must stay GREEN after step-2.
 #[test]
 fn analysis_result_safety_factor_value_stays_dimensionless() {
     assert_result_param_dimension("safety_factor_value", DimensionVector::DIMENSIONLESS);
@@ -264,9 +260,9 @@ fn analysis_result_safety_factor_value_stays_dimensionless() {
 
 /// Access-path coherence (the same-value-two-types wart RULING Q7 closes):
 /// `AnalysisResult.von_mises_stress`'s declared type must equal the
-/// compile-time cell type of `von_mises(stress)` called directly. Before
-/// step-2 these disagree (trait side `DIMENSIONLESS`, builtin side
-/// `PRESSURE`) even though both describe the same physical quantity.
+/// compile-time cell type of `von_mises(stress)` called directly — the
+/// trait-side and builtin-side types must agree, since both describe the
+/// same physical quantity.
 #[test]
 fn analysis_result_von_mises_stress_matches_builtin_cell_type() {
     let builtin_ty = cell_type(&compile_fixture(), "vm");
@@ -289,14 +285,27 @@ fn analysis_result_max_shear_stress_matches_builtin_cell_type() {
     );
 }
 
-/// Fence for the retype's constraint half: `std/analysis` must still load
-/// with zero Error-severity diagnostics after the five params go from
-/// dimensionless `Real` to `Scalar<PRESSURE>` — guards against
-/// `von_mises_stress >= 0` / `max_shear_stress >= 0`'s bare `0` literal
-/// failing to dimension-check once its sibling operand is dimensioned.
+/// The accept half of the user-visible accept/reject contract RULING Q7
+/// posture 2 creates: a structure conforming to `AnalysisResult` with all
+/// six params typed as the trait now requires — `Stress` for the five
+/// stress-bearing params, `Real` for `safety_factor_value` — must compile
+/// with zero Error diagnostics. (This also exercises the retype's constraint
+/// half: `von_mises_stress >= 0` / `max_shear_stress >= 0`'s bare `0`
+/// literal must still dimension-check now that its sibling operand is
+/// `Scalar<PRESSURE>`.)
 #[test]
-fn analysis_module_has_no_error_diagnostics() {
-    let module = analysis_module();
+fn analysis_result_conforming_structure_compiles_clean() {
+    let source = r#"
+structure def ConformingAnalysis : AnalysisResult {
+    param von_mises_stress : Stress = 1.0Pa
+    param principal_stress_1 : Stress = 1.0Pa
+    param principal_stress_2 : Stress = 1.0Pa
+    param principal_stress_3 : Stress = 1.0Pa
+    param max_shear_stress : Stress = 1.0Pa
+    param safety_factor_value : Real = 1.0
+}
+"#;
+    let module = compile_with_stdlib_helper(source);
     let errs: Vec<_> = module
         .diagnostics
         .iter()
@@ -304,6 +313,52 @@ fn analysis_module_has_no_error_diagnostics() {
         .collect();
     assert!(
         errs.is_empty(),
-        "std/analysis module must produce no Error diagnostics; got: {errs:?}"
+        "a structure conforming to AnalysisResult with Stress-typed stress \
+         params should compile with no Error diagnostics; got: {errs:?}"
     );
+}
+
+/// The reject half: a structure whose five stress params are `Real` instead
+/// of `Stress` must be rejected by trait conformance. This is the
+/// user-visible contract the retype creates — without this test, a future
+/// change that made a dimensionless `Real` implicitly convertible to a
+/// dimensioned scalar would silently re-open the same-value-two-types wart
+/// RULING Q7 closes while every other test in this file stayed green.
+#[test]
+fn analysis_result_real_typed_stress_param_is_rejected() {
+    let source = r#"
+structure def MisTypedAnalysis : AnalysisResult {
+    param von_mises_stress : Real = 1.0
+    param principal_stress_1 : Real = 1.0
+    param principal_stress_2 : Real = 1.0
+    param principal_stress_3 : Real = 1.0
+    param max_shear_stress : Real = 1.0
+    param safety_factor_value : Real = 1.0
+}
+"#;
+    let module = compile_with_stdlib_helper(source);
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    for member in [
+        "von_mises_stress",
+        "principal_stress_1",
+        "principal_stress_2",
+        "principal_stress_3",
+        "max_shear_stress",
+    ] {
+        let matched = errs.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TypeMismatchForTraitMember)
+                && d.message.contains("type mismatch for trait member")
+                && d.message.contains(member)
+        });
+        assert!(
+            matched,
+            "expected a TypeMismatchForTraitMember diagnostic for '{member}' \
+             when it is Real-typed against AnalysisResult's Stress \
+             requirement; got: {errs:?}"
+        );
+    }
 }
