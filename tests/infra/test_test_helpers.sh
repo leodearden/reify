@@ -246,6 +246,124 @@ else
 fi
 
 # ==============================================================================
+# Test: assert sanitizes a MULTI-LINE description (task 6353)
+# assert() historically echoed "  PASS: $desc" / "  FAIL: $desc" with no
+# sanitizing, so lines 2+ of a multi-line description printed at COLUMN 0.
+# dark-factory's slot-timeout/semaphore classifier is `^[ \t]*`-anchored, so a
+# description that interpolates a nested deadline-capable child's COMBINED
+# capture put that child's slot-timeout sentinel at column 0 and misclassified
+# the whole merge verify as semaphore starvation (task 6353; two live sites --
+# test_verify_env_ambient_isolation.sh and run_all_ambient_isolation_lib.sh).
+# The fix is structural, in assert() itself: line 1 stays byte-identical and
+# lines 2+ carry the same `  | ` prefix assert already applies to a failing
+# checker's captured output. `  | ` is a NON-whitespace prefix, which is what
+# actually defeats that anchor -- indentation alone does NOT.
+#
+# These checks use the LOCAL self-hosting check() helper (not assert(), which
+# is the unit under test) and drive assert() through the nested
+# `bash -c "source '$HELPER_FILE'; ..."` idiom used above, so the nested
+# PASS/FAIL counters never pollute this suite's own.
+# ==============================================================================
+
+echo ""
+echo "--- Test: assert prefixes lines 2+ of a multi-line description (6353) ---"
+
+# Sub-check 1: MULTI-LINE FAIL. Every output line after line 1 that came from
+# $desc must begin with the literal `  | `; none may start at column 0. The
+# checker is quiet (no output), so assert's own FAIL dump stays absent and the
+# only multi-line source is $desc itself.
+_ad_fail_out=$(bash -c "
+    source '$HELPER_FILE'
+    _ad_boom() { return 1; }
+    assert \"\$1\" _ad_boom
+" _ "$(printf 'line1\nNEEDLE_L2\nNEEDLE_L3')" 2>&1 || true)
+
+_ad_f_col0="$(printf '%s\n' "$_ad_fail_out" | grep -c '^NEEDLE_L' || true)"
+_ad_f_pfx="$(printf '%s\n' "$_ad_fail_out" | grep -c '^  | NEEDLE_L' || true)"
+_ad_f_l1="$(printf '%s\n' "$_ad_fail_out" | grep -c '^  FAIL: line1$' || true)"
+if [ "${_ad_f_col0:-1}" -eq 0 ] && [ "${_ad_f_pfx:-0}" -eq 2 ] && [ "${_ad_f_l1:-0}" -eq 1 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "6353-a: multi-line FAIL desc keeps line 1 byte-identical and prefixes lines 2+ with '  | ' (col0=$_ad_f_col0 want 0; prefixed=$_ad_f_pfx want 2; line1=$_ad_f_l1 want 1)" "$ok"
+
+# Sub-check 2: MULTI-LINE PASS. The leak fires on a PASSING assertion too
+# (test_slot_timeout_marker.sh:733 records exactly this), so fixing only the
+# FAIL branch would leave the channel wide open.
+_ad_pass_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$(printf 'line1\nNEEDLE_L2\nNEEDLE_L3')" 2>&1 || true)
+
+_ad_p_col0="$(printf '%s\n' "$_ad_pass_out" | grep -c '^NEEDLE_L' || true)"
+_ad_p_pfx="$(printf '%s\n' "$_ad_pass_out" | grep -c '^  | NEEDLE_L' || true)"
+_ad_p_l1="$(printf '%s\n' "$_ad_pass_out" | grep -c '^  PASS: line1$' || true)"
+if [ "${_ad_p_col0:-1}" -eq 0 ] && [ "${_ad_p_pfx:-0}" -eq 2 ] && [ "${_ad_p_l1:-0}" -eq 1 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "6353-b: multi-line PASS desc keeps line 1 byte-identical and prefixes lines 2+ with '  | ' (col0=$_ad_p_col0 want 0; prefixed=$_ad_p_pfx want 2; line1=$_ad_p_l1 want 1)" "$ok"
+
+# Sub-check 3: SENTINEL-SHAPED NEEDLE -- the property that actually matters to
+# dark-factory. The token is assembled at runtime from a SPLIT literal so this
+# file never carries the contiguous sentinel: test_slot_timeout_marker.sh scans
+# sibling tests/infra suites for exactly that anchored shape, and this suite's
+# own stdout is re-emitted into the merge-gate verify log, so a literal here
+# would be self-inflicted pollution.
+#
+# NOTE: the captured output is NEVER interpolated into a check description --
+# dumping it would BE the leak this sub-check guards. Counts only.
+_ad_sp='@@REIFY_SLOT_'
+_ad_tok="${_ad_sp}TIMEOUT@@"
+_ad_sent_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$(printf 'sentinel desc\n%sTIMEOUT@@ reason=x slots=1 waited=1800 disposition=soft lock=y' "$_ad_sp")" 2>&1 || true)
+
+_ad_s_anchored="$(printf '%s\n' "$_ad_sent_out" | grep -cE "^[[:blank:]]*${_ad_tok}" || true)"
+_ad_s_present="$(printf '%s\n' "$_ad_sent_out" | grep -cF -- "$_ad_tok" || true)"
+# Non-vacuity first: the token really is in the output, so a zero anchored
+# count means "unanchored", never "absent".
+if [ "${_ad_s_present:-0}" -ge 1 ]; then ok=true; else ok=false; fi
+check "6353-c1: non-vacuity control -- the sentinel token IS present in assert's output (present=$_ad_s_present want >=1)" "$ok"
+
+if [ "${_ad_s_anchored:-1}" -eq 0 ]; then ok=true; else ok=false; fi
+check "6353-c2: a sentinel-shaped line inside \$desc is NOT emitted \`^[[:blank:]]*\`-anchored (anchored=$_ad_s_anchored want 0)" "$ok"
+
+# Sub-check 4: REGRESSION -- single-line byte identity, both branches. Line 1 of
+# assert's output is parsed by test_run_all.sh / dark-factory's cause_hint
+# (run_all.sh's `^[[:space:]]*FAIL:` grep), so the common path must stay
+# byte-for-byte what it was.
+_ad_sl_fail=$(bash -c "
+    source '$HELPER_FILE'
+    _ad_quiet_boom() { return 1; }
+    assert 'boom desc' _ad_quiet_boom
+" 2>&1 || true)
+if [ "$_ad_sl_fail" = "  FAIL: boom desc" ]; then ok=true; else ok=false; fi
+check "6353-d1: single-line FAIL output is byte-identical to '  FAIL: <desc>' (got: $_ad_sl_fail)" "$ok"
+
+_ad_sl_pass=$(bash -c "
+    source '$HELPER_FILE'
+    assert 'ok desc' true
+" 2>&1 || true)
+if [ "$_ad_sl_pass" = "  PASS: ok desc" ]; then ok=true; else ok=false; fi
+check "6353-d2: single-line PASS output is byte-identical to '  PASS: <desc>' (got: $_ad_sl_pass)" "$ok"
+
+# Sub-check 5: REGRESSION -- literal-safety of the single-line path. A desc
+# carrying backslashes and a percent sign must be emitted VERBATIM, proving the
+# common path did not silently switch from `echo "$label$desc"` to a printf
+# FORMAT string (where `%` and `\n` would be interpreted).
+_ad_lit_desc='has \n backslash and 100% pct'
+_ad_lit_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$_ad_lit_desc" 2>&1 || true)
+if [ "$_ad_lit_out" = "  PASS: $_ad_lit_desc" ]; then ok=true; else ok=false; fi
+check "6353-e: single-line desc with backslashes and '%' is emitted verbatim, not as a printf format (got: $_ad_lit_out)" "$ok"
+
+# ==============================================================================
 # Consumer refactoring verification tests
 # Each consumer file should: source test_helpers.sh, NOT define assert() locally,
 # NOT init PASS=0/FAIL=0 locally, NOT have inline summary block.
