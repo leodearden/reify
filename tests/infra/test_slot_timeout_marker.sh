@@ -674,22 +674,44 @@ D_INVOKE=('"\$LIB"' 'test_semaphore_acquire' '"\$WRAPPER"')
 # failing assert needs.
 D_CAPTURE_RE='2>"?\$'
 
+# _d_join_logical <file> -> that file's LOGICAL command lines, one per line.
+# THE one logical-line builder, shared by D4's section slicer below and by
+# Section G's whole-file scan -- deliberately not two near-identical copies,
+# the drift hazard this file already records beside _f_direct_capable_stripped
+# (a future tightening could land on the dead copy and look like it had taken
+# effect).
+#
+# Continuations are joined FIRST, then comment / assert lines are dropped. Both
+# halves and their ORDER are load-bearing:
+#   - joining first is what makes each logical command ONE line: HG-2 puts its
+#     `2>` on the continuation line, not on the line naming the acquire, and a
+#     line-at-a-time scan would call that unredirected;
+#   - stripping after the join is what removes a WHOLE `assert "..." \` +
+#     continuation as one unit. Both name an entry point in PROSE without
+#     invoking it (test_test_run_semaphore.sh:859 is exactly that shape).
+#     MEASURED, and the reason the order is not free to flip: stripping BEFORE
+#     the join deletes the `assert` line but leaves its continuation orphaned at
+#     top level -- 75 such lines in test_run_all.sh, 81 in
+#     test_verify_semaphore_e2e.sh, 27 in test_slot_event_log.sh -- each a
+#     candidate false positive for Section G. The mirror hazard of joining first
+#     (a full-line comment ending in `\` swallowing the real line after it)
+#     occurs ZERO times across every file either arm scans.
+_d_join_logical() {  # <file> -> logical command lines
+    sed -e :a -e '/\\$/N; s/\\\n//; ta' "$1" \
+        | grep -vE '^[[:blank:]]*(#|assert )' || true
+}
+
 _d_section_cmds() {  # <member-file> <output-header-anchor> -> that section's commands
-    # Continuations are joined FIRST so each logical command is ONE line: HG-2
-    # puts its `2>` on the continuation line, not on the line naming the acquire,
-    # and a line-at-a-time scan would call that unredirected.
-    # Then the section is sliced header-to-next-header, and comment / assert
-    # lines are dropped -- both name the entry point in PROSE without invoking it
-    # (test_test_run_semaphore.sh:859 is exactly that shape).
+    # The logical lines, sliced header-to-next-header. Output is byte-identical
+    # to the pre-refactor inline pipeline over every section D4 slices today.
     local _src
     _src="echo \"${2#^}"
-    sed -e :a -e '/\\$/N; s/\\\n//; ta' "$1" \
+    _d_join_logical "$1" \
         | awk -v s="$_src" '
             !inb && index($0, s) { inb = 1; next }
             inb && /^echo "---/ { exit }
             inb { print }
-          ' \
-        | grep -vE '^[[:blank:]]*(#|assert )' || true
+          ' || true
 }
 
 _d_unredirected() {  # <cmds-file> <invocation-ERE> -> count of invocations with no capture
@@ -2409,6 +2431,41 @@ G_STALE="$(comm -13 <(printf '%s\n' "$G_DERIVED_STATIC") <(printf '%s\n' "$G_DEC
 
 assert "G0: Section G covers EVERY static-only roster member -- the declared coverage list equals the static-only slice of D_ROSTER (uncovered: ${G_UNCOVERED:-<none>}) (stale: ${G_STALE:-<none>})" \
     test "$G_DECLARED_SORTED" = "$G_DERIVED_STATIC"
+
+# --- Section G's two predicates, both over _d_join_logical's output.
+#
+# G_CAPTURE_RE is the DIVERSION grammar, deliberately laxer than D4's
+# D_CAPTURE_RE ('2>"?\$', file-only). `2>[^&]` accepts a capture to a file
+# (`2>"$VAR"`) AND to /dev/null, because Section G asserts only that the site's
+# stderr does not reach the inherited fd 2 -- the LEAK property. D4 additionally
+# asserts EVIDENCE PRESERVATION on the three behavioural members, whose own
+# failures this suite must be able to diagnose, which is why /dev/null is
+# excluded there and admitted here. The `[^&]` is what still rejects a bare
+# `2>&1`: merging stderr into an INHERITED stdout is not a diversion at all.
+# G2e below pins that the two grammars stay separate.
+G_CAPTURE_RE='2>[^&]'
+
+# _g_sites <logical-lines-file> <site-ERE> -> how many deadline-capable sites
+# that file holds. Drives G3's per-member non-vacuity arm.
+_g_sites() {
+    local _n
+    _n="$(grep -cE -- "$2" "$1" || true)"
+    echo "${_n:-0}"
+}
+
+# _g_unredirected <logical-lines-file> <site-ERE> -> how many of those sites do
+# NOT divert their stderr. Drives G1.
+#
+# Both predicates DRAIN their input -- `grep -c`, and a PRINTING `grep -E`,
+# never `grep -q`/`-l`. Same reason recorded above _f_deadline_capable: `-q`
+# exits on first match and can race the still-writing producer into SIGPIPE,
+# which this file's `pipefail` then promotes to the pipeline's status, silently
+# dropping a real positive.
+_g_unredirected() {
+    local _n
+    _n="$( { grep -E -- "$2" "$1" || true; } | grep -cvE -- "$G_CAPTURE_RE" || true )"
+    echo "${_n:-0}"
+}
 
 echo ""
 echo "--- G2: controls on the site/capture predicate, on synthetic fixtures ---"
