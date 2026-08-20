@@ -543,3 +543,85 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
          parse errors seen: {messages:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Anti-vacuity guards
+//
+// These matter more here than in a typical suite, because this module exists
+// precisely because a silent no-op had been passing for a gate. A doc-truth
+// test that quietly scrapes nothing is not a weaker gate — it is the same
+// absence of one, wearing a green tick.
+// ---------------------------------------------------------------------------
+
+/// Renaming or deleting the block must fail loudly, not scrape to nothing.
+///
+/// Without this, a rename of the marker reduces every other test in this module
+/// to a vacuous pass: zero entries scraped, zero comparisons made, all green.
+/// The input is the REAL exemplar with only its marker renamed, so the guard is
+/// exercised against the exact drift it is meant to catch rather than against
+/// unrelated text.
+///
+/// The fallback `panic!` below must NOT contain the `expected` substring, or it
+/// would satisfy `should_panic` on its own and this guard would pass without
+/// the scraper ever having guarded anything — the very vacuity it is here to
+/// prevent, reproduced inside the test that prevents it.
+#[test]
+#[should_panic(expected = "CANONICAL COPY")]
+fn scraper_panics_when_the_block_is_absent() {
+    let renamed = ANGLE_CROSSINGS_EXEMPLAR.replace(CANONICAL_COPY_MARKER, "AUTHORITATIVE COPY:");
+    let entries = canonical_copy_entries_from(&renamed);
+    panic!(
+        "the scraper returned {} entries from an exemplar whose marker was renamed, \
+         instead of failing loudly — every other test in this module would have silently \
+         gone vacuous",
+        entries.len()
+    );
+}
+
+/// The negative control: a reworded transcription really does fail.
+///
+/// Every other assertion in this module compares scraped text to compiler
+/// output, and a scraper bug that dropped the message body (or a comparison
+/// that accidentally compared scraped text to itself) would make all of them
+/// pass unconditionally. This perturbs the exemplar's wording — `must agree` to
+/// `must concur`, a genuinely different string — and proves that the equality
+/// assertion in `transcribed_compile_diagnostics_match_the_real_compiler` would
+/// then have gone red.
+#[test]
+fn scraper_discriminates_a_reworded_diagnostic() {
+    let perturbed = ANGLE_CROSSINGS_EXEMPLAR.replace("must agree", "must concur");
+    assert_ne!(
+        perturbed, ANGLE_CROSSINGS_EXEMPLAR,
+        "the perturbation must actually change the exemplar's text, or this control \
+         proves nothing. If the diagnostics no longer end in `must agree`, pick a \
+         substring they do contain."
+    );
+
+    let entries = canonical_copy_entries_from(&perturbed);
+    assert_eq!(
+        entries.len(),
+        TRANSCRIBED.len(),
+        "perturbing the wording must not change how many entries scrape; got {entries:#?}"
+    );
+
+    let mut still_matching: Vec<&str> = Vec::new();
+    let mut discriminated = 0usize;
+    for entry in entries.iter().filter(|entry| entry.renderer == "error") {
+        let module = compile_source_with_stdlib(fixture_for(&entry.declaration));
+        if errors_only(&module)
+            .iter()
+            .any(|d| d.message == entry.message)
+        {
+            still_matching.push(entry.declaration.as_str());
+        } else {
+            discriminated += 1;
+        }
+    }
+
+    assert!(
+        discriminated > 0,
+        "a reworded transcription still matched the compiler for every entry \
+         ({still_matching:?}), so the equality assertions in this module are not \
+         discriminating — they would pass against text the compiler never emits."
+    );
+}
