@@ -145,4 +145,127 @@ EOF
 assert "B2: every emitted unit name round-trips back to pid 4242 via govtest_slice_pid" \
     _units_roundtrip 4242
 
+# ---------------------------------------------------------------------------
+# Block C — govtest_stale_units: the pure filter that decides WHICH leaked
+# runs get reaped.
+#
+# Input is raw `systemctl --user list-units --all --plain --no-legend` text
+# with the unit name in field 1. The fixture rows below reproduce the exact
+# shape captured from the live host on 2026-08-20 for the real leaked run
+# 270780, e.g.
+#
+#   reify-govtest270780.slice        loaded active active Slice /reify/govtest270780
+#
+# Liveness is driven ENTIRELY through REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS so
+# no assertion depends on what happens to be running on the host. The var is
+# set to a non-empty value on EVERY call here — including calls where nothing
+# is meant to be alive — because an empty/unset value falls back to a real
+# `kill -0`, and a low fixture pid like 111 may well be a live process on the
+# test host, which would silently invert the expected result.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block C: govtest_stale_units liveness + dedup filter ---"
+
+# A pid far above any plausible /proc/sys/kernel/pid_max, used as the
+# "nothing is alive" sentinel: non-empty (so the seam stays engaged) but
+# matching no fixture pid.
+_ALIVE_NONE="999999999"
+
+# _listing_triple <pid> — the three rows one leaked run leaves behind.
+_listing_triple() {
+    local pid="$1"
+    printf 'reify-govtest%s-agents.slice loaded active active Slice /reify/govtest%s/agents\n' "$pid" "$pid"
+    printf 'reify-govtest%s-merge.slice  loaded active active Slice /reify/govtest%s/merge\n' "$pid" "$pid"
+    printf 'reify-govtest%s.slice        loaded active active Slice /reify/govtest%s\n' "$pid" "$pid"
+}
+
+# _expect_stale <self_pid> <alive_list> <listing> <want>
+#   The call runs inside a command substitution, so the env-prefixed knob is
+#   confined to that subshell and cannot leak into later assertions.
+#
+#   The exit status is checked as well as the output, and NOT merely as
+#   thoroughness: several assertions below expect EMPTY output, and an absent
+#   or crashing implementation also produces empty output. Requiring rc=0
+#   is what stops those from passing vacuously.
+_expect_stale() {
+    local self="$1" alive="$2" listing="$3" want="$4" got rc=0
+    got="$(REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$alive" govtest_stale_units "$self" "$listing")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "govtest_stale_units returned $rc, want 0"
+        return 1
+    fi
+    if [ "$got" != "$want" ]; then
+        printf 'govtest_stale_units self=%s alive="%s" =>\n%s\n--- want ---\n%s\n' \
+            "$self" "$alive" "$got" "$want"
+        return 1
+    fi
+    return 0
+}
+
+# C1 — the core contract: three leaked units collapse to ONE action, and that
+# action targets the PARENT. Measured on this host: stopping the parent slice
+# alone made both children vanish from `list-units --all`, so emitting the
+# children too would be two redundant stops plus an ordering hazard.
+assert "C1: dead run's parent+2 children => exactly one line, the PARENT" \
+    _expect_stale 999 "$_ALIVE_NONE" "$(_listing_triple 111)" "reify-govtest111.slice"
+
+# C2 — the safety direction that matters most. run_all.sh schedules many
+# lanes concurrently against ONE shared per-user systemd session, so reaping
+# a live run's parent would kill a concurrent governance measurement midway
+# and produce a confusing false RED in an unrelated lane.
+assert "C2: live pid (in FAKE_ALIVE_PIDS) => NOTHING, even with all three units present" \
+    _expect_stale 999 "222" "$(_listing_triple 222)" ""
+
+# C3 — belt-and-braces self-exclusion: the caller's own units are never
+# candidates, and this must hold on the liveness oracle's WORD alone. 555 is
+# deliberately absent from the alive list, so it reads dead through the seam;
+# only the explicit self check can save it.
+assert "C3: caller's own self_pid => NOTHING even when it reads dead via the seam" \
+    _expect_stale 555 "444" "$(_listing_triple 555)" ""
+
+# C4 — everything at once, including the two names that must never be
+# selectable: the production slice carrying real agent placement, and
+# dark-factory's own unit namespace.
+_C4_LISTING="$(_listing_triple 111)
+$(_listing_triple 222)
+$(_listing_triple 333)
+reify-governed-agents.slice     loaded active active Slice /reify/governed/agents
+df-verify-abc-def.scope         loaded active running /usr/bin/env
+
+"
+assert "C4: mixed listing (dead + live + self + production + df-verify + blank) => only the dead parent" \
+    _expect_stale 333 "222" "$_C4_LISTING" "reify-govtest111.slice"
+
+# C5 — several leaked runs reap independently, one parent line each, in
+# first-seen order, with the two children of each deduped away.
+_C5_LISTING="$(_listing_triple 111)
+$(_listing_triple 777)"
+_C5_WANT="reify-govtest111.slice
+reify-govtest777.slice"
+assert "C5: two distinct dead pids => one deduped parent line each, first-seen order" \
+    _expect_stale 999 "$_ALIVE_NONE" "$_C5_LISTING" "$_C5_WANT"
+
+# C6 — an empty listing is the STEADY STATE (no leaks), so it must be silent
+# and, critically, exit 0: the sweep runs under `set -euo pipefail` in
+# test_cpu_load_governance.sh, where a non-zero return would abort the whole
+# governance suite before a single row ran.
+_expect_stale_rc0() {
+    local self="$1" alive="$2" listing="$3" out rc=0
+    out="$(REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$alive" govtest_stale_units "$self" "$listing")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "govtest_stale_units returned $rc, want 0"
+        return 1
+    fi
+    if [ -n "$out" ]; then
+        printf 'expected no output, got:\n%s\n' "$out"
+        return 1
+    fi
+    return 0
+}
+
+assert "C6a: empty listing => no output, exit 0" \
+    _expect_stale_rc0 999 "$_ALIVE_NONE" ""
+assert "C6b: whitespace-and-blank-lines-only listing => no output, exit 0" \
+    _expect_stale_rc0 999 "$_ALIVE_NONE" "$(printf '\n   \n\t\n\n')"
+
 test_summary
