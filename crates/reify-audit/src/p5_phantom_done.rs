@@ -442,6 +442,47 @@ fn all_files_tracked_on_main(ctx: &AuditContext, meta: &TaskMetadata) -> bool {
     !meta.files.is_empty() && meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p))
 }
 
+/// True iff `subject` references `task_id` as a whole number — i.e. at least
+/// one occurrence whose immediate neighbours are not ASCII digits.
+///
+/// `git log --grep=<id>` is a bare substring/regex match, so `--grep=593`
+/// matches "Merge task/5937 into main". Filtering Rust-side (rather than
+/// changing the `--grep` pattern) keeps the [`crate::GitOps::log_grep`]
+/// contract unchanged, works identically for `MockGitOps`, and avoids
+/// depending on git's BRE/ERE word-boundary support.
+///
+/// Only DIGIT neighbours disqualify a match, so non-numeric ids ("H1T1",
+/// "REGR1", "6345D") behave exactly as before — the criterion is "is this a
+/// different, longer number", not "is this a word boundary".
+fn subject_references_task(subject: &str, task_id: &str) -> bool {
+    if task_id.is_empty() {
+        return false;
+    }
+    subject.match_indices(task_id).any(|(pos, m)| {
+        let before_ok = subject[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_digit());
+        let after_ok = subject[pos + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_digit());
+        before_ok && after_ok
+    })
+}
+
+/// `git log <MAIN_BASE> --grep=<task_id>`, with substring collisions removed.
+///
+/// The single entry point for every `log_grep`-based rescue, so the two sites
+/// cannot drift on what counts as a task-referencing commit.
+fn task_referencing_commits(ctx: &AuditContext, task_id: &str) -> Vec<GitCommit> {
+    ctx.git
+        .log_grep(MAIN_BASE, task_id)
+        .into_iter()
+        .filter(|c| subject_references_task(&c.subject, task_id))
+        .collect()
+}
+
 /// The set of paths a claimed commit contributes, choosing the diff base by
 /// ancestry.
 ///
@@ -616,14 +657,15 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
                 // escalating as a genuine phantom-done.
                 //
                 // Substring-match note: `--grep` is a bare substring/regex
-                // match, so a short or numerically-colliding task_id (e.g. "42"
-                // matching commits for "4242") can suppress a genuine
-                // phantom-done. Task IDs in this project are 4-digit integers,
-                // so collisions are very rare, and the design decision for this
-                // task accepted the bias toward fewer false-Highs. Operators
-                // should inspect Low findings on short-ID tasks manually.
+                // match, so `--grep=593` also matches "Merge task/5937 into
+                // main". That collision was an ACCEPTED risk under task 4464's
+                // bias toward fewer false-Highs; it is now FILTERED, because
+                // the failure it produces is a false NEGATIVE — a genuine
+                // phantom-done silently downgraded to Low. The criterion is a
+                // non-ASCII-digit boundary (see `subject_references_task`), so
+                // "Merge task/5937 into main" no longer rescues task 593.
                 {
-                    let siblings = ctx.git.log_grep(MAIN_BASE, &meta.task_id);
+                    let siblings = task_referencing_commits(ctx, &meta.task_id);
                     if !siblings.is_empty() {
                         let mut evidence: Vec<EvidenceRef> = siblings
                             .iter()
@@ -785,12 +827,13 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
     //
     // Substring-match note: the pure-reachability fallback (below) fires
     // whenever siblings is non-empty, which intercepts before the
-    // deliverable-presence rescue. A short or colliding task_id can therefore
-    // produce a false-low on a genuine phantom-done by matching an unrelated
-    // commit. Task IDs here are 4-digit integers; this risk is accepted per the
-    // task-4464 design decision (bias toward fewer false-Highs). Operators
-    // should inspect Low findings on short-ID tasks manually.
-    let siblings = ctx.git.log_grep(MAIN_BASE, &meta.task_id);
+    // deliverable-presence rescue — so a colliding task_id produced a false-low
+    // on a genuine phantom-done by matching an unrelated commit. That was an
+    // ACCEPTED risk under task 4464's bias toward fewer false-Highs; it is now
+    // FILTERED, because the failure it produces is a false NEGATIVE. The
+    // criterion is a non-ASCII-digit boundary (see `subject_references_task`),
+    // so "Merge task/5937 into main" no longer rescues task 593.
+    let siblings = task_referencing_commits(ctx, &meta.task_id);
     if !siblings.is_empty() {
         let mut sibling_covered: Vec<String> = Vec::new();
         let mut contributing: Vec<&GitCommit> = Vec::new();
