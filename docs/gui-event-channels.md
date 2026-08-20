@@ -24,7 +24,7 @@ For the naming/payload convention governing new entries see §3 of the source PR
 | `fea-convergence-changed` | `Option<FeaConvergenceInfo>` full-value snapshot | `gui/src-tauri/src/engine.rs::EngineSession::emit_fea_convergence` via `main.rs::TauriFeaConvergenceEmitter` | `bridge.ts::onFeaConvergenceChanged` → `engineStore.setFeaConvergence` → DualViewport → Viewport convergence badge | Full-snapshot semantics; fires on every commit incl. `None` to clear the stale indicator (task 5032, the next #4884) |
 | `evaluation-status` | `{phase: String, progress: Option<f32>}` | `main.rs::emit_status` | `onEvaluationStatus` | RAII IdleGuard emits `idle` on Drop |
 | `kernel-status` | `KernelStatus {available, message}` | `main.rs` Tauri `setup()` | `onKernelStatus` | One-shot at startup |
-| `diagnostics` | `{uri, diagnostics}` (LSP-shaped) | `main.rs::TauriNotificationSink` | *(none)* | LSP-routed; consumed by `main.rs::TauriNotificationSink` with no `bridge.ts` subscriber (task 6227) |
+| `diagnostics` | `{uri, diagnostics}` (LSP-shaped) | `main.rs::TauriNotificationSink` | *(none)* | LSP-routed; emitted only — no frontend subscriber since task 6227 |
 | `file-changed` | `FileData {path, content}` | `main.rs::create_watcher` | `onFileChanged` | File-watcher-driven |
 | `file-removed` | `{path: String}` | `main.rs::create_watcher` | `bridge.ts::onFileRemoved` | File-watcher-driven; signals file deleted on disk |
 | `focus-entity` | `String` (entity_path) | `focus_entity` command + MCP `focus_entity` tool | `onFocusEntity` | Bidirectional (UI ↔ MCP) |
