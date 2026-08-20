@@ -15,6 +15,8 @@
 #                                  dead predecessor run
 #   govtest_reap_stale [<self_pid>] enumerate + stop every dead predecessor's
 #                                  slice; no-op when systemctl is absent
+#   govtest_slice_teardown <pid>   unconditionally stop this run's own three
+#                                  slices, children before parent
 #
 # Knobs:
 #   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  space-separated pid list that replaces
@@ -246,6 +248,56 @@ govtest_reap_stale() {
         echo "  reaped stale govtest slice: $unit"
     done <<EOF
 $(govtest_stale_units "$self_pid" "$listing")
+EOF
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# govtest_slice_teardown <pid>
+#   Stop this run's own three slices — children first, parent last —
+#   UNCONDITIONALLY. Always returns 0. Safe to call from an EXIT trap.
+#
+#   WHY UNCONDITIONAL RATHER THAN FLAG-GUARDED. The mechanism this replaces
+#   recorded what it had created in `_ROW4_SLICE_TASK_CREATED` /
+#   `_ROW4_SLICE_MERGE_CREATED` / `_ROW4_CONFINE_PARENT_CREATED` and stopped
+#   only what those named. That is a drift-prone design: it re-derives at 8
+#   scattered assignment sites something `$$` already determines before any
+#   test cycle runs. And it had drifted — `_row4_confine_apply_quota` vivifies
+#   the parent slice from FOUR call sites but only TWO set the parent flag,
+#   and those two sit behind branches that additionally require `taskset` and
+#   a readable Cpus_allowed_list. On a host with cgroup governance but no
+#   `taskset`, the two unguarded sites still created the parent and nothing
+#   ever stopped it — a leak on a fully GREEN exit, distinct from the SIGKILL
+#   leak govtest_reap_stale handles.
+#
+#   Unconditional teardown closes that whole class rather than the one
+#   instance: the three names are fully determined by the pid, and
+#   `systemctl --user stop` on a never-started slice is a harmless no-op
+#   already swallowed by the `|| true` this function keeps. So there is
+#   nothing left to remember, and no future call site can forget to.
+#
+#   Stopping the PARENT alone would in fact suffice — cascade was measured
+#   (see govtest_stale_units). The children are stopped first purely as
+#   belt-and-braces for a host where cascade semantics differ, and the
+#   children-then-parent order preserves the rationale the previous
+#   _cleanup_all already carried: never leave a quota'd empty parent behind.
+#
+#   Returns 0 even when systemctl is missing or failing. This runs inside an
+#   EXIT trap, where a non-zero return would overwrite the governance suite's
+#   real exit status and report a passing run as failed.
+# ---------------------------------------------------------------------------
+govtest_slice_teardown() {
+    local pid="${1:-$$}"
+    local unit
+
+    command -v systemctl >/dev/null 2>&1 || return 0
+
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        systemctl --user stop "$unit" 2>/dev/null || true
+    done <<EOF
+$(govtest_slice_units "$pid")
 EOF
 
     return 0
