@@ -761,4 +761,68 @@ assert "hI1: a repo with no tracked .rs file matching SCOPE_PATHSPECS exits 2, n
 assert "hI1: ...and prints a diagnostic naming the stale scope" \
     bash -c "bash '$GATE' --repo-root '$EMPTY_FIX' 2>&1 | grep -q 'ERROR: no tracked .rs files matched SCOPE_PATHSPECS'"
 
+# ===========================================================================
+# hJ — CHARACTERIZATION pin of an ACCEPTED OVER-FLAG (task 5159).
+#
+# The gate flags the fragment `unwrap_or( … Ordering::Equal … )`. That also
+# matches a comparator built the SANCTIONED way, when the `Option<Ordering>`
+# being defaulted comes from `Iterator::find`/`max_by`/`min_by` rather than
+# from `partial_cmp`:
+#
+#     .map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Equal)
+#
+# Here `total_cmp` is ALREADY the fix — the `unwrap_or` only supplies the
+# "both sequences compared equal elementwise" answer for an exhausted `find`.
+# No NaN hazard exists. The gate flags it anyway.
+#
+# THIS IS PINNED AS ACCEPTED, NOT AS A DEFECT TO BE TIDIED UP. The matcher is
+# fragment-based on purpose: it must catch the MULTI-LINE form where
+# `.partial_cmp` and `.unwrap_or` sit on separate lines (e.g. reify-eval's
+# modal_ops.rs `frequency_ascending_order`), which a
+# `partial_cmp(...).unwrap_or(...)`-on-one-line matcher would miss. Narrowing
+# the regex to require a nearby `partial_cmp` would trade a fail-SAFE false
+# positive (cost: one annotation) for a possible false NEGATIVE (cost: a
+# silently-landed NaN hazard). For a safety gate that is the wrong direction,
+# so the narrowing is REJECTED — see docs/prds/compute-fea-hardening.md
+# "Resolved design decision 9".
+#
+# The shape below is read verbatim from crates/reify-ir/src/value.rs:284-291.
+# Two live instances of it exist today (value.rs:290 and :309); BOTH are
+# outside the covered scope, so the gate is green on the real tree and this
+# over-flag costs the tree nothing at present. It would cost exactly two
+# annotations if reify-ir were ever brought in scope.
+#
+# NOTE this block also disproves what the gate header asserted before task
+# 5159: that "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix
+# is never flagged." It can, and here it does.
+# ===========================================================================
+echo ""
+echo "--- (hJ): the total_cmp().find().unwrap_or() over-flag is deliberate and escapable ---"
+
+write_fixture <<'RS'
+fn cmp_floats(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| x.total_cmp(y))
+        .find(|o| !o.is_eq())
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+RS
+stage
+assert "hJ1: the gate FLAGS a total_cmp-based comparator whose unwrap_or defaults an exhausted find (accepted over-flag, not the NaN hazard)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+write_fixture <<'RS'
+fn cmp_floats(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| x.total_cmp(y))
+        .find(|o| !o.is_eq())
+        .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — total_cmp already; unwrap_or defaults an exhausted find, not a partial_cmp
+}
+RS
+stage
+assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
 test_summary
