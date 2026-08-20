@@ -656,6 +656,159 @@
         capture.assert_count(0);
     }
 
+    // ── Site 1: `iface.location` finiteness guard (task 6378) ────────────────
+
+    /// A NaN `iface.location` is the remaining unguarded operand feeding both
+    /// `nearest_node_index` (shell tie node) and `three_nearest_node_indices`
+    /// (tet nearest-3) — it must be rejected the same way a non-unit `normal`
+    /// or non-positive `thickness` already is.
+    ///
+    /// Currently RED: the validation block checks only `thickness` and
+    /// `normal`, so this input sails through to `Ok`.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_interface_location_nan() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [f64::NAN, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("a NaN interface location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-finite location → InvalidInterfaceGeometry"
+        );
+    }
+
+    /// An infinite `iface.location` component is rejected the same way as
+    /// NaN — `location` feeds `dist3_sq` on the target side of both
+    /// `nearest_node_index` and `three_nearest_node_indices`, and an
+    /// infinite coordinate there is just as capable of producing a
+    /// non-finite (or, against a node sharing that infinite coordinate, a
+    /// `dist3_sq` `inf - inf = NaN`-manufactured) squared distance as a
+    /// non-finite node coordinate is.
+    ///
+    /// Currently RED, for the same reason as the NaN case above.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_interface_location_infinite() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, f64::INFINITY, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("an infinite interface location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-finite location → InvalidInterfaceGeometry"
+        );
+    }
+
+    /// With multiple interfaces, the reported `interface_index` must name the
+    /// actual offending interface (1), not the first (valid) one (0).
+    ///
+    /// Currently RED, for the same reason as the single-interface cases
+    /// above.
+    #[test]
+    fn build_mixed_region_mesh_reports_correct_interface_index_for_non_finite_location_among_multiple()
+     {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let interfaces = vec![
+            ShellTetInterface {
+                shell_region: 0,
+                tet_region: 1,
+                normal: [0.0, 0.0, 1.0],
+                thickness: 0.1,
+                location: [0.0, 0.0, 0.0],
+            },
+            ShellTetInterface {
+                shell_region: 0,
+                tet_region: 1,
+                normal: [0.0, 0.0, 1.0],
+                thickness: 0.1,
+                location: [f64::NAN, 0.0, 0.0],
+            },
+        ];
+
+        let err = build_mixed_region_mesh(&shell, &tet, &interfaces)
+            .expect_err("the second interface's non-finite location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 1 },
+            "must name the offending interface (index 1), not the valid one at index 0"
+        );
+    }
+
+    /// Telemetry: the rejected non-finite-location call emits exactly one
+    /// WARN containing "non-finite", and an all-finite interface stays
+    /// quiet.
+    ///
+    /// Currently RED: not only does the call not yet error (as in the cases
+    /// above), but even counting warns alone would be misleading here — a
+    /// NaN `location` also propagates into `three_nearest_node_indices`'s
+    /// own (already fail-closed, SITE 2) telemetry today, which would
+    /// coincidentally satisfy a warn-count-only assertion for the wrong
+    /// reason both before and after this guard lands. Asserting the `Err`
+    /// first forces this test to actually fail pre-fix, and to prove
+    /// post-fix that the warn comes from THIS guard — `three_nearest_node_indices`
+    /// is never reached once the validation block rejects the interface
+    /// up front.
+    #[test]
+    fn build_mixed_region_mesh_warns_once_on_non_finite_location_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let bad_location = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [f64::NAN, 0.0, 0.0],
+        };
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&bad_location))
+        });
+        let err = result.expect_err("a non-finite interface location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-finite location → InvalidInterfaceGeometry"
+        );
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let valid = ShellTetInterface {
+                shell_region: 0,
+                tet_region: 1,
+                normal: [0.0, 0.0, 1.0],
+                thickness: 0.1,
+                location: [0.0, 0.0, 0.0],
+            };
+            let _ = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&valid))
+                .expect("all-finite fixture should succeed");
+        });
+        capture.assert_count(0);
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
