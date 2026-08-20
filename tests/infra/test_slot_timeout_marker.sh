@@ -2782,6 +2782,58 @@ G_EXEC_KV='([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*'
 G_EXEC_VERB_RE="${F_EDGE_ANCHOR}${G_EXEC_KV}"'(env|timeout|bash|sh|source)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*'
 G_EXEC_FIRST_RE="^[[:blank:]]*${G_EXEC_KV}"
 
+echo ""
+echo "--- G2f: controls on the exec-position anchor ---"
+
+# G2a-G2e above exercise only the CAPTURE half of the predicate: every one of
+# them calls _g_unredirected with a BARE G_CTRL_SITE and never constructs the
+# exec anchor at all. A hole in the anchor itself was therefore invisible to
+# every control in this section -- the G3/G1 loop below is the only consumer of
+# G_EXEC_VERB_RE/G_EXEC_FIRST_RE, and its real-tree counts cannot distinguish
+# "this member has N sites" from "this member has N+1 sites and one is
+# unreachable". G2f closes that, and asserts with _g_sites rather than
+# _g_unredirected because the property under test is site DETECTION, not
+# capture. Controls-first still holds: these sit above the arm they guard.
+G_CTRL_ENVKV="$TMPG/ctrl-exec-env-quoted-kv.cmds"
+G_CTRL_WRAP="$TMPG/ctrl-exec-wrapper-shadowed.cmds"
+
+# The real in-tree shape, at test_slot_event_log.sh:98-102 (joined logical line
+# 59): that section's own forced-acquire control, run at CONCURRENCY=1 against
+# a held lock, i.e. a genuine deadline-capable acquire site. What makes it hard
+# is that the `env` verb is followed by a QUOTED assignment word before the
+# wrapper is reached, and the FIRST-WORD form cannot rescue it because the
+# line's first word is `env`, not a KEY=VAL.
+printf '%s\n' \
+    'env -u REIFY_SLOT_EVENT_LOG DF_VERIFY_ROLE=task REIFY_LOCK="$G_LOCK" "$G_PROBE" bash -c true 2>"$G_ERR" || _rc=$?' \
+    > "$G_CTRL_ENVKV"
+
+# THE WRAPPER-SHADOWING PIN. Here the real exec is "$G_WRAPPER" and "$G_PROBE"
+# is a mere ARGUMENT, so this line is not a site at all. Green on arrival by
+# design, and kept for a specific reason recorded beside G_EXEC_VERB_RE: the
+# blanket relaxation `([^[:blank:]]+[[:blank:]]+)*` is INDISTINGUISHABLE from
+# the correct fix on today's roster -- both produce the same eight per-member
+# counts -- yet it steps over an intervening quoted COMMAND word and turns this
+# fixture into a false positive. Without G2f2 a future "simplification" to
+# blanket would land silently. The hazard is live in the tree, not
+# hypothetical: it is the same wrapper-vs-real distinction that
+# test_run_all_pool_lock_host_global.sh's G_SITE entry already exists to encode.
+printf '%s\n' \
+    'timeout 600 bash "$G_WRAPPER" "$G_PROBE" --pool 2>"$G_ERR" || _rc=$?' \
+    > "$G_CTRL_WRAP"
+
+# Built exactly as the G3/G1 loop below builds it, so these controls exercise
+# the predicate the real arm uses rather than a lookalike.
+G_CTRL_EXEC_RE="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_CTRL_SITE}"
+G2F1_N="$(_g_sites "$G_CTRL_ENVKV" "$G_CTRL_EXEC_RE")"
+G2F2_N="$(_g_sites "$G_CTRL_WRAP" "$G_CTRL_EXEC_RE")"
+
+# Counts only, precomputed into plain variables, `test` as the checker -- the
+# same E1/D1 output-safety discipline as every other assert in this section.
+assert "G2f1: an exec verb followed by a QUOTED assignment word still reaches its site (got $G2F1_N sites)" \
+    test "$G2F1_N" -eq 1
+assert "G2f2: ... but a site SHADOWED by an intervening quoted command word is NOT one (a blanket relaxation would flag it; got $G2F2_N sites)" \
+    test "$G2F2_N" -eq 0
+
 for _g_i in "${!G_MEMBERS[@]}"; do
     _g_m="${G_MEMBERS[$_g_i]}"
     # Empty G_SCAN entry means "scan the member itself" (seven of eight).
