@@ -2445,26 +2445,135 @@ assert "G0: Section G covers EVERY static-only roster member -- the declared cov
 # G2e below pins that the two grammars stay separate.
 G_CAPTURE_RE='2>[^&]'
 
+# _g_scan <logical-lines-file> <site-ERE> -> "<sites> <unredirected>", the ONE
+# analysis both predicates below read, so their two counts can never disagree.
+#
+# WHY AWK AND NOT A GREP. A line-local predicate cannot see either multi-line
+# capture shape the real roster members use -- the subshell closer and the
+# command-substitution opener sit on DIFFERENT lines from the site, with no
+# backslash continuation for _d_join_logical to merge. That is exactly why
+# Section F's SCOPE (1) declined to generalize D4's line-oriented slicer, and
+# it is what this two-pass block analysis supplies.
+#
+# THE SITE ERE AND THE CAPTURE ERE REACH AWK THROUGH THE ENVIRONMENT, read with
+# ENVIRON[]. NOT `awk -v`, and this is MEASURED, not stylistic: `-v` runs escape
+# processing over the value, so `\.` collapses to `.`, `\$` becomes the regex
+# END-OF-STRING anchor and `\{`/`\}` become literals. Handing these EREs over
+# with -v silently reduced EVERY member to sites=0, with nothing on stderr but
+# an `awk: warning: escape sequence ...`. ENVIRON does no escape processing and
+# is POSIX, so this is portable. G_CAPTURE_RE is passed rather than re-spelled
+# inside the program, so there stays exactly ONE diversion grammar in Section G.
+#
+# OUTPUT IS COUNTS ONLY -- never a matched line. Same discipline as D1, D4b and
+# _e_scan: this file's output is re-emitted verbatim into the merge-gate verify
+# log, so printing the offending line would BE the leak. Reading the file by
+# NAME rather than through a pipe also puts this beyond the `-q`/SIGPIPE/
+# pipefail hazard recorded above _f_deadline_capable: awk drains to EOF by
+# construction.
+#
+# NO APOSTROPHE APPEARS INSIDE THE AWK PROGRAM, comments included -- the whole
+# program is a single-quoted shell string, so one would end it. The single
+# quote the body rule needs is BUILT (SQ, below) for the same reason.
+_g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
+    G_AWK_SITE="$2" G_AWK_CAP="$G_CAPTURE_RE" awk '
+    BEGIN {
+        SITE = ENVIRON["G_AWK_SITE"]
+        CAP  = ENVIRON["G_AWK_CAP"]
+        SQ = sprintf("%c", 39)   # the single quote, built not written
+        n = 0; top = 0; sites = 0; unred = 0
+    }
+
+    # ---- PASS 1: block structure. For every line, record the innermost
+    # enclosing opener (encl[]); for every opener, record its kind and, once the
+    # closer is seen, that closer disposition (stamp[] = "<kind>:<disp>").
+    # THREE OPENER KINDS, each a real in-tree shape:
+    #   subst    a line ending in $( -- stdout is diverted into a variable,
+    #            which is what makes an inner 2>&1 a diversion rather than a
+    #            leak. Shape at test_run_all_content_skip.sh:80-87 and :380-388,
+    #            and test_verify_env_ambient_isolation.sh:172-178.
+    #   body     a line ending in "bash -c" plus a quote -- an inline script
+    #            body, closed by a line starting with that quote. MEASURED
+    #            load-bearing, not defensive: without this kind the CE2 site in
+    #            test_test_run_semaphore.sh reads 1 unredirected instead of 0,
+    #            because its capture sits on the closing line of the body. Same
+    #            class as SCOPE (3) of Section F -- but a false RED here, not a
+    #            merely spurious roster entry.
+    #   subshell a line ending in a bare ( -- the shape SCOPE (1) of Section F
+    #            names, captured on the closing ) line. 8 of the 11 sites in
+    #            test_verify_semaphore_e2e.sh are captured only this way.
+    # ORDER MATTERS: $( is tested before the bare ( so a command substitution is
+    # never misread as a subshell, and $(( arithmetic is excluded explicitly.
+    # FAIL-SAFE BY CONSTRUCTION: a closer arriving on an empty stack is ignored,
+    # and an opener still unclosed at EOF never gets a stamp, so it counts as
+    # NOT captured. Both degrade toward flagging, never toward hiding.
+    {
+        line[++n] = $0
+        isopen = 0; k = ""
+        if      ($0 ~ /\$\($/)                                      { isopen = 1; k = "subst" }
+        else if ($0 ~ "(bash|sh)[[:blank:]]+-c[[:blank:]]+" SQ "$") { isopen = 1; k = "body" }
+        else if ($0 ~ /\($/ && $0 !~ /\$\(\($/)                     { isopen = 1; k = "subshell" }
+
+        isclose = 0
+        if (top > 0) {
+            ok = stack[top]
+            if (bk[ok] == "body") { if ($0 ~ "^[[:blank:]]*" SQ) isclose = 1 }
+            else                  { if ($0 ~ /^[[:blank:]]*\)/)  isclose = 1 }
+        }
+
+        if (isclose) {
+            ok = stack[top--]
+            d = ($0 ~ CAP) ? "err" : (bk[ok] == "subst" ? "out" : "none")
+            stamp[ok] = bk[ok] ":" d
+            encl[n] = (top > 0) ? stack[top] : 0
+        } else if (isopen) {
+            encl[n] = (top > 0) ? stack[top] : 0
+            stack[++top] = n; bk[n] = k
+        } else {
+            encl[n] = (top > 0) ? stack[top] : 0
+        }
+    }
+
+    # ---- PASS 2: a site line is captured iff any of
+    #   (a) it carries a same-line diversion (CAP: 2> to a file or to /dev/null);
+    #   (b) it carries a same-line 2>&1 AND its stdout is itself diverted -- by a
+    #       same-line > that is not part of 2> or >&, by an inline $( on the same
+    #       line, or by an enclosing subst block. Without that precondition 2>&1
+    #       merges the sentinel back into the stream run_all Phase 3 re-emits,
+    #       which is the leak and not a fix;
+    #   (c) an enclosing block whose closer carried 2> (stamp ending :err) --
+    #       the subshell and inline-body shapes.
+    END {
+        for (i = 1; i <= n; i++) {
+            if (line[i] !~ SITE) continue
+            sites++
+            cap = 0
+            if (line[i] ~ CAP) cap = 1
+            else if (line[i] ~ /2>&1/) {
+                if (line[i] ~ /(^|[^2>&])>[^&]/ || line[i] ~ /\$\(/) cap = 1
+                else for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /^subst:/) { cap = 1; break }
+            }
+            if (!cap) for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /:err$/) { cap = 1; break }
+            if (!cap) unred++
+        }
+        printf "%d %d\n", sites, unred
+    }
+    ' "$1"
+}
+
 # _g_sites <logical-lines-file> <site-ERE> -> how many deadline-capable sites
 # that file holds. Drives G3's per-member non-vacuity arm.
 _g_sites() {
-    local _n
-    _n="$(grep -cE -- "$2" "$1" || true)"
-    echo "${_n:-0}"
+    local _r
+    _r="$(_g_scan "$1" "$2")"
+    echo "${_r%% *}"
 }
 
 # _g_unredirected <logical-lines-file> <site-ERE> -> how many of those sites do
 # NOT divert their stderr. Drives G1.
-#
-# Both predicates DRAIN their input -- `grep -c`, and a PRINTING `grep -E`,
-# never `grep -q`/`-l`. Same reason recorded above _f_deadline_capable: `-q`
-# exits on first match and can race the still-writing producer into SIGPIPE,
-# which this file's `pipefail` then promotes to the pipeline's status, silently
-# dropping a real positive.
 _g_unredirected() {
-    local _n
-    _n="$( { grep -E -- "$2" "$1" || true; } | grep -cvE -- "$G_CAPTURE_RE" || true )"
-    echo "${_n:-0}"
+    local _r
+    _r="$(_g_scan "$1" "$2")"
+    echo "${_r##* }"
 }
 
 echo ""
