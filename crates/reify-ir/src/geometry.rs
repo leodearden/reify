@@ -3466,12 +3466,13 @@ pub fn write_stl_binary(
 
 /// Write a mesh to the STL ASCII format.
 ///
-/// **Units — deliberately asymmetric with [`write_3mf`].** As with
-/// [`write_stl_binary`]: STL carries no unit field, so there is no declaration
-/// to keep honest and this writer emits the caller's coordinates VERBATIM (SI
-/// metres from a reify kernel). Callers needing the de-facto millimetre STL
-/// convention scale at the call site. TODO(#6187): unify STL into the
-/// millimetre regime alongside `write_stl_binary`.
+/// **Units:** as with [`write_stl_binary`], takes a [`Mesh`] whose vertices are
+/// SI METRES (reify model space) and emits MILLIMETRES, converting by
+/// [`MM_PER_METRE_F32`] as it writes them. STL carries no unit field, so there
+/// is no declaration to keep honest — but its consumers universally read
+/// millimetres, so that de-facto convention IS the promise, and scaling here
+/// rather than in the callers makes it un-bypassable. Callers must NOT
+/// pre-scale.
 ///
 /// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
@@ -3510,15 +3511,22 @@ pub fn write_stl_ascii(
     let mut line_buf = String::with_capacity(200);
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Normal from the UNSCALED verts, identically to `write_stl_binary`:
+        // it is a dimensionless unit direction, invariant under the uniform
+        // positive metre→millimetre scale, so this text stays byte-unchanged.
         let n = compute_facet_normal(v0, v1, v2);
         line_buf.clear();
+        // Vertices convert SI metres → millimetres in the same single `write!`
+        // — no second format call and no extra allocation, so the reused-String
+        // / one-`write_all`-per-triangle buffering contract above survives.
+        // Multiply in f32; see `MM_PER_METRE_F32` for why not via f64.
         let _ = write!(
             line_buf,
             "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
             nx = n[0], ny = n[1], nz = n[2],
-            x0 = v0[0], y0 = v0[1], z0 = v0[2],
-            x1 = v1[0], y1 = v1[1], z1 = v1[2],
-            x2 = v2[0], y2 = v2[1], z2 = v2[2],
+            x0 = v0[0] * MM_PER_METRE_F32, y0 = v0[1] * MM_PER_METRE_F32, z0 = v0[2] * MM_PER_METRE_F32,
+            x1 = v1[0] * MM_PER_METRE_F32, y1 = v1[1] * MM_PER_METRE_F32, z1 = v1[2] * MM_PER_METRE_F32,
+            x2 = v2[0] * MM_PER_METRE_F32, y2 = v2[1] * MM_PER_METRE_F32, z2 = v2[2] * MM_PER_METRE_F32,
         );
         writer.write_all(line_buf.as_bytes())?;
     }
@@ -10800,19 +10808,20 @@ mod tests {
             "single triangle: expected 3 'vertex ' entries"
         );
 
-        // Each specific vertex line must appear verbatim in the output.
-        // (Rust formats 0.0f32 as "0" and 1.0f32 as "1" via Display.)
+        // Each specific vertex line must appear verbatim in the output. The
+        // writer emits millimetres, so the 1 m fixture edges appear as 1000.
+        // (Rust formats 0.0f32 as "0" and 1000.0f32 as "1000" via Display.)
         assert!(
             text.contains("vertex 0 0 0"),
             "vertex (0,0,0) must appear in ascii output"
         );
         assert!(
-            text.contains("vertex 1 0 0"),
-            "vertex (1,0,0) must appear in ascii output"
+            text.contains("vertex 1000 0 0"),
+            "vertex (1,0,0) m must appear as 1000 mm in ascii output"
         );
         assert!(
-            text.contains("vertex 0 1 0"),
-            "vertex (0,1,0) must appear in ascii output"
+            text.contains("vertex 0 1000 0"),
+            "vertex (0,1,0) m must appear as 1000 mm in ascii output"
         );
     }
 
