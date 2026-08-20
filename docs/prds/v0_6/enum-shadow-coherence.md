@@ -241,7 +241,7 @@ params, lets, fn signatures, local trait members, constraint defs, fields, **and
 enum-variant payload fields** — resolves bare `N` to `Type::Enum(N)`. Known exclusions,
 each with a named owner (not silent): `type`-alias bodies (#6259), ctor/value position
 (#5920 / α, D7), type-param defaults (`convert_type_params`' unconditional
-`StructureRef` fallback — follow-up filed at decompose, §9), enums imported from other
+`StructureRef` fallback — follow-up **#6399**, §9), enums imported from other
 user modules (α / the #5969 rewrite).
 
 **C2 — Obligation diagnostic.** Fires iff conformance checking of a structure in M
@@ -286,8 +286,8 @@ not an excavation.
 | `stdlib-namespace.md` | feeds / superseded-by | α #5493 absorbs `build_local_enum_shadow_set` + β's helper into the NS-P1/P3 policy point; κ #5503 supersedes the D2 Error post-N3 (D-2 stage 2); ν #5505 owns the de-shadowing surface (NS-Q); D7's value-namespace question resolves under NS-P3 | per-item as listed | their §6 row lands in this PRD's commit |
 | `type-hygiene.md` η (#4487, done) | refines | the collision rule's diagnostic at the shadowed-name intersection is replaced by C2; D3 adds the omitted-member check η's collision-only scope deliberately excluded; all non-shadowed behavior unchanged | this PRD | no edit to their PRD needed |
 | **#6259** type-alias body gap | adjacent | eager alias DFS; D1's hoist means a future #6259 fix inherits shadow semantics in alias bodies | #6259 | ratchet note added to #6259 at decompose |
-| **#5969** extend-#5429 follow-up | re-scoped | two of its four surfaces already fixed on main (whole-sequence install); skeleton-pass surface dissolves at stdlib-namespace γ #5494; imported-user-module enums → α | rewrite at decompose | pending |
-| **#5920** enum entity-namespace gap | tracks | the type-vs-value namespace agreement question (D7); its local-vs-local precedence pin (`same_module_structure_still_beats_same_module_enum`) is preserved | #5920 / α | verified its text carries the question |
+| **#5969** extend-#5429 follow-up | re-scoped | two of its four surfaces already fixed on main (whole-sequence install); skeleton-pass surface dissolves at stdlib-namespace γ #5494; imported-user-module enums → α | #5969 (rewritten at decompose) | rewritten 2026-08-20; now gated on #5493 |
+| **#5920** enum entity-namespace gap | tracks | the type-vs-value namespace agreement question (D7); its local-vs-local precedence pin is preserved (as landed: `local_structure_wins_over_same_named_local_enum` in `enum_ctor_param_binding_tests.rs`; the planning-era name `same_module_structure_still_beats_same_module_enum` never landed — corrected on #5920 at decompose) | #5920 / α | verified its text carries the question |
 | **#5391** standard-parts program | consumes | interim collision survivability for user part/material enum names | this PRD (interim), stdlib-namespace (end-state) | no new edge (its gates already ride stdlib-namespace) |
 
 ## §8 — Decomposition plan (Greek labels → real ids at decompose)
@@ -297,35 +297,43 @@ neighbourhood; narrow file locks favor edges over contention. `metadata.files`
 tight-or-empty. No novel grammar anywhere: `grammar_confirmed=true` batch-wide (fixtures
 use existing syntax; validated against the checker 2026-08-20).
 
-- **α — Hoist the shadow scope over the whole resolving pipeline** (M1, D1). **LEAF.**
+- **α — #6394 — Hoist the shadow scope over the whole resolving pipeline** (M1, D1). **LEAF.**
   Crates: reify-compiler. Signal: `shadow_payload_binder.ri` — `reify check` exits 0
   (today: overload Error, *probe*); harness test pins the payload field lowering
   `Enum("Fit")`; boundary rows 5, 8. Deps: none.
-- **β — Shadow-set hygiene: generic filter, assertion strength, shared filter helper**
-  (M2). Intermediate → γ (γ's predicate consults the set β finalizes). Crates:
+- **β — #6395 — Shadow-set hygiene: generic filter, assertion strength, shared filter
+  helper** (M2). Intermediate → γ (γ's predicate consults the set β finalizes). Crates:
   reify-compiler. Signal: boundary row 7 pins (bare generic-enum name not collapsed;
   applied path preserved); the four filter-idiom sites collapse onto the shared helper
   (grep shows one definition). Deps: α (same-file adjacency; keeps locks serial).
-- **γ — Obligation-aware conformance diagnostics** (M3+M4, D2/D3). **LEAF — the headline.**
+- **γ — #6396 — Obligation-aware conformance diagnostics** (M3+M4, D2/D3).
+  **LEAF — the headline.**
   Crates: reify-compiler, reify-core (`DiagnosticCode` variant). Signal: boundary rows
   1–4, 6, 9 — `shadow_oblig_{redeclared,omitted,required}.ri` each emit exactly one new
   Error naming trait + prelude module with the enum-declaration label; renamed-enum
   control clean; `member_enum_ctor.ri` green. Deps: β.
-- **δ — Docs: shadowing rule, obligation collision, remedy** (M5; docs-truth gate).
+- **δ — #6397 — Docs: shadowing rule, obligation collision, remedy** (M5; docs-truth gate).
   **LEAF.** Modules: reify-mcp chunks, `.claude/skills/reify-design/SKILL.md` index.
   Signal: doc-chunk documents the rule + the 7 obligation names + the remedy, signatures
   registry-verified; cheatsheet index line present; discoverability — the collision
   findable from the chunks by intent query. Deps: γ.
-- **ω — PRD close** (overlay decompose-close obligation; filed at decompose). Signal: the
+- **ω — #6398 — PRD close** (overlay decompose-close obligation; filed at decompose). Signal: the
   committed terminal-status header (SHIPPED + leaf ids + AS-AUTHORED freeze + LIVE map,
   matching the data-carrying-enums shape) on this PRD and its capability manifest, after
   re-verifying the D7 tracking pins (§3). Deps: α, β, γ, δ.
 
-DAG: α → β → γ → δ → ω.
+DAG: α #6394 → β #6395 → γ #6396 → δ #6397 → ω #6398. All five filed 2026-08-20 in
+one `planning_mode` batch; every edge is a real `add_dependency` edge (ω depends on all
+four). Capability manifest: `enum-shadow-coherence.capability-manifest.md` + its
+`.yaml` sidecar (33 bindings, all PASS).
 
-**Companion corrections at decompose** (task-record writes, no code): rewrite #5969 per
-§7; append the D1 ratchet note to #6259; file the type-param-defaults follow-up (§9);
-wire all edges as real `add_dependency` edges.
+**Companion corrections at decompose** (task-record writes, no code) — all four done
+2026-08-20: **#5969** rewritten per §7 (re-scoped down to the imported-user-module-enums
+surface alone and gated on stdlib-namespace α #5493; the other three surfaces are recorded
+there as fixed-on-main or owned by #5494); the D1 ratchet note appended to **#6259**; the
+type-param-defaults follow-up filed as **#6399** (gated on α #6394); and one correction
+this session found — §7's #5920 row cited a planning-era pin name that never landed, fixed
+in that row and on #5920 itself.
 
 **G7 walk (reify INV-SF family, advisory here):** INV-SF-2 `error-severity-exits-nonzero`
 — D2 is an ordinary Error (exit policy untouched); INV-SF-3
@@ -350,8 +358,8 @@ conformance integration-test binaries — no new gate-resident test binary, no n
   tracked, never silently dropped).
 - **Type-param defaults** — `convert_type_params` resolves defaults with an unconditional
   `StructureRef` fallback that bypasses both the shadow override and the enum fallback
-  *(probe-adjacent, found by code reading)*; small, separable, filed as a follow-up task
-  at decompose rather than widening C1 here.
+  *(probe-adjacent, found by code reading)*; small, separable, filed at decompose as
+  **#6399** (gated on α #6394) rather than widening C1 here.
 - **General user-shadows-stdlib Warning→Error staging** → stdlib-namespace κ (D-2).
 - **The enum-vs-enum shadow inversion and every other name kind** → stdlib-namespace α.
 - **Enums imported from other user modules entering the shadow set** → α / the #5969
