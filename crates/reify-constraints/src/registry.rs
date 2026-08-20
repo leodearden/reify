@@ -5,7 +5,11 @@
 
 use crate::decompose::decompose_into_components;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
+use reify_ir::{
+    AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver,
+    ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
+    RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap,
+};
 use std::collections::HashMap;
 
 // ε-band constants (task ε — PRD §12.1).
@@ -206,8 +210,11 @@ impl SolverRegistry {
         // objective to an arbitrary component of a nondeterministic `HashMap`
         // iteration while the other component's autos were solved
         // feasibility-only against stale seeds.
-        let components =
-            decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
+        let components = decompose_into_components(
+            &problem.auto_params,
+            &problem.constraints,
+            obj_refs.as_ref(),
+        );
 
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
@@ -628,7 +635,10 @@ impl ConstraintSolver for SolverRegistry {
 /// the accumulated ε-band constraints, the final rank may itself be uniquely determined.
 /// Infeasible / NoProgress from any stage propagates immediately.
 fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) -> SolveResult {
-    let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
+    let obj = base
+        .objective
+        .as_ref()
+        .expect("solve_lexicographic: objective must be Some");
 
     // --- Group terms into ranks by distinct priority, sorted DESCENDING ---
     let priority_order: Vec<u32> = {
@@ -682,7 +692,10 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         let free_auto_params: Vec<AutoParam> = base
             .auto_params
             .iter()
-            .map(|ap| AutoParam { free: true, ..ap.clone() })
+            .map(|ap| AutoParam {
+                free: true,
+                ..ap.clone()
+            })
             .collect();
 
         // β (task #5189): mirror the degenerate single-priority path above, which
@@ -703,7 +716,10 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         let stage_result = solver.solve(&stage_problem);
 
         match stage_result {
-            SolveResult::Solved { values, unique: stage_unique } => {
+            SolveResult::Solved {
+                values,
+                unique: stage_unique,
+            } => {
                 // Warm-start the next stage from this stage's solution.
                 for (k, v) in &values {
                     current_values.insert(k.clone(), v.clone());
@@ -746,11 +762,15 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                         &values,
                         &base.dependent_cells,
                         &base.functions,
+                        None,
                     );
                     match eval_rank_cost(&rank_terms, &scored, &base.functions) {
                         Some(obj_star) => {
-                            accumulated_constraints
-                                .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                            accumulated_constraints.extend(build_band_constraints(
+                                &rank_terms,
+                                obj_star,
+                                stage_idx,
+                            ));
                         }
                         None => {
                             tracing::warn!(
@@ -763,7 +783,10 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                     }
                 }
 
-                last_result = Some(SolveResult::Solved { values, unique: result_unique });
+                last_result = Some(SolveResult::Solved {
+                    values,
+                    unique: result_unique,
+                });
 
                 if is_final {
                     break;
@@ -838,11 +861,13 @@ fn signed_term_expr(term: &ObjectiveTerm) -> CompiledExpr {
         ObjectiveSense::Minimize if is_unit => e,
         ObjectiveSense::Maximize if is_unit => CompiledExpr::unop(UnOp::Neg, e, e_type),
         ObjectiveSense::Minimize => {
-            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
+            let w_lit =
+                CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
         ObjectiveSense::Maximize => {
-            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
+            let w_lit =
+                CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
     }
@@ -892,6 +917,9 @@ fn build_band_constraints(
     let base_idx = stage_idx as u32 * 2;
     vec![
         (ConstraintNodeId::new("__lex_freeze__", base_idx), le_expr),
-        (ConstraintNodeId::new("__lex_freeze__", base_idx + 1), ge_expr),
+        (
+            ConstraintNodeId::new("__lex_freeze__", base_idx + 1),
+            ge_expr,
+        ),
     ]
 }
