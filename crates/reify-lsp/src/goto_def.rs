@@ -192,10 +192,13 @@ pub fn compute_goto_definition_cross_file_with_parsed(
 
 /// Find a top-level declaration by name in a source string and return its Location.
 ///
-/// Thin wrapper over [`find_declaration_name_span`] that pairs the located
-/// name-token span with `uri` as an LSP [`Location`].
+/// Thin wrapper over [`find_declaration_name_span`], falling back to
+/// [`find_type_alias_name_span`] so cross-file goto-def also resolves a `type`
+/// alias (#6341), and pairing the located name-token span with `uri` as an LSP
+/// [`Location`].
 fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Location> {
-    let span = find_declaration_name_span(source, name)?;
+    let span = find_declaration_name_span(source, name)
+        .or_else(|| find_type_alias_name_span(source, name))?;
     Some(Location {
         uri: uri.clone(),
         range: span_to_range(source, span),
@@ -233,6 +236,33 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
             // Point to the name within the declaration, not the entire span.
             // Find the name's byte position within the declaration text.
             let name_offset = find_name_offset_in_decl(source, span.start, name);
+            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
+        }
+    }
+    None
+}
+
+/// Find the **name-token span** of a top-level `type` alias declaration named `name`.
+///
+/// Deliberately SEPARATE from [`find_declaration_name_span`], which is `pub(crate)`
+/// and shared with the cross-file rename/reference collectors. Adding a TypeAlias
+/// arm there would classify a locally-declared alias as a renameable home
+/// declaration — but those collectors walk *expressions*, not type expressions, so
+/// a rename would move the declaration token and silently miss every
+/// `param x : Alias` use site, corrupting the user's file. Goto-def is read-only
+/// and has no such hazard, so the widening lives here, in the goto_def-private
+/// wrapper's fallback. Task #6341.
+fn find_type_alias_name_span(source: &str, name: &str) -> Option<SourceSpan> {
+    // Prelude-aware parse for AST-shape consistency across reify-lsp;
+    // see task 2525.
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
+
+    for decl in &parsed.declarations {
+        if let reify_ast::Declaration::TypeAlias(t) = decl
+            && t.name == name
+        {
+            // Point to the name within the declaration, not the entire span.
+            let name_offset = find_name_offset_in_decl(source, t.span.start, name);
             return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
         }
     }
