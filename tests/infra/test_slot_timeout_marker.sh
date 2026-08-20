@@ -514,11 +514,19 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # Section F derives (D_ROSTER -- direct call sites, plus their transitive
 # invocation closure since task 6291). D_ROSTER also lists EIGHT static-only
 # members (test_run_all.sh, test_slot_event_log.sh, test_verify_semaphore_e2e.sh
-# and the five transitive members 6291 added); their evidence-preservation is
-# ASSERTED IN PROSE beside D_ROSTER_MODE -- measured, and for two of the
-# transitive members measured NOT clean on the bare-variable echo/description
-# channel (recorded there in full) -- but is NOT machine-checked; generalizing
-# D4 to cover them is tracked as #6278.
+# and the five transitive members 6291 added). Their per-SITE stderr diversion
+# IS machine-checked now, by SECTION G at the end of this file (task 6278):
+# G1 proves every deadline-capable site in each of the eight diverts stderr off
+# the inherited fd 2, G3 that no member passes vacuously, and G0 that those
+# eight remain the WHOLE static-only slice as the roster grows.
+# D4 deliberately stays what it is -- the SECTION-SLICED, EVIDENCE-PRESERVING
+# arm over the three behavioural D_MEMBERS. Section G asserts the weaker LEAK
+# property over whole files, and Section G's own preamble records why the two
+# grammars must stay apart rather than being unified.
+# STILL ONLY MEASURED IN PROSE, beside D_ROSTER_MODE: the OTHER channel. Two of
+# the transitive members are measured NOT clean on the bare-variable
+# echo/description path -- recorded there in full, filed separately, and
+# outside what Section G asserts.
 # Section F derives D_ROSTER_MODE's behavioural/static-only split directly
 # from D_MEMBERS membership (not a hand-typed parallel array), so the two
 # cannot silently diverge -- see Section F for the derivation.
@@ -1038,18 +1046,32 @@ echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocat
 # deadline-capable SUITE appearing by EITHER route -- a file with no matching
 # entry in D_ROSTER at all. A green F1 is therefore proof that the roster is
 # SELF-CONSISTENT over both routes; it is NOT proof that no tests/infra suite
-# can reach a deadline by ANY route whatsoever. Four gaps are deliberately
-# out of scope:
+# can reach a deadline by ANY route whatsoever. Of the four gaps recorded here,
+# (1) is now CLOSED -- by Section G at the end of this file -- and (2), (3) and
+# (4) remain deliberately out of scope. The numbering is RETAINED rather than
+# compacted because this file cites these gaps by number from several places.
 #
 # (1) A new unredirected deadline SITE added inside an existing static-only
-# roster member -- D4's per-site stderr-capture check (D4a/D4b) still covers
-# only the three behavioural D_MEMBERS. Generalizing D4 to the static-only
-# members was declined here because it needs subshell-block analysis D4's
-# line-oriented section slicer (_d_section_cmds) cannot do:
+# roster member. CLOSED by SECTION G (task 6278). What stood here recorded that
+# generalizing D4 had been declined because it needs subshell-block analysis
+# D4's line-oriented section slicer (_d_section_cmds) cannot do:
 # test_verify_semaphore_e2e.sh captures at `) 2>"$C_ERR"`, on the subshell's
 # closing line, several lines after the invocation it guards -- not on the
-# invoking line itself, which is the only shape D4's slicer can see.
-# Generalizing D4 to cover it is tracked as #6278.
+# invoking line itself, which is the only shape D4's slicer can see. Section G
+# supplies that analysis: a two-pass block scan over subshell, command-
+# substitution and inline `bash -c` bodies, so a new unredirected
+# deadline-capable site inside ANY static-only member now goes RED.
+# WHAT REMAINS HAND-MAINTAINED, stated so the closure is not over-read: the
+# per-member (scan-file, site-target) DECLARATION. Section G does not DERIVE
+# which token is a member's deadline-capable site, and for the motivating
+# member it could not -- test_verify_semaphore_e2e.sh's site is
+# scripts/verify.sh, outside this section's node set by (2)(i), so a derived
+# predicate yields ZERO sites for it and would be vacuously green. Two asserts
+# bound that declaration instead: G0 checks the declared coverage still equals
+# the DERIVED static-only slice, so roster growth is loud rather than silent;
+# G3 checks each member's declared site still resolves to at least one real
+# site, so a moved invocation is loud too. The scan-file indirection for the
+# one second-order member is likewise declared, not derived from F_FWD_LIB_MAP.
 #
 # (2) RESIDUAL ROUTES THE CLOSURE STILL DOES NOT FOLLOW. Task 6291 CLOSED
 # what used to stand here: a suite that reaches a deadline only by invoking
@@ -1193,6 +1215,11 @@ D_ROSTER=(
 # a future reader needs in order to decide whether the exclusion still
 # holds. (The three behavioural entries need none: their justification is
 # that they ARE run, inside Section D's concurrent arm.)
+# READ THESE WITH SECTION G IN HAND (task 6278): every static-only entry's
+# SITE-level stderr diversion is now ASSERTED there, not merely measured in
+# this prose. What these notes still carry that no assert does is the OTHER
+# channel -- the bare-variable echo/description dumps recorded below -- which
+# Section G deliberately does not cover.
 #   test_run_all.sh -- bucket pool; DOES force a deadline every green run
 #   (Test 24, test_run_all.sh:2235-2320: a 30s holder on slot-1 against
 #   REIFY_RUN_ALL_POOL_WAIT=2), but measured clean on both leak channels:
@@ -1241,8 +1268,11 @@ D_ROSTER=(
 #   token, so it is outside E1's grammar in both directions -- E_CAT_RE is
 #   reader-keyed and E1 is assert-keyed, and this is a bare `echo`. Stated as
 #   a measured fact, not a defect claim against this task: the fix touches
-#   another module and belongs to the guard-widening work #6278 sits in, and
-#   is filed separately (ticket tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
+#   another module. Note the distinction Section G does NOT erase -- G asserts
+#   SITE-level stderr diversion, and this site's capture is correct (G1 passes
+#   on it, scanning the lib); what leaks is the DESCRIPTION channel one step
+#   later, which stays out of scope here and is filed separately (ticket
+#   tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
 #   test_verify_env_ambient_isolation.sh -- bucket pool; route
 #   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
 #   2>&1` :177). The capture at the site is correct (into $amb_out,
