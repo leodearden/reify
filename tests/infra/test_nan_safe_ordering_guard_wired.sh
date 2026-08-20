@@ -825,4 +825,95 @@ stage
 assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
+# ===========================================================================
+# hK — the KEEP-SCOPED decision, pinned executably (task 5159).
+#
+# These crates/modules are OUT of SCOPE_PATHSPECS by RECORDED DECISION, not
+# by oversight: docs/prds/compute-fea-hardening.md "Resolved design decision
+# 9". The scope RULE is "the physical/geometric numeric solve path"; the
+# 2026-08-20 per-site census behind the call, and the condition under which
+# the scope widens, live there.
+#
+# WHY PIN AN ABSENCE. The 2026-07-09 census that prompted task 5159 drifted
+# in six weeks without anyone noticing (a new site appeared in
+# reify-constraints; every cited line number moved). Prose cannot notice
+# that. These assertions can: they turn "we deliberately do not scan here"
+# into something that FAILS when it stops being true.
+#
+# The census also found that the out-of-scope sites are NOT all guarded —
+# 7 of the 14 gate-visible ones are not provably NaN-safe. Widening today
+# would therefore force either 6-7 FALSE `// nan-safe:allow` rationales (which
+# destroys the escape's only value — that a reader can trust the stated
+# reason) or 6-7 fail-closed fixes across 3 crates. Those fixes are owned by
+# filed follow-up work, cited in decision 9, NOT by this gate.
+#
+# A change that flips ANY assertion below is the intended tripwire.
+# SCOPE_PATHSPECS and these pins are meant to fail together: send the
+# reviewer to decision 9's census table and its follow-up tickets before
+# approving it.
+#
+# ANTI-VACUITY: hK8 writes the BYTE-IDENTICAL hazard text to a COVERED path
+# and requires exit 1. Without it, a typo in $HK_HAZARD would make all seven
+# exclusion assertions pass for the wrong reason and the pin would be
+# worthless — the same failure mode block (hI) guards at the scan-set level.
+# ===========================================================================
+echo ""
+echo "--- (hK): deliberately-excluded domains stay OUT of the gate's scan set ---"
+
+# The one hazard line every hK assertion uses, written byte-identically to
+# both the excluded paths (must NOT flag) and the covered path (MUST flag).
+HK_HAZARD='pub fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); }'
+
+# write_hazard_at <repo-relative-path> — plant $HK_HAZARD at that path.
+#
+# Two-file writer: the COVERED crates/reify-fdm/src/lib.rs is always
+# (re)created first, clean, so the scan set is never empty. Without it the
+# gate would exit 2 per the (hI) contract and every "not flagged" assertion
+# below would be testing the wrong thing — passing because the gate errored
+# out, not because the path is out of scope. When <path> IS the covered file
+# (hK8) it simply overwrites that clean content with the hazard.
+write_hazard_at() {
+    local rel="$1"
+    rm -rf "$FIX/crates"
+    mkdir -p "$FIX/crates/reify-fdm/src"
+    printf 'pub fn covered_but_clean() {}\n' > "$FIX/crates/reify-fdm/src/lib.rs"
+    mkdir -p "$FIX/$(dirname "$rel")"
+    printf '%s\n' "$HK_HAZARD" > "$FIX/$rel"
+    stage
+}
+
+# The deliberately-excluded set, as measured on 2026-08-20. Line numbers
+# drift (that is the whole point of this block); the FILE-level record is
+# what is authoritative here and in decision 9.
+HK_EXCLUDED=(
+    'crates/reify-stdlib/src/analysis.rs'
+    'crates/reify-stdlib/src/matrix.rs'
+    'crates/reify-constraints/src/solver.rs'
+    'crates/reify-eval/src/engine_build.rs'
+    'crates/reify-eval/src/persistent_cache.rs'
+    'crates/reify-eval/src/warm_pool.rs'
+    'crates/reify-ir/src/value.rs'
+)
+
+_hk_i=0
+for _hk_rel in "${HK_EXCLUDED[@]}"; do
+    _hk_i=$((_hk_i + 1))
+    write_hazard_at "$_hk_rel"
+    assert "hK$_hk_i: $_hk_rel is OUT of scope by decision — an UNGUARDED hazard there is not flagged" \
+        _exits_with 0 bash "$GATE" --repo-root "$FIX"
+done
+
+# hK8 — ANTI-VACUITY CONTROL. Same bytes, covered path, must flag.
+write_hazard_at 'crates/reify-fdm/src/lib.rs'
+assert "hK8: CONTROL — the byte-identical hazard IS flagged at a COVERED path (so hK1-hK7 are not passing vacuously)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hK9 — the covered scope is still wired end-to-end: covered file, clean, green.
+write_fixture <<'RS'
+pub fn covered_but_clean() {}
+RS
+stage
+assert "hK9: CONTROL — a clean covered file alone is exit 0 (scan set non-empty and scanned)" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
 test_summary
