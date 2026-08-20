@@ -1187,4 +1187,57 @@ structure Bolt {
             "hover on cluster member should name SocketHead arm type, got: {md}"
         );
     }
+
+    // --- task #6341: hover on type-alias declarations ---
+
+    /// Hover on an alias whose RHS names a structure. The compiler leaves
+    /// `resolved_type` as `None` here (the alias DFS runs before structures are
+    /// compiled — see #6259), so the signature must come from the author's
+    /// `type_expr` spelling, which is always available on the parsed decl.
+    #[test]
+    fn hover_on_unresolvable_type_alias_shows_source_spelling() {
+        let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
+        // Line 3 is "type F = Fit"; column 5 is the 'F' name token.
+        let position = Position::new(3, 5);
+        let md = hover_markdown(source, position)
+            .expect("hover on a type-alias name must return Some");
+        assert!(
+            md.contains("```reify\ntype F = Fit\n```"),
+            "hover should render the alias signature fence, got: {md}"
+        );
+    }
+
+    /// The signature line echoes the author's surface spelling, NOT the resolved
+    /// `Type`'s semantic Display (which would print `type Speed = Scalar[m·s^-1]`
+    /// — a `type` line the user never wrote).
+    #[test]
+    fn hover_on_resolvable_type_alias_shows_source_spelling_not_resolved_type() {
+        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
+        let position = Position::new(0, 6); // on 'Speed'
+        let md = hover_markdown(source, position)
+            .expect("hover on a resolvable type-alias name must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "signature must echo the source spelling, got: {md}"
+        );
+        assert!(
+            !md.contains("type Speed = Scalar["),
+            "signature must not render the resolved Type in the `type ... =` slot, got: {md}"
+        );
+    }
+
+    /// The new alias arm must not swallow positions on the alias RHS: the `Fit`
+    /// token still resolves through the structure-name hover.
+    #[test]
+    fn hover_on_type_alias_rhs_name_is_unaffected() {
+        let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
+        // Line 3 "type F = Fit": column 10 is inside the 'Fit' RHS token.
+        let position = Position::new(3, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover on the alias RHS structure name must return Some");
+        assert!(
+            md.contains("structure Fit"),
+            "RHS name should still resolve as a structure, got: {md}"
+        );
+    }
 }
