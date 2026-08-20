@@ -4331,6 +4331,193 @@ describe('reifyLanguage — fold and indent coverage', () => {
     // not after `enum`, which would hide the name `Color` too.
     expect(range).toEqual({ from: src.indexOf('{') + 1, to: src.lastIndexOf('}') });
   });
+
+  /**
+   * THE BEHAVIOURAL GUARD task #6325 was filed for. `resolves fold and indent
+   * props on %s` above only checks that `foldNodeProp` is DEFINED on the node
+   * type — a prop that resolves and then returns `null` at CALL time (which is
+   * exactly what `foldBody` does whenever `node.getChild('{')` finds nothing)
+   * passes that check while the fold arrow is dead. Task #5931 measured this
+   * for real: folding `ImportItems`' opener into an anonymous literal token
+   * left `foldBody` returning `null` for `import std.mech.{Bolt, Nut}` while
+   * the whole 428/428 GUI suite stayed green, because nothing called the prop
+   * and looked at what came back.
+   *
+   * `BEHAVIOR_FIXTURES` pins one minimal, corpus-attested-where-possible
+   * snippet per node type in `BRACE_FIRST_BODIES`/`KEYWORD_LED_BODIES`, and the
+   * test below actually invokes `foldNodeProp` on the located node — through
+   * `EditorState.create`, the same call shape the editor makes — and asserts
+   * the range is non-null and spans exactly the body's own brace interior.
+   *
+   * `FnBody` and the `JointDof`/`JointBody` family each have a second,
+   * legitimately brace-less arm (`= expression`; a bare DOF field or a bare
+   * expression body) where `foldBody` returning `null` is the CORRECT answer,
+   * not a gap. This map pins only the BRACED arm for those three, so the
+   * `it.each` below asserts non-null uniformly across every entry; the
+   * brace-less arms get their own explicit expected-null test right after it,
+   * so that half of the contract is pinned too rather than left implicit.
+   */
+  type BehaviorFixture = {
+    /** Source that must parse clean and contain a node named the map key. */
+    src: string;
+  };
+
+  const BEHAVIOR_FIXTURES: Record<string, BehaviorFixture> = {
+    // ── BRACE_FIRST_BODIES ──────────────────────────────────────────────
+    Block: { src: 'structure def F { let x = 1mm }' },
+    // Corpus-attested VERBATIM: the braced-arm slice above (`fn g() -> Real
+    // { let a = 1.0; a }`).
+    FnBody: { src: 'fn g() -> Real { let a = 1.0; a }' },
+    SpecializationBody: { src: 'structure def S { sub x : Foo<T> { bore = 5mm } }' },
+    PortBody: {
+      src: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
+    },
+    ConnectBody: {
+      src: 'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
+    },
+    // `import a.b {C, D}` — no separator, matching the RULE this port follows
+    // (see the long note on `ImportDeclaration` in reify.grammar).
+    ImportItems: { src: 'import std.mech {Bolt, Nut}' },
+    // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
+    KeyedMemberBlock: {
+      src: 'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
+    },
+    // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:32 — the
+    // braced-record DOF form.
+    JointDof: {
+      src: 'joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = concentric(a, b)',
+    },
+    // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:26 — the
+    // block-arm JointBody.
+    JointBody: {
+      src:
+        'joint revolute(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) with angle: Angle in 0deg..120deg = { concentric(a, b)  on(p, stop) }',
+    },
+    // ── KEYWORD_LED_BODIES ──────────────────────────────────────────────
+    MatchExpression: {
+      src: 'structure def F { let code = match grade { Standard => 1, Reinforced => 2, Premium => 3 } }',
+    },
+    EnumDeclaration: { src: 'enum Grade { Standard, Reinforced, Premium }' },
+    // First EnumVariant in this attested string (`Circle { radius: Length }`)
+    // carries the braced payload; the sibling `Point` variant is bare and is
+    // not what `findFirstNodeNamed` locates here.
+    EnumVariant: { src: 'enum Shape { Circle { radius: Length }, Point }' },
+    MetaBlock: {
+      src: 'structure def F { meta { project = "integration-test", version = "0.1" } }',
+    },
+    SetLiteral: { src: 'structure def F { let s = set { 1, 2 } }' },
+    MapLiteral: { src: 'structure def F { let m = map { 1 => 2 } }' },
+    VariantConstruction: { src: 'structure def F { let s = Circle { radius: 5mm } }' },
+    // First VariantBindingPattern in this attested string is `Circle { radius: r }`.
+    VariantBindingPattern: {
+      src: 'structure def F { let area = match outline { Circle { radius: r } => 3.14159 * r * r, Rect { width: w, height: h } => w * h, Point => 0mm * 0mm } }',
+    },
+    FieldDefinition: {
+      src: 'field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }',
+    },
+    FieldSource: {
+      src: 'field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }',
+    },
+    PurposeDeclaration: {
+      src: 'purpose design_review(subject : Structure) { constraint 1mm > 0mm }',
+    },
+    RelateBlock: { src: 'structure def F { relate { fasten(a.frame, b.frame) } }' },
+    ConstraintDefinition: {
+      src: 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}',
+    },
+    SubRelateBlock: {
+      src: 'structure def F { sub s : T at auto where { concentric(a, b) } }',
+    },
+    MatchArmDeclBlock: {
+      src: 'structure def F { match kind { Hex => sub head : HexHead, Sq => sub head : SqHead } }',
+    },
+  };
+
+  it('pins exactly one behavioural fixture per brace-delimited body', () => {
+    // Same drift protection as the two list-vs-grammar checks above, aimed at
+    // THIS map instead: a node type added to either list with no fixture here
+    // would silently skip the behavioural assertion below rather than fail it.
+    expect(Object.keys(BEHAVIOR_FIXTURES).sort()).toEqual(
+      [...BRACE_FIRST_BODIES, ...KEYWORD_LED_BODIES].sort(),
+    );
+  });
+
+  /** First node named `name` in the parse of `src`, or `null` if none. */
+  function findFirstNodeNamed(src: string, name: string): SyntaxNode | null {
+    const cursor = reifyLRLanguage.parser.parse(src).cursor();
+    do {
+      if (cursor.type.name === name) return cursor.node;
+    } while (cursor.next());
+    return null;
+  }
+
+  /**
+   * The brace pair belonging to `node` itself, located by SCANNING THE SOURCE
+   * TEXT within `node`'s own span rather than by reading `node`'s children —
+   * so this is an independent check of what `foldNodeProp` returns, not a
+   * restatement of `foldBody`'s own `getChild('{')` logic against itself.
+   * `node.from` skips any brace belonging to an ENCLOSING node (the structure
+   * body's own `{`, say), and `node.to - 1` bounds the search so a NESTED
+   * body's closing brace (an override block inside a keyed entry, say) is
+   * never mistaken for `node`'s own.
+   */
+  function ownBraceInterior(src: string, node: SyntaxNode): { from: number; to: number } {
+    const open = src.indexOf('{', node.from);
+    const close = src.lastIndexOf('}', node.to - 1);
+    if (open < 0 || close < 0 || open >= close) {
+      throw new Error(`no brace pair inside node span [${node.from}, ${node.to}) of: ${src}`);
+    }
+    return { from: open + 1, to: close };
+  }
+
+  it.each(Object.entries(BEHAVIOR_FIXTURES))(
+    'folds %s to a non-null range spanning its own brace interior',
+    (name, { src }) => {
+      expect(countErrorNodes(src), `${name} fixture has error nodes: ${src}`).toBe(0);
+
+      const node = findFirstNodeNamed(src, name);
+      expect(node, `no ${name} node in the parse of: ${src}`).not.toBeNull();
+
+      const fold = node!.type.prop(foldNodeProp)!;
+      const range = fold(node!, EditorState.create({ doc: src }));
+      expect(range, `${name}'s foldNodeProp returned null on: ${src}`).not.toBeNull();
+      expect(range).toEqual(ownBraceInterior(src, node!));
+    },
+  );
+
+  /**
+   * The other half of the contract: the two brace-less arms where `null` IS
+   * the correct answer, so the non-null assertion above does not simply
+   * invert into a false failure for them. `FnBody`'s `= expression` sugar
+   * (grammar.js:239-246) and `JointDof`/`JointBody`'s bare-field / bare-
+   * expression arms (grammar.js:781-784, 799-802) are the only three.
+   */
+  describe('legitimately brace-less arms return null', () => {
+    it('FnBody `= expression` sugar', () => {
+      // Corpus-attested VERBATIM: the brace-less-arm slice above.
+      const src = 'fn twice(x : Real) -> Real = x * 2';
+      expect(countErrorNodes(src)).toBe(0);
+      const node = findFirstNodeNamed(src, 'FnBody');
+      expect(node, 'no FnBody in the parse').not.toBeNull();
+      const fold = node!.type.prop(foldNodeProp)!;
+      expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
+    });
+
+    it('JointDof bare field and JointBody bare expression', () => {
+      // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri — the
+      // range-less-DOF slice above. Exercises both node types' brace-less arm
+      // in one snippet: the DOF is a bare `JointDofField`, and the body is the
+      // bare expression `concentric(a, b)`.
+      const src = 'joint prismatic(a: Axis, b: Axis) with travel: Length = concentric(a, b)';
+      expect(countErrorNodes(src)).toBe(0);
+      for (const name of ['JointDof', 'JointBody']) {
+        const node = findFirstNodeNamed(src, name);
+        expect(node, `no ${name} in the parse`).not.toBeNull();
+        const fold = node!.type.prop(foldNodeProp)!;
+        expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
+      }
+    });
+  });
 });
 
 // ── Corpus drift ledger ──────────────────────────────────────────────────
