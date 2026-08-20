@@ -577,9 +577,23 @@ pub fn compute_document_symbols_from_parsed(
                     None,
                 ));
             }
+            Declaration::TypeAlias(t) => {
+                // SymbolKind has no TypeAlias member; TYPE_PARAMETER is the
+                // conventional LSP mapping for a type alias (rust-analyzer maps
+                // its own SymbolKind::TypeAlias the same way). Task #6341.
+                symbols.push(make_symbol(
+                    &t.name,
+                    SymbolKind::TYPE_PARAMETER,
+                    span_to_range(source, t.span),
+                    name_selection_range(source, t.span, &t.name),
+                    None,
+                ));
+            }
             // All other top-level declarations are not navigable symbols:
-            // Import, Unit, TypeAlias, Constraint (ConstraintDef), Field,
-            // Purpose, and Module have no stable jump target and are skipped.
+            // Import, Unit, Constraint (ConstraintDef), Field, Purpose, and
+            // Module have no stable jump target and are skipped. Type aliases
+            // used to be listed here; since #6341 they emit a TYPE_PARAMETER
+            // symbol in the arm just above.
             _ => {}
         }
     }
