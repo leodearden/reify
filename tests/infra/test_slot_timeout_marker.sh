@@ -2500,4 +2500,85 @@ assert "G2a: positive control -- a deadline-capable site with NO redirect at all
 assert "G2b: the same site capturing to a file is NOT flagged (got $G2B_N unredirected)" \
     test "$G2B_N" -eq 0
 
+# --- G2c/G2d: the BLOCK-SCOPE controls. Both fixtures are shapes the real
+# roster members use, and neither is visible to a line-local predicate even
+# after continuation-joining -- which is exactly why Section F's SCOPE (1)
+# declined to generalize D4 rather than doing it cheaply.
+#
+# TWO HALVES EACH, and the second half of each pair is what stops block
+# tolerance from being BLANKET tolerance: a predicate that simply ignored
+# anything inside a `(` or `$(` would pass the first half of both and be
+# useless. The negative half pins that an UNCAPTURED enclosing block is still
+# flagged.
+G_CTRL_SUB_CAP="$TMPG/ctrl-subshell-captured.cmds"
+G_CTRL_SUB_BARE="$TMPG/ctrl-subshell-bare.cmds"
+G_CTRL_MERGE_BARE="$TMPG/ctrl-merge-stdout-inherited.cmds"
+G_CTRL_MERGE_SUBST="$TMPG/ctrl-merge-stdout-diverted.cmds"
+
+# The shape at test_verify_semaphore_e2e.sh: the invocation is inside a
+# subshell and the capture is on the subshell's CLOSING line, several lines
+# later. Eight of that member's eleven sites are captured only this way, and
+# this is the shape Section F's SCOPE (1) names verbatim.
+printf '%s\n' \
+    '_C_RC=0' \
+    '(' \
+    '    bash "$G_PROBE" --pool' \
+    ') 2>"$G_ERR" || _C_RC=$?' \
+    > "$G_CTRL_SUB_CAP"
+printf '%s\n' \
+    '_C_RC=0' \
+    '(' \
+    '    bash "$G_PROBE" --pool' \
+    ') || _C_RC=$?' \
+    > "$G_CTRL_SUB_BARE"
+
+# The merge rule and its STDOUT PRECONDITION. `2>&1` is a diversion only if
+# stdout is itself diverted; with stdout inherited it is the leak, not a fix
+# (the same reason D4's grammar rejects it outright). The positive shape is at
+# test_run_all_content_skip.sh:80-87 and :380-388 and
+# test_verify_env_ambient_isolation.sh:172-178 -- `2>&1` IS on the invocation
+# line, but its legitimacy is only knowable from the enclosing `$(` opener,
+# and these carry no backslash continuation for the joiner to merge.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>&1 || _rc=$?' \
+    > "$G_CTRL_MERGE_BARE"
+printf '%s\n' \
+    'G_OUT="$(' \
+    '    bash "$G_PROBE" --pool 2>&1' \
+    ')" || _rc=$?' \
+    > "$G_CTRL_MERGE_SUBST"
+
+G2C1_N="$(_g_unredirected "$G_CTRL_SUB_CAP" "$G_CTRL_SITE")"
+G2C2_N="$(_g_unredirected "$G_CTRL_SUB_BARE" "$G_CTRL_SITE")"
+G2D1_N="$(_g_unredirected "$G_CTRL_MERGE_BARE" "$G_CTRL_SITE")"
+G2D2_N="$(_g_unredirected "$G_CTRL_MERGE_SUBST" "$G_CTRL_SITE")"
+
+assert "G2c1: a site whose capture is on its enclosing SUBSHELL's closing line is NOT flagged (got $G2C1_N unredirected)" \
+    test "$G2C1_N" -eq 0
+assert "G2c2: ... but the same site in a subshell whose closer carries NO redirect still IS (block tolerance is not blanket; got $G2C2_N unredirected)" \
+    test "$G2C2_N" -eq 1
+assert "G2d1: a bare 2>&1 with stdout INHERITED is flagged -- merging into the re-emitted stream is the leak, not a fix (got $G2D1_N unredirected)" \
+    test "$G2D1_N" -eq 1
+assert "G2d2: ... but the same 2>&1 inside a multi-line command substitution is NOT, because stdout is diverted there (got $G2D2_N unredirected)" \
+    test "$G2D2_N" -eq 0
+
+# --- G2e: THE TIER-SEPARATION PIN. Green on arrival by design, kept as a
+# standing regression guard: Section G's laxer DIVERSION grammar must not have
+# leaked into D4's deliberately file-only D_CAPTURE_RE. A single
+# `2>/dev/null` site is the one input that tells the two grammars apart -- G
+# accepts it (stderr is diverted, which is all G claims), D4 rejects it (the
+# evidence a failing assert needs is destroyed). Asserted as two separate
+# checks so "G got lax" and "D4 got lax" stay distinguishable failures.
+G_CTRL_DEVNULL="$TMPG/ctrl-devnull.cmds"
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>/dev/null || _rc=$?' \
+    > "$G_CTRL_DEVNULL"
+G2E_G_N="$(_g_unredirected "$G_CTRL_DEVNULL" "$G_CTRL_SITE")"
+G2E_D_N="$(_d_unredirected "$G_CTRL_DEVNULL" "$G_CTRL_SITE")"
+
+assert "G2e1: Section G accepts a 2>/dev/null site -- it asserts the LEAK property, and stderr is diverted (got $G2E_G_N unredirected)" \
+    test "$G2E_G_N" -eq 0
+assert "G2e2: D4's file-only grammar still REJECTS that same site -- G's laxer diversion rule did not leak into the evidence-preserving tier (got $G2E_D_N unredirected)" \
+    test "$G2E_D_N" -eq 1
+
 test_summary
