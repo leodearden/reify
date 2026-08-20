@@ -579,3 +579,98 @@ fn a_file_of_broken_functions_is_bounded_and_says_so() {
         note.message,
     );
 }
+
+/// A GENERIC (un-anchorable) fault must still be reported with a TOKEN-PRECISE span.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+///
+/// The sibling tests above pin the ANCHORED branch of `diagnose_error_node`, where a fn-body
+/// `let` supplies both a cause (`missing ';' after `let` binding …`) and a location. This test
+/// pins the other branch. The fixture below — a positional payload pattern `some(v)`, which
+/// `tree-sitter-reify`'s `match_pattern` has no production for — collapses inside a structure
+/// body with NO fn-body `let` to blame, so it falls through to the generic arm whose message is
+/// deliberately content-free (`"syntax error in structure body"`).
+///
+/// That makes the SPAN the entire information content of the diagnostic, which is why it is
+/// pinned here rather than left implicit. Before this task the same input produced
+/// `format!("syntax error: {}", node_text(child))` spanning the whole declaration: the message
+/// carried the information and the span carried none. The trade is only sound in the direction
+/// this task took it if the span is genuinely token-precise — measured on this branch, exactly
+/// one diagnostic at bytes 78..79, precisely the payload binder `v` inside `some(v)`.
+///
+/// Recorded honestly: this test arrives GREEN, because step-4/step-8/step-10 already produce
+/// that span. It is kept because `reify-compiler`'s cross-PRD ratchet
+/// `enums_chunk_option_smoke.rs::option_payload_binding_pattern_still_fails_to_parse` was
+/// re-pointed onto exactly this property (its old message-substring pin was satisfiable only by
+/// the source echo removed here), and a property another crate's ratchet depends on must be
+/// pinned inside this task's own corpus.
+///
+/// Broadening the generic MESSAGE is deliberately out of scope — follow-up #6156. Measured, no
+/// snippet choice works: `snippet(fault)` is `"v"` (says nothing), and `snippet(node)` is the
+/// declaration header, which `fn_body_parse_error_messages_do_not_echo_source_blocks` forbids.
+#[test]
+fn an_unanchorable_fault_is_reported_with_a_token_precise_span() {
+    let source = "structure def D {\n\
+                  param c : Option<Length> = some(3mm)\n\
+                  let m = match c { some(v) => v, none => 0mm }\n\
+                  }";
+
+    // Offsets via `str::find` — never hard-coded (convention from `auto_type_arg_tests.rs`).
+    let match_start = source
+        .find("match c")
+        .expect("fixture must contain 'match c'") as u32;
+    let match_end = (source
+        .find("0mm }")
+        .expect("fixture must contain the match's final arm '0mm }'")
+        + "0mm }".len()) as u32;
+    let let_m = source.find("let m").expect("fixture must contain 'let m'") as u32;
+
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+
+    // (a) The fault must be reported at all — this is the branch with no `let` to blame, and
+    // falling silent here is the very zero-diagnostic failure mode this task exists to close.
+    assert!(
+        !m.errors.is_empty(),
+        "INV-SF-7 violated — a positional payload pattern `some(v)` has no grammar production, \
+         yet the parse produced NO diagnostic.\nsource:\n{source}",
+    );
+
+    // (b) At least one diagnostic must sit INSIDE the `match` expression. With the message
+    // deliberately generic, the span is the only thing telling a user where to look.
+    let inside: Vec<_> = m
+        .errors
+        .iter()
+        .filter(|e| e.span.start >= match_start && e.span.end <= match_end)
+        .collect();
+    assert!(
+        !inside.is_empty(),
+        "expected a diagnostic inside the `match` expression (bytes {match_start}..{match_end}); \
+         every one lies outside it, so the only located evidence about this fault points \
+         somewhere else.\ngot: {:?}",
+        triples(&m),
+    );
+
+    // (c) And it must be NARROW: a whole-declaration blob also "contains" the match, so
+    // containment alone is not evidence. It must additionally start after `let m` — the blob
+    // span this class of diagnostic exists to eliminate began at or before it.
+    let precise = inside
+        .iter()
+        .any(|e| e.span.start > let_m && e.span.end - e.span.start <= 40);
+    assert!(
+        precise,
+        "expected a TOKEN-PRECISE diagnostic — starting after `let m` (byte {let_m}) and \
+         spanning at most 40 bytes. Every in-range diagnostic is either anchored at or before \
+         the `let` or spans a whole region; a blob span carries no more information than the \
+         file name.\ngot: {:?}",
+        triples(&m),
+    );
+
+    // (d) The message must still be a one-liner, not echoed source (mechanism M3).
+    for e in &m.errors {
+        assert!(
+            !e.message.contains('\n') && e.message.len() <= 200,
+            "generic-branch diagnostic echoes source rather than describing the fault: {:?}",
+            (&e.message, e.span.start, e.span.end),
+        );
+    }
+}
