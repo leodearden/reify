@@ -33,12 +33,18 @@
 //!   user-observable signal: the fixture already evaluates correctly today
 //!   (the diagnostic is a Warning, not an Error), and must keep doing so.
 //! * **No-overreach guards (green on main AND after)** — the three inline-source
-//!   tests at the bottom. They fail against an over-broad implementation: a
-//!   PRELUDE enum must not shadow a LOCAL structure, the stdlib `Fit` structure
-//!   must stay reachable from a module with no local `enum Fit`, and a
-//!   same-module `structure def N` must still beat a same-module `enum N`.
+//!   tests in the `No-overreach guards` section. They fail against an over-broad
+//!   implementation: a PRELUDE enum must not shadow a LOCAL structure, the stdlib
+//!   `Fit` structure must stay reachable from a module with no local `enum Fit`,
+//!   and a same-module `structure def N` must still beat a same-module `enum N`.
+//! * **Payload-axis no-overreach guards (green on main AND after, #6394)** —
+//!   [`payload_field_of_prelude_structure_name_unaffected_without_local_enum`] and
+//!   [`local_structure_wins_over_same_named_local_enum_in_payload`]. The last two
+//!   rules above, re-pinned on the phase the #6394 hoist newly covers. They fail
+//!   against an implementation that hoisted the scope but ALSO widened what enters
+//!   the shadow set.
 //!
-//! A failure in the last two groups is a BEHAVIOUR CHANGE, not an unimplemented
+//! A failure in the last three groups is a BEHAVIOUR CHANGE, not an unimplemented
 //! feature.
 //!
 //! **Every helper here goes through the `*_with_stdlib` test-support variants on
@@ -413,6 +419,73 @@ structure def Consumer {
         Type::StructureRef("Fit".to_string()),
         "a same-module `structure def Fit` must still beat a same-module \
          `enum Fit`; got {f:?}"
+    );
+}
+
+// ── Payload-axis no-overreach guards (green on main AND after) ───────────────
+//
+// NOT red pins — these two are green BEFORE and AFTER #6394's scope hoist, in the
+// same spirit as the `No-overreach guards` group above. They do not drive the
+// fix; they fail against an implementation that hoisted the `LocalEnumShadowScope`
+// but ALSO widened what enters the shadow set — building it from
+// `ctx.resolution_enums` (prelude ++ local) instead of `ctx.enum_defs`, or
+// dropping the local-structure subtraction. Each re-pins one of
+// `build_local_enum_shadow_set`'s two membership rules on the newly-covered phase,
+// enum-variant payload resolution.
+//
+// Same `module test.<name>` prologue convention as the group above, so
+// `W_MODULE_DECL_MISSING` never pollutes these modules.
+
+/// With no local `enum Fit` in scope, a payload field `f: Fit` must still reach
+/// the stdlib `std.tolerancing.Fit` STRUCTURE (`tolerancing.ri:268`).
+///
+/// The payload-axis mirror of
+/// [`stdlib_fit_structure_param_unaffected_without_local_enum`]: the hoist must
+/// not make every `Fit` an enum.
+#[test]
+fn payload_field_of_prelude_structure_name_unaffected_without_local_enum() {
+    const SOURCE: &str = r#"
+module test.payload_stdlib_fit_structure
+
+enum Boxed { B { f: Fit } }
+"#;
+    let module = compile_source_with_stdlib(SOURCE);
+    let f = variant_payload_field_type(&module, "Boxed", "B", "f");
+    assert_eq!(
+        f,
+        Type::StructureRef("Fit".to_string()),
+        "with no local `enum Fit`, the payload field `f: Fit` must keep resolving \
+         to the stdlib structure def; got {f:?}"
+    );
+}
+
+/// The degenerate same-module collision, on the payload axis: a module declaring
+/// BOTH `enum Fit` and `structure def Fit` keeps `StructureRef` for a payload
+/// field typed `Fit`.
+///
+/// The payload-axis mirror of [`local_structure_wins_over_same_named_local_enum`]:
+/// `build_local_enum_shadow_set` subtracts the local structure/occurrence names,
+/// and that subtraction must hold on the newly-covered phase too.
+#[test]
+fn local_structure_wins_over_same_named_local_enum_in_payload() {
+    const SOURCE: &str = r#"
+module test.payload_local_structure_vs_local_enum
+
+enum Fit { A }
+
+structure def Fit {
+    param x: Length = 1mm
+}
+
+enum Boxed { B { f: Fit } }
+"#;
+    let module = compile_source_with_stdlib(SOURCE);
+    let f = variant_payload_field_type(&module, "Boxed", "B", "f");
+    assert_eq!(
+        f,
+        Type::StructureRef("Fit".to_string()),
+        "a same-module `structure def Fit` must still beat a same-module \
+         `enum Fit` in a variant payload position; got {f:?}"
     );
 }
 
