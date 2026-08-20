@@ -90,14 +90,22 @@ EXCLUDE_SEGMENTS = {".worktrees", "target", "tests", "benches", "examples"}
 # (which we exclude from the caller search), so their publics would
 # all look like orphans. Skip them at the crate level.
 EXCLUDE_CRATES = {"reify-test-support"}
-# Source-level files included only via `#[cfg(test)] mod NAME;` in the
-# crate root. Reify's convention is to name them `test_*.rs` or end
-# with `_test_support.rs`. Detecting the cfg(test)-mod declaration
-# precisely would require parsing the module tree; the filename
-# heuristic is adequate for v1.
+# Source-level files included only via `#[cfg(test)] mod NAME;`. Reify's
+# conventions: `test_*.rs`, `*_test_support.rs`, and — for the god-file test
+# evictions (task #5026 α geometry_ops, #5027 β engine_build, …) — the sibling
+# test module `<file>/tests.rs` and `<file>/<NAME>_tests.rs`. The eviction moves
+# a `#[cfg(test)] mod tests { … }` block to a sibling file whose `#[cfg(test)]`
+# gate lives on the *declaration*, so the sibling carries no inner `#[cfg(test)]`
+# for `mask_cfg_test` to catch; without a name-based exclusion its test bodies
+# would be miscounted as production callers, masking real orphans (and un-
+# orphaning same-file-test-caller pins). Detecting the cfg(test)-mod declaration
+# precisely would require parsing the module tree; the filename heuristic is
+# adequate for v1.
 EXCLUDE_FILE_PATTERNS = (
     re.compile(r'(?:^|/)test_[^/]+\.rs$'),
     re.compile(r'_test_support\.rs$'),
+    # god-file eviction test siblings: `X/tests.rs`, `X/<NAME>_tests.rs`
+    re.compile(r'(?:^|/|_)tests\.rs$'),
 )
 
 

@@ -29,7 +29,6 @@
 //! - `crates/reify-compiler/src/module_dag.rs`: `with_cfg`,
 //!   `compile_project_with_entry_source_cfg`
 //! - `crates/reify-runtime/src/commitment.rs`: `default_overrides`
-//! - `crates/reify-runtime/src/concurrent.rs`: `default_populate_priorities`
 //! - `crates/reify-stdlib/src/trajectory/trampoline.rs`:
 //!   `value_to_multijoint_spline`, `value_to_modal_model`,
 //!   `value_to_mechanism_model`
@@ -236,7 +235,7 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
 /// references; these functions have a genuine same-file caller but no external
 /// caller, so the tool misclassifies them as orphans.
 ///
-/// Covers 13 functions across 10 files (module_dag.rs hosts 2 pins,
+/// Covers 12 functions across 9 files (module_dag.rs hosts 2 pins,
 /// trampoline.rs hosts 3).
 #[test]
 fn same_file_caller_false_positives_are_g_allow_marked() {
@@ -273,11 +272,6 @@ fn same_file_caller_false_positives_are_g_allow_marked() {
         (
             "crates/reify-runtime/src/commitment.rs",
             "default_overrides",
-        ),
-        // runtime: default_populate_priorities called within concurrent.rs
-        (
-            "crates/reify-runtime/src/concurrent.rs",
-            "default_populate_priorities",
         ),
         // stdlib trampoline: all three called within trampoline.rs
         (

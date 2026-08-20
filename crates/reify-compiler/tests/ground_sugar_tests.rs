@@ -27,9 +27,15 @@ use reify_test_support::compile_source;
 #[derive(Debug, PartialEq)]
 enum FrameOperand {
     /// `sub.frame`: `IndexAccess { ValueRef(_ : StructureRef(s)), String("frame") }`.
-    SubDatum { structure: String, member: String },
+    SubDatum {
+        structure: String,
+        member: String,
+    },
     /// `self.frame`: `MethodCall { ValueRef(_ : StructureRef(s)), "frame", [] }`.
-    SelfDatum { structure: String, member: String },
+    SelfDatum {
+        structure: String,
+        member: String,
+    },
     Other,
 }
 
@@ -48,15 +54,17 @@ fn classify(e: &CompiledExpr) -> FrameOperand {
                 _ => FrameOperand::Other,
             }
         }
-        CompiledExprKind::MethodCall { object, method, args } if args.is_empty() => {
-            match &object.result_type {
-                Type::StructureRef(s) => FrameOperand::SelfDatum {
-                    structure: s.clone(),
-                    member: method.clone(),
-                },
-                _ => FrameOperand::Other,
-            }
-        }
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } if args.is_empty() => match &object.result_type {
+            Type::StructureRef(s) => FrameOperand::SelfDatum {
+                structure: s.clone(),
+                member: method.clone(),
+            },
+            _ => FrameOperand::Other,
+        },
         _ => FrameOperand::Other,
     }
 }
@@ -125,7 +133,9 @@ fn assert_fasten_ground_desugar(relation: &CompiledExpr) {
 
 fn assert_no_relate_expects_relation(diags: &[reify_core::Diagnostic]) {
     assert!(
-        !diags.iter().any(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation)),
+        !diags
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation)),
         "a desugared fasten must not draw E_RELATE_EXPECTS_RELATION; diags: {:?}",
         diags
             .iter()

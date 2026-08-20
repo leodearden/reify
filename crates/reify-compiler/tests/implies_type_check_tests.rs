@@ -38,7 +38,10 @@ structure def Good {
 }
 "#;
     let module = compile_source(source);
-    assert_no_error_diagnostics(&module.diagnostics, "true implies false should compile cleanly");
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "true implies false should compile cleanly",
+    );
 }
 
 /// `p implies true` (where `p` is a `Bool` param) must compile without errors.

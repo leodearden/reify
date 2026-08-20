@@ -1,0 +1,13 @@
+# hotspot-survey overlay — reify
+
+- **Memory identity**: `project_id="reify"`, `agent_id="claude-interactive"`.
+- **Task tracker**: fused-memory/Taskmaster at `project_root="/home/leo/src/reify"`. Probe `.taskmaster/tasks/tasks.json` first and mine it directly with python3; if the file layout differs, fall back to `get_tasks`/`search_tasks` via fused-memory.
+- **Output**: `docs/notes/bug-hotspot-survey-<date>.md` + `-full-findings.json` — **committed** (the 2026-07-05 run left its report untracked; don't repeat that). The full-findings JSON is mandatory this time: the 07-05 run skipped it, which left no per-finding evidence trail for premise re-verification.
+- **Fix-commit vocabulary**: generic set; check recent `git log --oneline | head -50` for local marker conventions in Phase 0 before mining.
+- **History window**: full history (~48k commits in the 07-05 run) or `--since` per user scope.
+- **Subsystem vocabulary seed** (from the 2026-07-05 run's H1–H7; re-derive fresh): eval multi-path parity, geometry ops + kernel adapters, engine_build god-file, compiler type layer, GUI state bridge, caching/freshness (persistent_cache — note: churn previously EXONERATED as healthy TDD), FEA/solver (tolerance whack-a-mole history). Headline coupling signal to re-check: compiler+eval co-touched in 143 fix commits.
+- **Doc corpora**: `docs/notes/`, `docs/prds/`, `docs/architecture-audit/`, `docs/invariants.md`.
+- **Deterministic audit fold-in**: run `/audit` (`reify-audit` detector CLI) in Phase 0 — `--pattern P1,P2,P5 --since <window>` — and hand its findings to the matching clusters as known context (it detects present-state phantom-done/orphan/stub invariant violations; the survey mines history — complementary, not overlapping).
+- **Known-context sources**: fused-memory `search(project_id="reify")` + `docs/notes/hotspot-program-briefing-2026-07-06.md` (in-flight structural changes, looks-stuck-but-isn't list).
+- **Hand-off**: PRDs under `docs/prds/`; extend `docs/invariants.md` (INV-id registry — every filed task cites its INV-id and lands the enforcement in done-criteria). Release gates for deferred batches = **escalate-on-dispatch milestone tasks** (precedent: task 5117), never bare no-op pending tasks (the scheduler dispatches and falsely completes those). Spawn-brief convention: one self-contained brief per PRD under `~/.claude/spawn-briefs/`, pre-answering G1–G6 + seam ownership.
+- **Prior run (exemplars)**: `docs/notes/bug-hotspot-survey-2026-07-05.md`, `docs/notes/hotspot-program-briefing-2026-07-06.md`, `docs/invariants.md`. A re-survey after the hardening waves (tasks ~5026–5117) land should compare against this baseline.

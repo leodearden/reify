@@ -78,14 +78,14 @@ assert "heavy filter contains package(reify-solver-elastic) & binary(analytical_
 assert "heavy filter contains package(reify-solver-elastic) & binary(modal_benchmarks)" \
     _atom_present "package(reify-solver-elastic) & binary(modal_benchmarks)"
 
-assert "heavy filter contains package(reify-eval) & binary(buckling_smoke)" \
-    _atom_present "package(reify-eval) & binary(buckling_smoke)"
+assert "heavy filter contains package(reify-eval-fea-tests) & binary(buckling_smoke)" \
+    _atom_present "package(reify-eval-fea-tests) & binary(buckling_smoke)"
 
 assert "heavy filter contains package(reify-eval) & binary(tensegrity_t0a)" \
     _atom_present "package(reify-eval) & binary(tensegrity_t0a)"
 
-assert "heavy filter contains package(reify-eval) & binary(fea_diagnostics_e2e)" \
-    _atom_present "package(reify-eval) & binary(fea_diagnostics_e2e)"
+assert "heavy filter contains package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)" \
+    _atom_present "package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)"
 
 # ---------------------------------------------------------------------------
 # Assertion D: drift-guard -- exactly 6 package(X) & binary(Y) atoms total

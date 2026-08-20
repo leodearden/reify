@@ -1,8 +1,10 @@
 //! Tests for `crates/reify-compiler/stdlib/ports.ri` and
 //! `crates/reify-compiler/stdlib/ports_mechanical.ri` —
 //! `std.ports` module: Directionality enum, Port base trait.
-//! `std.ports.mechanical` module: Torque type alias, MechanicalPort, Bore,
-//! Shaft, RotaryPort, ThreadedPort, StructurePort traits.
+//! `std.ports.mechanical` module: MechanicalPort, Bore, Shaft, RotaryPort,
+//! ThreadedPort, StructurePort traits. (The `Torque` type alias this module
+//! once declared was retired by task η — Torque is a built-in named dimension;
+//! see `torque_alias_removed_builtin_named_dimension_shadows` below.)
 //!
 //! Reconstructs the lost std.ports stdlib surface per PRD
 //! docs/prds/v0_6/stdlib-reconstruction.md task α.
@@ -10,11 +12,11 @@
 //! Tests use the production-path `load_stdlib()` helper, modeled on
 //! `process_stdlib_compile.rs`.
 
+use reify_ast::ExprKind;
 use reify_compiler::{
     CompiledTrait, DefaultKind, EntityKind, RequirementKind, ValueCellDecl, ValueCellKind,
     stdlib_loader,
 };
-use reify_ast::ExprKind;
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value};
 use reify_test_support::compile_source_with_stdlib;
@@ -68,7 +70,11 @@ fn find_trait(module_path: &str, name: &str) -> &'static CompiledTrait {
                 "module '{}' should contain trait '{}'; found: {:?}",
                 module_path,
                 name,
-                module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                module
+                    .trait_defs
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
             )
         })
 }
@@ -164,7 +170,11 @@ fn std_ports_loads_with_no_errors_and_directionality_enum() {
 
     let enum_def = find_enum("std/ports", "Directionality");
     assert_eq!(
-        enum_def.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        enum_def
+            .variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
         ["In", "Out", "Bidi"],
         "Directionality variants must be [In, Out, Bidi] in order; got: {:?}",
         enum_def.variants
@@ -213,7 +223,10 @@ fn port_base_trait_requires_direction_directionality() {
         .expect("Port.defaults should contain an entry named 'direction' (= Directionality.Bidi)");
 
     match &dir_default.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
                 Type::Enum("Directionality".into()),
@@ -299,11 +312,7 @@ fn std_ports_module_cardinality_locked() {
         enum_names
     );
 
-    let trait_names: Vec<&str> = module
-        .trait_defs
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
         3,
@@ -337,11 +346,15 @@ fn std_ports_module_cardinality_locked() {
 // ─── step-3 (task α): Frame3 structure surface ───────────────────────────────
 
 /// std/ports should contain a `structure def Frame3` with exactly 4 Param-kind
-/// value cells (origin, x_axis, y_axis, z_axis), each resolving to
-/// `Type::Vector { n: 3, quantity: Length[LENGTH] }`.
+/// value cells, SPLIT by what each member denotes (task 5848):
+///   - `origin` is a POSITION  → `Type::Vector { n: 3, quantity: Length }`
+///   - `x_axis`/`y_axis`/`z_axis` are DIRECTIONS → quantity `Dimensionless`
+///
+/// The `origin` half is the load-bearing fence: it proves the retype
+/// discriminates position from direction rather than sweeping the whole
+/// structure dimensionless.
 ///
 /// Frame3 is the port-frame structure added by task α, step-4.
-/// RED on current main (no Frame3 in std/ports → template lookup fails).
 #[test]
 fn frame3_structure_surface() {
     let module = load_module("std/ports");
@@ -352,7 +365,7 @@ fn frame3_structure_surface() {
         .find(|t| t.name == "Frame3" && t.entity_kind == EntityKind::Structure)
         .expect(
             "std/ports should contain 'structure def Frame3'; \
-             check ports.ri for the Frame3 definition"
+             check ports.ri for the Frame3 definition",
         );
 
     // Collect Param-kind value cells (excluding Let/Auto).
@@ -362,10 +375,7 @@ fn frame3_structure_surface() {
         .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
         .collect();
 
-    let param_names: Vec<&str> = param_cells
-        .iter()
-        .map(|vc| vc.id.member.as_str())
-        .collect();
+    let param_names: Vec<&str> = param_cells.iter().map(|vc| vc.id.member.as_str()).collect();
 
     assert_eq!(
         param_cells.len(),
@@ -375,17 +385,34 @@ fn frame3_structure_surface() {
         param_names
     );
 
-    // All 4 params must resolve to Vector3<Length>.
-    let expected_type = Type::Vector {
+    // A 3-vector over the given quantity dimension.
+    let vec3_of = |dimension| Type::Vector {
         n: 3,
-        quantity: Box::new(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        }),
+        quantity: Box::new(Type::Scalar { dimension }),
     };
-    for expected_name in &["origin", "x_axis", "y_axis", "z_axis"] {
+    // origin denotes a POSITION (Length); the three axes denote DIRECTIONS
+    // (dimensionless unit vectors) — task 5848.
+    for (expected_name, expected_type, why) in [
+        ("origin", vec3_of(DimensionVector::LENGTH), "a POSITION"),
+        (
+            "x_axis",
+            vec3_of(DimensionVector::DIMENSIONLESS),
+            "a DIRECTION",
+        ),
+        (
+            "y_axis",
+            vec3_of(DimensionVector::DIMENSIONLESS),
+            "a DIRECTION",
+        ),
+        (
+            "z_axis",
+            vec3_of(DimensionVector::DIMENSIONLESS),
+            "a DIRECTION",
+        ),
+    ] {
         let cell = param_cells
             .iter()
-            .find(|vc| vc.id.member == *expected_name)
+            .find(|vc| vc.id.member == expected_name)
             .unwrap_or_else(|| {
                 panic!(
                     "Frame3 missing param '{}'; got: {:?}",
@@ -393,11 +420,9 @@ fn frame3_structure_surface() {
                 )
             });
         assert_eq!(
-            cell.cell_type,
-            expected_type,
-            "Frame3.{} must be Type::Vector{{n:3, quantity:Length[LENGTH]}}, got {:?}",
-            expected_name,
-            cell.cell_type
+            cell.cell_type, expected_type,
+            "Frame3.{} denotes {}, so it must be {:?}; got {:?}",
+            expected_name, why, expected_type, cell.cell_type
         );
     }
 }
@@ -499,7 +524,10 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
             t.required_members.is_empty(),
             "trait '{}' should have no own required_members, got: {:?}",
             name,
-            t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+            t.required_members
+                .iter()
+                .map(|r| &r.name)
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -524,7 +552,10 @@ fn mechanical_port_optional_ratings_surface() {
         .find(|d| d.name.as_deref() == Some("max_load"))
         .expect("MechanicalPort.defaults should contain an entry named 'max_load' (= none)");
     match &max_load.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
                 Type::Option(Box::new(Type::Scalar {
@@ -553,7 +584,10 @@ fn mechanical_port_optional_ratings_surface() {
         .find(|d| d.name.as_deref() == Some("max_torque"))
         .expect("MechanicalPort.defaults should contain an entry named 'max_torque' (= none)");
     match &max_torque.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
                 Type::Option(Box::new(Type::Scalar {
@@ -595,7 +629,10 @@ fn motive_port_trait_surface() {
     assert!(
         t.required_members.is_empty(),
         "MotivePort should have no own required_members, got: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -626,7 +663,10 @@ fn rotary_port_trait_surface() {
         3,
         "RotaryPort should have exactly 3 required members [max_speed, max_torque, axis]; \
          got: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         t.required_members[0].name, "max_speed",
@@ -675,7 +715,9 @@ fn rotary_port_trait_surface() {
 
     // Regression guard: torque_capacity was renamed to max_torque.
     assert!(
-        !t.required_members.iter().any(|r| r.name == "torque_capacity"),
+        !t.required_members
+            .iter()
+            .any(|r| r.name == "torque_capacity"),
         "RotaryPort must not expose 'torque_capacity' (renamed to max_torque)"
     );
 }
@@ -701,9 +743,9 @@ import std.ports.mechanical
 structure def RotaryConformer : RotaryPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param max_torque : Torque = 1N * 1m / 1rad
@@ -751,9 +793,9 @@ import std.ports.mechanical
 structure def RotaryConformerMissingTorque : RotaryPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
@@ -779,7 +821,8 @@ structure def RotaryConformerMissingTorque : RotaryPort {
 
 /// LinearPort refines exactly [MotivePort] with required members [max_speed,
 /// max_force, stroke, axis] in order:
-///   max_speed : Scalar<Velocity = Length/Time>
+///   max_speed : Scalar<Velocity> (NAMED_DIMENSIONS builtin, m/s; back-compat
+///               `pub type Velocity` in units.ri resolves to the same dimension)
 ///   max_force : Scalar<FORCE>
 ///   stroke    : Scalar<LENGTH>
 ///   axis      : Vector3<Length>
@@ -801,9 +844,15 @@ fn linear_port_trait_surface() {
         4,
         "LinearPort should have exactly 4 required members \
          [max_speed, max_force, stroke, axis]; got: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
-    for (i, name) in ["max_speed", "max_force", "stroke", "axis"].iter().enumerate() {
+    for (i, name) in ["max_speed", "max_force", "stroke", "axis"]
+        .iter()
+        .enumerate()
+    {
         assert_eq!(
             t.required_members[i].name, *name,
             "LinearPort required_members[{}] should be '{}'",
@@ -811,14 +860,15 @@ fn linear_port_trait_surface() {
         );
     }
 
-    // Velocity = Length / Time (alias resolves to the composite dimension).
+    // Velocity is a NAMED_DIMENSIONS builtin (m/s); it resolves to Length/Time
+    // regardless (see units.ri:87-96 for the builtin-shadows-alias rationale).
     let expected_velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_speed"),
         Type::Scalar {
             dimension: expected_velocity_dim
         },
-        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity alias)"
+        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity NAMED_DIMENSIONS builtin)"
     );
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_force"),
@@ -867,7 +917,8 @@ fn assert_dof_eq_one_constraint(trait_name: &str) {
         .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
         .count();
     assert_eq!(
-        constraint_count, 1,
+        constraint_count,
+        1,
         "{} should carry exactly one trait-level constraint; got {} total defaults",
         trait_name,
         t.defaults.len()
@@ -880,7 +931,8 @@ fn assert_dof_eq_one_constraint(trait_name: &str) {
     assert!(
         c.name.is_none(),
         "{}'s degrees_of_freedom constraint should be unlabeled (name: None), got: {:?}",
-        trait_name, c.name
+        trait_name,
+        c.name
     );
     let decl = match &c.kind {
         DefaultKind::Constraint(decl) => decl,
@@ -892,12 +944,14 @@ fn assert_dof_eq_one_constraint(trait_name: &str) {
             assert!(
                 matches!(&left.kind, ExprKind::Ident(name) if name == "degrees_of_freedom"),
                 "{} constraint LHS should be Ident(degrees_of_freedom), got: {:?}",
-                trait_name, left.kind
+                trait_name,
+                left.kind
             );
             assert!(
                 matches!(&right.kind, ExprKind::NumberLiteral { value, .. } if *value == 1.0),
                 "{} constraint RHS should be NumberLiteral(1), got: {:?}",
-                trait_name, right.kind
+                trait_name,
+                right.kind
             );
         }
         other => panic!(
@@ -927,7 +981,10 @@ fn guide_port_trait_surface() {
         t.required_members.len(),
         1,
         "GuidePort should have exactly 1 required member (degrees_of_freedom); got: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         t.required_members[0].name, "degrees_of_freedom",
@@ -961,7 +1018,10 @@ fn linear_guide_port_trait_surface() {
         t.required_members.is_empty(),
         "LinearGuidePort should add no own required members (dof inherited from \
          GuidePort), got: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 
     assert_dof_eq_one_constraint("LinearGuidePort");
@@ -990,7 +1050,10 @@ fn rotary_guide_port_trait_surface() {
         2,
         "RotaryGuidePort should have exactly 2 required members \
          [max_radial_load, max_axial_load]; got: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
     for (i, name) in ["max_radial_load", "max_axial_load"].iter().enumerate() {
         assert_eq!(
@@ -1037,7 +1100,10 @@ fn threaded_port_trait_surface() {
         t.required_members.len(),
         1,
         "ThreadedPort should have exactly 1 required member (thread_spec); got: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         t.required_members[0].name, "thread_spec",
@@ -1051,7 +1117,9 @@ fn threaded_port_trait_surface() {
 
     // Regression guards: the raw thread_diameter/pitch pair was replaced.
     assert!(
-        !t.required_members.iter().any(|r| r.name == "thread_diameter"),
+        !t.required_members
+            .iter()
+            .any(|r| r.name == "thread_diameter"),
         "ThreadedPort must not expose 'thread_diameter' (replaced by thread_spec)"
     );
     assert!(
@@ -1073,7 +1141,11 @@ fn threaded_port_trait_surface() {
 fn mechanical_thread_enums_surface() {
     let thread_system = find_enum("std/ports/mechanical", "ThreadSystem");
     assert_eq!(
-        thread_system.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        thread_system
+            .variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
         ["ISO_Metric", "ISO_Metric_Fine", "UNC", "UNF"],
         "ThreadSystem variants must be [ISO_Metric, ISO_Metric_Fine, UNC, UNF] in order; got: {:?}",
         thread_system.variants
@@ -1081,7 +1153,11 @@ fn mechanical_thread_enums_surface() {
 
     let thread_class = find_enum("std/ports/mechanical", "ThreadClass");
     assert_eq!(
-        thread_class.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        thread_class
+            .variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
         ["Class_6g6H", "Class_4g6H"],
         "ThreadClass variants must be [Class_6g6H, Class_4g6H] in order; got: {:?}",
         thread_class.variants
@@ -1089,7 +1165,11 @@ fn mechanical_thread_enums_surface() {
 
     let tightening = find_enum("std/ports/mechanical", "ThreadTighteningDirection");
     assert_eq!(
-        tightening.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        tightening
+            .variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
         ["Clockwise", "Counterclockwise"],
         "ThreadTighteningDirection variants must be [Clockwise, Counterclockwise] in order; got: {:?}",
         tightening.variants
@@ -1136,9 +1216,16 @@ fn thread_spec_structure_surface() {
         ("system", Type::Enum("ThreadSystem".into())),
         (
             "nominal_diameter",
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
         ),
-        ("pitch", Type::Scalar { dimension: DimensionVector::LENGTH }),
+        (
+            "pitch",
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        ),
         ("thread_class", Type::Enum("ThreadClass".into())),
         ("tightening", Type::Enum("ThreadTighteningDirection".into())),
         ("thread_form", Type::Option(Box::new(Type::Geometry))),
@@ -1178,7 +1265,9 @@ fn thread_spec_structure_surface() {
         )
         .kind
     {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(
                 type_name, "ThreadTighteningDirection",
                 "tightening default enum type"
@@ -1226,9 +1315,14 @@ fn thread_spec_structure_surface() {
          [minor_diameter, pitch_diameter, tap_drill, clearance_hole], got: {:?}",
         let_names
     );
-    for (i, name) in ["minor_diameter", "pitch_diameter", "tap_drill", "clearance_hole"]
-        .iter()
-        .enumerate()
+    for (i, name) in [
+        "minor_diameter",
+        "pitch_diameter",
+        "tap_drill",
+        "clearance_hole",
+    ]
+    .iter()
+    .enumerate()
     {
         assert_eq!(
             let_cells[i].id.member, *name,
@@ -1348,11 +1442,7 @@ fn std_ports_mechanical_module_cardinality_locked() {
         );
     }
 
-    let trait_names: Vec<&str> = module
-        .trait_defs
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
         11,
@@ -1426,7 +1516,11 @@ fn std_ports_electrical_loads_with_no_errors_and_signal_kind_enum() {
 
     let enum_def = find_enum("std/ports/electrical", "SignalKind");
     assert_eq!(
-        enum_def.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        enum_def
+            .variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
         ["Analog", "Digital", "PWM", "Differential"],
         "SignalKind variants must be [Analog, Digital, PWM, Differential] in order; got: {:?}",
         enum_def.variants
@@ -1451,23 +1545,25 @@ fn std_ports_electrical_loads_with_no_errors_and_signal_kind_enum() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        electrical_port.required_members[0].name,
-        "voltage_rating",
+        electrical_port.required_members[0].name, "voltage_rating",
         "ElectricalPort required_members[0] should be 'voltage_rating'"
     );
     assert_eq!(
-        electrical_port.required_members[1].name,
-        "current_rating",
+        electrical_port.required_members[1].name, "current_rating",
         "ElectricalPort required_members[1] should be 'current_rating'"
     );
     assert_eq!(
         param_type("std/ports/electrical", "ElectricalPort", "voltage_rating"),
-        Type::Scalar { dimension: DimensionVector::VOLTAGE },
+        Type::Scalar {
+            dimension: DimensionVector::VOLTAGE
+        },
         "ElectricalPort.voltage_rating must be Scalar<VOLTAGE>"
     );
     assert_eq!(
         param_type("std/ports/electrical", "ElectricalPort", "current_rating"),
-        Type::Scalar { dimension: DimensionVector::CURRENT },
+        Type::Scalar {
+            dimension: DimensionVector::CURRENT
+        },
         "ElectricalPort.current_rating must be Scalar<CURRENT>"
     );
 }
@@ -1527,8 +1623,7 @@ fn power_port_trait_surface() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name,
-        "power_rating",
+        t.required_members[0].name, "power_rating",
         "PowerPort required_members[0] should be 'power_rating'"
     );
 
@@ -1583,8 +1678,7 @@ fn signal_port_trait_surface() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name,
-        "signal_kind",
+        t.required_members[0].name, "signal_kind",
         "SignalPort required_members[0] should be 'signal_kind'"
     );
     assert_eq!(
@@ -1598,7 +1692,10 @@ fn signal_port_trait_surface() {
         !t.required_members.iter().any(|r| r.name == "impedance"),
         "SignalPort.impedance must be absent from required_members \
          (it is now Option<Resistance> = none); got required: {:?}",
-        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 
     // impedance must be in defaults as DefaultKind::Param with Option<Resistance>.
@@ -1609,10 +1706,15 @@ fn signal_port_trait_surface() {
         .expect("SignalPort.defaults should contain an entry named 'impedance' (= none)");
 
     match &imp_default.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
-                Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::RESISTANCE })),
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: DimensionVector::RESISTANCE
+                })),
                 "SignalPort.impedance default cell_type must be \
                  Type::Option(Scalar<RESISTANCE>)"
             );
@@ -1664,8 +1766,7 @@ fn pin_port_trait_surface() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name,
-        "pin_id",
+        t.required_members[0].name, "pin_id",
         "PinPort required_members[0] should be 'pin_id'"
     );
     assert_eq!(
@@ -1752,9 +1853,9 @@ structure def PinConformer {
         param current_rating : Current = 0.1A
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param pin_id : String = "A1"
     }
@@ -1809,11 +1910,7 @@ fn std_ports_electrical_module_cardinality_locked() {
         enum_names
     );
 
-    let trait_names: Vec<&str> = module
-        .trait_defs
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
         4,
@@ -1892,8 +1989,7 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        thermal_port.required_members[0].name,
-        "heat_flow",
+        thermal_port.required_members[0].name, "heat_flow",
         "ThermalPort required_members[0] should be 'heat_flow'"
     );
     assert_eq!(
@@ -1911,7 +2007,10 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
         .find(|d| d.name.as_deref() == Some("temperature"))
         .expect("ThermalPort.defaults should contain 'temperature' (= none)");
     match &temp_default.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
                 Type::Option(Box::new(Type::Scalar {
@@ -1939,7 +2038,10 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
         .find(|d| d.name.as_deref() == Some("heat_flux"))
         .expect("ThermalPort.defaults should contain 'heat_flux' (= none)");
     match &heat_flux_default.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
                 Type::Option(Box::new(Type::Scalar {
@@ -1960,15 +2062,17 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
     }
 
     // thermal_resistance : Option<ThermalResistance> = none  (ThermalResistance = Temperature / Power)
-    let expected_thermal_resistance_dim =
-        DimensionVector::TEMPERATURE.div(&DimensionVector::POWER);
+    let expected_thermal_resistance_dim = DimensionVector::TEMPERATURE.div(&DimensionVector::POWER);
     let thermal_resistance_default = thermal_port
         .defaults
         .iter()
         .find(|d| d.name.as_deref() == Some("thermal_resistance"))
         .expect("ThermalPort.defaults should contain 'thermal_resistance' (= none)");
     match &thermal_resistance_default.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
                 Type::Option(Box::new(Type::Scalar {
@@ -2012,11 +2116,7 @@ fn std_ports_thermal_module_cardinality_locked() {
             .collect::<Vec<_>>()
     );
 
-    let trait_names: Vec<&str> = module
-        .trait_defs
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
         2,
@@ -2123,8 +2223,7 @@ fn thermal_contact_port_trait_surface() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name,
-        "contact_area",
+        t.required_members[0].name, "contact_area",
         "ThermalContactPort required_members[0] should be 'contact_area'"
     );
     assert_eq!(
@@ -2140,11 +2239,12 @@ fn thermal_contact_port_trait_surface() {
         .defaults
         .iter()
         .find(|d| d.name.as_deref() == Some("contact_conductance"))
-        .expect(
-            "ThermalContactPort.defaults should contain 'contact_conductance' (= none)"
-        );
+        .expect("ThermalContactPort.defaults should contain 'contact_conductance' (= none)");
     match &contact_cond.kind {
-        DefaultKind::Param { cell_type, default_decl } => {
+        DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } => {
             assert_eq!(
                 *cell_type,
                 Type::Option(Box::new(Type::Scalar {
@@ -2231,9 +2331,9 @@ import std.ports.thermal
 structure def ContactPatch : ThermalContactPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param region : Geometry = box(10mm, 10mm, 1mm)
     param heat_flow : Power = 1N * 1m / 1s
@@ -2303,23 +2403,19 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        fluid_port.required_members[0].name,
-        "pressure",
+        fluid_port.required_members[0].name, "pressure",
         "FluidPort required_members[0] should be 'pressure'"
     );
     assert_eq!(
-        fluid_port.required_members[1].name,
-        "flow_rate",
+        fluid_port.required_members[1].name, "flow_rate",
         "FluidPort required_members[1] should be 'flow_rate'"
     );
     assert_eq!(
-        fluid_port.required_members[2].name,
-        "medium",
+        fluid_port.required_members[2].name, "medium",
         "FluidPort required_members[2] should be 'medium'"
     );
     assert_eq!(
-        fluid_port.required_members[3].name,
-        "fluid_type",
+        fluid_port.required_members[3].name, "fluid_type",
         "FluidPort required_members[3] should be 'fluid_type'"
     );
 
@@ -2389,11 +2485,7 @@ fn std_ports_fluid_module_cardinality_locked() {
         enum_names
     );
 
-    let trait_names: Vec<&str> = module
-        .trait_defs
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
         3,
@@ -2441,7 +2533,11 @@ fn std_ports_fluid_module_cardinality_locked() {
 fn fluid_type_enum_surface() {
     let e = find_enum("std/ports/fluid", "FluidType");
     assert_eq!(
-        e.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().as_slice(),
+        e.variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>()
+            .as_slice(),
         ["Liquid", "Gas", "TwoPhase"].as_slice(),
         "FluidType variants should be [Liquid, Gas, TwoPhase] in order; got: {:?}",
         e.variants
@@ -2529,7 +2625,11 @@ structure def FluidConformerMissingFluidType : FluidPort {
 fn pipe_connection_type_enum_surface() {
     let e = find_enum("std/ports/fluid", "PipeConnectionType");
     assert_eq!(
-        e.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().as_slice(),
+        e.variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>()
+            .as_slice(),
         ["Threaded", "Flanged", "Compression", "PushFit", "Welded"].as_slice(),
         "PipeConnectionType variants should be \
          [Threaded, Flanged, Compression, PushFit, Welded] in order; got: {:?}",
@@ -2630,9 +2730,9 @@ structure def PipeConformer {
         param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param inner_diameter : Length = 25mm
         param connection_type = PipeConnectionType.Threaded
@@ -2711,7 +2811,11 @@ structure def PipeConformer {
 fn fitting_standard_enum_surface() {
     let e = find_enum("std/ports/fluid", "FittingStandard");
     assert_eq!(
-        e.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().as_slice(),
+        e.variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>()
+            .as_slice(),
         ["NPT", "BSP", "JIC", "ORFS"].as_slice(),
         "FittingStandard variants should be [NPT, BSP, JIC, ORFS] in order; got: {:?}",
         e.variants
@@ -2755,8 +2859,7 @@ fn hydraulic_port_trait_surface() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name,
-        "fitting_type",
+        t.required_members[0].name, "fitting_type",
         "HydraulicPort required_members[0] should be 'fitting_type'"
     );
     assert_eq!(
@@ -2806,9 +2909,9 @@ structure def HydroConformer {
         param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param fitting_type = FittingStandard.NPT
     }
@@ -2852,7 +2955,7 @@ structure def HydroConformer {
 /// std.ports.fluid; declares
 ///   `structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>`
 /// with three ports.  No concrete conformer is instantiated (PRD §4 decision 4;
-/// mirrors Coupling in examples/stdlib/ports_mechanical.ri).
+/// mirrors ShaftCoupling in examples/stdlib/ports_mechanical.ri).
 #[test]
 fn example_ports_domains_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2878,9 +2981,10 @@ fn example_ports_domains_ri_compiles_clean() {
     );
 
     assert!(
-        compiled.templates.iter().any(|t| {
-            t.name == "ActuatorInterface" && t.entity_kind == EntityKind::Structure
-        }),
+        compiled
+            .templates
+            .iter()
+            .any(|t| { t.name == "ActuatorInterface" && t.entity_kind == EntityKind::Structure }),
         "examples/stdlib/ports_domains.ri should declare \
          'structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>'; \
          found templates: {:?}",
@@ -2987,13 +3091,19 @@ structure def S {
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
-/// structurally declare a template named "Coupling" of EntityKind::Structure.
+/// structurally declare a template named "ShaftCoupling" of EntityKind::Structure.
+/// (Renamed from "Coupling" in task #5594 to resolve an accidental name
+/// collision with the unrelated stdlib `Coupling<P: DrivingJoint + HasMotion>`
+/// kinematic joint type in crates/reify-compiler/stdlib/kinematic.ri.)
 ///
-/// Note: direction/Bidi/StructurePort/Bore/Shaft and torque_capacity/max_speed
+/// Note: direction/Bidi/StructurePort/Bore/Shaft and max_torque/max_speed
 /// params are not exercised through an actual conformance path in this example
 /// (no concrete RotaryPort conformer is instantiated per PRD §4 decision 4).
-/// A follow-up that adds a concrete conformer supplying torque_capacity /
-/// max_speed / direction literals would close that coverage gap end-to-end.
+/// A concrete conformer supplying max_torque / max_speed literals is covered
+/// separately by `rotary_port_concrete_conformer_compiles` in this file;
+/// `direction` is exercised only through its Bidi default (see
+/// `port_conforms_without_direction_compiles_clean`) — an explicit non-default
+/// `direction` literal remains uncovered.
 #[test]
 fn example_ports_mechanical_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -3019,16 +3129,172 @@ fn example_ports_mechanical_ri_compiles_clean() {
     );
 
     assert!(
-        compiled.templates.iter().any(|t| {
-            t.name == "Coupling" && t.entity_kind == EntityKind::Structure
-        }),
+        compiled
+            .templates
+            .iter()
+            .any(|t| { t.name == "ShaftCoupling" && t.entity_kind == EntityKind::Structure }),
         "examples/stdlib/ports_mechanical.ri should declare \
-         'structure def Coupling<D: RotaryPort, N: RotaryPort>'; \
+         'structure def ShaftCoupling<D: RotaryPort, N: RotaryPort>'; \
          found templates: {:?}",
         compiled
             .templates
             .iter()
             .map(|t| (&t.name, &t.entity_kind))
             .collect::<Vec<_>>()
+    );
+
+    // Anti-recollision guard (task #5594), stated at the level of the bug
+    // CLASS rather than the one name that tripped it: no template this
+    // example declares may share a name with ANY template exported by a
+    // stdlib prelude module.  Every stdlib module is in the same prelude, so
+    // a same-named local decl wins name resolution and silently shadows the
+    // stdlib definition — which is exactly what a local `Coupling` here did
+    // to the unrelated stdlib kinematic joint
+    // `Coupling<P: DrivingJoint + HasMotion>` from `std.kinematic`: same
+    // name, different semantics, different type params/bounds.
+    //
+    // Note the deliberately NEGATIVE form: `compiled.templates` is
+    // user-module-only (prelude definitions are resolution context, not
+    // output — see the `compile_with_prelude` doc comment in
+    // crates/reify-compiler/src/lib.rs), so no stdlib template ever appears
+    // in this vec and a positive "exactly one Coupling, and it is the stdlib
+    // one" assertion would be unsatisfiable.  Synthetic monomorph clones are
+    // skipped: their names always contain `$`.
+    let prelude_template_names: std::collections::HashSet<&str> = stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .map(|t| t.name.as_str())
+        .collect();
+    let shadowed: Vec<&str> = compiled
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .filter(|name| !name.contains('$') && prelude_template_names.contains(name))
+        .collect();
+    assert!(
+        shadowed.is_empty(),
+        "examples/stdlib/ports_mechanical.ri must not declare a template whose name \
+         collides with a stdlib prelude template; these shadow same-named prelude \
+         definitions during name resolution: {:?}. Task #5594 hit exactly this with \
+         'Coupling', which shadowed the unrelated stdlib kinematic \
+         'Coupling<P: DrivingJoint + HasMotion>' from std.kinematic (both modules are \
+         in the same prelude), and renamed it to 'ShaftCoupling'; \
+         found templates: {:?}",
+        shadowed,
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── task η: Torque builtin named dimension retires the stdlib alias ─────────
+
+/// CONSUMER PROOF for task η: the `pub type Torque = Force * Length / Angle`
+/// alias in ports_mechanical.ri existed SOLELY because `Torque` was absent from
+/// `NAMED_DIMENSIONS`, so retiring it is what demonstrates the builtin works.
+/// See the `DimensionVector::TORQUE` docs in reify-core for the PRD §6 D4
+/// rationale behind the registration itself.
+///
+///  (a) no `Torque` entry remains in `module.type_aliases` — the retirement proof;
+///  (b) `RotaryPort.max_torque` still resolves to `Scalar<TORQUE>` — the builtin
+///      shadows the now-absent alias, resolution being builtin-before-alias
+///      (`resolve_type_with_aliases` tries `resolve_type_with_params` first);
+///  (c) a bare user source with NO import compiles clean and carries `TORQUE`;
+///  (d) the negative counterpart — an Energy-dimensioned default against a
+///      `Torque` annotation is still rejected.
+///
+/// Modelled on `rotational_stiffness_alias_removed_builtin_dimension_shadows`
+/// in flexures_stdlib_compile.rs, which pins the identical two-part invariant
+/// for task 4547's structurally identical deletion.
+#[test]
+fn torque_alias_removed_builtin_named_dimension_shadows() {
+    let module = load_module("std/ports/mechanical");
+
+    // (a) The alias itself is gone.
+    assert!(
+        !module.type_aliases.iter().any(|a| a.name == "Torque"),
+        "the `pub type Torque = Force * Length / Angle` alias must be DELETED \
+         (task η registered the built-in DimensionVector::TORQUE, which already \
+         shadows it); got type_aliases: {:?}",
+        module
+            .type_aliases
+            .iter()
+            .map(|a| &a.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (b) The deletion is safe: RotaryPort's required `max_torque : Torque`
+    // still resolves, now via NAMED_DIMENSIONS instead of the alias.
+    let max_torque = param_type("std/ports/mechanical", "RotaryPort", "max_torque");
+    assert_eq!(
+        max_torque,
+        Type::Scalar {
+            dimension: DimensionVector::TORQUE,
+        },
+        "RotaryPort.max_torque must resolve to the built-in TORQUE dimension \
+         even with the alias deleted; got: {:?}",
+        max_torque
+    );
+
+    // (c) The user-observable signal: no import needed.
+    let source = r#"
+structure def S { param t : Torque = 5N*m/rad }
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "`param t : Torque` must compile with NO import now that Torque is a \
+         built-in named dimension; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("compiled module should contain the S template");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "t")
+        .expect("S should have a value cell named 't'");
+    assert_eq!(
+        cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::TORQUE,
+        },
+        "the unimported `param t : Torque` cell must carry TORQUE; got: {:?}",
+        cell.cell_type
+    );
+
+    // (d) The negative counterpart to (c). Making `Torque` a bare, importless
+    // spelling puts it one keystroke away from `Energy` — `5N*m` instead of
+    // `5N*m/rad` — and the two vectors differ ONLY in the Angle⁻¹ slot. Pin
+    // that the compiler still rejects the mismatch, so the convenience of (c)
+    // cannot quietly become a way to write energy into a torque parameter.
+    let bad = compile_source_with_stdlib("structure def S { param t : Torque = 5N*m }\n");
+    let bad_errors: Vec<&String> = bad
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| &d.message)
+        .collect();
+    assert!(
+        !bad_errors.is_empty(),
+        "`param t : Torque = 5N*m` is an Energy-dimensioned default against a \
+         Torque annotation and MUST be rejected; got no Error diagnostics"
+    );
+    assert!(
+        bad_errors
+            .iter()
+            .any(|m| m.contains("rad^-1") && m.contains("must agree")),
+        "the rejection must name the Angle⁻¹ slot that separates Torque from \
+         Energy (declared `…rad^-1` vs initializer without it); got: {bad_errors:?}"
     );
 }

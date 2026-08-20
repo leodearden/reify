@@ -1,7 +1,7 @@
 //! Compiler behavior for ad-hoc selector (@) expressions.
 
-use reify_test_support::compile_source;
 use reify_core::*;
+use reify_test_support::compile_source;
 
 #[test]
 fn compile_ad_hoc_selector_on_undefined_name_emits_error() {

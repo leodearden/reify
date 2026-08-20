@@ -199,6 +199,42 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
+/// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
+/// subs; each `Mid` composes two `Leaf` subs; each `Leaf` owns a self-contained
+/// box. This yields 4 independent leaf realizations at the composed dotted paths
+/// `Top.a.p` / `Top.a.q` / `Top.b.p` / `Top.b.q` — 3 nesting levels, matching the
+/// repro's `Printer.motion.head_block` depth.
+///
+/// Leaf geometry is self-contained (a plain `box`, no cross-sub `GeomRef`), so no
+/// realization references `self.inner.body`; that would trip the documented v0.1
+/// nested sub-of-sub override scope boundary (cross_sub_geometry_e2e.rs:1583-1672).
+const NESTED_COMPOSED_SRC: &str = r#"pub structure Leaf {
+    let g = box(10mm, 10mm, 10mm)
+}
+pub structure Mid {
+    sub p = Leaf()
+    sub q = Leaf()
+}
+pub structure Top {
+    sub a = Mid()
+    sub b = Mid()
+}"#;
+
+/// Build an `EngineSession` (MockGeometryKernel + SimpleConstraintChecker) with
+/// [`NESTED_COMPOSED_SRC`] loaded — the shared nested-composed fixture for the
+/// full-scene debug-read tests (task 5348). Mirrors the `EngineSession::new`
+/// usage at the `sync_demand` harness below.
+fn make_nested_composed_session() -> EngineSession {
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(NESTED_COMPOSED_SRC, "nested_composed")
+        .expect("load_from_source of NESTED_COMPOSED_SRC should succeed");
+    session
+}
+
 #[test]
 fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
     // Step-5 RED: load a 2-body open-chain mechanism and assert the descriptor
@@ -1406,7 +1442,7 @@ fn get_source_location_end_to_end() {
         .expect("should find source location for Bracket.width");
 
     assert_eq!(loc.file_path, "bracket.ri");
-    // width is on line 2 of bracket_source() (line 1 = "structure Bracket {")
+    // width is on line 2 of bracket_source() (line 1 = "structure def Bracket {")
     assert!(
         loc.line >= 2,
         "width should be on line 2 or later, got {}",
@@ -1912,20 +1948,24 @@ fn build_gui_state_mesh_data_structure_matches_kernel_output() {
     assert!(!state.meshes.is_empty(), "should have at least one mesh");
     let mesh = &state.meshes[0];
 
-    // MockGeometryKernel returns: vertices = [0,0,0, 1,0,0, 0,1,0] (9 floats = 3 vertices)
+    // MockGeometryKernel returns `mocks::minimal_valid_mesh(true)`: a closed
+    // unit tetrahedron (4 vertices, 4 faces). It used to be a single open
+    // triangle, which `Mesh::validate` rejects under `MeshInvariant::Closed`
+    // (3 boundary edges) — see task #5105 (INV-GEO-1) for why the shared
+    // fixture had to become contract-valid. This test asserts the GuiState
+    // mesh-data *structure* mirrors the kernel output, so the counts are
+    // re-grounded on the tetra rather than pinned to the old shape.
     assert_eq!(
         mesh.vertices.len(),
-        9,
-        "expected 9 vertex floats (3 vertices × 3 coords)"
+        12,
+        "expected 12 vertex floats (4 vertices × 3 coords)"
     );
-    // indices = [0, 1, 2] (1 triangle)
-    assert_eq!(mesh.indices.len(), 3, "expected 3 indices (1 triangle)");
-    // normals = Some([0,0,1, 0,0,1, 0,0,1]) (9 floats)
+    assert_eq!(mesh.indices.len(), 12, "expected 12 indices (4 triangles)");
     assert!(mesh.normals.is_some(), "expected normals to be present");
     assert_eq!(
         mesh.normals.as_ref().unwrap().len(),
-        9,
-        "expected 9 normal floats"
+        12,
+        "expected 12 normal floats (4 normals × 3 coords)"
     );
     // entity_path should be non-empty
     assert!(
@@ -2613,9 +2653,9 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
 
     // Absolute coordinate check: 'width' is on line 2 at column 11 of bracket_source.
-    // bracket_source() starts "structure Bracket {\n    param width..."
-    // The 'w' of 'width' is at byte offset 30 (manually verified):
-    //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
+    // bracket_source() starts "structure def Bracket {\n    param width..."
+    // The 'w' of 'width' is at byte offset 34 (manually verified):
+    //   23 bytes "structure def Bracket {" + '\n' (line 2, col 1)
     //   + 10 bytes "    param " → col 11 when 'w' is reached.
     assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
     assert_eq!(
@@ -3544,12 +3584,16 @@ fn get_entity_tree_bracket_children_have_correct_kinds() {
         5,
         "5 param cells: width, height, thickness, fillet_radius, hole_diameter"
     );
-    // `let body = box(...)` compiles into a realization (geometry op), not a ValueCellDecl.
-    // Only `let volume = ...` is a let-binding value cell.
+    // γ (task #4954): a geometry-producing let now emits a Type::Geometry
+    // ValueCellDecl (kind Let) ALONGSIDE its RealizationDecl — the same
+    // pair-shape solid-typed geometry params already have. So `let body =
+    // box(...)` surfaces as BOTH a "let" value-cell node here and a
+    // "realization" node (see get_entity_tree_has_mesh_true_when_realization_exists).
+    // Both `let volume` (scalar) and `let body` (geometry) are let cells.
     assert_eq!(
         lets.len(),
-        1,
-        "1 let cell: volume (body is a realization, not a let)"
+        2,
+        "2 let cells: volume (scalar) + body (geometry-let value cell, γ #4954)"
     );
 }
 
@@ -4669,7 +4713,7 @@ fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
 /// Compare with the sibling debug-mode test
 /// `get_entity_tree_panics_on_duplicate_template_names_in_debug` which pins the
 /// debug_assert panic.  The orchestrator runs both `cargo test` and
-/// `cargo test --release` (orchestrator.yaml), so both modes are exercised in CI —
+/// `cargo test --release` (dark-factory-orchestrator.yaml), so both modes are exercised in CI —
 /// following the precedent at `crates/reify-expr/tests/field_eval_tests.rs:1066-1126`.
 #[cfg(not(debug_assertions))]
 #[test]
@@ -9495,7 +9539,7 @@ fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
             .collect();
             Value::StructureInstance(Box::new(StructureInstanceData {
                 type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
+                type_name: "BucklingMode".to_string(),
                 version: 1,
                 fields: mode_fields,
             }))
@@ -9734,7 +9778,7 @@ fn make_buckling_result_custom(
             .collect();
             Value::StructureInstance(Box::new(StructureInstanceData {
                 type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
+                type_name: "BucklingMode".to_string(),
                 version: 1,
                 fields: mode_fields,
             }))
@@ -11239,9 +11283,9 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
 
 /// element_kind_count histograms the per-face bytes; None → empty map.
 ///
-/// `debug_server` is gated behind the `gui` feature, so this test compiles and
-/// runs only under `--features gui` (the OCCT/Tauri build).
-#[cfg(feature = "gui")]
+/// `element_kind_count` was moved to the ungated `commands` module (task 5348) so
+/// the headless `mesh_stats_json` can reuse it, so this test no longer needs the
+/// `gui` feature.
 #[test]
 fn element_kind_count_histograms_element_kind_bytes() {
     let make = |element_kind: Option<Vec<u8>>| crate::types::MeshData {
@@ -11258,21 +11302,21 @@ fn element_kind_count_histograms_element_kind_bytes() {
         appearance: None,
     };
 
-    let all_shell = crate::debug_server::element_kind_count(&make(Some(vec![1, 1, 1])));
+    let all_shell = crate::commands::element_kind_count(&make(Some(vec![1, 1, 1])));
     assert_eq!(
         all_shell,
         std::collections::BTreeMap::from([(1u8, 3usize)]),
         "three shell faces → {{1: 3}}"
     );
 
-    let mixed = crate::debug_server::element_kind_count(&make(Some(vec![0, 1, 1])));
+    let mixed = crate::commands::element_kind_count(&make(Some(vec![0, 1, 1])));
     assert_eq!(
         mixed,
         std::collections::BTreeMap::from([(0u8, 1usize), (1u8, 2usize)]),
         "mixed faces → {{0: 1, 1: 2}}"
     );
 
-    let none = crate::debug_server::element_kind_count(&make(None));
+    let none = crate::commands::element_kind_count(&make(None));
     assert!(none.is_empty(), "None element_kind → empty histogram");
 }
 
@@ -11528,6 +11572,381 @@ fn get_entity_tree_aux_realization_default_visible_false() {
         !blank_node.default_visible,
         "aux `let blank` realization must have default_visible == false"
     );
+}
+
+// ---- #5195: consumed-downstream intermediates are hidden by default ----
+
+/// #5195 step-1 RED: an m5-flange-shaped template (modelled on
+/// `examples/m5_geometry_flange.ri:4-22`) whose `let body` / `let hole` /
+/// `let holes` realizations are all consumed downstream by the terminal
+/// `param geometry : Solid = difference(body, holes)`.
+///
+/// Intermediate (consumed) realizations must be hidden by default so the
+/// viewport shows only the finished part; the terminal `geometry`
+/// realization stays visible.
+///
+/// Fails today because `build_template_node` only checks `aux`
+/// (`default_visible: !(aux_ancestor || real.is_aux)`), so all four are true.
+#[test]
+fn get_entity_tree_consumed_realizations_default_visible_false() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = cylinder(60mm, 12mm)
+    let hole = translate(cylinder(4mm, 12mm), 45mm, 0mm, 0mm)
+    let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 8, 360deg)
+    param geometry : Solid = difference(body, holes)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "flange").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    // `body` is consumed by `difference(body, holes)`.
+    assert!(
+        !realization("body").default_visible,
+        "`let body` is consumed by `difference(body, holes)` — must be hidden by default"
+    );
+    // `hole` is consumed by `circular_pattern(hole, ...)`.
+    assert!(
+        !realization("hole").default_visible,
+        "`let hole` is consumed by `circular_pattern(hole, ...)` — must be hidden by default"
+    );
+    // `holes` is consumed by `difference(body, holes)`.
+    assert!(
+        !realization("holes").default_visible,
+        "`let holes` is consumed by `difference(body, holes)` — must be hidden by default"
+    );
+    // The terminal realization is consumed by nothing → stays visible.
+    assert!(
+        realization("geometry").default_visible,
+        "terminal `param geometry : Solid` is consumed by nothing — must stay visible"
+    );
+}
+
+// ---- #5195: trait_geometry propagates to the realization node ----
+
+/// #5195 step-3 RED: the realization node for a `Physical` structure's
+/// `geometry` member must carry `trait_geometry == true`, matching its
+/// value-cell sibling (`build_template_node`'s value-cell loop already sets
+/// `is_geometry_member && parent_has_physical`). A non-trait `let helper`
+/// realization stays `false`.
+///
+/// Fails today because the realization loop hard-codes `trait_geometry: false`
+/// for every realization.
+///
+/// `: Physical` is spelled literally so the existing `trait_bounds` substring
+/// heuristic fires — `trait_bounds` holds DECLARED names only, so a `: Rigid`
+/// structure (which refines Physical) does NOT match. That gap is pre-existing
+/// on the value-cell side and deliberately out of scope here; the feature's
+/// observable does not depend on it (see the consumed-downstream test above,
+/// which uses `: Rigid` and passes regardless).
+///
+/// `helper` is consumed by nothing, so it also stays `default_visible == true`
+/// — this test is independent of the consumed-downstream rule.
+#[test]
+fn get_entity_tree_realization_trait_geometry_propagates() {
+    let source = r#"structure def Widget : Physical {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    let helper = box(5mm, 5mm, 5mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "widget").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Widget")
+        .expect("Widget root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization of a `: Physical` structure must have \
+         trait_geometry == true, matching its value-cell sibling"
+    );
+    assert!(
+        !realization("helper").trait_geometry,
+        "a plain `let helper` realization must have trait_geometry == false"
+    );
+
+    // The value-cell sibling is the anchor this mirrors — assert the two agree
+    // so the realization node cannot drift from the existing cell heuristic.
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Widget.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `geometry` must already have trait_geometry == true \
+         (the existing heuristic this test pins the realization node against)"
+    );
+}
+
+/// #5195 step-11 end-to-end: the task's stated observable, asserted against the
+/// COMMITTED example rather than a hand-modelled copy of it.
+///
+/// `examples/m5_geometry_flange.ri` is the file a user opens to see this
+/// feature. Loading it through the real pipeline closes the gap between "the
+/// shape I wrote in a test" and "the shape that actually ships" — the
+/// inline-source test above could stay green while the example drifted.
+///
+/// Observable: the viewport shows only the finished flange. `body`, `hole` and
+/// `holes` are construction geometry, listed in the outline but hidden until
+/// toggled; the terminal `geometry` is the part.
+///
+/// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
+/// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
+/// `reify-compiler/tests/examples_smoke.rs`).
+#[test]
+fn examples_m5_geometry_flange_hides_consumed_intermediates() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
+    let contents =
+        std::fs::read_to_string(path).expect("examples/m5_geometry_flange.ri must exist");
+
+    let mut session = make_session();
+    session
+        .load_from_source(&contents, "m5_geometry_flange")
+        .expect("the committed flange example must compile");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "BoltFlange")
+        .expect("BoltFlange root must exist");
+
+    let visible: Vec<&str> = root
+        .children
+        .iter()
+        .filter(|n| n.kind == "realization" && n.default_visible)
+        .map(|n| n.display_name.as_deref().unwrap_or(&n.entity_path))
+        .collect();
+
+    // Asserted as a SET rather than per-name so a newly-added intermediate that
+    // this rule fails to classify shows up as an extra visible body.
+    assert_eq!(
+        visible,
+        vec!["geometry"],
+        "only the finished part may be visible by default; got {visible:?}"
+    );
+
+    // …and the intermediates are still LISTED (hidden ≠ absent — the outline
+    // must offer them to toggle).
+    for name in ["body", "hole", "holes"] {
+        let node = root
+            .children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("intermediate '{name}' must still be listed in the tree"));
+        assert!(
+            !node.default_visible,
+            "intermediate '{name}' must be hidden by default"
+        );
+    }
+
+    // ── Real-tree pin for the frontend's `Geometry` type-name rule (#5195) ──
+    //
+    // `GEOMETRY_TYPE_NAME_RE` in gui/src/stores/autoViewGenerator.ts gained the
+    // `Geometry` token this task; before that the whole `kind === 'let'` rule
+    // was dead against real trees. Every vitest fixture for it hand-writes
+    // `type_name: 'Geometry'`, so this asserts the REAL compiled tree actually
+    // emits that spelling — if the backend ever Displays `Solid` (or anything
+    // else) here, the frontend rule silently goes dead again and only this
+    // assertion notices.
+    let value_cell = |member: &str| -> &crate::types::EntityTreeNode {
+        let path = format!("BoltFlange.{member}");
+        root.children
+            .iter()
+            .find(|n| n.entity_path == path && n.kind != "realization")
+            .unwrap_or_else(|| panic!("value-cell node '{path}' must be present"))
+    };
+    for member in ["body", "hole", "holes", "geometry"] {
+        assert_eq!(
+            value_cell(member).type_name.as_deref(),
+            Some("Geometry"),
+            "value cell '{member}' must Display as \"Geometry\" — the token the \
+             frontend rule matches on"
+        );
+    }
+    // The `let` cells are the ones rule 2 (`kind === 'let'` + geometry type →
+    // 'hidden') reaches; `param geometry` is a `param`, so rule 2 never touches
+    // it and it stays shown. That asymmetry is what makes the newly-live rule
+    // safe here: nothing the user needs to see is hidden by it alone.
+    for member in ["body", "hole", "holes"] {
+        assert_eq!(
+            value_cell(member).kind,
+            "let",
+            "'{member}' must be a `let` value cell (the kind rule 2 gates on)"
+        );
+    }
+    assert_eq!(
+        value_cell("geometry").kind,
+        "param",
+        "`param geometry` must stay a `param` cell so the frontend's let-only \
+         rule 2 cannot hide the finished part's outline row"
+    );
+
+    // ── `: Rigid` does NOT set trait_geometry (KNOWN LIMITATION pin) ──
+    //
+    // `parent_has_physical` matches DECLARED trait names only, so the
+    // refinement `Rigid : Physical` is invisible to it and every committed
+    // example — including this one — evaluates the flag to false. Pinned at the
+    // CURRENT value deliberately: the follow-up that resolves the refinement
+    // chain via `reify_eval::conforms_to_trait` must land as a visible flip of
+    // this assertion rather than silently. See `build_template_node`'s
+    // `parent_has_physical` comment.
+    //
+    // The observable does not depend on the flag: `geometry` is un-consumed, so
+    // `default_visible == true` shows it either way (asserted above).
+    assert!(
+        !root
+            .children
+            .iter()
+            .any(|n| n.trait_geometry),
+        "no BoltFlange node may report trait_geometry while the heuristic is \
+         declared-name-only and the example declares `: Rigid`; got {:?}",
+        root.children
+            .iter()
+            .filter(|n| n.trait_geometry)
+            .map(|n| &n.entity_path)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// #5195 amendment (reviewer: robustness): a CONTAINER-typed geometry binding
+/// consumes its siblings too.
+///
+/// `let ribs = [rib_a, rib_b]` is typed `List<Geometry>`, not `Type::Geometry`.
+/// The original exact-variant filter skipped such a cell entirely, so `rib_a`
+/// and `rib_b` stayed classified as products and rendered as stray bodies
+/// beside the finished part. `is_geometry_valued` recurses into containers.
+///
+/// `shell` is consumed by nothing and keeps the template off the consumed-rule
+/// floor, so this test measures the container path in isolation rather than the
+/// floor's fallback.
+#[test]
+fn get_entity_tree_container_typed_binding_consumes_its_siblings() {
+    let source = r#"structure def RibbedPlate {
+    let rib_a = box(10mm, 2mm, 2mm)
+    let rib_b = box(2mm, 10mm, 2mm)
+    let ribs = [rib_a, rib_b]
+    let shell = box(20mm, 20mm, 20mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "ribbed_plate").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "RibbedPlate")
+        .expect("RibbedPlate root must exist");
+
+    // PREMISE PIN: `ribs` must really be a CONTAINER type, not bare
+    // `Type::Geometry`. Without this the test could pass for the wrong reason
+    // (the old exact-variant filter would have caught a `Geometry`-typed cell
+    // too) and would silently stop covering the container path.
+    let ribs_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "RibbedPlate.ribs" && n.kind != "realization")
+        .expect("value-cell node for 'ribs' must be present");
+    assert_eq!(
+        ribs_cell.type_name.as_deref(),
+        Some("List<Geometry>"),
+        "the consuming cell must be container-typed — that is the whole point of \
+         this test; got {:?}",
+        ribs_cell.type_name
+    );
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    for name in ["rib_a", "rib_b"] {
+        assert!(
+            !realization(name).default_visible,
+            "'{name}' is collected by the `List<Geometry>`-typed `ribs`, so it is \
+             an intermediate and must be hidden by default"
+        );
+    }
+    assert!(
+        realization("shell").default_visible,
+        "'shell' is consumed by nothing and must stay visible"
+    );
+}
+
+/// #5195 amendment (reviewer: robustness): the consumed rule has a FLOOR.
+///
+/// A geometry-valued sibling may DERIVE from the finished part rather than feed
+/// it — `let clearance = translate(geometry, ...)` kept for a clearance check
+/// puts `geometry` in the consumed set. Without a floor the finished part is
+/// hidden and only the helper renders: a blank-looking viewport, no diagnostic.
+///
+/// Guard 1 (the trait terminal `geometry` is never consumed-hidden) is what
+/// this test pins; guard 2 (never hide EVERY realization) is a backstop for
+/// templates with no `geometry` terminal at all.
+#[test]
+fn get_entity_tree_terminal_geometry_survives_a_derived_consumer() {
+    let source = r#"structure def Derived : Physical {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = box(20mm, 20mm, 20mm)
+    let notch = box(5mm, 5mm, 30mm)
+    param geometry : Solid = difference(body, notch)
+    let clearance = translate(geometry, 0mm, 0mm, 30mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "derived").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Derived")
+        .expect("Derived root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    assert!(
+        realization("geometry").default_visible,
+        "the trait terminal must survive being referenced by a DERIVED sibling \
+         (`let clearance = translate(geometry, ...)`) — hiding it would leave the \
+         viewport showing only the helper"
+    );
+    // The rule is floored, not disabled: genuine intermediates still hide.
+    for name in ["body", "notch"] {
+        assert!(
+            !realization(name).default_visible,
+            "'{name}' feeds `difference(body, notch)` and must still be hidden"
+        );
+    }
 }
 
 /// step-3 RED: a root assembly with a plain `sub part : Part at <pose>` and an
@@ -13583,6 +14002,84 @@ fn sync_demand_populates_production_demand_selectively() {
     }
 }
 
+/// step-1 (task 5348): `build_gui_state_full_scene` returns the COMPLETE realized
+/// scene even after the frontend has flipped PRODUCTION demand to selective — the
+/// fix for the debug-MCP `mesh_stats`/`engine_state` under-report.
+///
+/// On the 3-level nested-composed fixture (`Top` → `Mid` → `Leaf`, 4 leaf
+/// realizations), the cold full-scope `build_gui_state` is the complete scene the
+/// frontend receives. Hiding one leaf branch via `sync_demand` (mirrors the
+/// frontend post-render selective flip) makes the NEXT `build_gui_state` return an
+/// incremental DELTA that under-reports the scene (DELTA CONTRACT,
+/// engine_build.rs:5440-5465). `build_gui_state_full_scene` must instead force the
+/// cold full-scope override and return every realization's mesh, then RESTORE the
+/// selective scope so subsequent warm edits stay incremental.
+///
+/// RED until step-2 adds `EngineSession::build_gui_state_full_scene` (compile-error
+/// RED, consistent with the sync_demand "RED until step-10" house pattern above).
+#[test]
+fn build_gui_state_full_scene_returns_complete_scene_under_selective_demand() {
+    let mut session = make_nested_composed_session();
+
+    // (1) Cold-build ground truth: production demand is full_scope right after
+    //     load, so this is the COMPLETE scene the frontend receives.
+    let cold = session
+        .build_gui_state()
+        .expect("cold build_gui_state should succeed");
+    let n = cold.meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must realize the 4 leaf bodies (Top.a.p/a.q/b.p/b.q); got {n}"
+    );
+    let all_paths: Vec<String> = cold.meshes.iter().map(|m| m.entity_path.clone()).collect();
+
+    // (2) Hide exactly one leaf branch: sync all OTHER entity_paths as the visible
+    //     set → flips PRODUCTION demand SELECTIVE (mirrors the frontend sync).
+    let hidden_path = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths
+        .iter()
+        .filter(|p| **p != hidden_path)
+        .cloned()
+        .collect();
+    session.sync_demand(&visible);
+
+    // (3) The selective `build_gui_state` under-reports: absent HIDDEN + HASH-EXEMPT
+    //     realizations mean the delta carries strictly fewer meshes than the scene.
+    let selective = session
+        .build_gui_state()
+        .expect("selective build_gui_state should succeed");
+    assert!(
+        selective.meshes.len() < n,
+        "selective build_gui_state must under-report the scene (delta); got {} vs cold {n}",
+        selective.meshes.len()
+    );
+
+    // (4) The fix: `build_gui_state_full_scene` returns the COMPLETE scene (== n)
+    //     and the hidden body's entity_path is present.
+    let full = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene should succeed");
+    assert_eq!(
+        full.meshes.len(),
+        n,
+        "full-scene read must return every realized body (the complete cold scene)"
+    );
+    assert!(
+        full.meshes.iter().any(|m| m.entity_path == hidden_path),
+        "full-scene read must include the hidden body's entity_path {hidden_path:?}"
+    );
+
+    // (5) The full-scene read is READ-ONLY: it restores the frontend's selective
+    //     scope (full_scope OFF) so subsequent warm edits stay incremental.
+    assert!(
+        !session.core_state_for_test().engine().demand_is_full_scope(),
+        "build_gui_state_full_scene must restore the selective (non-full-scope) demand state"
+    );
+}
+
 // --- ValueData::last_substantive_value population (demand-prune prior value, §8 γ #4739) ---
 
 /// step-13 (RED until step-14): after a warm selective build hides body_b, the
@@ -13681,6 +14178,137 @@ fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
     );
 }
 
+// --- ValueData::dimension / si_value population (per-cell display-unit picker, task #5199) ---
+
+/// step-5 (RED until step-6): `build_values` surfaces the per-cell canonical
+/// dimension name and raw SI magnitude alongside the existing default-unit
+/// `value`/`unit` pair. A Volume `let` cell (derived from Length·Length·Length)
+/// carries `dimension == "Volume"` and `si_value == Some(<m³ magnitude>)`; a
+/// Length param carries `dimension == "Length"` + its own SI magnitude; an
+/// unbound (Undef) param — non-scalar — carries `dimension == ""` and
+/// `si_value == None`.
+///
+/// RED today: build_values still emits the step-4 placeholders
+/// (`dimension: String::new(), si_value: None`) for every cell. GREEN after
+/// step-6 wires the local `display_scalar` helper into build_values.
+#[test]
+fn build_values_populates_dimension_and_si_value_for_scalar_cells() {
+    const SRC: &str = r#"
+structure Tank {
+    param w : Length = 10mm
+    let capacity = w * w * w
+    param free_val : Length
+}
+"#;
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(SRC, "tank")
+        .expect("load_from_source should succeed");
+
+    let w = state
+        .values
+        .iter()
+        .find(|v| v.name == "w")
+        .expect("w must surface as a ValueData");
+    assert_eq!(w.dimension, "Length");
+    assert_eq!(w.si_value, Some(0.01), "w = 10mm = 0.01m in SI");
+
+    let capacity = state
+        .values
+        .iter()
+        .find(|v| v.name == "capacity")
+        .expect("capacity must surface as a ValueData");
+    assert_eq!(capacity.dimension, "Volume");
+    assert_eq!(
+        capacity.si_value,
+        Some(0.01 * 0.01 * 0.01),
+        "capacity = w³ = 1e-6 m³ in SI"
+    );
+
+    let free_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "free_val")
+        .expect("free_val must surface as a ValueData");
+    assert_eq!(
+        free_val.dimension, "",
+        "an unbound (Undef) cell has no scalar dimension"
+    );
+    assert_eq!(free_val.si_value, None);
+}
+
+/// Regression coverage (task #5199 amend, reviewer_comprehensive
+/// test_coverage finding): `display_scalar`'s `Value::Option(Some(inner))`
+/// recursion arm — the auto-resolve/optional-wrapper unwrap — was never
+/// exercised by any test above; only a bare `Value::Scalar` (param), a
+/// derived `let`, and an `Undef` param are covered. A `some(...)` literal
+/// compiles to exactly `Value::Option(Some(Box::new(Value::Scalar {..})))`
+/// (see `crates/reify-expr/tests/option_eval_tests.rs`), giving a real,
+/// compiled fixture that reaches this branch without touching
+/// `display_scalar` directly (it is a private `engine.rs` helper, not
+/// reachable from this test module).
+#[test]
+fn build_values_surfaces_dimension_and_si_value_through_option_some_wrapper() {
+    const SRC: &str = r#"
+structure Part {
+    param yield_stress : Option<Pressure> = some(250MPa)
+}
+"#;
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(SRC, "part")
+        .expect("load_from_source should succeed");
+
+    let yield_stress = state
+        .values
+        .iter()
+        .find(|v| v.name == "yield_stress")
+        .expect("yield_stress must surface as a ValueData");
+    assert_eq!(
+        yield_stress.dimension, "Pressure",
+        "dimension must be surfaced from inside the Option(Some(..)) wrapper, not left blank"
+    );
+    assert_eq!(
+        yield_stress.si_value,
+        Some(250_000_000.0),
+        "si_value must be the wrapped scalar's raw SI magnitude (250 MPa = 2.5e8 Pa)"
+    );
+}
+
+/// Companion to the above: `Value::Option(None)` — `display_scalar`'s `_ =>
+/// None` arm — must surface as `dimension: ""` / `si_value: None`, same as
+/// any other non-scalar cell, not e.g. a zero or garbage magnitude.
+#[test]
+fn build_values_option_none_cell_has_no_dimension_or_si_value() {
+    const SRC: &str = r#"
+structure Part {
+    param yield_stress : Option<Pressure> = none
+}
+"#;
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(SRC, "part")
+        .expect("load_from_source should succeed");
+
+    let yield_stress = state
+        .values
+        .iter()
+        .find(|v| v.name == "yield_stress")
+        .expect("yield_stress must surface as a ValueData");
+    assert_eq!(yield_stress.dimension, "");
+    assert_eq!(yield_stress.si_value, None);
+}
+
 // ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
 
 /// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
@@ -13698,7 +14326,7 @@ fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
 ///
 /// The `Ok` assertion alone is the proof: the stub would return `Err` here, so
 /// an `Ok` can only arise if the real checker is wired into `EngineSession`.
-/// This test mirrors the CLI smoke in `crates/reify-cli/tests/cli_auto_type_param_select.rs`
+/// This test mirrors the CLI smoke in `crates/reify-cli/tests/harness_cli/cli_auto_type_param_select.rs`
 /// (step-8) and completes §11.2 row "LSP/MCP/CLI/GUI binary surface" (task ζ).
 #[test]
 fn auto_type_param_real_checker_selects_in_gui_engine() {
@@ -14175,7 +14803,7 @@ fn build_gui_state_no_display_output_yields_empty_display_panes() {
 fn build_gui_state_drops_display_output_with_unresolved_subject() {
     // `param b : Solid` with no default compiles legally (the Reify compiler
     // accepts geometry-typed params without a constructor; confirmed by
-    // crates/reify-compiler/tests/geometry_profile_precondition_tests.rs).
+    // crates/reify-compiler/tests/harness_geometry_solver/geometry_profile_precondition_tests.rs).
     // At eval time, the cell has no `RealizationDecl`, so
     // `mint_symbolic_geometry_handles_into_values` skips it and the
     // evaluator writes `Value::Undef` for it (no default_expr → Undef path
@@ -14954,6 +15582,138 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     );
 }
 
+/// #5195 step-14: premise pin for the ADDITIVE DisplayOutput routing rule.
+///
+/// This test CHARACTERIZES already-committed engine behaviour and is expected
+/// to be GREEN on arrival — it is deliberately NOT a RED test. Its two jobs:
+///
+///  (i) Pin the REAL `examples/appearance_viewport_egress.ri` rather than only
+///      a hand-built frontend fixture. That example is the case that broke:
+///      it declares an appearance-only `DisplayOutput(subject: geometry,
+///      style: …)` with NO `pane:` argument, purely to stack a RAL9001 layer-3
+///      override, PLUS an independent `sub raw = RawEgress()` carrying its own
+///      geometry realization that no DisplayOutput ever names.
+///
+/// (ii) Stop the paired vitest fixture from silently drifting away from the
+///      actual wire shape. The frontend assertion is
+///      autoViewGenerator.test.ts::'appearance-only DisplayOutput does not
+///      delete sibling bodies (examples/appearance_viewport_egress.ri shape)'.
+///      If the example or `collect_display_routing` changes, this fails loudly
+///      instead of leaving the vitest fixture testing fiction.
+///
+/// The two assertions together are exactly the additive rule's premise:
+///  (a) an appearance-only DisplayOutput DOES land in `display_panes` carrying
+///      a DEFAULTED `pane: 0` — indistinguishable on the wire from an explicit
+///      `pane: 0` — so a directive proves nothing about visibility intent; and
+///  (b) the `raw` sub's realization is neither aux nor a consumed sibling (the
+///      consumption scan matches BARE same-structure names only, and nothing
+///      references `raw.geometry`), so the engine leaves it `default_visible ==
+///      true` and the frontend must not override that to 'hidden'.
+///
+/// Load harness is the same construction as
+/// `examples_appearance_viewport_egress_realizes_section8_appearance_contract`
+/// above (`SimpleConstraintChecker` + `MockGeometryKernel`, factored into
+/// `make_session()`).
+#[test]
+fn examples_appearance_viewport_egress_display_output_defaults_pane_and_raw_stays_visible() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/appearance_viewport_egress.ri"
+    );
+    let contents =
+        std::fs::read_to_string(path).expect("examples/appearance_viewport_egress.ri must exist");
+
+    let mut session = make_session();
+    let state = session
+        .load_from_source(&contents, "appearance_viewport_egress")
+        .expect("appearance_viewport_egress.ri must compile and eval without hard error");
+
+    // ── (a) appearance-only DisplayOutput → one directive with a DEFAULTED pane 0 ──
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "the single appearance-only DisplayOutput must still emit exactly one \
+         DisplayDirective; got {:?}",
+        state.display_panes
+    );
+    let directive = &state.display_panes[0];
+    assert!(
+        directive
+            .subject
+            .starts_with("AppearanceViewportEgress#realization["),
+        "directive subject must resolve to the styled steel body's realization; got {:?}",
+        directive.subject
+    );
+    assert_eq!(
+        directive.pane, 0,
+        "the example passes NO `pane:` argument, yet the hydrated instance always \
+         carries a defaulted pane 0 — this is the wire-level ambiguity that forces \
+         the routing rule to be additive"
+    );
+
+    // ── (b) the unrouted `raw` box realization stays default_visible == true ──
+    let tree = session.get_entity_tree();
+
+    fn collect<'a>(
+        nodes: &'a [crate::types::EntityTreeNode],
+        out: &mut Vec<&'a crate::types::EntityTreeNode>,
+    ) {
+        for n in nodes {
+            out.push(n);
+            collect(&n.children, out);
+        }
+    }
+    let mut all = Vec::new();
+    collect(&tree, &mut all);
+
+    let raw_realization = all
+        .iter()
+        .find(|n| {
+            n.kind == "realization"
+                && n.entity_path
+                    .starts_with("AppearanceViewportEgress.raw#realization[")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the `sub raw = RawEgress()` realization node must exist; got: {:?}",
+                all.iter().map(|n| &n.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        raw_realization.default_visible,
+        "the raw box is neither aux nor consumed by a sibling, so the engine must \
+         leave it visible — additive routing then keeps it on screen even though no \
+         DisplayOutput names it (entity_path {:?})",
+        raw_realization.entity_path
+    );
+
+    // ── (c) the subject ↔ entity_path SEAM (#5195 amendment) ──
+    //
+    // App.tsx builds the routing set as
+    // `new Set(state.displayPanes.map(d => d.subject))` and rule -1 tests it
+    // against `node.entity_path`. That is the ONE place the two string forms
+    // are assumed identical, and nothing else composes them: the frontend
+    // fixtures hard-code matching strings, and (a)/(b) above pin each side
+    // separately. If either format gains a prefix (an instance path, say) the
+    // rule simply stops matching — and because routing is ADDITIVE the failure
+    // is invisible: everything just stays visible. Byte-equality here is the
+    // only thing that would notice.
+    assert!(
+        all.iter()
+            .any(|n| n.kind == "realization" && n.entity_path == directive.subject),
+        "DisplayDirective.subject {:?} must be BYTE-EQUAL to some realization \
+         node's entity_path in the same tree snapshot — App.tsx matches the \
+         routing set against entity_path directly. Realization paths present: \
+         {:?}",
+        directive.subject,
+        all.iter()
+            .filter(|n| n.kind == "realization")
+            .map(|n| &n.entity_path)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ---- R3b-2 (#4818): build_gui_state threads structured_detail → fea_diagnostics ---
 // RED (step-3): these tests compile but fail assertions until step-4 populates
 // fea_diagnostics from last_check().structured_detail in build_gui_state.
@@ -15326,6 +16086,424 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
     assert!(
         events[0].is_empty(),
         "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+/// load_from_compiled_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4).
+///
+/// Regression for latent bug #6: `load_from_compiled`'s emit block silently
+/// drops `emit_fea_diagnostics` — it jumps straight from mode_shape to drain
+/// (engine.rs:5291-5300 on current main). Pins that `load_from_compiled` fires
+/// a `fea-diagnostics-changed` event just like the other five entry points
+/// (fires-every-commit semantics, including the empty-list case for a
+/// non-FEA compiled module).
+///
+/// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling
+/// `load_from_compiled` (there is no prior load to exclude here, unlike
+/// `fea_diagnostics_emitter_fires_on_set_parameter`).
+///
+/// RED on current main: load_from_compiled never calls emit_fea_diagnostics,
+/// so zero events are recorded.
+#[test]
+fn load_from_compiled_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let template = TopologyTemplateBuilder::new("Simple").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "load_from_compiled must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA compiled module must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+/// load_from_source_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4 step-4).
+///
+/// Behavioral regression covering the `load_from_source` production entry
+/// point: pins that it routes through `post_engine_call_telemetry` and
+/// therefore fires a `fea-diagnostics-changed` event (fires-every-commit
+/// semantics, empty payload for a non-FEA design). This is direct behavioral
+/// coverage of the INV-GUI-2 choke-point for this entry point, in place of
+/// the source-introspection call-count guard.
+///
+/// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling
+/// load_from_source (there is no prior load to exclude here).
+#[test]
+fn load_from_source_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: load_from_source must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+/// load_file_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4 step-4).
+///
+/// Behavioral regression covering the `load_file` production entry point
+/// (path-construction mirrors load_file_returns_gui_state).
+///
+/// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling load_file
+/// (there is no prior load to exclude here).
+#[test]
+fn load_file_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/bracket.ri");
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session.load_file(&path).expect("load_file should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: load_file must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+/// update_source_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4 step-4).
+///
+/// Behavioral regression covering the `update_source` production entry point.
+///
+/// Setup:
+///   1. Load bracket_source() (non-FEA design, no structured_detail) to prime
+///      the session.
+///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from
+///      here), mirroring fea_diagnostics_emitter_fires_on_set_parameter.
+///   3. Call update_source("bracket.ri", bracket_source_with_width("120mm")).
+#[test]
+fn update_source_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Install AFTER the initial load so that only update_source's emit is counted.
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .update_source("bracket.ri", &bracket_source_with_width("120mm"))
+        .expect("update_source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: update_source must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+// ── FeaConvergenceEmitter tests (#5032) ─────────────────────────────────────
+
+/// Mirrors [`RecordingFeaDiagnosticsEmitter`] for the fea-convergence-changed channel.
+///
+/// Compile-fails in step-1 because `crate::engine::FeaConvergenceEmitter` does
+/// not exist yet.
+struct RecordingFeaConvergenceEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<Option<crate::types::FeaConvergenceInfo>>>>,
+}
+
+impl RecordingFeaConvergenceEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::FeaConvergenceEmitter for RecordingFeaConvergenceEmitter {
+    fn changed(&self, payload: Option<crate::types::FeaConvergenceInfo>) {
+        self.events.lock().unwrap().push(payload);
+    }
+}
+
+/// (A) fea_convergence_emitter_fires_converged.
+///
+/// Injects a CheckResult whose `values` carries a `Converged` ElasticResult
+/// (via `make_elastic_result_value_map_with_convergence`), then calls
+/// `emit_fea_convergence_for_test()`. Asserts the recorder captured exactly
+/// ONE event whose payload is `Some(FeaConvergenceInfo{converged:true, reason:None})`.
+///
+/// Compile-fails because FeaConvergenceEmitter, set_fea_convergence_emitter,
+/// and emit_fea_convergence_for_test do not exist yet.
+#[test]
+fn fea_convergence_emitter_fires_converged() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_ir::Value;
+
+    let convergence_status = Value::Enum {
+        type_name: "ConvergenceStatus".to_string(),
+        variant: "Converged".to_string(),
+        payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+    };
+    let values = make_elastic_result_value_map_with_convergence(convergence_status);
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_convergence_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-convergence-changed event, got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0],
+        Some(crate::types::FeaConvergenceInfo {
+            converged: true,
+            reason: None
+        }),
+        "fea-convergence-changed payload must be Some(converged:true) for a Converged ElasticResult"
+    );
+}
+
+/// (B) fea_convergence_emitter_fires_none_for_no_elastic_result.
+///
+/// Injects a CheckResult with an empty ValueMap (no ElasticResult), then calls
+/// `emit_fea_convergence_for_test()`. Asserts the recorder captured exactly
+/// ONE event whose payload is `None` — pins the clear-stale-indicator contract:
+/// a param edit that clears the FEA problem must clear the convergence indicator.
+///
+/// Compile-fails because FeaConvergenceEmitter, set_fea_convergence_emitter,
+/// and emit_fea_convergence_for_test do not exist yet.
+#[test]
+fn fea_convergence_emitter_fires_none_for_no_elastic_result() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    let check = CheckResult {
+        values: reify_ir::ValueMap::new(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_convergence_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-convergence-changed event even with no ElasticResult, got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0], None,
+        "payload must be None when no ElasticResult is present — clears stale indicator"
+    );
+}
+
+/// (C) fea_convergence_emitter_fires_not_converged_with_reason.
+///
+/// Injects a CheckResult whose `values` carries a `NotConverged` ElasticResult
+/// with a `BudgetReason::MaxDofs` payload (via
+/// `make_elastic_result_value_map_with_convergence`), then calls
+/// `emit_fea_convergence_for_test()`. Asserts the recorder captured exactly
+/// ONE event whose payload is
+/// `Some(FeaConvergenceInfo{converged:false, reason:Some("MaxDofs")})`.
+///
+/// Closes the composite-path gap (extract_fea_convergence ->
+/// build_fea_convergence -> emit) for the failure-reason case: that variant
+/// was previously exercised only by the `extract_fea_convergence` unit test
+/// and the TS bridge test, not end-to-end through the emitter (reviewer
+/// follow-up, amendment pass on #5032).
+#[test]
+fn fea_convergence_emitter_fires_not_converged_with_reason() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_ir::Value;
+
+    let convergence_status = Value::Enum {
+        type_name: "ConvergenceStatus".to_string(),
+        variant: "NotConverged".to_string(),
+        payload: vec![(
+            "reason".to_string(),
+            Value::Enum {
+                type_name: "BudgetReason".to_string(),
+                variant: "MaxDofs".to_string(),
+                payload: vec![],
+            },
+        )],
+    };
+    let values = make_elastic_result_value_map_with_convergence(convergence_status);
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_convergence_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-convergence-changed event, got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0],
+        Some(crate::types::FeaConvergenceInfo {
+            converged: false,
+            reason: Some("MaxDofs".to_string())
+        }),
+        "fea-convergence-changed payload must be Some(converged:false, reason:Some(\"MaxDofs\")) for a NotConverged ElasticResult"
+    );
+}
+
+/// fea_convergence_emitter_fires_on_set_parameter (INV-GUI-2 / gui-state-sync L3 step-3).
+///
+/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
+/// invokes and then discards the GuiState from — emits a `fea-convergence-changed`
+/// event via the installed emitter.
+///
+/// Setup:
+///   1. Load bracket_source() (non-FEA design, no ElasticResult).
+///   2. THEN install RecordingFeaConvergenceEmitter (events only counted from here).
+///   3. Call set_parameter("Bracket.width", "120mm").
+///
+/// Assert: recorder captured exactly ONE event with payload None (non-FEA design
+/// has no ElasticResult).
+///
+/// RED: emit_fea_convergence is not yet called from the post_engine_call_telemetry
+/// commit path, so zero events are recorded.
+#[test]
+fn fea_convergence_emitter_fires_on_set_parameter() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Install AFTER load so that only set_parameter's emit is counted.
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("set_parameter should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "set_parameter must fire exactly one fea-convergence-changed event; got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0], None,
+        "non-FEA design must produce a None fea-convergence payload; got {:?}",
         events[0]
     );
 }
@@ -16014,5 +17192,467 @@ fn examples_surface_finish_viewport_display_override_beats_functional() {
         dir.style.opacity
     );
     assert!(!dir.style.wireframe, "override style.wireframe must be false");
+}
+
+// ---- task 3965 step-5: AffineMap example GUI viewport backstop -------------
+
+/// GUI viewport backstop for `examples/affine_tapered_spacer.ri` (task 3965,
+/// PRD `docs/prds/v0_6/affine-map-type.md` task η, "C-as-integration-gate").
+///
+/// Loads the committed example through the same `EngineSession` +
+/// `MockGeometryKernel` path the Tauri GUI uses to build its viewport state,
+/// and asserts the Z-stretched `body` realization surfaces as a `GuiState`
+/// mesh with a non-empty vertex payload. This is the automated proxy for the
+/// manual reify-debug `viewport_state`/screenshot "renders the deformed
+/// solid" signal.
+///
+/// This test is a seam-lock over capabilities delivered by tasks α–ζ
+/// (the AffineMap stdlib surface) and the example authored in steps 2/4; no
+/// production code change is required — modeled on the seam-lock convention
+/// in `crates/reify-eval/tests/sub_placement_assembly_gate.rs`.
+#[test]
+fn examples_affine_tapered_spacer_renders_deformed_solid() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/affine_tapered_spacer.ri"
+    );
+    let contents = std::fs::read_to_string(path)
+        .expect("examples/affine_tapered_spacer.ri must exist (created in task 3965 steps 2/4)");
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(&contents, "affine_tapered_spacer")
+        .expect("affine_tapered_spacer.ri must compile and eval without hard error");
+
+    // Zero Error-severity compile diagnostics (a benign missing-module
+    // Warning is expected and allowed, per the example's header comment).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "examples/affine_tapered_spacer.ri must produce zero Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // The deformed `body` realization must reach the GUI mesh pipeline with a
+    // non-empty vertex payload.
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("TaperedSpacer#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a mesh with entity_path starting with \
+                 'TaperedSpacer#realization['; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !mesh.vertices.is_empty(),
+        "TaperedSpacer deformed-solid mesh payload must be non-empty"
+    );
+}
+
+// ---- task 3848 (KCC-ι): GUI debug-MCP scrub smoke harness -------------------
+
+/// Smoke harness for the GUI debug-MCP `mechanism-descriptors` command's
+/// scrub-slider contract (η, task 3846) on the REAL
+/// `examples/kinematic/dock_pickup.ri` fixture — the same
+/// `EngineSession::get_mechanism_descriptors` layer the debug-MCP command
+/// wraps.
+///
+/// Asserts:
+///   - `dock_pickup.ri` loads and evaluates cleanly through `EngineSession` +
+///     `MockGeometryKernel`.
+///   - The `DockPickup` mechanism descriptor has `bodies_count == 2`
+///     (head_solid + dock_solid).
+///   - The prismatic `j_x` joint (`bind(j_x, 0mm)`) is exposed as
+///     `JointBinding::LiteralBound { synth_param_name: "__joint_j_x_v",
+///     initial_value_si: Some(0.0), scrubbable: true }` — i.e.
+///     `MechanismPanel` would render a functional scrub slider for it.
+///   - The `dock_solid` body's `fixed()` joint yields
+///     `JointBinding::FixedNoMotion` (no scrubbable slider).
+///   - A second `get_mechanism_descriptors()` call still reports
+///     `bodies_count == 2` (mesh/body-count regression guard).
+///
+/// A live GUI + reify-debug MCP end-to-end harness is deliberately avoided
+/// (heavy/flaky); this exercises the exact `EngineSession` layer the
+/// debug-MCP `mechanism-descriptors` command wraps. The frontend scrub
+/// itself is covered by `gui/src/__tests__/MechanismPanel.test.tsx`.
+#[test]
+fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/kinematic/dock_pickup.ri"
+    );
+    let contents =
+        std::fs::read_to_string(path).expect("examples/kinematic/dock_pickup.ri must exist");
+
+    let mut session = make_session();
+    session
+        .load_from_source(&contents, "DockPickup")
+        .expect("dock_pickup.ri must compile and eval without hard error");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let dp_desc = descriptors
+        .iter()
+        .find(|d| d.entity_path == "DockPickup" && d.bodies_count == 2)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a DockPickup descriptor with bodies_count==2; got: {:?}",
+                descriptors
+                    .iter()
+                    .map(|d| (d.entity_path.as_str(), d.bodies_count))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    // j_x: prismatic, literal-bound at 0mm -> scrubbable slider.
+    //
+    // Note: dock_pickup.ri also drives j_x via `sweep(m2, j_x, 0mm .. 500mm, 11)`
+    // (cell `snaps`), independently of the `snapshot(m2, [bind(j_x, 0mm)])`
+    // (cell `s`) pinned below. This is not a binding-precedence race: engine.rs's
+    // AST-driven binding resolver (`resolve_driving_params_from_ast` /
+    // `collect_snapshot_bind_pairs`) only scans `bind()` pairs inside
+    // `snapshot()` calls — `sweep()` calls are never consulted for descriptor
+    // classification — so `j_x`'s binding is derived solely from the literal
+    // snapshot bind and is unaffected by the sweep cell coexisting in the fixture.
+    let j_x = dp_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "prismatic")
+        .expect("expected a prismatic joint (j_x) in the DockPickup descriptor");
+    assert_eq!(
+        j_x.binding,
+        crate::types::JointBinding::LiteralBound {
+            synth_param_name: "__joint_j_x_v".to_string(),
+            initial_value_si: Some(0.0),
+            scrubbable: true,
+        },
+        "j_x (bind(j_x, 0mm)) must produce a scrubbable LiteralBound slider descriptor; got {:?}",
+        j_x.binding
+    );
+
+    // dock_solid's fixed() joint must NOT be scrubbable.
+    let fixed_joint = dp_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "fixed")
+        .expect("expected a fixed joint (dock_solid) in the DockPickup descriptor");
+    assert_eq!(
+        fixed_joint.binding,
+        crate::types::JointBinding::FixedNoMotion,
+        "dock_solid's fixed() joint must be FixedNoMotion (no scrubbable slider); got {:?}",
+        fixed_joint.binding
+    );
+
+    // Regression guard: bodies_count stays stable across a second call.
+    let descriptors2 = session.get_mechanism_descriptors();
+    let dp_desc2 = descriptors2
+        .iter()
+        .find(|d| d.entity_path == "DockPickup")
+        .expect("expected a DockPickup descriptor on the second get_mechanism_descriptors call");
+    assert_eq!(
+        dp_desc2.bodies_count, 2,
+        "bodies_count must stay 2 across repeated get_mechanism_descriptors calls (mesh/body-count regression guard)"
+    );
+}
+
+// ── Task 5194: Rigid auto-derived mass-property cells surface in the GUI panel ──
+//
+// A `structure def X : Rigid` auto-derives four geometry-query lets via the
+// stdlib `Rigid : Physical` traits (crates/reify-compiler/stdlib/structural_physical.ri):
+//   mass              = volume(geometry) * material.density
+//   centroid          = centroid(geometry)
+//   moment_of_inertia = moment_of_inertia(geometry, body_density)
+//   moi_principal     = eigenvalues(moment_of_inertia)   (+ PD constraint [0] > 0)
+//
+// These are populated ONLY by the kernel-bearing build's `run_post_processes`
+// (mass/centroid via geometry queries; moment_of_inertia via the topology-selector
+// pass; moi_principal via the derived-let pass). The GUI property panel, however,
+// sources cell values from the kernel-LESS `check.values` (eval / warm edit_param),
+// so all four read `undetermined` and the `moi_principal[0] > 0` PD constraint reads
+// `Indeterminate`. The fix overlays the kernel-derived `tessellate_snapshot`
+// `result.values` / `result.constraint_results` onto the panel in `build_gui_state`.
+
+/// Shared harness for the task-5194 GUI tests: an `EngineSession` whose
+/// `MockGeometryKernel` is pre-seeded with volume / centroid / inertia-tensor
+/// replies for `GeometryHandleId` 1..=4.
+///
+/// The id RANGE (not just id 1) covers the post-edit rebuild handle drift: the
+/// mock's `next_id` is monotonic and NOT reset between builds, so the initial
+/// load realizes the box to id 1 but a subsequent `set_parameter` rebuild
+/// re-executes the box and allocates a fresh id (2, 3, …). Seeding 1..=4 keeps
+/// the geometry queries answered across both the load and warm-edit rebuilds.
+///
+/// The inertia tensor is diagonal `diag(1, 2, 3)` (positive) so `moi_principal`
+/// eigenvalues are `[1, 2, 3]` and the PD constraint `moi_principal[0] > 0` is
+/// satisfiable. Seeded magnitudes are arbitrary stand-ins — the tests assert on
+/// determinacy / constraint status, not analytic values (the OCCT-gated
+/// crates/reify-eval/tests/rigid_moment_of_inertia_autoderive_smoke.rs owns the
+/// exact-magnitude checks).
+fn rigid_mass_props_session() -> EngineSession {
+    use reify_ir::{GeometryHandleId, Value};
+    let checker = SimpleConstraintChecker;
+    let mut kernel = MockGeometryKernel::new();
+    for id in 1..=4u64 {
+        let h = GeometryHandleId(id);
+        kernel = kernel
+            .with_volume_result(h, Value::Real(0.003))
+            .with_centroid_result(
+                h,
+                Value::String("{\"x\":0.05,\"y\":0.05,\"z\":0.15}".to_string()),
+            )
+            .with_inertia_tensor_result(
+                h,
+                7850.0,
+                Value::List(vec![
+                    Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+                    Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+                ]),
+            );
+    }
+    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+/// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,
+/// resolved from this crate's manifest dir (two levels up → workspace root),
+/// mirroring `load_file_returns_gui_state`.
+fn rigid_mass_props_fixture_path() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/rigid_mass_props_smoke.ri")
+}
+
+/// Locate the `moi_principal[0] > 0` positive-definiteness constraint injected by
+/// the stdlib `Rigid` trait, matching on either its formatted expression or its
+/// collected `parameter_ids` (both carry the `moi_principal` cell name).
+fn find_moi_principal_constraint(state: &crate::types::GuiState) -> &crate::types::ConstraintData {
+    state
+        .constraints
+        .iter()
+        .find(|c| {
+            c.expression.contains("moi_principal")
+                || c.parameter_ids.iter().any(|p| p.contains("moi_principal"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the Rigid `moi_principal[0] > 0` PD constraint; have: {:?}",
+                state
+                    .constraints
+                    .iter()
+                    .map(|c| (c.expression.as_str(), &c.parameter_ids, c.status.as_str()))
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Task 5194 (step-1, RED): on GUI **load**, a `: Rigid` body's auto-derived
+/// mass-property cells must surface as `determined` in the property panel, and
+/// the `moi_principal[0] > 0` PD constraint must be `Satisfied`.
+///
+/// RED against the pre-fix panel: the four cells read `undetermined` (they are
+/// sourced from the kernel-less `check.values`, where the geometry-query
+/// post-processes never ran) and the PD constraint reads `Indeterminate`.
+#[test]
+fn rigid_mass_props_surface_as_determined_on_load() {
+    let mut session = rigid_mass_props_session();
+
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+
+    for name in ["mass", "centroid", "moment_of_inertia", "moi_principal"] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a `{name}` value cell on load; have: {:?}",
+                    state.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            cell.determinacy, "determined",
+            "`{name}` must be `determined` on load (auto-derived from geometry + \
+             material.density); got determinacy={:?}, reason={:?}",
+            cell.determinacy, cell.reason
+        );
+        assert!(
+            cell.reason.is_none(),
+            "`{name}` must carry no undef-cause `reason` once surfaced; got {:?}",
+            cell.reason
+        );
+    }
+
+    let pd = find_moi_principal_constraint(&state);
+    assert_eq!(
+        pd.status, "Satisfied",
+        "the `moi_principal[0] > 0` PD constraint must be Satisfied once \
+         moi_principal resolves; got status={:?}",
+        pd.status
+    );
+}
+
+/// Task 5194 (step-3): after a warm `set_parameter` edit, the `: Rigid` body's
+/// auto-derived mass-property cells must STAY `determined` (and the PD constraint
+/// Satisfied) — the surfacing fix must be path-agnostic across load and warm edit.
+///
+/// `set_parameter` → `edit_check` (kernel-less) → `build_gui_state` →
+/// `tessellate_snapshot` clears the realization cache and re-executes the box,
+/// allocating a FRESH `GeometryHandleId` (the mock's `next_id` is monotonic and
+/// not reset between builds). The overlay keys on `ValueCellId`, not the kernel
+/// handle, so the cells must re-surface from the fresh `result.values` and must
+/// NOT degrade back to Undef after the edit.
+#[test]
+fn rigid_mass_props_stay_determined_after_warm_edit() {
+    let mut session = rigid_mass_props_session();
+
+    session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+
+    // Warm edit: perturb the box depth. This clears the realization cache, so the
+    // subsequent build re-executes the box under a fresh kernel handle.
+    let state = session
+        .set_parameter("RigidMassSmoke.depth", "250mm")
+        .expect("set_parameter(RigidMassSmoke.depth, 250mm) should succeed");
+
+    // The edit must have taken effect (depth == 250mm), proving we rebuilt.
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.name == "depth")
+        .expect("expected a `depth` value cell after the warm edit");
+    assert_eq!(
+        depth.value, "250",
+        "depth must read 250 (mm) after the warm edit; got {:?}",
+        depth.value
+    );
+
+    for name in ["mass", "centroid", "moment_of_inertia", "moi_principal"] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a `{name}` value cell after the warm edit; have: {:?}",
+                    state.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            cell.determinacy, "determined",
+            "`{name}` must remain `determined` after a warm set_parameter edit \
+             (re-surfaced from the fresh-handle rebuild); got determinacy={:?}, reason={:?}",
+            cell.determinacy, cell.reason
+        );
+        assert!(
+            cell.reason.is_none(),
+            "`{name}` must carry no undef-cause `reason` after the warm edit; got {:?}",
+            cell.reason
+        );
+    }
+
+    let pd = find_moi_principal_constraint(&state);
+    assert_eq!(
+        pd.status, "Satisfied",
+        "the `moi_principal[0] > 0` PD constraint must stay Satisfied after the \
+         warm edit; got status={:?}",
+        pd.status
+    );
+}
+
+// ── Task 5074 step-1: from_engine must delegate to the canonical A1
+// production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
+// task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.
+//
+// TEST A is a runtime no-regression pin only (both pre-existing bundle halves
+// still dispatch); it does not attempt to distinguish "delegates to
+// register_production_compute_fns" from "still hand-rolled; only mesh-morph
+// missing", since both implementations satisfy it identically. Proving actual
+// delegation is PRD task A5's static drift guard (tracked as task 5076), not
+// this test's job.
+#[test]
+fn engine_session_registers_fea_and_shell_extract_dispatch() {
+    let session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let engine = session.engine();
+
+    // Runs in both feature configurations; TEST B (gui_feature_tests, below)
+    // does not repeat these pins.
+    assert!(
+        engine.compute_dispatch("solver::elastic_static").is_some(),
+        "EngineSession must register the FEA trampoline dispatch target \
+         (solver::elastic_static) — PRD compute-fea-hardening task A3 / INV-FEA-1"
+    );
+    assert!(
+        engine.compute_dispatch("shell-extract::extract").is_some(),
+        "EngineSession must register the shell-extract trampoline dispatch \
+         target (shell-extract::extract) — PRD compute-fea-hardening task A3 \
+         / INV-FEA-1"
+    );
+}
+
+/// TEST B — the task's stated acceptance floor: after the `gui` feature puts
+/// `reify-mesh-morph` on the dependency graph, `from_engine` must pass
+/// `MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer)` so
+/// `Engine::morph_producer()` is `Some` post-construction. This is the
+/// esc-2962-66-class gap task A3 closes: the GUI never registered the
+/// mesh-morph producer.
+///
+/// Gated because `reify-mesh-morph` is only on the graph under `--features
+/// gui` (see the `gui` feature list in `gui/src-tauri/Cargo.toml`).
+/// A change flipping the `#[cfg(feature = "gui")]` arm in `from_engine` to
+/// `Unavailable` compiles clean, so it is caught only by executing this
+/// assertion or by a static check. Task 5076 wired both: `scripts/verify.sh`
+/// now EXECUTES this module, via the `-p reify-gui --features gui` test pass
+/// emitted from `add_test_passes()`, and
+/// `scripts/check-compute-trampoline-registration.sh` pins a
+/// `MorphRegistration::Enabled` on `gui/src-tauri/src/engine.rs`.
+/// Precedent for this gated-module shape: `kernel_status_tests` and
+/// `event_bus_tests` in this same directory.
+///
+/// Asserts only `morph_producer().is_some()`: TEST A above
+/// (`engine_session_registers_fea_and_shell_extract_dispatch`, ungated)
+/// already pins the two pre-existing dispatch targets (`solver::elastic_static`,
+/// `shell-extract::extract`) and runs in both feature configurations, so
+/// re-asserting them here would just duplicate TEST A under `--features gui`.
+#[cfg(feature = "gui")]
+mod gui_feature_tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+
+    use crate::engine::EngineSession;
+
+    #[test]
+    fn from_engine_registers_mesh_morph_producer() {
+        let session = EngineSession::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        let engine = session.engine();
+
+        assert!(
+            engine.morph_producer().is_some(),
+            "the `gui` feature puts reify-mesh-morph on the graph, so \
+             from_engine must pass \
+             MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer) \
+             — this is the esc-2962-66-class gap A3 closes"
+        );
+    }
 }
 

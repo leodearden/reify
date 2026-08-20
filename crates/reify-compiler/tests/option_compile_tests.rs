@@ -5,9 +5,9 @@
 //! to generic function call resolution.
 
 use reify_compiler::{CompiledGuardedGroup, ValueCellDecl};
-use reify_test_support::compile_first_template;
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::CompiledExprKind;
+use reify_test_support::compile_first_template;
 
 /// Helper: compile source and extract the value cell named `cell_name`'s default_expr.
 /// Panics if there are errors or the cell is missing.

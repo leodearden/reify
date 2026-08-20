@@ -30,6 +30,15 @@ _REIFY_AFFECTED_CRATES_LIB_SOURCED=1
 
 _AFFECTED_CRATES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Shared compile-closure primitive (_reify_compile_closure): _reverse_closure
+# below delegates to it instead of carrying its own copy of the
+# adj_normal/adj_dev + normal_closure model. occt-scope-lib.sh's own source
+# guard makes this a no-op if verify.sh (or another caller) already sourced
+# it first.
+[ -f "$_AFFECTED_CRATES_LIB_DIR/occt-scope-lib.sh" ] || { echo "affected-crates-lib.sh: ERROR — scripts/occt-scope-lib.sh not found next to affected-crates-lib.sh" >&2; return 1; }
+# shellcheck source=scripts/occt-scope-lib.sh
+source "$_AFFECTED_CRATES_LIB_DIR/occt-scope-lib.sh"
+
 # _is_global <path> — returns 0 (true) if the path is a C4 workspace-global file.
 # Matches: root Cargo.toml, Cargo.lock, .cargo/**, tree-sitter-reify/**,
 #          rust-toolchain and rust-toolchain.toml.
@@ -46,12 +55,17 @@ _is_global() {
 
 # _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
 # contributes no crates and must NOT force ALL.
-# Matches: docs/** (documentation) and gui/src/** (frontend-only).
+# Matches: docs/** (documentation), gui/src/** (frontend-only), and
+# tests/infra/** (shell/python infra test scripts — these run as their own
+# verify step and never affect Rust crate compilation or test outcomes, so a
+# tests/infra-only diff must narrow to no crates rather than hitting the C5
+# fail-wide-to-ALL path via an unmappable path).
 _is_noncrate() {
     local path="$1"
     case "$path" in
-        docs/*)    return 0 ;;
-        gui/src/*) return 0 ;;
+        docs/*)        return 0 ;;
+        gui/src/*)     return 0 ;;
+        tests/infra/*) return 0 ;;
     esac
     return 1
 }
@@ -79,71 +93,57 @@ _file_to_crate() {
 }
 
 # _reverse_closure — read seed crate names from stdin (one per line), emit the
-# BFS reverse-dependency closure (seeds + all workspace crates that transitively
-# depend on them), sorted-unique, one per line.
+# cargo-accurate affected workspace-crate set (seeds plus every workspace
+# crate whose test-compile-closure pulls in a seed), sorted-unique, one per
+# line.
 #
-# Technique mirrors occt-scope-lib.sh:occt_touching_set (lines 59-110):
-#   - single `cargo metadata --format-version 1` piped into python3
-#   - reverse adjacency R[dep_id] += pkg_id over workspace-internal edges of
-#     ALL kinds (null/build/dev)
-#   - BFS from the seed IDs, inclusive
-#   - intersect with workspace_members, print sorted-unique names
+# Delegates to _reify_compile_closure (scripts/occt-scope-lib.sh, sourced
+# above) — the single shared implementation of the adj_normal/adj_dev +
+# normal_closure compile-closure model, also used by occt_touching_set. This
+# is the reverse ("which crates pull in a seed") framing of that same model,
+# reached here by passing the stdin seed names as the helper's argv instead
+# of occt_touching_set's hardcoded seed.
 #
-# On any cargo failure or python error, prints ALL (C5).
+# tests/infra/test_affected_crates_lib.sh asserts affected_crates(occt-seed)
+# == occt_touching_set as a regression guard: since both now delegate to the
+# same helper, this fails loudly if either caller's seed handling regresses.
+#
+# On any cargo failure or malformed-metadata error from the shared helper,
+# prints ALL (C5).
 _reverse_closure() {
     local seeds
     seeds="$(cat)"
     [ -n "$seeds" ] || return 0
 
     # Collect metadata once; guard failure -> ALL.
+    #
+    # --locked stops cargo from REWRITING Cargo.lock: it refuses to resolve a
+    # stale/missing lock instead of silently updating it (the tracked-file
+    # mid-commit-mutation risk this task closes). It does NOT imply
+    # --offline: on a cold registry/index cache, cargo can still perform
+    # network I/O to read dependency manifests even against a valid,
+    # unchanged lock. Fully closing that (--frozen/--offline) is deliberately
+    # out of scope for this change — it trades a cold-cache network hit for
+    # cold-cache closures unconditionally widening to ALL, a separate
+    # tradeoff left to a follow-up rather than folded into this single-flag
+    # change.
     local meta
-    meta="$(cargo metadata --format-version 1 2>/dev/null)" || { echo ALL; return 0; }
+    meta="$(cargo metadata --format-version 1 --locked 2>/dev/null)" || {
+        echo "affected-crates-lib.sh: cargo metadata --locked failed (stale/missing Cargo.lock?) — falling back to ALL" >&2
+        echo ALL
+        return 0
+    }
     [ -n "$meta" ] || { echo ALL; return 0; }
 
-    printf '%s\n' "$meta" | _AFFECTED_CRATES_SEEDS="$seeds" python3 -c "
-import sys, json, os
-try:
-    seed_names = set(s.strip() for s in os.environ.get('_AFFECTED_CRATES_SEEDS', '').strip().splitlines() if s.strip())
+    # Convert the newline-separated seeds into a bash array for safe argv
+    # expansion into _reify_compile_closure.
+    local seed_args=()
+    local s
+    while IFS= read -r s; do
+        [ -n "$s" ] && seed_args+=("$s")
+    done <<< "$seeds"
 
-    m = json.load(sys.stdin)
-    members = set(m['workspace_members'])
-    id_to_name = {p['id']: p['name'] for p in m['packages']}
-    name_to_ids = {}
-    for p in m['packages']:
-        name_to_ids.setdefault(p['name'], []).append(p['id'])
-
-    # Build reverse adjacency over workspace-internal edges, all dep kinds.
-    # R[dep_id] = set of pkg_ids in workspace that depend on dep_id.
-    rev = {}
-    for node in m['resolve']['nodes']:
-        if node['id'] not in members:
-            continue
-        for d in node['deps']:
-            if d['pkg'] not in members:
-                continue
-            rev.setdefault(d['pkg'], set()).add(node['id'])
-
-    # BFS from all IDs matching any seed name, inclusive.
-    seed_ids = set()
-    for sn in seed_names:
-        seed_ids.update(name_to_ids.get(sn, []))
-
-    visited = set(seed_ids)
-    queue = list(seed_ids)
-    while queue:
-        curr = queue.pop()
-        for dep_on_curr in rev.get(curr, []):
-            if dep_on_curr not in visited:
-                visited.add(dep_on_curr)
-                queue.append(dep_on_curr)
-
-    result = sorted({id_to_name[i] for i in visited if i in members})
-    for name in result:
-        print(name)
-except Exception:
-    print('ALL')
-    sys.exit(0)
-" || { echo ALL; return 0; }
+    printf '%s\n' "$meta" | _reify_compile_closure "${seed_args[@]}" 2>/dev/null || { echo ALL; return 0; }
 }
 
 # affected_crates <file>... — print the affected workspace crate set, one name

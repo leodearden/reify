@@ -1,0 +1,24 @@
+// Task 5194 fixture — a minimal `: Rigid` body whose mass-property cells
+// (mass / centroid / moment_of_inertia / moi_principal) are auto-derived from
+// `geometry` + `material.density` by the stdlib `Rigid : Physical` traits
+// (crates/reify-compiler/stdlib/structural_physical.ri).
+//
+// Used by the GUI-panel surfacing tests (gui/src-tauri/src/tests/engine_tests.rs)
+// and the OCCT-free compute-contract regression lock
+// (crates/reify-eval/tests/rigid_mass_props_autoderive_gui_path.rs).
+//
+// The geometry is a SINGLE `box(...)` primitive so it realizes to a
+// deterministic `GeometryHandleId(1)` under `MockGeometryKernel` (no OCCT, no
+// booleans, no handle non-determinism). The scalar `depth : Length` param
+// drives one box dimension so a warm `edit_param` / `set_parameter` round-trip
+// can perturb a geometry dimension and re-exercise the surfacing path.
+//
+// Modelled on examples/structural_traits_dimensioned.ri (RigidPost) and
+// crates/reify-eval/tests/rigid_moment_of_inertia_autoderive_smoke.rs
+// (AUTO_MOI_POST_SRC).
+structure def RigidMassSmoke : Rigid {
+    param depth : Length = 300mm
+    param geometry : Solid = box(100mm, 100mm, depth)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    constraint depth > 0mm
+}

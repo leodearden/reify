@@ -1,0 +1,28 @@
+// G3 grammar fixture for docs/prds/v0_6/angle-units-surface-convergence.md cluster C
+// (ratified decision 7a: accept U+00B7 MIDDLE DOT as a unit-multiply operator).
+//
+// THIS FIXTURE FAILS `tree-sitter parse --quiet` TODAY, BY DESIGN.
+// Measured at HEAD dc83d4fd60: exit 1, with a 3-byte ERROR node spanning the UTF-8
+// `·` on each of the three `let` lines below (e.g. `(ERROR [23, 24] - [23, 27])`).
+// U+00B7 appears nowhere in tree-sitter-reify/grammar.js or src/scanner.c; the
+// unit-multiply external token `UNIT_MUL_OP` fires only on ASCII `*`
+// (scanner.c:244-258, guarded by `is_unit_start` at :101).
+//
+// grammar_confirmed: false — upstream grammar-producer task is this PRD's leaf κ
+// ("Scanner accepts U+00B7 as unit-multiply"). Every downstream leaf asserting
+// middle-dot round-trip depends on κ.
+//
+// Why it matters: `Display for DimensionVector` (reify-core/src/dimension.rs:626)
+// joins base-unit parts with U+00B7, so `reify eval` prints `7850 kg·m^-3` and
+// `5 m^2·kg·s^-2·rad^-1` — strings Reify cannot read back. Replacing `·` with `*`
+// makes them parse and evaluate identically (probe-verified), so the middle dot is
+// the ONLY blocker on that surface.
+//
+// Expected after κ: `tree-sitter parse --quiet` exits 0, and `5N·m` evaluates
+// identically to `5N*m`.
+
+structure def UnitMiddotMul {
+    let torque_like = 5N·m
+    let with_div    = 5N·m/rad
+    let composed    = 5m^2·kg·s^-2
+}

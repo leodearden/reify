@@ -24,7 +24,7 @@ into one of these — no orphan producers):
 | `scripts/cpu-admit.sh` (shared PSI-admission core) | `scripts/verify.sh` (`psi_gate`/`compile_gate` refactor to call it); the agent cargo shim (β) |
 | `scripts/agent-bin/cargo` (PSI shim) | the **agent's PATH** — every ad-hoc `cargo build`/`cargo test`/`cargo nextest` the agent runs via its Bash tool |
 | `scripts/cpu-governed-exec.sh` + `scripts/lib_cgroup.sh` (cgroup `cpu.weight` placement) | the **dark-factory agent-launch path** (agent spawn prefix) and the **merge-verify** subprocess |
-| `orchestrator.yaml` `cpu_governance:` block | `scripts/verify.sh` (knob defaults) + dark-factory `_build_agent_env` (env injection) |
+| `dark-factory-orchestrator.yaml` `cpu_governance:` block | `scripts/verify.sh` (knob defaults) + dark-factory `_build_agent_env` (env injection) |
 | `tests/infra/test_cpu_load_governance.sh` | CI / `verify.sh --include-infra` — the integration-gate proof |
 
 **User-observable surface (operator-facing).** Under a heavy realistic mix
@@ -171,7 +171,7 @@ cpu-admit.sh requeue    # exit-75-on-timeout mode (verify test phase)
   weight, so the slice hierarchy is load-bearing, not cosmetic.
 - **C-G3 (merge-favored).** Default weights mirror the landed jobserver merge:task
   ≈ 3:1 baseline (`task_baseline = max(1, nproc//4)`): `W_task=100` (cgroup default),
-  `W_merge=300`. Tunable in `orchestrator.yaml`.
+  `W_merge=300`. Tunable in `dark-factory-orchestrator.yaml`.
 - **C-G4 (fail-open / no root).** Placement uses the **user** systemd manager
   (`systemd-run --user --scope --slice=…`), which works because the `cpu` controller is
   delegated to `user@<uid>.service` (verified §6) — **no root required**. If delegation
@@ -203,7 +203,7 @@ Mirrors the existing `DF_AGENT_CPU_NICE` / `_cpu_priority_prefix` mechanism exac
 
 - **DF-1.** dark-factory prepends `cpu-governed-exec.sh --role task --` to the agent
   spawn, gated by a new `DF_AGENT_CPU_GOVERN` env (reify-owned value in
-  `orchestrator.yaml`), at `shared/src/shared/cli_invoke.py:1125` alongside the nice
+  `dark-factory-orchestrator.yaml`), at `shared/src/shared/cli_invoke.py:1125` alongside the nice
   prefix.
 - **DF-2.** dark-factory prepends reify's `scripts/agent-bin` to the agent's **PATH**
   via `_build_agent_env` / `env_overrides`, so the cargo shim is active for ad-hoc
@@ -337,15 +337,15 @@ integration gate (ε) → cross-repo seam (ζ) → companion corrections (δ).
   weight read back is the role value, not a default. *Manifest:* `substrate` =
   `systemd-run --user --scope` (confirmed); `numeric-floor` N/A (weight is a ratio).
 
-- **δ — `orchestrator.yaml` `cpu_governance:` policy block + CLAUDE.md + cross-PRD prose.**
-  *Modules:* `orchestrator.yaml`, `CLAUDE.md` ("Test concurrency"), `docs/prds/test-run-concurrency-semaphore.md` + `jobserver-merge-priority-balancer.md` cross-refs.
+- **δ — `dark-factory-orchestrator.yaml` `cpu_governance:` policy block + CLAUDE.md + cross-PRD prose.**
+  *Modules:* `dark-factory-orchestrator.yaml`, `CLAUDE.md` ("Test concurrency"), `docs/prds/test-run-concurrency-semaphore.md` + `jobserver-merge-priority-balancer.md` cross-refs.
   *Signal (companion-corrections leaf):* the new `cpu_governance:` block (weights,
   enable flags, knob defaults, `DF_AGENT_CPU_GOVERN`) parses and the reify primitives
   honour its knobs (covered by α/γ tests reading the same env); CLAUDE.md documents the
   full compose order (`cpu-governed-exec` placement → `cpu-admit` per heavy command →
   existing semaphore region); `scripts/verify-pipeline-guard.sh` / the verify-pipeline
   path manifest updated if `cpu-admit.sh` becomes a `source`d verify dep. *Depends:*
-  α, β, γ. *Note:* `orchestrator.yaml` is loaded once at startup — landing this is a
+  α, β, γ. *Note:* `dark-factory-orchestrator.yaml` is loaded once at startup — landing this is a
   commit-then-restart per CLAUDE.md "Deploying the orchestrator".
 
 - **ε — Integration-gate leaf: `tests/infra/test_cpu_load_governance.sh`** (the §8 boundary signal).

@@ -220,9 +220,9 @@ mod tests {
         };
         let p_one = reify_ast::Pragma {
             name: "foo".to_string(),
-            args: vec![reify_ast::PragmaArg::Bare(
-                reify_ast::PragmaValue::Ident("x".to_string()),
-            )],
+            args: vec![reify_ast::PragmaArg::Bare(reify_ast::PragmaValue::Ident(
+                "x".to_string(),
+            ))],
             span: reify_core::SourceSpan::new(0, 0),
         };
         assert_ne!(

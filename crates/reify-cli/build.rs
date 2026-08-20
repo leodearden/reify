@@ -16,6 +16,13 @@ fn main() {
     //   - Gmsh via `reify-eval → reify-solver-elastic → reify-kernel-gmsh`
     //   - OpenVDB via `reify-eval → reify-kernel-openvdb` (since task 3576)
 
+    // Mechanism A″ (task #5192): give the `reify` binary a direct NEEDED
+    // libtbb.so.12 via the tbb-only pin dir, prepended FIRST in RUNPATH —
+    // BEFORE the native-dep rpath emissions below, so tbb-pin lands first
+    // in the binary's DT_RUNPATH ahead of /opt/reify-deps/lib et al.
+    reify_build_utils::emit_tbb_pin_for_bins();
+    reify_build_utils::emit_tbb_pin_for_tests();
+
     // Declare has_openvdb as a known cfg so rustc does not warn on unknown cfgs.
     println!("cargo::rustc-check-cfg=cfg(has_openvdb)");
     // Enable has_openvdb if OpenVDB native libraries are available.

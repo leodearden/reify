@@ -1,0 +1,10 @@
+module dic_min_no_autos
+
+// INV-SF-3 probe: a declared objective in a scope with NO auto params at all —
+// structurally inert (references only never-auto cells). Baseline 2026-07-24:
+// TOTAL silence (no solve, no diagnostic, exit 0).
+
+structure DicMinNoAutos {
+    param k : Real = 3.0
+    minimize k * k
+}

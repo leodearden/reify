@@ -9,9 +9,12 @@
 #
 # Allowlist mechanism (three composable filters):
 #   (1) Operator:     only -le / -lt upper bounds are flagged (-ge / -gt ignored).
-#   (2) Wall-clock lexeme: only lines whose description or compared variable
-#       carries a time signal (elapsed | within [0-9]+s | [0-9]+ms | seconds |
-#       wall | duration | var matching ELAPSED/_S/_MS/_NS/SECONDS).
+#   (2) Time-measurement signal: only lines whose description or compared
+#       variable carries a genuine time-MEASUREMENT signal — a description
+#       lexeme (elapsed | within [0-9]+[ms]s? | duration) OR a time-suffixed
+#       variable operand (var matching ELAPSED/_S/_MS/_NS/SECONDS).  Bare
+#       prose `wall`/`seconds` with a literal/config-constant operand does
+#       NOT match (task #5257).
 #   (3) Inline escape: `# wallclock:allow` on the assert line opts it out.
 #
 # SELF-MATCH SAFETY: this file must not contain any literal flaggable construct
@@ -39,12 +42,17 @@ echo "=== Wall-clock upper-bound regression guard ==="
 #
 # Scans all *.sh files in <dir> (except <exclude_basename>) for
 # wall-clock absolute-upper-bound assert violations.  A logical line
-# (after joining \-continuations via awk) is a violation iff ALL of:
+# (after joining \-continuations AND lines inside a still-open
+# single- OR double-quoted `bash -c '...'` / multi-line description span
+# via awk) is a violation iff ALL of:
 #   (1) assert-wired: the word "assert" appears on the line
 #   (2) upper-bound:  line contains `-le <int>` or `-lt <int>`
-#   (3) wall-clock:   description or compared var carries a time lexeme:
-#                     elapsed | within [0-9]+[ms]s? | seconds | wall |
-#                     duration | ELAPSED/_S/_MS/_NS/SECONDS suffix
+#   (3) time-measurement: description or compared var carries a genuine
+#                     time-MEASUREMENT signal — a time-suffixed variable
+#                     operand (ELAPSED/_S/_MS/_NS/SECONDS suffix) OR a
+#                     description lexeme (elapsed | within [0-9]+[ms]s? |
+#                     duration).  Bare prose `wall`/`seconds` alongside a
+#                     literal/config-constant operand no longer matches (#5257).
 #   (4) NOT escaped:  line does NOT contain `wallclock:allow`
 #
 # Prints each violation as "file:lineno: <content>" to stderr.
@@ -71,7 +79,14 @@ _detect_wallclock_upper_bound() {
     local _ass_re; _ass_re='asse''rt'
     local _esc_re; _esc_re='wallcl''ock:allow'
     local _wc_re
-    _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
+    # Free-prose description lexemes.  Task #5257 dropped the bare `wall` and
+    # lowercase `seconds` alternatives: they matched config-constant ceilings
+    # whose description merely mentioned "wall"/"seconds" without any genuine
+    # time-MEASUREMENT signal (the ep3 false positives).  A time-suffixed
+    # variable operand is still a legitimate signal — see `_wc_var_sfx` below,
+    # which is composed in UNCHANGED (its uppercase SECONDS suffix is a
+    # case-sensitive, independent matcher from the removed lowercase prose).
+    _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|durat''ion'
     # Variable-name suffixes: single-quoted so '' splits work correctly.
     local _wc_var_sfx
     _wc_var_sfx='ELAP''SED|_M?S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
@@ -96,24 +111,107 @@ _detect_wallclock_upper_bound() {
             continue
         fi
 
-        # Join backslash-continued lines into logical lines.
+        # Join backslash-continued lines AND lines inside a still-open
+        # single- OR double-quoted string (e.g. a multi-line `bash -c '...'`
+        # block, the test_occt_flock_gate.sh / test_proc_reaper.sh idiom, OR
+        # a multi-line "..." assert description — bash permits a literal
+        # embedded newline inside double quotes too) into one logical line.
+        # A line ending in `\` continues the join exactly as before; a line
+        # that leaves EITHER a single-quoted OR a double-quoted string OPEN
+        # continues the join even with no trailing backslash, and the join
+        # only terminates once none of the three conditions holds.
+        #
+        # Quote tracking is a left-to-right character scan, NOT a naive
+        # apostrophe parity count — a bare `'` is only a real single-quote
+        # toggle when it appears OUTSIDE a double-quoted span.  tests/infra
+        # prose is full of possessives/contractions inside double-quoted
+        # assert descriptions (e.g. "...other branch's job") and inside `#`
+        # comments (e.g. "# _START15's perspective"), each contributing
+        # exactly ONE apostrophe on its physical line; a whole-line odd/even
+        # count desyncs on the first such line and then mis-joins (or
+        # mis-splits) everything downstream. The scanner tracks single-quote
+        # (inq1) and double-quote (inq2) state independently: a `'` only
+        # toggles inq1 while NOT inside inq2, matching real shell quoting
+        # (apostrophes inside "..." are literal text, never a quote
+        # boundary). `'"$VAR"'`-style interpolation (close-quote, dquote-var,
+        # reopen-quote, as used by test_occt_flock_gate.sh's barrier loops)
+        # is thus handled precisely rather than by parity-cancellation luck:
+        # the first `'` toggles inq1 off, `"..."` opens/closes inq2 without
+        # touching inq1, and the final `'` toggles inq1 back on.
+        #
+        # A `#` starts a comment (stops the scan early — nothing after it can
+        # affect quote state, matching real bash) only when reached OUTSIDE
+        # both inq1 and inq2 and at a word boundary (start of line, or
+        # preceded by a space/tab); this keeps prose apostrophes in full-line
+        # or trailing comments from ever reaching the parity logic. The
+        # comment text itself is still appended to `buf` unmodified — only
+        # the SCAN stops early — because a `# wallclock:allow` escape token
+        # is itself a comment and must survive into the logical line for the
+        # downstream escape-regex to see it.
+        #
+        # A backslash escapes the single next character everywhere (outside
+        # quotes, and inside a double-quoted span) so `\"` inside `"..."`
+        # cannot prematurely close it. Inside a single-quoted span nothing is
+        # special but the terminating `'` (real bash: single quotes have no
+        # escape mechanism), so the scanner does not consult backslashes
+        # there.
+        #
+        # `q`/`dq` (passed via -v) hold one apostrophe / double-quote so this
+        # awk script body never needs either literally — a literal `'` would
+        # break out of the surrounding bash single-quoted string.
+        #
+        # Statement-boundary reset: a logical line is only ever printed once
+        # cont_bs, inq1, AND inq2 all hold false (see the continuation guard
+        # below), so by construction inq1/inq2 are already both closed at
+        # that point — the explicit `inq1 = 0; inq2 = 0` reset is therefore
+        # always a true "already-terminated" reset, never a forced one, and
+        # an already-terminated statement can never leak open-quote state
+        # into an unrelated later statement (fixture 2j).
         # Output format: <first-physical-lineno> TAB <logical-line>
-        awk '
-            /\\$/ {
-                sub(/\\$/, "")
-                if (buf == "") { startline = NR }
-                buf = buf $0
-                next
-            }
+        awk -v q="'" -v dq="\"" '
+            BEGIN { inq1 = 0; inq2 = 0; active = 0; buf = "" }
             {
-                if (buf != "") {
-                    print startline "\t" buf $0
-                    buf = ""; startline = 0
-                } else {
-                    print NR "\t" $0
+                orig = $0
+                cont_bs = (orig ~ /\\$/)
+                line = orig
+                if (cont_bs) { sub(/\\$/, "", line) }
+
+                n = length(line)
+                i = 1
+                while (i <= n) {
+                    c = substr(line, i, 1)
+                    if (inq1) {
+                        if (c == q) { inq1 = 0 }
+                        i++
+                        continue
+                    }
+                    if (inq2) {
+                        if (c == "\\") { i += 2; continue }
+                        if (c == dq) { inq2 = 0 }
+                        i++
+                        continue
+                    }
+                    if (c == "\\") { i += 2; continue }
+                    if (c == q) { inq1 = 1; i++; continue }
+                    if (c == dq) { inq2 = 1; i++; continue }
+                    if (c == "#") {
+                        prevc = (i == 1) ? "" : substr(line, i - 1, 1)
+                        if (i == 1 || prevc == " " || prevc == "\t") { break }
+                    }
+                    i++
                 }
+
+                if (!active) { startline = NR; active = 1 }
+                buf = buf line
+
+                if (cont_bs || inq1 || inq2) {
+                    next
+                }
+
+                print startline "\t" buf
+                buf = ""; active = 0; inq1 = 0; inq2 = 0
             }
-            END { if (buf != "") print startline "\t" buf }
+            END { if (active) print startline "\t" buf }
         ' "$f" > "$_linesf"
 
         local lineno logical
@@ -126,7 +224,7 @@ _detect_wallclock_upper_bound() {
             if ! [[ "$logical" =~ $_ass_re ]]; then continue; fi
             # (2) Upper-bound operator: -le <int> or -lt <int>
             if ! [[ "$logical" =~ $_op_re ]]; then continue; fi
-            # (3) Wall-clock lexeme
+            # (3) Time-measurement signal (description lexeme OR var-suffix)
             if ! [[ "$logical" =~ $_wc_re ]]; then continue; fi
             # Violation: all four conditions met
             echo "${f}:${lineno}: ${logical}" >> "$_viof"
@@ -308,6 +406,274 @@ _s2g_rc=0
 _detect_wallclock_upper_bound "$_s2g_tmpdir" 2>/dev/null || _s2g_rc=$?
 assert "2g: bare _S suffix variable (wait_S -le 30) flagged as wall-clock upper bound (returns 1)" \
     test "$_s2g_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2h/2i/2j/2k/2l (task 5148, DEFECT 2A): multi-line evasion — an `assert "..." \`
+# that opens a multi-line single-quoted `bash -c '...'` block (the
+# test_occt_flock_gate.sh / test_proc_reaper.sh idiom).  The prior awk join
+# only continued across a trailing `\`; a line ending in an OPEN single quote
+# (no trailing `\`) terminated the join even though the quoted string
+# continues on later physical lines, so `assert` and a `-le`/`-lt <int>`
+# comparison living deeper inside that block landed on DIFFERENT logical
+# lines and the assert-wiring gate never fired. Mirrors the real evasion at
+# tests/infra/test_proc_reaper.sh (pre-task-5148 Test 8a shape).
+# ---------------------------------------------------------------------------
+
+# 2h: MULTI-LINE, un-escaped -> must be flagged (returns 1).
+# RED today: the awk only joins backslash-continuations, so `assert` (already
+# joined with the `bash -c '` line via its own trailing `\`) and the
+# `-op <int>` comparison several physical lines deeper in the still-open
+# single-quoted string never land on the same logical line.
+_s2h_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2h_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2h_tmpdir/fixture.sh"
+printf '%s "%s check" \\\n' "$_ASS_WORD" "$_WC_LEX_PART" >> "$_s2h_tmpdir/fixture.sh"
+printf "    bash -c '\n" >> "$_s2h_tmpdir/fixture.sh"
+printf '        test "$el" %s 3\n' "$_UB_OP" >> "$_s2h_tmpdir/fixture.sh"
+printf "    '\n" >> "$_s2h_tmpdir/fixture.sh"
+
+_s2h_rc=0
+_detect_wallclock_upper_bound "$_s2h_tmpdir" 2>/dev/null || _s2h_rc=$?
+assert "2h: multi-line assert-opens-bash-c-single-quote shape (unescaped) is flagged (returns 1)" \
+    test "$_s2h_rc" -eq 1
+
+# 2i: same multi-line shape, but the escape token lives inside the joined
+# block -> must stay unflagged (returns 0). Already passes pre-fix (the
+# unjoined old awk never flags it either); locks in precision once the join
+# becomes quote-aware.
+_s2i_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2i_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2i_tmpdir/fixture.sh"
+printf '%s "%s check" \\\n' "$_ASS_WORD" "$_WC_LEX_PART" >> "$_s2i_tmpdir/fixture.sh"
+printf "    bash -c '\n" >> "$_s2i_tmpdir/fixture.sh"
+printf '        test "$el" %s 3  # %s\n' "$_UB_OP" "$_ESC_TOKEN" >> "$_s2i_tmpdir/fixture.sh"
+printf "    '\n" >> "$_s2i_tmpdir/fixture.sh"
+
+_s2i_rc=0
+_detect_wallclock_upper_bound "$_s2i_tmpdir" 2>/dev/null || _s2i_rc=$?
+assert "2i: multi-line shape with the escape token inside the joined block stays unflagged (returns 0)" \
+    test "$_s2i_rc" -eq 0
+
+# 2j: NO-OVER-JOIN guard — a separate, already-terminated assert statement
+# (no trailing backslash, no open quote) precedes an UNRELATED later
+# multi-line bash -c block that itself carries an upper-bound + wall-clock
+# lexeme but no `assert` keyword. Must stay unflagged (returns 0): the join
+# must not spuriously bridge two unrelated statements.
+_s2j_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2j_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2j_tmpdir/fixture.sh"
+printf '%s "unrelated pre-terminated statement" test 1 -eq 1\n' "$_ASS_WORD" >> "$_s2j_tmpdir/fixture.sh"
+printf "bash -c '\n" >> "$_s2j_tmpdir/fixture.sh"
+printf '    test "$el" %s 15\n' "$_UB_OP" >> "$_s2j_tmpdir/fixture.sh"
+printf '    # %s marker\n' "$_WC_LEX_PART" >> "$_s2j_tmpdir/fixture.sh"
+printf "'\n" >> "$_s2j_tmpdir/fixture.sh"
+
+_s2j_rc=0
+_detect_wallclock_upper_bound "$_s2j_tmpdir" 2>/dev/null || _s2j_rc=$?
+assert "2j: an unrelated later multi-line bash -c block (no assert keyword) does not spuriously join with an earlier already-terminated assert statement (returns 0)" \
+    test "$_s2j_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2k (task 5148, DEFECT 2B): FAITHFUL positive — replicates
+# tests/infra/test_proc_reaper.sh Part 8 Test 8a's real evasion shape: an
+# `assert "..." \` line joins (via its OWN trailing backslash) an
+# `env VAR=x bash -c '` line that itself ends in an OPEN single quote (no
+# trailing backslash); deeper inside that still-open quote sit INTERNAL
+# backslash-continuation lines (mirroring Test 8a's `PATH=... \` /
+# `REIFY_REAPER_PS_TIMEOUT=2 \` env-prefix lines), then a bare
+# `_elapsed=$(( ... ))` computation, then the `[ "$_elapsed" -le <int> ]`
+# comparison several physical lines further in, then the closing `'`.
+# Under the pre-step-3 backslash-only join, `assert` (joined only with the
+# `bash -c '` line via its own trailing backslash) and the upper-bound
+# comparison (buried past internally-joined-but-separately-terminated lines)
+# never land on the same logical line -> NOT flagged.
+# RED today (joins 2h): must be flagged (returns 1) once the join becomes
+# quote-aware (step 3).
+# ---------------------------------------------------------------------------
+_s2k_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2k_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2k_tmpdir/fixture.sh"
+printf '%s "reap-orphans check" \\\n' "$_ASS_WORD" >> "$_s2k_tmpdir/fixture.sh"
+printf "    env FOO=x bash -c '\n" >> "$_s2k_tmpdir/fixture.sh"
+printf '        PATH=x \\\n' >> "$_s2k_tmpdir/fixture.sh"
+printf '        VAR=2 \\\n' >> "$_s2k_tmpdir/fixture.sh"
+printf '            true\n' >> "$_s2k_tmpdir/fixture.sh"
+printf '        _%s=$(( 1 ))\n' "$_WC_LEX_PART" >> "$_s2k_tmpdir/fixture.sh"
+printf '        [ "$_%s" %s 15 ]\n' "$_WC_LEX_PART" "$_UB_OP" >> "$_s2k_tmpdir/fixture.sh"
+printf "    '\n" >> "$_s2k_tmpdir/fixture.sh"
+
+_s2k_rc=0
+_detect_wallclock_upper_bound "$_s2k_tmpdir" 2>/dev/null || _s2k_rc=$?
+assert "2k: faithful multi-line Test-8a-shape (internal backslash-continuations inside an open bash -c quote) is flagged (returns 1)" \
+    test "$_s2k_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2l (task 5148, DEFECT 2B): PRECISION-NEGATIVE — replicates
+# tests/infra/test_occt_flock_gate.sh's `"$WRAPPER" bash -c '...'`
+# barrier-loop shape: a multi-line open single-quoted block containing
+# `'"$VAR"'`-style interpolation (a quote-close/quote-reopen pair on the SAME
+# physical line) around a NON-assert-wired `while ... -le 100` loop keyed on
+# a non-lexeme var (`_w`), immediately followed by a SEPARATE,
+# already-terminated `assert` statement whose description carries a
+# wall-clock lexeme but compares with `-eq` (not an upper bound) so it is
+# benign on its own. A join that mis-tracks the interpolated quote parity (or
+# fails to reset cleanly at the true close of the quoted block) could weld
+# the barrier loop's upper-bound operator onto the trailing assert's lexeme,
+# producing a FALSE positive across two unrelated statements.
+# Must stay unflagged (returns 0) both before and after the step-3 hardening.
+# ---------------------------------------------------------------------------
+_s2l_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2l_tmpdir")
+
+# Assemble the two interpolated-quote lines separately (readability); each
+# embeds a literal `'"$_BARRIER2L"'` pair via the standard '"'"' idiom so the
+# WRITTEN fixture reproduces the real close-quote/dquote-var/reopen-quote
+# barrier pattern, while this guard source line itself carries no literal
+# assert+upper-bound+lexeme combination (self-match safety).
+_s2l_line_b='    touch "'"'"'"$_BARRIER2L"'"'"'/ready-$$"'
+_s2l_line_c='    _w=0; while [ ! -f "'"'"'"$_BARRIER2L"'"'"'/go" ] && [ "$_w" '"$_UB_OP"' 100 ]; do'
+
+printf '#!/usr/bin/env bash\n' > "$_s2l_tmpdir/fixture.sh"
+printf '"$WRAPPER" bash -c '"'"'\n' >> "$_s2l_tmpdir/fixture.sh"
+printf '%s\n' "$_s2l_line_b" >> "$_s2l_tmpdir/fixture.sh"
+printf '%s\n' "$_s2l_line_c" >> "$_s2l_tmpdir/fixture.sh"
+printf '        sleep 0.2; _w=$(( _w + 1 )); done\n' >> "$_s2l_tmpdir/fixture.sh"
+printf "'\n" >> "$_s2l_tmpdir/fixture.sh"
+printf '%s "%s check done" test 1 -eq 1\n' "$_ASS_WORD" "$_WC_LEX_PART" >> "$_s2l_tmpdir/fixture.sh"
+
+_s2l_rc=0
+_detect_wallclock_upper_bound "$_s2l_tmpdir" 2>/dev/null || _s2l_rc=$?
+assert "2l: quote-interpolated barrier loop with a non-lexeme non-assert-wired upper bound, followed by a separate lexeme-bearing assert, does not spuriously join (returns 0)" \
+    test "$_s2l_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2m (reviewer follow-up, task 5148): DOUBLE-QUOTE mirror of 2h — an assert
+# description opens a double-quoted string that stays OPEN across a literal
+# physical newline (bash permits an embedded newline inside "..." exactly as
+# it does inside '...'), closing only on a later physical line that also
+# carries the `-le`/`-lt <int>` upper-bound comparison. Before this fix the
+# join's continuation guard was `cont_bs || inq1` only — it never continued
+# across a still-open double-quoted span (inq2) and unconditionally reset
+# inq2 to closed as soon as cont_bs/inq1 both cleared, so this shape split
+# into two logical lines (one with `assert`+the lexeme, one with the bare
+# `-le`/`-lt <int>`) exactly like the pre-fix single-quote evasion (2h) — a
+# false negative. Must be flagged (returns 1) now that the join continues
+# across an open inq2 span too.
+# ---------------------------------------------------------------------------
+_s2m_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2m_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2m_tmpdir/fixture.sh"
+printf '%s "%s check\n' "$_ASS_WORD" "$_WC_LEX_PART" >> "$_s2m_tmpdir/fixture.sh"
+printf '    details" test "$el" %s 3\n' "$_UB_OP" >> "$_s2m_tmpdir/fixture.sh"
+
+_s2m_rc=0
+_detect_wallclock_upper_bound "$_s2m_tmpdir" 2>/dev/null || _s2m_rc=$?
+assert "2m: multi-line DOUBLE-quoted assert description (open dquote spanning a physical newline) is flagged (returns 1)" \
+    test "$_s2m_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2n (task #5257): PRECISION NEGATIVE — the six ep3 config-constant false
+# positives, reproduced UN-annotated.  Each compares a CONFIG-CONSTANT ceiling
+# with `-lt 3600` and matched the OLD detector ONLY because its description
+# prose carried the word "wall"; NONE carries a genuine time-measurement
+# signal — the operands are not time-suffixed variables (HS_* has no
+# _S/_MS/_NS/ELAPSED/SECONDS suffix; `_DEFAULT_ST_*` carries a NON-boundary
+# _S inside `_ST_`, which `_M?S([^A-Za-z0-9_]|$)` does not match) and no
+# description carries elapsed/within-Ns/duration.  Both operand shapes are
+# reproduced: a bare quoted variable and an arithmetic product whose var names
+# carry the `_ST_` non-boundary substring.  RED before the step-2 tightening
+# (the `wall` prose still flags them, rc==1); GREEN after it (no
+# time-measurement signal remains, rc==0).
+# ---------------------------------------------------------------------------
+_s2n_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2n_tmpdir")
+
+# Assemble the soon-to-be-removed free-prose "wall" lexeme and the strict
+# upper-bound operator from parts (self-match safety: no literal
+# assert+upper-bound+lexeme lands on a single source line of this guard).
+_WALL_LEX='wal''l'         # assembles to the removed free-prose "wall" lexeme
+_UB_LT='-lt'               # strict upper-bound operator used by the in-tree asserts
+
+printf '#!/usr/bin/env bash\n' > "$_s2n_tmpdir/fixture.sh"
+# Shape A: bare quoted variable operand (HS_T0A style), "pass-level wall" prose.
+printf '%s "tensegrity heavy ceiling strictly less than the 3600s pass-level %s" \\\n' \
+    "$_ASS_WORD" "$_WALL_LEX" >> "$_s2n_tmpdir/fixture.sh"
+printf '    bash -c "[ '\''${HS_T0A:-0}'\'' %s 3600 ]"\n' \
+    "$_UB_LT" >> "$_s2n_tmpdir/fixture.sh"
+# Shape B: arithmetic product whose var names carry a NON-boundary _S (_ST_).
+printf '%s "default slow-timeout ceiling strictly less than the 3600s pass-level %s" \\\n' \
+    "$_ASS_WORD" "$_WALL_LEX" >> "$_s2n_tmpdir/fixture.sh"
+printf '    bash -c "[ $(( ${_DEFAULT_ST_PERIOD:-0} * ${_DEFAULT_ST_TERM:-0} )) %s 3600 ]"\n' \
+    "$_UB_LT" >> "$_s2n_tmpdir/fixture.sh"
+
+_s2n_rc=0
+_detect_wallclock_upper_bound "$_s2n_tmpdir" 2>/dev/null || _s2n_rc=$?
+assert "2n: config-constant ceilings matched only by the removed wall prose (no time-measurement signal) NOT flagged (returns 0)" \
+    test "$_s2n_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2o (task #5257): PRECISION NEGATIVE — an assert whose ONLY wall-clock signal
+# is the bare free-prose word "seconds", over a non-time operand ($count, no
+# _S/_MS/_NS/ELAPSED/SECONDS suffix) and a literal ceiling.  RED before the
+# step-2 tightening (the `seconds` prose still flags it, rc==1); GREEN after it
+# (no time-measurement signal remains, rc==0).  NOTE: bash `[[ =~ ]]` is
+# case-sensitive, so removing this LOWERCASE free-prose lexeme does NOT touch
+# the retained UPPERCASE SECONDS var-suffix matcher exercised by 2q.
+# ---------------------------------------------------------------------------
+_s2o_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2o_tmpdir")
+
+# Assemble the soon-to-be-removed lowercase free-prose "seconds" lexeme.
+_SEC_PROSE='second''s'     # assembles to the removed free-prose "seconds" lexeme
+
+printf '#!/usr/bin/env bash\n' > "$_s2o_tmpdir/fixture.sh"
+printf '%s "job completed in a few %s" test "$count" %s 5\n' \
+    "$_ASS_WORD" "$_SEC_PROSE" "$_UB_LT" >> "$_s2o_tmpdir/fixture.sh"
+
+_s2o_rc=0
+_detect_wallclock_upper_bound "$_s2o_tmpdir" 2>/dev/null || _s2o_rc=$?
+assert "2o: bare lowercase seconds prose over a non-time operand (no time-measurement signal) NOT flagged (returns 0)" \
+    test "$_s2o_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2p (task #5257): TRUE POSITIVE (green-on-arrival) — the ep1/ep2 shape the
+# task names: a description carrying the RETAINED `elapsed` lexeme with a
+# strict upper bound.  Must stay flagged (returns 1) both before AND after the
+# step-2 tightening — `elapsed` is a genuine time-MEASUREMENT description lexeme
+# the guard must keep firing on.
+# ---------------------------------------------------------------------------
+_s2p_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2p_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2p_tmpdir/fixture.sh"
+printf '%s "render %s under budget" test "$el" %s 2\n' \
+    "$_ASS_WORD" "$_WC_LEX_PART" "$_UB_LT" >> "$_s2p_tmpdir/fixture.sh"
+
+_s2p_rc=0
+_detect_wallclock_upper_bound "$_s2p_tmpdir" 2>/dev/null || _s2p_rc=$?
+assert "2p: real elapsed upper-bound assert (retained description lexeme) still fires (returns 1)" \
+    test "$_s2p_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2q (task #5257): TRUE-POSITIVE PRECISION GUARD — a SECONDS-suffixed variable
+# operand (wait_SECONDS) under a NEUTRAL description that carries NO
+# elapsed/within/duration/wall/seconds prose.  Must stay flagged (returns 1):
+# a time-suffixed variable operand is a genuine time-MEASUREMENT signal, matched
+# by the RETAINED uppercase SECONDS var-suffix branch.  This pins the exact
+# distinction this task turns on — removing the LOWERCASE free-prose `seconds`
+# lexeme (intended) must NOT delete the UPPERCASE SECONDS VAR-SUFFIX (a
+# regression that would reintroduce false negatives); an over-eager
+# "remove seconds" edit that nuked the var-suffix would flip this to rc==0.
+# ---------------------------------------------------------------------------
+_s2q_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2q_tmpdir")
+
+# Assemble the SECONDS var-name suffix from parts (self-match safety).
+_SEC_SFX='SECOND''S'       # assembles to the retained uppercase SECONDS var-suffix
+
+printf '#!/usr/bin/env bash\n' > "$_s2q_tmpdir/fixture.sh"
+printf '%s "worker finished under budget" test "$wait_%s" %s 30\n' \
+    "$_ASS_WORD" "$_SEC_SFX" "$_UB_OP" >> "$_s2q_tmpdir/fixture.sh"
+
+_s2q_rc=0
+_detect_wallclock_upper_bound "$_s2q_tmpdir" 2>/dev/null || _s2q_rc=$?
+assert "2q: time-suffixed variable operand under a neutral description (retained var-suffix measurement signal) still fires (returns 1)" \
+    test "$_s2q_rc" -eq 1
 
 # ===========================================================================
 # Section 3: LIVE guard — scan the real tests/infra for un-escaped

@@ -81,6 +81,8 @@ std
     snapshot     // snapshot(), bodies(), transform_of(), center_of_mass(), bounding_box()
     sweep        // sweep(), sweep_grid()
     query        // interferes(), interferes_with(), min_clearance()
+  result
+    mod.ri         // Result<T,E>, unwrap_or, is_ok, is_err, or_else, map_err, ok_or
 ```
 
 ---
@@ -279,6 +281,10 @@ fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
 enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
 ```
 
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `project` (both the point and vector overloads), `orient_look_at`, and the qualified-enum-value path for `EulerConvention` are implemented by this PRD.
+
+**Bare vs. qualified `EulerConvention`:** `orient_euler`/`orient_to_euler` accept the convention argument either as a lowercase string (`"xyz"`) or as a qualified enum value (`EulerConvention.XYZ`) — a **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. The string path is case-sensitive: `"XYZ"` (uppercase) also evaluates to `Undef`.
+
 #### SO(3) and SE(3) operations (v0.2)
 
 Added to support the closed-chain kinematic loop-closure solver — see
@@ -341,6 +347,14 @@ parameters are unit-less in the joint's local frame.
 
 ### 3.2 `std.geometry.primitive`
 
+**Note on the signatures below:** these describe the target `std.geometry` stdlib
+API — the structured/typed argument forms designers should expect. The
+compiler's current lowering for a few of these constructors (`polygon`,
+`line_segment`, `arc`, `interp`, `bezier`) accepts only flat positional
+coordinate arguments rather than the structured types shown; each is annotated
+below with a `// current compiler form:` comment giving the form that compiles
+today.
+
 **3D solids:**
 
 ```
@@ -352,6 +366,7 @@ fn cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid
 fn sphere(radius: Length) -> Solid
 fn torus(major_radius: Length, minor_radius: Length) -> Solid
 fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
+fn rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid
 
 // Planned — not yet implemented; see tracking task 3465 / PRD docs/prds/geometry-primitive-constructors.md
 // fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
@@ -361,23 +376,71 @@ fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Sol
 // fn extrude_infinite(profile: Surface, direction: Vector3<Length>) -> Solid
 ```
 
+**Anchoring & orientation.** Three distinct anchor conventions coexist across the solids above —
+deliberately not unified (redefining `box`'s corner-at-origin would break ~370 existing call sites
+and their world positions; see `docs/prds/geometry-primitive-constructors.md`). This table is
+mirrored — condensed, for MCP tool consumption — in
+`crates/reify-mcp/src/tools/chunks/geometry.md`; keep both in sync when a primitive's anchor
+convention changes:
+
+| Primitive | Anchor | Notes |
+|---|---|---|
+| `box` | centred at origin, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally |
+| `box_centered` | centred at origin, all 3 axes | op-identical alias of `box`, for symmetry with `cylinder_centered` |
+| `sphere` | centred at origin | |
+| `torus` | centred at origin; axis is +Z | |
+| `cylinder` | base at z=0, axis +Z, x/y centred | top face at `z = height`; NOT centred on z |
+| `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
+| `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
+| `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |
+| `rounded_box` | centred at origin, all 3 axes | same anchor as `box`; the 4 vertical (plan-view) edges are rounded to `corner_r` |
+| `rounded_rect` (2D) | planar XY at z=0, centred at origin | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
+
+`cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
+`wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
+`translate(primitive(...), 0mm, 0mm, -h/2)` workaround — note the dimensioned zeros: `translate`'s
+components are length-semantic, so a bare `0` is rejected rather than read as 0 SI metres. (`-h/2`
+needs no change; dividing a length by a bare number preserves the length.)
+
+`rounded_box`/`rounded_rect` additionally require `corner_r > 0` and
+`2*corner_r < min(width, depth)`; a statically-known violation (constant literal
+arguments, including constant arithmetic like `10mm + 15mm`) is a compile-time
+error. This check is best-effort: it only fires when `width`/`depth`/`corner_r`
+all fold to constants. A param-driven value that violates the constraint at
+runtime is **not** caught statically — it fails at evaluation with an opaque
+kernel error instead of a diagnostic.
+
 **2D shapes:**
 
 ```
 fn rectangle(width: Length, height: Length) -> Surface
 fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
+// current compiler form: polygon(x1, y1, x2, y2, ...) — variadic flat
+// coordinate pairs, at least 6 args (3 points), even count; see geometry.rs:1570
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
+fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
+
+All 2D shapes are planar faces in the XY plane at z=0. `rectangle`/`circle`/`ellipse`/`rounded_rect`
+are centred at origin (same centring as `box`); `polygon` is the exception — its position is set by
+the caller's explicit vertex coordinates, not auto-centred.
 
 **Curves:**
 
 ```
 fn line_segment<N: Nat>(start: Point<N,Length>, end: Point<N,Length>) -> Curve
+// current compiler form: line_segment(x1, y1, z1, x2, y2, z2) — 6 flat
+// scalars; see geometry_curve.rs:22
 fn arc(center: Point3<Length>, radius: Length, start_angle: Angle, end_angle: Angle) -> Curve
+// current compiler form: arc(cx, cy, cz, radius, start_angle, end_angle, ax,
+// ay, az) — 9 flat args (adds an explicit axis ax/ay/az); see geometry_curve.rs:47
 fn helix(radius: Length, pitch: Length, height: Length) -> Curve
 fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
+// current compiler form: same list -> flat-args divergence as `polygon` /
+// `line_segment` above (flat coordinate args, not a structured List<Point<N,Length>>)
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
+// current compiler form: same list -> flat-args divergence as `interp` above
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
 
 // Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
@@ -390,6 +453,10 @@ fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, kno
 fn tube(outer_radius: Length, inner_radius: Length, height: Length) -> Solid
 fn pipe(path: Curve, radius: Length) -> Solid
 ```
+
+`tube` is composed from an outer `cylinder` minus an inner `cylinder`, so it inherits
+`cylinder`'s anchor: base at z=0, axis +Z, x/y centred at origin — not z-centred (no
+`tube_centered` variant exists yet).
 
 ### 3.4 `std.geometry.boolean`
 
@@ -453,6 +520,10 @@ fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
 
 Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `apply_transform`, `rotate(geometry, orientation: Orientation<3>)`, and `scale(geometry, factors: Vector3<Real>)` are implemented by this PRD.
+
+**LSP completion scope:** `apply_transform` is exposed as a named completion in the editor's completion catalog (`crates/reify-lsp/src/completion.rs`); `rotate` and `scale` are not. This mirrors the catalog's pre-existing convention of listing geometry constructors and generic single-purpose helpers by name while omitting multi-argument geometry-operation verbs (`translate`, `union`, `extrude`, etc.) — a completion-catalog scoping choice, not an implementation gap.
+
 ### 3.8 `std.geometry.pattern`
 
 ```
@@ -464,6 +535,12 @@ fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3
 ```
 
 Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
+
+**Performance — single-pass fuse (task 5213):** when a multi-instance pattern is realized as a merged solid on the OCCT kernel (`linear_pattern`, `linear_pattern_2d`, `circular_pattern`, `arbitrary_pattern`), all instances are fused in ONE n-ary boolean pass rather than one pairwise fuse per instance — turning the former O(N²) accumulation into a single OCCT arrangement pass, with identical union semantics (overlapping instances still merge; disjoint instances stay separate). This makes dense replicated workloads — perforated plates, sieves, vent grids — practical. See `examples/perforated_plate.ri` for a worked `difference(plate, union_all(linear_pattern_2d, linear_pattern_2d))` sieve.
+
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `mirror(geometry, plane: Plane)`, `circular_pattern(geometry, axis: Axis, ...)`, and `arbitrary_pattern(geometry, transforms: List<Transform<3>>)` are implemented by this PRD.
+
+**LSP completion scope:** none of `mirror`, `circular_pattern`, or `arbitrary_pattern` are enumerated as named completions in the editor's completion catalog, following the same convention noted in §3.7 — the catalog intentionally omits multi-argument geometry-operation verbs rather than listing every stdlib function by name.
 
 ### 3.9 `std.geometry.query`
 
@@ -526,6 +603,63 @@ fn edges_parallel_to(solid: Solid, direction: Vector3<Dimensionless>, tolerance:
 fn edges_at_height(solid: Solid, height: Length, tolerance: Length) -> List<Curve>
 ```
 
+**Feature provenance:**
+
+```
+fn feature<G: Geometry>(geometry: G) -> Feature
+fn created_by_feature(solid: Solid, f: Feature) -> List<Surface>
+fn split_by_feature(solid: Solid, f: Feature) -> List<Surface>
+```
+
+`feature(geometry)` is an **explicit projection** from `Geometry` to the
+`Feature` that produced it — there is no implicit `Geometry → Feature`
+coercion, so passing a `Geometry` where a `Feature` is expected is a
+construct-time `reify check` error, not a solve-time surprise. A whole-body
+handle resolves to its realization feature; a sub-shape handle (e.g. a
+single face pulled out of a resolved selector, `single(faces(base))`)
+resolves to that entry's recorded origin feature. `feature()` returns a
+`Feature`, not a region — it is the *input* to the two selectors below, not
+itself selectable geometry.
+
+`created_by_feature(solid, f)` and `split_by_feature(solid, f)` are
+provenance-addressed, Face-only selectors (edge/vertex provenance is a
+deferred extension) built from a `Feature` rather than a geometric
+predicate — pure-Rust readers over the engine's topology-attribute table,
+kernel-free at construction, and composable with `union`/`intersect` like
+the other selectors above:
+- `created_by_feature(solid, f)` resolves to the faces whose recorded origin
+  feature is `f` — the inverse of `feature()`: given a feature, surface the
+  entities it produced (mirrors OnShape's `qCreatedBy`). Across a fillet,
+  `created_by_feature(g, feature(base))` and `created_by_feature(g, feature(g))`
+  give **disjoint, non-empty** face sets — the base's original faces vs. the
+  faces the fillet generated.
+- `split_by_feature(solid, f)` resolves to the faces whose modification
+  history records a split by `f` at **any** position, not just the most
+  recent entry (mirrors OnShape's `qSplitBy` / FreeCAD-RealThunder's `;:M2`
+  postfix model) — a face split first by `f` and later by another feature
+  still matches `split_by_feature(f)`.
+
+The `solid` argument is retained for readability (and future per-body
+correlation) but is not consulted by resolution — not even as a source of
+candidate faces to filter: resolving `created_by_feature`/`split_by_feature`
+is a kernel-free scan of the recorded `feature_id` over the whole
+topology-attribute table. A feature identity is globally unique, so
+`created_by_feature(solid, f)` returns exactly the faces `f` created
+regardless of which realized body handle is passed.
+
+**Fail-closed provenance.** `feature(geometry)` fails closed to
+`Value::Undef` plus a diagnostic only when its argument does not resolve to
+a realized geometry handle at all; any resolved handle — whole-body or
+sub-shape — always projects to a `Feature`, so `feature()` itself never has
+an empty outcome to fail closed from. `created_by_feature()` and
+`split_by_feature()`, being `List`-valued and Face-only, can match zero
+faces for two different reasons — the geometry carries no recorded
+provenance at all (imported geometry), or the named feature legitimately
+produced no faces (e.g. an edge/vertex-only op, which is empty precisely
+because these selectors are Face-only) — but the contract does **not**
+distinguish the two: either way the match emits a structured diagnostic and
+yields `Value::Undef`, never a silent empty `List`, never a panic.
+
 **Kernel note (mesh vs B-rep).** `faces()`/`edges()` cardinality and the
 indices returned by `adjacent_faces()`/`shared_edges()` are **kernel-dependent**
 (selected by the `#kernel(...)` pragma). On the **B-rep** kernel (OCCT) a face
@@ -577,7 +711,7 @@ fn axis_y(origin: Point3<Length>) -> Axis
 fn axis_z(origin: Point3<Length>) -> Axis
 ```
 
-**Deferred:** `Plane`, `Axis`, `BoundingBox`, and the `plane_xy`/`plane_xz`/`plane_yz`/`axis_x`/`axis_y`/`axis_z` helpers are listed here for reference but not yet implemented in the stdlib (landing in a follow-up task).
+**Implemented.** `plane_xy`/`plane_xz`/`plane_yz`/`axis_x`/`axis_y`/`axis_z` and the `Plane`/`Axis`/`BoundingBox` structure values they produce are live in the stdlib — see the constructor dispatch arms at `reify-stdlib/src/geometry.rs:818-825` and the `Value::Plane`/`Value::Axis`/`Value::BoundingBox` runtime variants backing the structure defs above. `bbox`/`bbox_size`/`bbox_center` (the `BoundingBox` constructor and accessors) ship alongside them and are wired into LSP completions.
 
 #### Runtime conformance-query predicates
 
@@ -591,6 +725,8 @@ is_closed(g : Geometry)     -> Bool  — boundary has no free edges (the weaker 
 is_connected(g : Geometry)  -> Bool  — shape is a single connected component (no disjoint sub-bodies)
 is_bounded(g : Geometry)    -> Bool  — shape has a finite bounding box (no infinite half-spaces)
 ```
+
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `is_closed`, `is_connected`, and `is_bounded` — along with the `Geometry`/`Transformable` supertraits — are implemented by this PRD; `is_watertight`, `is_manifold`, and `is_orientable` predate it.
 
 **User-assertion escape hatch:** if the enclosing structure declares the matching marker trait, the helper short-circuits to `Bool(true)` before consulting the kernel — pairing is one-to-one (no trait-DAG propagation):
 
@@ -843,8 +979,9 @@ trait HydraulicPort : FluidPort + MechanicalPort {
 
 ```
 // Base trait — every material-conforming structure satisfies this contract.
-// Note: density shown as Density (aspirational dimensioned type); shipped MaterialSpec
-// uses density : Real pending dimensional-type tightening (#3111-family).
+// Note: density : Density is SHIPPED, not aspirational — the dimensional-type
+// tightening has landed. Every param declaration below — name, type, default and
+// trait base — matches materials_mechanical.ri; comments here are editorial.
 trait MaterialSpec {
     param density : Density
     param name : String
@@ -853,10 +990,13 @@ trait MaterialSpec {
 // Canonical first-class material value type (shipped in materials_mechanical.ri,
 // task #1876 / #2411). Use MaterialSpec above for trait-typed params; use this struct
 // when you want a concrete material value (e.g. Material(name: "steel", ...)).
-structure def Material {
+// The `: Visual` base and the additive `appearance` param (neutral-grey default)
+// arrived with task β #4761; existing no-appearance constructors remain valid.
+structure def Material : Visual {
     param name : String
-    param density : Real
-    param youngs_modulus : Real
+    param density : Density
+    param youngs_modulus : Pressure
+    param appearance : Appearance = Appearance()
 }
 
 trait TemperatureDependent {
@@ -869,48 +1009,61 @@ trait TemperatureDependent {
 ```
 // Dimensioned-type note: the Pressure/Energy param types shown below (youngs_modulus,
 // yield_strength, ultimate_tensile_strength, compressive_strength, shear_modulus,
-// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are the target of the
-// deferred #3111-family dimensional tightening and are currently Real placeholders in the
-// shipped stdlib. The thermal/electrical/optical/fracture dimensioned types shown in §6.3–§6.5
-// have been realized by tasks #3112/#3113/#3115 (ThermalExpansion, ElectricResistivity,
-// DielectricStrength, AbsorptionCoeff, FractureToughness). Do not downgrade the Pressure/Energy
-// types shown here — they remain the documented aspiration pending #3111.
+// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are SHIPPED, not
+// aspirational — the dimensional tightening has landed. Every param declaration in this
+// fence — name, type, default and trait base — matches materials_mechanical.ri. Inline
+// comments are editorial and are NOT pinned to the .ri text: some are condensed from a
+// block comment above the trait there (e.g. fracture_toughness, damping_ratio,
+// loss_factor), so a "verbatim" audit should compare declarations, not comments.
+// The thermal/electrical/optical/fracture
+// dimensioned types shown in §6.3–§6.5 have been realized by tasks #3112/#3113/#3115
+// (ThermalExpansion, ElectricResistivity, DielectricStrength, AbsorptionCoeff,
+// FractureToughness). Do not downgrade the Pressure/Energy types shown here.
+//
+// The params still typed Real in this section — poissons_ratio, hardness_value,
+// elongation_at_break, reduction_of_area, damping_ratio, loss_factor — are GENUINELY
+// dimensionless (ratios, fractions, and scale-dependent instrument readings) and are
+// correct as written. Do not "fix" them to a dimensioned type; each carries its
+// rationale inline below.
+//
+// Being declared with a dimensioned type does not imply anything reads it: see
+// "Declared-only material properties" immediately after §6.3 for the register.
 
 // Elastic, Strong, Hard, Ductile are free-standing (no MaterialSpec base) — deliberate
 // design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
 // slot rather than inheriting from the base trait directly.
 trait Elastic {
-    param youngs_modulus : Pressure  // shipped: Real (aspiration pending #3111)
-    param poissons_ratio : Real
-    param shear_modulus : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param youngs_modulus : Pressure
+    param poissons_ratio : Real // dimensionless
+    param shear_modulus : Pressure = undef // optional — omit when not independently measured
     constraint 0 < poissons_ratio < 0.5
 }
 trait Strong {
-    param yield_strength : Pressure  // shipped: Real (aspiration pending #3111)
-    param ultimate_tensile_strength : Pressure  // shipped: Real (aspiration pending #3111)
-    param compressive_strength : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param yield_strength : Pressure
+    param ultimate_tensile_strength : Pressure
+    param compressive_strength : Pressure = undef // optional — omit when not reported
     constraint ultimate_tensile_strength >= yield_strength
 }
 trait Hard {
-    param hardness_value : Real
+    param hardness_value : Real // dimensionless — scale-dependent (Rockwell/Brinell/Vickers/Shore)
     param hardness_scale : HardnessScale
 }
 enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
 trait FatigueRated : MaterialSpec {
-    param fatigue_limit : Pressure = undef  // shipped: Real (aspiration pending #3111)
-    param fatigue_strength_at : Pressure = undef  // shipped: Real (aspiration pending #3111)
-    param fatigue_cycles : Int = undef
+    param fatigue_limit : Pressure = undef        // optional — stress amplitude for unlimited cycles
+    param fatigue_strength_at : Pressure = undef  // optional — stress amplitude at fatigue_cycles
+    param fatigue_cycles : Int = undef            // optional — cycle count for fatigue_strength_at
 }
 trait FractureTough : MaterialSpec {
     param fracture_toughness : FractureToughness  // Pa·√m — tightened from Scalar<> by task #3115
 }
 trait Ductile {
-    param elongation_at_break : Real
-    param reduction_of_area : Real = undef
+    param elongation_at_break : Real // dimensionless
+    param reduction_of_area : Real = undef // optional — omit when not reported
 }
 trait ImpactResistant : MaterialSpec {
-    param charpy_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
-    param izod_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
+    param charpy_impact : Energy = undef  // optional — energy absorbed in Charpy test (J)
+    param izod_impact : Energy = undef    // optional — energy absorbed in Izod test (J)
 }
 trait Damping : MaterialSpec {
     param damping_ratio : Real  // fraction of critical damping (dimensionless)
@@ -938,6 +1091,56 @@ trait Refractory : ThermallyCharacterized {
     constraint max_service_temperature >= 1500.0K
 }
 ```
+
+#### Declared-only material properties (no production readers)
+
+Some material params above are *declared* with a dimensioned type but are never
+*read*. A dimensioned type is evidence of intent, not of consumption, so the gap is
+registered here rather than left for a reader to infer. See
+`INV-SF-3 declared-intent-consumed-or-diagnosed` in
+`docs/legibility/design-invariants.md` — that file is the single normative copy of
+the rule, cited here by slug and deliberately not restated.
+
+"Reader" below means a **production** reader: a Rust/host consumer, or a live DSL
+`constraint`/expression that uses the value. The sweep rule is stated generically
+rather than as a path list, so it does not drift as files move — **a hit is not a
+reader if it is** a declaration (including a re-declaration with a default), a
+comment, an identifier appearing only in a name (a test fn name, a diagnostic
+string), anything under `examples/**`, or anything inside a `tests/` tree or a
+`#[cfg(test)]` body — including test fixtures such as
+`reify-test-support/src/fixtures.rs`, which declares these params in fixture DSL
+rather than reading them. Re-running the sweep therefore yields many hits for both
+properties below; none of them is a reader.
+
+| Property | Declared at | Production readers | Owner |
+|---|---|---|---|
+| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
+| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
+
+**`thermal_conductivity` is deliberately absent from that table.** The name is
+declared at two independent sites, and they differ:
+
+- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:148`) is
+  **not** declared-only — `structural_physical.ri:150` carries
+  `constraint thermal_conductivity > 0W/(m*K)`, a live DSL reader. For this site
+  the zero-reader claim holds only when scoped to **Rust/host** readers.
+- `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a
+  *separate* param that merely shares the name, and it has no reader of its own:
+  no constraint in `materials_thermal.ri`, and its only non-test Rust hit is
+  inside a `#[cfg(test)]` body.
+
+The second site is nonetheless **not** registered above. The ratified ruling in
+**#5801** names both declaration sites and treats `thermal_conductivity` as one
+property that it explicitly does not own, so adding a row against #5801 would
+assign it an ownership it declines. Splitting the two sites — and deciding whether
+the trait-scoped one needs its own owner — is #5801's call, not this reference's;
+it is recorded here so the distinction is not silently lost.
+
+This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
+and the matching §10 out-of-scope entry, both of which listed `thermal_conductivity`
+among the properties with "zero production readers repo-wide". That PRD's §2.4
+correction 2, its ο signal and its §10 entry were amended to match in the same
+change as this register, so no superseded claim is left standing there.
 
 ### 6.4 `std.materials.electrical`
 
@@ -1514,12 +1717,13 @@ Joint primitives are first-class stdlib values. Each joint type internally expos
 **Joint types and traits:**
 
 ```
-trait Joint          // any joint kind
+trait Joint          // root marker — every joint kind conforms (Prismatic, Revolute, Coupling, Fixed, ...)
 trait HasMotion {    // joint kinds with a concrete-dimension motion variable (Prismatic, Revolute, Coupling)
     type MotionValue  // required associated type; no default
 }
 trait DrivingJoint: Joint {}   // Prismatic and Revolute only; may be bound or swept directly
-                               // Coupling<P> derives its motion and does NOT implement DrivingJoint
+                               // Coupling<P> and Fixed do NOT implement DrivingJoint: Coupling derives
+                               // its motion from a parent joint, Fixed has no motion variable at all
 
 structure def Prismatic : DrivingJoint + HasMotion {  // 1-DOF translation; Prismatic::MotionValue ⇒ Length
     type MotionValue = Length
@@ -1530,7 +1734,16 @@ structure def Revolute : DrivingJoint + HasMotion {   // 1-DOF rotation;    Revo
 structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // derives motion from joint P
     type MotionValue = P::MotionValue  // Coupling<P>::MotionValue ⇒ P::MotionValue; not a DrivingJoint
 }
+structure def Fixed : Joint {}  // 0-DOF rigid sub-assembly grouping; no motion variable, not a DrivingJoint
 ```
+
+This hierarchy is enforced via nominal conformance, not merely declared: `bind`/`sweep`/`dim` (§13.3–§13.4) carry a `DrivingJoint` bound checked at both the runtime (L1) and compile-time (L2) layers and reject `Coupling`/`Fixed` arguments with `error[E_MECHANISM_NONDRIVING_JOINT]`.
+
+`JointBinding` (the `bind()` return type, §13.3) and `Twist` (the `joint_jacobian` return type, below) are likewise declared marker structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`Twist` values rather than bare `Map`s, even though neither structure yet declares member fields (field layout is a follow-on, not part of this reconciliation).
+
+The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
+
+`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Length>`-shaped value today, and its promotion to a distinct nominal type is tracked there.
 
 **Constructors:**
 
@@ -1538,25 +1751,29 @@ structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // de
 fn prismatic(axis: Vector3<Dimensionless>, range: Range<Length>) -> Prismatic
 fn revolute(axis: Axis, range: Range<Angle>) -> Revolute
 fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionValue = zero) -> Coupling<P>
+fn fixed() -> Fixed
 ```
 
-`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6).
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
 
-**Axis, range, and ratio accessors:**
+**`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
 ```
-fn axis(j: Prismatic) -> Vector3<Dimensionless>
-fn range(j: Prismatic) -> Range<Length>
-fn axis(j: Revolute) -> Axis
-fn range(j: Revolute) -> Range<Angle>
-fn ratio(j: Coupling<P>) -> Real
-fn offset(j: Coupling<P>) -> P::MotionValue
+fn joint_axis(j: Prismatic) -> Vector3<Dimensionless>
+fn joint_range(j: Prismatic) -> Range<Length>
+fn joint_axis(j: Revolute) -> Axis
+fn joint_range(j: Revolute) -> Range<Angle>
+fn joint_ratio(j: Coupling<P>) -> Real
+fn joint_offset(j: Coupling<P>) -> P::MotionValue
 fn transform_at(j: Prismatic, v: Length) -> Transform<3>
 fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
 
-**Jacobian (v0.2).** `joint_jacobian` returns the analytic SE(3) twist column
+These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
+
+**Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
+`joint_jacobian_value` at `:776`) that returns the analytic SE(3) twist column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
 returned `Twist` shape (`Map { angular, linear }`) is the same one used by
@@ -1588,21 +1805,21 @@ Coupling<P>::MotionValue         ⇒ P::MotionValue  // symbolic until P is subs
 
 ### 13.2 `std.mechanism.builder`
 
-`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`. `world` is the pre-declared ground-frame sentinel — a `Joint` value with no motion variable that serves as the fixed root anchor of every mechanism DAG:
+`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`. `world()` is the ground-frame sentinel builtin — it returns a `Joint` value with no motion variable that serves as the fixed root anchor of every mechanism DAG. Reify has no top-level `const`/`let` bindings, so the ground frame is reached by calling `world()`, not by referencing a bare `world` identifier — the same reason `g`/`c`/`boltzmann` are zero-arg functions (`STANDARD_GRAVITY()`/`SPEED_OF_LIGHT()`/`BOLTZMANN_CONSTANT()`, §2) rather than pre-declared constants:
 
 ```
-let world : Joint   // ground/world frame; the implicit fixed root of every mechanism DAG
+fn world() -> Joint   // ground/world frame; the implicit fixed root of every mechanism DAG
 ```
 
 ```
 fn mechanism() -> Mechanism
-fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world, pose: Transform<3> = transform3_identity) -> Mechanism
+fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world(), pose: Transform<3> = transform3_identity) -> Mechanism
 fn body_id_of(m: Mechanism, solid: Solid) -> BodyId
 ```
 
-`at` is the joint that positions the body; `parent` is the upstream joint (default `world` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
+`at` is the joint that positions the body; `parent` is the upstream joint (default `world()` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
 
-**Closed-chain detection.** `mechanism()` builds a directed acyclic graph (DAG) of bodies connected through joints. If any body is reachable via two distinct joint paths, the compiler emits `error[E_KINEMATIC_CLOSED_CHAIN]`, naming both paths in the diagnostic:
+**Closed chains (reserved diagnostic, not emitted).** `mechanism()` builds a directed graph of bodies connected through joints. An earlier draft of this section documented closed chains — bodies reachable via two distinct joint paths — as a build-time error:
 
 ```
 error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
@@ -1612,7 +1829,7 @@ error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
   | path 2: world -> joint_c -> body
 ```
 
-Closed chains are a v0.1 error; v0.2 introduces a cyclic solver.
+That rejection was retired by task 2671: closed chains are valid v0.2 mechanisms. Each closing edge is instead recorded as a loop-closure constraint on the `Mechanism` value and construction proceeds normally — see [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md) for the loop-closure solver. `E_KINEMATIC_CLOSED_CHAIN` remains declared in the diagnostics registry, reserved for a possible future opt-in strict mode, but no path on main emits it today.
 
 ### 13.3 `std.mechanism.snapshot`
 
@@ -1623,7 +1840,7 @@ fn snapshot(m: Mechanism, bindings: List<JointBinding>) -> Snapshot
 fn bind<J: DrivingJoint + HasMotion>(joint: J, value: J::MotionValue) -> JointBinding
 ```
 
-Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling<P>` joints are excluded — their motion variable is derived from the parent joint's binding and cannot be overridden (`Coupling<P>` implements `Joint` but not `DrivingJoint`, so passing a coupling to `bind` is a type error). `JointBinding` is a sum type with one variant per `DrivingJoint` kind; its concrete variants are `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `J::MotionValue` in §13.1). Joints absent from `bindings` take their range midpoint.
+Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling` and `Fixed` joints are rejected — neither implements `DrivingJoint` (§13.1: `Coupling`'s motion is derived from its parent, `Fixed` has no motion variable at all), so passing either to `bind` raises `error[E_MECHANISM_NONDRIVING_JOINT]`. The rejection is enforced at both the runtime layer (`bind`'s own guard) and the compile-time layer (the `DrivingJoint` conformance check on `bind`'s type parameter), so it holds whether or not the build reaches the kernel. `JointBinding` (§13.1) is the typed marker structure `bind` returns; its concrete forms are conceptually `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `J::MotionValue` in §13.1). Joints absent from `bindings` take their range midpoint.
 
 **Snapshot accessors:**
 
@@ -1635,6 +1852,8 @@ fn bounding_box(s: Snapshot) -> BoundingBox
 ```
 
 `center_of_mass` with `densities = undef` (the default) uses uniform density across all bodies; an empty map (`{}`) is treated identically to `undef`. A partial map uses the specified density for each listed body and falls back to uniform density for any body absent from the map. `bounding_box` returns the axis-aligned bounding box of all body geometry in the snapshot, expressed in world coordinates. `BoundingBox` is defined in §3.10. `BodyId` is the opaque identifier returned by `.body()` (§13.2).
+
+**Point-mass approximation.** `bounding_box` always computes the axis-aligned envelope of each body's *origin point* (the translation component of its world-frame transform), not the true geometric extent of its solid; a volumetric upgrade (the real BREP bounding box via `BRepBndLib::Add`) is tracked separately (task #2530) and is out of scope here. `center_of_mass` falls back to that same origin-point, density-weighted approximation only when at least one body in the snapshot lacks resolvable mass data; when every body carries resolvable mass (an explicitly attached mass-properties structure, or mass properties baked in by the build), it instead returns the mass-weighted centroid using each body's resolved mass-properties center, posed by its `world_transform` (rotation and translation), and the `densities` argument is ignored — this mass-weights each body's stored `MassProperties` center, not a recomputed volumetric centroid of the solid's BREP (that upgrade is the same task #2530 as `bounding_box` above).
 
 ### 13.4 `std.mechanism.sweep`
 
@@ -1666,9 +1885,11 @@ fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
 
 `min_clearance` computes the minimum separation distance between `a` and `b` using OCCT's `BRepExtrema_DistShapeShape`. Returns `0mm` when the bodies intersect.
 
+**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
+
 ### 13.6 Worked examples
 
-The two examples below are the primary acceptance-test drivers for `std.mechanism`. Both are reproduced verbatim from `docs/prds/kinematic-constraints.md`.
+The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
 
 **Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
 
@@ -1690,12 +1911,14 @@ fn toolchanger_dock_check() -> Bool {
 
     // Interference query — toolhead must not collide with parked tool
     // anywhere along the path except at the final dock pose.
-    let collisions = snapshots.map(|s| interferes(s));
-    forall i in 0..50 - 1: collisions[i].is_empty()
+    let collisions = flat_map(snapshots, |s| [interferes(s)]);
+    forall i in 0..50 - 1: collisions[i].count == 0
 }
 ```
 
-**Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary as the toolhead traverses its range.
+The swept `flat_map(snapshots, |s| [interferes(s)])` call above is illustrative, not itself e2e-tested: no landed example runs `interferes` inside a sweep. The landed, compiling, e2e-tested `examples/kinematic/dock_pickup.ri` covers the same swept-interference-query shape (one prismatic joint, a fixed dock) but its swept cell drives `min_clearance`, not `interferes` — `let clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_park)])`; `interferes(s)` is exercised there only once, on a single home-position snapshot, outside any sweep. Treat `dock_pickup.ri`'s `min_clearance` sweep as the canonical, proven form of this pattern, and the `interferes`-in-`flat_map` snippet above as an unverified variant that follows the identical shape.
+
+**Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary — at the origin, for this symmetric equal-mass pair — as the toolhead traverses its range.
 
 ```reify
 fn counter_mass_balance() -> Bool {
@@ -1707,11 +1930,43 @@ fn counter_mass_balance() -> Bool {
         .body(toolhead_solid(), at: x_axis)
         .body(counter_mass_solid(), at: cm_axis);
 
-    // At every position along the sweep, the system COM must stay fixed.
+    // At every position along the sweep, the system COM must stay at the
+    // origin: distance-from-origin is the invariant, not a pairwise diff.
     let snapshots = sweep(m, x_axis, 0mm .. 500mm, steps: 11);
-    let coms = snapshots.map(|s| s.center_of_mass());
-    forall pair in coms.windows(2): (pair[1] - pair[0]).norm() < 0.1mm
+    let com_magnitudes = flat_map(snapshots, |s| [magnitude(center_of_mass(s))]);
+    forall d in com_magnitudes: d < 1um
 }
 ```
 
+This mirrors the landed `examples/kinematic/counter_mass_balance.ri`, whose e2e-proven invariant is `magnitude(center_of_mass(s)) < 1um` for every swept snapshot (a generous bound relative to the 1e-9m tolerance `center_of_mass_counter_mass_balance_stationarity` proves at the Rust level) — rather than the PRD prose's unsupported pairwise `coms.windows(2)` / `.norm()` adjacent-difference form.
+
 See `docs/prds/kinematic-constraints.md` for the full specification, acceptance criteria, and task breakdown.
+
+---
+
+## 14. `std.result` — recovery combinators
+
+`Result<T, E>` is a prelude generic data-carrying enum — `Ok { value: T }` / `Err { error: E }` — callable with no `import`, exactly like `Option<T>`. `std.result` layers six recovery combinators on top, declared alongside the enum:
+
+```
+fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T
+fn is_ok<T, E>(r: Result<T, E>) -> Bool
+fn is_err<T, E>(r: Result<T, E>) -> Bool
+fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E>
+fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F>
+fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E>
+```
+
+`unwrap_or` and `or_else` overload the `std.option_recovery` combinators of the same name — the compiler resolves the `Option` or `Result` signature per call site from the subject's constructor head (`some`/`none` vs. `Ok`/`Err`), and evaluation dispatches on the runtime subject's tag.
+
+Recovery is driven by the subject (first argument): an `Ok` yields its carried value (or is passed through unchanged, for `or_else`/`map_err`), an `Err` yields the recovery (the default, the alternative, or the payload mapped through `f`), and an **undef-of-`Result`** subject always yields `undef` — only a *determined* `Err` recovers, never an undetermined one.
+
+| combinator | `Ok { value: x }` | `Err { error: e }` | `undef` |
+|---|---|---|---|
+| `unwrap_or(r, dflt)` | `x` | `dflt` | `undef` |
+| `is_ok(r)` | `true` | `false` | `undef` |
+| `is_err(r)` | `false` | `true` | `undef` |
+| `or_else(r, alt)` | `r` unchanged | `alt` | `undef` |
+| `map_err(r, f)` | `r` unchanged (`f` not applied) | `Err { error: f(e) }` | `undef` |
+
+`ok_or(o, err)` is the `Option` → `Result` bridge: `some(x) -> Ok { value: x }`, `none -> Err { error: err }`, `undef -> undef`.

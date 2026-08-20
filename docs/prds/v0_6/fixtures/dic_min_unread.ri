@@ -1,0 +1,13 @@
+module dic_min_unread
+
+// INV-SF-3 probe: scope HAS an auto, but the declared objective reads only a
+// concrete (never-auto) cell — structurally inert objective. Baseline
+// 2026-07-24: `a` resolves via constraints, the minimize is silently useless.
+
+structure DicMinUnread {
+    param a : Real = auto(free)
+    param k : Real = 3.0
+    constraint a >= 1.0
+    constraint a <= 5.0
+    minimize k * k
+}

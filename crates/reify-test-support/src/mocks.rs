@@ -3,12 +3,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use reify_core::{ConstraintNodeId, Diagnostic, Type, ValueCellId};
+use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
 pub fn empty_problem() -> ResolutionProblem {
     ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -823,6 +824,61 @@ impl QueryKey {
                 tolerance_bits: density_bits(*tolerance),
             },
         }
+    }
+}
+
+/// The canned interchange mesh the mock kernels hand back from `tessellate`
+/// and `realize_mesh_from_voxel`: a closed, consistently outward-wound unit
+/// tetrahedron (V0=(0,0,0), V1=(1,0,0), V2=(0,1,0), V3=(0,0,1)).
+///
+/// # Why a tetra and not a triangle (task #5105 δ, INV-GEO-1)
+///
+/// These mocks used to return a single triangle, described in-comment as "a
+/// minimal valid mesh". It is not: a lone triangle has three boundary edges,
+/// so `reify_ir::geometry::Mesh::validate` rejects it under
+/// `MeshInvariant::Closed` (`open_edges == 3`). That was harmless only while
+/// the kernel-seam mesh contract was warn-only. Once site 1 (the
+/// tessellate→ingest handoff in `reify-eval`) flipped to enforce-by-default,
+/// every test routing this mock through a BRep→Mesh conversion would abort on
+/// a contract violation that has nothing to do with what those tests assert
+/// (routing, caching, attribute forwarding, rollback).
+///
+/// A tetrahedron is the smallest mesh that actually satisfies the contract, so
+/// it keeps those tests asserting what they always intended while letting them
+/// exercise the enforcing seam for real, rather than opting out of it with a
+/// per-test `set_mesh_contract_mode(Warn)`.
+///
+/// `with_normals` selects whether per-vertex normals are attached — callers
+/// that previously emitted `normals: Some(..)` keep doing so, preserving the
+/// "normals present" property some consumers check.
+pub fn minimal_valid_mesh(with_normals: bool) -> Mesh {
+    Mesh {
+        #[rustfmt::skip]
+        vertices: vec![
+            0.0, 0.0, 0.0, // V0
+            1.0, 0.0, 0.0, // V1
+            0.0, 1.0, 0.0, // V2
+            0.0, 0.0, 1.0, // V3
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            0, 2, 1, // face 0
+            0, 1, 3, // face 1
+            0, 3, 2, // face 2
+            1, 2, 3, // face 3
+        ],
+        // Outward per-vertex normals: the unit vector from the centroid
+        // (0.25, 0.25, 0.25) to each vertex.
+        normals: with_normals.then(|| {
+            #[rustfmt::skip]
+            let n = vec![
+                -0.5774, -0.5774, -0.5774, // V0
+                 0.9045, -0.3015, -0.3015, // V1
+                -0.3015,  0.9045, -0.3015, // V2
+                -0.3015, -0.3015,  0.9045, // V3
+            ];
+            n
+        }),
     }
 }
 
@@ -1791,12 +1847,7 @@ impl GeometryKernel for MockGeometryKernel {
         // tolerance through to the kernel rather than the module-level
         // `effective_tessellation_tolerance` default.
         self.tessellate_tolerances.lock().unwrap().push(tolerance);
-        // Return a minimal valid mesh (one triangle)
-        Ok(Mesh {
-            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            indices: vec![0, 1, 2],
-            normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
-        })
+        Ok(minimal_valid_mesh(true))
     }
 
     /// Realization-read VolumeMesh accessor (task γ): return a clone of the
@@ -1810,6 +1861,34 @@ impl GeometryKernel for MockGeometryKernel {
                 "MockGeometryKernel: no volume_mesh output configured for {handle:?}"
             ))),
         }
+    }
+
+    /// Task 5001 (γ): override the trait default so this mock can act as a
+    /// Voxel→Mesh MarchingCubes source in conversion-executor tests. Always
+    /// succeeds with a minimal non-empty contract-valid mesh, mirroring
+    /// `tessellate`'s canned-mesh pattern above (the caller-supplied `handle`
+    /// need not name a real voxel grid — this is a test double, not the real
+    /// FFI kernel).
+    fn realize_mesh_from_voxel(
+        &self,
+        _handle: GeometryHandleId,
+        _iso_level: f64,
+        _adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        Ok(minimal_valid_mesh(false))
+    }
+
+    /// Task 5001 (γ): a non-trivial, field-derived `ContentHash` — distinct
+    /// per `(iso_level, adaptive)` pair and never equal to the `NO_OPTIONS`
+    /// sentinel (`ContentHash(0)`), thanks to the domain-tag seed. Mirrors
+    /// the wire-format shape of the real `MarchingCubesOptions::content_hash()`
+    /// (`reify-kernel-openvdb`) without naming that type — `reify-test-support`
+    /// cannot depend on `reify-kernel-openvdb` (dep-direction: kernel crates
+    /// depend on `reify-test-support`, not the reverse).
+    fn surface_options_content_hash(&self, iso_level: f64, adaptive: bool) -> ContentHash {
+        ContentHash::of_str("MockGeometryKernel::surface_options")
+            .combine(ContentHash::of(&iso_level.to_le_bytes()))
+            .combine(ContentHash::of(&[adaptive as u8]))
     }
 }
 
@@ -3308,7 +3387,12 @@ mod tests {
             })
             .unwrap();
 
-        let transforms = vec![[0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.02, 0.02, 0.0]];
+        let identity = [1.0, 0.0, 0.0, 0.0];
+        let transforms = vec![
+            (identity, [0.02, 0.0, 0.0]),
+            (identity, [0.0, 0.02, 0.0]),
+            (identity, [0.02, 0.02, 0.0]),
+        ];
         let handle = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: target.id,
@@ -3324,9 +3408,9 @@ mod tests {
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert_eq!(recorded_transforms.len(), 3);
-                assert_eq!(recorded_transforms[0], [0.02, 0.0, 0.0]);
-                assert_eq!(recorded_transforms[1], [0.0, 0.02, 0.0]);
-                assert_eq!(recorded_transforms[2], [0.02, 0.02, 0.0]);
+                assert_eq!(recorded_transforms[0], (identity, [0.02, 0.0, 0.0]));
+                assert_eq!(recorded_transforms[1], (identity, [0.0, 0.02, 0.0]));
+                assert_eq!(recorded_transforms[2], (identity, [0.02, 0.02, 0.0]));
             }
             other => panic!("expected ArbitraryPattern, got {:?}", other),
         }
@@ -3939,6 +4023,7 @@ mod tests {
 
         // First call
         let problem1 = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![single_auto_param(ValueCellId::new("A", "x"))],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -3953,6 +4038,7 @@ mod tests {
 
         // Second call
         let problem2 = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![single_auto_param(ValueCellId::new("B", "y"))],
             constraints: vec![],
             current_values: ValueMap::new(),

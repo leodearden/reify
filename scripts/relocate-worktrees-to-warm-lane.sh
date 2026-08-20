@@ -20,7 +20,7 @@
 #   5. If it is a real DIRECTORY                     → mv each entry into
 #      <mount>/worktrees/, rmdir, then create the symlink.
 #
-# git.worktree_dir (.worktrees) stays UNCHANGED in orchestrator.yaml — the
+# git.worktree_dir (.worktrees) stays UNCHANGED in dark-factory-orchestrator.yaml — the
 # symlink makes DF's `worktree_base = (project_root / worktree_dir).resolve()`
 # follow it onto XFS (PRD DA2, task 4696).
 #

@@ -13,24 +13,7 @@
 //! only prelude-callable via `compile_with_stdlib`.
 
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_test_support::compile_source_with_stdlib;
-
-// ── helper ───────────────────────────────────────────────────────────────────
-
-fn cell_expr_stdlib<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+use reify_test_support::{compile_source_with_stdlib, get_let_expr};
 
 // ── (a) module loads clean ───────────────────────────────────────────────────
 
@@ -94,7 +77,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),
@@ -130,7 +113,7 @@ structure S {
         errors
     );
 
-    let b_expr = cell_expr_stdlib(&module, "b");
+    let b_expr = get_let_expr(&module, "b");
     assert_eq!(
         b_expr.result_type,
         Type::Bool,
@@ -166,7 +149,7 @@ structure S {
         errors
     );
 
-    let w_expr = cell_expr_stdlib(&module, "w");
+    let w_expr = get_let_expr(&module, "w");
     assert_eq!(
         w_expr.result_type,
         Type::Option(Box::new(Type::length())),
@@ -206,7 +189,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),
@@ -263,7 +246,7 @@ structure S {
         diag.message
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::Error,
@@ -300,7 +283,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),
@@ -336,7 +319,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),
@@ -373,7 +356,7 @@ structure S {
         errors
     );
 
-    let b_expr = cell_expr_stdlib(&module, "b");
+    let b_expr = get_let_expr(&module, "b");
     assert_eq!(
         b_expr.result_type,
         Type::Bool,
@@ -583,7 +566,11 @@ fn map_or_third_param_resolves_to_type_function() {
     );
 
     let (f_name, f_ty) = &map_or.params[2];
-    assert_eq!(f_name, "f", "third param should be named f, got: {:?}", f_name);
+    assert_eq!(
+        f_name, "f",
+        "third param should be named f, got: {:?}",
+        f_name
+    );
     assert_eq!(
         *f_ty,
         Type::Function {
@@ -633,7 +620,7 @@ structure S {
         errors
     );
 
-    let v_expr = cell_expr_stdlib(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),

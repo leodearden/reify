@@ -197,9 +197,9 @@ pub(crate) fn compile_modules_topo(
 
 #[cfg(test)]
 mod tests {
-    use reify_core::{ModulePath, Severity};
-    use crate::CompiledModule;
     use super::compile_modules_topo;
+    use crate::CompiledModule;
+    use reify_core::{ModulePath, Severity};
 
     /// SIGNAL #2 + **permanent regression guard**: the real stdlib compiles clean
     /// through the topo path and output order equals input order (no imports →
@@ -240,8 +240,10 @@ mod tests {
         // (b) Stability: output order equals input order (identity permutation because
         //     no production module declares `import`)
         let input_names: Vec<&str> = set.iter().map(|(n, _)| *n).collect();
-        let output_names: Vec<String> =
-            modules.iter().map(|m| format!("{}", m.path).replace('/', ".")).collect();
+        let output_names: Vec<String> = modules
+            .iter()
+            .map(|m| format!("{}", m.path).replace('/', "."))
+            .collect();
         assert_eq!(
             output_names.len(),
             input_names.len(),
@@ -267,9 +269,8 @@ mod tests {
         let set: &[(&str, &str)] = &[("a", a_src), ("b", b_src)];
 
         let result = compile_modules_topo(set);
-        let diag = result.expect_err(
-            "compile_modules_topo must return Err for a cyclic module set",
-        );
+        let diag =
+            result.expect_err("compile_modules_topo must return Err for a cyclic module set");
 
         assert_eq!(
             diag.severity,

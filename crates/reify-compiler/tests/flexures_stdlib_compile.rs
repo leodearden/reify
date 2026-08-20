@@ -19,9 +19,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper pattern in `trajectory_stdlib_compile.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -177,7 +177,7 @@ fn rotational_stiffness_alias_removed_builtin_dimension_shadows() {
 /// field flexure compliance contract. Per PRD §4.2:
 ///
 ///   - `effective_stiffness   : RotationalStiffness`    (proper dimensioned
-///                                                       type kg·m²·s⁻²·rad⁻¹
+///                                                       type kg·m²·s⁻²·rad⁻²
 ///                                                       per task α; PRD
 ///                                                       §4.2 spelling)
 ///   - `max_stress            : Pressure`               (at range endpoint)
@@ -296,7 +296,7 @@ fn flexure_compliance_struct_has_correct_param_shape() {
 /// (PRD §11 task λ) — has a well-typed value to return. The defaults
 /// expected (per the module header §6.* sentinel-zero rationale):
 ///
-///   effective_stiffness   = 0N*m/rad (Scalar { ROTATIONAL_STIFFNESS, si_value 0.0 })
+///   effective_stiffness   = 0N*m/rad^2 (Scalar { ROTATIONAL_STIFFNESS, si_value 0.0 })
 ///   max_stress            = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
 ///   max_stress_at_neutral = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
 ///   yield_margin          = 0.0    (Real)
@@ -319,10 +319,10 @@ fn flexure_compliance_struct_has_correct_param_shape() {
 fn flexure_compliance_params_have_literal_defaults() {
     let template = find_structure("FlexureCompliance");
 
-    // effective_stiffness = 0N*m/rad — Scalar{ROTATIONAL_STIFFNESS, si_value 0.0}
+    // effective_stiffness = 0N*m/rad^2 — Scalar{ROTATIONAL_STIFFNESS, si_value 0.0}
     // (task 4547 D2: dimensioned-zero default; was a bare `0.0` under the
     // now-deleted `RotationalStiffness = Real` alias). The compound-unit literal
-    // folds to a single Scalar, same as the `1N*m/rad` fold proven in
+    // folds to a single Scalar, same as the `1N*m/rad^2` fold proven in
     // flexure_dimension_types.rs and the sibling `0Pa` defaults below.
     let effective_stiffness_default = require_default(template, "effective_stiffness");
     match &effective_stiffness_default.kind {
@@ -334,19 +334,19 @@ fn flexure_compliance_params_have_literal_defaults() {
                 *dimension,
                 DimensionVector::ROTATIONAL_STIFFNESS,
                 "effective_stiffness default should carry ROTATIONAL_STIFFNESS \
-                 dimension (= 0N*m/rad); got: {:?}",
+                 dimension (= 0N*m/rad^2); got: {:?}",
                 dimension
             );
             assert_eq!(
                 *si_value, 0.0,
                 "effective_stiffness default si_value should be exactly 0.0 \
-                 (= 0N*m/rad); got: {}",
+                 (= 0N*m/rad^2); got: {}",
                 si_value
             );
         }
         other => panic!(
             "effective_stiffness default should be Literal(Value::Scalar \
-             {{ ROTATIONAL_STIFFNESS, 0.0 }}) (= 0N*m/rad); got: {:?}",
+             {{ ROTATIONAL_STIFFNESS, 0.0 }}) (= 0N*m/rad^2); got: {:?}",
             other
         ),
     }
@@ -429,19 +429,45 @@ fn flexure_compliance_params_have_literal_defaults() {
     // RED until step-6 changes flexures.ri param type to Range<Angle> with default 0deg..0deg.
     let prb_validity_range_default = require_default(template, "prb_validity_range");
     match &prb_validity_range_default.kind {
-        CompiledExprKind::RangeConstructor { lower, upper, lower_inclusive, upper_inclusive } => {
-            assert!(lower_inclusive, "prb_validity_range default lower_inclusive should be true (0deg..0deg)");
-            assert!(upper_inclusive, "prb_validity_range default upper_inclusive should be true (0deg..0deg)");
+        CompiledExprKind::RangeConstructor {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
+            assert!(
+                lower_inclusive,
+                "prb_validity_range default lower_inclusive should be true (0deg..0deg)"
+            );
+            assert!(
+                upper_inclusive,
+                "prb_validity_range default upper_inclusive should be true (0deg..0deg)"
+            );
             let check_zero_angle = |opt: &Option<Box<CompiledExpr>>, label: &str| {
-                let expr = opt.as_deref().unwrap_or_else(|| panic!("prb_validity_range default {label} bound missing"));
+                let expr = opt
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("prb_validity_range default {label} bound missing"));
                 match &expr.kind {
-                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
-                        assert_eq!(*dimension, DimensionVector::ANGLE,
-                            "prb_validity_range default {label} bound should have ANGLE dimension; got: {:?}", dimension);
-                        assert_eq!(*si_value, 0.0,
-                            "prb_validity_range default {label} bound si_value should be 0.0 (= 0deg); got: {}", si_value);
+                    CompiledExprKind::Literal(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::ANGLE,
+                            "prb_validity_range default {label} bound should have ANGLE dimension; got: {:?}",
+                            dimension
+                        );
+                        assert_eq!(
+                            *si_value, 0.0,
+                            "prb_validity_range default {label} bound si_value should be 0.0 (= 0deg); got: {}",
+                            si_value
+                        );
                     }
-                    other => panic!("prb_validity_range default {label} bound should be Literal(Scalar{{ANGLE, 0.0}}); got: {:?}", other),
+                    other => panic!(
+                        "prb_validity_range default {label} bound should be Literal(Scalar{{ANGLE, 0.0}}); got: {:?}",
+                        other
+                    ),
                 }
             };
             check_zero_angle(lower, "lower");
@@ -622,11 +648,7 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
             panic!(
                 "expected `pub fn flexure_compliance(...)` in std/flexures, \
                  got functions: {:?}",
-                module
-                    .functions
-                    .iter()
-                    .map(|f| &f.name)
-                    .collect::<Vec<_>>()
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
             )
         });
 
@@ -867,7 +889,12 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         .get(&"prb_validity_range".to_string())
         .expect("flexure_compliance(0.0).prb_validity_range missing");
     match prb_validity_range {
-        Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+        Value::Range {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
             assert!(lower_inclusive, "prb_validity_range: lower_inclusive");
             assert!(upper_inclusive, "prb_validity_range: upper_inclusive");
             for (label, bound) in [("lower", lower), ("upper", upper)] {
@@ -875,7 +902,10 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
                     panic!("flexure_compliance(0.0).prb_validity_range {label} bound missing")
                 });
                 match b {
-                    Value::Scalar { si_value, dimension } => {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
                         assert_eq!(
                             *dimension,
                             reify_core::DimensionVector::ANGLE,

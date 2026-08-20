@@ -1,7 +1,11 @@
 // Lezer grammar for the Reify CAD language
 // Ported from tree-sitter-reify/grammar.js
 
-@top SourceFile { Declaration* }
+// `module` is admitted ONLY here, never as a member of `Declaration`, so a
+// module decl after any other declaration is a natural parse ERROR — the
+// grammar enforces the top-of-file / one-per-file rule (PRD D-5 §7.2) with no
+// extra code, exactly as tree-sitter-reify/grammar.js:126-132 does.
+@top SourceFile { ModuleDeclaration? Declaration* }
 
 @skip { whitespace | LineComment | BlockComment }
 
@@ -9,17 +13,276 @@
 
 Declaration {
   StructureDefinition |
+  OccurrenceDefinition |
+  TraitDeclaration |
+  FunctionDefinition |
+  EnumDeclaration |
+  FieldDefinition |
+  PurposeDeclaration |
+  UnitDeclaration |
+  TypeAliasDeclaration |
+  DefaultDeclaration |
+  ConstraintDefinition |
+  // grammar.js:147 lists `joint_definition` in `_declaration` — top level only,
+  // never a `Member`.
+  JointDefinition |
+  Pragma |
+  Annotation |
   ImportDeclaration
 }
 
+// ── Field definition ────────────────────────────────────
+// grammar.js:308-364. The body is fixed: exactly one `source = <arm>`.
+FieldDefinition {
+  kw<"pub">? ekw<"field"> kw<"def"> Identifier ":" TypeExpr "->" TypeExpr
+  "{" ekw<"source"> "=" FieldSource "}"
+}
+
+// The analytical and composed arms hold an EXPRESSION — in every committed
+// case a lambda, which is why this slice depends on LambdaExpression. The
+// sampled and imported arms hold config entries that are NOT comma-separated
+// (`repeat($.field_config_entry)`, :339-342).
+FieldSource {
+  kw<"analytical"> "{" expression "}" |
+  kw<"sampled"> "{" FieldConfigEntry* "}" |
+  ekw<"composed"> "{" expression "}" |
+  ekw<"imported"> "{" FieldConfigEntry* "}"
+}
+
+FieldConfigEntry {
+  Identifier "=" expression
+}
+
+// ── Purpose ─────────────────────────────────────────────
+// grammar.js:366-398. The body is `purpose_member`, a subset of `Member` plus
+// `default_declaration` and nested structure definitions. `Block` is reused
+// for the same direction-of-error reason recorded on TraitDeclaration, with
+// `DefaultDeclaration` and `StructureDefinition` added — those two are NOT in
+// `Member` and would otherwise be rejected in a position the corpus uses.
+PurposeDeclaration {
+  kw<"pub">? kw<"purpose"> Identifier TypeParameters?
+  "(" (PurposeParam ("," PurposeParam)* ","?)? ")"
+  "{" (DefaultDeclaration | StructureDefinition | Member)* "}"
+}
+
+PurposeParam {
+  Identifier ":" Identifier
+}
+
+// ── Unit ────────────────────────────────────────────────
+// grammar.js:426-434. Both the conversion and the offset are optional.
+// `unit` is CONTEXTUAL: six committed files pass it as a named-argument
+// label (`unit: …`), which the ReservedWord listing it replaced was already
+// breaking.
+UnitDeclaration {
+  kw<"pub">? ekw<"unit"> Identifier ":" TypeExpr ("=" expression)? (ekw<"offset"> expression)?
+}
+
+// ── Type alias ──────────────────────────────────────────
+// grammar.js:436-447. Reuses the same `type` keyword as the member-level
+// AssociatedType; the two never compete, because one is only reachable at
+// `Declaration` and the other only at `Member`.
+TypeAliasDeclaration {
+  kw<"pub">? kw<"type"> Identifier TypeParameters? "=" DimensionalTypeExpr
+}
+
+// `Force / Area`, `Force * Length / Time`. Written flat rather than as a
+// recursive rule with a precedence level: the dimensional operators are
+// equal-precedence and left-associative, so the flat spelling is both simpler
+// and free of any conflict with the value-level `*`/`/`.
+DimensionalTypeExpr {
+  TypeExpr (("*" | "/") TypeExpr)*
+}
+
+// ── Default ─────────────────────────────────────────────
+// grammar.js:463-469. RHS is an expression, NOT a bindingValue — `auto` is
+// meaningless for a concrete default, and upstream says so explicitly.
+// `default` is contextual upstream (:449-461 documents the same treatment for
+// `unit`/`type`/`undef`), and is kept contextual here.
+DefaultDeclaration {
+  ekw<"default"> TypeExpr "=" expression
+}
+
+// ── Meta block ──────────────────────────────────────────
+// grammar.js:550-570 — comma-separated, unlike the field config entries.
+//
+// `meta` is CONTEXTUAL. A hard `kw<"meta">` is context-FREE in Lezer, so the
+// word stopped being an `Identifier` everywhere — including as the receiver of
+// an ordinary member access, which examples/m9_combined.ri:67-68 and
+// examples/integration_full_v01.ri:140-141 both use (`let label = meta.material`,
+// `let proj_name = meta.project`). Upstream has no such problem: its
+// parse-state-driven lexer keeps `meta` an identifier wherever a meta block
+// cannot start, so `ekw` is the upstream-faithful reading.
+//
+// MEASURED: lezer-generator reports ZERO conflicts for the demotion — the
+// ambiguity at member start that a contextual keyword could re-open does not
+// exist here, because no `Member` alternative begins with a bare identifier.
+// That is the same argument `RelateBlock` records for `ekw<"relate">` and
+// `ChainStatement` for `ekw<"chain">`, and it is stated explicitly so the next
+// round does not re-litigate it: no `~` ambiguity marker and no precedence
+// level was needed. The corpus test pins the surviving reading directly, with
+// `countNodesNamed(…, 'MetaBlock') === 1` rather than an error count, since a
+// re-opened ambiguity can reach 0 errors while doubling the node.
+//
+// `meta` STAYS in KEYWORDS: the styling guard scans for the literal
+// `kw<"meta">` substring, which `ekw<"meta">` contains.
+MetaBlock {
+  ekw<"meta"> "{" (MetaEntry ("," MetaEntry)* ","?)? "}"
+}
+
+MetaEntry {
+  Identifier "=" expression
+}
+
+// ── Pragma and annotation ───────────────────────────────
+// grammar.js:1688-1716. Both are standalone items, not prefixes: an
+// annotated declaration is an `Annotation` followed by a `Declaration`, which
+// `Declaration*` already sequences.
+//
+// The `@` here is the SAME token the infix AdHocSelector uses, and no
+// precedence is declared for it. That is deliberate and rests on the same
+// argument the lambda `|` records: an annotation's `@` is only ever at a
+// declaration START and the selector's only ever after a COMPLETE expression,
+// so the two never share a parse state. `#` is a new character used nowhere
+// else.
+//
+// That separation now holds in a SECOND place: `Annotation` is also a `Member`
+// arm (grammar.js:44 `commonMembers()`), so an `@` can open an item at MEMBER
+// start as well as at declaration start. The argument carries over unchanged —
+// member start is still a position where no expression is in progress — and
+// lezer-generator reports zero conflicts for the added arm. But the claim is no
+// longer a single-site one, so it is ASSERTED rather than restated: the corpus
+// test pins that `let f = body @ faces_by_normal(zdir)` still reduces to
+// `AdHocSelector` with `body` as its left operand and yields no `Annotation`.
+// `!itemStart` on the arg list's `(`: inside a ConstraintDefinition body a
+// pragma is followed by items that may THEMSELVES open with `(`. See the
+// `itemStart` note in the @precedence block.
+Pragma {
+  "#" Identifier (!itemStart "(" (PragmaArg ("," PragmaArg)* ","?)? ")")?
+}
+
+PragmaArg {
+  Identifier "=" expression | expression
+}
+
+Annotation {
+  "@" Identifier ("(" (expression ("," expression)* ","?)? ")")?
+}
+
+// ── Enum ────────────────────────────────────────────────
+// grammar.js:153-184. A variant is a bare name (`Point`) or a named-field
+// payload (`Circle { radius: Length }`); `TypeParameters` is the same
+// production the structure/trait headers use.
+EnumDeclaration {
+  kw<"pub">? kw<"enum"> Identifier TypeParameters? "{" (EnumVariant ("," EnumVariant)* ","?)? "}"
+}
+
+EnumVariant {
+  Identifier ("{" VariantFieldDecl ("," VariantFieldDecl)* ","? "}")?
+}
+
+VariantFieldDecl {
+  Identifier ":" TypeExpr
+}
+
+// ── Module ───────────────────────────────────────────────
+ModuleDeclaration {
+  kw<"module"> ModulePath
+}
+
+// Dot-separated module path: `std.mechanical.fasteners`
+ModulePath {
+  Identifier ("." Identifier)*
+}
+
 // ── Imports ──────────────────────────────────────────────
+// Mirrors tree-sitter-reify/grammar.js:258-282. The `String` alternative is
+// retained for the legacy `import "foo.ri"` form.
+//
+// UNSETTLED — the destructured form's separator. This port follows the
+// tree-sitter RULE, which sequences import_path then import_items with NO
+// separator (`import a.b {C, D}`). But grammar.js's own doc comment on that
+// rule (:263) and the lowering at crates/reify-syntax/src/ts_parser.rs:538
+// both spell it `import a.b.{C, D}`, with a dot. The rule and the two comments
+// therefore disagree, and nothing settles it: `import_items` has no
+// tree-sitter corpus test, no committed `.ri` uses it (every import under
+// examples/ and tests/prd-gate/fixtures/ is a bare `import x.y` or
+// `import x as y`), and no Rust code matches on the node name. The corpus test
+// deliberately does NOT pin either spelling — asserting one would cement an
+// unverified shape as an intentional GUI contract. Filed as #5931, which
+// decides the canonical form against the authoritative surface first; until it
+// lands, `ImportItems` is live grammar surface with no test coverage by
+// design, and that is the one thing here a reader should not mistake for an
+// intentional contract.
 ImportDeclaration {
-  kw<"import"> String
+  kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
+}
+
+ImportItems {
+  "{" (Identifier ("," Identifier)* ","?)? "}"
 }
 
 // ── Structure ───────────────────────────────────────────
+// Mirrors tree-sitter-reify/grammar.js:504-515 — `pub` and `def` are both
+// optional; the bare `structure Foo { }` form is still used by many committed
+// fixtures, so it must keep parsing.
 StructureDefinition {
-  kw<"structure"> Identifier Block
+  kw<"pub">? kw<"structure"> kw<"def">? Identifier TypeParameters? (":" TraitBoundList)? Block
+}
+
+// grammar.js:517-528 — identical header shape to StructureDefinition.
+OccurrenceDefinition {
+  kw<"pub">? kw<"occurrence"> kw<"def">? Identifier TypeParameters? (":" TraitBoundList)? Block
+}
+
+// ── Trait ───────────────────────────────────────────────
+// grammar.js:284-306. Same header shape as StructureDefinition — `pub`?,
+// name, optional type parameters, optional `:` refinement bounds — so the
+// TypeParameters/TraitBoundList productions are reused verbatim.
+//
+// THE BODY IS `Block`, NOT A TRAIT-SPECIFIC NODE. Upstream's `trait_member`
+// (grammar.js:295-305) is a strict subset of `_member`: it omits
+// minimize/maximize/guarded blocks and adds `function_signature`. Reusing
+// `Block` therefore makes the GUI parser accept a few members inside a trait
+// that the compiler rejects. That is the deliberate direction of error: this
+// file already records the same stance for SpecializationBody ("rejecting the
+// members that are forbidden in this position is the validator's job
+// upstream"), and an over-permissive highlighting parser degrades to "no
+// squiggle on a program the compiler will still reject", while an
+// under-permissive one paints red on valid code. Reuse also keeps the single
+// `Block` entry in reifyLanguage.ts's fold/indent props correct for trait
+// bodies with no extra wiring.
+TraitDeclaration {
+  kw<"pub">? kw<"trait"> Identifier TypeParameters? (":" TraitBoundList)? Block
+}
+
+// ── Associated type ─────────────────────────────────────
+// grammar.js:471-476. Admitted BOTH in a trait body (the requirement,
+// `type Material`) and in a structure/occurrence body (the conformer's
+// binding, `type Material = Steel`) — upstream lists it in `trait_member`
+// AND in `_member` (:537), and examples/trait_assoc_type_material.ri uses
+// both spellings in the same file.
+AssociatedType {
+  kw<"type"> Identifier ("=" TypeExpr)?
+}
+
+// ── Type parameters and trait bounds ────────────────────
+// grammar.js:478-503. `TraitBoundList` is shared by structure/occurrence
+// headers and by the bounds on an individual type parameter.
+TypeParameters {
+  "<" TypeParameter ("," TypeParameter)* ","? ">"
+}
+
+TypeParameter {
+  Identifier (":" TraitBoundList)? ("=" TypeExpr)?
+}
+
+TraitBoundList {
+  TraitBoundEntry ("+" TraitBoundEntry)*
+}
+
+TraitBoundEntry {
+  Identifier ("<" TypeArgList ">")?
 }
 
 Block {
@@ -33,43 +296,186 @@ Member {
   SubDeclaration |
   MinimizeDeclaration |
   MaximizeDeclaration |
-  GuardedBlock
+  AssociatedType |
+  FunctionDefinition |
+  GuardedBlock |
+  // The topology families. All four are `commonMembers()` entries upstream
+  // (grammar.js:39-42), so they are admitted in every body that admits a
+  // member — structure, occurrence, guarded and specialization alike.
+  PortDeclaration |
+  ConnectStatement |
+  ChainStatement |
+  ForallStatement |
+  RelateBlock |
+  MatchArmDeclBlock |
+  MetaBlock |
+  Pragma |
+  // grammar.js:44 — `commonMembers()` lists `$.annotation`, so every body that
+  // admits a member admits it too: structure, occurrence, guarded and
+  // specialization alike. Corpus-attested: examples/m11_annotations.ri:115-118,
+  // where each `@solver_hint(...)` precedes the `param` it annotates. The
+  // annotation is a standalone member, NOT a prefix — `Member*` sequences the
+  // pair, exactly as `Declaration*` already does at top level.
+  Annotation
 }
 
 // ── Guarded block ─────────────────────────────────────
+// The `~poseWhere` marker at the head is the other half of the pair on
+// `PoseClause` — see the long note there. It is what keeps a CONDITIONED
+// post-pose `where` reading as this node rather than being swallowed by
+// `SubRelateBlock`.
 GuardedBlock {
-  kw<"where"> expression Block (kw<"else"> Block)?
+  ~poseWhere kw<"where"> expression Block (kw<"else"> Block)?
 }
 
 // ── Param ───────────────────────────────────────────────
+// grammar.js:615-621 — `param_declaration` opens with `optional('priv')`.
+// Corpus-attested: examples/module_visibility/producer.ri:4.
+//
+// `priv` is already a `kw<>` and already in KEYWORDS (SubDeclaration and
+// PortDeclaration both carry it), so neither list changes. `Member` now has
+// THREE arms that can open with `priv` — param, sub, port — and they diverge
+// on the very next token (`param` / `aux`|`sub` / `port`), well inside LR(1)
+// lookahead; lezer-generator reports zero conflicts.
 ParamDeclaration {
-  kw<"param"> Identifier TypeAnnotation? DefaultValue? ~where WhereClause?
+  kw<"priv">? kw<"param"> Identifier TypeAnnotation? DefaultValue? ~where WhereClause?
 }
 
 TypeAnnotation {
   ":" TypeExpr
 }
 
+// Four-way choice transliterated from tree-sitter-reify grammar.js:1064-1140.
+// The leading token is unique per alternative — `(` for FunctionType, `Name<`
+// for ParameterizedType, `Name::` for QualifiedType — so no precedence hacks
+// are needed. `auto_type_arg` (`Bearing<auto: Seal>`), which task 5907 left
+// deferred here, is now implemented — see AutoTypeArg below.
 TypeExpr {
+  FunctionType |
+  ParameterizedType |
+  QualifiedType |
   Identifier
 }
 
-DefaultValue {
-  "=" (AutoKeyword | expression)
+// Arrow / function type: `(T) -> U`, `(A, B) -> C`, `() -> U`
+FunctionType {
+  "(" (TypeExpr ("," TypeExpr)* ","?)? ")" "->" TypeExpr
 }
 
+// A type with type arguments: `Box<T>`, `Tensor<2, 3, Force>`.
+//
+// `!itemStart` on the `<`: a `param x : Name` inside a ConstraintDefinition
+// body may be followed by a predicate opening with `<` (the one-sided
+// RangeExpression arm), which competes with reducing `Name` to a plain
+// `TypeExpr`. See the `itemStart` note in the @precedence block.
+ParameterizedType {
+  Identifier !itemStart "<" TypeArgList ">"
+}
+
+// Qualified type-expr: `Beam::Material`, `Beam::(HasMaterial::Material)`.
+// The parenthesized form encodes the FORK-G trait disambiguator (PRD §3.5
+// Phase 8). The base is widened to `Identifier | ParameterizedType` for
+// applied-base projection (`Coupling<Prismatic>::MotionValue`); restricting it
+// to ParameterizedType rather than full TypeExpr avoids recursive
+// qualified-in-base ambiguity.
+QualifiedType {
+  (Identifier | ParameterizedType) "::" (Identifier | "(" Identifier "::" Identifier ")")
+}
+
+TypeArgList {
+  typeArg ("," typeArg)* ","?
+}
+
+typeArg {
+  AutoTypeArg | TypeExpr | Number
+}
+
+// grammar.js:1146-1152 — `Bearing<auto: Seal>`, `Bearing<auto(free): Seal>`.
+// The arm task 5907 deferred when it added ParameterizedType/TypeArgList.
+//
+// The bound stays a BARE Identifier. Upstream defers composite (`auto: A + B`)
+// and parametric (`auto: Container<T>`) bounds explicitly (:1142-1145), so
+// widening it here would invent a third dialect — the GUI grammar accepting
+// what neither the compiler nor tree-sitter does.
+AutoTypeArg {
+  AutoKeyword ":" Identifier
+}
+
+DefaultValue {
+  "=" bindingValue
+}
+
+// grammar.js:647-669. Three arms sharing the `auto` prefix. Upstream needs
+// explicit `prec(2)`/`prec(1)`/`prec(0)` to settle the shift-reduce at `(`;
+// here the arms are distinguished by content — `free` is a distinct literal
+// and `AutoParam` requires an `=` — so no marker is needed, and none is added:
+// an unnecessary ambiguity marker suppresses a genuine future conflict rather
+// than surfacing it (the same reasoning ArgumentList records).
+//
+// The `!itemStart` markers are a SEPARATE matter and are not that: they settle
+// the bare `auto` arm against a following item that opens with `(`, which only
+// arises inside a ConstraintDefinition body. See the `itemStart` note in the
+// @precedence block. Both parenthesised arms need one — a marker on just the
+// first leaves the second's conflict unresolved.
 AutoKeyword {
+  kw<"auto"> !itemStart "(" kw<"free"> ")" |
+  kw<"auto"> !itemStart "(" AutoParamList ")" |
   kw<"auto">
 }
 
+AutoParamList {
+  AutoParam ("," AutoParam)* ","?
+}
+
+// `seed = 5mm`, `orientation = orient_identity()`. The value is a full
+// expression (grammar.js:660-668).
+AutoParam {
+  Identifier "=" expression
+}
+
 // ── Let ─────────────────────────────────────────────────
+// The RHS is `AutoKeyword | expression`, not bare `expression`: grammar.js:678
+// binds it to `_binding_value`, the same alternation `param`'s default uses, so
+// `let gap : Length = auto(free)` (examples/interpolation.ri:33) is a `let`
+// with a solver-determined value. `AutoKeyword` is deliberately NOT a member of
+// `primaryExpression` — upstream keeps it out of `_expression` too — so it has
+// to be admitted at each binding site that accepts it.
 LetDeclaration {
-  kw<"let"> Identifier TypeAnnotation? "=" expression ~where WhereClause?
+  kw<"let"> Identifier TypeAnnotation? "=" bindingValue ~where WhereClause?
 }
 
 // ── Constraint ──────────────────────────────────────────
 ConstraintDeclaration {
   kw<"constraint"> expression ~where WhereClause?
+}
+
+// ── Constraint definition ───────────────────────────────
+// grammar.js:400-420. A top-level DECLARATION, not a member — it names a
+// reusable predicate set that structures then invoke as
+// `constraint MinThickness(t: wall)`.
+//
+// `ConstraintDeclaration` above never competes with it, and no marker is
+// needed to say so. At `Declaration` the `constraint` keyword is always
+// followed by `def`, and `Member` is unreachable from the top level, so the
+// two live in disjoint states — the same positional discriminator
+// `ForallStatement` vs `QuantifierExpression` relies on. The discrimination is
+// pinned by a node-name assertion in reifyGrammarCorpus.test.ts because the
+// wrong reading of either would be error-free.
+//
+// THE BODY IS THE HARD PART, and `itemStart` in the @precedence block is what
+// settles it — see the note there for the shape, the three shifts it marks and
+// the trade it accepts.
+ConstraintDefinition {
+  kw<"pub">? kw<"constraint"> kw<"def"> Identifier TypeParameters?
+  "{" (ParamDeclaration | LetDeclaration | Pragma | ConstraintDefPredicate)* "}"
+}
+
+// A bare expression, and deliberately its own node type rather than an inlined
+// `expression`: the tree is what tells an editor feature (and the corpus test)
+// that a given expression is a PREDICATE of the enclosing definition rather
+// than, say, the RHS of a `let` beside it.
+ConstraintDefPredicate {
+  expression
 }
 
 // ── Minimize ───────────────────────────────────────────
@@ -82,9 +488,322 @@ MaximizeDeclaration {
   kw<"maximize"> expression ~where WhereClause?
 }
 
+// ── Port ────────────────────────────────────────────────
+// grammar.js:957-993. The direction and the body are both optional, so the
+// bodyless `port output : out FullTrait`
+// (examples/integration_corner_cases.ri:45) and the directionless
+// `port p : Fluid` are both admitted. The type is a bare `Identifier`
+// upstream, not a TypeExpr, and is kept that way — every committed port names
+// a plain trait.
+PortDeclaration {
+  kw<"priv">? kw<"port"> Identifier ":" PortDirectionKeyword? Identifier PortBody? ~where WhereClause?
+}
+
+// grammar.js:968. `bidi` has ZERO corpus occurrences; `in`/`out` had to leave
+// the ReservedWord list for this production (see the note there).
+PortDirectionKeyword {
+  kw<"in"> | kw<"out"> | kw<"bidi">
+}
+
+// grammar.js:970-980. NOT a `Block`: upstream admits only param/let/constraint
+// plus the two settings, and — unlike the TraitDeclaration body, where reusing
+// `Block` costs nothing — a port body that accepted `sub`/`connect`/`port`
+// would let the editor's fold and indent props disagree with what the
+// compiler will accept in a position users actually write. The narrow list is
+// also short enough to state, so it is stated.
+PortBody {
+  "{" (ParamDeclaration | LetDeclaration | ConstraintDeclaration | PortDirectionSetting | PortFrameSetting)* "}"
+}
+
+// `direction` and `frame` are CONTEXTUAL (`ekw`, i.e. @extend), not `kw`.
+// The corpus forces it, exactly as it forced `at`: `let direction =
+// normalize(velocity)` (examples/modal/…), `param frame : Frame3 = Frame3(…)`
+// and the named-argument label `frame: mid_f` are all committed, and a
+// context-FREE @specialize would reserve the word globally and un-pin every
+// one of those files. Inside a port body no other member can begin with a bare
+// identifier, so the contextual reading is unambiguous exactly where it is
+// needed.
+PortDirectionSetting {
+  ekw<"direction"> "=" PortDirectionKeyword
+}
+
+PortFrameSetting {
+  ekw<"frame"> "=" expression
+}
+
+// ── Connect ─────────────────────────────────────────────
+// grammar.js:995-1028. Both operands are full expressions
+// (`port_ref: $ => $._expression`, :1006), which is what admits the attested
+// `connect src -> vents["intake"].inlet` — narrowing them to a dotted name
+// would reject it.
+ConnectStatement {
+  kw<"connect"> expression ConnectOperator expression (":" Identifier)? ConnectBody?
+}
+
+// grammar.js:1002. `<-` and `<->` are unattested in the corpus but normative;
+// they are the reason the `@precedence { "<->", "<-", "<=", "<" }` ordering
+// below is required — without it neither arrow is ever formed and `<-` lexes
+// as `<` then `-`.
+ConnectOperator {
+  "->" | "<-" | "<->"
+}
+
+ConnectBody {
+  "{" (connectBodyEntry ("," connectBodyEntry)* ","?)? "}"
+}
+
+connectBodyEntry {
+  PortMapping | ParamAssignment
+}
+
+PortMapping {
+  Identifier "->" Identifier
+}
+
+// ── Chain ───────────────────────────────────────────────
+// grammar.js:1030-1034 — `repeat1`, so a chain has at least two links.
+//
+// `ekw` NOT `kw`, and this one is a CORRECTION rather than a fresh choice.
+// Round 2 (#5927) promoted the word with `kw<"chain">`, which is context-FREE,
+// so `chain` stopped being a legal identifier everywhere. Three committed files
+// use it as an ordinary name and were left unparseable by that:
+// examples/tolerance-stackup-3part.ri:45 and examples/tolerance-stackup-rss.ri:35
+// (`let chain = [...]`, then `stackup_worst_case(chain)` / `stackup_rss(chain)`
+// at rss:40,44), and examples/integration_corner_cases.ri:131. MEASURED before
+// the change: `structure def S { let chain = a }` → 3 error nodes, the first ON
+// the word itself, while `structure def S { let y = [x] }` was already clean —
+// so the list literal the round-3 ledger blamed was never involved.
+//
+// Upstream spells the statement keyword as a plain `'chain'` string
+// (grammar.js chain_statement) whose parse-state-driven lexer keeps it an
+// identifier off this slot, so the contextual reading is the upstream-faithful
+// one. `ekw` is unambiguous exactly where it is needed, since no `Member`
+// alternative begins with a bare identifier — the same argument `RelateBlock`
+// records for `ekw<"relate">`. `chain` STAYS in KEYWORDS: the styling guard
+// scans for the literal `kw<"chain">` substring, which `ekw<"chain">` contains.
+ChainStatement {
+  ekw<"chain"> expression ("->" expression)+
+}
+
+// ── Forall statement ────────────────────────────────────
+// grammar.js:1248-1263. The body MUST start with `connect`, `chain` or
+// `constraint`; grammar.js:1238-1247 records that this required leading
+// keyword is the whole discriminator against the quantifier EXPRESSION that
+// shares the `forall` keyword. Lezer needs no marker for it: a `Member` can
+// never be a bare expression, so `QuantifierExpression` is simply not
+// reachable in this position and the two never compete for a state.
+ForallStatement {
+  kw<"forall"> Identifier kw<"in"> expression ":" (ConnectStatement | ChainStatement | ConstraintDeclaration)
+}
+
+// ── Relate block ────────────────────────────────────────
+// grammar.js:724-734. The body is a bare-expression repeat, so relations are
+// newline-separated with NO comma — `concentric(…)` then `flush(…)`
+// (examples/kinematic/relate_mounted_revolute.ri:77-80).
+//
+// `ekw` NOT `kw`. `relate` has ZERO uses as an identifier in the 330 committed
+// `.ri`, so a context-free `kw<"relate">` would pass today — but upstream
+// treats it as a contextual keyword (grammar.js:714-719) and the contextual
+// reading is unambiguous exactly where it is needed here, since no `Member`
+// alternative begins with a bare identifier. `ekw` costs nothing and keeps
+// `relate` usable as a variable name, the same door `at`, `self`, `direction`
+// and `frame` are held open by. The `kw<"…">` substring inside `ekw<"…">` is
+// what the data-driven KEYWORDS guard scans for, so it still cannot silently
+// go unstyled.
+//
+// NO PRECEDENCE OR AMBIGUITY MARKER, and that is MEASURED rather than assumed:
+// this compiles with zero conflicts on its own. The body holds only bare
+// expressions, so the "a preceding item's optional tail could equally open the
+// next item" conflicts that ConstraintDefinition hits never arise — there is
+// no optional tail to compete with — and the existing `!postfix`/`!additive`
+// markers on the expression grammar already settle continuation-vs-new-item.
+// An unneeded marker suppresses a genuine future conflict rather than
+// surfacing it, the stance already recorded on `ArgumentList` and `AutoKeyword`.
+RelateBlock {
+  ekw<"relate"> "{" RelationMember* "}"
+}
+
+RelationMember {
+  expression
+}
+
+// ── Joint definition ────────────────────────────────────
+// grammar.js:762-802, a TOP-LEVEL declaration (:147 lists `joint_definition`
+// in `_declaration`). Corpus-attested: examples/joint_dof_self_check.ri:26
+// (bare DOF, block body) and :32 (record DOF, expression body) — the file needs
+// BOTH forms, so neither arm alone moves the ledger.
+//
+// `joint` and `with` are CONTEXTUAL, matching upstream's own stance
+// (grammar.js:757-762): "zero regression: `joint` and `with` continue to lex as
+// identifiers at all other parse positions". A hard `kw<>` would buy the same
+// parses and break exactly that — the failure `chain` and `meta` each had to
+// undo this round. `in` is already `kw<"in">` (the forall/range keyword) and
+// serves the DOF range clause directly.
+//
+// `TypeParameters`, `FnParamList` and `RelationMember` are REUSED, not cloned.
+// The last is upstream's explicit instruction (:795-797) — reusing δ's node is
+// what makes a joint body lower "via lower_relation_members (same as
+// relate_block)". `pub` and the type parameters come free from that reuse and
+// are pinned in the corpus test even though no committed file uses them.
+JointDefinition {
+  kw<"pub">? ekw<"joint"> Identifier TypeParameters? "(" FnParamList? ")"
+  ekw<"with"> JointDof "=" JointBody
+}
+
+// grammar.js:781-784 — a bare field, or a braced comma-separated record whose
+// shape mirrors `enum_variant`'s named-field payload.
+JointDof {
+  JointDofField |
+  "{" JointDofField ("," JointDofField)* ","? "}"
+}
+
+// grammar.js:788-793. The `in <range>` clause is optional.
+JointDofField {
+  Identifier ":" TypeExpr (kw<"in"> expression)?
+}
+
+// grammar.js:799-802. MEASURED: lezer-generator reports zero conflicts for the
+// two arms, confirming upstream's own disambiguation note — "`{` unambiguously
+// selects the block arm (no _expression starts with bare `{`)". So no `~`
+// marker and no precedence level was needed here either.
+JointBody {
+  "{" RelationMember* "}" |
+  expression
+}
+
 // ── Sub ─────────────────────────────────────────────────
+// grammar.js:805-899 defines three arms. They share the whole
+// `priv? aux? sub Identifier` prefix and diverge only on the `=` vs `:` that
+// follows, so they are written as ONE production with an inner choice rather
+// than three sibling productions — LR decides on a single token of lookahead
+// and no ambiguity marker is needed.
+//
+// THE COLLECTION ARM IS FOLDED INTO THE SPECIALIZATION ARM. Upstream spells
+// `sub xs : List<T>` as its own arm carrying a BARE `'List'` string token, and
+// grammar.js documents at length (and pins with four Rust tests) that this
+// depends on two TREE-SITTER lexer rules: #1 longest-match, so `Listicle<Foo>`
+// falls through to the specialization arm, and #2 string-beats-regex on equal
+// length, so `List<Foo>` is captured by the collection arm. It further records
+// (esc-3712-201) that the "more explicit" `token(prec(1, 'List'))` BREAKS rule
+// #1 and was rejected on empirical evidence.
+//
+// Lezer's tokenizer does not share either tie-break, so transliterating the
+// bare string would be cargo-culting a mechanism whose stated preconditions do
+// not hold. `List<Pulley>` already matches `ParameterizedType`, and the CST
+// distinction between the two arms is consumed only by Rust-side tests
+// (crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs),
+// never by GUI code — so folding is behaviour-preserving for every consumer
+// here and removes an unresolvable lexer dependency.
 SubDeclaration {
-  kw<"sub"> Identifier "=" Identifier ArgList ~where WhereClause?
+  kw<"priv">? kw<"aux">? kw<"sub"> Identifier (
+    "=" Identifier ("<" TypeArgList ">")? ArgList ~where WhereClause? |
+    ":" (ParameterizedType | Identifier) ~where WhereClause? subBody?
+  ) PoseClause?
+}
+
+// grammar.js:900-920. Accepts both param assignments and ordinary members;
+// rejecting the members that are forbidden in this position is the validator's
+// job upstream, not the grammar's, so it is not the GUI parser's either.
+SpecializationBody {
+  "{" (ParamAssignment | Member)* "}"
+}
+
+// `bore = auto`. Unambiguous against every `Member` arm: each of those starts
+// with a specialized keyword token, so one token of lookahead separates them
+// from a bare `Identifier`.
+ParamAssignment {
+  Identifier "=" bindingValue
+}
+
+// The `:` arm's body slot, as a NAMED rule rather than an inline
+// `(SpecializationBody | KeyedMemberBlock)?`. Both spellings generate the same
+// language, but MEASURED: the inline form pushed `SubDeclaration` to 128
+// expansions and tripped lezer-generator's "generating a lot of choices"
+// advisory, because the arm's optionals multiply out. Naming the choice keeps
+// the rule under the threshold. Lowercase, so it does not appear in the tree —
+// `SpecializationBody`/`KeyedMemberBlock` stay the nodes the corpus test pins.
+subBody {
+  SpecializationBody | KeyedMemberBlock
+}
+
+// ── Keyed sub-member block ──────────────────────────────
+// grammar.js:906-939 — `sub vents : Keyed<Vent> { "intake" => { area = 5mm } }`
+// (examples/keyed_vents.ri:27-30, examples/keyed_forall.ri:18-21).
+//
+// UPSTREAM'S DISAMBIGUATION IS TRANSLITERATED, NOT RE-DERIVED. Both block forms
+// open with `{`, and grammar.js:915-923 records exactly what parts them: this
+// production requires at least ONE entry (`+`, upstream's `repeat1`) while
+// `SpecializationBody` takes zero-or-more, so an empty `{}` is unambiguously a
+// specialization body; when non-empty, the first token after `{` decides — a
+// `String` selects this block, an identifier or member keyword the other. Both
+// readings are corpus-attested, so the corpus test pins BOTH rather than only
+// the new one.
+//
+// MEASURED: lezer-generator reports zero conflicts, so no `~` ambiguity marker
+// and no precedence level was needed — the one-token lookahead above is enough
+// for LR(1) as it stands. `=>` is already a token (`MapEntry`, `MatchArm`), so
+// no new token or `@precedence` entry was needed either.
+//
+// SCOPE, matching upstream's own note (grammar.js:925-929): the keyed block is
+// accepted after ANY `structure_name<…>`, not only after `Keyed<…>`. Confining
+// it to the Keyed collection kind is a resolution concern, and narrowing it
+// here would make the GUI reject what the compiler accepts-then-diagnoses.
+KeyedMemberBlock {
+  "{" KeyedMemberEntry+ "}"
+}
+
+// The overrides slot reuses `SpecializationBody` VERBATIM rather than cloning
+// it — upstream's stated contract (grammar.js:931-934): override blocks inside
+// a keyed sub "parse identically to a standalone specialization-scope body".
+// The corpus test asserts the reuse on a node COUNT, since a cloned production
+// would satisfy an error count and silently fork the two.
+KeyedMemberEntry {
+  String "=>" SpecializationBody
+}
+
+// Trailing pose: `at auto`, `at transform3(...)`. Last on every arm, matching
+// grammar.js.
+// `at` is CONTEXTUAL (see `ekw` above): five committed files pass it as a
+// named-argument label, so it must keep lexing as an Identifier off this slot.
+//
+// ── THE `~poseWhere` MARKER, and why it is NOT a precedence level ──────────
+//
+// After the pose a following `where` is genuinely ambiguous to LR(1): it may
+// open the `SubRelateBlock` below (shift), or end this SubDeclaration so that
+// `where` starts a member-level `GuardedBlock` (reduce). What separates them is
+// the token AFTER `where` — `{` versus an expression — i.e. two tokens of
+// lookahead, which LR(1) does not have and which upstream gets free from GLR.
+// grammar.js:736-744 records the same reasoning: a CONDITIONLESS `where {`
+// after a pose can only be a sub_relate_block.
+//
+// MEASURED: without a marker lezer-generator reports
+// `shift/reduce conflict between SubRelateBlock -> · where "{" and
+// PoseClause -> at expression`.
+//
+// A precedence marker would be the WRONG instrument here, and this is the one
+// place in the grammar where that must be said out loud, because the conflict
+// looks just like the one `itemStart` resolves one family away. Precedence
+// makes greedy shift win unconditionally, which would turn EVERY post-pose
+// `where` into a SubRelateBlock — and `where determined(origin) { … }` is
+// committed at examples/integration_full_v01.ri:224 and
+// examples/m10_combined.ri:97, in six files overall, several already pinned in
+// EXPECTED_CLEAN. Collapsing to one parse is free for `itemStart` because the
+// losing reading is unattested; here it would regress committed files to admit
+// a form NO committed file uses. `~` is the tool that keeps BOTH parses alive,
+// and the `~where` markers elsewhere in this grammar are the existing
+// precedent, not an invention. Both readings are pinned by node-name
+// assertions in reifyGrammarCorpus.test.ts.
+PoseClause {
+  ekw<"at"> (AutoKeyword | expression) ~poseWhere SubRelateBlock?
+}
+
+// grammar.js:745-750 — the sub-local sibling of `relate`, reusing its
+// `RelationMember` exactly as upstream does at :748. Conditionless by
+// construction: the absent guard expression is what distinguishes it from the
+// `GuardedBlock` that shares its keyword. No committed `.ri` uses this form, so
+// it moves the corpus ledger by zero files and is taken for node shape.
+SubRelateBlock {
+  kw<"where"> "{" RelationMember* "}"
 }
 
 ArgList {
@@ -95,8 +814,71 @@ NamedArgumentList {
   NamedArgument ("," NamedArgument)* ","?
 }
 
+// The value slot IS `bindingValue` — the exact transliteration of upstream's
+// `named_argument.value = $._binding_value` (grammar.js:1042-1046). Spelling it
+// that way rather than enumerating arms is what admits `AutoKeyword`
+// (`Bolt(length: auto)`, examples/auto_binding_sites.ri:94) alongside the
+// `VariantConstruction` arm this slot already needed, and it keeps the two
+// slots that share `_binding_value` upstream from drifting apart here.
+//
+// This one production is shared by call-expression named arguments AND by
+// `SubDeclaration`'s instantiation `ArgList`, so anything admitted here is
+// admitted in both — which is exactly upstream's arrangement.
+//
+// `AutoKeyword`'s parenthesised arms carry `!itemStart` markers and are now
+// reachable from a comma-separated argument list, a new parse state. MEASURED:
+// lezer-generator reports zero conflicts, so `itemStart` needed no extension.
 NamedArgument {
-  Identifier ":" expression
+  Identifier ":" bindingValue
+}
+
+// ── Function ────────────────────────────────────────────
+// grammar.js:192-215 declares TWO productions — `function_definition` (with a
+// body) and `function_signature` (bodyless, trait-only) — and has to declare a
+// GLR conflict `[function_definition, function_signature]` for them, because
+// they share their entire prefix and diverge only at the `{`/`=` that either
+// does or does not follow the return type.
+//
+// Lezer is LR, so that conflict is not resolvable the same way. They are
+// merged here into ONE production with an optional `FnBody?`: the absence of a
+// body IS the signature form. This removes the conflict entirely rather than
+// working around it, and costs nothing downstream — no GUI code consumes the
+// node-name distinction, and the two nodes carry identical children otherwise.
+//
+// The merge is (deliberately) permissive in one direction: a bodyless `fn` is
+// now also accepted inside a structure body, where upstream admits only the
+// body-bearing override form (:544-547). Same direction-of-error argument as
+// TraitDeclaration's body above.
+FunctionDefinition {
+  kw<"pub">? kw<"fn"> Identifier TypeParameters? "(" FnParamList? ")" ("->" TypeExpr)? FnBody?
+}
+
+// grammar.js:217-231. Two arms: a `self` receiver optionally followed by typed
+// params, or typed params only.
+FnParamList {
+  ekw<"self"> ("," FnParam ("," FnParam)* ","?)? |
+  FnParam ("," FnParam)* ","?
+}
+
+FnParam {
+  Identifier ":" TypeExpr ("=" expression)?
+}
+
+// grammar.js:239-246. Block form `{ let-bindings* result }` and the spec §18
+// #10 expression-body sugar `= result`.
+FnBody {
+  "{" FnLetBinding* expression "}" |
+  "=" expression
+}
+
+// grammar.js:248-255. NOTE THE REQUIRED `;` — a fn-body let binding is
+// terminated, unlike the member-level LetDeclaration, which is not. Upstream
+// pins the shape in tree-sitter-reify/test/corpus/function.txt
+// (`fn f(x: Int) -> Int { let y = x; y }`); no committed `.ri` has a
+// multi-statement fn body at all, so the corpus neither confirms nor
+// contradicts it and the authoritative grammar governs.
+FnLetBinding {
+  kw<"let"> Identifier TypeAnnotation? "=" expression ";"
 }
 
 // ── Where clause ────────────────────────────────────────
@@ -111,18 +893,367 @@ WhereClause {
 //   3: ==, != (equality)
 //   4: <, >, <=, >= (comparison)
 //   5: +, - (additive)
-//   6: *, / (multiplicative)
+//   6: *, /, % (multiplicative)
 //   7: unary -, ! (unary)
 //   8: postfix (member access, function call)
+
+// ── Binding value ───────────────────────────────────────
+// The RHS of every `=` that binds a value: a param default, a `let`, a
+// specialization-body or connect-body param assignment. `AutoKeyword` is
+// admitted here and not in `primaryExpression` because upstream keeps it out
+// of `_expression` too (see LetDeclaration).
+//
+// `VariantConstruction` is admitted HERE AND ONLY HERE (plus a construction's
+// own field values), not in `primaryExpression` — see the note on the
+// production itself for why.
+bindingValue {
+  AutoKeyword | VariantConstruction | expression
+}
 
 expression[@isGroup=Expression] {
   BinaryExpression |
   UnaryExpression |
   ConditionalExpression |
+  QuantifierExpression |
+  MatchExpression |
+  RangeExpression |
+  IndexAccess |
+  AdHocSelector |
+  LambdaExpression |
   primaryExpression
 }
 
+// ── Match ───────────────────────────────────────────────
+// grammar.js:1275-1320. Upstream requires at least one arm, and so does this.
+//
+// The discriminant is a full expression immediately followed by `{`, which is
+// one of the three shapes that collide with variant construction — see the
+// note on VariantConstruction below for how that is settled.
+MatchExpression {
+  kw<"match"> expression "{" MatchArm ("," MatchArm)* ","? "}"
+}
+
+MatchArm {
+  MatchPattern "=>" expression
+}
+
+// grammar.js:1289-1293. The three arms are separated by one token of
+// lookahead after the leading Identifier: `{` opens a binding pattern, `|`
+// continues an or-pattern, `=>` ends a bare one.
+MatchPattern {
+  VariantBindingPattern |
+  Identifier ("|" Identifier)* |
+  WildcardPattern
+}
+
+// DO NOT "FIX" `_` INSIDE AN OR-PATTERN SLOT (#5958). `WildcardPattern` is
+// deliberately a sibling of the WHOLE or-production above, not of one
+// `|`-separated slot inside it, so `A | _` and `_ | A` reduce `_` to a plain
+// `Identifier`. This note is the single home for that reasoning; the corpus
+// tests pinning it point here rather than restating it. It mirrors the
+// authoritative grammar exactly — grammar.js:1289-1293 is
+// `choice(variant_binding_pattern, seq(identifier, repeat(seq('|',
+// identifier))), '_')`, where `'_'` is likewise a sibling of the whole
+// or-production — and it mirrors the lowering, which decides wildcard by
+// WHOLE-pattern text (`if pattern_text == "_"`) at BOTH of the two sites that
+// consume a `match_pattern`, so an or-slot `_` fails the test at either and
+// falls to the else branch that walks the pattern's `identifier` children:
+//   - ts_parser.rs:3482, `lower_match_arm` — the EXPRESSION form. The else
+//     branch pushes `MatchPattern::Variant("_")`; `MatchPattern::Wildcard` is
+//     reachable only from the whole-text test.
+//   - ts_parser.rs:3618, `lower_match_arm_decl_arm` — the DECLARATION form.
+//     Same whole-pattern-text test, but this site collects plain pattern
+//     `String`s rather than `MatchPattern` values, so `_` arrives downstream as
+//     the ordinary name `"_"`; the `Variant("_")` phrasing above is the
+//     expression form's only.
+// MEASURED with `reify eval`:
+//   `match k { A | _ => 1mm }`
+//     -> error: non-exhaustive match on 'Kind': missing variant(s) B, C
+//   `match kind { Hex | _ => sub head : DefaultHead }`
+//     -> error: match-arm pattern '_' is not a variant of enum 'Kind'
+//   `match k { _ | A => 1mm }` -> Parse error: syntax error
+//   CONTROL, bare `match k { _ => 1mm }` -> evaluates clean (`F.x = 0.001 m`),
+//     which is why the BARE-`_` corpus tests legitimately pin a
+//     `WildcardPattern` node and the or-slot ones pin zero of them.
+// #5958 restructured this rule into `matchPatternAtom ("|" matchPatternAtom)*`
+// to make an or-slot `_` reduce to `WildcardPattern`, and was REVERTED. Note
+// the reason carefully, because it is NOT the one the "three findings"
+// paragraph below describes: combined with the `[@dynamicPrecedence=1]` marker
+// the restructure DOES build clean and DOES emit the node (MEASURED, 0
+// conflicts) — it simply emits the WRONG one. It made the editor paint `_` as
+// a catch-all in the two positions where the compiler emits a hard error, so
+// the fix has to happen in the compiler first if it happens at all (that is a
+// real language question — `_` is BOUND, not reserved — but it needs
+// grammar.js, ts_parser.rs and the exhaustiveness checker to move together).
+// `_ | A` parsing with 0 ERROR nodes here while the compiler rejects it is
+// accepted EDITOR LENIENCY, not compiler parity: a spurious ERROR node breaks
+// highlighting for source the editor should tolerate, whereas a missing one
+// just defers the diagnostic to the compiler, which is the real gate.
+
+// `_` already lexes as an `Identifier` (the token rule admits a leading
+// underscore), and it is an `ekw`-family `@extend` for the reason every
+// contextual keyword here is one: the language admits `_` as an ORDINARY NAME,
+// so a context-free `@specialize` would make this grammar reject source the
+// compiler accepts. That is measured against the compiler, not inferred —
+// `reify eval` on `structure def F { let _ = 3mm }` prints `F._ = 0.003 m`,
+// and on `param _ : Length = 1mm` prints `F._ = 0.001 m`. `_` is BOUND, not
+// reserved. Same door `at`/`self`/`direction`/`frame`/`relate` are held open
+// by; see the note on `ekw` above.
+//
+// `@extend` ALONE, however, never yields the node. It disambiguates only when
+// the two readings occupy DIFFERENT grammar positions (`at`, `self`, `frame`
+// each have a keyword slot that no plain-identifier production also occupies).
+// Here both readings sit at the SAME position: `MatchPattern`'s plain-
+// Identifier alternative (`Identifier ("|" Identifier)*`) and
+// `WildcardPattern` are two direct alternatives of the same rule, so `_` is
+// equally valid as either the whole `WildcardPattern` reduction or a
+// one-Identifier `Identifier ("|" Identifier)*` reduction, with nothing left
+// to look ahead at (`=>` follows either way) — a genuine ambiguity that
+// `@extend` resolved by silently falling back to the unextended `Identifier`
+// reading every time (MEASURED, #5957).
+//
+// `@dynamicPrecedence` is lezer's designated mechanism for choosing between
+// ambiguous COMPLETE parses, so it is what breaks that tie — and it breaks it
+// ONLY where both readings are live, leaving `_` an ordinary Identifier
+// everywhere else. MEASURED for this variant: zero build conflicts, the node
+// produced in both the `MatchExpression` and `MatchArmDeclBlock` forms, and
+// zero ERROR nodes across all six legal-identifier positions pinned in
+// reifyGrammarCorpus.test.ts.
+//
+// The `@extend` carries NO `@name`, unlike every `ekw<>` above, and that is
+// load-bearing rather than an omission. `@name=WildcardPattern` would name the
+// TOKEN what the enclosing rule is already named, and both are visible in the
+// tree, so every wildcard arm came out as `MatchPattern > WildcardPattern >
+// WildcardPattern` — one node duplicated (MEASURED; the doubling was invisible
+// to the suite because `nodeNames(...).toContain(…)` is satisfied by either).
+// Dropping `@name` leaves the token anonymous and the rule the sole bearer of
+// the public name, so exactly ONE `WildcardPattern` node spans the `_`
+// (MEASURED; pinned by an explicit count assertion in the corpus test, not
+// just by a `toContain`). A distinct token `@name` was tried too and is worse:
+// it emits a second, differently-named node instead of removing one.
+//
+// Three findings worth not re-deriving. Restructuring `MatchPattern` into
+// `matchPatternAtom ("|" matchPatternAtom)*` was tried as a fix on its own and
+// does NOT work: rule shape does not change the token-level fallback, so it
+// parses clean but yields no `WildcardPattern` node anywhere. The precedence
+// cannot be moved onto the token to collapse rule and token into one
+// construct: `@extend[@name=WildcardPattern, @dynamicPrecedence=1]<…>` is a
+// hard generator error, "Dynamic precedence can only be specified on
+// nonterminals" — hence a wrapping rule is REQUIRED here, and the anonymous
+// token is what keeps it from costing a duplicate node. And the syntax trap —
+// `@dynamicPrecedence` is a RULE PROP only; a top-level
+// `@dynamicPrecedence { … }` block is a hard parse error in the generator.
+WildcardPattern[@dynamicPrecedence=1] {
+  @extend<Identifier, "_">
+}
+
+VariantBindingPattern {
+  Identifier "{" FieldBinding ("," FieldBinding)* ","? "}"
+}
+
+// grammar.js:1310-1315 — the binder is an IDENTIFIER, not a nested pattern.
+FieldBinding {
+  Identifier ":" Identifier
+}
+
+// ── Match arm declaration block ─────────────────────────
+// grammar.js:1322-1345. A MEMBER-position `match` whose arms DECLARE a sub
+// rather than evaluate to a value: the variant chosen decides which sub the
+// structure gets.
+//
+// NO MARKER, and none is needed, against the `MatchExpression` it shares its
+// keyword and its whole `match <expr> {` prefix with. Position is the
+// discriminator: no `Member` can begin with a bare expression, so the
+// expression form is simply unreachable here and the two never share a state.
+// That is the same argument already recorded for `ForallStatement` vs
+// `QuantifierExpression`. MEASURED: zero conflicts. Both directions are pinned
+// by assertions in reifyGrammarCorpus.test.ts — expression-position `match`
+// still yields MatchExpression, and a member-position `match` whose arms are
+// expressions ERRORS.
+//
+// The patterns reuse `MatchPattern` verbatim, so or-patterns, wildcards and
+// variant-binding patterns come free and cannot drift from the expression form.
+//
+// No committed `.ri` uses this block, so it moves the corpus ledger by zero
+// files and is taken for node shape.
+MatchArmDeclBlock {
+  kw<"match"> expression "{" MatchArmDeclArm ("," MatchArmDeclArm)* ","? "}"
+}
+
+MatchArmDeclArm {
+  MatchPattern "=>" MatchArmSubDecl
+}
+
+// DELIBERATELY NARROWER than `SubDeclaration`: no body, no where clause, no
+// pose. This port's standing stance is that over-permissiveness is the safe
+// direction of error (recorded on TraitDeclaration and SpecializationBody), but
+// that argument holds only where the cost is "no squiggle on a program the
+// compiler will still reject". Here upstream restricts the arm precisely
+// because the compiler rejects bodies and where clauses in this position
+// (audit M-006, entity.rs:2506-2521), so accepting them would invent a third
+// dialect rather than degrade gracefully — the editor's reading would diverge
+// from the compiler's exactly where over-permissiveness misleads instead of
+// helping. `PortBody` records the same exception for the same reason.
+MatchArmSubDecl {
+  kw<"sub"> Identifier ":" Identifier
+}
+
+// ── Variant construction ────────────────────────────────
+// grammar.js:1443-1451, and the one production in this port that is still
+// DELIBERATELY NARROWER than upstream — but narrower in `primaryExpression`
+// ONLY. Argument position is now admitted; the two differ, and the reason they
+// differ is a FOLLOW SET, not a marker.
+//
+// Upstream spells it as an ordinary `_primary_expression` alternative and pays
+// for it with an explicitly declared GLR conflict,
+// `[_primary_expression, variant_construction]`: `Name { … }` collides with
+// every expression that reduces to a bare identifier and is followed by `{`.
+// Three of those shapes are committed and load-bearing —
+//
+//     match outline { … }               discriminant, then `{`
+//     where shape == Shape.Round { … }  guard condition, then `{`
+//     connect outlet -> inlet { … }     right port ref, then `{`
+//
+// — and Lezer, being LR, cannot resolve them the way GLR does. Critically the
+// wrong reading is ERROR-FREE: variant construction would silently swallow the
+// match body, so the corpus test could not see the damage by counting error
+// nodes, which is why every regression assertion for this production checks
+// nodeNames instead. That warning applies to the widening below just as much.
+//
+// WHERE IT IS REACHABLE, and why each position is safe:
+//
+//   - `bindingValue` and a construction's own field values. Every committed
+//     call site is one of these — all four are `param … = Name { … }` or
+//     `let … = Name { … }`, one of them nested
+//     (examples/m6_generic_enum.ri:36) — and a binding value is never followed
+//     by `{`, so the collision is removed structurally rather than papered over.
+//
+//   - `argument` and the `NamedArgument` value slot. Inside an argument list
+//     the follow set of a value is `,` or `)`; `{` is NOT in it, so the state
+//     after `Identifier` has a shift on `{` and no competing reduce. MEASURED:
+//     zero conflicts, no marker needed, and all three collision shapes above
+//     still read correctly. Both argument slots are widened together because
+//     `NamedArgument` is the value slot of the same call syntax and is shared
+//     with `SubDeclaration`'s instantiation `ArgList` — widening only the
+//     positional arm would still reject `Foo(shape: Circle { radius: 5mm })`.
+//
+// `primaryExpression` stays narrowed: nothing measured has changed about the
+// three collisions, and `{` is in the follow set there. NO COMMITTED `.ri`
+// USES THE ARGUMENT FORM, so admitting it moved the corpus ledger by zero
+// files — it is taken for node shape, and the assertions in
+// reifyGrammarCorpus.test.ts are the only thing guarding it, including one that
+// pins that expression-position `Name { … }` must STILL error. The residual
+// `primaryExpression` narrowing is tracked as #5950.
+VariantConstruction {
+  Identifier "{" VariantConstructionField ("," VariantConstructionField)* ","? "}"
+}
+
+VariantConstructionField {
+  Identifier ":" (VariantConstruction | expression)
+}
+
+// ── Quantifier expression ───────────────────────────────
+// grammar.js:1265-1273, `prec.right(0)` — the predicate swallows everything to
+// its right, so `forall v in vs : a and b` is `forall v in vs : (a and b)`,
+// never `(forall v in vs : a) and b`. That is why `quantifier` is one of the
+// two LOOSEST levels in the @precedence block.
+//
+// Distinct from `ForallStatement` above by POSITION, not by marker: upstream
+// keeps them apart with the leading `connect`/`chain`/`constraint` its
+// statement body requires, and here the same discriminator falls out of the
+// grammar for free because no `Member` can begin with a bare expression.
+QuantifierExpression {
+  !quantifier kw<"forall"> Identifier kw<"in"> expression ":" expression |
+  !quantifier kw<"exists"> Identifier kw<"in"> expression ":" expression
+}
+
+// ── Lambda ──────────────────────────────────────────────
+// grammar.js:1222-1232, `prec.right(0)` — the body extends as far right as it
+// can, which is why `lambda` is the LOOSEST level in the @precedence block.
+//
+// THE `||` COLLISION, and the SECOND ARM that now settles it. A zero-parameter
+// lambda opens with the same two characters as the symbolic OR operator. No
+// `@precedence { "||", "|" }` is declared, and that is still deliberate:
+// declaring one would force `"||"` to win unconditionally and there would be no
+// way back to `|| 1`.
+//
+// The original reading of this hazard was that `"|"` (only ever at an
+// expression START or closing a parameter list) and `"||"` (only ever after a
+// COMPLETE expression) never share a state, so lezer's per-state token groups
+// keep them apart for free. `RelateBlock` ended that: `RelationMember*` is the
+// grammar's first repeat of BARE expressions, so after a complete relation the
+// parser may both continue a binary expression (`"||"` valid) and start a new
+// member with a lambda (`"|"` valid). One state admitting both is enough to
+// merge the two tokens into ONE group, and a group is a property of the TOKEN,
+// not of the state — so maximal munch then applies everywhere, including at
+// `let f = ` where only `"|"` is grammatical.
+//
+// THE NOTE HERE PREVIOUSLY CLAIMED lezer-generator would raise an
+// overlapping-token error at build time if that ever happened, and that the
+// loud failure was why no precedence was declared. That claim is FALSE and was
+// falsified by exactly the edit it was written to catch: adding `RelateBlock`
+// compiled with ZERO conflicts and zero warnings, and silently turned
+// `let f = || 1` into an error node. The whole corpus still passed; only the
+// two snippet assertions in reifyGrammarCorpus.test.ts noticed. Token-group
+// merging is not a conflict, so nothing in the build reports it — there is no
+// loud failure to rely on, only those assertions.
+//
+// So the zero-parameter form is spelled out as its own arm instead. This is not
+// a new language form: `|| 1` is the same source text upstream accepts through
+// `commaSep`'s empty case (grammar.js:1222-1232), reached here by a different
+// token path, and it still yields one `LambdaExpression` node. The arm is
+// reachable only where an expression may START, so `a || b` is unaffected —
+// after a complete operand the `!or` shift beats the looser `!lambda` reduce,
+// which is also what makes `relate { a || b }` one binary relation rather than
+// a relation followed by a lambda. All of that is pinned by node-name
+// assertions in reifyGrammarCorpus.test.ts, not by error counts, because the
+// losing reading in each case is error-free.
+LambdaExpression {
+  !lambda "|" (LambdaParam ("," LambdaParam)* ","?)? "|" expression |
+  !lambda "||" expression
+}
+
+LambdaParam {
+  Identifier (":" TypeExpr)?
+}
+
+// ── Ad-hoc port selector ────────────────────────────────
+// grammar.js:1568-1575 — `expr @ selector(args)`, `prec.left(10)`: tighter
+// than index access (9), looser than member access / function call (11).
+// This port collapses those two into the single `postfix` level, so `selector`
+// sits immediately below it and above every binary band.
+AdHocSelector {
+  expression !selector "@" Identifier ArgListExpr
+}
+
+// ── Ranges ──────────────────────────────────────────────
+// grammar.js:1374-1389. Precedence 0 — LOWER than every other binary
+// operator — so `2mm + 1mm .. 10mm - 1mm` is `(2mm+1mm) .. (10mm-1mm)`.
+//
+// The single-sided prefix arms share their leading token with binary
+// comparison (`a < b` vs `<b`). Lezer separates them by POSITION rather than
+// by precedence: the prefix arm has no left operand, so it is only reachable
+// where an expression may start, and `constraint thickness < 50mm` still
+// reduces through `CompareOp`. No ambiguity marker is needed and none is
+// added — the corpus test pins both readings.
+RangeExpression {
+  expression !range ".." expression |
+  expression !range "..<" expression |
+  !range CompareOp<">"> expression |
+  !range CompareOp<">="> expression |
+  !range CompareOp<"<"> expression |
+  !range CompareOp<"<="> expression
+}
+
 BinaryExpression {
+  // Keyword logical-operator band (grammar.js:1347-1352, spec §16 levels
+  // 13-15). tree-sitter spells these -13/-14/-15 only because its numeric
+  // scale is inverted; the ORDER is what matters and it is preserved here —
+  // `implies` looser than `or`, which is looser than `and`, all three looser
+  // than the symbolic `||`/`&&` band below.
+  expression !kwImplies kw<"implies"> expression |
+  expression !kwOr kw<"or"> expression |
+  expression !kwAnd kw<"and"> expression |
   expression !or ArithOp<"||"> expression |
   expression !and ArithOp<"&&"> expression |
   expression !equality CompareOp<"=="> expression |
@@ -134,10 +1265,27 @@ BinaryExpression {
   expression !additive ArithOp<"+"> expression |
   expression !additive ArithOp<"-"> expression |
   expression !multiplicative ArithOp<"*"> expression |
-  expression !multiplicative ArithOp<"/"> expression
+  expression !multiplicative ArithOp<"/"> expression |
+  // `%` shares the multiplicative band, VERIFIED not assumed: grammar.js:1363,
+  // 1364 and 1365 give `*`, `/` and `%` an identical `prec.left(6)`. Reusing
+  // `ArithOp` rather than naming a new node keeps `OPERATOR_NODES` in the
+  // corpus test unchanged — a new node type there would have to be added in
+  // the same commit or `leftOperandOf` silently returns the wrong operand.
+  // `%` is a character used nowhere else in this grammar, so it needs no
+  // `@precedence` token-ordering entry; lezer-generator reports zero conflicts.
+  // Corpus-attested: examples/modulo_index_wrap.ri:13,17.
+  expression !multiplicative ArithOp<"%"> expression |
+  // Value-level exponent. Only ever reached with whitespace around the `^`
+  // (`(5mm ^ 2) / (1mm ^ 2)`, examples/unit_expressions.ri:23) — the
+  // contiguous form is a unit exponent and is lexed inside QuantityLiteral.
+  expression !exponent ArithOp<"^"> expression
 }
 
 UnaryExpression {
+  // grammar.js:1393 — `not` is spec §16 level 12, LOOSER than every symbolic
+  // operator, so `not a < b` is `not (a < b)`. That is the opposite of the
+  // symbolic `!` below, which sits at the tight `unary` level.
+  !kwNot kw<"not"> expression |
   !unary ArithOp<"-"> expression |
   !unary ArithOp<"!"> expression
 }
@@ -148,30 +1296,218 @@ ConditionalExpression {
 
 primaryExpression {
   QuantityLiteral |
+  RadixQuantityLiteral |
+  ImaginaryQuantityLiteral |
+  RadixLiteral |
+  ImaginaryLiteral |
   Number |
   String |
+  InterpolatedString |
   Boolean |
   FunctionCall |
   MemberAccess |
+  // grammar.js:1587-1610 — the expression-position `::` family. Placed beside
+  // `MemberAccess`/`FunctionCall`, the postfix forms they mirror.
+  QualifiedAccess |
+  InstanceQualifiedAccess |
+  TraitMethodCall |
+  ListLiteral |
+  SetLiteral |
+  MapLiteral |
   Identifier |
   ReservedWord |
   ParenthesizedExpression
 }
 
+// ── Collection literals ─────────────────────────────────
+// Transliterated from tree-sitter-reify/grammar.js:1557-1566. `set` and `map`
+// are keyword-introduced, so both had to leave the `ReservedWord` @specialize
+// list below — see the note there.
+ListLiteral {
+  "[" (expression ("," expression)* ","?)? "]"
+}
+
+SetLiteral {
+  kw<"set"> "{" (expression ("," expression)* ","?)? "}"
+}
+
+MapLiteral {
+  kw<"map"> "{" (MapEntry ("," MapEntry)* ","?)? "}"
+}
+
+MapEntry {
+  expression "=>" expression
+}
+
+// ── Strings and interpolated strings ────────────────────
+// Transliterated from grammar.js:1628-1670. THE HOLE IS `{expr}`, NOT
+// `${expr}`: examples/interpolation.ri:18 is `"thickness is {t}, doubled is
+// {2 * t}"`. `{{`/`}}` are literal content rather than holes, which is why
+// `StringChunk` admits a doubled brace as one of its units — scanner.c's
+// STRING_CONTENT block consumes a doubled brace and stops at a single one.
+//
+// WHY `String` IS A RULE HERE AND A TOKEN UPSTREAM. tree-sitter keeps a
+// whole-string `token()` as a fast path and falls through to
+// `interpolated_string` when its (brace-excluding) char class fails. Lezer
+// cannot: a whole-string token and the bare `"` delimiter of an interpolated
+// string OVERLAP — one is a prefix of the other — so lezer-generator forces
+// them into one precedence order that applies at EVERY quote. MEASURED: with
+// the whole-string token winning, the CLOSING quote of an interpolated string
+// lexes as the opening of a new string that runs to the next quote in the file,
+// which swallowed four spans of examples/interpolation.ri into error nodes; with
+// the delimiter winning, the whole-string token never fires at all. So both
+// readings are built from the SAME two non-overlapping tokens (`stringQuote`,
+// `StringChunk`) and the split is by rule, not by lexer.
+//
+// The consequence — recorded because it is a real divergence — is that the
+// split is on the presence of a HOLE, not the presence of a brace. Upstream's
+// `"{{braces}}"` is an `interpolated_string` with one chunk and no holes; here
+// it is a `String` with one chunk. Both agree the doubled braces are content.
+//
+// A SECOND CONSEQUENCE, USER-VISIBLE. A string holding a LONE unescaped brace
+// is now an error node where it used to parse clean. MEASURED: `"use {} for
+// empty"`, `"a { b"` and `"}"` each yielded 0 error nodes under the old
+// whole-string token and yield 1 now. This is upstream-faithful, not a
+// regression of the port: grammar.js:1628-1643 deliberately narrows
+// `string_literal`'s char class from `/[^"\\]/` to `/[^"\\{}]/` so any
+// unescaped brace falls through to `interpolated_string`, and
+// grammar.js:1664-1666 records that an empty `{}` is then "a parse error for
+// free". Upstream's own note adds that a grep of every `.ri` file found ZERO
+// string literals containing a bare brace, which is why the narrowing costs
+// the corpus nothing. The escape hatch is `\{` / `\}` — `StringChunk`'s
+// `"\\" _` arm keeps `"a\{b\}"` clean, exactly as upstream's
+// `seq('\\', /./)` arm does. Both halves are pinned by assertions.
+//
+// WHY TWO @skip BLOCKS. The string body must NOT skip whitespace or comments —
+// otherwise the spaces between chunks would be dropped from the tree and a
+// `//` inside a string would start a LineComment that eats the closing quote.
+// But a hole holds a whole expression, which DOES need the normal skip set
+// (`{2 * t}`). Declaring `Interpolation` in its own block with the default skip
+// expression restores it inside the braces only. `expression` is reached solely
+// through that block, so the generator does not duplicate the expression
+// grammar for the no-skip context.
+@skip {} {
+  String { stringQuote StringChunk? stringQuote }
+
+  // At least one hole — that requirement is what keeps this decidable against
+  // `String` above with one token of lookahead: after the leading chunk, a
+  // `"` reduces the String and a `{` shifts into the first hole.
+  InterpolatedString {
+    stringQuote StringChunk? Interpolation stringPart* stringQuote
+  }
+
+  stringPart { StringChunk | Interpolation }
+}
+
+@skip { whitespace | LineComment | BlockComment } {
+  Interpolation { "{" expression "}" }
+}
+
+// ── Index access ────────────────────────────────────────
+// grammar.js:1578-1583 gives this prec.left(9) — below member_access (11) and
+// the ad-hoc selector (10), above the binary bands. The existing `postfix`
+// level is the closest Lezer equivalent and puts it on the same footing as
+// `MemberAccess`/`FunctionCall`, which is what `m.rows[i]` and `f(x)[0]`
+// require.
+IndexAccess {
+  expression !postfix "[" expression "]"
+}
+
+// The callee admits `ReservedWord` as well as `Identifier`. `some(u)`
+// (examples/integration_corner_cases.ri:99), `map_or(some(5mm), …)`
+// (examples/option_map_or.ri:30) and `Steel_AISI_1045(yield_stress: some(310mm))`
+// (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31) all call one.
+//
+// WHY THE CALLEE AND NOT THE RESERVATION. `some` and `none` appear NOWHERE in
+// tree-sitter-reify/grammar.js — upstream parses `some(u)` as an ordinary call
+// on an ordinary identifier, so there is no upstream node to match. They exist
+// here purely as the forward-compat STYLING reservation the `ReservedWord` note
+// below prices: dropping them from the `@specialize` list would parse these
+// three files just as well, but it "would not enable anything, it would only
+// drop their `ReservedWord: t.keyword` styling". Widening this one slot buys
+// the parse and keeps the colour. MEASURED before the change: bare
+// `let s = none` was already 0 errors — the gap was localised to the callee.
+//
+// The callee stays a two-way CHOICE rather than becoming a general
+// `expression`. A general callee would make every juxtaposed `expr (` a call
+// candidate and put this rule into competition with `ParenthesizedExpression`,
+// `FunctionType` and `AutoKeyword`'s parenthesised arms — a large ambiguity
+// surface bought for a handful of shapes. Callee forms beyond these two get
+// their own named node instead, which also keeps them addressable for styling.
 FunctionCall {
-  Identifier !postfix ArgListExpr
+  (Identifier | ReservedWord) !postfix ArgListExpr
 }
 
 ArgListExpr {
   "(" ArgumentList? ")"
 }
 
+// Mirrors tree-sitter-reify/grammar.js:1542-1546 — a call argument list mixes
+// positional and named arguments freely. `NamedArgument` is the same
+// production `SubDeclaration`'s instantiation form already uses; reusing it
+// keeps one node name for one concept.
+//
+// Both arms begin with `Identifier`, so a `~arg` ambiguity marker was
+// expected here. It turned out unnecessary and is deliberately absent:
+// lezer-generator resolves the two arms on the one-token lookahead that
+// follows the `Identifier` (`:` selects NamedArgument, anything else the
+// bare expression) and reports no conflict. Adding an unneeded marker would
+// suppress a genuine future conflict rather than surface it.
 ArgumentList {
-  expression ("," expression)* ","?
+  argument ("," argument)* ","?
+}
+
+// `VariantConstruction` is admitted here, and NOT in `primaryExpression` — see
+// the long note on that production for why the two positions differ.
+argument {
+  NamedArgument | VariantConstruction | expression
 }
 
 MemberAccess {
   expression !postfix "." Identifier
+}
+
+// ── Qualified access in EXPRESSION position ─────────────
+// grammar.js:1587-1610. `::` already reached TYPE position through
+// `QualifiedType`; these three are the expression-position counterparts, and
+// nothing here shares a production with the type form.
+//
+// Upstream's prec.left(9) for the two access forms and prec(11) for the call
+// map onto the existing `postfix` level, which is where `MemberAccess`,
+// `IndexAccess` and `FunctionCall` already sit — the same mapping `IndexAccess`
+// records for its own prec.left(9).
+//
+// TWO SEPARATIONS REST ON SHAPE ALONE, not on any marker, so the corpus test
+// asserts them rather than this note claiming them:
+//   • `QualifiedAccess` vs `QualifiedType` — both spell `::`, and only the
+//     position they are reached from tells them apart. A type annotation must
+//     still yield `QualifiedType`, including the applied-base arm
+//     (`Coupling<Prismatic>::MotionValue`).
+//   • `InstanceQualifiedAccess` vs `MemberAccess` — the two share the whole
+//     `expression "."` prefix and part on the ONE token after the dot: `(`
+//     shifts into the qualified form, an identifier reduces the plain one.
+// MEASURED: lezer-generator reports zero conflicts, so neither separation
+// needed a `~` ambiguity marker or a precedence level.
+QualifiedAccess {
+  expression !postfix "::" Identifier
+}
+
+// `obj.(Trait::method)`. Upstream widens the parenthesised slot to any
+// expression and validates in LOWERING, emitting a specific diagnostic when it
+// is not a qualified access (grammar.js:1602-1604 says so explicitly). That
+// widening is kept: narrowing it here would make the GUI reject a shape the
+// compiler accepts-then-diagnoses, which is the third-dialect failure the
+// `AutoTypeArg` note already forbids.
+InstanceQualifiedAccess {
+  expression !postfix "." "(" expression ")"
+}
+
+// The call tail is a SEPARATE node, exactly as upstream's `trait_method_call`
+// is separate from `qualified_access` — so the bare `Defaultable::make_default`
+// with no tail is still a plain `QualifiedAccess`. The callee stays a two-way
+// choice for the same reason `FunctionCall`'s does: see the note there.
+TraitMethodCall {
+  (QualifiedAccess | InstanceQualifiedAccess) !postfix ArgListExpr
 }
 
 ParenthesizedExpression {
@@ -185,6 +1521,26 @@ Boolean {
 // ── Keywords ─────────────────────────────────────────────
 kw<term> { @specialize[@name={term}]<Identifier, term> }
 
+// CONTEXTUAL keyword: reserved in its own grammatical slot but still a legal
+// identifier everywhere else. `@specialize` replaces the token unconditionally
+// and is context-FREE, so it is the wrong tool for a word the language also
+// admits as an ordinary name; `@extend` offers both readings and lets the
+// parse context choose.
+//
+// `at` is the motivating case and the corpus proved it empirically. Promoting
+// it with `kw<"at">` for the `sub … at <pose>` clause un-pinned two files that
+// pass `at` as a NAMED ARGUMENT LABEL — `StepForce(at: tip_face, …)` in
+// examples/modal/transient_step_response.ri and `at: "tip"` in
+// tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri — because
+// `NamedArgument` needs `at` to still lex as `Identifier`. Five committed files
+// use the label form. grammar.js:443-461 records the same contextual-keyword
+// treatment upstream for `default`/`unit`/`type`/`undef`.
+//
+// The `kw<"…">` substring in `ekw<"…">` is deliberate: the data-driven styling
+// guard scans for that literal, so a contextual keyword is still required to
+// appear in KEYWORDS and cannot silently go unstyled.
+ekw<term> { @extend[@name={term}]<Identifier, term> }
+
 // ── Operator wrappers (outside @tokens for node naming) ──
 ArithOp<expr> { expr }
 CompareOp<expr> { expr }
@@ -192,20 +1548,110 @@ CompareOp<expr> { expr }
 // ── M5 Reserved Keywords (forward-compat highlighting) ──
 // These use @specialize to replace Identifier with ReservedWord,
 // causing parse errors when used as identifiers (correct reserved-word behavior).
-// They parse correctly in expression context via the primaryExpression rule.
+// The words REMAINING in this list parse in expression context via the
+// primaryExpression rule (which reaches them through `ReservedWord`).
+//
+// A word promoted to a real `kw<>` production MUST be removed from this list:
+// lezer-generator permits only one replacement name per (base token, literal)
+// pair and otherwise hard-fails with
+//   Conflicting names for specialization "def" of Identifier
+// `pub`/`def` (StructureDefinition), `module`/`as` (ModuleDeclaration,
+// ImportDeclaration), `set`/`map` (SetLiteral, MapLiteral),
+// `not`/`and`/`or`/`implies` (the keyword logical-operator band in
+// UnaryExpression/BinaryExpression), `occurrence` (OccurrenceDefinition),
+// `port`/`connect`/`chain`/`forall`/`exists`/`in`/`out` (the topology member
+// families and QuantifierExpression) and `enum`/`match` (EnumDeclaration,
+// MatchExpression) were promoted out of this list; their keyword styling is
+// re-pinned explicitly in highlight.ts.
+//
+// `some`/`none` deliberately STAY. They are forward-compat reservations with
+// no production to be promoted INTO — removing them would not enable
+// anything, it would only drop their `ReservedWord: t.keyword` styling and
+// silently make them ordinary variable names.
+//
+// `in`/`out` are the one promotion in that set that reserves a SHORT, common
+// English word globally. It is safe here and was verified rather than assumed:
+// no committed `.ri` uses either as an identifier — no `.in`/`.out` member
+// access, no `in:`/`out:` argument label, no `let`/`param`/`sub` so named.
+// `direction`/`frame`, which fail that same check, are `ekw` instead (see
+// PortDirectionSetting).
+//
+// Removal has one behavioural consequence worth stating precisely: a promoted
+// word is NO LONGER reachable from primaryExpression, so it now produces an
+// error node in bare expression position where it previously produced none
+// (measured: `structure def F { let x = pub }` → 1 error node, and the same
+// for every other promoted word, while the still-listed `trait` → 0). No
+// committed fixture is affected, and erroring on a keyword in expression
+// position is the more correct behaviour, so this is recorded rather than
+// worked around. `set`/`map` are only a partial exception: they are
+// unreachable BARE but still start a SetLiteral/MapLiteral.
+// `trait`/`fn`/`type` were promoted here (TraitDeclaration, FunctionDefinition,
+// AssociatedType). `self` was promoted too, but as a CONTEXTUAL `ekw<"self">`
+// rather than a `kw<>` — see the note on FnParamList and on ekw above. The
+// corpus forced that choice: `self` appears 146 times in committed `.ri`, all
+// of them in EXPRESSION position (`constraint self.b.bore == 10mm`,
+// `[self.a.line_cost, self.b.line_cost].sum`), and tree-sitter admits those
+// because its lexer is parse-state-driven — `'self'` is a bare string used
+// only in `fn_param_list`, so it still lexes as `identifier` everywhere else.
+// A context-FREE `kw<"self">` would have reserved the word globally and broken
+// every one of those files.
+//
+// One styling consequence is accepted and stated: `self` in expression
+// position now lexes as `Identifier` (t.variableName) where it previously
+// lexed as `ReservedWord` (t.keyword). That matches the upstream reading —
+// there, too, expression-position `self` is an ordinary identifier — and in
+// the receiver slot `ekw` still yields the `self` token, which KEYWORDS styles.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
-    "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
-    "occurrence" | "purpose" | "field" | "pub" | "def" | "port" |
-    "type" | "module" | "unit" | "forall" | "exists" | "implies" |
-    "and" | "or" | "not" | "in" | "out" | "meta" | "self" |
-    "undef" | "some" | "none" | "set" | "map" | "as">
+    "undef" | "some" | "none">
 }
 
 @external propSource reifyHighlighting from "./highlight"
 
+// Listed TIGHTEST first. The keyword logical band (grammar.js:1347-1352,
+// :1393) sits below the symbolic `&&`/`||` band and above `conditional`:
+// `not` is spec §16 level 12 and therefore LOOSER than every symbolic
+// operator, which is why `kwNot` is here rather than beside `unary`.
 @precedence {
+  // TIGHTEST, and not an operator level at all. It resolves ONE recurring
+  // shape: a body whose repeat mixes items that carry an OPTIONAL TAIL with
+  // items that are BARE EXPRESSIONS. The tail's opening token is then also a
+  // token the next item could open with, and LR(1) cannot see far enough to
+  // tell "still finishing the previous item" from "already starting the next".
+  //
+  // `ConstraintDefinition`'s body is the first such repeat in this grammar
+  // (`param`/`let`/`#pragma` items beside a bare `ConstraintDefPredicate`), and
+  // MEASURED it produces exactly three shift/reduce conflicts, all of that one
+  // shape. `!itemStart` marks the three shifts — `Pragma`'s `(`,
+  // `ParameterizedType`'s `<`, and the `(` in both parenthesised `AutoKeyword`
+  // arms — and with all three the grammar compiles clean; with any of them
+  // missing lezer-generator reports the corresponding conflict.
+  //
+  // THE TRADE, stated rather than left to be rediscovered: being tightest,
+  // greedy SHIFT always wins. That preserves `Box<T>`, `Tensor<2, 3, Force>`,
+  // `auto(free)`, `auto(seed = 5mm)` and `#pragma(a = 1)`, every one of them
+  // attested in a pinned file. It sacrifices only the mirror image — a
+  // predicate whose FIRST token is `<` (the one-sided RangeExpression arm) or
+  // `(` on the line directly after a param/let/pragma item — a shape attested
+  // in none of the 330 committed `.ri`. All five preserved readings are pinned
+  // by node-name assertions in reifyGrammarCorpus.test.ts, not by error counts,
+  // because a precedence edit reshapes a tree in silence.
+  //
+  // Note this is the OPPOSITE instrument to the one `~poseWhere` uses on a
+  // conflict that looks similar. Precedence is right here only because the
+  // losing reading is unattested; where both readings are committed, collapsing
+  // to one parse would be a regression and an ambiguity marker is the tool.
+  itemStart @left,
   postfix @left,
+  // `@` ad-hoc selector — tree-sitter prec.left(10), between member access
+  // (11, folded into `postfix` here) and index access (9).
+  selector @left,
+  // Value-level `^` — tree-sitter prec.right 8, i.e. TIGHTER than unary (7)
+  // and multiplicative (6). So `-2 ^ 2` is `-(2 ^ 2)` and `2 * 3 ^ 2` is
+  // `2 * (3 ^ 2)`, both pinned by leftOperandOf assertions in the corpus test.
+  // This is the SPACED reading only; the contiguous `m^3` never reaches the
+  // parser, having been consumed whole by the QuantityLiteral token.
+  exponent @right,
   unary @right,
   multiplicative @left,
   additive @left,
@@ -213,7 +1659,20 @@ ReservedWord {
   equality @left,
   and @left,
   or @left,
-  conditional @right
+  kwNot @right,
+  kwAnd @left,
+  kwOr @left,
+  kwImplies @right,
+  range @left,
+  conditional @right,
+  // The two LOOSEST levels: grammar.js gives `lambda_expression` and
+  // `quantifier_expression` prec.right(0) alike, so each body swallows
+  // everything to its right — `|x| a + b * c` is `|x| (a + b * c)`, never
+  // `(|x| a) + b * c`, and `forall v in vs : a and b` binds the same way.
+  // They never compete with each other (different leading tokens), so their
+  // relative order here is arbitrary.
+  quantifier @right,
+  lambda @right
 }
 
 @tokens {
@@ -225,22 +1684,213 @@ ReservedWord {
   blockCommentRest { ![*] blockCommentRest | "*" blockCommentAfterStar }
   blockCommentAfterStar { "/" | ![/*] blockCommentRest | "*" blockCommentAfterStar }
 
-  @precedence { QuantityLiteral, Number, Identifier }
+  // ORDERING IS EVERYTHING HERE, and it is NOT a tie-break list.
+  //
+  // MEASURED: lezer token precedence OVERRIDES longest match. With
+  // `@precedence { A, B }`, input `0xFFmm` where A matches `0xFF` and B matches
+  // all six characters yields `A[0,4]` plus an ERROR node — B never gets a
+  // chance. (Omitting the declaration is not an option either: the generator
+  // hard-fails with "Overlapping tokens … used in same context".)
+  //
+  // That single fact dictates the pair-wise shape below. A bare `RadixLiteral`
+  // placed above `QuantityLiteral` would break `0xFFmm`, which grammar.js
+  // :1484-1497 accepts via quantity_literal's RADIX ARM; placed below it, it
+  // would never fire at all, because `QuantityLiteral` already matches `0xFF`
+  // as `0` + unit `xFF`. So each narrow literal is declared as a PAIR — the
+  // bare token, plus a companion that matches the same literal WITH a trailing
+  // unit and is aliased back to `QuantityLiteral` — with every companion above
+  // every bare token. The longest reading is then also the highest-precedence
+  // one in each case, and the "precedence beats length" rule stops working
+  // against us.
+  @precedence {
+    RadixQuantityLiteral,
+    ImaginaryQuantityLiteral,
+    RadixLiteral,
+    ImaginaryLiteral,
+    QuantityLiteral,
+    Number,
+    Identifier
+  }
 
-  // QuantityLiteral: digits immediately followed by alpha unit (e.g. 80mm, 3.5deg)
-  QuantityLiteral { @digit+ ("." @digit+)? $[a-zA-Z_] $[a-zA-Z0-9_]* }
+  // RadixLiteral: `0xFF`, `0b1010`, `0xDEAD_BEEF`. Upstream produces these from
+  // the RADIX_LITERAL external token (tree-sitter-reify/src/scanner.c) and
+  // aliases them to `number_literal`; a distinct node name is more useful to an
+  // editor, and both style as `t.number`.
+  //
+  // HEX AND BINARY ONLY. The scanner admits `x`/`X` and `b`/`B` as radix
+  // prefixes and returns false for anything else, so `0o17` is a quantity
+  // literal (`0` + unit `o17`), not an octal literal. `_` separators are part
+  // of the run, but a TRAILING `_` is not — hence `("_"? hexDigit)*` rather
+  // than a separator that may dangle.
+  RadixLiteral { hexRun | binRun }
 
-  Number { @digit+ ("." @digit+)? }
+  hexRun { "0" $[xX] hexDigit ("_"? hexDigit)* }
+  binRun { "0" $[bB] binDigit ("_"? binDigit)* }
+  hexDigit { $[0-9a-fA-F] }
+  binDigit { $[01] }
 
-  String { '"' (![\\\"] | "\\" _)* '"' }
+  // The radix arm of grammar.js:1484-1497's quantity_literal — `0xFFmm` is a
+  // quantity whose value happens to be written in hex. Aliased to
+  // `QuantityLiteral` so callers see ONE node name for one concept.
+  //
+  // WHY THE UNIT CLASSES ARE NARROWED. Upstream's scanner consumes radix digits
+  // GREEDILY and only then lets the unit start, so a unit can never begin with
+  // a character the digit run would have eaten. The hex arm therefore excludes
+  // `[0-9a-fA-F]` from the unit's first character, and BOTH arms exclude `_`:
+  // without that, this higher-precedence token would read `0xDEAD_BEEF` as
+  // `0xDEAD` + unit `_BEEF`, silently turning a corpus-attested radix literal
+  // (examples/radix_literals.ri:17) into a quantity.
+  RadixQuantityLiteral[@name=QuantityLiteral] {
+    hexRun hexUnitStart $[a-zA-Z0-9_]* unitPow? (unitOp unitAtom)* |
+    binRun $[a-zA-Z] $[a-zA-Z0-9_]* unitPow? (unitOp unitAtom)*
+  }
+
+  hexUnitStart { $[g-zG-Z] }
+
+  // ImaginaryLiteral: `4j`, `4.1j`, `1.5e-3j` (grammar.js:1459-1477).
+  ImaginaryLiteral { numberRun "j" }
+
+  // The `j`-unit carve-out, kept faithfully. grammar.js:1462-1467 records that
+  // the scanner refuses the imaginary reading when a word character follows the
+  // `j`, so `2joule` and `jk` stay quantity literals — capital `J` never
+  // reaches here at all, since the imaginary suffix is lowercase-only.
+  ImaginaryQuantityLiteral[@name=QuantityLiteral] {
+    numberRun "j" $[a-zA-Z0-9_]+ unitPow? (unitOp unitAtom)*
+  }
+
+  // Upstream's number_literal: /\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/
+  // (grammar.js:1626). Used for the imaginary literals above and for `Number`.
+  numberRun {
+    @digit+ ("_"? @digit+)* ("." @digit+ ("_"? @digit+)*)? ($[eE] $[+\-]? @digit+ ("_"? @digit+)*)?
+  }
+
+  // QuantityLiteral: digits immediately followed by a contiguous UNIT
+  // EXPRESSION — `80mm`, `3.5deg`, `7850kg/m^3`, `0.5W/(m*K)`, `1m^-1`.
+  //
+  // WHY THIS IS A TOKEN AND NOT A PARSE RULE. grammar.js:1508-1533 models
+  // `unit_expr` as a parse rule, but polices it with a C external scanner
+  // (`_unit_expr_start`, `_unit_mul_op`, `_unit_div_op`, `token.immediate('^')`)
+  // that fires only when the operator is IMMEDIATELY adjacent and followed by
+  // something that can start a unit. Lezer has no external scanner, so
+  // transliterating the rule structurally would drop the contiguity constraint
+  // entirely and mis-parse whitespace-separated division as a unit. Contiguity
+  // is intrinsically a lexer property in both systems — `token.immediate` IS a
+  // lexer directive — so keeping it in the token is the faithful translation,
+  // not a shortcut.
+  //
+  // THE GREEDINESS BOUND. `unitAtom` must begin with `[a-zA-Z_(]`, exactly as
+  // the upstream scanner requires. That is what stops `25USD/1kg` being
+  // swallowed whole: `1` is a digit, so the token ends at `25USD` and `/ 1kg`
+  // is left to the expression grammar as a binary division. Pinned by three
+  // `leftOperandOf` assertions, which are needed because the greedy parse has
+  // zero error nodes — it would be wrong, not broken.
+  QuantityLiteral { @digit+ ("." @digit+)? unitName unitPow? (unitOp unitAtom)* }
+
+  unitName { $[a-zA-Z_] $[a-zA-Z0-9_]* }
+  unitPow { "^" "-"? @digit+ }
+
+  // `·` IS U+00B7 MIDDLE DOT, and it is admitted HERE AND NOWHERE ELSE.
+  //
+  // That placement is the whole safety argument, not a stylistic choice. There
+  // is no general `·` operator in Reify, and this widening cannot invent one:
+  // `unitOp` is reachable only from inside `QuantityLiteral` (and its radix and
+  // imaginary companions), whose shape demands a `unitAtom` after every
+  // `unitOp`, and `unitAtom` must begin with `[a-zA-Z_(]`. So `5 · 3` and
+  // `5N· m` remain error nodes for free — which is exactly the guard κ spells
+  // out in C as `is_unit_start` (tree-sitter-reify/src/scanner.c:101), reached
+  // structurally here instead of procedurally. Both boundary rows are pinned by
+  // tests rather than left to that argument.
+  //
+  // THE OTHER HALF IS SOMEONE ELSE'S, AND IT IS STILL OUTSTANDING. The
+  // tree-sitter + compiler side is leaf κ of
+  // docs/prds/v0_6/angle-units-surface-convergence.md, task #5784 (pending),
+  // whose scope is `scanner.c` and the compiler and does NOT include this file.
+  // This is therefore not duplicated work but the GUI half landing first,
+  // deliberately: PRD decision 7a is ratified, so the SURFACE is settled and
+  // only the upstream implementation is outstanding.
+  //
+  // κ's measured contract is `lexer->lookahead == 0xB7` — a DECODED CODEPOINT,
+  // not the UTF-8 byte pair `0xC2 0xB7` that the PRD prose describes. Cited
+  // here so the two halves cannot drift apart on what "accepts U+00B7" means:
+  // this rule matches the same single codepoint.
+  //
+  // Why it matters at all: `Display for DimensionVector`
+  // (crates/reify-core/src/dimension.rs) joins base-unit parts with U+00B7, so
+  // `reify eval` prints `7850 kg·m^-3` — a string the language could not read
+  // back. Round-tripping that output is the point.
+  unitOp { "*" | "/" | "\u{b7}" }
+  unitAtom { unitName unitPow? | unitParen }
+
+  // Parenthesised denominator. The corpus attests exactly two shapes, both in
+  // examples/drivebelt_trait_bounds.ri:85-86 — `30.0W/(m*K)` and `880.0J/(kg*K)`.
+  // Deliberately ONE level deep and non-recursive — lezer token rules compile
+  // to a DFA, so the centre-embedded `"(" unitExpr ")"` that upstream can
+  // express is not a regular language and would not compile. Every
+  // parenthesised unit in the committed corpus is exactly this shape.
+  unitParen { "(" unitName unitPow? (unitOp unitName unitPow?)* ")" }
+
+  // Widened to upstream's full number_literal shape (separators + exponent).
+  //
+  // HONEST NOTE ON WHAT THIS DOES NOT BUY. `QuantityLiteral` sits ABOVE
+  // `Number` and matches `1_000_000` as `1` + unit `_000_000` (and `1.0e6` as
+  // `1.0` + unit `e6`), so those still lex as quantities — the widening is
+  // inert for them. Lifting `Number` above `QuantityLiteral` is NOT the fix:
+  // precedence beats length there too, so `80mm` would lex as `80` + a dangling
+  // `mm` — and the ATTESTED `1_000mm` (examples/numeric_separators.ri:17) is
+  // the same trap with a separator, since a separator-aware `Number` ordered
+  // first takes `1_000` and strands `mm`. The companion-token trick used for
+  // radix and imaginary literals above would survive that, but only by
+  // excluding `_` from the start of its unit class — otherwise `1_000_000`
+  // splits back into `1_000` + unit `_000`. A unit class that cannot start
+  // with `_` turns a `5_myunit`-shaped quantity into an error node. That shape
+  // is HYPOTHETICAL, not attested: a sweep of all 330 committed `.ri` under
+  // examples/ and tests/prd-gate/fixtures/ for `[0-9]+(\.[0-9]+)?_[A-Za-z]`
+  // returns zero non-comment hits, and every `_`-in-number attestation
+  // (numeric_separators.ri:11,14,17) has digits after the `_`. So the trade is
+  // real but it is priced against `1_000mm`, which IS attested and IS pinned.
+  // Left as a divergence, deliberately; both halves — the separator form and
+  // the `1.0e6` exponent form — are pinned by tests so they stay visible.
+  Number { numberRun }
+
+  // The two string tokens. They are deliberately NON-OVERLAPPING — see the
+  // `String` rule above for the measured reason a whole-string token cannot
+  // coexist with the `"` delimiter of an interpolated string.
+  stringQuote { '"' }
+
+  // A run of literal bytes inside a string. Doubled braces are CONTENT
+  // (scanner.c STRING_CONTENT), a single brace stops the run and is left to
+  // `Interpolation`. The `@precedence` entry below is what makes that split
+  // work: `{{` must beat the `"{"` delimiter token, while a lone `{` falls
+  // through to it because this token cannot match there at all.
+  StringChunk { (![\\\"{}] | "\\" _ | "{{" | "}}")+ }
 
   Identifier { $[a-zA-Z_] $[a-zA-Z0-9_]* }
 
-  @precedence { "<=", "<" }
+  // ONE ordering, not two: `<->` beats `<-` beats `<=` beats `<`. Splitting it
+  // into a separate `{ "<->", "<-" }` block alongside the original
+  // `{ "<=", "<" }` would leave the two arrow tokens unordered against `<=`,
+  // and `connect a <-> b` would lex as `<` `-` `>`.
+  @precedence { "<->", "<-", "<=", "<" }
   @precedence { ">=", ">" }
   @precedence { "!=", "!" }
+  // `->` must win over `-` and `::` over `:`, else the longer token is never
+  // formed (arrow types and qualified types both become error nodes).
+  @precedence { "->", "-" }
+  @precedence { "::", ":" }
   @precedence { BlockComment, LineComment, "/" }
+  // Inside a string body, `{{` is content and a single `{` opens a hole. Same
+  // for `}}` versus the closing delimiter of a hole.
+  @precedence { StringChunk, "{", "}" }
 
-  "(" ")" "{" "}" "." "," ":" "="
-  "||" "&&" "==" "+" "-" "*"
+  // `=>` must win over `=` for the same reason `->` wins over `-`.
+  @precedence { "=>", "=" }
+  // Without this, `..` lexes as two member-access `.` and every range becomes
+  // an error node — the same trap `->`/`::` fell into above.
+  @precedence { "..<", "..", "." }
+
+  // `;` terminates a fn-body let binding (FnLetBinding) and appears nowhere
+  // else in the language.
+  "(" ")" "{" "}" "[" "]" "." "," ":" ";" "=" "#"
+  "||" "&&" "==" "+" "-" "*" "^" "|" "@"
+  "::" "->" "<-" "<->" "=>" "<" ">" ".." "..<"
 }

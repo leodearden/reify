@@ -92,7 +92,7 @@
 //! `assemble_global_stiffness` -> `apply_dirichlet_row_elimination` ->
 //! `solve_cg`) is identical to the rest of the FEA validation suite.
 
-use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AssemblyElement, AssemblyMode, BudgetReason, CgResult,
@@ -500,8 +500,10 @@ fn volume_mesh_from_nodes_conns(nodes: &[[f64; 3]], conns: &[[usize; 4]]) -> Vol
     }
     VolumeMesh {
         vertices,
-        tet_indices,
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }
@@ -531,13 +533,14 @@ fn volume_mesh_from_nodes_conns(nodes: &[[f64; 3]], conns: &[[usize; 4]]) -> Vol
 /// `compute_zz_indicator`) supports P1 tets only.
 fn nodes_conns_from_volume_mesh(volume_mesh: &VolumeMesh) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
     assert_eq!(
-        volume_mesh.element_order,
-        ElementOrderTag::P1,
+        volume_mesh.element_order(),
+        Some(ElementOrderTag::P1),
         "FeaAdaptiveProblem supports P1 tets only",
     );
     let n_verts = volume_mesh.vertices.len() / 3;
     let raw_conns: Vec<[usize; 4]> = volume_mesh
-        .tet_indices
+        .tet_indices()
+        .expect("checked P1 above")
         .chunks_exact(4)
         .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize, c[3] as usize])
         .collect();
@@ -1087,7 +1090,12 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
         "a bending load state must Dörfler-mark at least one element",
     );
 
-    let n_elements_before = problem.volume_mesh.tet_indices.len() / 4;
+    let n_elements_before = problem
+        .volume_mesh
+        .tet_indices()
+        .expect("FeaAdaptiveProblem supports P1 tets only")
+        .len()
+        / 4;
     let n_dofs_before = 3 * (problem.volume_mesh.vertices.len() / 3);
     let (nodes_before, conns_before) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
 
@@ -1098,7 +1106,12 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
         .refine(&marked)
         .expect("refine must succeed when GMSH_AVAILABLE");
 
-    let n_elements_after = problem.volume_mesh.tet_indices.len() / 4;
+    let n_elements_after = problem
+        .volume_mesh
+        .tet_indices()
+        .expect("FeaAdaptiveProblem supports P1 tets only")
+        .len()
+        / 4;
     let n_dofs_after = 3 * (problem.volume_mesh.vertices.len() / 3);
     assert!(
         n_elements_after > n_elements_before,

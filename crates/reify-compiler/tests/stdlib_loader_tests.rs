@@ -1,14 +1,14 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
-use reify_compiler::stdlib_loader;
 use reify_ast::Pragma;
-use reify_test_support::{
-    CompiledModuleBuilder, EXPECTED_GEOMETRY_SUPERTRAITS, EXPECTED_GEOMETRY_TRAITS,
-    EXPECTED_MATERIAL_TRAITS, collect_errors,
-    collect_value_ref_members, steel_elastic_source, steel_strong_source,
-};
+use reify_compiler::stdlib_loader;
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction};
+use reify_test_support::{
+    CompiledModuleBuilder, EXPECTED_GEOMETRY_SUPERTRAITS, EXPECTED_GEOMETRY_TRAITS,
+    EXPECTED_MATERIAL_TRAITS, collect_errors, collect_value_ref_members, steel_elastic_source,
+    steel_strong_source,
+};
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -66,7 +66,8 @@ fn std_determinacy_purposes_is_last_stdlib_module() {
     let last = modules.last().unwrap();
     let path_str = format!("{}", last.path);
     assert_eq!(
-        path_str, "std/determinacy/purposes",
+        path_str,
+        "std/determinacy/purposes",
         "std.determinacy.purposes must be the LAST stdlib module compiled \
          (invariant: no later stdlib module may inherit its pub purposes \
          via the sequential merge). \
@@ -516,12 +517,17 @@ fn prelude_modules_carry_no_prelude_pragma() {
     // `std.materials.appearance` (an inter-stdlib dependency). Per the
     // invariant above, a module with an inter-stdlib dependency must NOT
     // carry `#no_prelude` and must NOT be a bootstrap target.
+    // NOTE: `std/result` was ADDED to this list by task B-α (#4035). It
+    // declares only the generic enum `Result<T, E> { Ok{value:T}, Err{error:E} }`,
+    // which references nothing but its own type params — zero inter-stdlib
+    // dependencies, same as `std/option_recovery`.
     let targets = [
         "std/units",
         "std/analysis",
         "std/tolerancing",
         "std/fields",
         "std/option_recovery",
+        "std/result",
     ];
 
     assert_no_prelude_pragma_invariant_bidirectional(modules, &targets);
@@ -616,7 +622,8 @@ fn compile_with_prelude_injects_trait_constraints() {
     let ge_expr = &ge_constraint.unwrap().expr;
     let refs = collect_value_ref_members(ge_expr);
     assert!(
-        refs.iter().any(|m| m.as_str() == "ultimate_tensile_strength"),
+        refs.iter()
+            .any(|m| m.as_str() == "ultimate_tensile_strength"),
         "expected 'ultimate_tensile_strength' ValueRef in >= constraint, got refs: {:?}",
         refs
     );
@@ -875,5 +882,321 @@ structure def S {
             .iter()
             .map(|f| &f.name)
             .collect::<Vec<_>>()
+    );
+}
+
+// ─── task 5496 (stdlib-namespace β): NS-P2 intra-stdlib collision gate ───────
+//
+// PRD docs/prds/v0_6/stdlib-namespace.md §7 boundary #3. The observable the PRD
+// asks for is "the stdlib BUILD fails", not "a helper returns findings", so
+// these tests drive a synthetic source set through
+// `stdlib_loader::build_stdlib_modules` — the exact function
+// `load_stdlib()` delegates to. The stdlib is `include_str!`-embedded, so no
+// user-level `.ri` fixture can inject a duplicate stdlib module; a synthetic
+// source set through the production entry point is the only way to observe the
+// gate fire.
+
+/// Drive `build_stdlib_modules` on `sources` and return the panic message.
+///
+/// Panics (failing the test) if the build did NOT panic, or if the payload is
+/// neither `String` nor `&'static str`. Downcast idiom mirrors
+/// `multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic`
+/// above.
+fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stdlib_loader::build_stdlib_modules(sources);
+    }));
+    let err = result.expect_err("build_stdlib_modules should have panicked, but returned Ok");
+    if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = err.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else {
+        panic!("panic payload was neither String nor &'static str");
+    }
+}
+
+/// Assert that building `sources` panics with the NS-P2 collision message, and
+/// that the message names the kind, the colliding name, and BOTH modules.
+///
+/// Message-CONTENT matching is the point. A bare "it panicked" assertion would
+/// pass vacuously on any stdlib build failure — a cycle, an Error diagnostic, an
+/// unwrap deep inside the compiler — and would therefore keep passing if the
+/// collision scan were deleted outright.
+#[track_caller]
+fn assert_collision_panic(
+    sources: &[(&str, &str)],
+    kind: &str,
+    name: &str,
+    module_a: &str,
+    module_b: &str,
+) {
+    let msg = stdlib_build_panic_message(sources);
+    for needle in [NS_P2_PANIC_ANCHOR, kind, name, module_a, module_b] {
+        assert!(
+            msg.contains(needle),
+            "NS-P2 collision panic should name {needle:?}; got:\n{msg}"
+        );
+    }
+}
+
+/// Stable anchor substring identifying the NS-P2 code path. Kept as a constant
+/// so every collision test agrees on it and a reworded message is a one-line fix.
+const NS_P2_PANIC_ANCHOR: &str = "intra-stdlib pub-name collision";
+
+/// Boundary #3: two stdlib modules declaring the same `structure def` name must
+/// fail the stdlib BUILD, with a message naming both modules.
+///
+/// The synthetic set reproduces exactly the collision the real corpus carried
+/// until this task's rename: `structure def Mode` in two modules, with
+/// DIFFERENT member sets, which is what made the pre-state dangerous (the two
+/// resolution phases silently disagreed about the winner).
+///
+/// Both modules carry `#no_prelude` so they compile against builtins only. That
+/// matters for the same reason it matters in the bootstrap-invariant tests
+/// above: without it the sources would draw Error diagnostics and the build's
+/// pre-existing Error-diagnostic assert would fire FIRST, so the test would
+/// observe the wrong panic and pass for the wrong reason.
+#[test]
+fn stdlib_build_with_injected_duplicate_structure_name_panics_naming_both_modules() {
+    const DUP_A: &str = "#no_prelude\nstructure def Mode {\n    param eigenvalue : Real\n}\n";
+    const DUP_B: &str = "#no_prelude\nstructure def Mode {\n    param frequency : Real\n}\n";
+    let sources: &[(&str, &str)] = &[("std.test.dup_a", DUP_A), ("std.test.dup_b", DUP_B)];
+
+    assert_collision_panic(
+        sources,
+        "structure",
+        "Mode",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+/// The positive counterpart: the REAL stdlib must still build. This is what
+/// proves the gate is wired into the production path rather than only reachable
+/// from a synthetic test set — if the scan were too coarse (kind-agnostic, or
+/// keying functions by name alone), this test goes red on the live 47-file
+/// corpus while the injected-duplicate test above stays green.
+#[test]
+fn real_stdlib_build_is_collision_free() {
+    let modules = stdlib_loader::load_stdlib();
+    assert!(
+        !modules.is_empty(),
+        "load_stdlib() must return modules; the NS-P2 gate must not fire on the real corpus"
+    );
+
+    let paths: Vec<String> = modules.iter().map(|m| m.path.to_string()).collect();
+    for expected in ["std/solver/buckling", "std/modal/analysis"] {
+        assert!(
+            paths.iter().any(|p| p == expected),
+            "real stdlib should still contain {expected}; got: {paths:?}"
+        );
+    }
+}
+
+// ─── task 5496: NS-P3 kind uniformity + the live-corpus carve-outs ───────────
+//
+// Every case below is a two-module `#no_prelude` synthetic set driven through
+// `build_stdlib_modules`, the same production entry point boundary #3 uses.
+//
+// The NEGATIVE cases (g)/(h)/(i) are the load-bearing half. Each mirrors a
+// declaration that is LIVE in the real stdlib as of 2026-07-28, so each is a
+// guard against a future implementer coarsening the scan and detonating the
+// real stdlib build:
+//
+//   (g) cross-module function OVERLOADS — `unwrap_or` (option_recovery.ri:37 vs
+//       result.ri:52), `or_else` (:42 vs :57), `fallback` (:56 vs :75). Three
+//       real pairs. Keying functions by name alone panics the real build.
+//   (h) cross-KIND name reuse — `structure def Planar` (kinematic.ri:163) vs
+//       `trait Planar {}` (geometry_traits.ri:56).
+//   (i) ASSOCIATED types are not module-level type aliases — `type MotionValue`
+//       is declared in `trait HasMotion` (kinematic.ri:110) and bound in
+//       `Prismatic` (:133), `Revolute` (:151) and `Coupling` (:198). A syntactic
+//       `^\s*(pub )?type <name>` scan sees four `MotionValue`s and panics on day
+//       one; reading `CompiledModule.type_aliases` (module-level only) does not.
+//
+// Deliberately NOT covered: INTRA-module duplicates. `displacement_at` x2
+// (modal_analysis_fns.ri:153,193), `solve_elastic_static` x3
+// (solver_elastic.ri:727,768,809) and `solve_load_cases` x2
+// (fea_multi_case.ri:653,700) are all same-module overloads, out of a
+// cross-module scan's reach by construction, and remain the business of the
+// per-module duplicate path at ctx.rs:157.
+
+/// Assert that building `sources` does NOT panic — the negative counterpart of
+/// [`assert_collision_panic`].
+///
+/// `catch_unwind` rather than a bare call so a failure reports the panic message
+/// (which distinguishes "the scan is too coarse" from "the synthetic source
+/// failed to compile") instead of just aborting the test binary's thread.
+#[track_caller]
+fn assert_no_collision_panic(sources: &[(&str, &str)], why: &str) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stdlib_loader::build_stdlib_modules(sources);
+    }));
+    if let Err(err) = result {
+        let msg = err
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        panic!("stdlib build should have accepted {why}; got:\n{msg}");
+    }
+}
+
+/// Build a two-module source set from two `#no_prelude` bodies.
+fn two_modules<'a>(a: &'a str, b: &'a str) -> [(&'a str, &'a str); 2] {
+    [("std.test.dup_a", a), ("std.test.dup_b", b)]
+}
+
+// ─── (a)-(f): every remaining kind must collide ──────────────────────────────
+
+#[test]
+fn duplicate_enum_name_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub enum Grade { A, B }\n",
+        "#no_prelude\npub enum Grade { C, D }\n",
+    );
+    assert_collision_panic(
+        &sources,
+        "enum",
+        "Grade",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+#[test]
+fn duplicate_trait_name_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\ntrait Foo { }\n",
+        "#no_prelude\ntrait Foo { }\n",
+    );
+    assert_collision_panic(&sources, "trait", "Foo", "std.test.dup_a", "std.test.dup_b");
+}
+
+#[test]
+fn duplicate_unit_symbol_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub unit zz : Length = 1.0\n",
+        "#no_prelude\npub unit zz : Length = 2.0\n",
+    );
+    assert_collision_panic(&sources, "unit", "zz", "std.test.dup_a", "std.test.dup_b");
+}
+
+#[test]
+fn duplicate_top_level_type_alias_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub type Alias = Real\n",
+        "#no_prelude\npub type Alias = Int\n",
+    );
+    assert_collision_panic(
+        &sources,
+        "type alias",
+        "Alias",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+#[test]
+fn duplicate_constraint_def_name_across_modules_fails_the_stdlib_build() {
+    let body = "#no_prelude\npub constraint def Bounded {\n    param v : Real\n    constraint v >= 0\n}\n";
+    let sources = two_modules(body, body);
+    assert_collision_panic(
+        &sources,
+        "constraint def",
+        "Bounded",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+#[test]
+fn duplicate_purpose_name_across_modules_fails_the_stdlib_build() {
+    let body = "#no_prelude\npub purpose ready(subject : Structure) {\n    constraint forall p in subject.geometric_params: determined(p)\n}\n";
+    let sources = two_modules(body, body);
+    assert_collision_panic(
+        &sources,
+        "purpose",
+        "ready",
+        "std.test.dup_a",
+        "std.test.dup_b",
+    );
+}
+
+/// (f) Same function name AND identical signature in two modules is a genuine
+/// collision — one silently shadows the other today (lib.rs first-wins, with a
+/// comment deferring to "stdlib-level review"; this gate replaces that).
+///
+/// This case is also what forbids keying functions by `content_hash`: the two
+/// bodies below differ, so a body-derived key would hash them apart and miss
+/// the collision entirely — exactly the hole this task closes.
+#[test]
+fn duplicate_function_with_identical_signature_across_modules_fails_the_stdlib_build() {
+    let sources = two_modules(
+        "#no_prelude\npub fn twin(x : Real) -> Real {\n    x\n}\n",
+        "#no_prelude\npub fn twin(x : Real) -> Real {\n    x + 1.0\n}\n",
+    );
+    assert_collision_panic(&sources, "function", "twin", "std.test.dup_a", "std.test.dup_b");
+}
+
+// ─── (g)-(i): the three carve-outs the LIVE stdlib depends on ────────────────
+
+/// (g) Cross-module function OVERLOADS must be accepted. Mirrors `unwrap_or` /
+/// `or_else` / `fallback`, each declared in both `option_recovery.ri` and
+/// `result.ri` with different first-parameter types.
+///
+/// NS-P3 keys functions by name + SIGNATURE (param types in order, plus return
+/// type). A name-only key panics the real stdlib build on three separate pairs.
+#[test]
+fn cross_module_function_overloads_are_accepted() {
+    let sources = two_modules(
+        "#no_prelude\npub fn recover(x : Real, dflt : Real) -> Real {\n    x\n}\n",
+        "#no_prelude\npub fn recover(x : Int, dflt : Real) -> Real {\n    dflt\n}\n",
+    );
+    assert_no_collision_panic(
+        &sources,
+        "cross-module function overloads differing in parameter type \
+         (live: unwrap_or/or_else/fallback in option_recovery.ri vs result.ri)",
+    );
+}
+
+/// (h) Cross-KIND name reuse must be accepted — per-kind namespaces. Mirrors
+/// `structure def Planar` (kinematic.ri:163) and `trait Planar {}`
+/// (geometry_traits.ri:56). A kind-agnostic scan would force an out-of-scope
+/// rename of `Planar`.
+#[test]
+fn cross_kind_name_reuse_is_accepted() {
+    let sources = two_modules(
+        "#no_prelude\nstructure def Planar {\n    param v : Real\n}\n",
+        "#no_prelude\ntrait Planar { }\n",
+    );
+    assert_no_collision_panic(
+        &sources,
+        "the same name used for a structure in one module and a trait in another \
+         (live: kinematic.ri Planar vs geometry_traits.ri Planar)",
+    );
+}
+
+/// (i) ASSOCIATED types are members of their template, not module-level
+/// aliases, so the same associated-type name in two modules must be accepted.
+/// Mirrors `type MotionValue` in `trait HasMotion` (kinematic.ri:110) and its
+/// bindings in `Prismatic` / `Revolute` / `Coupling`.
+///
+/// This is the case that makes "scan the materialized surface, not the syntax"
+/// enforceable rather than advisory: a syntactic `^\s*(pub )?type <name>` scan
+/// reports four duplicate `MotionValue`s and panics the real stdlib build
+/// immediately, while `CompiledModule.type_aliases` holds only module-level
+/// aliases and correctly reports none.
+#[test]
+fn associated_types_are_not_module_level_type_aliases() {
+    let sources = two_modules(
+        "#no_prelude\ntrait HasMotion {\n    type MotionValue\n}\n",
+        "#no_prelude\ntrait AlsoHasMotion {\n    type MotionValue\n}\n",
+    );
+    assert_no_collision_panic(
+        &sources,
+        "the same ASSOCIATED type name declared inside two different traits \
+         (live: MotionValue in kinematic.ri HasMotion/Prismatic/Revolute/Coupling)",
     );
 }

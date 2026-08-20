@@ -1,0 +1,8 @@
+// B-α #4035 end-to-end fixture: `Ok { value: 5mm }` against the PRELUDE
+// Result<T, E> enum, with NO inline `enum Result` declared. Task γ #4031's
+// payload-driven inference binds T = Length from the supplied 5mm -> no
+// field-set/type diagnostics -> `reify check` exits 0 and reports
+// "All constraints satisfied" (the structure declares no constraints).
+structure def Widget {
+    let r = Ok { value: 5mm }
+}

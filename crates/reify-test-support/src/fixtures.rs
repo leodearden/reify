@@ -11,7 +11,7 @@ use crate::builders::{
 
 /// The canonical bracket source code for end-to-end testing.
 pub fn bracket_source() -> &'static str {
-    r#"structure Bracket {
+    r#"structure def Bracket {
     param width: Length = 80mm
     param height: Length = 100mm
     param thickness: Length = 5mm
@@ -1354,7 +1354,7 @@ mod tests {
     #[test]
     fn bracket_source_is_well_formed() {
         let source = bracket_source();
-        assert!(source.contains("structure Bracket"));
+        assert!(source.contains("structure def Bracket"));
         assert!(source.contains("param width"));
         assert!(source.contains("constraint thickness > 2mm"));
         assert!(source.contains("let body = box("));

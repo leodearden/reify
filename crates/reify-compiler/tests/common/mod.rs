@@ -251,8 +251,8 @@ pub fn assert_trait_constraint_binop(
     expected_rhs: f64,
     rhs_epsilon: f64,
 ) {
-    use reify_compiler::DefaultKind;
     use reify_ast::ExprKind;
+    use reify_compiler::DefaultKind;
 
     let constraint_default = trait_def
         .defaults
@@ -339,9 +339,7 @@ pub fn assert_trait_constraint_binop(
                 // (1e-3, 1e6), so pass `expected_rhs` as the coefficient, not
                 // the SI value, or this assertion will spuriously mismatch.
                 ExprKind::QuantityLiteral { value, .. } => break *value,
-                ExprKind::BinOp { op, left, .. }
-                    if op.as_str() == "*" || op.as_str() == "/" =>
-                {
+                ExprKind::BinOp { op, left, .. } if op.as_str() == "*" || op.as_str() == "/" => {
                     cursor = left;
                 }
                 other => panic!(

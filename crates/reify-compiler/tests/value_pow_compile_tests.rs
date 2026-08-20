@@ -22,9 +22,9 @@
 mod common;
 
 use common::expect_binop;
-use reify_test_support::{compile_source, errors_only};
 use reify_core::{DimensionVector, Type};
 use reify_ir::BinOp;
+use reify_test_support::{compile_source, errors_only};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -66,7 +66,9 @@ fn pow_5mm_2_result_type_is_area() {
     let expr = compile_let_expr("5mm ^ 2");
     assert_eq!(
         expr.result_type,
-        Type::Scalar { dimension: DimensionVector::AREA },
+        Type::Scalar {
+            dimension: DimensionVector::AREA
+        },
         "5mm ^ 2 result_type should be Scalar{{AREA}}, got {:?}",
         expr.result_type
     );

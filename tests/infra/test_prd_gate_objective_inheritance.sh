@@ -9,8 +9,12 @@
 # all-PASS: these are PASSING capability probes (the W_ codes are implemented).
 #
 # Skip-guard: requires a pre-built reify binary (REIFY_BIN env var, or
-# target/release/reify, or target/debug/reify).  No tree-sitter guard needed
-# — these are `check` probes only.
+# target/release/reify, or target/debug/reify), PLUS a target/.reify-bin-sha
+# freshness check proving the resolved binary's build-time HEAD matches the
+# current tree (task #5133 — see scripts/reify-bin-freshness.sh; guards
+# against a cross-candidate leftover binary in the shared _merge-verify warm
+# lane). An explicit REIFY_BIN handoff bypasses the freshness check. No
+# tree-sitter guard needed — these are `check` probes only.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob, and runs
 # under the merge --scope all gate (no verify-pipeline-infra-tests.txt edit
@@ -30,19 +34,15 @@ source "$SCRIPT_DIR/test_helpers.sh"
 echo "=== test_prd_gate_objective_inheritance ==="
 
 # ── Toolchain skip-guard ───────────────────────────────────────────────────
-_REIFY_BIN=""
-if [ -n "${REIFY_BIN:-}" ]; then
-    _REIFY_BIN="${REIFY_BIN}"
-elif [ -f "$REPO_ROOT/target/release/reify" ]; then
-    _REIFY_BIN="$REPO_ROOT/target/release/reify"
-elif [ -f "$REPO_ROOT/target/debug/reify" ]; then
-    _REIFY_BIN="$REPO_ROOT/target/debug/reify"
-fi
-
-if [ -z "$_REIFY_BIN" ]; then
-    echo "SKIP: reify binary not built — need target/{release,debug}/reify or REIFY_BIN"
-    exit 0
-fi
+# Binary discovery+freshness (task #5133) lives in reify-bin-freshness.sh: it
+# refuses (clean SKIP) a resolved binary whose target/.reify-bin-sha sidecar
+# is absent or doesn't match HEAD — provenance unproven, possibly a
+# cross-candidate leftover from a sibling merge candidate in the shared
+# _merge-verify warm lane. An explicit REIFY_BIN handoff bypasses this and is
+# trusted outright.
+source "$REPO_ROOT/scripts/reify-bin-freshness.sh"
+resolve_trusted_reify_bin "$REPO_ROOT" || { echo "SKIP: $REIFY_BIN_SKIP_REASON"; exit 0; }
+_REIFY_BIN="$REIFY_BIN_RESOLVED"
 
 PROBE_SET="$REPO_ROOT/tests/prd-gate/objective-inheritance-probe-set.json"
 

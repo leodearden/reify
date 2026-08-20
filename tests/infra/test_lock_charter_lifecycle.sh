@@ -85,6 +85,15 @@ _lcl_classify_rc="$LCL_GUARD_RC"
 lcl_run_guard check "crates/reify-eval/src/"
 assert "row 3b: classify+check agree on exit code for dir" test "$LCL_GUARD_RC" -eq "$_lcl_classify_rc"
 assert "row 3b: classify+check produce byte-identical REJECT verdict" test "$LCL_GUARD_OUT" = "$_lcl_classify_out"
+# (c) --list-extensionless equals the canonical α/γ shared extensionless vector
+# (dark_factory:3248 mirror).  Second of the two vectors the guard now pins; the
+# reference lives in the harness lib for the same reason 3a's does — a stable
+# comparand independent of the script under test.
+_lcl_canonical_extless="$(lcl_canonical_extensionless)"
+lcl_run_guard --list-extensionless
+assert "row 3c: --list-extensionless exits 0" test "$LCL_GUARD_RC" -eq 0
+assert "row 3c: --list-extensionless matches canonical α/γ extensionless vector" \
+    test "$LCL_GUARD_OUT" = "$_lcl_canonical_extless"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Live skip-guard + MCP curl client contract

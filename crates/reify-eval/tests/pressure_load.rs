@@ -12,7 +12,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::ValueCellId;
+use reify_core::{Severity, ValueCellId};
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
@@ -29,7 +29,7 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 /// task 3544 step-1: bare `PressureLoad()` constructor lowers to a
 /// `Value::StructureInstance` whose `type_name` is `"PressureLoad"` and whose
 /// fields carry the three declared defaults: `direction = "normal"`,
-/// `face = ""`, `magnitude = 0.0`.
+/// `face = none` (Option<FaceSelector> = none — task 4370), `magnitude = 0.0`.
 ///
 /// RED before step-2 declares `structure def PressureLoad : Load { ... }` in
 /// `crates/reify-compiler/stdlib/fea_multi_case.ri`; source-level `PressureLoad(...)`
@@ -67,11 +67,12 @@ structure def PressureLoadFixture {
                 "PressureLoad.direction default must be \"normal\"; fields: {:?}",
                 data.fields
             );
-            // face default = ""
+            // face default = none (Option<FaceSelector> = none — task 4370
+            // migrates PressureLoad.face from String to Option<FaceSelector>)
             assert_eq!(
                 field(&data.fields, "face"),
-                Some(&Value::String(String::new())),
-                "PressureLoad.face default must be \"\"; fields: {:?}",
+                Some(&Value::Option(None)),
+                "PressureLoad.face default must be none (Value::Option(None)); fields: {:?}",
                 data.fields
             );
             // magnitude default = 0.0
@@ -198,13 +199,20 @@ structure def BadUsage {
 "#;
 
     let compiled = compile_source_with_stdlib(SOURCE);
-    let errors = collect_errors(&compiled.diagnostics);
+    // task 5302 α: ctor-site trait conformance (the `sub =` path) now emits at
+    // Severity::Warning under the CTOR_FIELD_CONFORMANCE_SEVERITY knob, not Error.
+    // Filter warnings (was collect_errors). Diagnostic code/message unchanged.
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
     assert!(
-        errors
+        warnings
             .iter()
             .any(|d| d.message.contains("does not conform to trait") && d.message.contains("Load")),
         "NotALoad must be rejected for a Load-typed param with a 'does not conform \
-         to trait Load' error (empty-marker trait still enforces nominal identity); \
-         got errors: {errors:?}"
+         to trait Load' warning (empty-marker trait still enforces nominal identity); \
+         got warnings: {warnings:?}"
     );
 }

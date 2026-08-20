@@ -319,8 +319,8 @@ structure def PointLoad : Load {
     // load is `force * direction` component-wise (see elastic_static.rs
     // `extract_loads`); callers are expected to supply a unit vector so that
     // `force` retains its physical magnitude meaning.  Non-unit vectors
-    // silently scale the applied force by |direction| — e.g. [0, 0, -2]
-    // doubles the -Z force.  Default [0, 0, -1] (−Z, the canonical
+    // silently scale the applied force by |direction| — e.g. vec3(0, 0, -2)
+    // doubles the -Z force.  Default vec3(0, 0, -1) (−Z, the canonical
     // bending/gravity direction) preserves backward compatibility — a bare
     // PointLoad() contributes [0, 0, -force], byte-identical to the pre-4245
     // hardcoded -Z path.
@@ -328,19 +328,20 @@ structure def PointLoad : Load {
     // `direction` is declared LAST on purpose: structure-def constructors bind
     // arguments POSITIONALLY (declaration order), so existing call sites that
     // pass `PointLoad(point: ..., force: ...)` stay correct, and directional
-    // callers append `PointLoad(point: ..., force: ..., direction: [...])`
+    // callers append `PointLoad(point: ..., force: ..., direction: vec3(...))`
     // (task 3015's non-colinear superposition). Inserting `direction` first
     // would shift `point`/`force` and silently mis-bind every existing caller.
     //
-    // `direction` stays `List<Real>` — NOT `Vec3`. Vec3 is now `Vector3<Length>`
-    // (tightened by task #4575), which is the WRONG type here: PointLoad direction
-    // is a DIMENSIONLESS unit-direction vector consumed component-wise by
-    // reify-eval (elastic_static.rs:1769) as `Value::List`. The honest future
-    // target is `Vector3<Dimensionless>` + eval marshalling, mirroring the
-    // modal-direction precedent (`Vector3<Dimensionless>` in modal_analysis.ri).
-    // That migration is out of scope for #4575 (positive Vec3 surface only) and
-    // is left as future work alongside `Gravity.direction` below.
-    param direction : List<Real> = [0.0, 0.0, -1.0]
+    // `direction` is `Vector3<Dimensionless>`. Which Q a stdlib 3-vector field
+    // takes is decided by what the field DENOTES (the RULING at trajectory.ri's
+    // Vec3<Q> header, task 5848): a DIRECTION takes a dimensionless slot, a
+    // POSITION or DISPLACEMENT takes Length. An applied-force direction is a
+    // unit vector, so it is genuinely dimensionless — `Vec3` (= `Vector3<Length>`)
+    // would be the wrong type, and the former `List<Real>` spelling was only ever
+    // a stand-in from before a dimensionless 3-tuple could be spelled at all.
+    // Sibling precedents: `ModalOptions.reference_direction` (modal_analysis.ri)
+    // and `FDMProcess.build_direction` (fdm.ri).
+    param direction : Vector3<Dimensionless> = vec3(0.0, 0.0, -1.0)
 }
 
 // FixedSupport — wave-1 replacement for the `FixedSupport` builtin
@@ -359,7 +360,7 @@ structure def FixedSupport : Support {
 // (`crates/reify-stdlib/src/supports.rs::eval_supports` arm retired in task
 // 3546 SIR-β-sup step-4). The `target` field mirrors the `target` key emitted
 // by the pre-retirement `make_kind_map("pinned_support", ...)` call
-// (supports.rs:106-114; Q-SIR-4 preserve-don't-redesign):
+// (crates/reify-stdlib/src/supports.rs; Q-SIR-4 preserve-don't-redesign):
 //
 //   `target` — geometry selector target. `String` is a placeholder for
 //              `Selector` until the topology-selector type aliases land;
@@ -384,17 +385,23 @@ structure def PinnedSupport : Support {
 // (crates/reify-stdlib/src/loads.rs::eval_loads arm retired in task 3544
 // SIR-β-load step-4). Field shapes mirror the three keys emitted by the
 // pre-retirement `make_kind_map("pressure_load", ...)` call
-// (loads.rs:102-109; Q-SIR-4 preserve-don't-redesign):
+// (crates/reify-stdlib/src/loads.rs; Q-SIR-4 preserve-don't-redesign):
 //
 //   `magnitude`  — applied pressure. `Real` is a placeholder for
 //                  `Scalar<PRESSURE>` until the dimensional type aliases land;
 //                  mirrors the `magnitude` key in the retired builtin.
-//   `face`       — geometry selector. `String` is a placeholder for `FaceSelector`
-//                  (docs/prds/topology-selector-value-type.md — typed-selector
-//                  value-type design); actual String → FaceSelector migration is
-//                  owned by the FEA Load/Support follow-on PRD (depends on
-//                  topology-selector-value-type.md §10 + task 4092). Mirrors the
-//                  `face` key in the retired builtin.
+//   `face`       — geometry selector, now typed `Option<FaceSelector> = none`
+//                  (String → typed-selector migration completed in task 4370;
+//                  docs/prds/topology-selector-value-type.md — typed-selector
+//                  value-type design). Callers pass a nested named-leaf selector
+//                  ctor, e.g. `face(body, "x_max")`, which the compiler hoists to
+//                  a synthetic top-level cell and the named-leaf symbolic stand-in
+//                  mints to a `Value::Selector(Leaf { query: Named(name) })`;
+//                  `extract_loads` reads the `Named` name kernel-lessly via
+//                  `box_face_plane`. `none` (the `= none` default) leaves the
+//                  pressure faceless (no traction applied). The legacy
+//                  `face: "x_max"` String form is still accepted for transition
+//                  safety (extract_loads keeps its `Value::String` arm).
 //   `direction`  — outward-normal sentinel or explicit direction. `String` is
 //                  a placeholder; mirrors the `direction` key in the retired
 //                  builtin. The `"normal"` sentinel means "outward face normal";
@@ -411,7 +418,7 @@ structure def PinnedSupport : Support {
 //      selector→node-set mapping).
 structure def PressureLoad : Load {
     param magnitude : Real = 0.0
-    param face      : String = ""
+    param face      : Option<FaceSelector> = none
     param direction : String = "normal"
 }
 
@@ -476,27 +483,28 @@ structure def BodyForce : Load {
 // docs/prds/v0_6/typed-fea-authoring-surface.md §4.1).
 //
 // Shape mirrors PointLoad: scalar dimensional magnitude + dimensionless
-// `direction : List<Real>`.  NOT `Vector3<Acceleration>` — `vec3(0 m/s^2, …)`
-// fails to parse (acceleration has no compound m/s² literal; only the
-// `1m/(1s*1s)` build form works).  The scalar form composes cleanly with
-// `STANDARD_GRAVITY()` / `5 * STANDARD_GRAVITY()` and keeps `direction`
-// general (centrifuge, lateral-g).
+// `direction : Vector3<Dimensionless>`.  NOT `Vector3<Acceleration>` —
+// `vec3(0 m/s^2, …)` fails to parse (acceleration has no compound m/s²
+// literal; only the `1m/(1s*1s)` build form works).  The scalar form composes
+// cleanly with `STANDARD_GRAVITY()` / `5 * STANDARD_GRAVITY()` and keeps
+// `direction` general (centrifuge, lateral-g).
 //
 //   `magnitude`  — gravitational acceleration applied to the body.
 //                  `Acceleration` resolves to the built-in `DimensionVector::ACCELERATION`
-//                  (crates/reify-core/src/dimension.rs:508).  Defaults to
-//                  `STANDARD_GRAVITY()` (units.ri:133) = 9.80665 m/s²
+//                  (crates/reify-core/src/dimension.rs).  Defaults to
+//                  `STANDARD_GRAVITY()` (units.ri) = 9.80665 m/s²
 //                  (standard Earth surface gravity, ISO 80000-3).
 //                  Override with e.g. `5 * STANDARD_GRAVITY()` for 5 g loads.
 //   `direction`  — unit vector pointing in the direction gravity acts.
-//                  `List<Real>` stays as-is — NOT `Vec3`. Vec3 is now
-//                  `Vector3<Length>` (tightened by task #4575), which is the
-//                  WRONG type here: gravity direction is a DIMENSIONLESS unit
-//                  vector consumed component-wise by reify-eval (elastic_static.rs:3234)
-//                  as `Value::List`. Honest future target: `Vector3<Dimensionless>`
-//                  + eval marshalling (cf. `PointLoad.direction` above and the
-//                  modal-direction `Vector3<Dimensionless>` precedent). Deferred.
-//                  Default [0, 0, -1] = −Z (canonical downward direction).
+//                  `Vector3<Dimensionless>` — NOT `Vec3` (= `Vector3<Length>`).
+//                  Which Q a stdlib 3-vector field takes is decided by what the
+//                  field DENOTES (the RULING at trajectory.ri's Vec3<Q> header,
+//                  task 5848): a DIRECTION takes a dimensionless slot, a POSITION
+//                  or DISPLACEMENT takes Length. A gravity direction is a unit
+//                  vector, so it is genuinely dimensionless (cf.
+//                  `PointLoad.direction` above and `ModalOptions.reference_direction`
+//                  in modal_analysis.ri).
+//                  Default vec3(0, 0, -1) = −Z (canonical downward direction).
 //                  Caller is responsible for supplying a unit vector; non-unit
 //                  vectors silently scale effective gravity by |direction|.
 //                  `direction` is declared LAST (same rationale as PointLoad:
@@ -507,15 +515,15 @@ structure def BodyForce : Load {
 //
 // PRD: docs/prds/v0_6/typed-fea-authoring-surface.md §4.1 task α.
 structure def Gravity : Load {
-    param magnitude : Acceleration = STANDARD_GRAVITY()
-    param direction : List<Real>   = [0.0, 0.0, -1.0]
+    param magnitude : Acceleration            = STANDARD_GRAVITY()
+    param direction : Vector3<Dimensionless>  = vec3(0.0, 0.0, -1.0)
 }
 
 // ── SIR-β-mlcfea wave-2 closure ──────────────────────────────────────────────
 //
 // task 3549 (SIR-β-mlcfea) pins `LoadCase` and `MultiCaseResult` as
 // `Value::StructureInstance` producers via the `structure def` path declared
-// above (lines 75-105 and 247-254). No Rust-side builtin retirement was needed:
+// above. No Rust-side builtin retirement was needed:
 // `crates/reify-stdlib/src/` carries no `fea_multi_case.rs` — the ctors were
 // never name-dispatched, so SIR-α (task 3540) introduced both as `structure def`s
 // from the start.
@@ -525,7 +533,7 @@ structure def Gravity : Load {
 //   - `self.`-qualified member-access readthrough:
 //       `self.case.name`, `self.case.loads[0]`, `self.case.supports[0]`
 //   - `options` default evaluates to `Value::Option(None)` (not `Value::None`)
-//     per `CompiledExprKind::OptionNone` in `crates/reify-expr/src/lib.rs:611`
+//     per `CompiledExprKind::OptionNone` in `crates/reify-expr/src/lib.rs`
 //   - Map-vs-StructureInstance pattern-match discriminates (GR-001 §Resolution)
 //
 // Lives in: `crates/reify-eval/tests/load_case.rs`
@@ -655,5 +663,47 @@ pub fn solve_load_cases(
     // Contract body — inline fallback only (see dispatch-site comment above).
     // Returns an empty MultiCaseResult; the lib.rs interceptor provides the
     // real per-case iteration and result assembly.
+    MultiCaseResult(cases: map{})
+}
+
+// Body-arg overload (task 4870): the FEA body-arg substrate for multi-case.
+//
+// Replaces the three scalar dims (length/width/height) of the dims overload
+// above with a single `body : Solid` geometry input. `body` is the geometry
+// identity that forms the mesh-realization cache key — the engine realizes it
+// (OCCT → gmsh tet VolumeMesh) once and projects that mesh into the shared
+// `solver::multi_case` trampoline's `realization_inputs`, which the trampoline
+// forwards UNCHANGED to every per-case `solve_elastic_static` sub-solve. So ALL
+// cases sharing this `body` share ONE realized tet mesh (no re-mesh per case),
+// and each case solves on the realized non-prismatic mesh instead of the
+// synthetic nx×1×6 box the dims overload builds. `Solid` lowers to
+// `reify_core::Type::Geometry`, so the body arg is EXCLUDED from the cache-key
+// `value_inputs` list and instead drives the module-static VolumeMesh demand
+// pass (a `Type::Geometry` ValueRef), mirroring the `solve_elastic_static`
+// body overload (solver_elastic.ri) and `as_printed_material` (fdm_as_printed.ri).
+//
+// Shared trampoline: both overloads carry `@optimized("solver::multi_case")` and
+// share the single Rust-registered `solve_multi_case_trampoline`. It branches on
+// the arg-1 Value shape: a `Value::GeometryHandle` at `value_inputs[1]` (this
+// overload) selects the body layout [material, body, cases, options] and rebuilds
+// each per-case dispatch in the elastic BODY layout [material, body, loads,
+// supports, options]; a scalar `length` at `value_inputs[1]` (the dims overload)
+// keeps the dims layout unchanged.
+//
+// Non-breaking: arity 4 keeps this overload disjoint from the arity-6 dims
+// overload under `resolve_function_overload` (which filters by arity), so a
+// 3/4-arg body call resolves here unambiguously and existing 5/6-arg dims calls
+// are untouched.
+//
+// Body discipline: same as the dims overload — `MultiCaseResult(cases: map{})`
+// is the inline fallback; the trampoline is always registered and never runs
+// the body.
+@optimized("solver::multi_case")
+pub fn solve_load_cases(
+    material : ConstitutiveLaw,
+    body     : Solid,
+    cases    : List<LoadCase>,
+    options  : ElasticOptions = ElasticOptions()
+) -> MultiCaseResult {
     MultiCaseResult(cases: map{})
 }

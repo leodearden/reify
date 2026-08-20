@@ -193,8 +193,8 @@ _cleanup_balancer() {
         wait "$_BALANCER_PID" 2>/dev/null || true
     fi
     _BALANCER_PID=""
-    [ -n "$_MERGE_FIFO"  ] && rm -f "$_MERGE_FIFO"  || true
-    [ -n "$_TASK_FIFO"   ] && rm -f "$_TASK_FIFO"   || true
+    [ -n "$_MERGE_FIFO"  ] && rm -f "$_MERGE_FIFO" "${_MERGE_FIFO}.owner" || true
+    [ -n "$_TASK_FIFO"   ] && rm -f "$_TASK_FIFO" "${_TASK_FIFO}.owner"   || true
     [ -n "$_PSI_FIXTURE" ] && rm -f "$_PSI_FIXTURE" || true
     _MERGE_FIFO=""
     _TASK_FIFO=""
@@ -1719,5 +1719,421 @@ assert "17e: GUARD — ExecStopPost still references reify-jobserver-merge (orig
 # 17f: GUARD — ExecStopPost reify-jobserver-task line still present
 assert "17f: GUARD — ExecStopPost still references reify-jobserver-task (orig FIFO)" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-task'"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 18: FIFO owner stamp write (test-18, task 5146)
+#   verify.sh cannot distinguish a live FIFO from one left behind by a crashed
+#   balancer (existence-only `[ -p FIFO ]` guard).  The daemon must write a
+#   sidecar owner stamp "${FIFO}.owner" = "<pid> <boot_id>" AFTER opening each
+#   FIFO O_RDWR, for BOTH the merge and task FIFOs, so verify.sh can probe
+#   liveness before trusting the FIFO's existence.
+#
+#   (a) ${_MERGE_FIFO}.owner and ${_TASK_FIFO}.owner exist as regular files
+#       (polled, bounded ~5s).
+#   (b) First whitespace field of each stamp == $_BALANCER_PID, and that pid
+#       is alive (kill -0 / /proc/<pid> present).
+#   (c) Second field of each stamp == the host boot_id
+#       ($(cat /proc/sys/kernel/random/boot_id)).
+#
+#   RED today: the balancer writes no stamp — the poll below times out and
+#   the stamp files never appear.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 18: FIFO owner stamp write ---"
+
+_cleanup_balancer   # ensure clean state from any prior run
+
+start_balancer 4 0.05
+wait_for_seed 10 || true
+
+_b18_host_boot="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+
+# Poll (bounded ~5s) until BOTH owner stamps exist.
+_b18_stamps_present=0
+_b18_t0=$(date +%s)
+while true; do
+    if [ -f "${_MERGE_FIFO}.owner" ] && [ -f "${_TASK_FIFO}.owner" ]; then
+        _b18_stamps_present=1; break
+    fi
+    [ $(( $(date +%s) - _b18_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Block 18: both owner stamps appear within timeout" \
+    test "$_b18_stamps_present" -eq 1
+
+assert "Block 18: merge owner stamp is a regular file" \
+    test -f "${_MERGE_FIFO}.owner"
+
+assert "Block 18: task owner stamp is a regular file" \
+    test -f "${_TASK_FIFO}.owner"
+
+_b18_merge_pid=""; _b18_merge_boot=""
+if [ -f "${_MERGE_FIFO}.owner" ]; then
+    read -r _b18_merge_pid _b18_merge_boot < "${_MERGE_FIFO}.owner" || true
+fi
+_b18_task_pid=""; _b18_task_boot=""
+if [ -f "${_TASK_FIFO}.owner" ]; then
+    read -r _b18_task_pid _b18_task_boot < "${_TASK_FIFO}.owner" || true
+fi
+
+assert "Block 18: merge stamp pid == balancer pid" \
+    test "$_b18_merge_pid" = "$_BALANCER_PID"
+
+assert "Block 18: task stamp pid == balancer pid" \
+    test "$_b18_task_pid" = "$_BALANCER_PID"
+
+assert "Block 18: merge stamp pid is alive" \
+    bash -c '[ -n "$1" ] && { kill -0 "$1" 2>/dev/null || [ -d "/proc/$1" ]; }' _ "$_b18_merge_pid"
+
+assert "Block 18: task stamp pid is alive" \
+    bash -c '[ -n "$1" ] && { kill -0 "$1" 2>/dev/null || [ -d "/proc/$1" ]; }' _ "$_b18_task_pid"
+
+# Guarded on _b18_host_boot being non-empty (task 5146 review comment 1,
+# round 2): read_boot_id() and this test's own `cat` read the same host file
+# under the same user, so if it's unreadable here it's unreadable to the
+# daemon too, and the daemon's stamp records the "-" fail-open sentinel
+# instead of a real boot_id. Asserting `test "-" = ""` would then false-fail
+# even though the code is behaving correctly (mirrors the HOST_BOOT_ID guard
+# in test_jobserver_role_fifo.sh case (h)). Rather than skip outright, assert
+# the fail-open sentinel directly in that branch so coverage holds either way.
+if [ -n "$_b18_host_boot" ]; then
+    assert "Block 18: merge stamp boot_id == host boot_id" \
+        test "$_b18_merge_boot" = "$_b18_host_boot"
+
+    assert "Block 18: task stamp boot_id == host boot_id" \
+        test "$_b18_task_boot" = "$_b18_host_boot"
+else
+    echo "  NOTE: host boot_id unreadable here; asserting daemon's '-' fail-open sentinel instead"
+
+    assert "Block 18: merge stamp boot_id == '-' fail-open sentinel (host boot_id unreadable)" \
+        test "$_b18_merge_boot" = "-"
+
+    assert "Block 18: task stamp boot_id == '-' fail-open sentinel (host boot_id unreadable)" \
+        test "$_b18_task_boot" = "-"
+fi
+
+_cleanup_balancer
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 19: clean-exit unlink (test-19, task 5146)
+#   A crash/SIGKILL must NOT unlink (that's what makes staleness detectable
+#   across balancer crashes) but a CLEAN SIGTERM must unlink both FIFOs and
+#   both owner stamps, so a graceful restart never leaves a stale stamp
+#   behind for the next daemon incarnation to trip over.
+#
+#   Also asserts (grep-the-source, Block 5 style) that setup-dev.sh's
+#   ExecStartPre/ExecStopPost rm lines were extended to cover the new
+#   ".owner" sidecars, keeping the systemd-level belt-and-suspenders cleanup
+#   in sync with the daemon's own in-process unlink.
+#
+#   RED today: the balancer never unlinks on exit (poll below times out with
+#   the FIFOs/stamps still present), and setup-dev.sh has no ".owner" rm.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 19: clean-exit unlink ---"
+
+_cleanup_balancer   # ensure clean state from any prior run
+
+start_balancer 4 0.05
+wait_for_seed 10 || true
+
+# Wait for both owner stamps to appear before triggering shutdown, so the
+# unlink assertions below prove removal, not "never created".
+_b19_stamps_present=0
+_b19_t0=$(date +%s)
+while true; do
+    if [ -f "${_MERGE_FIFO}.owner" ] && [ -f "${_TASK_FIFO}.owner" ]; then
+        _b19_stamps_present=1; break
+    fi
+    [ $(( $(date +%s) - _b19_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+assert "Block 19: owner stamps present before shutdown (precondition)" \
+    test "$_b19_stamps_present" -eq 1
+
+_b19_merge_fifo="$_MERGE_FIFO"
+_b19_task_fifo="$_TASK_FIFO"
+
+# Clean SIGTERM (not SIGKILL) — the graceful-exit path under test.
+kill "$_BALANCER_PID" 2>/dev/null || true
+wait "$_BALANCER_PID" 2>/dev/null || true
+_BALANCER_PID=""
+
+# Poll (bounded ~5s) until all four paths are gone.
+_b19_all_gone=0
+_b19_t0=$(date +%s)
+while true; do
+    if [ ! -e "$_b19_merge_fifo" ] && [ ! -e "$_b19_task_fifo" ] \
+        && [ ! -e "${_b19_merge_fifo}.owner" ] && [ ! -e "${_b19_task_fifo}.owner" ]; then
+        _b19_all_gone=1; break
+    fi
+    [ $(( $(date +%s) - _b19_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Block 19: all four paths (FIFOs + owner stamps) gone within timeout" \
+    test "$_b19_all_gone" -eq 1
+assert "Block 19: merge FIFO removed after clean exit" \
+    test ! -e "$_b19_merge_fifo"
+assert "Block 19: task FIFO removed after clean exit" \
+    test ! -e "$_b19_task_fifo"
+assert "Block 19: merge owner stamp removed after clean exit" \
+    test ! -e "${_b19_merge_fifo}.owner"
+assert "Block 19: task owner stamp removed after clean exit" \
+    test ! -e "${_b19_task_fifo}.owner"
+
+# _MERGE_FIFO/_TASK_FIFO now point at already-removed paths; _cleanup_balancer's
+# rm -f tolerates that (no-op), so this stays leak-free either way.
+_cleanup_balancer
+
+# setup-dev.sh: ExecStartPre/ExecStopPost reference the new .owner sidecars
+# (grep-the-source, mirrors Block 5's pattern).
+assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner sidecar cleanup" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge.owner'"
+
+# Amendment (task 5146 review comment 2): write_owner_stamp()'s tmp+rename
+# sidecar ("${fifo}.owner.tmp") must also be covered by setup-dev.sh's
+# ExecStartPre/ExecStopPost rm lines, so a tmp file orphaned by a mid-flight
+# write/rename failure can never survive a clean service restart either.
+assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner.tmp sidecar cleanup" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge.owner.tmp'"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 19b: SIGKILL leaves FIFOs + owner stamps behind (test-19b, task 5146
+#   review comment 1, round 3)
+#
+#   The central invariant this whole feature rests on -- "a crash/SIGKILL
+#   must NOT unlink the stamp, which is what makes staleness detectable" --
+#   was, until now, asserted only in Block 19's prose comment above, never
+#   exercised. Block 19 proves a clean SIGTERM DOES unlink; this block proves
+#   the inverse: a SIGKILL (which Python cannot catch or run any cleanup
+#   for) leaves everything behind. A future refactor that installs a broad
+#   atexit/finally unlink (intending to only catch SIGTERM) could silently
+#   defeat the whole crash-detection mechanism, and no other test would
+#   catch it.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 19b: SIGKILL leaves FIFOs + owner stamps behind ---"
+
+_cleanup_balancer   # ensure clean state from any prior run
+
+start_balancer 4 0.05
+wait_for_seed 10 || true
+
+# Wait for both owner stamps to appear before SIGKILLing, so the
+# still-present assertions below prove survival, not "never created".
+_b19b_stamps_present=0
+_b19b_t0=$(date +%s)
+while true; do
+    if [ -f "${_MERGE_FIFO}.owner" ] && [ -f "${_TASK_FIFO}.owner" ]; then
+        _b19b_stamps_present=1; break
+    fi
+    [ $(( $(date +%s) - _b19b_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+assert "Block 19b: owner stamps present before SIGKILL (precondition)" \
+    test "$_b19b_stamps_present" -eq 1
+
+_b19b_merge_fifo="$_MERGE_FIFO"
+_b19b_task_fifo="$_TASK_FIFO"
+
+# SIGKILL -- the crash path the whole owner-stamp mechanism exists to detect.
+# Python cannot catch this signal, so none of the clean-exit unlink code runs.
+kill -9 "$_BALANCER_PID" 2>/dev/null || true
+wait "$_BALANCER_PID" 2>/dev/null || true
+_BALANCER_PID=""
+
+# Brief grace window for the kernel to finish the reap before asserting.
+sleep 0.2
+
+assert "Block 19b: merge FIFO still present after SIGKILL (crash leaves evidence)" \
+    test -e "$_b19b_merge_fifo"
+assert "Block 19b: task FIFO still present after SIGKILL (crash leaves evidence)" \
+    test -e "$_b19b_task_fifo"
+assert "Block 19b: merge owner stamp still present after SIGKILL (crash leaves evidence)" \
+    test -e "${_b19b_merge_fifo}.owner"
+assert "Block 19b: task owner stamp still present after SIGKILL (crash leaves evidence)" \
+    test -e "${_b19b_task_fifo}.owner"
+
+# _MERGE_FIFO/_TASK_FIFO still point at the (still-present) leaked paths;
+# _cleanup_balancer's rm -f removes them so this block stays leak-free.
+_cleanup_balancer
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 20: read_boot_id() fail-open "-" sentinel unit test (test-20, task 5146
+#   review comment 1)
+#
+#   Every real test host has a readable /proc/sys/kernel/random/boot_id, so
+#   the "-" fail-open sentinel branch in read_boot_id() (the OSError except
+#   clause) never executes end-to-end via the live-daemon Block 18/19 tests
+#   above. That branch is the safety valve that keeps a missing/unreadable
+#   boot_id from ever producing a false STALE verdict in verify.sh's
+#   _jobserver_owner_live() — so it is exercised directly here, via
+#   importlib, by pointing read_boot_id() at a path that cannot exist.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 20: read_boot_id() fail-open '-' sentinel unit test ---"
+
+_b20_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── unreadable/nonexistent proc_path → "-" sentinel (fail-open) ──────────
+got = mod.read_boot_id("/nonexistent/path/does-not-exist-5146")
+if got != "-":
+    errors.append(f"read_boot_id(nonexistent) = {got!r}, want '-'")
+
+if errors:
+    sys.stderr.write("FAIL read_boot_id:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: read_boot_id fail-open sentinel")
+PY
+} || _b20_exit=$?
+assert "read_boot_id(): unreadable/nonexistent path returns '-' sentinel (fail-open)" \
+    test "$_b20_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 21: write_owner_stamp() OSError fail-open unit test (test-21, task 5146
+#   review comment 2, round 2)
+#
+#   write_owner_stamp()'s `except OSError` branch (WARNING, no raise) is the
+#   write-side safety valve symmetric to read_boot_id()'s "-" sentinel
+#   (Block 20): a stamp-write failure must never crash the daemon. It never
+#   executes via the live-daemon Block 18/19 tests above (those always write
+#   successfully under /tmp), so it is exercised directly here, via
+#   importlib, by pointing write_owner_stamp() at a fifo_path whose parent
+#   directory does not exist — open(tmp, "w") then raises FileNotFoundError
+#   (an OSError subtype) regardless of which user/permissions run the test.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 21: write_owner_stamp() OSError fail-open unit test ---"
+
+_b21_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import contextlib
+import importlib.util
+import io
+import sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── nonexistent parent dir → swallowed OSError + WARNING (fail-open) ─────
+_captured = io.StringIO()
+with contextlib.redirect_stderr(_captured):
+    mod.write_owner_stamp("/nonexistent/path/does-not-exist-5146/fifo", 1234, "-")
+# Reaching this line at all proves the OSError did not propagate.
+
+_stderr = _captured.getvalue()
+if "WARNING" not in _stderr:
+    errors.append(
+        f"write_owner_stamp() OSError path emitted no WARNING on stderr; got {_stderr!r}"
+    )
+
+if errors:
+    sys.stderr.write("FAIL write_owner_stamp:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: write_owner_stamp fail-open + WARNING")
+PY
+} || _b21_exit=$?
+assert "write_owner_stamp(): unwritable path swallows OSError (fail-open) and emits WARNING" \
+    test "$_b21_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 22: make_fifo() cleans up a stale owner-stamp sidecar (test-22, task
+#   5146 review comment 3, round 3)
+#
+#   make_fifo() already removed a stale FIFO/file at `path`, but NOT the
+#   sibling "${path}.owner" (or its ".owner.tmp" write-in-progress sibling)
+#   left behind by a prior crashed incarnation. On any startup not mediated
+#   by systemd's ExecStartPre (manual restart, a different supervisor), a
+#   stale stamp survives the window between make_fifo() and
+#   write_owner_stamp() publishing the fresh one — a verify.sh probe landing
+#   in that window reads the OLD dead-pid stamp and returns a false STALE.
+#   Fail-safe (cargo just falls back to its own pool) but avoidable: this
+#   test proves make_fifo() is self-cleaning independent of ExecStartPre.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 22: make_fifo() cleans up a stale owner-stamp sidecar ---"
+
+_b22_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util
+import os
+import stat
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+with tempfile.TemporaryDirectory() as d:
+    fifo_path = os.path.join(d, "fifo")
+    stamp_path = fifo_path + mod.OWNER_STAMP_SUFFIX
+    tmp_path = stamp_path + ".tmp"
+
+    # Simulate leftovers from a prior crashed incarnation (dead pid, in case
+    # anything ever reads them before make_fifo() removes them).
+    with open(stamp_path, "w") as f:
+        f.write("999999999 stale-boot\n")
+    with open(tmp_path, "w") as f:
+        f.write("partial-write")
+
+    mod.make_fifo(fifo_path)
+
+    if os.path.exists(stamp_path):
+        errors.append(f"{stamp_path!r} still exists after make_fifo()")
+    if os.path.exists(tmp_path):
+        errors.append(f"{tmp_path!r} still exists after make_fifo()")
+    if not stat.S_ISFIFO(os.stat(fifo_path).st_mode):
+        errors.append(f"{fifo_path!r} is not a FIFO after make_fifo()")
+
+if errors:
+    sys.stderr.write("FAIL make_fifo:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: make_fifo() removes stale owner-stamp sidecars before creating fresh FIFO")
+PY
+} || _b22_exit=$?
+assert "make_fifo(): removes stale '.owner'/'.owner.tmp' sidecars before creating fresh FIFO" \
+    test "$_b22_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 23: boot_id proc-path coherence guard (test-23, task 5146 review
+#   comment 4, round 3)
+#
+#   verify.sh's _jobserver_owner_live() reads /proc/sys/kernel/random/boot_id
+#   as an inline literal, while jobserver-balancer.py names the same path via
+#   the BOOT_ID_PROC_PATH constant. Both MUST read the same file for the "-"
+#   fail-open sentinel and the boot-id comparison to stay coherent across
+#   this cross-language contract — there is no compiler/typechecker to
+#   enforce it, so a plain grep-the-source guard (Block 5 pattern) is the
+#   only thing that would catch one side silently drifting from the other.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 23: boot_id proc-path coherence guard (grep-the-source) ---"
+
+VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
+
+assert "jobserver-balancer.py BOOT_ID_PROC_PATH literal is /proc/sys/kernel/random/boot_id" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$BALANCER' | grep -qF '/proc/sys/kernel/random/boot_id'"
+
+assert "verify.sh _jobserver_owner_live() reads the same /proc/sys/kernel/random/boot_id path" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$VERIFY_SH' | grep -qF '/proc/sys/kernel/random/boot_id'"
 
 test_summary

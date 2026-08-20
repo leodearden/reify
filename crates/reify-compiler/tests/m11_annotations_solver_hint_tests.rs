@@ -21,8 +21,8 @@ const EXAMPLE_PATH: &str = concat!(
 
 #[test]
 fn m11_annotations_exercises_solver_hint_collection_payloads() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m11_annotations.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_annotations.ri should exist");
 
     // Compile with the stdlib prelude so `standard_bolt_lengths` and
     // `standard_sheet_thicknesses` resolve against `std.stock`.
@@ -33,10 +33,7 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
     assert!(
         errors.is_empty(),
         "expected no Error diagnostics, got: {:?}",
-        errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // (2) No warnings (PRD acceptance: "producing no warnings under `reify check`").
@@ -44,10 +41,7 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
     assert!(
         warnings.is_empty(),
         "expected no Warning diagnostics, got: {:?}",
-        warnings
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // Locate the BoltedPanel template by name — scoping to the specific template
@@ -59,7 +53,7 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
         .find(|t| t.name == "BoltedPanel")
         .expect(
             "BoltedPanel template should be present in the compiled module — \
-             did you forget to add the Feature 7 block to examples/m11_annotations.ri?"
+             did you forget to add the Feature 7 block to examples/m11_annotations.ri?",
         );
 
     // (3) BoltedPanel.bolt_length carries SolverHint { DiscreteSet, "standard_bolt_lengths" }.

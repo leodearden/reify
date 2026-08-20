@@ -14,8 +14,8 @@
 //! Because both sides hash the same sub-expression trees, any difference in the
 //! formula (tag byte, combine order, missing field) will surface here.
 
-use reify_test_support::{compile_source, get_let_expr};
 use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_test_support::{compile_source, get_let_expr};
 
 // ── UserFunctionCall ─────────────────────────────────────────────────────────
 

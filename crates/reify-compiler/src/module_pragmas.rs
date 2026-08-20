@@ -803,8 +803,7 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 /// typed field on `CompiledModule`; it only emits diagnostics.  Positional
 /// attachment of `#cfg` to the following `import` is task γ's job.
 fn apply_cfg_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
-    const MALFORMED_MSG: &str =
-        "E_CFG_MALFORMED: #cfg requires a key=value or bare-ident argument, \
+    const MALFORMED_MSG: &str = "E_CFG_MALFORMED: #cfg requires a key=value or bare-ident argument, \
          e.g. #cfg(target = \"linux\") or #cfg(linux); ignored";
 
     for pragma in &parsed.pragmas {

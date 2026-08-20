@@ -112,10 +112,7 @@ pub(crate) fn check_duplicate_member_keys(
         match first_seen.get(entry.key.as_str()) {
             Some(&first_span) => {
                 diagnostics.push(dup_member_key_error(
-                    sub_name,
-                    &entry.key,
-                    first_span,
-                    entry.span,
+                    sub_name, &entry.key, first_span, entry.span,
                 ));
             }
             None => {
@@ -224,7 +221,9 @@ mod tests {
         assert_eq!(d.labels.len(), 2);
         assert_eq!(d.labels[0].span, dup_span);
         assert!(
-            d.labels[0].message.contains("duplicate default declared here"),
+            d.labels[0]
+                .message
+                .contains("duplicate default declared here"),
             "expected 'duplicate default declared here' in label 0: {:?}",
             d.labels[0].message
         );

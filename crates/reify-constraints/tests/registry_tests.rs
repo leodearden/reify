@@ -3,7 +3,7 @@
 use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_core::{ContentHash, DimensionVector, Type};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, RankedSolveResult, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, RankedSolveResult, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
 /// produces same results as DimensionalSolver alone for a simple problem.
@@ -20,6 +20,7 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
     let lt_expr = lt(thickness_ref, literal(mm(20.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -66,6 +67,7 @@ fn registry_solves_independent_subproblems() {
     let c2 = gt(value_ref("Part", "b"), literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -114,6 +116,7 @@ fn registry_uses_fallback_for_all_domains() {
     let c2 = lt(value_ref("Part", "x"), literal(mm(50.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -152,6 +155,7 @@ fn cross_domain_shared_param_solved_via_fallback() {
     let c3 = lt(value_ref("Part", "a"), literal(mm(50.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -205,6 +209,7 @@ fn registry_backward_compat_compound_constraint() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -251,6 +256,7 @@ fn registry_compat_infeasible_bounds() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -297,6 +303,7 @@ fn registry_compat_false_negative_small_violation() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -329,6 +336,7 @@ fn registry_compat_maximize_objective() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -386,6 +394,7 @@ fn solve_ranked_values_are_byte_identical_to_solve() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -447,6 +456,7 @@ fn registry_compat_empty_problem() {
     let registry = SolverRegistry::new(Box::new(DimensionalSolver));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -503,6 +513,7 @@ fn objective_spanning_independent_components_merges_them() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, obj_expr);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -552,6 +563,402 @@ fn objective_spanning_independent_components_merges_them() {
             // (same tolerance as registry_compat_maximize_objective)
         }
         other => panic!("expected Solved or Infeasible, got {:?}", other),
+    }
+}
+
+// === δ (task #5016): SolverRegistry::solve_ranked propagates the K-candidate
+// === best-of-K multistart set from the objective component, instead of
+// === collapsing it to 1 via `candidates.swap_remove(0)` (registry.rs:246).
+
+/// dim=2 interior-optimum objective fixture, routed through the REGISTRY
+/// (unlike `two_param_interior_quadratic_problem` in solver_integration.rs,
+/// which calls `DimensionalSolver` directly and needs no constraints at all).
+/// `decompose_into_components` short-circuits to `vec![]` for a
+/// constraints-empty problem regardless of the objective (decompose.rs's
+/// `if constraints.is_empty() { return vec![]; }` runs BEFORE the
+/// objective-refs union step) — so box `bounds` alone are not enough to form
+/// a component at the registry seam; explicit GT/LT constraints are required.
+///
+/// x, y each get their own GT/LT pair (mirrors
+/// `objective_spanning_independent_components_merges_them`), so
+/// `decompose_into_components` first splits them into 2 singleton
+/// components, then the objective's value-refs (both x and y) union them
+/// back into ONE merged 2-param component — exactly the "merged cluster"
+/// shape task δ targets. minimize (x-30mm)^2 + (y-70mm)^2 with x,y in
+/// [1mm,100mm] keeps the optimum strictly interior, so every one of the
+/// K=2*(2+1)=6 multistart points is feasible (no boundary/Infeasible edge
+/// case to hedge against).
+fn two_param_interior_quadratic_problem_via_registry()
+-> (ResolutionProblem, reify_core::ValueCellId, reify_core::ValueCellId) {
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+
+    let dx = binop(BinOp::Sub, value_ref("Part", "x"), literal(mm(30.0)));
+    let dx2 = binop(BinOp::Mul, dx.clone(), dx);
+    let dy = binop(BinOp::Sub, value_ref("Part", "y"), literal(mm(70.0)));
+    let dy2 = binop(BinOp::Mul, dy.clone(), dy);
+    let quad_expr = binop(BinOp::Add, dx2, dy2);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, quad_expr);
+
+    let c1 = gt(value_ref("Part", "x"), literal(mm(1.0)));
+    let c2 = lt(value_ref("Part", "x"), literal(mm(100.0)));
+    let c3 = gt(value_ref("Part", "y"), literal(mm(1.0)));
+    let c4 = lt(value_ref("Part", "y"), literal(mm(100.0)));
+
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), mm(10.0));
+    current.insert(y_id.clone(), mm(90.0));
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![
+            (cnid("Part", 0), c1),
+            (cnid("Part", 1), c2),
+            (cnid("Part", 2), c3),
+            (cnid("Part", 3), c4),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+    (problem, x_id, y_id)
+}
+
+/// Same as [`two_param_interior_quadratic_problem_via_registry`] plus an
+/// INDEPENDENT third component: `z` has its own GT/LT constraints, is never
+/// referenced by the objective, and shares no constraint with x/y — so
+/// `decompose_into_components` keeps it as its own separate component,
+/// dispatched via the plain `solver.solve()` arm (not `solve_ranked`) inside
+/// `solve_inner`. This is the fixture for cross-merge correctness: the
+/// objective component's best-of-K candidates must each be unioned with the
+/// (shared, single) z value — not just candidate 0.
+fn two_param_objective_plus_independent_component()
+-> (
+    ResolutionProblem,
+    reify_core::ValueCellId,
+    reify_core::ValueCellId,
+    reify_core::ValueCellId,
+) {
+    let (mut problem, x_id, y_id) = two_param_interior_quadratic_problem_via_registry();
+
+    let z_id = vcid("Part", "z");
+    problem.auto_params.push(AutoParam {
+        id: z_id.clone(),
+        param_type: Type::length(),
+        bounds: Some((0.001, 0.1)),
+        free: true,
+    });
+    problem
+        .constraints
+        .push((cnid("Part", 4), gt(value_ref("Part", "z"), literal(mm(5.0)))));
+    problem
+        .constraints
+        .push((cnid("Part", 5), lt(value_ref("Part", "z"), literal(mm(50.0)))));
+    problem.current_values.insert(z_id.clone(), mm(20.0));
+
+    (problem, x_id, y_id, z_id)
+}
+
+/// (a) `SolverRegistry::solve_ranked` must surface the objective component's
+/// FULL best-of-K candidate set, ordered best-first — not collapse it to 1
+/// via `candidates.swap_remove(0)` (registry.rs:246, pre-δ).
+///
+/// RED today: the registry always returns exactly 1 candidate regardless of
+/// how many the domain solver produced.
+#[test]
+fn solve_ranked_registry_propagates_k_candidates_ordered_best_first() {
+    use reify_ir::OptimalityStatus;
+
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+    let (problem, _x_id, _y_id) = two_param_interior_quadratic_problem_via_registry();
+
+    let ranked = registry.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked {
+            candidates,
+            optimality,
+        } => {
+            // NOTE (reviewer_comprehensive amend, task δ #5016 review pass 2):
+            // this `>= 2` assertion is load-bearing on the INTENTIONAL non-dedup
+            // contract documented at `DimensionalSolver::solve_ranked`'s
+            // "NOT deduplicated" comment (solver.rs) and the registry cross-merge
+            // comment above `objective_candidates` (registry.rs) -- for this
+            // single-basin fixture, most/all K candidates converge to the same
+            // optimum and are surfaced verbatim rather than fingerprint-deduped.
+            // A future change that deduplicates candidates by resolved-value
+            // fingerprint would need to update this assertion (e.g. to check for
+            // >= 2 DISTINCT designs) rather than raw candidate count.
+            assert!(
+                candidates.len() >= 2,
+                "SolverRegistry::solve_ranked must propagate the objective \
+                 component's best-of-K candidate set instead of collapsing to \
+                 1 via swap_remove(0); got {}",
+                candidates.len()
+            );
+            for pair in candidates.windows(2) {
+                let a = pair[0]
+                    .objective_score
+                    .expect("dim=2 objective candidate must carry a score");
+                let b = pair[1]
+                    .objective_score
+                    .expect("dim=2 objective candidate must carry a score");
+                assert!(
+                    a <= b,
+                    "candidates must be ordered ascending by objective_score \
+                     (best-first); {} > {}",
+                    a,
+                    b
+                );
+            }
+            assert!(
+                matches!(optimality, OptimalityStatus::BestFound { .. }),
+                "Nelder-Mead is derivative-free -> always BestFound, never \
+                 ProvenOptimal (I3); got {:?}",
+                optimality
+            );
+        }
+        other => panic!(
+            "expected Ranked for an interior-optimum dim=2 objective problem, got {:?}",
+            other
+        ),
+    }
+}
+
+/// (b) Dominance, NOT byte-identity — task δ's own design note: "single-basin
+/// still identical; multi-basin strictly better" (registry.rs doc comment,
+/// step-8). `candidates[0]` — the resolved optimum the engine consumes via
+/// `candidates.swap_remove(0)` — must never score WORSE than
+/// `SolverRegistry::solve()`'s single-seed result. Mirrors
+/// `solve_ranked_multistart_dominates_single_start_solve`
+/// (solver_integration.rs) at the registry seam.
+///
+/// This is deliberately NOT a byte-identical assertion like the dim=1
+/// `solve_ranked_values_are_byte_identical_to_solve` invariant: empirically, a
+/// best-of-K winner from a DIFFERENT start than the historical seed can
+/// converge to a marginally different floating-point point than solve()'s
+/// single-seed trajectory even within the same globally-convex basin
+/// (verified: solve()=0.03000000000000052 vs candidates[0]=0.029999999999999565
+/// on this exact fixture — both ~1 ULP from the true optimum 0.03, but not
+/// bit-identical). Requiring byte-identity here would demand LESS accuracy
+/// from best-of-K than a plain single-seed solve, which contradicts the
+/// entire point of multistart.
+#[test]
+fn solve_ranked_registry_candidate0_dominates_solve() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+    let (problem, x_id, y_id) = two_param_interior_quadratic_problem_via_registry();
+
+    let solve_result = registry.solve(&problem);
+    let single_score = match solve_result {
+        SolveResult::Solved { values, .. } => {
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y = values.get(&y_id).unwrap().as_f64().unwrap();
+            (x - 0.03_f64).powi(2) + (y - 0.07_f64).powi(2)
+        }
+        other => panic!("expected Solved from solve(), got {:?}", other),
+    };
+
+    let ranked_result = registry.solve_ranked(&problem);
+    match ranked_result {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert!(
+                !candidates.is_empty(),
+                "Ranked result must carry >= 1 candidate (invariant I2)"
+            );
+            let best = candidates[0]
+                .objective_score
+                .expect("dim=2 objective candidate must carry a score");
+            // Small epsilon absorbs any ULP-level arithmetic-order noise between
+            // this test's manual re-derivation and the solver's internal
+            // expression-evaluator fold — dominance is a `<=` claim, not exact
+            // equality (mirrors solver_integration.rs's tolerance).
+            assert!(
+                best <= single_score + 1e-9,
+                "best-of-K candidate[0] (score {}) must never be worse than the \
+                 single-seed solve() score ({}) — dominance",
+                best,
+                single_score
+            );
+        }
+        other => panic!(
+            "expected Ranked for an interior-optimum dim=2 objective problem, got {:?}",
+            other
+        ),
+    }
+}
+
+/// (c) Cross-merge correctness: when the problem decomposes into an
+/// objective component (x,y) + an independent non-objective component (z),
+/// EVERY merged candidate — not just candidate 0 — must contain all three
+/// values. A naive implementation that only cross-merges the winner (or
+/// forgets to union the shared non-objective values into candidates[1..])
+/// would drop z from the alternate candidates.
+#[test]
+fn solve_ranked_registry_cross_merges_independent_component_into_every_candidate() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+    let (problem, x_id, y_id, z_id) = two_param_objective_plus_independent_component();
+
+    let ranked = registry.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert!(
+                candidates.len() >= 2,
+                "expected the objective component's best-of-K set to \
+                 propagate through the cross-merge, got {}",
+                candidates.len()
+            );
+            for (i, c) in candidates.iter().enumerate() {
+                assert!(
+                    c.values.contains_key(&x_id),
+                    "candidate[{i}] missing objective-component value x"
+                );
+                assert!(
+                    c.values.contains_key(&y_id),
+                    "candidate[{i}] missing objective-component value y"
+                );
+                assert!(
+                    c.values.contains_key(&z_id),
+                    "candidate[{i}] missing independent-component value z \
+                     (cross-merge correctness)"
+                );
+            }
+        }
+        other => panic!("expected Ranked, got {:?}", other),
+    }
+}
+
+/// dim=1 companion guard: a single-auto-param objective problem must keep
+/// the pre-δ single-candidate path at the registry seam (mirrors B1 at the
+/// `DimensionalSolver` level and the byte-identical test at the registry
+/// level) — an interior-optimum minimize (not maximize-toward-boundary) so
+/// the outcome is deterministically `Solved`, not a boundary/Infeasible edge
+/// case.
+#[test]
+fn solve_ranked_registry_dim1_objective_returns_exactly_one_candidate() {
+    let x_id = vcid("Bracket", "thickness");
+    let x_ref = value_ref("Bracket", "thickness");
+    let gt_expr = gt(x_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(20.0)));
+
+    let dx = binop(BinOp::Sub, x_ref, literal(mm(5.0)));
+    let dx2 = binop(BinOp::Mul, dx.clone(), dx);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, dx2);
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: x_id,
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+            free: true,
+        }],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+    let ranked = registry.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert_eq!(
+                candidates.len(),
+                1,
+                "dim=1 objective problem must keep the pre-\u{3b4} single-candidate \
+                 path (pins the multistart gate at the registry seam); got {}",
+                candidates.len()
+            );
+        }
+        other => panic!(
+            "expected Ranked for an interior-optimum dim=1 problem, got {:?}",
+            other
+        ),
+    }
+}
+
+/// (d) Infeasible problems still map through `solve_ranked` unchanged.
+#[test]
+fn solve_ranked_registry_infeasible_maps_through_unchanged() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let x_id = vcid("Part", "x");
+    let constraint = gt(
+        value_ref("Part", "x"),
+        literal(Value::Scalar {
+            si_value: 0.015,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: x_id,
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)),
+            free: false,
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    let ranked = registry.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostics");
+        }
+        other => panic!(
+            "expected Infeasible through registry solve_ranked, got {:?}",
+            other
+        ),
+    }
+}
+
+/// (d) Empty problems (no auto params) still map through `solve_ranked`
+/// unchanged: exactly 1 trivial, empty-valued candidate.
+#[test]
+fn solve_ranked_registry_empty_problem_maps_through_unchanged() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    let ranked = registry.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert_eq!(
+                candidates.len(),
+                1,
+                "empty problem should trivially map to exactly 1 (empty) candidate"
+            );
+            assert!(
+                candidates[0].values.is_empty(),
+                "empty problem candidate should have no values"
+            );
+        }
+        other => panic!("expected Ranked for empty problem, got {:?}", other),
     }
 }
 
@@ -610,6 +1017,7 @@ fn pt_pt_distance_problem() -> (reify_core::ValueCellId, reify_core::ValueCellId
     let constraint_expr = eq(dist_call, literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -736,6 +1144,7 @@ fn registry_mixed_dimensional_and_geometric() {
     let geo_expr = eq(dist_call, literal(mm(15.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: thickness_id.clone(),
@@ -810,6 +1219,7 @@ fn registry_merges_unique_flag() {
     let c2 = gt(value_ref("Part", "b"), literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -922,6 +1332,7 @@ fn lexicographic_stages_by_descending_priority() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("Lex", "x"), weight: 1.0, priority: 1 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("Lex", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Stage 1 spy result: x at its bound.
@@ -940,6 +1351,7 @@ fn lexicographic_stages_by_descending_priority() {
     let registry = SolverRegistry::new(Box::new(spy));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
@@ -1035,6 +1447,7 @@ fn lexicographic_freezes_earlier_rank_as_epsilon_band() {
                 priority: 0,
             },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Stage 1 returns x at a concrete value so obj* for rank-1 is computable.
@@ -1052,6 +1465,7 @@ fn lexicographic_freezes_earlier_rank_as_epsilon_band() {
     let registry = SolverRegistry::new(Box::new(spy));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -1160,6 +1574,7 @@ fn lexicographic_ties_fold_as_weighted_sum_within_rank() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexTie", "y"), weight: 1.0, priority: 2 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexTie", "z"), weight: 1.0, priority: 1 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Two spy stages: tie-rank (x+y) first, then z.
@@ -1179,6 +1594,7 @@ fn lexicographic_ties_fold_as_weighted_sum_within_rank() {
     let registry = SolverRegistry::new(Box::new(spy));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
@@ -1252,6 +1668,7 @@ fn lexicographic_single_rank_degenerates_to_weighted_sum() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Equivalent WeightedSum — must produce the same result.
@@ -1261,10 +1678,12 @@ fn lexicographic_single_rank_degenerates_to_weighted_sum() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // free: true — we are testing the delegation path, not uniqueness.
     let make_problem = |obj: ObjectiveSet| ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
@@ -1348,6 +1767,7 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "x"), weight: 1.0, priority: 1 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // WeightedSum of the same terms (priority ignored) — must prefer y → x_ws ≈ 0.
@@ -1357,6 +1777,7 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "x"), weight: 1.0, priority: 1 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // No initial values: midpoint of (0.0, 0.1) = 50mm violates all three
@@ -1365,6 +1786,7 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
     // reduced-iteration warm-start that can collapse the Nelder-Mead simplex
     // before it explores the constraint boundary at x=3mm.
     let make_problem = |obj: ObjectiveSet| ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.0, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.0, 0.1)), free: true },
@@ -1421,203 +1843,4 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
         "WeightedSum must NOT preserve rank-1 (x_ws={x_ws:.6}m expected < x_lex−1mm={:.6}m)",
         x_lex - 0.001
     );
-}
-
-// ============================================================================
-// Compute-dispatch forwarding through SolverRegistry
-// (step-11 RED / step-12 GREEN, task #4880 — review fix
-//  integration_gap_feature_noop_in_production)
-// ============================================================================
-//
-// `SolverRegistry::production()` is the `ConstraintSolver` installed by both the CLI
-// (reify-cli/src/main.rs) and GUI (gui/src-tauri/src/engine.rs) engines, and the
-// engine_eval.rs resolve site calls `solve_with_dispatch` / `solve_ranked_with_dispatch`
-// on it (task #4880 step-10). Because the registry originally inherited the trait DEFAULT
-// `_with_dispatch` methods (constraint.rs:487-512) — which drop `dispatch` and re-enter
-// `solve`/`solve_ranked` with `dispatch = None` — the #4880 compute-dispatch hook never
-// reached the inner `DimensionalSolver` cost loop in production: `@optimized` calls
-// (`solve_elastic_static`) silently fell through to `Value::Undef`, a no-op on the real
-// CLI/GUI path.
-//
-// This mirrors the step-5 `DimensionalSolver` fixture (solver.rs
-// `dispatch_hook_steers_convergence_to_fea_binding_point`) but drives it THROUGH
-// `SolverRegistry::new(Box::new(DimensionalSolver))` to prove the registry forwards the
-// hook into its inner dimensional solver. The single new variable vs. the step-5 GREEN
-// baseline is the registry hop, so no fresh numeric/exactness premise is introduced.
-
-/// A [`reify_ir::ComputeDispatch`] that resolves exactly `"test::stress"` to `K / t`
-/// (reading trial `t` from `args[0]`), counting how many times it was asked to resolve
-/// that target. Defers (`None`) for every other target. Mirror of the step-5
-/// `CountingDispatch` in `crates/reify-constraints/src/solver.rs`.
-struct CountingDispatch {
-    calls: std::sync::atomic::AtomicUsize,
-    k: f64,
-}
-
-impl reify_ir::ComputeDispatch for CountingDispatch {
-    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
-        if target != "test::stress" {
-            return None;
-        }
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let t = args.first()?.as_f64()?;
-        Some(Value::Scalar {
-            si_value: self.k / t,
-            dimension: DimensionVector::DIMENSIONLESS,
-        })
-    }
-}
-
-/// Builds the shared `stress(t) < LIMIT`, `minimize t` fixture (mirror of the step-5
-/// `fea_binding_problem` in solver.rs). `stress` is an `@optimized("test::stress")` stub
-/// whose body reduces to `Undef`; `K` / `LIMIT` are chosen so the binding point
-/// `t* = K / LIMIT = 0.25` sits strictly inside the declared bounds `(0.001, 1.0)`, away
-/// from their `0.5005` midpoint — so a pass that actually reaches the optimum is
-/// distinguishable from one that merely reports the unmoved initial guess.
-fn fea_binding_problem() -> (reify_core::ValueCellId, ResolutionProblem) {
-    let params = vec![("t".to_string(), Type::length())];
-    let stress_fn = CompiledFunction {
-        name: "stress".to_string(),
-        doc: None,
-        is_pub: false,
-        param_defaults: CompiledFunction::no_defaults_for(&params),
-        params,
-        return_type: Type::dimensionless_scalar(),
-        body: CompiledFnBody {
-            let_bindings: vec![],
-            result_expr: CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
-        },
-        content_hash: ContentHash::of(b"step11_registry_fea_binding_stress_stub"),
-        annotations: vec![],
-        optimized_target: Some("test::stress".to_string()),
-        type_params: vec![],
-    };
-
-    let t_id = vcid("Bracket", "t");
-    let t_ref = CompiledExpr::value_ref(t_id.clone(), Type::length());
-    let stress_call = CompiledExpr::user_function_call(
-        "stress".to_string(),
-        vec![t_ref.clone()],
-        Type::dimensionless_scalar(),
-    );
-    let limit_lit = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: 4.0, // LIMIT; with K = 1.0 below, t* = K / LIMIT = 0.25
-            dimension: DimensionVector::DIMENSIONLESS,
-        },
-        Type::dimensionless_scalar(),
-    );
-    let lt_expr = CompiledExpr::binop(BinOp::Lt, stress_call, limit_lit, Type::Bool);
-    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, t_ref);
-
-    let problem = ResolutionProblem {
-        auto_params: vec![AutoParam {
-            id: t_id.clone(),
-            param_type: Type::length(),
-            bounds: Some((0.001, 1.0)),
-            free: false,
-        }],
-        constraints: vec![(cnid("Bracket", 0), lt_expr)],
-        current_values: ValueMap::new(),
-        objective: Some(objective),
-        functions: vec![stress_fn].into(),
-    };
-    (t_id, problem)
-}
-
-/// SolverRegistry must thread the compute-dispatch hook into its per-component
-/// inner-solver calls, so an `@optimized` call reached inside a constraint/objective
-/// binds the free param at its interior optimum — exactly as when driving the inner
-/// `DimensionalSolver` directly (step-5). Without threading (default trait methods),
-/// dispatch is discarded and `stress(t)` stays `Undef` → Infeasible.
-///
-/// RED before step-12: `SolverRegistry` inherits the trait DEFAULT
-/// `solve_with_dispatch`/`solve_ranked_with_dispatch` (constraint.rs:487-512), which drop
-/// `dispatch` and re-call `solve`/`solve_ranked`; `solve_inner` then dispatches the inner
-/// solver (registry.rs:232/262) with `dispatch = None`, so `stress → Undef → Infeasible`
-/// and the Solved/Ranked-arm assertions panic.
-#[test]
-fn registry_threads_compute_dispatch_into_inner_solver() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let (t_id, problem) = fea_binding_problem();
-    let (lo, hi) = (0.001, 1.0);
-    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
-
-    // (a) WITH the dispatch hook forwarded through the registry: stress(t) resolves to
-    // a real, thickness-varying value inside the inner cost loop, so `stress(t) < limit`
-    // is a real constraint that binds at the interior optimum t* = K / LIMIT.
-    let mock = CountingDispatch {
-        calls: AtomicUsize::new(0),
-        k: 1.0,
-    };
-    match registry.solve_with_dispatch(&problem, Some(&mock)) {
-        SolveResult::Solved { values, .. } => {
-            let t = values
-                .get(&t_id)
-                .expect("t should be in the solution")
-                .as_f64()
-                .expect("t should be numeric");
-            assert!(
-                t > lo && t < hi,
-                "registry.solve_with_dispatch should converge to a t strictly interior to \
-                 bounds ({lo}, {hi}); got {t}"
-            );
-        }
-        other => panic!(
-            "expected Solved once the registry forwards dispatch into the inner cost loop; \
-             got {:?}",
-            other
-        ),
-    }
-    assert!(
-        mock.calls.load(Ordering::SeqCst) > 0,
-        "expected the dispatch hook to have been invoked from inside the inner cost loop \
-         THROUGH the registry (solve path)"
-    );
-
-    let mock_ranked = CountingDispatch {
-        calls: AtomicUsize::new(0),
-        k: 1.0,
-    };
-    match registry.solve_ranked_with_dispatch(&problem, Some(&mock_ranked)) {
-        RankedSolveResult::Ranked { candidates, .. } => {
-            let t = candidates
-                .first()
-                .expect("non-empty candidates (invariant I2)")
-                .values
-                .get(&t_id)
-                .expect("t should be in the solution")
-                .as_f64()
-                .expect("t should be numeric");
-            assert!(
-                t > lo && t < hi,
-                "registry.solve_ranked_with_dispatch should converge to a t strictly interior \
-                 to bounds ({lo}, {hi}); got {t}"
-            );
-        }
-        other => panic!(
-            "expected Ranked once the registry forwards dispatch into the inner cost loop; \
-             got {:?}",
-            other
-        ),
-    }
-    assert!(
-        mock_ranked.calls.load(Ordering::SeqCst) > 0,
-        "expected the dispatch hook to have been invoked from inside the inner cost loop \
-         THROUGH the registry (ranked path)"
-    );
-
-    // (b) WITHOUT the dispatch hook: plain registry.solve drops any hook, so `stress(t)`
-    // falls through to body-eval -> Undef for every t and the FEA constraint can never be
-    // numerically satisfied — back-compat with pre-#4880 behaviour (invariant I1 freeze).
-    match registry.solve(&problem) {
-        SolveResult::Infeasible { .. } => {}
-        other => panic!(
-            "expected Infeasible for the plain (no-dispatch) registry.solve -- stress(t) is \
-             Undef for every t so the FEA constraint can never be numerically satisfied \
-             without the hook; got {:?}",
-            other
-        ),
-    }
 }

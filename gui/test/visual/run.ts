@@ -22,6 +22,7 @@ import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
 import { FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
 import { resolveDebugPort, debugUrlForPort, allocateFreePort } from "./endpoint.js";
+import { runScenarioSteps } from "./orchestrate.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -41,7 +42,7 @@ const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 // Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
 // SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-import { SCENARIOS, screenshotBaseFor, feaViewActions, type Scenario, type Camera } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 
@@ -168,6 +169,7 @@ type HarnessExitCode = 0 | 1 | 2;
 
 async function main(): Promise<HarnessExitCode> {
   let anyFailed = false;
+
   // INVARIANT: SCENARIOS[0].fixture bootstraps the GUI process; subsequent scenarios call
   // open_file without relaunching. If scenarios are ever filtered or reordered (e.g. a
   // future --grep flag), move the launch fixture to a neutral empty .ri and rely entirely
@@ -183,114 +185,17 @@ async function main(): Promise<HarnessExitCode> {
     for (const scenario of SCENARIOS) {
       console.log(`\n[harness] scenario: ${scenario.name}`);
 
-      // Open the scenario fixture
-      const fixturePath = path.join(REPO_ROOT, scenario.fixture);
-      const openResult = await rpc<unknown>("open_file", { path: fixturePath });
-      if (!openResult.ok) {
-        console.error(`  FAIL open_file: ${openResult.error}`);
+      // Drive the scenario to screenshot-ready state: open_file, set_test_mode,
+      // set_camera, wait_for_idle, then the optional set_fea_case (task 3026),
+      // feaChannel (task 4906), and feaView (task 2968) blocks. Exact RPC
+      // sequence, param shapes, and log-and-continue-on-failure behavior are
+      // headlessly unit-tested in orchestrate.test.ts — this function itself
+      // is not headlessly testable (it spawns a real GUI process and calls
+      // process.exit).
+      const stepsOutcome = await runScenarioSteps({ rpc, log: (m) => console.error(m) }, scenario, REPO_ROOT);
+      if (!stepsOutcome.ok) {
         anyFailed = true;
         continue;
-      }
-
-      // Enable test mode (deterministic rendering)
-      const testModeResult = await rpc<unknown>("set_test_mode", { enabled: true });
-      if (!testModeResult.ok) {
-        console.error(`  FAIL set_test_mode: ${testModeResult.error}`);
-        anyFailed = true;
-        continue;
-      }
-
-      // Set camera
-      const cameraArgs: Record<string, unknown> = {
-        position: scenario.camera.position,
-        target: scenario.camera.target,
-      };
-      if (scenario.camera.up !== undefined) cameraArgs.up = scenario.camera.up;
-      if (scenario.camera.zoom !== undefined) cameraArgs.zoom = scenario.camera.zoom;
-
-      const cameraResult = await rpc<unknown>("set_camera", cameraArgs);
-      if (!cameraResult.ok) {
-        console.error(`  FAIL set_camera: ${cameraResult.error}`);
-        anyFailed = true;
-        continue;
-      }
-
-      // Wait for the renderer to settle.
-      // parseRpcResponse now surfaces in-band {error:...} as ok:false (task-4305 rpc.ts
-      // fix), so a stuck renderer/engine (timeout/engine_phase/engine_not_started) is
-      // correctly caught here rather than silently passing as ok:true.
-      const idleResult = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
-      if (!idleResult.ok) {
-        console.error(`  FAIL wait_for_idle (stuck renderer/engine?): ${idleResult.error}`);
-        anyFailed = true;
-        continue;
-      }
-
-      // Select the active FEA load case (task 3026: multi-load-case case-picker).
-      // When scenario.feaCase is set, call set_fea_case then wait for idle again
-      // so the re-sourced contour is fully rendered before we screenshot.
-      if (scenario.feaCase !== undefined) {
-        const setCaseResult = await rpc<unknown>("set_fea_case", { case: scenario.feaCase });
-        if (!setCaseResult.ok) {
-          console.error(`  FAIL set_fea_case(${scenario.feaCase}): ${setCaseResult.error}`);
-          anyFailed = true;
-          continue;
-        }
-        const idleAfterCase = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
-        if (!idleAfterCase.ok) {
-          console.error(`  FAIL wait_for_idle after set_fea_case: ${idleAfterCase.error}`);
-          anyFailed = true;
-          continue;
-        }
-      }
-
-      // Drive the FEA deformed-shape view (task 2968).
-      // feaViewActions returns [] for contour/plain scenarios, so this is a no-op
-      // for all existing non-feaView scenes.  For deformed scenes the sequence is:
-      //   click show-deformed toggle → wait_for_selector the warp preset →
-      //   click the warp preset → wait_for_idle.
-      //
-      // Idempotency assumption: open_file (called unconditionally above) is assumed
-      // to reset the FEA view store to its default state (showDeformed=false).
-      // The `fea-mode-show-deformed-toggle` is a checkbox that flips state on each
-      // click — if showDeformed were already true at scenario start, the click would
-      // toggle it OFF rather than ON, the warp-preset buttons (rendered only under
-      // <Show when={showDeformed}>) would disappear from the DOM, and the subsequent
-      // wait_for_selector would time out with a confusing error.
-      //
-      // If the two deformed baselines look wrong (e.g. warp100 appears undeformed),
-      // verify that open_file triggers a feaModeStore reset.  A `get_element_attribute`
-      // debug tool to read the toggle's checked state would allow idempotent clicking.
-      const viewActions = feaViewActions(scenario);
-      let viewActionFailed = false;
-      for (const action of viewActions) {
-        if (action.kind === "click") {
-          const clickResult = await rpc<unknown>("click_element", { testId: action.testId });
-          if (!clickResult.ok) {
-            console.error(`  FAIL click_element(${action.testId}): ${clickResult.error}`);
-            anyFailed = true;
-            viewActionFailed = true;
-            break;
-          }
-        } else {
-          // kind === "waitForSelector"
-          const waitSelectorResult = await rpc<unknown>("wait_for_selector", { testId: action.testId });
-          if (!waitSelectorResult.ok) {
-            console.error(`  FAIL wait_for_selector(${action.testId}): ${waitSelectorResult.error}`);
-            anyFailed = true;
-            viewActionFailed = true;
-            break;
-          }
-        }
-      }
-      if (viewActionFailed) continue;
-      if (viewActions.length > 0) {
-        const idleAfterView = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
-        if (!idleAfterView.ok) {
-          console.error(`  FAIL wait_for_idle after feaViewActions: ${idleAfterView.error}`);
-          anyFailed = true;
-          continue;
-        }
       }
 
       // Capture screenshot

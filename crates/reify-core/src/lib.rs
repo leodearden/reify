@@ -20,15 +20,18 @@
 
 pub mod diagnostics;
 pub mod dimension;
+pub mod display_units;
 pub mod field_calculus;
 pub mod kernel;
 pub mod hash;
 pub mod identity;
+pub mod panic_payload;
 pub mod persistent_cache;
 pub mod primitives;
 pub mod source_location;
 pub mod spanned_ident;
 pub mod ty;
+pub mod units;
 
 // Root re-exports — mirror the flat surface that previously lived at the
 // reify-types lib root for these eight modules.  Mirroring them here keeps
@@ -40,6 +43,7 @@ pub use diagnostics::{
     SourceSpan,
 };
 pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
+pub use display_units::{AutoScale, AutoScaleChoice, DimensionLadder, UnitOption, unit_ladders};
 pub use field_calculus::{DifferentialOp, differential_codomain};
 pub use hash::ContentHash;
 pub use identity::{
@@ -48,14 +52,16 @@ pub use identity::{
     ScopeId, SnapshotId, SourceNodeId, ValueCellId, VersionId,
 };
 pub use primitives::{
-    DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, PortDirection, SHELL_ANNOTATION, SOLID_ANNOTATION,
-    SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+    DEPRECATED_ANNOTATION, DISPLAY_ANNOTATION, OPTIMIZED_ANNOTATION, PortDirection,
+    SHELL_ANNOTATION, SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
 };
 pub use source_location::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
     line_col_to_byte_offset_with_offsets,
 };
+pub use panic_payload::panic_payload_to_string;
 pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;
+pub use units::unit_symbol_to_si;

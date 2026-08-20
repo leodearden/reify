@@ -1,0 +1,38 @@
+// End-to-end example for task 4168 (geom-transform ε): `arbitrary_pattern`'s
+// LIST form — a `List<Transform<3>>` carrying a full per-instance rigid
+// transform (rotation + translation) — additively alongside the existing
+// scalar-triple (translation-only) form exercised by
+// examples/pattern_composition.ri's `PatternComposed.shifted`. Supersedes the
+// phantom-partial task 323 (translation-only arbitrary_pattern).
+//
+// Running
+//
+//     reify eval examples/pattern_arbitrary_transforms.ri
+//
+// unions `box(2mm, 2mm, 10mm)` with a single copy rotated 90° about the Y
+// axis (zero translation) via the LIST form, and surfaces the resulting
+// geometry's mass through the `Physical` spec-shape trait (mirrors
+// examples/spec-shape-physical.ri):
+//
+//   ArbitraryTransformBracket.mass = volume(geometry) * material.density
+//
+// A 90°-about-Y rotation swaps the box's X and Z extents (2mm <-> 10mm), so
+// the union of the original box (X:[-1,1] Y:[-1,1] Z:[-5,5] mm) with its
+// rotated copy (X:[-5,5] Y:[-1,1] Z:[-1,1] mm) has volume
+// 40 + 40 - 8 = 72 mm^3 (their 2x2x2mm cube intersection is subtracted once)
+// — observably different from either box alone. This is the signal that the
+// per-instance rotation is honored end-to-end (compiler list-form lowering
+// -> eval decode -> IR per-instance transforms -> kernel rigid transform)
+// rather than silently dropped (task 323's translation-only regression,
+// which would instead yield the un-rotated box's volume of 40 mm^3).
+structure def ArbitraryTransformBracket : Physical {
+    param geometry : Solid = arbitrary_pattern(
+        box(2mm, 2mm, 10mm),
+        [transform3(orient_axis_angle(vec3(0.0, 1.0, 0.0), 90deg), vec3(0mm, 0mm, 0mm))]
+    )
+    param material : Material = Material(
+        name: "Steel AISI 1045",
+        density: 7850kg/m^3,
+        youngs_modulus: 205GPa
+    )
+}

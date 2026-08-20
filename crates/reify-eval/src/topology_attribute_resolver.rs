@@ -1,7 +1,8 @@
 //! v0.2 persistent-naming-v2 attribute-based selector resolver.
 //!
-//! Mirrors `topology_selectors.rs::resolve_unique_by_tag` (the v0.1 path)
-//! but consumes `TopologyAttributeTable` instead of `FeatureTagTable`.
+//! Resolves a selector query against a `TopologyAttributeTable`, returning
+//! the unique matching handle or a diagnostic when the match is not exactly
+//! one candidate.
 //!
 //! ## PRD references
 //!
@@ -30,14 +31,16 @@
 //!
 //! The resolver is pure Rust: it does NOT take a `&mut dyn GeometryKernel`.
 //! Callers pre-extract candidates via `kernel.extract_faces(...)` /
-//! `kernel.extract_edges(...)` and pass a slice. This mirrors
-//! `resolve_unique_by_tag`'s discipline and keeps the resolver testable
-//! without an OCCT build.
+//! `kernel.extract_edges(...)` and pass a slice, which keeps the resolver
+//! testable without an OCCT build.
 
 use std::collections::HashSet;
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
-use reify_ir::{FeatureId, GeometryHandleId, Role, TopologyAttribute, TopologyAttributeTable};
+use reify_ir::{
+    FeatureId, GeometryHandleId, KernelHandle, KernelId, Role, TopologyAttribute,
+    TopologyAttributeTable,
+};
 
 /// Query used to pick a unique sub-shape out of a candidate slice.
 ///
@@ -147,6 +150,7 @@ pub fn resolve_unique_by_attribute(
     candidates: &[GeometryHandleId],
     query: &AttributeQuery,
     selector_span: SourceSpan,
+    scope_kernel: KernelId,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
     // (step-16a) Empty candidate slice: nothing to look up — by definition
@@ -167,7 +171,17 @@ pub fn resolve_unique_by_attribute(
     // answer, so duplicate candidate ids cannot change the outcome. The
     // dedup discipline is enforced where it matters, inside
     // `count_unique_matches` (which counts matches, not just any-match).
-    if !candidates.iter().any(|&id| table.lookup(id).is_some()) {
+    // Scoped to `scope_kernel` (#4351 step-6): a candidate id is only ever
+    // meaningful within the kernel scope that produced it, so cross-kernel
+    // builds must look it up under that same scope.
+    if !candidates.iter().any(|&id| {
+        table
+            .lookup(KernelHandle {
+                kernel: scope_kernel,
+                id,
+            })
+            .is_some()
+    }) {
         return AttributeResolution::FallbackToComputed;
     }
 
@@ -218,7 +232,7 @@ pub fn resolve_unique_by_attribute(
     // multi-match clustering path both consume the same Vec, dropping the
     // redundant predicate-closure construction per multi-match.
     if let Some(label) = query.user_label.as_deref() {
-        let matches = collect_matches(table, candidates, |attr| {
+        let matches = collect_matches(table, candidates, scope_kernel, |attr| {
             attr.user_label.as_deref() == Some(label) && feature_id_filter(attr)
         });
         match matches.len() {
@@ -250,7 +264,7 @@ pub fn resolve_unique_by_attribute(
     // role + local_index branch (step-4). Same single-scan discipline as
     // the user_label branch above.
     if let Some((role, idx)) = query.role_and_index {
-        let matches = collect_matches(table, candidates, |attr| {
+        let matches = collect_matches(table, candidates, scope_kernel, |attr| {
             attr.role == role && attr.local_index == idx && feature_id_filter(attr)
         });
         match matches.len() {
@@ -290,9 +304,8 @@ pub fn resolve_unique_by_attribute(
 ///
 /// Shared by the zero-match (step-10) and multi-match (step-12) emission
 /// sites so the message form stays consistent. The primary label is
-/// attached at `selector_span` with the canonical "selector call" text,
-/// matching `resolve_unique_by_tag`'s diagnostic shape. A secondary
-/// "feature originally produced here" label is intentionally omitted —
+/// attached at `selector_span` with the canonical "selector call" text.
+/// A secondary "feature originally produced here" label is intentionally omitted —
 /// `TopologyAttribute` does not currently carry a `source_span`, so there
 /// is no canonical originating-feature span to point at.
 fn emit_attribute_stale_diagnostic(
@@ -314,22 +327,21 @@ fn emit_attribute_stale_diagnostic(
 /// to the attribute. Returns the de-duplicated Vec of all matching
 /// `(handle, attribute)` pairs in candidate-encounter order.
 ///
-/// Mirrors `resolve_unique_by_tag`'s zero/one/many counting discipline.
-/// Callers branch on `matches.len()` (`0` / `1` / `>1`) to decide whether
-/// to resolve, fall through, or emit a diagnostic. The returned slice
-/// also feeds [`try_cluster_after_split`] without re-querying the table:
-/// each match already carries a borrow of the matching attribute, so
-/// the cluster predicate runs directly over the borrowed attrs rather
-/// than re-doing `table.lookup` per matched id.
+/// Implements a zero/one/many counting discipline: callers branch on
+/// `matches.len()` (`0` / `1` / `>1`) to decide whether to resolve, fall
+/// through, or emit a diagnostic. The returned slice also feeds
+/// [`try_cluster_after_split`] without re-querying the table: each match
+/// already carries a borrow of the matching attribute, so the cluster
+/// predicate runs directly over the borrowed attrs rather than re-doing
+/// `table.lookup` per matched id.
 ///
-/// Deduplicates candidate ids via a HashSet (mirroring
-/// `resolve_unique_by_tag` at topology_selectors.rs:703) so a misbehaving
-/// extractor that returned the same handle multiple times does not
-/// inflate the match count and spuriously trigger an ambiguity
-/// diagnostic.
+/// Deduplicates candidate ids via a HashSet so a misbehaving extractor
+/// that returned the same handle multiple times does not inflate the
+/// match count and spuriously trigger an ambiguity diagnostic.
 fn collect_matches<'t, F>(
     table: &'t TopologyAttributeTable,
     candidates: &[GeometryHandleId],
+    scope_kernel: KernelId,
     predicate: F,
 ) -> Vec<(GeometryHandleId, &'t TopologyAttribute)>
 where
@@ -341,8 +353,12 @@ where
         if !seen.insert(id) {
             continue;
         }
-        if let Some(attr) = table.lookup(id)
-            && predicate(attr)
+        // Scoped to `scope_kernel` (#4351 step-6) — a candidate id is only
+        // ever meaningful within the kernel scope that produced it.
+        if let Some(attr) = table.lookup(KernelHandle {
+            kernel: scope_kernel,
+            id,
+        }) && predicate(attr)
         {
             out.push((id, attr));
         }
@@ -359,7 +375,10 @@ where
 /// Operates directly on the `(handle, attr)` pairs returned by
 /// [`collect_matches`] — both the parent-key windows check and the
 /// children-list construction use the borrowed attrs, so no
-/// `table.lookup` is re-issued per matched id.
+/// `table.lookup` is re-issued per matched id. Consequently this function
+/// takes no `scope_kernel` parameter of its own (#4351 step-6): it never
+/// looks the table up directly, so it has nothing to scope — the pairs it
+/// receives were already resolved against the caller's scope.
 ///
 /// Failure modes that yield `None` (caller proceeds to Unresolved):
 ///   - `matches.len() < 2` — no cluster to detect; a single-element
@@ -497,8 +516,8 @@ mod tests {
     #[test]
     fn resolve_unique_by_attribute_user_label_match_returns_resolved() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(10), attr(Role::Side, 0, Some("top")));
-        table.record(h(11), attr(Role::Side, 1, Some("bottom")));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Side, 0, Some("top")));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(11) }, attr(Role::Side, 1, Some("bottom")));
         let candidates = [h(10), h(11)];
         let query = AttributeQuery {
             user_label: Some("top".to_string()),
@@ -507,7 +526,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result, AttributeResolution::Resolved(h(10)));
         assert!(
             diagnostics.is_empty(),
@@ -521,8 +540,8 @@ mod tests {
     #[test]
     fn resolve_unique_by_attribute_role_and_index_match_returns_resolved() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        table.record(h(21), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Side, 0, None));
         let candidates = [h(20), h(21)];
         let query = AttributeQuery {
             user_label: None,
@@ -531,7 +550,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result, AttributeResolution::Resolved(h(20)));
         assert!(
             diagnostics.is_empty(),
@@ -550,9 +569,9 @@ mod tests {
     fn user_label_preferred_over_role_and_index_when_both_apply() {
         let mut table = TopologyAttributeTable::default();
         // handle 30 — has the user_label, but mismatched role/idx.
-        table.record(h(30), attr(Role::Side, 7, Some("top")));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(30) }, attr(Role::Side, 7, Some("top")));
         // handle 31 — no user_label, but matches the queried role/idx.
-        table.record(h(31), attr(Role::Cap(CapKind::Top), 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(31) }, attr(Role::Cap(CapKind::Top), 0, None));
         let candidates = [h(30), h(31)];
 
         // (a) user_label match exists → user_label wins, role/idx ignored.
@@ -563,7 +582,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_a =
-            resolve_unique_by_attribute(&table, &candidates, &query_a, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_a, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_a,
             AttributeResolution::Resolved(h(30)),
@@ -579,7 +598,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_b =
-            resolve_unique_by_attribute(&table, &candidates, &query_b, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_b, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_b,
             AttributeResolution::Resolved(h(31)),
@@ -670,8 +689,8 @@ mod tests {
 
         for case in cases {
             let mut table = TopologyAttributeTable::default();
-            table.record(h(60), case.attr_a);
-            table.record(h(61), case.attr_b);
+            table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, case.attr_a);
+            table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, case.attr_b);
             let candidates = [h(60), h(61)];
             let mut diagnostics = Vec::new();
             let result = resolve_unique_by_attribute(
@@ -679,6 +698,7 @@ mod tests {
                 &candidates,
                 &case.query,
                 span(),
+                KernelId::Occt,
                 &mut diagnostics,
             );
             assert_eq!(
@@ -740,8 +760,8 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 1,
         }];
-        table.record(h(60), a);
-        table.record(h(61), b);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, a);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, b);
         let candidates = [h(60), h(61)];
         let query = AttributeQuery {
             user_label: None,
@@ -750,7 +770,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::AmbiguousAfterSplit {
@@ -789,8 +809,8 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 1,
         }];
-        table.record(h(70), a);
-        table.record(h(71), b);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(70) }, a);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(71) }, b);
         let candidates = [h(70), h(71)];
         let query = AttributeQuery {
             user_label: Some("seam".to_string()),
@@ -799,7 +819,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::AmbiguousAfterSplit {
@@ -826,7 +846,7 @@ mod tests {
     #[test]
     fn unresolved_with_diagnostic_when_zero_match_but_entries_exist() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(50), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(50) }, attr(Role::Side, 0, None));
         let candidates = [h(50)];
         let selector_span = SourceSpan::new(10, 20);
         let query = AttributeQuery {
@@ -840,6 +860,7 @@ mod tests {
             &candidates,
             &query,
             selector_span,
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(result, AttributeResolution::Unresolved);
@@ -853,7 +874,7 @@ mod tests {
             diag.message
         );
         // Primary label at selector_span with the canonical "selector call"
-        // text (mirrors resolve_unique_by_tag).
+        // text.
         assert!(!diag.labels.is_empty(), "expected at least one label");
         let primary = &diag.labels[0];
         assert_eq!(primary.span, selector_span);
@@ -881,7 +902,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result, AttributeResolution::FallbackToComputed);
         assert!(
             diagnostics.is_empty(),
@@ -890,11 +911,11 @@ mod tests {
 
         // (b) Table populated for OTHER handles.
         let mut table_b = TopologyAttributeTable::default();
-        table_b.record(h(99), attr(Role::Side, 0, None));
+        table_b.record(KernelHandle { kernel: KernelId::Occt, id: h(99) }, attr(Role::Side, 0, None));
         // Candidates 40/41 still have no entries.
         let mut diagnostics = Vec::new();
         let result_b =
-            resolve_unique_by_attribute(&table_b, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table_b, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result_b, AttributeResolution::FallbackToComputed);
         assert!(diagnostics.is_empty());
     }
@@ -920,8 +941,8 @@ mod tests {
         let slot = FeatureId::realization("Slot", 0);
         let other = FeatureId::realization("Other", 0);
         let mut table = TopologyAttributeTable::default();
-        table.record(h(70), attr_for(boss.clone(), Role::Side, 0, None));
-        table.record(h(71), attr_for(slot.clone(), Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(70) }, attr_for(boss.clone(), Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(71) }, attr_for(slot.clone(), Role::Side, 0, None));
         let candidates = [h(70), h(71)];
 
         // (a) feature_id=Slot → handle 71.
@@ -932,7 +953,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_slot =
-            resolve_unique_by_attribute(&table, &candidates, &query_slot, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_slot, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_slot,
             AttributeResolution::Resolved(h(71)),
@@ -948,7 +969,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_boss =
-            resolve_unique_by_attribute(&table, &candidates, &query_boss, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_boss, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_boss,
             AttributeResolution::Resolved(h(70)),
@@ -971,6 +992,7 @@ mod tests {
             &candidates,
             &query_other,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(result_other, AttributeResolution::Unresolved);
@@ -998,13 +1020,13 @@ mod tests {
     /// (c) Duplicate candidate ids → Resolved. The resolver must
     ///     deduplicate before counting matches so a misbehaving extractor
     ///     that returned the same handle three times still yields
-    ///     `Resolved(handle)`, mirroring `resolve_unique_by_tag`'s
-    ///     defense-in-depth `HashSet::insert` discipline.
+    ///     `Resolved(handle)`, via the defense-in-depth `HashSet::insert`
+    ///     discipline.
     #[test]
     fn edge_cases() {
         // (a) Empty candidate slice + populated table.
         let mut table_a = TopologyAttributeTable::default();
-        table_a.record(h(80), attr(Role::Side, 0, None));
+        table_a.record(KernelHandle { kernel: KernelId::Occt, id: h(80) }, attr(Role::Side, 0, None));
         let candidates_a: [GeometryHandleId; 0] = [];
         let query_a = AttributeQuery {
             user_label: None,
@@ -1017,6 +1039,7 @@ mod tests {
             &candidates_a,
             &query_a,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(
@@ -1028,7 +1051,7 @@ mod tests {
 
         // (b) All-None query on populated candidates.
         let mut table_b = TopologyAttributeTable::default();
-        table_b.record(h(81), attr(Role::Side, 0, Some("anything")));
+        table_b.record(KernelHandle { kernel: KernelId::Occt, id: h(81) }, attr(Role::Side, 0, Some("anything")));
         let candidates_b = [h(81)];
         let query_b = AttributeQuery {
             user_label: None,
@@ -1041,6 +1064,7 @@ mod tests {
             &candidates_b,
             &query_b,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(
@@ -1061,7 +1085,7 @@ mod tests {
 
         // (c) Duplicate candidate ids → Resolved (dedup before counting).
         let mut table_c = TopologyAttributeTable::default();
-        table_c.record(h(80), attr(Role::Side, 0, None));
+        table_c.record(KernelHandle { kernel: KernelId::Occt, id: h(80) }, attr(Role::Side, 0, None));
         // h(80) repeated three times.
         let candidates_c = [h(80), h(80), h(80)];
         let query_c = AttributeQuery {
@@ -1075,6 +1099,7 @@ mod tests {
             &candidates_c,
             &query_c,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(
@@ -1083,6 +1108,44 @@ mod tests {
             "duplicate candidates → resolver dedups, single match"
         );
         assert!(diagnostics.is_empty());
+    }
+
+    /// Coverage-parity mirror of the analogous v0.1 tag-based-resolver
+    /// interleaved-duplicates regression test (deleted alongside the v0.1
+    /// resolver): dedup must apply to the full candidate set, not only
+    /// matching ids. Interleaves a matching id with a non-matching id (both
+    /// duplicated) so a dedup guard that only tracked ids reaching the match
+    /// branch would still leave the earlier case (c) above passing (every
+    /// occurrence there matches), while this shape would resurface a
+    /// spurious multi-match. Pins the user-observable outcome of
+    /// `collect_matches`'s unconditional `seen.insert` regardless of match
+    /// order.
+    #[test]
+    fn resolve_unique_by_attribute_interleaved_matching_and_nonmatching_duplicates() {
+        let id_match = h(90);
+        let id_nomatch = h(91);
+        let mut table = TopologyAttributeTable::default();
+        table.record(KernelHandle { kernel: KernelId::Occt, id: id_match }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: id_nomatch }, attr(Role::Side, 1, None));
+        let candidates = [id_match, id_nomatch, id_nomatch, id_match];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
+        assert_eq!(
+            result,
+            AttributeResolution::Resolved(id_match),
+            "duplicate candidate ids must not inflate the match count regardless of tag-match order"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no spurious TopologyAttributeStale when matching and non-matching duplicates are interleaved; got: {:?}",
+            diagnostics
+        );
     }
 
     /// Regression pin for the feature_id-only contract (plan #2704).
@@ -1109,8 +1172,8 @@ mod tests {
         // even when some candidates would match the filter.
         let other_feature = FeatureId::realization("OtherFeature", 0);
         let mut table = TopologyAttributeTable::default();
-        table.record(h(90), attr(Role::Side, 0, None));
-        table.record(h(91), attr_for(other_feature, Role::Side, 1, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(90) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(91) }, attr_for(other_feature, Role::Side, 1, None));
         let candidates = [h(90), h(91)];
 
         // feature_id=Some, but both positional fields are None.
@@ -1122,7 +1185,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
 
         // The all-None positional check fires regardless of feature_id, so
         // the resolver returns Unresolved with the standard zero-match
@@ -1173,8 +1236,8 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 0, // same as a — populator bug: identical split_index
         }];
-        table.record(h(60), a);
-        table.record(h(61), b);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, a);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, b);
         let candidates = [h(60), h(61)];
         let query = AttributeQuery {
             user_label: None,
@@ -1183,7 +1246,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1217,8 +1280,8 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // Both attrs use the default empty mod_history — no split has been
         // recorded at all, yet the parent-key matches. Classic populator bug.
-        table.record(h(70), attr(Role::Side, 0, None));
-        table.record(h(71), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(70) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(71) }, attr(Role::Side, 0, None));
         let candidates = [h(70), h(71)];
         let query = AttributeQuery {
             user_label: None,
@@ -1227,7 +1290,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1255,9 +1318,9 @@ mod tests {
     #[test]
     fn resolve_keeps_unresolved_for_three_matches_with_empty_mod_history() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(80), attr(Role::Side, 0, None));
-        table.record(h(81), attr(Role::Side, 0, None));
-        table.record(h(82), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(80) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(81) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(82) }, attr(Role::Side, 0, None));
         let candidates = [h(80), h(81), h(82)];
         let query = AttributeQuery {
             user_label: None,
@@ -1266,7 +1329,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1328,9 +1391,9 @@ mod tests {
         h61.mod_history = mod_entry_a; // A (duplicate)
         let mut h62 = attr(Role::Side, 0, None);
         h62.mod_history = mod_entry_b; // B
-        table.record(h(60), h60);
-        table.record(h(61), h61);
-        table.record(h(62), h62);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, h60);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, h61);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(62) }, h62);
         let candidates = [h(60), h(61), h(62)];
         let query = AttributeQuery {
             user_label: None,
@@ -1339,7 +1402,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1387,8 +1450,8 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // Distinct feature_ids on the two matched candidates → mixed
         // parent-keys → cluster check fails → Unresolved.
-        table.record(h(60), attr_for(boss, Role::Side, 0, None));
-        table.record(h(61), attr_for(slot, Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, attr_for(boss, Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, attr_for(slot, Role::Side, 0, None));
         let candidates = [h(60), h(61)];
         // user_label "missing" matches neither candidate: sets last_count = Some(0).
         // role_and_index (Role::Side, 0) matches both: sets last_count = Some(2).
@@ -1399,7 +1462,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
 
         // Neither branch produced a unique match; mixed parent-keys mean
         // try_cluster_after_split returns None → Unresolved.
@@ -1424,6 +1487,75 @@ mod tests {
             !diag.message.contains("split children"),
             "mixed-parent multi-match must NOT use the split-children sub-form, got: {}",
             diag.message
+        );
+    }
+
+    /// Task 4351 step-5 — RED: `resolve_unique_by_attribute` has no
+    /// `scope_kernel` parameter yet, so this 6-arg call (and therefore the
+    /// whole crate's lib test target) fails to compile. GREEN (step-6) adds
+    /// the parameter and threads it into the fallback pre-pass and
+    /// `collect_matches`, replacing the interim `KernelId::Occt` scoping.
+    ///
+    /// Records an attribute under `KernelHandle{Manifold, h(1)}` and shows
+    /// the resolver only finds it when queried with `scope_kernel =
+    /// KernelId::Manifold`; querying the SAME candidate id with
+    /// `scope_kernel = KernelId::Occt` must miss (`FallbackToComputed`) —
+    /// there is no `{Occt, h(1)}` entry, only `{Manifold, h(1)}`. This is
+    /// the resolution-scope half of the cross-kernel `GeometryHandleId`
+    /// collision task 4351 fixes (the write half is pinned by
+    /// `cross_kernel_attribute_collision_e2e.rs`).
+    #[test]
+    fn resolve_unique_by_attribute_scopes_lookups_by_kernel() {
+        let mut table = TopologyAttributeTable::default();
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Manifold,
+                id: h(1),
+            },
+            attr(Role::Side, 0, None),
+        );
+        let candidates = [h(1)];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+
+        let mut diagnostics = Vec::new();
+        let result_manifold = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query,
+            span(),
+            KernelId::Manifold,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result_manifold,
+            AttributeResolution::Resolved(h(1)),
+            "querying with scope_kernel = Manifold must resolve the entry \
+             recorded under KernelHandle{{Manifold, h(1)}}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected on a unique scoped match"
+        );
+
+        let mut diagnostics_occt = Vec::new();
+        let result_occt = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query,
+            span(),
+            KernelId::Occt,
+            &mut diagnostics_occt,
+        );
+        assert_eq!(
+            result_occt,
+            AttributeResolution::FallbackToComputed,
+            "querying the SAME candidate id with scope_kernel = Occt must \
+             miss — there is no entry under KernelHandle{{Occt, h(1)}}, only \
+             Manifold"
         );
     }
 }

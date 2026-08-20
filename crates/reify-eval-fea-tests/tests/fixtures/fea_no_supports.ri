@@ -1,0 +1,26 @@
+// FEA diagnostic fixture: under-constrained advisory.
+//
+// A cantilever structure with a PointLoad but an EMPTY supports list [].
+// Triggers the FeaUnderConstrained warning diagnostic via the elastic-static
+// trampoline. The fixed cantilever model auto-clamps the root face even with
+// an empty supports list, so the solve still returns an ElasticResult.
+//
+// Modelled after examples/fea_cantilever_smoke.ri (same geometry, same
+// material) but `supports: []` so no user-specified support is supplied.
+
+structure FeaNoSupports {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+
+    // Apply a tip load but provide no supports.
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [], ElasticOptions()
+    )
+
+    let body = box(length, width, height)
+}

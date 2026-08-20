@@ -7,7 +7,7 @@
 
 use reify_kernel_gmsh::MeshingOptions;
 use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
-use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 
 // ---------------------------------------------------------------------------
 // Test fixture helpers
@@ -58,14 +58,16 @@ fn five_tet_p1_vm() -> VolumeMesh {
     // 5-tet P1 mesh with 6 vertices.
     VolumeMesh {
         vertices: vec![0.0_f32; 18], // 6 vertices × 3 coords
-        tet_indices: vec![
-            0, 1, 2, 3, // tet 0
-            0, 1, 2, 4, // tet 1
-            0, 1, 3, 4, // tet 2
-            0, 2, 3, 4, // tet 3
-            1, 2, 3, 4, // tet 4
-        ],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
+                0, 1, 2, 3, // tet 0
+                0, 1, 2, 4, // tet 1
+                0, 1, 3, 4, // tet 2
+                0, 2, 3, 4, // tet 3
+                1, 2, 3, 4, // tet 4
+            ],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }
@@ -74,12 +76,14 @@ fn five_tet_p1_vm() -> VolumeMesh {
 fn three_tet_p1_vm() -> VolumeMesh {
     VolumeMesh {
         vertices: vec![0.0_f32; 15], // 5 vertices × 3 coords
-        tet_indices: vec![
-            0, 1, 2, 3, // tet 0
-            0, 1, 2, 4, // tet 1
-            0, 1, 3, 4, // tet 2
-        ],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
+                0, 1, 2, 3, // tet 0
+                0, 1, 2, 4, // tet 1
+                0, 1, 3, 4, // tet 2
+            ],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }
@@ -183,7 +187,7 @@ fn localized_size_reduction_refines_marked_region_only() {
         .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
         .expect("baseline mesh_to_volume must succeed");
 
-    let n_base_tets = vm_baseline.tet_indices.len() / 4;
+    let n_base_tets = vm_baseline.tet_indices().expect("baseline is tet-only").len() / 4;
     assert!(n_base_tets > 0, "baseline must have at least one tet");
 
     // Build per-element size hints: 4× finer in marked region (x < 0.5).
@@ -198,7 +202,7 @@ fn localized_size_reduction_refines_marked_region_only() {
     let vm_refined = result.expect("refine_with_size_field must return Ok");
 
     assert!(
-        vm_refined.tet_indices.len() / 4 > 0,
+        vm_refined.tet_indices().expect("refined is tet-only").len() / 4 > 0,
         "refined mesh must have at least one tet"
     );
 
@@ -229,19 +233,21 @@ fn localized_size_reduction_refines_marked_region_only() {
 
 fn tet_centroid_x(vm: &VolumeMesh, elem_idx: usize) -> f64 {
     let base = elem_idx * 4;
+    let tet_indices = vm.tet_indices().expect("fixture is tet-only");
     (0..4)
-        .map(|k| vm.vertices[(vm.tet_indices[base + k] as usize) * 3] as f64)
+        .map(|k| vm.vertices[(tet_indices[base + k] as usize) * 3] as f64)
         .sum::<f64>()
         / 4.0
 }
 
 fn count_tets_with_centroid_x_lt(vm: &VolumeMesh, threshold: f64) -> usize {
-    let n = vm.tet_indices.len() / 4;
+    let n = vm.tet_indices().expect("fixture is tet-only").len() / 4;
     (0..n).filter(|&e| tet_centroid_x(vm, e) < threshold).count()
 }
 
 fn avg_tet_edge_in_region_x_ge(vm: &VolumeMesh, threshold: f64) -> f64 {
-    let n = vm.tet_indices.len() / 4;
+    let tet_indices = vm.tet_indices().expect("fixture is tet-only");
+    let n = tet_indices.len() / 4;
     let mut total_edge = 0.0_f64;
     let mut count = 0usize;
     for e in 0..n {
@@ -251,7 +257,7 @@ fn avg_tet_edge_in_region_x_ge(vm: &VolumeMesh, threshold: f64) -> f64 {
         let base = e * 4;
         let verts: Vec<[f64; 3]> = (0..4)
             .map(|k| {
-                let vi = vm.tet_indices[base + k] as usize;
+                let vi = tet_indices[base + k] as usize;
                 [
                     vm.vertices[vi * 3] as f64,
                     vm.vertices[vi * 3 + 1] as f64,

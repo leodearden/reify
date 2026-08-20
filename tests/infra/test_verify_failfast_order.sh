@@ -29,7 +29,12 @@ echo "=== verify.sh fail-fast ordering tests (task 4448) ==="
 MERGE_TEST_PLAN="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep -v '^#')"
 ALL_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" all --scope all --include-infra --print-plan | grep -v '^#')"
 PLAIN_TEST_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep -v '^#')"
-export MERGE_TEST_PLAN ALL_PLAN PLAIN_TEST_PLAN
+# task 5125: merge-tier capture — action=all, role=merge, NO --include-infra
+# (mirrors hooks/pre-merge-commit:39 exactly). The wholesale run_all.sh pool
+# now lives here (gated on DF_VERIFY_ROLE=merge), not on the role=task
+# INCLUDE_INFRA tier.
+MERGE_ALL_PLAN="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+export MERGE_TEST_PLAN ALL_PLAN PLAIN_TEST_PLAN MERGE_ALL_PLAN
 
 # ===========================================================================
 # Test 1: #4446 deliverable — merge-role test plan: npm typecheck BEFORE psi-gate
@@ -75,6 +80,19 @@ assert "all plan: check_event_inventory.sh index < psi-gate index" \
 # ===========================================================================
 # Test 3: Preservation — plan still contains all expected components
 # ===========================================================================
+# RUNNER-AGNOSTIC TEST-PASS ASSERTS (task 5604). The two asserts below that
+# name the test pass accept BOTH runner spellings via the ERE alternation
+# `cargo (test|nextest run)`, because the property actually under test here (a
+# --workspace pass exists and carries no --exclude, i.e. OCCT is folded into
+# the pool per task 4451) holds identically on either runner path. Rationale
+# and verify.sh's two emission branches: see the "WHY THE FALLBACK IS
+# SHAPE-IDENTICAL" block in tests/infra/test_verify_nextest_absent_suites.sh,
+# which is the canonical copy and is what pins this suite (S6, floor 40).
+# Hard-coding `cargo nextest run` made the positive half FAIL and the negative
+# half pass VACUOUSLY on a nextest-less host. Both halves use `grep -qE`: the
+# alternation is ERE, so plain `grep -q` would match the group literally.
+# Runner identity itself is pinned by the `nextest=N` plan header, which
+# test_verify_nextest_probe.sh owns.
 echo ""
 echo "--- Test 3: preservation — all expected components still present ---"
 
@@ -91,7 +109,7 @@ assert "merge test plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nex
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$MERGE_TEST_PLAN"
 
 assert "merge test plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$MERGE_TEST_PLAN"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$MERGE_TEST_PLAN"
 
 assert "all plan: contains cargo clippy (rust lint gate for action=all)" \
     bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy"' _ "$ALL_PLAN"
@@ -109,7 +127,7 @@ assert "all plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nextest po
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$ALL_PLAN"
 
 assert "all plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$ALL_PLAN"
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$ALL_PLAN"
 
 # ===========================================================================
 # Test 4: bounded overlap — action=all: node lane is BACKGROUNDED and joined
@@ -190,43 +208,146 @@ assert "plain test plan: npm run typecheck present and before psi-gate" \
 # ===========================================================================
 # Test 6: task #4624 — reify-audit release pre-step ordered BEFORE run_all.sh
 #          and run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1
+#          (task 5273 γ: the same line also carries REIFY_RUN_ALL_CONTENT_SKIP=1,
+#          the merge-tier content-addressed skip engine's activation key)
+#
+# task 5125: the pre-step + run_all.sh pairing MOVED to the merge tier
+# (DF_VERIFY_ROLE=merge) — the wholesale pool suite no longer runs on the
+# per-task INCLUDE_INFRA tier (fixes M-way shared-pool contention). Assertions
+# (a)-(d) now read MERGE_ALL_PLAN instead of ALL_PLAN; (e) is a new drift
+# guard confirming the role=task ALL_PLAN no longer carries the wholesale
+# suite.
 #
 # Hermetic: --print-plan never runs cargo.
-# FAIL until impl-verify-prestep adds the pre-step and env token.
+# RED until step-3 (task 5125) restructures build_plan's role gating.
 # ===========================================================================
 echo ""
-echo "--- Test 6 (#4624): reify-audit pre-step before run_all.sh + env token ---"
+echo "--- Test 6 (#4624/5125): reify-audit pre-step before run_all.sh + env token (merge tier) ---"
 
-# (a) pre-step line is present in the all-plan (contains `cargo build --release`
-#     and `-p reify-audit`)
-assert "all plan: reify-audit release pre-step line present (cargo build --release -p reify-audit)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo build --release" && printf "%s\n" "$1" | grep "cargo build --release" | grep -q "\-p reify-audit"' _ "$ALL_PLAN"
+# (a) pre-step line is present in the merge-all-plan (contains `cargo build
+#     --release` and `-p reify-audit`)
+assert "merge-all plan: reify-audit release pre-step line present (cargo build --release -p reify-audit)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo build --release" && printf "%s\n" "$1" | grep "cargo build --release" | grep -q "\-p reify-audit"' _ "$MERGE_ALL_PLAN"
 
 # (b) pre-step index < run_all.sh line index
-assert "all plan: reify-audit pre-step index < run_all.sh index (pre-step ordered before suite)" \
+assert "merge-all plan: reify-audit pre-step index < run_all.sh index (pre-step ordered before suite)" \
     bash -c '
         PRE_IDX=$(printf "%s\n" "$1" | grep -n "cargo build --release" | grep "\-p reify-audit" | head -1 | cut -d: -f1)
         RUN_IDX=$(printf "%s\n" "$1" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
         [ -n "$PRE_IDX" ] && [ -n "$RUN_IDX" ] && [ "$PRE_IDX" -lt "$RUN_IDX" ]
-    ' _ "$ALL_PLAN"
+    ' _ "$MERGE_ALL_PLAN"
 
 # (c) pre-step line does NOT contain `run_all.sh` (it is a separate plan line)
 #     and does NOT contain `20m` (its own bounded timeout must differ from the
-#     20m run_all wall, so we know it is the pre-step, not the walled line)
-assert "all plan: reify-audit pre-step line is separate from run_all.sh (no 'run_all.sh' on the cargo line)" \
+#     run_all wall, so we know it is the pre-step, not the walled line)
+assert "merge-all plan: reify-audit pre-step line is separate from run_all.sh (no 'run_all.sh' on the cargo line)" \
     bash -c '
         PRE_LINE=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
         echo "$PRE_LINE" | grep -qv "run_all\.sh"
-    ' _ "$ALL_PLAN"
+    ' _ "$MERGE_ALL_PLAN"
 
-assert "all plan: reify-audit pre-step line does not contain '20m' (timeout distinct from run_all wall)" \
+assert "merge-all plan: reify-audit pre-step line does not contain '20m' (timeout distinct from run_all wall)" \
     bash -c '
         PRE_LINE=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
         echo "$PRE_LINE" | grep -qv "20m"
-    ' _ "$ALL_PLAN"
+    ' _ "$MERGE_ALL_PLAN"
 
 # (d) run_all.sh plan line carries REIFY_AUDIT_NO_COLD_BUILD=1 (backstop armed)
-assert "all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
-    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$ALL_PLAN"
+assert "merge-all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$MERGE_ALL_PLAN"
+
+# (d2) task 5273 (merge-gate-riders γ): the run_all.sh plan line ALSO carries
+#      REIFY_RUN_ALL_CONTENT_SKIP=1 — the merge-tier content-addressed per-member
+#      skip engine's activation key. Purely additive substring grep, parallel to
+#      (d); the pre-existing token asserts stay green when the line gains this
+#      one extra env token. RED until step-16 adds the flag to verify.sh's
+#      run_all plan-line env prefix.
+assert "merge-all plan: run_all.sh line carries REIFY_RUN_ALL_CONTENT_SKIP=1 (content-skip engine, task 5273)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_RUN_ALL_CONTENT_SKIP=1"' _ "$MERGE_ALL_PLAN"
+
+# (e) task 5125: role=task ALL_PLAN (--include-infra, no DF_VERIFY_ROLE) no
+#     longer carries the wholesale suite — it moved to the merge tier above.
+assert "all plan (role=task): LACKS run_all.sh (wholesale suite moved to merge tier, task 5125)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "run_all\.sh"' _ "$ALL_PLAN"
+
+# (f)-(k) task 5139: assert the generated PLAN STRING only, via the hermetic
+# --print-plan oracle (amend review, reviewer_comprehensive test_coverage) —
+# they confirm verify.sh emits `2>&1` / drops `-q` in the right places, not
+# that stderr text actually reaches the archived stdout log end-to-end. An
+# e2e check would need to drive the real cargo/run_all pipeline (heavy,
+# non-hermetic) for no added fidelity on this pure string-shape change — see
+# design_decisions in .task/plan.json ("plan-shape via --print-plan").
+#
+# (f)-(g) run_all.sh stderr is not captured into the archived
+# attempt-N.test-*.log — merge it into the already-captured stdout stream
+# (2>&1) while preserving the Summary/FAILED classifier-marker contract.
+# (f) RED until step-2: run_all.sh line merges stderr into stdout.
+assert "merge-all plan: run_all.sh line merges stderr into captured stdout (2>&1)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "2>&1"' _ "$MERGE_ALL_PLAN"
+
+# (g) contract guard (green before and after): stdout is never redirected
+# away, so run_all's Summary/FAILED classifier markers stay classifier-visible.
+assert "merge-all plan: run_all.sh line keeps stdout (no 1>&2 / >/dev/null)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "run_all\.sh" | head -1)
+        echo "$L" | grep -qv "1>&2" && echo "$L" | grep -qv ">/dev/null"
+    ' _ "$MERGE_ALL_PLAN"
+
+# (h)-(i) task 5139: the two release pre-builds run cargo build --release -q,
+# which swallows all compiler diagnostics — the 06-27/28 failure cluster and
+# esc-5077-1 archived with no usable evidence. Drop -q so diagnostics land in
+# the archived log.
+assert "merge-all plan: reify-audit pre-step drops -q (compiler diagnostics archived)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -qvE "[[:space:]]-q([[:space:]]|;|$)"
+    ' _ "$MERGE_ALL_PLAN"
+
+assert "merge-all plan: reify-cli pre-step present and drops -q" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-cli" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -qvE "[[:space:]]-q([[:space:]]|;|$)"
+    ' _ "$MERGE_ALL_PLAN"
+
+# (j)-(k) task 5139 (review fix, reviewer_comprehensive robustness_error_handling):
+# dropping -q alone does NOT archive compiler diagnostics — cargo writes ALL of
+# its output (Compiling/Finished progress AND rustc error/warning diagnostics)
+# to stderr, never stdout, and DF captures verify.sh's stdout stream only.
+# Merge stderr into stdout on both pre-build lines, mirroring the run_all.sh
+# fix in (f) above.
+assert "merge-all plan: reify-audit pre-step merges stderr into captured stdout (2>&1)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "2>&1"
+    ' _ "$MERGE_ALL_PLAN"
+
+assert "merge-all plan: reify-cli pre-step merges stderr into captured stdout (2>&1)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-cli" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "2>&1"
+    ' _ "$MERGE_ALL_PLAN"
+
+# (l)-(m) task 5139 (amendment review, reviewer_comprehensive
+# robustness_error_handling): the reify-audit binary-missing guard (task
+# #4624's positive assertion — Cargo.toml present but pre-build produced no
+# binary -> abort loudly) emitted its ERROR(#4624) diagnostic to stderr-only
+# (echo ... >&2; false). When that guard fires, the explanation was dropped
+# from the archived stdout log — reproducing the exact "archived with no
+# usable evidence" gap 5139 closes elsewhere for the cargo/run_all lines.
+# Merge its stderr into the captured stdout stream too, same as (f)/(j)/(k).
+assert "merge-all plan: reify-audit binary-missing guard (#4624) merges stderr into captured stdout (2>&1)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "ERROR(#4624)" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "2>&1"
+    ' _ "$MERGE_ALL_PLAN"
+
+# (m) contract guard (green before and after): the guard's abort semantics
+# (non-zero exit via `false`) must survive the stderr-capture fix — the fix
+# is a stream redirect, not a logic change.
+assert "merge-all plan: reify-audit binary-missing guard (#4624) still aborts (false present, non-zero exit preserved)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "ERROR(#4624)" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "false"
+    ' _ "$MERGE_ALL_PLAN"
 
 test_summary

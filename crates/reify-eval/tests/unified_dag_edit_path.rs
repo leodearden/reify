@@ -85,31 +85,40 @@ fn harness_bracket_fixture_loads() {
     assert!(BRACKET_EDIT_SRC.contains("structure Bracket"));
     let on_disk = bracket_source();
     assert!(
-        on_disk.contains("structure Bracket"),
-        "examples/bracket.ri should define `structure Bracket`"
+        on_disk.contains("structure def Bracket"),
+        "examples/bracket.ri should define `structure def Bracket`"
     );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // step-3 (RED): edit_param re-evaluates in the unified DRIVER's schedule order.
 //
-// The fixture is chosen so the LEGACY `compute_eval_set` order (level-by-level
-// Kahn, `dirty::compute_levels`) differs from `run_unified_pass`'s GLOBAL
-// DebugOrd-priority Kahn order. Editing `p` dirties {a, b, c, z}:
+// The fixture is chosen so the order `compute_eval_set` USED to return — a
+// level-by-level batch drain, retired by task 5045 ν — differs from
+// `run_unified_pass`'s GLOBAL DebugOrd-priority Kahn order. Editing `p` dirties
+// {a, b, c, z}:
 //   a = p          (reads param p — external to the eval_set ⇒ in-degree 0)
 //   b = a          (reads a)
 //   c = b          (reads b)              a→b→c is a depth-2 chain
 //   z = p          (reads param p — external ⇒ in-degree 0, DebugOrd-large)
 //
 // Within the eval_set {a,b,c,z}:
-//   • LEGACY level order:  [a, z, b, c]  — level 0 = {a, z}, so the shallow
+//   • RETIRED level order: [a, z, b, c]  — level 0 = {a, z}, so the shallow
 //     sibling `z` is emitted BEFORE the chain's interior `b`/`c`.
 //   • DRIVER global Kahn:  [a, b, c, z]  — once `a` is popped, `b` (DebugOrd <
 //     `z`) is immediately ready and drains the whole chain before `z`.
 //
-// The Started-event sequence therefore distinguishes the two orderings. Legacy
-// edit_param iterates `compute_eval_set` order → [a, z, b, c]; after step-4 the
-// executor walks the driver schedule → [a, b, c, z]. RED until step-4.
+// The Started-event sequence therefore distinguishes the two orderings. Before
+// step-4, edit_param iterated `compute_eval_set` order → [a, z, b, c]; step-4
+// routed the executor through the driver schedule → [a, b, c, z].
+//
+// ν (task 5045) CONVERGENCE: `compute_eval_set` itself now returns the driver
+// order too — `dirty::topological_sort` delegates to `run_unified_pass_seeded`,
+// so the level-batched sort no longer exists and there is no second order left to
+// diverge. The [a, b, c, z] assertion below is unchanged and still correct; what
+// changed is its reach. It now pins the ONE core's order on BOTH surfaces at once
+// (the executor's walk AND `compute_eval_set`'s return), where it used to pin the
+// executor's walk against a different in-tree implementation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DRIVER_ORDER_P1_SRC: &str = r#"structure DriverOrder {
@@ -184,8 +193,10 @@ fn edit_param_revaluates_in_driver_schedule_order() {
         started,
         vec![v("a"), v("b"), v("c"), v("z")],
         "edit_param must re-evaluate in the unified driver's Kahn order [a, b, c, z]; \
-         legacy compute_eval_set level-order is [a, z, b, c] (RED until step-4 routes \
-         the value loop through run_unified_pass_seeded). Observed: {started:?}"
+         the retired level-batched order was [a, z, b, c]. Since task 5045 ν this \
+         pins the ONE core's order on both the executor's walk and \
+         compute_eval_set's return — there is no second sort left to diverge. \
+         Observed: {started:?}"
     );
 }
 

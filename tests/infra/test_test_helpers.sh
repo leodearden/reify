@@ -165,6 +165,87 @@ else
 fi
 
 # ==============================================================================
+# Test: assert dumps captured output on FAIL (evidence preservation)
+# esc-4959-57: assert() historically discarded the asserted command's
+# stdout/stderr entirely (`>/dev/null 2>&1`), so a failing infra-test left
+# zero diagnostic evidence in the archived verify log (task 4965's quoting
+# bug burned ~20h for exactly this reason). These checks pin the fix: on
+# FAIL, the captured output must be dumped after the byte-identical
+# "  FAIL: <desc>" line; on PASS, output stays byte-identical (no dump,
+# proving captured output is swallowed rather than printed); and the
+# no-subshell invariant (a checker's parent-shell global mutation survives
+# assert) must hold throughout, since asserted checker functions run in the
+# parent shell and some mutate parent-shell globals (e.g. the offline
+# suite's _OFFLINE_PLAN_CACHE memoization).
+# ==============================================================================
+
+echo ""
+echo "--- Test: assert dumps captured output on FAIL (evidence preservation) ---"
+
+# Sub-checks 1-3: a failing assert must dump the asserted command's captured
+# stdout+stderr instead of silently discarding it, while the "  FAIL: <desc>"
+# line itself stays byte-identical (parsed by test_run_all.sh / dark-factory's
+# cause_hint). RED on base -- assert currently redirects to /dev/null.
+_eb_fail_out=$(bash -c "
+    source '$HELPER_FILE'
+    _eb_boom() { printf 'EVIDENCE_NEEDLE_%s\n' ABC >&2; return 1; }
+    assert 'boom desc' _eb_boom
+" 2>&1 || true)
+
+if printf '%s\n' "$_eb_fail_out" | grep -qF '  FAIL: boom desc'; then
+    check "FAIL line stays byte-identical when a dump follows" "true"
+else
+    check "FAIL line stays byte-identical when a dump follows (got: $_eb_fail_out)" "false"
+fi
+
+if printf '%s\n' "$_eb_fail_out" | grep -qF 'EVIDENCE_NEEDLE_ABC'; then
+    check "assert dumps the failing command's captured stderr needle on FAIL" "true"
+else
+    check "assert dumps the failing command's captured stderr needle on FAIL (got: $_eb_fail_out)" "false"
+fi
+
+if printf '%s\n' "$_eb_fail_out" | grep -qF 'assert: captured output'; then
+    check "assert FAIL dump has a stable dump marker (assert: captured output)" "true"
+else
+    check "assert FAIL dump has a stable dump marker (assert: captured output) (got: $_eb_fail_out)" "false"
+fi
+
+# Sub-check 4: byte-identical-green guard -- a PASSING assert's output must
+# stay EXACTLY "  PASS: <desc>" with no dump, even though the passing command
+# also wrote to stderr (proving the captured output is swallowed into the
+# tmpfile, not printed, on the PASS branch).
+_eb_pass_out=$(bash -c "
+    source '$HELPER_FILE'
+    _eb_ok() { printf X >&2; return 0; }
+    assert 'ok desc' _eb_ok
+" 2>&1 || true)
+
+if [ "$_eb_pass_out" = "  PASS: ok desc" ]; then
+    check "PASS output is byte-identical to '  PASS: <desc>' (no dump on PASS)" "true"
+else
+    check "PASS output is byte-identical to '  PASS: <desc>' (no dump on PASS) (got: $_eb_pass_out)" "false"
+fi
+
+# Sub-check 5: no-subshell invariant -- a checker fn that mutates a
+# parent-shell global and returns 1 must leave that mutation visible after
+# assert returns, proving assert executes "$@" in-shell (redirect only) and
+# never wraps it in a command-substitution subshell (which would fork and
+# discard the mutation).
+_eb_subshell_result=$(bash -c "
+    source '$HELPER_FILE'
+    _eb_mut_global=0
+    _eb_mutator() { _eb_mut_global=1; return 1; }
+    assert 'mutator desc' _eb_mutator >/dev/null 2>&1
+    echo \"\$_eb_mut_global\"
+" 2>/dev/null || echo "ERROR")
+
+if [ "$_eb_subshell_result" = "1" ]; then
+    check "no-subshell invariant: checker's parent-shell global mutation survives assert" "true"
+else
+    check "no-subshell invariant: checker's parent-shell global mutation survives assert (got: $_eb_subshell_result)" "false"
+fi
+
+# ==============================================================================
 # Consumer refactoring verification tests
 # Each consumer file should: source test_helpers.sh, NOT define assert() locally,
 # NOT init PASS=0/FAIL=0 locally, NOT have inline summary block.
@@ -944,6 +1025,940 @@ echo "--- Pipeline divergence documented in test_helpers.sh ---"
 
 if grep -q 'tests/infra/test_tree_sitter_pipeline.sh' "$HELPER_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "test_helpers.sh documents pipeline divergence" "$ok"
+
+# ==============================================================================
+# Warm-lane test isolation helpers (tasks 5590/5612)
+#
+# init_isolated_lane_root <stem> + make_isolated_lane <prefix> are promoted out
+# of tests/infra/test_seed_warm_lane.sh Block R into the shared library so the
+# seven warm-lane suites share ONE implementation.
+#
+# WHY the facility exists at all: scripts/seed-warm-lane.sh computes
+# RESEED_TRASH_DIR as dirname(LANE_DIR)/.reseed-trash and renames a non-empty
+# <lane>/target there before re-seeding. A lane created bare under /tmp makes
+# that path the machine-shared /tmp/.reseed-trash, shared with every other
+# agent/test run on the host. Nesting each lane under its own private parent
+# makes dirname(LANE_DIR) unique per lane, so the computed trash dir is
+# run-private.
+#
+# WHY the init/make SPLIT: call sites read `X_LANE="$(make_isolated_lane p)"`,
+# so make_isolated_lane's body runs in a command-substitution SUBSHELL where any
+# `_TMPDIRS+=(...)` is silently discarded when the subshell exits — leaking every
+# private parent. So registration happens ONCE, in the main shell, in
+# init_isolated_lane_root; make_isolated_lane must append to nothing.
+#
+# WHY these probes never touch the real /tmp: _wl_run redirects TMPDIR into this
+# file's own $_robust_tmpdir. Several probes deliberately mint lane roots and
+# lanes, and a facility whose own unit tests littered the machine-shared path it
+# defends would be self-defeating.
+# ==============================================================================
+
+echo ""
+echo "--- Warm-lane isolation: init_isolated_lane_root / make_isolated_lane contract ---"
+
+_WL_DIR="$(mktemp -d "$_robust_tmpdir/wl-XXXXXX")"
+
+# _wl_run <probe-script> [args...] — run a probe against $HELPER_FILE in a fresh
+# bash process with a private per-probe TMPDIR. The probe receives the library
+# path as $1. Sets _WL_RC / _WL_OUT / _WL_ERR / _WL_TMP (the private TMPDIR, so
+# a caller can assert on exactly what the probe created there).
+_wl_run() {
+    local _script="$1"
+    shift
+    _WL_TMP="$(mktemp -d "$_WL_DIR/tmpdir-XXXXXX")"
+    local _errf="$_WL_TMP.err"
+    _WL_RC=0
+    _WL_OUT="$(TMPDIR="$_WL_TMP" bash "$_script" "$HELPER_FILE" "$@" 2>"$_errf")" || _WL_RC=$?
+    _WL_ERR="$(cat "$_errf")"
+    rm -f "$_errf"
+}
+
+# _wl_flat <text> — squash newlines so a multi-line diagnostic stays on one
+# check() line and does not corrupt the suite's PASS/FAIL line format.
+_wl_flat() { printf '%s' "${1//$'\n'/ ; }"; }
+
+# (a) Both functions are defined after sourcing.
+for _wl_fn in init_isolated_lane_root make_isolated_lane; do
+    if bash -c "source '$HELPER_FILE' && declare -f $_wl_fn >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+    check "WL-a: $_wl_fn is defined after sourcing test_helpers.sh" "$ok"
+done
+
+# (b) Sourcing alone is INERT. 153 files in the tree source this library; none
+# may pay a mktemp or leak a temp entry for a facility only 7 of them use.
+cat > "$_WL_DIR/inert.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+# ${var-UNSET} (no colon) distinguishes set-but-empty from genuinely unset —
+# the defaults must be SET (so `set -u` consumers can read them) and EMPTY.
+printf 'LANE_ROOT=[%s] HITS=[%s]\n' "${_LANE_ROOT-UNSET}" "${_TRASH_HITS_FILE-UNSET}"
+PROBE
+_wl_run "$_WL_DIR/inert.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "LANE_ROOT=[] HITS=[]" ]; then ok=true; else ok=false; fi
+check "WL-b1: sourcing alone leaves _LANE_ROOT/_TRASH_HITS_FILE set-but-empty (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+_wl_n="$(ls -A "$_WL_TMP" | wc -l)"
+if [ "$_wl_n" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-b2: sourcing alone creates no entry under \$TMPDIR — no source-time mktemp (got $_wl_n)" "$ok"
+
+# (c) init_isolated_lane_root fails LOUDLY when _TMPDIRS is not yet declared.
+# A call placed before the suite's own `_TMPDIRS=()` would otherwise register
+# into an array that assignment then wipes, leaking the root for the whole run.
+cat > "$_WL_DIR/init-no-tmpdirs.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+init_isolated_lane_root teststem
+PROBE
+_wl_run "$_WL_DIR/init-no-tmpdirs.sh"
+if [ "$_WL_RC" -ne 0 ]; then ok=true; else ok=false; fi
+check "WL-c1: init_isolated_lane_root fails when _TMPDIRS is not already declared (rc=$_WL_RC)" "$ok"
+
+if [[ "$_WL_ERR" == *_TMPDIRS* ]]; then ok=true; else ok=false; fi
+check "WL-c2: ... naming _TMPDIRS in a stderr diagnostic (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
+_wl_n="$(ls -A "$_WL_TMP" | wc -l)"
+if [ "$_wl_n" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-c3: ... and mints no unregistered root that nothing would ever reclaim (got $_wl_n)" "$ok"
+
+# (d) Happy path: the root exists, is registered, is stem-named, lives in TMPDIR.
+cat > "$_WL_DIR/init-ok.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+[ -d "$_LANE_ROOT" ] || { echo "root-not-a-dir"; exit 8; }
+_found=no
+for _d in "${_TMPDIRS[@]}"; do
+    if [ "$_d" = "$_LANE_ROOT" ]; then _found=yes; fi
+done
+printf 'found=%s count=%s base=%s parent=%s\n' \
+    "$_found" "${#_TMPDIRS[@]}" "$(basename "$_LANE_ROOT")" "$(dirname "$_LANE_ROOT")"
+PROBE
+_wl_run "$_WL_DIR/init-ok.sh"
+if [ "$_WL_RC" -eq 0 ] && [[ "$_WL_OUT" == "found=yes count=1 "* ]]; then ok=true; else ok=false; fi
+check "WL-d1: init_isolated_lane_root registers an existing _LANE_ROOT into _TMPDIRS (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+if [[ "$_WL_OUT" == *"base=teststem-lane-root-"* ]]; then ok=true; else ok=false; fi
+check "WL-d2: the root is named from the caller's stem, so litter stays attributable (got: $(_wl_flat "$_WL_OUT"))" "$ok"
+
+if [[ "$_WL_OUT" == *"parent=$_WL_TMP"* ]]; then ok=true; else ok=false; fi
+check "WL-d3: the root is minted under \$TMPDIR, not a hardcoded /tmp (got: $(_wl_flat "$_WL_OUT"))" "$ok"
+
+# (e) make_isolated_lane's structural contract, the whole reason it exists.
+cat > "$_WL_DIR/make-lane.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+P="$(dirname "$L")"
+[ -d "$L" ]                || { echo "lane-not-a-dir"; exit 1; }
+[ "$P" != "/tmp" ]         || { echo "parent-is-bare-tmp"; exit 1; }
+[ "$P" != "${TMPDIR%/}" ]  || { echo "parent-is-bare-tmpdir"; exit 1; }
+case "$L" in "$_LANE_ROOT"/*) ;; *) echo "lane-not-under-lane-root"; exit 1 ;; esac
+_n="$(ls -A "$P" | wc -l)"
+[ "$_n" -eq 1 ]            || { echo "parent-holds-$_n-entries"; exit 1; }
+[ ! -e "$P/.reseed-trash" ] || { echo "reseed-trash-already-exists"; exit 1; }
+echo OK
+PROBE
+_wl_run "$_WL_DIR/make-lane.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "OK" ]; then ok=true; else ok=false; fi
+check "WL-e: make_isolated_lane yields a lane under a private parent — never bare /tmp, parent holds only the lane, no sibling .reseed-trash (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (e2) THE ATTRIBUTION COUPLING, pinned end-to-end rather than by inspection:
+# seed names each trash entry "<lane-basename>.<pid>", and the litter guard
+# attributes by a prefix test on that basename. So the lane basename MUST carry
+# the suite stem — a bare "lane-XXXXXX" would make every library-minted lane
+# unattributable, i.e. only ever an informational note, leaving the guard
+# structurally incapable of failing for exactly the lanes it exists to cover.
+# The probe therefore does not merely assert the name: it synthesizes the entry
+# seed WOULD write for this lane and requires the real checker to fail on it.
+cat > "$_WL_DIR/lane-name-attributable.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+_base="$(basename "$L")"
+case "$_base" in teststem*) ;; *) echo "lane-basename-lacks-stem:$_base"; exit 1 ;; esac
+# Simulate seed: RESEED_TRASH="$(dirname LANE)/.reseed-trash/$(basename LANE).$$"
+TRASH="$_LANE_ROOT/attr-trash"; SNAP="$_LANE_ROOT/attr-snap"
+mkdir -p "$TRASH"; _list_trash_entries "$TRASH" > "$SNAP"
+mkdir -p "$TRASH/$_base.4242"
+_out="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$_LANE_LITTER_PREFIX" 2>&1)" && { echo "guard-passed-its-own-lane-litter"; exit 1; }
+case "$_out" in *"$_base.4242"*) ;; *) echo "guard-did-not-name-entry:$_out"; exit 1 ;; esac
+case "$_out" in *unattributable*|*"not attributable"*) echo "guard-classed-own-lane-as-unattributed:$_out"; exit 1 ;; esac
+echo OK
+PROBE
+_wl_run "$_WL_DIR/lane-name-attributable.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "OK" ]; then ok=true; else ok=false; fi
+check "WL-e2: a make_isolated_lane lane is ATTRIBUTABLE — its basename carries the stem, so the litter guard FAILS (not 'notes') on the <lane>.<pid> entry seed would write for it (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (f) Distinct parents per call — a shared parent would put two lanes' trash
+# dirs on one path and defeat the isolation.
+cat > "$_WL_DIR/two-lanes.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+A="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+B="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+_sp=no; [ "$(dirname "$A")" = "$(dirname "$B")" ] && _sp=yes
+_sl=no; [ "$A" = "$B" ] && _sl=yes
+printf 'same_parent=%s same_lane=%s\n' "$_sp" "$_sl"
+PROBE
+_wl_run "$_WL_DIR/two-lanes.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "same_parent=no same_lane=no" ]; then ok=true; else ok=false; fi
+check "WL-f: two make_isolated_lane calls with the same prefix get distinct private parents (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (g) THE subshell-safety property — the reason for the init/make split.
+cat > "$_WL_DIR/subshell-safe.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+_before="${#_TMPDIRS[@]}"
+# Command substitution: make_isolated_lane's body runs in a SUBSHELL, so any
+# array append it attempted would be silently discarded right here.
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+_after="${#_TMPDIRS[@]}"
+[ -d "$L" ] || { echo "lane-not-a-dir"; exit 1; }
+# The caller's cleanup() reclaims only what _TMPDIRS holds. Prove the single
+# registered root is sufficient to reclaim a lane minted after registration.
+rm -rf "$_LANE_ROOT"
+_gone=no; [ -e "$L" ] || _gone=yes
+printf 'before=%s after=%s lane_gone=%s\n' "$_before" "$_after" "$_gone"
+PROBE
+_wl_run "$_WL_DIR/subshell-safe.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "before=1 after=1 lane_gone=yes" ]; then ok=true; else ok=false; fi
+check "WL-g: make_isolated_lane appends to no array (subshell-safe) yet its lane is still reclaimed via \$_LANE_ROOT (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (h) make_isolated_lane without init must fail cleanly, not mktemp into a
+# bare/empty path (which would resolve to "/lane-XXXXXX" or CWD).
+cat > "$_WL_DIR/make-no-init.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+make_isolated_lane pfx
+PROBE
+_wl_run "$_WL_DIR/make-no-init.sh"
+if [ "$_WL_RC" -ne 0 ]; then ok=true; else ok=false; fi
+check "WL-h1: make_isolated_lane fails when init_isolated_lane_root was never called (rc=$_WL_RC)" "$ok"
+
+if [[ "$_WL_ERR" == *init_isolated_lane_root* ]]; then ok=true; else ok=false; fi
+check "WL-h2: ... naming init_isolated_lane_root in a stderr diagnostic (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
+_wl_n="$(ls -A "$_WL_TMP" | wc -l)"
+if [ "$_wl_n" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-h3: ... and mktemps nothing into a bare/empty path (got $_wl_n entries under \$TMPDIR)" "$ok"
+
+# ==============================================================================
+# Warm-lane shared-trash runtime detector (tasks 5590/5612)
+#
+# _note_shared_trash_use is the RECORDER: warm-lane suites call it as a bare
+# unguarded statement from inside their run_helper wrappers after every seed
+# invocation. It inspects the captured seed stderr ($ERR_OUT) and records a hit
+# whenever the invocation named $_SHARED_TRASH_DIR — exact evidence that this
+# invocation renamed into the machine-shared path.
+# _assert_no_shared_trash_use is the matching CHECKER.
+#
+# Three invariants below are load-bearing, not stylistic:
+#   * the trailing `return 0` — the recorder runs as a bare unguarded statement
+#     under `set -euo pipefail`, so any nonzero return would abort a whole suite
+#     rather than fail one assert;
+#   * state is an append-only FILE, not a bash array — two real call sites
+#     invoke the helper inside a backgrounded ( ... ) & subshell, where an array
+#     append is discarded on subshell exit, silently blinding the detector on
+#     exactly the runs most likely to reach seed's rename-into-trash path;
+#   * the case pattern quotes the variable (*"$_SHARED_TRASH_DIR"*) so a glob
+#     metacharacter in the path is matched literally, not as a wildcard.
+# ==============================================================================
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash runtime detector ---"
+
+# (b) Both detector entry points are defined after sourcing.
+for _wl_fn in _note_shared_trash_use _assert_no_shared_trash_use; do
+    if bash -c "source '$HELPER_FILE' && declare -f $_wl_fn >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+    check "WL-i1: $_wl_fn is defined after sourcing test_helpers.sh" "$ok"
+done
+
+# (a) The default is the real machine-shared path, and it is a plain variable a
+# caller can redirect (the positive controls in the warm-lane suites depend on
+# redirecting it to a run-private trash dir).
+_wl_sd="$(bash -c "source '$HELPER_FILE' && printf '%s' \"\${_SHARED_TRASH_DIR-UNSET}\"" 2>/dev/null || echo ERROR)"
+if [ "$_wl_sd" = "/tmp/.reseed-trash" ]; then ok=true; else ok=false; fi
+check "WL-i2: _SHARED_TRASH_DIR defaults to the literal /tmp/.reseed-trash (got: $_wl_sd)" "$ok"
+
+# (c) init_isolated_lane_root mints the hits file under $_LANE_ROOT, empty.
+# Placement matters: it must be a SIBLING of each lane's private parent, never
+# inside one, or the "parent holds only the lane" structural check breaks.
+cat > "$_WL_DIR/hits-file.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+[ -n "$_TRASH_HITS_FILE" ]  || { echo "hits-file-path-empty"; exit 1; }
+[ -f "$_TRASH_HITS_FILE" ]  || { echo "hits-file-not-created"; exit 1; }
+[ ! -s "$_TRASH_HITS_FILE" ] || { echo "hits-file-not-empty"; exit 1; }
+[ "$(dirname "$_TRASH_HITS_FILE")" = "$_LANE_ROOT" ] || { echo "hits-file-not-under-lane-root"; exit 1; }
+L="$(make_isolated_lane pfx)" || { echo "make-failed"; exit 8; }
+P="$(dirname "$L")"
+case "$_TRASH_HITS_FILE" in "$P"/*) echo "hits-file-inside-a-lane-parent"; exit 1 ;; esac
+_n="$(ls -A "$P" | wc -l)"
+[ "$_n" -eq 1 ] || { echo "lane-parent-holds-$_n-entries"; exit 1; }
+echo OK
+PROBE
+_wl_run "$_WL_DIR/hits-file.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "OK" ]; then ok=true; else ok=false; fi
+check "WL-i3: init_isolated_lane_root mints an empty _TRASH_HITS_FILE directly under \$_LANE_ROOT, beside (never inside) a lane's private parent (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (d)+(e) Recorder semantics: one line on a match, nothing on a miss, rc 0 in
+# BOTH cases — and rc 0 even under `set -u` with ERR_OUT entirely unset, which
+# is why the body must read ${ERR_OUT:-} rather than bare $ERR_OUT now that the
+# library is sourced by 153 files with no such wrapper.
+cat > "$_WL_DIR/note-hits.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+ERR_OUT="info: Renaming non-empty /x/target -> $_SHARED_TRASH_DIR/lane.999 before re-seed"
+_note_shared_trash_use match-probe
+_rc_match=$?
+_n_match="$(wc -l < "$_TRASH_HITS_FILE")"
+_body_match="$(cat "$_TRASH_HITS_FILE")"
+
+: > "$_TRASH_HITS_FILE"
+ERR_OUT="info: reflink copy completed, nothing renamed"
+_note_shared_trash_use nomatch-probe
+_rc_nomatch=$?
+_n_nomatch="$(wc -l < "$_TRASH_HITS_FILE")"
+
+: > "$_TRASH_HITS_FILE"
+unset ERR_OUT
+_note_shared_trash_use unset-probe
+_rc_unset=$?
+_n_unset="$(wc -l < "$_TRASH_HITS_FILE")"
+
+printf 'match=%s/%s/[%s] nomatch=%s/%s unset=%s/%s\n' \
+    "$_rc_match" "$_n_match" "$_body_match" \
+    "$_rc_nomatch" "$_n_nomatch" "$_rc_unset" "$_n_unset"
+PROBE
+_wl_run "$_WL_DIR/note-hits.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "match=0/1/[match-probe] nomatch=0/0 unset=0/0" ]; then ok=true; else ok=false; fi
+check "WL-i4: _note_shared_trash_use records exactly one labelled line on a match, nothing on a miss, and returns 0 in every case including ERR_OUT unset under set -u (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (f) Glob metacharacters in the path are matched literally.
+cat > "$_WL_DIR/note-glob.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+# Unquoted inside the case pattern, '/tmp/a*b[x]/.reseed-trash' would ALSO
+# match an ERR_OUT naming '/tmp/aZZZbx/.reseed-trash' — a false positive that
+# would fail a suite for a path seed never touched.
+_SHARED_TRASH_DIR='/tmp/a*b[x]/.reseed-trash'
+
+ERR_OUT="renamed into /tmp/a*b[x]/.reseed-trash now"
+_note_shared_trash_use literal-hit
+_n_literal="$(wc -l < "$_TRASH_HITS_FILE")"
+
+: > "$_TRASH_HITS_FILE"
+ERR_OUT="renamed into /tmp/aZZZbx/.reseed-trash now"
+_note_shared_trash_use glob-expanded-miss
+_n_glob="$(wc -l < "$_TRASH_HITS_FILE")"
+
+printf 'literal=%s glob=%s\n' "$_n_literal" "$_n_glob"
+PROBE
+_wl_run "$_WL_DIR/note-glob.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "literal=1 glob=0" ]; then ok=true; else ok=false; fi
+check "WL-i5: a _SHARED_TRASH_DIR holding glob metacharacters is matched literally, not as a wildcard (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (g) THE reason the state is file-backed: an append made inside a backgrounded
+# subshell must be visible to the parent shell. A bash array append would be
+# discarded here, silently blinding the detector.
+cat > "$_WL_DIR/note-subshell.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+(
+    ERR_OUT="Renaming non-empty /x/target -> $_SHARED_TRASH_DIR before re-seed"
+    _note_shared_trash_use subshell-probe
+) &
+_pid=$!
+wait "$_pid" 2>/dev/null || true
+printf 'lines=%s body=[%s]\n' "$(wc -l < "$_TRASH_HITS_FILE")" "$(cat "$_TRASH_HITS_FILE")"
+PROBE
+_wl_run "$_WL_DIR/note-subshell.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "lines=1 body=[subshell-probe]" ]; then ok=true; else ok=false; fi
+check "WL-i6: a recorder append made inside a backgrounded ( ... ) & subshell is visible to the parent shell (file-backed state, rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (h) Checker semantics, message content included: a refactor that dropped the
+# hit dump or the path from the message would still exit 1 but lose every scrap
+# of forensic value.
+cat > "$_WL_DIR/assert-no-use.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+_out_clean="$(_assert_no_shared_trash_use 2>&1)"; _rc_clean=$?
+
+printf 'stale-hit-one\nstale-hit-two\n' >> "$_TRASH_HITS_FILE"
+_out_dirty="$(_assert_no_shared_trash_use 2>&1)"; _rc_dirty=$?
+
+_names_dir=no; case "$_out_dirty" in *"$_SHARED_TRASH_DIR"*) _names_dir=yes ;; esac
+_names_h1=no;  case "$_out_dirty" in *stale-hit-one*)         _names_h1=yes  ;; esac
+_names_h2=no;  case "$_out_dirty" in *stale-hit-two*)         _names_h2=yes  ;; esac
+
+printf 'clean=%s/[%s] dirty=%s names_dir=%s h1=%s h2=%s\n' \
+    "$_rc_clean" "$_out_clean" "$_rc_dirty" "$_names_dir" "$_names_h1" "$_names_h2"
+PROBE
+_wl_run "$_WL_DIR/assert-no-use.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "clean=0/[] dirty=1 names_dir=yes h1=yes h2=yes" ]; then ok=true; else ok=false; fi
+check "WL-i7: _assert_no_shared_trash_use passes silently on an empty hits file and fails naming both _SHARED_TRASH_DIR and every recorded hit (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (i) UNINITIALIZED STATE. This library is sourced by 153 files, so both entry
+# points are reachable with $_TRASH_HITS_FILE still at its empty default. The
+# recorder's append would then have an EMPTY redirect target: under the
+# `set -euo pipefail` every warm-lane suite uses, the shell exits mid-run with a
+# cryptic ": No such file or directory" and test_summary never prints totals.
+# The recorder must therefore diagnose and still return 0 (its trailing return 0
+# is absolute); the CHECKER must instead fail loudly, since passing on state it
+# never observed is the dead instrument this facility exists to prevent.
+cat > "$_WL_DIR/no-init-detector.sh" <<'PROBE'
+set -euo pipefail
+source "$1"
+# Deliberately NO init_isolated_lane_root, and an ERR_OUT that WOULD match.
+ERR_OUT="renaming into $_SHARED_TRASH_DIR/x.1"
+_note_shared_trash_use no-init-probe
+_rc_note=$?
+_out_chk="$(_assert_no_shared_trash_use 2>&1)" && _rc_chk=0 || _rc_chk=$?
+_chk_names_init=no; case "$_out_chk" in *init_isolated_lane_root*) _chk_names_init=yes ;; esac
+# Reaching here at all proves `set -e` did not abort the script at the recorder.
+printf 'survived=yes rc_note=%s rc_chk=%s chk_names_init=%s\n' \
+    "$_rc_note" "$_rc_chk" "$_chk_names_init"
+PROBE
+_wl_run "$_WL_DIR/no-init-detector.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "survived=yes rc_note=0 rc_chk=1 chk_names_init=yes" ]; then ok=true; else ok=false; fi
+check "WL-i8: with init never called, _note_shared_trash_use returns 0 without aborting the suite under set -e, and _assert_no_shared_trash_use fails loudly naming init_isolated_lane_root rather than passing vacuously (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+if [[ "$_WL_ERR" == *_note_shared_trash_use* ]]; then ok=true; else ok=false; fi
+check "WL-i9: ... and the recorder says so on stderr, so a missing init is visible rather than silently unrecorded (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
+# ==============================================================================
+# Warm-lane shared-trash LITTER guard + liveness control (task 5612)
+#
+# WHY a second, filesystem-based guard when the ERR_OUT recorder above already
+# exists: the recorder only fires when a run_helper wrapper has captured seed's
+# stderr into $ERR_OUT. Most warm-lane suites have no such wrapper (several never
+# invoke the real seed at all, driving stub scripts instead), so
+# _assert_no_shared_trash_use would read a permanently-empty hits file and pass
+# VACUOUSLY forever in them — a dead instrument. A snapshot-diff of the actual
+# trash directory observes the leak regardless of how seed was invoked or whether
+# its stderr was captured, so the guard has teeth everywhere.
+#
+# ATTRIBUTION IS BY THE SUITE'S OWN mktemp STEM, and that is a deliberate
+# trade-off, not an oversight: /tmp/.reseed-trash is machine-shared, so a bare
+# snapshot-diff would fail this suite for another worktree's concurrent litter.
+# Stem matching is race-free and matches the forensic method that attributed the
+# pre-fix entries by mktemp prefix, at the cost of not catching a hypothetical
+# bare-/tmp lane named outside its own suite's naming convention. New entries
+# that do NOT match the stem are therefore informational, never a failure.
+#
+# The liveness control exists because a guard that can only ever pass is worth
+# nothing: it proves the checker FIRES, hermetically, without writing to the
+# machine-shared path it defends.
+# ==============================================================================
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash litter guard ---"
+
+for _wl_fn in _assert_no_shared_trash_litter assert_no_shared_trash_litter assert_shared_trash_litter_detector_live; do
+    if bash -c "source '$HELPER_FILE' && declare -f $_wl_fn >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+    check "WL-j1: $_wl_fn is defined after sourcing test_helpers.sh" "$ok"
+done
+
+# The two new globals must be as inert at source time as the rest of the block.
+cat > "$_WL_DIR/litter-inert.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+printf 'SNAP=[%s] PREFIX=[%s]\n' "${_SHARED_TRASH_SNAPSHOT-UNSET}" "${_LANE_LITTER_PREFIX-UNSET}"
+PROBE
+_wl_run "$_WL_DIR/litter-inert.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "SNAP=[] PREFIX=[]" ]; then ok=true; else ok=false; fi
+check "WL-j2: sourcing alone leaves _SHARED_TRASH_SNAPSHOT/_LANE_LITTER_PREFIX set-but-empty (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (a)-(e): the parameterized checker, exercised on synthetic trash dirs.
+cat > "$_WL_DIR/litter-checker.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+
+TRASH="$TMPDIR/trash"
+SNAP="$TMPDIR/snap"
+STEM="test-mystem"
+mkdir -p "$TRASH"
+
+# (c) A stem-matching entry present BEFORE the snapshot is not ours.
+mkdir -p "$TRASH/$STEM-lane-aaaaaa.111"
+ls -A "$TRASH" | sort > "$SNAP"
+_out_pre="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_pre=$?
+
+# (d) Nothing new since the snapshot → clean.
+_out_clean="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_clean=$?
+
+# (b) A NEW entry that does not match the stem is another worktree's litter on a
+# machine-shared path: reported informationally, never a failure.
+mkdir -p "$TRASH/some-other-suite-lane-bbbbbb.222"
+_out_other="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_other=$?
+_other_named=no; case "$_out_other" in *some-other-suite-lane-bbbbbb.222*) _other_named=yes ;; esac
+
+# (a)+(e) A NEW stem-matching entry fails, and the message names BOTH the stem
+# and the offending entry — so a dropped expansion or a swapped stem/entry
+# argument order is caught, not just a wrong exit status.
+mkdir -p "$TRASH/$STEM-lane-cccccc.333"
+_out_hit="$(_assert_no_shared_trash_litter "$TRASH" "$SNAP" "$STEM" 2>&1)"; _rc_hit=$?
+_hit_stem=no;  case "$_out_hit" in *"$STEM"*)                 _hit_stem=yes  ;; esac
+_hit_entry=no; case "$_out_hit" in *"$STEM-lane-cccccc.333"*) _hit_entry=yes ;; esac
+# The pre-existing entry must NOT be reported: it was in the snapshot.
+_hit_pre=no;   case "$_out_hit" in *"$STEM-lane-aaaaaa.111"*) _hit_pre=yes   ;; esac
+
+# (d) An absent trash dir is the normal case, not an error.
+_out_absent="$(_assert_no_shared_trash_litter "$TMPDIR/no-such-trash" "$SNAP" "$STEM" 2>&1)"; _rc_absent=$?
+
+printf 'pre=%s clean=%s other=%s/%s hit=%s/%s/%s/%s absent=%s\n' \
+    "$_rc_pre" "$_rc_clean" "$_rc_other" "$_other_named" \
+    "$_rc_hit" "$_hit_stem" "$_hit_entry" "$_hit_pre" "$_rc_absent"
+PROBE
+_wl_run "$_WL_DIR/litter-checker.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "pre=0 clean=0 other=0/yes hit=1/yes/yes/no absent=0" ]; then ok=true; else ok=false; fi
+check "WL-j3: _assert_no_shared_trash_litter fails only on a NEW stem-matching entry, naming stem and offender; pre-existing and other-suite entries stay informational; absent dir is clean (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (f) The globals wrapper must FAIL LOUDLY when init was never called. A
+# vacuous pass here would let an unwired suite report a false all-clear forever.
+cat > "$_WL_DIR/litter-wrapper-uninit.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+assert_no_shared_trash_litter
+PROBE
+_wl_run "$_WL_DIR/litter-wrapper-uninit.sh"
+if [ "$_WL_RC" -ne 0 ]; then ok=true; else ok=false; fi
+check "WL-j4: assert_no_shared_trash_litter FAILS on uninitialized state — never a vacuous pass (rc=$_WL_RC)" "$ok"
+
+if [[ "$_WL_ERR" == *init_isolated_lane_root* ]]; then ok=true; else ok=false; fi
+check "WL-j5: ... naming init_isolated_lane_root so the fix is obvious (got: $(_wl_flat "$_WL_ERR"))" "$ok"
+
+# The wired path: init records the stem, writes the snapshot in the documented
+# `ls -A | sort` format, and the wrapper then behaves like the parameterized form.
+cat > "$_WL_DIR/litter-wrapper-init.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_TMPDIRS=()
+_SHARED_TRASH_DIR="$TMPDIR/fake-trash"
+mkdir -p "$_SHARED_TRASH_DIR/pre-existing-entry"
+init_isolated_lane_root teststem || { echo "init-failed"; exit 9; }
+
+[ -n "${_SHARED_TRASH_SNAPSHOT:-}" ]        || { echo "snapshot-path-empty"; exit 1; }
+[ -f "$_SHARED_TRASH_SNAPSHOT" ]            || { echo "snapshot-not-created"; exit 1; }
+[ "${_LANE_LITTER_PREFIX:-}" = "teststem" ] || { echo "stem-not-recorded"; exit 1; }
+[ "$(dirname "$_SHARED_TRASH_SNAPSHOT")" = "$_LANE_ROOT" ] || { echo "snapshot-not-under-lane-root"; exit 1; }
+diff <(ls -A "$_SHARED_TRASH_DIR" | sort) "$_SHARED_TRASH_SNAPSHOT" >/dev/null \
+    || { echo "snapshot-is-not-a-sorted-ls-A-listing"; exit 1; }
+
+_out_clean="$(assert_no_shared_trash_litter 2>&1)"; _rc_clean=$?
+mkdir -p "$_SHARED_TRASH_DIR/teststem-lane-dddddd.444"
+_out_dirty="$(assert_no_shared_trash_litter 2>&1)"; _rc_dirty=$?
+_named=no; case "$_out_dirty" in *teststem-lane-dddddd.444*) _named=yes ;; esac
+
+printf 'clean=%s/[%s] dirty=%s named=%s\n' "$_rc_clean" "$_out_clean" "$_rc_dirty" "$_named"
+PROBE
+_wl_run "$_WL_DIR/litter-wrapper-init.sh"
+if [ "$_WL_RC" -eq 0 ] && [ "$_WL_OUT" = "clean=0/[] dirty=1 named=yes" ]; then ok=true; else ok=false; fi
+check "WL-j6: init_isolated_lane_root records the stem and a sorted 'ls -A' snapshot under \$_LANE_ROOT, and the wrapper then passes clean / fails naming the offender (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# (g)+(h) The liveness control: must return 0, and must be hermetic. Pointing
+# _SHARED_TRASH_DIR at an empty PRIVATE dir makes the hermeticity check
+# race-free, and comparing the directory mtime as well as the entry set also
+# catches a control that created a synthetic entry there and then removed it —
+# which an entry-set comparison alone would miss.
+cat > "$_WL_DIR/litter-live.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+_SHARED_TRASH_DIR="$TMPDIR/watched-trash"
+mkdir -p "$_SHARED_TRASH_DIR"
+_mt_before="$(stat -c %y "$_SHARED_TRASH_DIR")"
+_ls_before="$(ls -A "$_SHARED_TRASH_DIR" | sort)"
+
+_out="$(assert_shared_trash_litter_detector_live 2>&1)"; _rc=$?
+
+_mt_after="$(stat -c %y "$_SHARED_TRASH_DIR")"
+_ls_after="$(ls -A "$_SHARED_TRASH_DIR" | sort)"
+_untouched=no
+if [ "$_mt_before" = "$_mt_after" ] && [ "$_ls_before" = "$_ls_after" ]; then _untouched=yes; fi
+printf 'rc=%s untouched=%s out=[%s]\n' "$_rc" "$_untouched" "$_out"
+PROBE
+_wl_run "$_WL_DIR/litter-live.sh"
+if [ "$_WL_RC" -eq 0 ] && [[ "$_WL_OUT" == "rc=0 untouched=yes"* ]]; then ok=true; else ok=false; fi
+check "WL-j7: assert_shared_trash_litter_detector_live returns 0 and never reads or writes \$_SHARED_TRASH_DIR — it mktemps its own scratch dir (rc=$_WL_RC got: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+# ... and the same control against the REAL default path must leave
+# /tmp/.reseed-trash as it found it.
+#
+# ATTRIBUTED, NOT A BARE SNAPSHOT-DIFF. /tmp/.reseed-trash is machine-shared, so
+# any concurrent worktree writing there inside this probe's window would fail a
+# bare diff for a reason with nothing to do with the code under test — the very
+# flake the production guard's stem attribution exists to avoid, so this check
+# uses the same method. The control's own stem is the literal "selftest-stem"
+# hardcoded in assert_shared_trash_litter_detector_live, and the only entry it
+# could ever create is "<stem>-lane-XXXX.<pid>"; anything else new is another
+# process's and is reported informationally instead of failing.
+_WL_SELFTEST_STEM="selftest-stem"
+
+# _WL_REAL_TRASH_DIR: the machine-shared trash dir this block observes.
+# Defaults to the real path; the override hook exists solely so this file's
+# own absent-dir regression guard (WL-j13 below) can point it at a path
+# guaranteed not to exist, making that branch reachable deterministically on
+# any host (#6299). Under override, WL-j9 degrades to a vacuous pass (nothing
+# can litter a dir that does not exist), while WL-j8 keeps its full meaning
+# because assert_shared_trash_litter_detector_live is hermetic and mktemps
+# its own scratch dir — the default (non-overridden) run retains both checks'
+# full meaning.
+_WL_REAL_TRASH_DIR="${_WL_REAL_TRASH_DIR:-/tmp/.reseed-trash}"
+
+# _wl_snapshot_real_trash <dir> <outfile>: mirrors the already-correct
+# _list_trash_entries contract documented in tests/infra/test_helpers.sh ("An
+# absent or unreadable dir emits nothing and is NOT an error"). Duplicated
+# here rather than called there, to keep this suite's own observation
+# scaffolding independent of the module under test — see the file header's
+# no-circular-dependency note (#6299). Before this helper existed, this block
+# read the dir with a bare `ls -A ... | sort` under errexit+pipefail:
+# `2>/dev/null` suppresses only ls's diagnostic, not its exit 2 on an absent
+# dir, which pipefail then propagates into errexit, aborting the whole suite.
+# An empty before/after pair is the semantically correct reading of an absent
+# dir: this block only diffs before-vs-after for NEW litter, and an absent
+# dir has none. The trailing `|| : > "$_out"` also closes a TOCTOU window —
+# /tmp/.reseed-trash is machine-shared and another worktree may remove it
+# between the `[ -d ]` check and the read.
+_wl_snapshot_real_trash() {
+    local _dir="$1" _out="$2"
+    : > "$_out"
+    [ -d "$_dir" ] || return 0
+    ls -A "$_dir" 2>/dev/null | sort > "$_out" || : > "$_out"
+    return 0
+}
+
+# _wl_classify_new_trash <before-file> <after-file> <stem>: sets the globals
+# _wl_new_real/_wl_new_other to the space-separated entries new in <after-file>
+# that do/don't match <stem>, extracted verbatim (#6299) from what this block
+# used to run inline, so WL-j14..j18 can unit-check the classification that
+# decides WL-j9's verdict. `comm -13` requires sorted input, which is exactly
+# what _wl_snapshot_real_trash's `| sort` guarantees for its two outfiles —
+# keep the two coupled.
+#
+# MUST be called as a plain statement, NEVER as $(_wl_classify_new_trash ...):
+# a command substitution runs the body in a subshell and silently discards
+# both global assignments, the same subshell-safety hazard this file already
+# documents for make_isolated_lane's _TMPDIRS+= (see WL-g above). For the same
+# reason the loop below reads via `< <(comm ...)` process substitution rather
+# than a `comm ... | while` pipe, which would put the loop itself in a
+# subshell and lose the globals the same way.
+_wl_classify_new_trash() {
+    local _before="$1" _after="$2" _stem="$3" _wl_e
+    _wl_new_real=""
+    _wl_new_other=""
+    # Precondition: a missing/unreadable snapshot file must be an explicit
+    # failure, not a vacuous "no new litter" pass (#6299). Without this, a
+    # process substitution's failure never propagates under errexit: `comm
+    # -13` on a nonexistent file just prints to stderr, the loop reads
+    # nothing, and both globals come back empty — the same vacuous-pass shape
+    # WL-j4 exists to prevent elsewhere in this file. The globals are reset to
+    # "" above (never left unset) so a caller referencing them under `set -u`
+    # cannot hit an unbound-variable error on this early-return path either;
+    # callers MUST still check this function's return code — an empty global
+    # alone no longer means "clean".
+    [ -f "$_before" ] && [ -f "$_after" ] || {
+        echo "ERROR: _wl_classify_new_trash: missing snapshot file (before=$_before after=$_after)" >&2
+        return 1
+    }
+    while IFS= read -r _wl_e; do
+        [ -n "$_wl_e" ] || continue
+        case "$_wl_e" in
+            "$_stem"*) _wl_new_real="$_wl_new_real$_wl_e " ;;
+            *)         _wl_new_other="$_wl_new_other$_wl_e " ;;
+        esac
+    done < <(comm -13 "$_before" "$_after")
+}
+
+_wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-before"
+cat > "$_WL_DIR/litter-live-real.sh" <<'PROBE'
+set -uo pipefail
+source "$1"
+# _SHARED_TRASH_DIR deliberately left at its default: the REAL shared path.
+assert_shared_trash_litter_detector_live
+PROBE
+_wl_run "$_WL_DIR/litter-live-real.sh"
+_wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-after"
+# Plain-statement call (never $(...) — see the subshell-safety note above);
+# rc captured via `|| _wl_classify_rc=$?` so a precondition failure (#6299)
+# reports as a WL-j9 FAIL instead of aborting the whole suite under errexit.
+_wl_classify_rc=0
+_wl_classify_new_trash "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after" "$_WL_SELFTEST_STEM" || _wl_classify_rc=$?
+if [ -n "${_wl_new_other// /}" ]; then
+    echo "note: /tmp/.reseed-trash gained entries not attributable to $_WL_SELFTEST_STEM (other worktrees; not a failure): $_wl_new_other"
+fi
+
+if [ "$_WL_RC" -eq 0 ]; then ok=true; else ok=false; fi
+check "WL-j8: the liveness control returns 0 against the real default _SHARED_TRASH_DIR (rc=$_WL_RC out: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
+
+if [ "$_wl_classify_rc" -eq 0 ] && [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
+check "WL-j9: ... and adds no entry of its OWN stem ($_WL_SELFTEST_STEM) to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real] classify_rc=$_wl_classify_rc)" "$ok"
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash read tolerates an absent real-trash dir (#6299) ---"
+
+# WL-j10..j13 close the gap this task exists to fix: before #6299, the two
+# real-trash reads above were a bare `ls -A /tmp/.reseed-trash | sort` under
+# errexit+pipefail, which abort this whole suite (exit 2, no Results: summary)
+# whenever /tmp/.reseed-trash happens to be absent on the host — mistaken by
+# the main-tip integrity sweep for main being broken. _wl_snapshot_real_trash
+# mirrors the already-correct _list_trash_entries contract documented in
+# tests/infra/test_helpers.sh ("An absent or unreadable dir emits nothing and
+# is NOT an error"). It is duplicated here rather than called there, to keep
+# this suite's own observation scaffolding independent of the module under
+# test — see the file header's no-circular-dependency note.
+
+# (a) WL-j10: an ABSENT dir must be tolerated, not aborted. declare -F guards
+# the call so that until _wl_snapshot_real_trash is defined, this reports a
+# clean FAIL instead of an undefined-command abort.
+_wl_j10_dir="$_WL_DIR/no-such-real-trash"
+_wl_j10_out="$_WL_DIR/absent-trash-snapshot"
+rm -f "$_wl_j10_out"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j10_rc=0
+    _wl_snapshot_real_trash "$_wl_j10_dir" "$_wl_j10_out" || _wl_j10_rc=$?
+    if [ "$_wl_j10_rc" -eq 0 ] && [ -f "$_wl_j10_out" ] && [ ! -s "$_wl_j10_out" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j10: _wl_snapshot_real_trash tolerates an absent dir — rc=0, outfile exists and is empty (#6299)" "$ok"
+
+# (b) WL-j11: a PRESENT dir with several entries, including a dotfile, pins
+# the exact 'ls -A ... | sort' format that the comm -13 classification below
+# depends on.
+_wl_j11_dir="$_WL_DIR/present-trash-with-entries"
+mkdir -p "$_wl_j11_dir"
+touch "$_wl_j11_dir/.dotfile-entry" "$_wl_j11_dir/zeta-entry" "$_wl_j11_dir/alpha-entry" "$_wl_j11_dir/mid-entry"
+_wl_j11_out="$_WL_DIR/present-trash-snapshot"
+_wl_j11_expected="$_WL_DIR/present-trash-expected"
+rm -f "$_wl_j11_out"
+ls -A "$_wl_j11_dir" | sort > "$_wl_j11_expected"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j11_rc=0
+    _wl_snapshot_real_trash "$_wl_j11_dir" "$_wl_j11_out" || _wl_j11_rc=$?
+    if [ "$_wl_j11_rc" -eq 0 ] && cmp -s "$_wl_j11_out" "$_wl_j11_expected"; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j11: _wl_snapshot_real_trash on a present dir with entries byte-matches an independently computed 'ls -A | sort', dotfiles included (#6299)" "$ok"
+
+# (c) WL-j12: a PRESENT but EMPTY dir must not be confused with the absent
+# case — both produce an empty outfile, but this path must not error either.
+_wl_j12_dir="$_WL_DIR/present-trash-empty"
+mkdir -p "$_wl_j12_dir"
+_wl_j12_out="$_WL_DIR/present-empty-trash-snapshot"
+rm -f "$_wl_j12_out"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j12_rc=0
+    _wl_snapshot_real_trash "$_wl_j12_dir" "$_wl_j12_out" || _wl_j12_rc=$?
+    if [ "$_wl_j12_rc" -eq 0 ] && [ -f "$_wl_j12_out" ] && [ ! -s "$_wl_j12_out" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j12: _wl_snapshot_real_trash on a present-but-empty dir writes an empty outfile with rc=0 (#6299)" "$ok"
+
+# (d) WL-j13: the end-to-end regression barrier. The real /tmp/.reseed-trash
+# is a hardcoded machine-shared path no test may create or delete, so an
+# absent-dir check against it alone would pass vacuously on any host where the
+# dir happens to exist — exactly the intermittency that let this bug survive
+# four sweep failures. Re-running this whole suite with _WL_REAL_TRASH_DIR
+# pointed at a guaranteed-absent path makes the absent-dir branch reachable
+# deterministically on ANY host. Sentinel-gated so the inner run skips this
+# block entirely and recursion is bounded to one level. No EXIT trap is added
+# here: $_WL_DIR already sits under $_robust_tmpdir and is reclaimed by the
+# suite's single existing trap.
+if [ -z "${_WL_ABSENT_TRASH_SELFTEST:-}" ]; then
+    _wl_j13_tmpdir="$(mktemp -d "$_WL_DIR/selftest-tmp-XXXXXX")"
+    _wl_j13_log="$_WL_DIR/selftest.log"
+    _wl_j13_rc=0
+    _WL_ABSENT_TRASH_SELFTEST=1 _WL_REAL_TRASH_DIR="$_WL_DIR/no-such-trash" TMPDIR="$_wl_j13_tmpdir" \
+        bash "${BASH_SOURCE[0]}" > "$_wl_j13_log" 2>&1 || _wl_j13_rc=$?
+    _wl_j13_summary_ok=false
+    if grep -qE '^Results: [0-9]+ passed, 0 failed' "$_wl_j13_log"; then
+        _wl_j13_summary_ok=true
+    fi
+    # Require a CLEAN inner run, not merely "reached the summary" (#6299): the
+    # override only makes WL-j9 vacuous, it must never make any check actually
+    # FAIL, so rc must be exactly 0 — an inner rc=1 (some check failed) is a
+    # real regression that this guard must not wave through as acceptable.
+    if [ "$_wl_j13_summary_ok" = "true" ] && [ "$_wl_j13_rc" -eq 0 ]; then
+        ok=true
+    else
+        ok=false
+    fi
+    if [ "$ok" = "false" ]; then
+        # The nested run's log lives under $_WL_DIR and is reclaimed by the
+        # suite's single EXIT trap — surface its tail now so the failure is
+        # diagnosable from this run's own output instead of vanishing with it.
+        echo "  WL-j13 nested run log (tail -20):"
+        tail -20 "$_wl_j13_log" 2>/dev/null | sed 's/^/    /' || true
+    fi
+    check "WL-j13: re-running this suite with _WL_REAL_TRASH_DIR pointed at a guaranteed-absent path still reaches a CLEAN Results: summary (0 failed, rc=0), never aborting or failing a check (#6299) (rc=$_wl_j13_rc)" "$ok"
+fi
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash NEW-litter classification is unit-tested (#6299) ---"
+
+# WL-j14..j18 close the MUST-NOT-REGRESS gap this task also requires: the
+# comm -13 + stem-attribution classification that decides WL-j9's verdict is
+# exercised only end-to-end by WL-j8/WL-j9 today. WL-j3/WL-j6/WL-j7 cover the
+# LIBRARY functions in test_helpers.sh, not this suite's own driver-level
+# classification block. _wl_classify_new_trash names that classification so
+# it can be driven directly over synthetic before/after listings written
+# under $_WL_DIR — never the real trash path. Each check below guards its
+# call with declare -F so, while the function is undefined, it reports a
+# clean FAIL rather than an undefined-command abort under errexit.
+
+# (a) WL-j14: a NEW entry matching the stem, shaped "<stem>-lane-XXXX.<pid>",
+# must land in _wl_new_real and NOT in _wl_new_other.
+_wl_j14_before="$_WL_DIR/clsfy-j14-before"
+_wl_j14_after="$_WL_DIR/clsfy-j14-after"
+_wl_j14_stem="wl14stem"
+printf '%s\n' "other-preexisting-entry" | sort > "$_wl_j14_before"
+printf '%s\n' "other-preexisting-entry" "${_wl_j14_stem}-lane-0007.12345" | sort > "$_wl_j14_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real=""
+    _wl_new_other=""
+    _wl_classify_new_trash "$_wl_j14_before" "$_wl_j14_after" "$_wl_j14_stem"
+    if [[ "$_wl_new_real" == *"${_wl_j14_stem}-lane-0007.12345"* ]] && [[ "$_wl_new_other" != *"${_wl_j14_stem}-lane-0007.12345"* ]]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j14: _wl_classify_new_trash puts a NEW stem-matching entry, shaped '<stem>-lane-XXXX.<pid>', in _wl_new_real and not in _wl_new_other (#6299)" "$ok"
+
+# (b) WL-j15: a NEW entry NOT matching the stem must land in _wl_new_other and
+# NOT in _wl_new_real — another worktree's concurrent litter stays
+# informational and never fails the suite.
+_wl_j15_before="$_WL_DIR/clsfy-j15-before"
+_wl_j15_after="$_WL_DIR/clsfy-j15-after"
+_wl_j15_stem="wl15stem"
+printf '%s\n' "other-preexisting-entry" | sort > "$_wl_j15_before"
+printf '%s\n' "other-preexisting-entry" "otherstem-lane-0009.54321" | sort > "$_wl_j15_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real=""
+    _wl_new_other=""
+    _wl_classify_new_trash "$_wl_j15_before" "$_wl_j15_after" "$_wl_j15_stem"
+    if [[ "$_wl_new_other" == *"otherstem-lane-0009.54321"* ]] && [[ "$_wl_new_real" != *"otherstem-lane-0009.54321"* ]]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j15: _wl_classify_new_trash puts a NEW non-stem-matching entry in _wl_new_other and not in _wl_new_real, so other worktrees' litter stays informational (#6299)" "$ok"
+
+# (c) WL-j16: an entry present in BOTH before and after (pre-existing) lands
+# in neither global — including a stem-matching pre-existing entry, which
+# must not be misreported as new.
+_wl_j16_before="$_WL_DIR/clsfy-j16-before"
+_wl_j16_after="$_WL_DIR/clsfy-j16-after"
+_wl_j16_stem="wl16stem"
+printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_before"
+printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    # Pre-seeded with a stale marker, not "" (#6299): otherwise a completely
+    # no-op or early-returning _wl_classify_new_trash would pass this check
+    # vacuously by merely leaving the globals untouched, rather than by
+    # actively producing emptiness. Matches the WL-j17 precedent below for
+    # the identical hazard.
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j16_before" "$_wl_j16_after" "$_wl_j16_stem"
+    if [ -z "${_wl_new_real// /}" ] && [ -z "${_wl_new_other// /}" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j16: _wl_classify_new_trash reports neither global for an entry present in BOTH before and after, stem-matching pre-existing entry included (#6299)" "$ok"
+
+# (d) WL-j17: the absent-dir composition. Two EMPTY before/after files (what
+# _wl_snapshot_real_trash writes for an absent dir) must yield both globals
+# empty — pinning that an absent dir reads as "no new litter", not as an
+# error or a false positive. Both globals are pre-seeded with a stale marker
+# so the check actually exercises the function producing emptiness, rather
+# than merely observing untouched globals.
+_wl_j17_before="$_WL_DIR/clsfy-j17-before"
+_wl_j17_after="$_WL_DIR/clsfy-j17-after"
+: > "$_wl_j17_before"
+: > "$_wl_j17_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j17_before" "$_wl_j17_after" "wl17stem"
+    if [ -z "${_wl_new_real// /}" ] && [ -z "${_wl_new_other// /}" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j17: _wl_classify_new_trash on two EMPTY before/after listings (the absent-dir composition) yields both globals empty (#6299)" "$ok"
+
+# (e) WL-j18: subshell safety. Called as a plain statement (never inside a
+# $( ) command substitution — see the make_isolated_lane precedent this file
+# already documents for the same hazard), the function must visibly mutate
+# _wl_new_real in the calling (main) shell, not merely appear to succeed
+# while leaving the caller's globals untouched.
+_wl_j18_before="$_WL_DIR/clsfy-j18-before"
+_wl_j18_after="$_WL_DIR/clsfy-j18-after"
+_wl_j18_stem="wl18stem"
+: > "$_wl_j18_before"
+printf '%s\n' "${_wl_j18_stem}-lane-0002.222" | sort > "$_wl_j18_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j18_before" "$_wl_j18_after" "$_wl_j18_stem"
+    if [[ "$_wl_new_real" == *"${_wl_j18_stem}-lane-0002.222"* ]] && [ "$_wl_new_real" != "stale-marker" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j18: _wl_classify_new_trash called as a plain statement visibly mutates _wl_new_real in the caller's shell, not silently discarded as inside \$( ) (#6299)" "$ok"
 
 # -- Summary -------------------------------------------------------------------
 echo ""

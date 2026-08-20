@@ -30,6 +30,55 @@ pub use register::OCCT_KERNEL_VERSION;
 mod ffi;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
+
+/// Zero the calling thread's boolean-op-pass count (task 5213).
+///
+/// Incremented once per completed OCCT boolean `Build()` (the binary
+/// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
+/// tests can assert that a K-instance pattern performs exactly ONE boolean
+/// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
+/// single-pass change.
+///
+/// This is a TEST-OBSERVABILITY hook, not a progress-reporting one.  Do not
+/// plumb it into GUI/CLI progress reporting: those paths drive OCCT through
+/// [`OcctKernelHandle`]'s dedicated worker thread (see the per-thread scope
+/// below), so a reporter on any other thread reads a permanent 0.  A
+/// cross-thread progress signal would need a separate process-global
+/// aggregate, deliberately not added here because nothing consumes one today.
+///
+/// The counter is PER-THREAD: each thread has its own count, so a
+/// reset→operate→read window on one thread needs no serialization against
+/// other threads, and this reset zeroes only the calling thread's count.
+///
+/// The count therefore reflects only booleans performed ON THE CALLING THREAD.
+/// Work driven through [`OcctKernelHandle`], which owns a dedicated OCCT worker
+/// thread (see `src/handle.rs`), lands in that worker's count and is NOT
+/// observable from the caller — use [`OcctKernel`] directly when reading the
+/// counter.
+#[cfg(has_occt)]
+pub fn reset_boolean_pass_count() {
+    ffi::ffi::reset_boolean_pass_count();
+}
+
+/// Read the calling thread's count of completed OCCT boolean passes.
+///
+/// See [`reset_boolean_pass_count`] for the increment contract and for the
+/// per-thread scope (in particular, why [`OcctKernelHandle`]-driven work is not
+/// visible here).
+#[cfg(has_occt)]
+pub fn boolean_pass_count() -> u64 {
+    ffi::ffi::boolean_pass_count()
+}
+
+/// Stub boolean-op-pass counter reset (OCCT not available) — no-op.
+#[cfg(not(has_occt))]
+pub fn reset_boolean_pass_count() {}
+
+/// Stub boolean-op-pass counter read (OCCT not available) — always 0.
+#[cfg(not(has_occt))]
+pub fn boolean_pass_count() -> u64 {
+    0
+}
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
@@ -199,40 +248,27 @@ fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
 }
 
 #[cfg(has_occt)]
-/// Tolerance for the pipe start-tangent +Z check.
+/// Validate that a pipe start-tangent is all-finite (defense-in-depth for `gp_Dir`).
 ///
-/// The guard is symmetric: `|t.z - 1| < PIPE_START_TANGENT_Z_EPSILON`.
-/// For a true unit vector the per-axis residual satisfies x²+y² < 2ε,
-/// so |x|,|y| < √(2ε).
-const PIPE_START_TANGENT_Z_EPSILON: f64 = 1e-6;
-
-#[cfg(has_occt)]
-/// Validate that a pipe start-tangent is approximately +Z and all-finite.
-///
-/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity) or if
-/// `t.z` is outside `[1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON]`
-/// (tangent not close enough to the unit +Z vector).
+/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity).
 ///
 /// # Rationale
 ///
-/// The circular profile face is built in the XY plane (normal = +Z).
-/// `BRepOffsetAPI_MakePipe` requires the profile plane to align with the path's
-/// start-tangent. For non-+Z paths the swept solid is degenerate (zero volume);
-/// this helper detects that upfront and returns an explicit error rather than
-/// silently producing unusable geometry. General orientation support is deferred
-/// future work (option (a) from task-2095 review).
+/// The tangent is fed into OCCT's `gp_Dir` (via the oriented-circle profile
+/// construction) to align the circular profile with the path's start frame, and
+/// `gp_Dir` requires a finite, non-degenerate vector. `BRepAdaptor_CompCurve::D1`
+/// already yields a normalized tangent, so a non-finite component here signals a
+/// malformed wire or an FFI contract violation; this Rust-side guard rejects it
+/// explicitly rather than passing NaN/∞ across the FFI boundary.
+///
+/// Any finite orientation is accepted: `gp_Ax2(point, dir)` builds a valid
+/// orthonormal frame for ANY unit normal (including −Z), so pipes are no longer
+/// restricted to a +Z start-tangent.
 fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
     if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
         return Err(GeometryError::OperationFailed(format!(
             "pipe start-tangent has non-finite component (got ({:.3}, {:.3}, {:.3}))",
             t.x, t.y, t.z
-        )));
-    }
-    if t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON || t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON {
-        return Err(GeometryError::OperationFailed(format!(
-            "pipe currently only supports paths whose start-tangent is +Z \
-             (tolerance {:e}) (got tangent ({:.3}, {:.3}, {:.3}))",
-            PIPE_START_TANGENT_Z_EPSILON, t.x, t.y, t.z
         )));
     }
     Ok(())
@@ -473,9 +509,12 @@ const LOCAL_FEATURE_OP_ACCESSORS: SixBufferHistoryAccessors<ffi::ffi::LocalFeatu
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     /// Per-handle BRepKind, populated alongside `shapes` in `store_with_repr`.
-    /// Looked up via the public `repr_of(id)` accessor. Warm-start does not
-    /// repopulate this map (best-effort: post-restore queries return `None`
-    /// until the handle is re-stored locally).
+    /// Looked up via the public `repr_of(id)` accessor. Persisted and
+    /// restored in lock-step with `shapes` across warm-start (see
+    /// `warm_state` / `with_warm_state`): entries missing at restore time
+    /// (e.g. because the shape failed to serialize) fall back to
+    /// `BRepKind::Solid`, matching the implicit default in
+    /// [`Self::store`].
     reprs: HashMap<u64, BRepKind>,
     /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
     /// previously-minted edge handle list (in canonical
@@ -524,6 +563,35 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
+/// Map an `OcctShape` to the [`BRepKind`] matching its actual top-level TopAbs
+/// type, for ops whose result kind depends on their input rather than being
+/// fixed. Both `COMPSOLID` and `COMPOUND` are multi-body aggregates and
+/// classify as [`BRepKind::Compound`]. Any unrecognized type falls back to
+/// [`BRepKind::Solid`] (matches `store`'s implicit default).
+///
+/// Callers:
+/// - [`OcctKernel::fuse_all`] — `fuse_shape_list` yields a `SOLID` for an
+///   overlapping fuse and a `COMPSOLID` for a disjoint one, so the stored repr
+///   must not claim a multi-body result is a single `Solid`.
+/// - `GeometryOp::SweepGuided` / `GeometryOp::LoftGuided` — `make_pipe_shell` /
+///   `loft_guided_profiles` solidify only when the section(s) were faces and
+///   otherwise leave an un-capped `SHELL` (see cpp/occt_wrapper.cpp).
+#[cfg(has_occt)]
+fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
+    let name = ffi::ffi::shape_type_name(shape)
+        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+    Ok(match name.as_str() {
+        "Solid" => BRepKind::Solid,
+        "CompSolid" | "Compound" => BRepKind::Compound,
+        "Shell" => BRepKind::Shell,
+        "Wire" => BRepKind::Wire,
+        "Face" => BRepKind::Face,
+        "Edge" => BRepKind::Edge,
+        "Vertex" => BRepKind::Vertex,
+        _ => BRepKind::Solid,
+    })
+}
+
 #[cfg(has_occt)]
 impl OcctKernel {
     pub fn new() -> Self {
@@ -548,6 +616,25 @@ impl OcctKernel {
     /// [`BRepKind::Solid`] (matches the implicit default in [`OcctKernel::store`]).
     pub fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
         self.reprs.get(&id.0).copied()
+    }
+
+    /// Returns the number of shapes that failed BRep deserialization during
+    /// the last [`WarmStartable::with_warm_state`] call (0 if none failed, or
+    /// if `with_warm_state` has not yet been called on this kernel).
+    ///
+    /// INV-GEO-3 production observability accessor: each failure is also
+    /// reported via a `tracing::warn!` event at the point of failure (see
+    /// `with_warm_state`); this accessor exposes the failure count from
+    /// the most recent restore for production consumers that want the
+    /// summary figure without instrumenting tracing.
+    ///
+    /// Edge case: a `with_warm_state` call whose [`OpaqueState`] fails the
+    /// type check is a no-op per the trait contract (state silently
+    /// ignored) and returns *before* the counter reset — it does not zero
+    /// or otherwise change the count left by the previous successful
+    /// restore.
+    pub fn warm_start_failures(&self) -> usize {
+        self.last_warm_start_failures
     }
 
     /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
@@ -576,14 +663,54 @@ impl OcctKernel {
         }
     }
 
+    /// Debug-only invariant guard shared by `extract_edges`/`extract_faces`/
+    /// `extract_vertices`: asserts that `h`, just returned from
+    /// `store_with_repr`, really did get a strictly fresh id (never reused).
+    ///
+    /// This protects `warm_state()`'s bounded-payload filter (see its
+    /// "Bounded payload" note): the filter treats every `parent_handle` key
+    /// as a derived, rebuildable sub-shape id and drops it from persisted
+    /// state. That's only safe because `store_with_repr` mints ids by
+    /// fetch-and-increment on `next_id` and never reuses one, so a
+    /// root/persistent handle id can never end up back here as `h.id.0`.
+    /// Assert that freshness explicitly so a future change that breaks it
+    /// (e.g. a `store_with_repr` that interns/reuses ids) fails loudly here
+    /// instead of silently making the filter drop real root data.
+    fn debug_assert_fresh_id(&self, h: &GeometryHandle) {
+        debug_assert_eq!(
+            h.id.0,
+            self.next_id - 1,
+            "store_with_repr must mint a strictly fresh id; a non-fresh \
+             id here could alias an existing root/persistent handle and \
+             make warm_state()'s parent_handle filter silently drop real \
+             root data"
+        );
+    }
+
     /// Look up a shape by handle ID.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
         let ptr = self
             .shapes
             .get(&id.0)
             .ok_or(GeometryError::InvalidReference(id))?;
-        ptr.as_ref()
-            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))
+        let shape = ptr
+            .as_ref()
+            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))?;
+        // Reject a NON-null wrapper around null (IsNull) topology. Such a shape
+        // passes the null-UniquePtr check above yet dereferences to a null
+        // TShape, which crashes the unguarded OCCT geometry-query FFI (e.g.
+        // query_volume's ShapeType() fallback -> hardware SIGSEGV). This single
+        // chokepoint covers all four mass-property queries plus every other
+        // shape.shape deref reached via get_shape (query_area,
+        // query_edge_length, ...). Refuse loudly — no silent zero/origin
+        // fallback (aligns with sibling 5197's mass-properties policy).
+        if ffi::ffi::shape_is_null(shape) {
+            return Err(GeometryError::OperationFailed(format!(
+                "shape handle {:?} wraps null/empty topology (IsNull)",
+                id
+            )));
+        }
+        Ok(shape)
     }
 
     /// Return the topology-map cache build counts for the shape identified by
@@ -644,6 +771,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Edge);
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this edge come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
@@ -687,6 +818,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Face);
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance — sister to `extract_edges`. See
             // `parent_handle` field doc for the design contract.
             self.parent_handle.insert(h.id.0, handle);
@@ -742,6 +877,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Vertex);
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this vertex come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
@@ -847,6 +986,55 @@ impl OcctKernel {
         // Immutable borrow on self.shapes is released; now safe to call
         // store_with_repr (which takes &mut self).
         Ok(self.store_with_repr(compound_result, BRepKind::Compound))
+    }
+
+    /// Fuse N shapes into a single body in ONE OCCT boolean pass (task 5213,
+    /// Lever 1 — the single-pass n-ary fuse).
+    ///
+    /// Resolves each `GeometryHandleId` to its `OcctShape`, builds an
+    /// `OcctShapeVec`, and calls `ffi::ffi::fuse_all`, which fuses the whole
+    /// list in one `BRepAlgoAPI_Fuse` (SetArguments/SetTools) pass instead of
+    /// the O(N²) pairwise-accumulator loop.  Union semantics are preserved
+    /// exactly: overlapping inputs merge (no internal walls / double-counted
+    /// volume), disjoint inputs come back as a watertight multi-solid.  Source
+    /// handles remain valid after the call.
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` when:
+    /// - `handles` is empty, or
+    /// - any handle is unknown, or
+    /// - the underlying OCCT fuse fails.
+    pub fn fuse_all(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if handles.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "fuse_all: handles slice must not be empty".into(),
+            ));
+        }
+        // Gather the argument shapes into a fresh OcctShapeVec while holding the
+        // immutable borrow on self.shapes; the borrow ends before we store.
+        let fused = {
+            let mut vec = ffi::ffi::new_shape_vec();
+            for &id in handles {
+                let shape = self.get_shape(id)?;
+                ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+            }
+            ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+        };
+        // Stamp the repr from the ACTUAL result type rather than assuming
+        // Solid: `fuse_shape_list` returns a SOLID for an overlapping fuse, a
+        // COMPSOLID for a disjoint one, and — in the single-element identity
+        // path — the sole input shape unchanged (any kind). A hardcoded Solid
+        // would mislead future `repr_of()` consumers that trust it to tell a
+        // single solid from a multi-body compound/compsolid.
+        let repr = if handles.len() == 1 {
+            // Identity passthrough: preserve the sole input's classification.
+            self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
+        } else {
+            brep_kind_of_shape(&fused)?
+        };
+        Ok(self.store_with_repr(fused, repr))
     }
 
     /// Test whether two shapes are intersecting (non-positive minimum distance).
@@ -2841,6 +3029,24 @@ impl OcctKernel {
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::ScaleNonUniform { target, sx, sy, sz } => {
+                let shape = self.get_shape(*target)?;
+                if !sx.is_finite()
+                    || !sy.is_finite()
+                    || !sz.is_finite()
+                    || *sx == 0.0
+                    || *sy == 0.0
+                    || *sz == 0.0
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "scale factors must be finite and non-zero, got sx={sx}, sy={sy}, sz={sz}"
+                    )));
+                }
+                ffi::ffi::gtransform_shape(
+                    shape, *sx, 0.0, 0.0, 0.0, *sy, 0.0, 0.0, 0.0, *sz, 0.0, 0.0, 0.0,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_f64(distance)?;
                 if !dist.is_finite() {
@@ -2926,13 +3132,22 @@ impl OcctKernel {
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_f64(radius)?;
                 validate_positive_finite(r, "pipe radius")?;
-                // Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.
                 let path_shape = self.get_shape(*path)?;
+                // Orient the circular profile onto the path's start frame: build
+                // the circle at the wire's start point with its plane normal
+                // aligned to the start-tangent, then sweep. This supports paths
+                // with ANY finite start-tangent (not just +Z).
                 let t = ffi::ffi::wire_start_tangent(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Copy the tangent components before the by-value validate guard
+                // consumes `t` (Point3 is not Copy).
+                let (tx, ty, tz) = (t.x, t.y, t.z);
                 validate_pipe_start_tangent(t)?;
-                let circle_shape = ffi::ffi::make_circle_face(r, 0.0)
+                let p = ffi::ffi::wire_start_point(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let circle_shape =
+                    ffi::ffi::make_oriented_circle_face(r, p.x, p.y, p.z, tx, ty, tz)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 ffi::ffi::make_pipe(&circle_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -2980,6 +3195,11 @@ impl OcctKernel {
                 ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            // No Rust-side argument validation, unlike the LoftGuided / Pipe /
+            // ExtrudeInfinite neighbours: `make_pipe_shell` in
+            // cpp/occt_wrapper.{h,cpp} owns all three contracts — the section
+            // profile's, and the path's and guide's wire-ness — and raises a
+            // ContractViolation naming the offending argument and type.
             GeometryOp::SweepGuided {
                 profile,
                 path,
@@ -2988,8 +3208,18 @@ impl OcctKernel {
                 let profile_shape = self.get_shape(*profile)?;
                 let path_shape = self.get_shape(*path)?;
                 let guide_shape = self.get_shape(*guide)?;
-                ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let shape = ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // The result kind is input-dependent, so it cannot use the
+                // default `store` (which stamps BRepKind::Solid): a face
+                // profile — the only kind a DSL `sweep_guided()` can supply —
+                // is capped into a SOLID, while a wire or vertex profile
+                // leaves an un-capped SHELL that no end cap can close. Stamping
+                // Solid on the latter would make `repr_of()` report a closed
+                // solid for a shape whose `IsClosed` is false, and mislead the
+                // sub-shape classification keyed off the repr.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::LoftGuided { profiles, guides } => {
                 if profiles.len() < 2 {
@@ -3012,8 +3242,15 @@ impl OcctKernel {
                     let shape = self.get_shape(gid)?;
                     ffi::ffi::shape_vec_push(guide_vec.pin_mut(), shape);
                 }
-                ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let shape = ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Input-dependent result kind, exactly as for SweepGuided
+                // above: an all-face section set — the only kind a DSL
+                // `loft_guided()` can supply — is capped into a SOLID, while a
+                // mixed or all-wire set stays an un-capped SHELL. Stamp the
+                // repr the shape actually has rather than the default Solid.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::LineSegment {
                 x1,
@@ -3220,8 +3457,24 @@ impl OcctKernel {
                         "arbitrary_pattern requires at least one transform".into(),
                     ));
                 }
-                let flat_transforms: Vec<f64> =
-                    transforms.iter().flat_map(|t| t.iter().copied()).collect();
+                // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz].
+                // An identity quaternion ([1,0,0,0]) reproduces the pre-4168
+                // pure-translation behavior exactly (see `build_trsf` on the
+                // C++ side).
+                let flat_transforms: Vec<f64> = transforms
+                    .iter()
+                    .flat_map(|(rotation, translation)| {
+                        [
+                            rotation[0],
+                            rotation[1],
+                            rotation[2],
+                            rotation[3],
+                            translation[0],
+                            translation[1],
+                            translation[2],
+                        ]
+                    })
+                    .collect();
                 let num_transforms = transforms.len() as u32;
                 ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
@@ -3396,6 +3649,18 @@ impl OcctKernel {
             GeometryOp::Split { .. } => {
                 return Err(GeometryError::OperationFailed(
                     "GeometryOp::Split is multi-output; use execute_split() instead of execute()"
+                        .into(),
+                ));
+            }
+            // Surface is a Mesh-repr terminal anchor fed by a Voxel→Mesh
+            // conversion edge (PRD docs/prds/v0_3/voxel-to-mesh-surfacing.md
+            // C-1); it must never reach OcctKernel::execute(). A permanent
+            // defensive Err, not a todo!() — reaching this arm is a
+            // dispatcher bug, not unfinished work.
+            GeometryOp::Surface { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "GeometryOp::Surface is a Mesh-repr terminal anchor fed by a Voxel→Mesh \
+                     conversion edge; it must not reach OcctKernel::execute() — see PRD C-1"
                         .into(),
                 ));
             }
@@ -4045,13 +4310,114 @@ fn analytic_curve_datum_to_value(
 #[cfg(has_occt)]
 impl WarmStartable for OcctKernel {
     fn warm_state(&self) -> Option<OpaqueState> {
-        if self.shapes.is_empty() {
+        // INV-GEO-3 state-inventory guard: exhaustive destructure (no `..`
+        // spread) so a newly-added OcctKernel field forces a compile-time
+        // persist/clear/runtime classification here instead of being
+        // silently omitted from warm-start state.
+        //   PERSIST (serialized into OcctWarmState): shapes, reprs, next_id
+        //     — excluding ids that are keys in parent_handle (see below)
+        //   CLEAR-on-restore (derived provenance, rebuilt by extract_*;
+        //     see with_warm_state): extracted_edges, extracted_faces,
+        //     extracted_vertices, parent_handle
+        //   RUNTIME-only (not part of warm-start state): last_warm_start_failures
+        //
+        // Bounded payload: `shapes` is persisted below, but ids that are
+        // keys in `parent_handle` are skipped. Those ids name sub-shape
+        // blobs previously minted by extract_edges/extract_faces/
+        // extract_vertices; since parent_handle and the extracted_* caches
+        // are CLEAR-on-restore, a serialized sub-shape would round-trip as
+        // an ordinary shapes/reprs entry but come out orphaned on the
+        // consumer side: still queryable by id (repr_of, Volume, ...) but
+        // unreachable via OwnerBody and never reused by a later extract_*
+        // call, which mints fresh ids against the cleared cache. Left
+        // unfiltered, this would be unbounded across repeated warm-start
+        // cycles, not just single-cycle bloat: each cycle would serialize
+        // prior orphans, restore them, and the next extract_* would mint
+        // yet more fresh ids on top of the cleared cache, so the shape
+        // table would monotonically grow with phantom, unreachable
+        // entries. `parent_handle`'s key set is exactly the derived,
+        // rebuildable sub-shape ids — roots created by `execute` (Box,
+        // Cylinder, Union, Sphere, ...) are never keys, so only
+        // root/persistent shapes round-trip.
+        //
+        // `next_id` is not part of this bounded-vs-unbounded concern: it is
+        // persisted verbatim (see the `OcctWarmState` construction below)
+        // and, by design, keeps advancing across warm-start cycles — every
+        // `store_with_repr` call, root or (pre-filter) sub-shape alike,
+        // mints its id via fetch-and-increment and never reuses one, so
+        // `next_id` is monotonic regardless of this filter. That's expected
+        // and harmless: it's a single 8-byte scalar, not a per-entry
+        // collection, so it never contributes to the multi-cycle payload
+        // growth this filter exists to bound.
+        //
+        // Consumer contract: a `GeometryHandleId` returned by extract_edges/
+        // extract_faces/extract_vertices must not be held across a
+        // `with_warm_state()` boundary. After restore, such an id is only
+        // valid again once re-minted by a fresh extract_* call on its root;
+        // querying the old id directly (Volume, OwnerBody, repr_of, ...)
+        // now fails with `QueryError::InvalidHandle` instead of the
+        // pre-filter behavior of returning a stale-but-queryable orphan.
+        // Callers must re-extract sub-shapes from their root after every
+        // warm-start restore (see `warm_state_reextract_cycle` in the test
+        // module below). Verified at the time this filter was added (task
+        // #5162): no in-tree production caller exercises this cycle today.
+        // `OcctKernelHandle` (crates/reify-kernel-occt/src/handle.rs)
+        // forwards `warm_state`/`with_warm_state` over its request channel,
+        // but nothing outside this crate's own tests sends
+        // `OcctRequest::WarmState`/`WithWarmState`; and `reify-eval`'s only
+        // production warm-state wiring (`CacheStore::donate_warm_state`/
+        // `get_warm_state`, driven from `engine_compute.rs`/
+        // `engine_edit.rs`) is scoped to `NodeId::Compute` solver state, not
+        // `OcctKernel`/`OcctKernelHandle` geometry state — `engine_build.rs`
+        // has no `warm_state`/`OpaqueState` reference at all. A future
+        // caller that wires OCCT warm-start into the eval graph must follow
+        // the re-extraction contract above.
+        let Self {
+            shapes,
+            reprs,
+            next_id,
+            extracted_edges,
+            extracted_faces,
+            extracted_vertices,
+            parent_handle,
+            last_warm_start_failures: _,
+        } = self;
+        // Completeness cross-check for the bounded-payload filter below: it is
+        // only correct if every extracted_edges/extracted_faces/
+        // extracted_vertices cached id is also a `parent_handle` key. That
+        // holds today because extract_edges/extract_faces/extract_vertices
+        // insert into `parent_handle` immediately after minting each id (see
+        // their `store_with_repr` call sites), but nothing at the type level
+        // enforces that pairing — `debug_assert_fresh_id` only guards id
+        // freshness, not this coupling. Assert it explicitly (read-only; these
+        // fields are otherwise unused here, not persisted) so a future code
+        // path that repopulates one of the extracted_* caches, or stores a
+        // sub-shape, without a matching `parent_handle` insert fails loudly
+        // here instead of silently re-opening the unbounded multi-cycle
+        // growth this filter exists to prevent.
+        debug_assert!(
+            [extracted_edges, extracted_faces, extracted_vertices]
+                .into_iter()
+                .flat_map(|cache| cache.values().flatten())
+                .all(|id| parent_handle.contains_key(&id.0)),
+            "every extracted_edges/extracted_faces/extracted_vertices cached \
+             id must be a parent_handle key, or warm_state()'s bounded-payload \
+             filter would silently leak an un-filtered orphan back into \
+             persisted warm-start state"
+        );
+        if shapes.is_empty() {
             return None;
         }
         let mut warm_shapes = HashMap::new();
         let mut warm_reprs: HashMap<u64, BRepKind> = HashMap::new();
         let mut total_bytes: usize = 0;
-        for (&id, shape) in &self.shapes {
+        for (&id, shape) in shapes {
+            if parent_handle.contains_key(&id) {
+                // Derived sub-shape id (rebuildable via extract_*); skip so
+                // it doesn't round-trip as an orphaned entry. See the
+                // "Bounded payload" note above.
+                continue;
+            }
             let Some(shape_ref) = shape.as_ref() else {
                 continue; // Skip null shapes (best-effort, like serialization failures)
             };
@@ -4061,7 +4427,7 @@ impl WarmStartable for OcctKernel {
                     warm_shapes.insert(id, brep);
                     // Mirror repr entry only for ids that successfully serialized,
                     // keeping shapes and reprs in lock-step.
-                    if let Some(&repr) = self.reprs.get(&id) {
+                    if let Some(&repr) = reprs.get(&id) {
                         warm_reprs.insert(id, repr);
                     }
                 }
@@ -4085,7 +4451,7 @@ impl WarmStartable for OcctKernel {
             OcctWarmState {
                 shapes: warm_shapes,
                 reprs: warm_reprs,
-                next_id: self.next_id,
+                next_id: *next_id,
             },
             size_estimate,
         ))
@@ -4107,7 +4473,11 @@ impl WarmStartable for OcctKernel {
                     staged.insert(id, shape);
                 }
                 Err(e) => {
-                    eprintln!("warning: warm-start deserialization failed for shape {id}: {e}");
+                    tracing::warn!(
+                        shape_id = id,
+                        error = %e,
+                        "warm-start deserialization failed"
+                    );
                     self.last_warm_start_failures += 1;
                     continue;
                 }
@@ -4115,6 +4485,15 @@ impl WarmStartable for OcctKernel {
         }
         // Atomic swap: only replace kernel state if at least one shape was
         // successfully deserialized. Otherwise the kernel state is untouched.
+        //
+        // Coverage boundary: the INV-GEO-3 exhaustive-destructure drift guard
+        // below only fires on this swap-occurs path. A future field that must
+        // be cleared even on the no-op (total-failure) branch is NOT caught
+        // by that guard — it would need its own explicit handling above this
+        // `if`, plus a behavioral pin (see
+        // `with_warm_state_total_failure_preserves_dirty_state_and_provenance`,
+        // which asserts the no-op path leaves every current field, including
+        // `parent_handle`, untouched on a dirty kernel).
         if !staged.is_empty() {
             // Rebuild repr map: for every successfully staged id, take the
             // persisted repr if present, falling back to BRepKind::Solid
@@ -4133,15 +4512,36 @@ impl WarmStartable for OcctKernel {
                 let repr = warm.reprs.get(&id).copied().unwrap_or(BRepKind::Solid);
                 new_reprs.insert(id, repr);
             }
-            self.shapes = staged;
-            self.reprs = new_reprs;
-            self.next_id = warm.next_id;
-            // Wholesale shape replacement invalidates any cached parent →
-            // children mapping (the cached child ids may not correspond to
-            // any face/edge/vertex of the freshly-restored parent shapes).
-            self.extracted_edges.clear();
-            self.extracted_faces.clear();
-            self.extracted_vertices.clear();
+            // INV-GEO-3 state-inventory guard: this exhaustive destructure (no
+            // `..` spread) forces every OcctKernel field to be classified here
+            // as PERSIST (overwritten from the restored state) or CLEAR-on-restore
+            // (derived/cached provenance invalidated by the wholesale shape
+            // swap). Adding a new field to OcctKernel without extending this
+            // pattern is a hard compile error (E0027), so the consumer-side
+            // clear/rebuild decision can't be silently skipped.
+            let Self {
+                shapes,
+                reprs,
+                next_id,
+                extracted_edges,
+                extracted_faces,
+                extracted_vertices,
+                parent_handle,
+                last_warm_start_failures: _, // finalized above; not part of the swap
+            } = self;
+            // PERSIST: overwritten wholesale from the restored warm state.
+            *shapes = staged;
+            *reprs = new_reprs;
+            *next_id = warm.next_id;
+            // CLEAR-on-restore: derived provenance/idempotency caches keyed to
+            // the pre-restore shape table. Cached child ids may not correspond
+            // to any face/edge/vertex of the freshly-restored shapes, and
+            // parent_handle's child → parent entries are likewise stale
+            // (rebuilt on demand by a later extract_edges/faces/vertices call).
+            extracted_edges.clear();
+            extracted_faces.clear();
+            extracted_vertices.clear();
+            parent_handle.clear();
         }
     }
 }
@@ -4162,12 +4562,6 @@ impl OcctKernel {
         if id >= self.next_id {
             self.next_id = id + 1;
         }
-    }
-
-    /// Returns the number of shapes that failed deserialization during the
-    /// last `with_warm_state()` call.
-    pub fn warm_start_failures(&self) -> usize {
-        self.last_warm_start_failures
     }
 }
 
@@ -4585,6 +4979,22 @@ mod tests {
         (parse_field("x"), parse_field("y"), parse_field("z"))
     }
 
+    /// Parse a single named field out of the `{"xmin":_,"ymin":_,"zmin":_,"xmax":_,
+    /// "ymax":_,"zmax":_}` JSON string returned by `GeometryQuery::BoundingBox`.
+    fn parse_bbox_field(s: &str, field: &str) -> f64 {
+        let needle = format!("\"{field}\":");
+        let start = s
+            .find(needle.as_str())
+            .unwrap_or_else(|| panic!("field {field} not found in bbox JSON: {s:?}"))
+            + needle.len();
+        let rest = &s[start..];
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        rest[..end]
+            .trim()
+            .parse::<f64>()
+            .unwrap_or_else(|e| panic!("failed to parse {field} in bbox JSON: {s:?}: {e}"))
+    }
+
     /// Decode the 3-row × 3-col `Value::List` returned by an `InertiaTensor` query into
     /// a `[[f64;3];3]` array.  Panics with a descriptive message if the structure does not
     /// match the expected nested-list shape.
@@ -4619,6 +5029,84 @@ mod tests {
             }
         }
         entries
+    }
+
+    /// Capture `from`'s warm state and restore it into `into` — which may be
+    /// a freshly constructed kernel or one that already has its own state
+    /// (a "dirty" consumer) — returning the restored kernel. Shared by the
+    /// warm-start round-trip tests so each test body leads with its distinct
+    /// scenario setup and assertions instead of repeating the
+    /// capture/restore boilerplate.
+    fn warm_restore(from: &OcctKernel, mut into: OcctKernel) -> OcctKernel {
+        let state = from.warm_state().expect("kernel should have warm state");
+        into.with_warm_state(state);
+        into
+    }
+
+    /// Run one warm-start capture/restore/re-extract cycle, shared by
+    /// `warm_state_persisted_shape_count_stays_bounded_across_cycles` and
+    /// `warm_state_persisted_shape_count_bounded_with_post_extraction_root`
+    /// so each test body keeps only its distinct setup and final assertion.
+    ///
+    /// Captures `kernel`'s warm state, records the persisted
+    /// `(shapes.len(), reprs.len())` counts and the persisted `shapes` key
+    /// set (so callers can pin surviving-id identity, not just cardinality),
+    /// restores into a fresh kernel, runs `mid_cycle` on the restored
+    /// (pre-re-extraction) kernel for any cycle-specific checks (e.g.
+    /// asserting root survival) — `mid_cycle` takes `&mut OcctKernel` so a
+    /// caller can also re-extract sub-shapes on a root of its own (e.g. a
+    /// second, post-extraction root) instead of just the box — then
+    /// re-seeds `parent_handle` by re-running extract_faces/extract_edges/
+    /// extract_vertices on `box_root` against the cleared idempotency cache.
+    /// `box_root` is taken as a parameter — the caller's actual box handle
+    /// id, captured from its `execute` return value — instead of this
+    /// helper assuming `GeometryHandleId(1)`, so it stays correct if a
+    /// caller's id-assignment order ever changes. Returns the
+    /// restored+re-extracted kernel plus the counts and id set captured
+    /// before restore.
+    fn warm_state_reextract_cycle(
+        kernel: OcctKernel,
+        box_root: GeometryHandleId,
+        mid_cycle: impl FnOnce(&mut OcctKernel),
+    ) -> (OcctKernel, usize, usize, std::collections::HashSet<u64>) {
+        let state = kernel.warm_state().expect("kernel should have warm state");
+        let warm = state
+            .downcast_ref::<OcctWarmState>()
+            .expect("warm state should downcast_ref to OcctWarmState");
+        let shapes_len = warm.shapes.len();
+        let reprs_len = warm.reprs.len();
+        let shape_ids: std::collections::HashSet<u64> = warm.shapes.keys().copied().collect();
+
+        let mut next = OcctKernel::new();
+        next.with_warm_state(state);
+
+        mid_cycle(&mut next);
+
+        next.extract_faces(box_root)
+            .expect("extract_faces on the restored box should succeed");
+        next.extract_edges(box_root)
+            .expect("extract_edges on the restored box should succeed");
+        next.extract_vertices(box_root)
+            .expect("extract_vertices on the restored box should succeed");
+
+        (next, shapes_len, reprs_len, shape_ids)
+    }
+
+    /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
+    /// anchor fed by a Voxel→Mesh conversion edge (PRD
+    /// docs/prds/v0_3/voxel-to-mesh-surfacing.md C-1) — it must never reach
+    /// `OcctKernel::execute()`. Mirrors the `GeometryOp::Split` defensive arm:
+    /// a permanent fail-loud `Err`, not a `todo!()` stub (Surface is never
+    /// occt-executed; reaching this arm would be a dispatcher bug).
+    #[test]
+    fn execute_surface_returns_operation_failed() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Surface {
+            grid: GeometryHandleId(1),
+            iso_level: 0.0,
+            adaptive: false,
+        });
+        assert_operation_fails_with(result, "GeometryOp::Surface");
     }
 
     #[test]
@@ -4777,8 +5265,20 @@ mod tests {
     #[test]
     fn repr_of_survives_warm_start_round_trip() {
         // Pins the invariant that `repr_of` returns the correct BRepKind after a
-        // warm_state()/with_warm_state() round-trip. Prior to the fix, OcctWarmState
-        // did not persist the `reprs` map, so every restored handle returned None.
+        // warm_state()/with_warm_state() round-trip. Prior to the original fix,
+        // OcctWarmState did not persist the `reprs` map, so every restored handle
+        // returned None.
+        //
+        // Scope note (#5162): repr survival is scoped to root/persistent handles
+        // (those minted by `execute`: Box, Cylinder, Union, ...). Derived
+        // sub-shape handles minted by extract_* are `parent_handle` keys on the
+        // producer and are deliberately filtered out of warm_state() to bound
+        // multi-cycle payload growth (they round-trip as orphaned, unreachable
+        // entries otherwise — see the "Bounded payload" note in warm_state()).
+        // So a previously-extracted face id correctly returns None post-restore;
+        // its repr is no longer persisted. The regression this test guards —
+        // reprs are persisted at all, for persistent handles — is asserted via
+        // the root box handle below.
 
         // 1. Build kernel A with a box → BRepKind::Solid (id 1).
         let mut kernel_a = OcctKernel::new();
@@ -4811,20 +5311,22 @@ mod tests {
         );
 
         // 4. Round-trip.
-        let state = kernel_a
-            .warm_state()
-            .expect("kernel should have warm state");
-        let mut kernel_b = OcctKernel::new();
-        kernel_b.with_warm_state(state);
+        let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
 
-        // 5. Post-warm: face handle must still report BRepKind::Face (the regression).
+        // 5. Post-warm: the extracted-face handle is a derived sub-shape id and is
+        //    deliberately filtered out of warm_state() (#5162), so its repr is not
+        //    persisted and repr_of correctly returns None post-restore. This is the
+        //    same orphaned-but-queryable state #5162 eliminates: pre-#5162 it would
+        //    round-trip as Some(Face) but remain unreachable via OwnerBody and never
+        //    be reused by a later extract_* call.
         assert_eq!(
             kernel_b.repr_of(face_id),
-            Some(BRepKind::Face),
-            "post-warm: face handle should have BRepKind::Face, not None"
+            None,
+            "post-warm: derived sub-shape (face) repr is filtered out of warm-start (#5162)"
         );
 
-        // 6. Post-warm: box handle must still report BRepKind::Solid.
+        // 6. Post-warm: box handle (a persistent root shape) must still report
+        //    BRepKind::Solid — this is the actual regression this test guards.
         assert_eq!(
             kernel_b.repr_of(box_id),
             Some(BRepKind::Solid),
@@ -4837,6 +5339,534 @@ mod tests {
             None,
             "repr_of for unknown id should return None"
         );
+    }
+
+    #[test]
+    fn owner_body_survives_warm_start() {
+        // Kernel A: a lone box; its warm state will be restored into a
+        // *dirty* kernel B below.
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Kernel B: dirty consumer. It already has extraction provenance
+        // (parent_handle entries) from its own cylinder before the restore.
+        let mut kernel_b = OcctKernel::new();
+        kernel_b
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_faces = kernel_b
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the cylinder should succeed");
+        assert!(
+            !cyl_faces.is_empty(),
+            "cylinder extraction should yield at least one face to seed a stale parent_handle entry"
+        );
+        // Secondary sanity check, not load-bearing for the regression this
+        // test targets below: a cylinder has 3 faces (two caps + the
+        // lateral surface). An OCCT-version/topology change would fail
+        // this without indicating a provenance-clearing regression.
+        assert_eq!(
+            cyl_faces.len(),
+            3,
+            "sanity check: a cylinder has 3 faces (two caps + the lateral surface)"
+        );
+
+        // Also seed extracted_edges/extracted_vertices provenance on the same
+        // dirty kernel_b — not just extracted_faces. with_warm_state clears
+        // all three extraction caches independently (see its exhaustive
+        // destructure), so a hypothetical regression that cleared
+        // extracted_faces on restore but forgot one of its sister caches
+        // would not be caught behaviorally without this. See the
+        // `edges != cyl_edges` / `verts != cyl_verts` re-extraction checks
+        // below, mirroring `faces != cyl_faces`.
+        let cyl_edges = kernel_b
+            .extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the cylinder should succeed");
+        assert!(
+            !cyl_edges.is_empty(),
+            "cylinder extraction should yield at least one edge to seed a stale extracted_edges cache entry"
+        );
+        let cyl_verts = kernel_b
+            .extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the cylinder should succeed");
+        assert!(
+            !cyl_verts.is_empty(),
+            "cylinder extraction should yield at least one vertex to seed a stale extracted_vertices cache entry"
+        );
+        let stale_child = cyl_faces[0];
+
+        // Precondition: before the restore, OwnerBody correctly resolves the
+        // cylinder face back to its parent (handle 1).
+        assert_eq!(
+            kernel_b
+                .query(&GeometryQuery::OwnerBody(stale_child))
+                .unwrap(),
+            Value::Int(1),
+            "precondition: stale_child should resolve to its cylinder parent before warm-start"
+        );
+
+        // Warm-start kernel B with kernel A's box-only state (shapes={1},
+        // next_id=2). This wholesale-swaps kernel B's shape table out from
+        // under its stale parent_handle entries.
+        let mut kernel_b = warm_restore(&kernel_a, kernel_b);
+
+        // RED on current main: parent_handle is never cleared by
+        // with_warm_state, so OwnerBody(stale_child) still resolves to
+        // Value::Int(1) — WRONG, because stale_child no longer corresponds
+        // to any sub-shape of the freshly-restored box. After the fix, the
+        // stale entry is cleared and this query correctly reports
+        // QueryFailed.
+        let post_restore = kernel_b.query(&GeometryQuery::OwnerBody(stale_child));
+        assert!(
+            matches!(post_restore, Err(QueryError::QueryFailed(_))),
+            "stale parent_handle must be cleared on warm-start; got {:?}",
+            post_restore
+        );
+
+        // PERSIST path: reprs must be restored from kernel_a's state. Handle
+        // 1 now names kernel_a's box (kernel_b's own cylinder used the same
+        // id before the wholesale swap), so repr_of(1) must report the
+        // restored box's BRepKind, not a stale leftover.
+        assert_eq!(
+            kernel_b.repr_of(GeometryHandleId(1)),
+            Some(BRepKind::Solid),
+            "post-restore: handle 1 should report the restored box's BRepKind::Solid"
+        );
+
+        // PERSIST path: next_id must come from kernel_a's state (2, after
+        // minting one handle) — not kernel_b's own dirty next_id, which the
+        // cylinder + extract_faces above already advanced past kernel_a's.
+        // This dirty-consumer setup is the only round-trip test where
+        // kernel_b's pre-restore next_id exceeds kernel_a's, so it is the
+        // one place a "keep the larger of the two" merge regression (instead
+        // of an overwrite) would actually surface.
+        let minted = kernel_b
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .unwrap();
+        assert_eq!(
+            minted.id,
+            GeometryHandleId(2),
+            "next_id should be restored from kernel_a's warm state, not kernel_b's dirty pre-restore value"
+        );
+
+        // Re-extraction on the restored (box) shape correctly rebuilds
+        // provenance. If extracted_faces had not been cleared on restore,
+        // this call would hit the idempotency cache under parent id 1 and
+        // return the stale 3-entry cylinder-face list verbatim instead of
+        // re-extracting — so the assert_ne! below (faces != cyl_faces)
+        // already proves the cache was cleared, independent of the box's
+        // exact face count (which OCCT-version/topology drift could
+        // otherwise change without indicating this regression).
+        //
+        // Note: the returned ids are deliberately *not* asserted disjoint
+        // from `cyl_faces`. next_id is restored wholesale from kernel_a's
+        // state (asserted above) rather than merged/maxed against kernel_b's
+        // dirty pre-restore counter, and this test mints a sphere in
+        // between — so numeric id reuse across the warm-start boundary
+        // (e.g. a new box face landing on the same integer as an old
+        // cylinder face) is an expected consequence of that design, not a
+        // staleness bug. The correctness guarantee under test is that every
+        // *current* handle resolves correctly (see the OwnerBody loop
+        // below), not that ids stay globally unique across a kernel's
+        // lifetime.
+        let faces = kernel_b
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the restored box should succeed");
+        assert_ne!(
+            faces, cyl_faces,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-face list verbatim — extracted_faces was not cleared on restore"
+        );
+        assert!(
+            !faces.is_empty(),
+            "re-extraction after warm-start restore should yield at least one face"
+        );
+
+        for face in &faces {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*face)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild provenance correctly for {face:?}"
+            );
+        }
+
+        // Secondary sanity check, not the regression this test targets: a
+        // box has 6 faces. If this fails while the assertions above pass,
+        // it points to an OCCT-version/topology change, not a cache-clear
+        // regression.
+        assert_eq!(faces.len(), 6, "sanity check: a box has 6 faces");
+
+        // Mirror the extracted_faces regression check above for
+        // extracted_edges: this is a defense-in-depth gap the exhaustive-
+        // destructure type guard alone does not close, since it enforces
+        // that every field is *classified* but not that a CLEAR-on-restore
+        // field is cleared at the *correct* call site. (Same id-reuse
+        // caveat as `faces` above applies: `edges` is not asserted disjoint
+        // from `cyl_edges`, only unequal as a whole — see the note above.)
+        let edges = kernel_b
+            .extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the restored box should succeed");
+        assert_ne!(
+            edges, cyl_edges,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-edge list verbatim — extracted_edges was not cleared on restore"
+        );
+        assert!(
+            !edges.is_empty(),
+            "re-extraction after warm-start restore should yield at least one edge"
+        );
+        for edge in &edges {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*edge)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild edge provenance correctly for {edge:?}"
+            );
+        }
+        // Secondary sanity check, not the regression this test targets: a
+        // (rectangular) box has 12 edges.
+        assert_eq!(edges.len(), 12, "sanity check: a box has 12 edges");
+
+        // Mirror the same check for extracted_vertices.
+        let verts = kernel_b
+            .extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the restored box should succeed");
+        assert_ne!(
+            verts, cyl_verts,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-vertex list verbatim — extracted_vertices was not cleared on restore"
+        );
+        assert!(
+            !verts.is_empty(),
+            "re-extraction after warm-start restore should yield at least one vertex"
+        );
+        for vertex in &verts {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*vertex)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild vertex provenance correctly for {vertex:?}"
+            );
+        }
+        // Secondary sanity check, not the regression this test targets: a
+        // box has 8 vertices.
+        assert_eq!(verts.len(), 8, "sanity check: a box has 8 vertices");
+    }
+
+    #[test]
+    fn warm_state_producer_does_not_serialize_extraction_provenance() {
+        // Kernel A extracts its own box's faces, populating parent_handle
+        // (child face id -> parent box id) before any warm-state round-trip.
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let faces_a = kernel_a
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the box should succeed");
+        assert!(
+            !faces_a.is_empty(),
+            "box extraction should yield at least one face"
+        );
+
+        // Precondition: kernel_a resolves its own freshly-extracted face's
+        // owner correctly, pre-restore.
+        assert_eq!(
+            kernel_a
+                .query(&GeometryQuery::OwnerBody(faces_a[0]))
+                .unwrap(),
+            Value::Int(1),
+            "precondition: kernel_a should resolve its own extracted face's owner"
+        );
+
+        // Restore kernel_a's warm state into a FRESH kernel_b — no dirty
+        // pre-existing provenance of its own, so a `parent_handle.clear()`
+        // on the consumer side would be a no-op regardless. This isolates
+        // the *producer* half of the persist/clear classification: it
+        // proves `warm_state()` never serialized kernel_a's parent_handle
+        // entries into `OcctWarmState` at all, independent of whether the
+        // consumer clears on restore (that consumer-side behavior is
+        // covered separately by `owner_body_survives_warm_start`, which
+        // uses a *dirty* consumer to get a RED-on-main signal).
+        let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
+
+        // faces_a[0]'s id is a `parent_handle` key, so (#5162) `warm_state()`
+        // filters it out entirely — its shape blob is absent from kernel_b's
+        // `shapes`/`reprs` tables, not merely disconnected from its owner.
+        // The assertion below still holds regardless of that filtering: it
+        // depends only on kernel_b's (always-empty-here) `parent_handle`, not
+        // on whether the blob itself round-tripped. If `warm_state()` ever
+        // starts serializing `parent_handle`, this fresh kernel_b would
+        // silently resolve the owner "correctly" (there is no stale state
+        // here to expose the bug the way a dirty consumer would), so this
+        // assertion is the only thing pinning the "derived, not persisted"
+        // half of the classification.
+        let result = kernel_b.query(&GeometryQuery::OwnerBody(faces_a[0]));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "warm_state() must not serialize extraction provenance \
+             (parent_handle); got {:?}",
+            result
+        );
+    }
+
+    /// RED step-1 (task 5162): `warm_state()` currently persists sub-shape
+    /// blobs minted by `extract_faces`/`extract_edges`/`extract_vertices`
+    /// wholesale, even though those ids are orphaned on restore (their
+    /// `parent_handle` provenance is CLEAR-on-restore). Across repeated
+    /// warm-start cycles — capture, restore into a fresh kernel, re-extract
+    /// to re-seed `parent_handle` against the cleared idempotency cache —
+    /// this is unbounded, not just single-cycle bloat: each cycle's orphans
+    /// round-trip through the next, and the following extraction mints yet
+    /// more fresh ids on top.
+    ///
+    /// A single root box (id 1) has 6 faces + 12 edges + 8 vertices = 26
+    /// sub-shapes, so on current main the persisted count grows
+    /// [1, 27, 53, 79] across 4 cycles — the "stays constant at the root
+    /// count" assertion below trips because cycles after the first (27, 53,
+    /// 79) differ from `counts[0]` (1). After the fix, only the root
+    /// persists every cycle: [1, 1, 1, 1].
+    #[test]
+    fn warm_state_persisted_shape_count_stays_bounded_across_cycles() {
+        let mut kernel = OcctKernel::new();
+        let box_handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let box_id = box_handle.id;
+
+        let mut counts = Vec::new();
+        let mut repr_counts = Vec::new();
+        for _ in 0..4 {
+            // Re-seeds parent_handle against the cleared idempotency cache,
+            // mirroring the extract-after-restore pattern from
+            // `owner_body_survives_warm_start`; no mid-cycle checks needed here.
+            let (next, shapes_len, reprs_len, _shape_ids) =
+                warm_state_reextract_cycle(kernel, box_id, |_next| {});
+            counts.push(shapes_len);
+            repr_counts.push(reprs_len);
+            kernel = next;
+        }
+
+        // The stronger "stays constant at the root count" assertion below
+        // subsumes a "does not grow cycle-over-cycle" check (windows(2).all(|w|
+        // w[1] <= w[0])) — any growth is itself a violation of all-equal, and
+        // the printed `counts`/`repr_counts` vector already pinpoints where
+        // growth would occur, so only the all-equal assertion is kept here.
+        assert!(
+            counts.iter().all(|&c| c == counts[0]),
+            "persisted shape count must stay constant at the root count across cycles: {counts:?}"
+        );
+        // shapes/reprs are filtered in lock-step (see warm_state()'s "Bounded
+        // payload" note), so reprs must stay just as bounded — guards against
+        // a future change that filters shapes but forgets reprs, which the
+        // consumer-side debug_assert in with_warm_state only catches in debug
+        // builds.
+        assert!(
+            repr_counts.iter().all(|&c| c == repr_counts[0]),
+            "persisted repr count must stay constant at the root count across cycles: {repr_counts:?}"
+        );
+    }
+
+    /// Sibling of `warm_state_persisted_shape_count_stays_bounded_across_cycles`
+    /// covering the scenario its debug_assert-only guarantee doesn't pin
+    /// behaviorally: a *second* root created via `execute` AFTER
+    /// `extract_faces`/`extract_edges`/`extract_vertices` has already
+    /// populated `parent_handle` with the first root's derived sub-shape
+    /// ids. `store_with_repr` mints ids by fetch-and-increment and never
+    /// reuses one, so this post-extraction root's id is always strictly
+    /// greater than every existing `parent_handle` key and can never
+    /// collide with — and must never be caught by — the bounded-payload
+    /// filter (the exact invariant `debug_assert_fresh_id` protects). This
+    /// test pins that both roots survive every warm-start cycle while all
+    /// sub-shapes are filtered, rather than relying solely on the debug
+    /// assertion. The mid-cycle closure re-extracts the cylinder's own
+    /// faces/edges/vertices on every restored kernel (mirroring the shared
+    /// helper's box-only re-extraction), so the filter is exercised against
+    /// a *second* root's derived ids each cycle — not just the box's —
+    /// rather than the two-root count vacuously holding because the
+    /// cylinder never has any sub-shape ids to filter in the first place.
+    #[test]
+    fn warm_state_persisted_shape_count_bounded_with_post_extraction_root() {
+        let mut kernel = OcctKernel::new();
+        let box_handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let box_id = box_handle.id;
+        kernel
+            .extract_faces(box_id)
+            .expect("extract_faces on the box should succeed");
+        kernel
+            .extract_edges(box_id)
+            .expect("extract_edges on the box should succeed");
+        kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices on the box should succeed");
+
+        // Second root, created only after parent_handle already holds the
+        // box's derived sub-shape ids above.
+        let cyl = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_id = cyl.id;
+        const ROOT_COUNT: usize = 2; // box (id 1) + post-extraction cylinder
+        // Pins *identity*, not just cardinality: a filter that dropped a
+        // root and kept an equal number of unrelated sub-shapes would still
+        // satisfy the `counts == ROOT_COUNT` check below, so also assert
+        // every cycle's persisted `warm.shapes` key set is exactly the two
+        // root ids.
+        let expected_ids: std::collections::HashSet<u64> =
+            [box_id.0, cyl_id.0].into_iter().collect();
+
+        let mut counts = Vec::new();
+        for _ in 0..4 {
+            // Mid-cycle: both roots must resolve after every restore, and the
+            // cylinder's own faces/edges/vertices are re-extracted here (the
+            // shared helper only re-extracts the box root afterward) so the
+            // bounded-payload filter is exercised against a second root's
+            // derived ids too, not just the box's. Re-seeding parent_handle
+            // for the box happens inside the shared helper after this closure.
+            let (next, shapes_len, _, shape_ids) =
+                warm_state_reextract_cycle(kernel, box_id, |next| {
+                    next.query(&GeometryQuery::Volume(box_id))
+                        .expect("box root should survive warm-start round-trip");
+                    next.query(&GeometryQuery::Volume(cyl_id)).expect(
+                        "post-extraction cylinder root should survive warm-start round-trip",
+                    );
+                    next.extract_faces(cyl_id)
+                        .expect("extract_faces on the restored cylinder should succeed");
+                    next.extract_edges(cyl_id)
+                        .expect("extract_edges on the restored cylinder should succeed");
+                    next.extract_vertices(cyl_id)
+                        .expect("extract_vertices on the restored cylinder should succeed");
+                });
+            counts.push(shapes_len);
+            assert_eq!(
+                shape_ids, expected_ids,
+                "persisted shapes key set must be exactly the root ids \
+                 (box={box_id:?}, cylinder={cyl_id:?}), not merely matching \
+                 cardinality: got {shape_ids:?}"
+            );
+            kernel = next;
+        }
+
+        assert!(
+            counts.iter().all(|&c| c == ROOT_COUNT),
+            "persisted shape count must stay pinned at the two-root count \
+             ({ROOT_COUNT}) across cycles — a post-extraction root must never \
+             be dropped, and sub-shapes must stay filtered: {counts:?}"
+        );
+    }
+
+    /// Shared body for the three `warm_state_completeness_debug_assert_fires_
+    /// on_orphaned_extracted_*_entry` tests below: corrupt one `extracted_*`
+    /// cache via `corrupt` with an id that has no matching `parent_handle`
+    /// entry, then invoke `warm_state()` so its completeness cross-check
+    /// panics. Only compiled under `#[cfg(debug_assertions)]` — see the
+    /// firing tests' doc comment for why `#[should_panic]` needs that gate;
+    /// gating the helper the same way avoids an unused-function warning in
+    /// release-mode test builds, where none of its three callers compile.
+    #[cfg(debug_assertions)]
+    fn assert_completeness_guard_fires_on(corrupt: impl FnOnce(&mut OcctKernel)) {
+        let mut kernel = OcctKernel::new();
+        corrupt(&mut kernel);
+        let _ = kernel.warm_state();
+    }
+
+    /// `warm_state()`'s completeness cross-check (see its doc comment) is a
+    /// debug-only guard: every id cached in `extracted_edges`/
+    /// `extracted_faces`/`extracted_vertices` must also be a `parent_handle`
+    /// key, or the bounded-payload filter could silently leak an un-filtered
+    /// orphan back into persisted warm-start state. `extract_edges`/
+    /// `extract_faces`/`extract_vertices` always insert into both caches
+    /// together (see their `store_with_repr` call sites), so this coupling
+    /// never breaks through the public API — each of the three tests below
+    /// reaches past it via one crate-private `extracted_*` field to confirm
+    /// the guard actually fires for that cache, rather than trusting an
+    /// untested assertion to be correct. They are three separate `#[test]`
+    /// functions rather than one loop over the caches because a
+    /// `#[should_panic]` test stops at the first panic — a shared loop body
+    /// would only ever prove the first cache's corruption fires and leave
+    /// the guard's `.flat_map([...])` coverage of the other two caches
+    /// unverified.
+    ///
+    /// `#[cfg(debug_assertions)]` is required because `debug_assert!`
+    /// compiles to a no-op in release builds — `#[should_panic]` would
+    /// falsely "pass" in a release build where the panic never fires (dual-test
+    /// pattern from `crates/reify-eval/src/kernel_registry.rs`'s
+    /// `emit_kernel_selection_panics_when_total_is_zero`). No release-mode
+    /// counterpart is added: `shapes`/`reprs` filtering never consults
+    /// `extracted_*`, so a release build's silently-elided assert has no
+    /// distinct fall-through behavior to pin beyond what the bounded-payload
+    /// tests above already cover. If a future change ever makes the
+    /// bounded-payload filter itself consult `extracted_*` (instead of
+    /// keying solely off `parent_handle`), add a release-mode behavioral
+    /// test alongside that change confirming a coupling violation still
+    /// cannot leak an orphan into persisted state — this debug-only guard
+    /// would no longer be sufficient on its own.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_faces_entry() {
+        // Directly corrupt extracted_faces: cache an id with no matching
+        // parent_handle entry, violating the coupling extract_faces always
+        // maintains through the public API.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_faces
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_edges_entry() {
+        // Same as the extracted_faces variant above, but corrupts
+        // extracted_edges — proves the completeness guard's iteration over
+        // all three caches actually includes this one too.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_edges
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_vertices_entry() {
+        // Same as the extracted_faces variant above, but corrupts
+        // extracted_vertices — proves the completeness guard's iteration
+        // over all three caches actually includes this one too.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_vertices
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
     }
 
     #[test]
@@ -5022,6 +6052,89 @@ mod tests {
     }
 
     #[test]
+    fn with_warm_state_total_failure_preserves_dirty_state_and_provenance() {
+        // Dirty consumer: box + cylinder, with extraction provenance already
+        // populated (parent_handle non-empty) before the restore attempt.
+        let mut kernel = OcctKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_faces = kernel
+            .extract_faces(GeometryHandleId(2))
+            .expect("extract_faces on the cylinder should succeed");
+
+        // Snapshot every field the atomic-swap guard in `with_warm_state` is
+        // responsible for leaving untouched when every incoming shape fails
+        // to deserialize (the `staged.is_empty()` no-op path) — the exact
+        // opposite of the clear-on-successful-restore behavior this PR
+        // establishes for the swap-occurs path, so it needs its own pin.
+        let shape_ids_before: std::collections::HashSet<u64> =
+            kernel.shapes.keys().copied().collect();
+        let reprs_before = kernel.reprs.clone();
+        let next_id_before = kernel.next_id;
+        let parent_handle_before = kernel.parent_handle.clone();
+
+        // Construct a warm state with only undeserializable shape blobs.
+        let mut corrupted_shapes = HashMap::new();
+        corrupted_shapes.insert(1, "INVALID_BREP_DATA".to_string());
+        corrupted_shapes.insert(2, "ALSO_GARBAGE".to_string());
+        let corrupted_warm = OcctWarmState {
+            shapes: corrupted_shapes,
+            reprs: HashMap::new(),
+            next_id: 999,
+        };
+        kernel.with_warm_state(OpaqueState::new(corrupted_warm, 64));
+
+        // Nothing should have changed: staged ends up empty, so the atomic
+        // swap — and the parent_handle/extracted_* clears that ride along
+        // with it — must not run at all.
+        let shape_ids_after: std::collections::HashSet<u64> =
+            kernel.shapes.keys().copied().collect();
+        assert_eq!(
+            shape_ids_after, shape_ids_before,
+            "shapes must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.reprs, reprs_before,
+            "reprs must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.next_id, next_id_before,
+            "next_id must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.parent_handle, parent_handle_before,
+            "parent_handle provenance must survive a fully-failed warm-start restore \
+             untouched, not just a successful one — the no-op path must not clear it"
+        );
+        assert_eq!(
+            kernel.warm_start_failures(),
+            2,
+            "both corrupt entries should be counted even though the swap was skipped"
+        );
+
+        // And the provenance is still live end-to-end: OwnerBody for a
+        // pre-existing cylinder face still resolves correctly post-no-op.
+        assert_eq!(
+            kernel
+                .query(&GeometryQuery::OwnerBody(cyl_faces[0]))
+                .unwrap(),
+            Value::Int(2),
+            "provenance should remain queryable after a fully-failed warm-start restore"
+        );
+    }
+
+    #[test]
     fn with_warm_state_partial_deserialization_replaces_state() {
         // Create a helper kernel to get a valid cylinder BRep string
         let mut helper = OcctKernel::new();
@@ -5060,6 +6173,28 @@ mod tests {
             other => panic!("expected Real, got {:?}", other),
         }
 
+        // Seed a stale parent_handle entry, mirroring
+        // `owner_body_survives_warm_start`, so this PARTIAL-deserialization
+        // restore (some shapes fail, `staged` non-empty) is pinned to clear
+        // parent_handle too — not just the full-swap (all-shapes-succeed)
+        // path that test covers.
+        let box_faces = kernel
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the box should succeed");
+        assert!(
+            !box_faces.is_empty(),
+            "box extraction should yield at least one face to seed a stale parent_handle entry"
+        );
+        let stale_child = box_faces[0];
+
+        // Precondition: before the restore, OwnerBody correctly resolves the
+        // box face back to its parent (handle 1).
+        assert_eq!(
+            kernel.query(&GeometryQuery::OwnerBody(stale_child)).unwrap(),
+            Value::Int(1),
+            "precondition: stale_child should resolve to its box parent before warm-start"
+        );
+
         // Construct partially-corrupted warm state:
         // handle 1 = valid cylinder BRep, handle 2 = corrupt data
         let mut partial_shapes = HashMap::new();
@@ -5074,6 +6209,21 @@ mod tests {
 
         // Apply partially-corrupted warm state
         kernel.with_warm_state(partial_state);
+
+        // parent_handle must be cleared even on a PARTIAL-deserialization
+        // restore — the clear rides along the same `if !staged.is_empty()`
+        // branch as the full-swap path pinned by
+        // `owner_body_survives_warm_start`. stale_child's underlying shape
+        // (an old box face) is gone regardless post-swap, but OwnerBody
+        // looks up `parent_handle` directly (see the query handler), so
+        // this assertion is the only thing pinning that the map itself —
+        // not just the shape table — was cleared on this branch.
+        let post_restore = kernel.query(&GeometryQuery::OwnerBody(stale_child));
+        assert!(
+            matches!(post_restore, Err(QueryError::QueryFailed(_))),
+            "stale parent_handle must be cleared on a partial warm-start restore too; got {:?}",
+            post_restore
+        );
 
         // Handle 1 should now be a cylinder (not a box)
         let vol_after = kernel
@@ -5110,8 +6260,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn with_warm_state_partial_failure_logs_warning() {
+    /// Build a warm state with 1 valid cylinder BRep (id 1) + 1 corrupt
+    /// entry (id 2, `"CORRUPT_DATA"`) — deterministically drives the
+    /// `deserialize_brep` `Err` branch for exactly one shape. Shared fixture
+    /// for `with_warm_state_partial_failure_counts_and_restores_valid` and
+    /// `with_warm_state_partial_failure_emits_tracing_warn`, which differ
+    /// only in what they assert about the resulting failure (the counter
+    /// vs. the tracing event).
+    fn one_valid_one_corrupt_state() -> OpaqueState {
         // Create a helper kernel to get a valid cylinder BRep string
         let mut helper = OcctKernel::new();
         helper
@@ -5139,7 +6295,12 @@ mod tests {
             reprs: HashMap::new(),
             next_id: 10,
         };
-        let state = OpaqueState::new(warm, 64);
+        OpaqueState::new(warm, 64)
+    }
+
+    #[test]
+    fn with_warm_state_partial_failure_counts_and_restores_valid() {
+        let state = one_valid_one_corrupt_state();
 
         let mut kernel = OcctKernel::new();
         kernel.with_warm_state(state);
@@ -5164,6 +6325,34 @@ mod tests {
             1,
             "should report 1 failed deserialization"
         );
+    }
+
+    /// INV-GEO-3: a shape that fails BRep deserialization during
+    /// `with_warm_state` must emit a `tracing::warn!` event (production
+    /// observability), not just increment the silent `last_warm_start_failures`
+    /// counter. Mirrors the 1-valid + 1-corrupt fixture from
+    /// `with_warm_state_partial_failure_counts_and_restores_valid`, but asserts on the
+    /// tracing event instead of the counter: exactly 1 WARN, whose message
+    /// contains "warm-start deserialization failed" and whose structured
+    /// `shape_id` field identifies the failed shape (id 2).
+    #[test]
+    fn with_warm_state_partial_failure_emits_tracing_warn() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let state = one_valid_one_corrupt_state();
+        let mut kernel = OcctKernel::new();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            kernel.with_warm_state(state);
+        });
+
+        capture.assert_count_and_any_message_contains(1, "warm-start deserialization failed");
+        capture.assert_any_event_field_contains("shape_id", "2");
     }
 
     #[test]
@@ -5244,6 +6433,127 @@ mod tests {
             Err(other) => panic!("expected InvalidReference, got {:?}", other),
             Ok(_) => panic!("expected error for missing shape, got Ok"),
         }
+    }
+
+    /// Structural boundary guard: a NON-null `OcctShape` wrapping null (IsNull)
+    /// topology must be rejected at `get_shape`, and every production query
+    /// path that flows through `get_shape` must therefore return `Err` — never
+    /// a hardware SIGSEGV.
+    ///
+    /// The input is `make_null_shape_for_test()` — a default-constructed
+    /// `OcctShape` whose `.shape` is a null `TopoDS_Shape`. It passes
+    /// `get_shape`'s existing null-`UniquePtr` check (the pointer is non-null)
+    /// but, pre-fix, dereferences to null topology: `query_volume`'s
+    /// `ShapeType()` fallback then SIGSEGVs.
+    ///
+    /// RED (pre-fix): `get_shape` returns `Ok(&null_shape)`, so the assertion
+    /// below fails on the `Ok(_)` arm. GREEN (after the get_shape IsNull
+    /// guard): `get_shape` returns `Err(OperationFailed)` and all four queries
+    /// return `Err`.
+    ///
+    /// MUST run under `cargo nextest run` (process-per-test isolation) so any
+    /// pre-fix crash is contained as a single failing test, not a suite abort.
+    #[test]
+    fn get_shape_rejects_null_topology_and_queries_return_err() {
+        let mut kernel = OcctKernel::new();
+        let h = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+
+        // Structural chokepoint: get_shape refuses null/empty topology loudly.
+        match kernel.get_shape(h) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let low = msg.to_lowercase();
+                assert!(
+                    low.contains("null") || low.contains("empty"),
+                    "error should mention null/empty topology, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for null-topology shape, got Ok"),
+        }
+
+        // Every production query path routes through get_shape, so each must
+        // now return Err (never SIGSEGV). Volume is the guaranteed crash vector.
+        assert!(
+            kernel.query(&GeometryQuery::Volume(h)).is_err(),
+            "Volume query on null-topology shape must return Err, not crash/Ok"
+        );
+        assert!(
+            kernel.query(&GeometryQuery::Centroid(h)).is_err(),
+            "Centroid query on null-topology shape must return Err"
+        );
+        assert!(
+            kernel.query(&GeometryQuery::BoundingBox(h)).is_err(),
+            "BoundingBox query on null-topology shape must return Err"
+        );
+        assert!(
+            kernel
+                .query(&GeometryQuery::InertiaTensor {
+                    handle: h,
+                    density: 1000.0,
+                })
+                .is_err(),
+            "InertiaTensor query on null-topology shape must return Err"
+        );
+    }
+
+    /// Defense-in-depth: each OCCT geometry-query FFI entry point must reject a
+    /// null-topology shape with a catchable `Err` — never a hardware SIGSEGV —
+    /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.
+    /// This pins the C++ IsNull guards independently of the Rust chokepoint, so
+    /// any future or direct-FFI path that skips `get_shape` still fails safely.
+    /// Covers the mass-property queries (volume/centroid/bbox/inertia) plus the
+    /// surface/linear-property queries (face_centroid/area/edge_length);
+    /// `query_face_centroid` is the one reached from the production `Centroid`
+    /// dispatch for Face-repr handles, so its direct-FFI guard closes the last
+    /// gap the get_shape chokepoint already covers.
+    ///
+    /// RED (pre-fix): `query_volume` dereferences `ShapeType()` on null
+    /// topology → SIGSEGV (the guaranteed crash vector); `query_centroid`,
+    /// `query_face_centroid`, `query_area`, and `query_edge_length` all return
+    /// `Ok` (origin / mass 0.0) on null topology (so their `is_err()`
+    /// assertions would fail). GREEN (after the C++ guards): each throws
+    /// `std::runtime_error`, mapped by cxx to a catchable `Err`.
+    ///
+    /// MUST run under `cargo nextest run` (process-per-test isolation) so the
+    /// pre-fix crash is contained as one failing test, not a suite abort.
+    #[test]
+    fn occt_query_ffi_rejects_null_topology_shape() {
+        let null_shape = ffi::ffi::make_null_shape_for_test();
+
+        // query_volume is the guaranteed crash vector pre-fix (ShapeType()
+        // fallback over null topology).
+        assert!(
+            ffi::ffi::query_volume(&null_shape).is_err(),
+            "query_volume on null-topology shape must return Err, not crash"
+        );
+        assert!(
+            ffi::ffi::query_centroid(&null_shape).is_err(),
+            "query_centroid on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_bbox(&null_shape).is_err(),
+            "query_bbox on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_inertia_tensor(&null_shape, 1000.0).is_err(),
+            "query_inertia_tensor on null-topology shape must return Err"
+        );
+        // Surface/linear-property queries: pre-fix these return Ok (origin /
+        // mass 0.0) on null topology rather than crashing, but they are equally
+        // unguarded. query_face_centroid is reached from the production Centroid
+        // dispatch for Face-repr handles (see GeometryQuery::Centroid dispatch).
+        assert!(
+            ffi::ffi::query_face_centroid(&null_shape).is_err(),
+            "query_face_centroid on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_area(&null_shape).is_err(),
+            "query_area on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_edge_length(&null_shape).is_err(),
+            "query_edge_length on null-topology shape must return Err"
+        );
     }
 
     #[test]
@@ -6209,7 +7519,11 @@ mod tests {
         let pattern_h = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: box_h.id,
-                transforms: vec![[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [20.0, 20.0, 0.0]],
+                transforms: vec![
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 0.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 20.0, 0.0]),
+                ],
             })
             .unwrap();
         // Volume should be approximately 4 * 1000 = 4000 (original + 3 copies)
@@ -6223,6 +7537,52 @@ mod tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+    }
+
+    /// RED (task 4168, step-3): a single-instance `ArbitraryPattern` whose transform
+    /// carries a 90-degree-about-Y rotation (zero translation) must honor the rotation
+    /// in the fused result, not just the translation.
+    ///
+    /// `box(width=2, height=2, depth=10)` maps to X-extent=2, Y-extent=2, Z-extent=10
+    /// (`make_box(width,height,depth)` -> `gp_Pnt(-w/2,-h/2,-d/2)` + `MakeBox(dx,dy,dz)`,
+    /// so width->X, height->Y, depth->Z). A 90-degree rotation about Y swaps the X and Z
+    /// extents (2<->10) for the rotated copy; fusing it with the untouched original
+    /// (X-extent 2) grows the union's overall X-extent to the max of the two, ~10.
+    ///
+    /// Until the kernel honors `.0` (currently dropped — see step-2's handler comment),
+    /// the instance behaves as identity, so the result is `original ∪ original` =
+    /// `box(2,2,10)` and the X-extent stays ~2, failing the ~10 assertion below.
+    #[test]
+    fn arbitrary_pattern_honors_rotation() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(2.0),
+                height: Value::Real(2.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Single instance: 90-degree-about-Y quaternion [cos45,0,sin45,0], zero
+        // translation.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let pattern_h = kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: box_h.id,
+                transforms: vec![([s, 0.0, s, 0.0], [0.0, 0.0, 0.0])],
+            })
+            .unwrap();
+        let bbox = kernel
+            .query(&GeometryQuery::BoundingBox(pattern_h.id))
+            .unwrap();
+        let s = match bbox {
+            Value::String(s) => s,
+            other => panic!("expected Value::String, got {:?}", other),
+        };
+        let x_extent = parse_bbox_field(&s, "xmax") - parse_bbox_field(&s, "xmin");
+        assert!(
+            (x_extent - 10.0).abs() < 1.0,
+            "expected rotated-copy union X-extent ~10 (Y-90 swaps X<->Z 2<->10), got {x_extent} (bbox={s})"
+        );
     }
 
     #[test]
@@ -8908,87 +10268,110 @@ mod tests {
     }
 
     #[test]
-    fn kernel_pipe_non_z_start_tangent_returns_error() {
-        // This test locks in the explicit-error contract for non-+Z paths
-        // defined in the orientation-constraint section of GeometryOp::Pipe.
-        // Prior to task-2095, these cases silently returned a degenerate
-        // (zero-volume) solid; they now return
-        // GeometryError::OperationFailed with "start-tangent" in the message.
+    fn kernel_pipe_arbitrary_orientation_volume_matches_pi_r2_l() {
+        // General path-orientation acceptance: a straight LineSegment in ANY
+        // direction, piped with radius r, must yield a RIGHT circular cylinder
+        // whose analytic BRep volume equals π·r²·L exactly (rel_err < 1e-6),
+        // mirroring the +Z case kernel_pipe_straight_path_volume_matches_pi_r2_l.
         //
-        // The four cases cover:
-        //   - +X line segment (start-tangent = +X)
-        //   - +Y line segment (start-tangent = +Y)
-        //   - Arc in the XY plane, start_angle=0 (start-tangent = +Y)
-        //   - -Z line segment (start-tangent = -Z)
-        //
-        // The -Z case guards against future refactors that might accidentally
-        // compare t.z.abs() instead of t.z — such a change would still reject
-        // +X and +Y but would incorrectly accept -Z.
-        //
-        // See `kernel_pipe_straight_path_volume_matches_pi_r2_l` for the
-        // accepted +Z case.
+        // Covers +X, +Y, -Z, a (1,1,1) diagonal, and a NON-origin +X segment.
+        // Before the oriented-profile rewire the profile is an XY circle at the
+        // origin, so every in-plane (non-perpendicular) case sweeps a
+        // degenerate/offset solid and fails this assertion (RED).
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
             return;
         }
-
-        let cases: &[(&str, GeometryOp)] = &[
-            (
-                "+X line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.020,
-                    y2: 0.0,
-                    z2: 0.0,
-                },
-            ),
-            (
-                "+Y line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.0,
-                    y2: 0.020,
-                    z2: 0.0,
-                },
-            ),
-            (
-                "arc in XY plane",
-                GeometryOp::Arc {
-                    center: [0.0, 0.0, 0.0],
-                    radius: 0.010,
-                    start_angle: 0.0,
-                    end_angle: std::f64::consts::FRAC_PI_2,
-                    axis: [0.0, 0.0, 1.0],
-                },
-            ),
-            (
-                "-Z line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.0,
-                    y2: 0.0,
-                    z2: -0.020,
-                },
-            ),
+        let r = 0.002_f64;
+        // (label, [x1, y1, z1, x2, y2, z2])
+        let cases: &[(&str, [f64; 6])] = &[
+            ("+X", [0.0, 0.0, 0.0, 0.020, 0.0, 0.0]),
+            ("+Y", [0.0, 0.0, 0.0, 0.0, 0.020, 0.0]),
+            ("-Z", [0.0, 0.0, 0.0, 0.0, 0.0, -0.020]),
+            ("diagonal (1,1,1)", [0.0, 0.0, 0.0, 0.010, 0.010, 0.010]),
+            ("non-origin +X", [0.005, 0.0, 0.0, 0.025, 0.0, 0.0]),
         ];
-
-        for (label, path_op) in cases {
+        for (label, c) in cases {
+            let [x1, y1, z1, x2, y2, z2] = *c;
+            let length = ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt();
             let mut kernel = OcctKernel::new();
             let wire_handle = kernel
-                .execute(path_op)
-                .unwrap_or_else(|e| panic!("{label}: path execute should succeed, got {e:?}"));
-            let result = kernel.execute(&GeometryOp::Pipe {
-                path: wire_handle.id,
-                radius: Value::Real(0.002),
-            });
-            assert_operation_fails_with(result, "start-tangent");
+                .execute(&GeometryOp::LineSegment {
+                    x1,
+                    y1,
+                    z1,
+                    x2,
+                    y2,
+                    z2,
+                })
+                .unwrap_or_else(|e| {
+                    panic!("{label}: LineSegment execute should succeed, got {e:?}")
+                });
+            let pipe_handle = kernel
+                .execute(&GeometryOp::Pipe {
+                    path: wire_handle.id,
+                    radius: Value::Real(r),
+                })
+                .unwrap_or_else(|e| panic!("{label}: Pipe execute should succeed, got {e:?}"));
+            let vol = kernel
+                .query(&GeometryQuery::Volume(pipe_handle.id))
+                .unwrap_or_else(|e| panic!("{label}: Volume query should succeed, got {e:?}"));
+            let v = vol.as_f64().expect("Volume should be numeric");
+            assert!(v > 0.0, "{label}: pipe volume must be positive, got {v}");
+            let expected = std::f64::consts::PI * r.powi(2) * length;
+            let rel_err = (v - expected).abs() / expected;
+            assert!(
+                rel_err < 1e-6,
+                "{label}: pipe volume should be ≈ {expected:.3e} m³, got {v:.3e} (rel_err={rel_err:.4e})"
+            );
         }
+    }
+
+    #[test]
+    fn kernel_pipe_xy_arc_quarter_torus_volume() {
+        // A quarter-circle spine in the XY plane (bend radius R=0.010, start at
+        // (0.010,0,0), start-tangent +Y) piped with tube radius r=0.002 sweeps
+        // an exact torus segment: a planar circular spine has constant binormal
+        // (no Frenet twist), so by Pappus's theorem V = π·r²·R·θ exactly
+        // (R>r ⇒ no self-intersection) ≈ 1.9739e-7 m³.
+        //
+        // This case also guards the wire_start_point plumbing: the arc does NOT
+        // start at the origin, so a start-point-ignoring profile would sweep
+        // from the wrong location. RED until the oriented-profile rewire lands.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let r = 0.002_f64;
+        let bend_r = 0.010_f64;
+        let theta = std::f64::consts::FRAC_PI_2;
+        let mut kernel = OcctKernel::new();
+        let wire_handle = kernel
+            .execute(&GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: bend_r,
+                start_angle: 0.0,
+                end_angle: theta,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .expect("Arc execute should succeed");
+        let pipe_handle = kernel
+            .execute(&GeometryOp::Pipe {
+                path: wire_handle.id,
+                radius: Value::Real(r),
+            })
+            .expect("Pipe execute should succeed for XY arc");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pipe_handle.id))
+            .expect("Volume query should succeed");
+        let v = vol.as_f64().expect("Volume should be numeric");
+        assert!(v > 0.0, "arc pipe volume must be positive, got {v}");
+        let expected = std::f64::consts::PI * r.powi(2) * bend_r * theta;
+        let rel_err = (v - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "quarter-torus pipe volume should be ≈ {expected:.4e} m³ (π·r²·R·θ), got {v:.4e} (rel_err={rel_err:.4e})"
+        );
     }
 
     // --- validate_pipe_start_tangent helper unit tests ---
@@ -9034,31 +10417,54 @@ mod tests {
     }
 
     #[test]
-    fn validate_pipe_start_tangent_rejects_negative_z() {
-        // Exercises the pure helper with a -Z unit tangent directly.
-        // Guards against a future refactor that compares t.z.abs() instead of
-        // t.z — such a change would still reject +X and +Y but would
-        // incorrectly accept -Z. Asserts both the "start-tangent" substring
-        // (correct branch) and negative-z evidence in the reported coordinates
-        // so that a wrong-branch rejection would surface immediately.
-        let t = ffi::ffi::Point3 {
-            x: 0.0,
-            y: 0.0,
-            z: -1.0,
-        };
-        match super::validate_pipe_start_tangent(t) {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("start-tangent"),
-                    "expected error containing 'start-tangent' for -Z tangent, got: {msg}"
-                );
-                assert!(
-                    msg.contains("-1"),
-                    "expected error to include negative-Z coordinate evidence ('-1'), got: {msg}"
-                );
-            }
-            Ok(()) => panic!("expected Err for -Z tangent (z=-1.0), got Ok"),
-            Err(other) => panic!("expected OperationFailed for -Z tangent, got {:?}", other),
+    fn validate_pipe_start_tangent_accepts_finite_non_z_tangents() {
+        // Once the +Z-only restriction is lifted, the narrowed guard accepts
+        // ANY finite tangent (the vector still feeds gp_Dir, so only the
+        // finite/NaN check remains). Exercises +X, +Y, -Z, and a normalized
+        // diagonal — all finite unit vectors — asserting each returns Ok(()).
+        // Fails against the pre-task +Z guard, which rejects every non-+Z case.
+        let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
+        let cases = [
+            (
+                "+X",
+                ffi::ffi::Point3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "+Y",
+                ffi::ffi::Point3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "-Z",
+                ffi::ffi::Point3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+            ),
+            (
+                "normalized diagonal",
+                ffi::ffi::Point3 {
+                    x: inv_sqrt3,
+                    y: inv_sqrt3,
+                    z: inv_sqrt3,
+                },
+            ),
+        ];
+        for (label, t) in cases {
+            let coords = (t.x, t.y, t.z);
+            let result = super::validate_pipe_start_tangent(t);
+            assert!(
+                result.is_ok(),
+                "expected Ok(()) for finite {label} tangent {coords:?}, got {result:?}"
+            );
         }
     }
 
@@ -9096,26 +10502,6 @@ mod tests {
                     other
                 ),
             }
-        }
-    }
-
-    #[test]
-    fn validate_pipe_start_tangent_rejects_oversize_z() {
-        // Guards the upper-bound: a finite t.z far above 1.0 (e.g. 1e100) is not
-        // a unit vector. The two-sided comparator rejects t.z outside
-        // [1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON].
-        let t = ffi::ffi::Point3 {
-            x: 0.0,
-            y: 0.0,
-            z: 1e100,
-        };
-        match super::validate_pipe_start_tangent(t) {
-            Err(GeometryError::OperationFailed(_)) => {}
-            Ok(()) => panic!("expected Err for oversize-z tangent (z=1e100), got Ok"),
-            Err(other) => panic!(
-                "expected OperationFailed for oversize-z tangent, got {:?}",
-                other
-            ),
         }
     }
 
@@ -9249,6 +10635,207 @@ mod tests {
             "composite +Z wire: start-tangent z should be ≈ 1.0, got {}",
             t.z
         );
+    }
+
+    // --- wire_start_point / make_oriented_circle_face FFI tests ---
+    //
+    // Direct FFI coverage for the two primitives added to pose the pipe profile
+    // on the path's start frame. Otherwise both are reached only transitively
+    // through the `GeometryOp::Pipe` arm, which is blind to two failures: a
+    // start/end swap produces a plausible solid on a symmetric spine, and the
+    // radius guard inside `make_oriented_circle_face` is unreachable from that
+    // arm entirely (it runs `validate_positive_finite` Rust-side first).
+
+    /// The line runs (0.005,0,0) → (0.025,0,0): asymmetric about the origin, so
+    /// the start and end are 0.020 apart and a swap cannot hide inside the
+    /// tolerance. Pinning the start specifically matters because the profile is
+    /// *centred* at this point — an end-point result would sweep a solid of the
+    /// right shape from the wrong place.
+    #[test]
+    fn ffi_wire_start_point_returns_start_not_end_of_line() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let wire = ffi::ffi::make_line_wire(0.005, 0.0, 0.0, 0.025, 0.0, 0.0)
+            .expect("make_line_wire should succeed");
+        let p = ffi::ffi::wire_start_point(&wire)
+            .expect("wire_start_point should succeed for +X line");
+        assert!(
+            (p.x - 0.005).abs() < 1e-6,
+            "start-point x should be ≈ 0.005 (the START, not the END 0.025), got {}",
+            p.x
+        );
+        assert!(p.y.abs() < 1e-6, "start-point y should be ≈ 0, got {}", p.y);
+        assert!(p.z.abs() < 1e-6, "start-point z should be ≈ 0, got {}", p.z);
+    }
+
+    /// Composite-wire counterpart to `ffi_wire_start_tangent_composite_wire_*`,
+    /// exercising `BRepAdaptor_CompCurve` on a **multi-edge** wire: a future
+    /// refactor to a single-edge `BRepAdaptor_Curve` would break this while the
+    /// single-edge test above still passed.
+    ///
+    /// The polyline is deliberately **non-collinear** — (0.005,0,0) →
+    /// (0.015,0,0) → (0.015,0.010,0) — which is what lets this test pin the
+    /// agreement between the two queries rather than just one of them. The
+    /// profile frame combines *both*: centred at `wire_start_point`, normal
+    /// along `wire_start_tangent`. If they disambiguated the wire's ends
+    /// differently the frame would be silently wrong, and here that is visible:
+    /// at the start the point is (0.005,0,0) with tangent +X, at the far end
+    /// (0.015,0.010,0) with tangent +Y. Both are asserted together.
+    #[test]
+    fn ffi_wire_start_point_composite_wire_agrees_with_start_tangent() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        #[rustfmt::skip]
+        let coords: &[f64] = &[
+            0.005, 0.0,   0.0,
+            0.015, 0.0,   0.0,
+            0.015, 0.010, 0.0,
+        ];
+        let wire = ffi::ffi::make_polyline_wire(coords, 3)
+            .expect("make_polyline_wire should succeed for 3-point L-shaped polyline");
+
+        let p = ffi::ffi::wire_start_point(&wire)
+            .expect("wire_start_point should succeed for composite wire");
+        assert!(
+            (p.x - 0.005).abs() < 1e-6,
+            "composite wire: start-point x should be ≈ 0.005, got {}",
+            p.x
+        );
+        assert!(
+            p.y.abs() < 1e-6,
+            "composite wire: start-point y should be ≈ 0 (the far end has y = 0.010), got {}",
+            p.y
+        );
+        assert!(
+            p.z.abs() < 1e-6,
+            "composite wire: start-point z should be ≈ 0, got {}",
+            p.z
+        );
+
+        let t = ffi::ffi::wire_start_tangent(&wire)
+            .expect("wire_start_tangent should succeed for composite wire");
+        assert!(
+            (t.x - 1.0).abs() < 1e-6,
+            "composite wire: start-tangent x should be ≈ 1.0 — the FIRST edge runs +X, so a \
+             value of ≈ 0 here means the tangent came from a different end than the point did; \
+             got {}",
+            t.x
+        );
+        assert!(
+            t.y.abs() < 1e-6,
+            "composite wire: start-tangent y should be ≈ 0 (the far end's tangent is +Y), got {}",
+            t.y
+        );
+        assert!(
+            t.z.abs() < 1e-6,
+            "composite wire: start-tangent z should be ≈ 0, got {}",
+            t.z
+        );
+    }
+
+    /// `gp_Ax2(P, N)` builds a valid orthonormal frame for ANY unit normal, so
+    /// no direction is privileged and there is no antiparallel singularity —
+    /// which is the whole reason the profile is posed at construction rather
+    /// than by a post-hoc rotation carrying +Z onto the tangent. `-Z` is in the
+    /// table because it is exactly where such a rotation degenerates.
+    ///
+    /// The centre is off-origin in all three coordinates, so a dropped
+    /// translation cannot pass. Area is exact — a planar face bounded by an
+    /// exact `Geom_Circle`, integrated by `BRepGProp::SurfaceProperties` — so it
+    /// is checked at the same 1e-6 the neighbouring FFI tests use.
+    #[test]
+    fn ffi_make_oriented_circle_face_poses_centre_and_normal() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let radius = 0.004_f64;
+        let (cx, cy, cz) = (0.005, -0.003, 0.011);
+        let cases: &[(&str, f64, f64, f64)] = &[
+            ("+Z", 0.0, 0.0, 1.0),
+            ("+X", 1.0, 0.0, 0.0),
+            ("-Z", 0.0, 0.0, -1.0),
+        ];
+
+        for &(label, nx, ny, nz) in cases {
+            let face = ffi::ffi::make_oriented_circle_face(radius, cx, cy, cz, nx, ny, nz)
+                .unwrap_or_else(|e| {
+                    panic!("make_oriented_circle_face should succeed for normal {label}: {e}")
+                });
+
+            let c = ffi::ffi::query_face_centroid(&face)
+                .unwrap_or_else(|e| panic!("query_face_centroid should succeed for {label}: {e}"));
+            assert!(
+                (c.x - cx).abs() < 1e-6,
+                "normal {label}: face centroid x should be ≈ {cx}, got {}",
+                c.x
+            );
+            assert!(
+                (c.y - cy).abs() < 1e-6,
+                "normal {label}: face centroid y should be ≈ {cy}, got {}",
+                c.y
+            );
+            assert!(
+                (c.z - cz).abs() < 1e-6,
+                "normal {label}: face centroid z should be ≈ {cz}, got {}",
+                c.z
+            );
+
+            let n = ffi::ffi::query_face_normal(&face)
+                .unwrap_or_else(|e| panic!("query_face_normal should succeed for {label}: {e}"));
+            assert!(
+                (n.x - nx).abs() < 1e-6,
+                "normal {label}: face normal x should be ≈ {nx}, got {}",
+                n.x
+            );
+            assert!(
+                (n.y - ny).abs() < 1e-6,
+                "normal {label}: face normal y should be ≈ {ny}, got {}",
+                n.y
+            );
+            assert!(
+                (n.z - nz).abs() < 1e-6,
+                "normal {label}: face normal z should be ≈ {nz}, got {}",
+                n.z
+            );
+
+            let area = ffi::ffi::query_area(&face)
+                .unwrap_or_else(|e| panic!("query_area should succeed for {label}: {e}"));
+            let expected_area = std::f64::consts::PI * radius * radius;
+            let rel_err = (area - expected_area).abs() / expected_area;
+            assert!(
+                rel_err < 1e-6,
+                "normal {label}: face area should be ≈ pi*r^2 = {expected_area}, got {area} \
+                 (rel_err {rel_err:.3e})",
+            );
+        }
+    }
+
+    /// The `Pipe` arm runs `validate_positive_finite(r, "pipe radius")` before it
+    /// ever calls this primitive, so the C++ radius guard is unreachable from its
+    /// only production caller. This test is the guard's sole coverage: it is
+    /// pinned here or it is dead code.
+    #[test]
+    fn ffi_make_oriented_circle_face_rejects_non_positive_or_nan_radius() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        for (label, radius) in [
+            ("zero", 0.0_f64),
+            ("negative", -1.0_f64),
+            ("NaN", f64::NAN),
+        ] {
+            let result = ffi::ffi::make_oriented_circle_face(radius, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+            assert!(
+                result.is_err(),
+                "make_oriented_circle_face should reject {label} radius ({radius}), got Ok"
+            );
+        }
     }
 
     // --- make_line_wire degeneracy threshold tests (task-383 S2) ---
@@ -10432,23 +12019,14 @@ mod tests {
 
     // --- AffineApply tests (task 3963 step-1) ---
 
-    /// Compute the axis-aligned bounding box of a tessellated [`Mesh`] by
-    /// scanning its flat `[x0,y0,z0,x1,y1,z1,...]` vertex buffer. Distinct
-    /// from `ffi::ffi::query_bbox` (which computes the exact-geometry AABB
-    /// via `BRepBndLib::Add`) — this reads the tessellation directly, so the
-    /// result is bounded by the tessellation deflection passed to
-    /// `OcctKernel::tessellate`, not `Precision::Confusion()`.
-    fn mesh_aabb(mesh: &Mesh) -> ([f32; 3], [f32; 3]) {
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for v in mesh.vertices.chunks_exact(3) {
-            for axis in 0..3 {
-                min[axis] = min[axis].min(v[axis]);
-                max[axis] = max[axis].max(v[axis]);
-            }
-        }
-        (min, max)
-    }
+    // `mesh_aabb` (AABB of a tessellated [`Mesh`] over its flat
+    // `[x0,y0,z0,x1,y1,z1,...]` vertex buffer) is shared via
+    // `reify_test_support::mesh_aabb` (task 4959 dedup). Distinct from
+    // `ffi::ffi::query_bbox` (which computes the exact-geometry AABB via
+    // `BRepBndLib::Add`) — this reads the tessellation directly, so the
+    // result is bounded by the tessellation deflection passed to
+    // `OcctKernel::tessellate`, not `Precision::Confusion()`.
+    use reify_test_support::mesh_aabb;
 
     /// `OcctKernel::execute(&GeometryOp::AffineApply { ... })` must dispatch to
     /// `ffi::ffi::gtransform_shape` (gp_GTrsf / BRepBuilderAPI_GTransform).
@@ -10616,6 +12194,161 @@ mod tests {
             }
             other => panic!(
                 "expected GeometryError::OperationFailed for non-finite linear component, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // --- ScaleNonUniform tests (task 4167 step-1) ---
+
+    /// `OcctKernel::execute(&GeometryOp::ScaleNonUniform { ... })` must dispatch
+    /// to `ffi::ffi::gtransform_shape` (gp_GTrsf) with a diagonal linear part
+    /// `diag(sx,sy,sz)` and zero translation — mirrors
+    /// `execute_affine_apply_non_uniform_scale_maps_tessellated_aabb` but through
+    /// the dedicated per-axis `scale` surface (task 4167).
+    #[test]
+    fn scale_non_uniform_maps_tessellated_aabb() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::ScaleNonUniform {
+                target: box_h.id,
+                sx: 2.0,
+                sy: 1.0,
+                sz: 0.5,
+            })
+            .expect("ScaleNonUniform execute should succeed");
+        let mesh = kernel
+            .tessellate(scaled.id, 1e-4)
+            .expect("tessellate should succeed");
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        assert!(
+            (max[0] - min[0] - 0.02).abs() < tol,
+            "X extent expected ≈0.02 (sx=2.0), got {}",
+            max[0] - min[0]
+        );
+        assert!(
+            (max[1] - min[1] - 0.01).abs() < tol,
+            "Y extent expected ≈0.01 (sy=1.0), got {}",
+            max[1] - min[1]
+        );
+        assert!(
+            (max[2] - min[2] - 0.005).abs() < tol,
+            "Z extent expected ≈0.005 (sz=0.5), got {}",
+            max[2] - min[2]
+        );
+    }
+
+    /// Volume scales by sx*sy*sz = 2*1*0.5 = 1 → unchanged from the source box
+    /// (mirrors `scale_doubles_volume`).
+    #[test]
+    fn scale_non_uniform_volume_preserved() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::ScaleNonUniform {
+                target: box_h.id,
+                sx: 2.0,
+                sy: 1.0,
+                sz: 0.5,
+            })
+            .expect("ScaleNonUniform execute should succeed");
+        let vol = kernel.query(&GeometryQuery::Volume(scaled.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1000.0).abs() < 1.0,
+                    "scale(2,1,0.5) should give volume ≈ 1000 (2*1*0.5=1), got {v}"
+                );
+            }
+            other => panic!("expected Value::Real for volume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scale_non_uniform_zero_component_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ScaleNonUniform {
+            target: box_h.id,
+            sx: 0.0,
+            sy: 1.0,
+            sz: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("non-zero") || msg.contains("finite"),
+                    "error should mention non-zero/finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for zero scale component, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn scale_non_uniform_nan_component_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ScaleNonUniform {
+            target: box_h.id,
+            sx: 1.0,
+            sy: f64::NAN,
+            sz: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite") || msg.contains("non-zero"),
+                    "error should mention finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for NaN scale component, got {:?}",
                 other
             ),
         }
@@ -11671,4 +13404,31 @@ mod tests {
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }
+
+    // Shared cross-cfg `GeometryKernel` contract (INV-GEO-4) against the
+    // real actor-backed kernel, so the has_occt merge gate actually runs
+    // the OCCT arm of the suite. Previously only reify-test-support's own
+    // self-test (against a fake `TestRealKernel`) exercised this arm; the
+    // genuine OCCT kernel was never driven through it. `OcctKernelHandle`
+    // is used (not the inner single-thread `OcctKernel`) because the
+    // macro's generated tests upcast to `Box<dyn GeometryKernel>` and the
+    // handle is the `Send + Sync` type that implements the trait. Each
+    // generated test spawns its own handle (and OCCT worker thread) for
+    // isolation; the resulting startup cost is an accepted tradeoff, not
+    // a correctness concern.
+    //
+    // The `stub;` arm (`not(has_occt)`) is deliberately not instantiated
+    // here: the stub OCCT adapter's all-error taxonomy is already covered
+    // by bespoke hand-written tests in stubs.rs, and migrating it onto
+    // this shared suite is tracked as a separate follow-up (#5110) —
+    // out of scope for this real-arm-only wiring.
+    reify_test_support::assert_kernel_contract!(
+        real;
+        OcctKernelHandle::spawn,
+        valid_op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        },
+    );
 }

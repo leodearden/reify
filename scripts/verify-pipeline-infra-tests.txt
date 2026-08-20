@@ -43,12 +43,87 @@ scripts/seed-warm-lane.sh            tests/infra/test_warm_lane_pool.sh
 # test_tree_sitter_pipeline.sh silently rests on.
 scripts/seed-warm-lane.sh            tests/infra/test_target_per_lane_independence.sh
 scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
+# Task 5981: refresh-warm-base.sh's OWN suite also guards its provenance WIP
+# refusal path (Block I). The row above maps the artifact only to the pool
+# suite, so that assertion would not be selected on a branch-scope verify.
+scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
+scripts/warm-lane-degenerate-ref-check.sh    tests/infra/test_warm_lane_degenerate_ref.sh
 scripts/warm-lane-gc.sh              tests/infra/test_warm_lane_gc.sh
 scripts/warm-lane-gc-sweep.sh        tests/infra/test_warm_lane_gc_sweep.sh
+# Task 5572: the shared live-reference /proc scanner, sourced by BOTH gc scripts
+# (gc.sh's per-lane/per-orphan reclaim gate and the sweep's .reseed-trash
+# reaper), so it needs a row per consumer -- same one-artifact-multiple-rows
+# pattern as scripts/seed-warm-lane.sh / scripts/warm-lane-audit.sh. Without
+# these rows a task-scope edit to the lib alone gets NO fail-fast infra pole:
+# this file's header notes the GLOB is self-maintaining for new TESTS, not for
+# new ARTIFACTS.
+scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc.sh
+scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc_sweep.sh
+# Task 5823: thin-warm-lane.sh gained the same live-reference gate (T4), making
+# it lib_live_refs.sh's THIRD consumer -- hence the third lib row, per the
+# one-row-per-consumer rule stated above. The thin row is its SECOND: the only
+# existing one (task 5176, below) points at the sizing-lifecycle suite, so a
+# task-scope edit to thin selected no fail-fast pole over thin's OWN suite --
+# the one that holds the gate's coverage (Block F), where the characteristic
+# regression is SILENT (the gate stops firing and thin rm -rf's a live build's
+# target/, exactly as before the gate existed).
+scripts/thin-warm-lane.sh            tests/infra/test_thin_warm_lane.sh
+scripts/lib_live_refs.sh             tests/infra/test_thin_warm_lane.sh
+# Task 5672: scripts/lib_lane_x_flock.sh is a shared lock-acquire lib sourced
+# TRANSITIVELY by tests/infra/run_all.sh under --scope host-infra; without
+# this row a task-scope diff touching only the lib selects zero infra tests,
+# so tests/infra/test_lane_x_flock.sh (the test that covers it) never runs.
+scripts/lib_lane_x_flock.sh          tests/infra/test_lane_x_flock.sh
+# Task 6024: scripts/lib_slot_acquire.sh is the single deadline site every
+# finite-WAIT caller shares, and it now emits the column-0 slot-timeout sentinel
+# dark-factory's SEMAPHORE_TIMEOUT classifier keys on. That is a CROSS-REPO wire
+# contract whose characteristic regression is SILENT (the sentinel stops being
+# emitted, or drifts off column 0, and DF quietly stops classifying every
+# semaphore starvation), so an edit to the lib alone needs its own fail-fast
+# pole. Same TRANSITIVELY-sourced rationale as the lane-x row above: the lib is
+# reached via verify.sh -> lib_test_semaphore.sh, so it is not auto-derived by
+# verify-pipeline-guard.sh's live source inspection.
+# A GLOB, not an exact path, per this file's own self-maintaining-for-additions
+# convention (header above): `test_slot_*.sh` selects BOTH guards of this one
+# lib -- the new timeout-sentinel suite AND the pre-existing
+# tests/infra/test_slot_event_log.sh, which covers the same lib's
+# ACQUIRE/RELEASE event contract and had no row anywhere in this map, so a
+# lib-only edit previously got no pole for half the lib's contract. It also
+# absorbs future test_slot_*.sh additions without another edit to this file,
+# which is itself a load-bearing verify-pipeline artifact (every edit here
+# routes the touching task through the full --scope all gate).
+scripts/lib_slot_acquire.sh          tests/infra/test_slot_*.sh
+# Task 6024 (review amendment): the lib is not the only CARRIER of that wire
+# contract. Each caller below passes an explicit 5th TIMEOUT_REASON whose token
+# is itself a cross-repo wire value, so a task-scope edit that drops one selects
+# zero infra tests without a row here and is caught only at merge tier.
+# scripts/lib_test_semaphore.sh is the worst case: its 5th arg is a deliberate
+# literal duplicate of its 4th, so dropping it falls silently through
+# slot_acquire's ${REASON:-...} fallback and still emits a plausible-looking
+# token. Same glob as the lib row -- test_slot_timeout_marker.sh's B0/B2 already
+# pin both tokens behaviourally; these rows are what make them RUN.
+scripts/lib_test_semaphore.sh        tests/infra/test_slot_*.sh
+scripts/cargo-test-occt-gated.sh     tests/infra/test_slot_*.sh
 scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence.sh
+scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_audit.sh
+# Task 5608: the LOCK-axis availability oracle (sibling of the DISK-axis
+# warm-lane-disk-guard.sh above). Its whole value is a correct BUSY/IDLE
+# verdict, and the characteristic regression -- a mis-derived lock path -- is
+# SILENT (it reports IDLE forever), so a task-scope edit to the guard needs its
+# own fail-fast infra pole rather than only the whole-suite run.
+scripts/warm-lane-lock-guard.sh      tests/infra/test_warm_lane_lock_guard.sh
+# Task 5176 (ζ): the sizing-lifecycle end-to-end integration gate composes
+# these four primitives (B8 release-thin-bounds-resident-divergent, the β
+# budget ADVISORY relation, B6/B6b soft-vs-hard floor ordering) -- a 2nd row
+# per artifact, same one-artifact-multiple-rows pattern as
+# scripts/seed-warm-lane.sh / scripts/warm-lane-preflight.sh above.
+scripts/thin-warm-lane.sh            tests/infra/test_warm_lane_sizing_lifecycle.sh
+scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_sizing_lifecycle.sh
+scripts/warm-lane-disk-guard.sh      tests/infra/test_warm_lane_sizing_lifecycle.sh
+scripts/provision-warm-lane-fs.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
 
 # H1 (#4921) run_all.sh classification drift-guard — declares every
 # tests/infra/test_*.sh into pool / intra-run-serial / host-exclusive; the
@@ -59,6 +134,19 @@ scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence
 tests/infra/run-all-classification.manifest    tests/infra/test_run_all_classification.sh
 tests/infra/run-all-classification-lib.sh      tests/infra/test_run_all_classification.sh
 tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classification.sh
+
+# Task 5252 mechanical early gate: fail verify (naming the offending file) when
+# a tests/infra/test_*.sh has no run-all-classification.manifest row (or a row
+# has no file). scripts/check-infra-classification-manifest.sh is
+# emitted-not-sourced by verify.sh (like scripts/check-manifold-deps.sh), so it
+# is intentionally absent from scripts/verify-pipeline-paths.txt; per-task
+# fail-fast coverage comes from these rows (one-artifact-multiple-rows pattern,
+# like scripts/seed-warm-lane.sh above): the lib row guards the accessors, and
+# the scripts/verify.sh row runs the (e) plan-shape assertion as a per-task
+# pole whenever build_plan()'s gate emission is edited.
+scripts/check-infra-classification-manifest.sh    tests/infra/test_infra_classification_manifest_gate.sh
+tests/infra/run-all-classification-lib.sh         tests/infra/test_infra_classification_manifest_gate.sh
+scripts/verify.sh                                 tests/infra/test_infra_classification_manifest_gate.sh
 
 # Task 4917 (A6) offline/gate heavy-test partition drift-guard.
 # .config/nextest.toml carries the heavy binaries' LPT priority overrides;
@@ -82,3 +170,62 @@ docs/notes/lean-debuginfo-bench.md                           tests/infra/test_le
 docs/prds/jobserver-merge-priority-balancer.tuning-report.md tests/infra/test_jobserver_tuning_harness.sh
 docs/gui-event-channels.md                                   tests/infra/test_check_event_inventory.sh
 docs/notes/cargo-incremental-persistent-lane-bench.md        tests/infra/test_cargo_incremental_lane_decision.sh
+
+# Task 5125 (L0b): broadened select-map coverage. These load-bearing
+# verify-pipeline artifacts previously selected ZERO per-task infra tests on
+# a product-source diff -- these rows restore fail-fast per-task coverage
+# now that the wholesale run_all.sh pool suite is merge-tier only (see
+# scripts/verify.sh build_plan's DF_VERIFY_ROLE=merge gate).
+scripts/occt-scope-lib.sh            tests/infra/test_verify_*.sh
+scripts/affected-crates-lib.sh       tests/infra/test_verify_*.sh
+scripts/release-scope-lib.sh         tests/infra/test_verify_*.sh
+scripts/cpu-admit.sh                 tests/infra/test_verify_*.sh
+# cpu-admit.sh also gets its own dedicated integration guard (task 5125
+# review): test_verify_*.sh only exercises verify.sh's plan-generation
+# wiring to cpu-admit.sh, not cpu-admit.sh's own PSI-admission behavior --
+# test_cpu_admit.sh drives that directly. Two rows for one artifact mirrors
+# the existing scripts/seed-warm-lane.sh / warm-lane-preflight.sh pattern
+# above.
+scripts/cpu-admit.sh                 tests/infra/test_cpu_admit.sh
+tests/infra/run_all.sh               tests/infra/test_run_all*.sh
+scripts/land.sh                      tests/infra/test_land_*.sh
+hooks/pre-merge-commit               tests/infra/test_hooks_call_verify.sh
+hooks/pre-commit                     tests/infra/test_hooks_call_verify.sh
+hooks/reference-transaction          tests/infra/test_reference_transaction_gate.sh
+hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate.sh
+# Task 5981: the same two artifacts also carry the refs/stash arm (the guard
+# against `git stash` in a shared checkout) and its independent stash-guard
+# switches, which test_reference_transaction_gate.sh does not exercise at all --
+# it drives refs/heads/main lines only. A second row per artifact is additive:
+# select_infra_tests() dedups globs by whole token, so both suites are selected.
+hooks/reference-transaction          tests/infra/test_stash_guard.sh
+hooks/main-gate-lib.sh               tests/infra/test_stash_guard.sh
+
+# Task 5259 (W4c): the ambient-isolation lib's hostile+baseline disambiguation
+# is guarded by BOTH the consumer (test_run_all_ambient_isolation.sh) and the
+# new lib unit test (test_run_all_ambient_isolation_lib.sh); the glob selects
+# both as fail-fast poles when the lib is edited on a task-scope verify.
+# Mirrors the run-all-classification-lib.sh rows above.
+tests/infra/run_all_ambient_isolation_lib.sh    tests/infra/test_run_all_ambient_isolation*.sh
+
+# Task 5321: the read-only closure-staleness sweep. Mirrors the
+# scripts/warm-lane-audit.sh row above — a task-scope verify runs the sweep's
+# hermetic suite whenever the SUT changes.
+scripts/deterministic-gate-closure-staleness-sweep.sh    tests/infra/test_deterministic_gate_closure_staleness_sweep.sh
+
+# Task 5076: the INV-FEA-1 compute-trampoline delegation gate. Same
+# one-artifact-multiple-rows pattern as check-infra-classification-manifest.sh
+# above: the gate itself, plus each of the three known engine-construction
+# sites it pins. The site rows are the point — editing a site is exactly when
+# a delegation/variant regression is introduced, so the guard fires as a
+# per-task fail-fast pole on that diff rather than waiting for the merge gate.
+scripts/check-compute-trampoline-registration.sh    tests/infra/test_compute_trampoline_registration_wired.sh
+crates/reify-cli/src/main.rs                        tests/infra/test_compute_trampoline_registration_wired.sh
+gui/src-tauri/src/engine.rs                         tests/infra/test_compute_trampoline_registration_wired.sh
+crates/reify-eval/src/test_runner.rs                tests/infra/test_compute_trampoline_registration_wired.sh
+
+# Task 6243: scripts/check-nan-safe-ordering.sh (the INV-FEA-3 nan-safe-
+# ordering gate, task 5093) had NO row at all here, so a task-scope edit to
+# the gate script selected zero infra tests. Mirrors the
+# check-compute-trampoline-registration.sh row above.
+scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh

@@ -1,0 +1,5 @@
+structure def Test {
+    let spec = ThreadSpec(system: ThreadSystem.ISO_Metric, nominal_diameter: 5mm, pitch: 0.8mm, thread_class: ThreadClass.Class_6g6H)
+    let td = spec.tap_drill
+    constraint td > 3mm
+}

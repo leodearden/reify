@@ -1,0 +1,32 @@
+// Litter tray: observable-signal example for `rounded_box` / `rounded_rect`
+// (task #5201) — a rectangular tray with the 4 plan-view (vertical) corners
+// rounded to `corner_r`.
+//
+// `rounded_box` is origin-centred on all 3 axes (same anchor as `box`/
+// `box_centered`), so `translate(rounded_box(...), 0mm, 0mm, height/2)`
+// lifts the base onto the z=0 build plate while staying x/y-centred — the
+// same centred-solid-onto-build-plate idiom as `fdm_bracket.ri`, just along
+// one axis instead of all three.
+//
+// `rim` cross-checks the 2D `rounded_rect` profile: extruding the
+// rounded-rectangle footprint by the tray's `height` produces the same
+// rounded-corner solid as `rounded_box` itself (volume equality is the
+// numeric signal asserted end-to-end in
+// crates/reify-eval/tests/rounded_primitives_e2e.rs).
+//
+// This file is auto-covered by crates/reify-compiler/tests/examples_smoke.rs
+// (recursive examples/*.ri compile-clean walk; zero Error diagnostics).
+
+structure def LitterTray {
+    param width: Length = 480mm
+    param depth: Length = 260mm
+    param height: Length = 80mm
+    param corner_r: Length = 25mm
+
+    // Base sits on the z=0 build plate; x/y stay centred on the origin.
+    let tray = translate(rounded_box(width, depth, height, corner_r), 0mm, 0mm, height / 2)
+
+    // Same footprint as `tray`, built from the 2D profile + extrude instead
+    // of the boolean-compose solid constructor directly.
+    let rim = extrude(rounded_rect(width, depth, corner_r), height)
+}

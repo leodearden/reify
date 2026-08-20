@@ -1,8 +1,8 @@
 //! Collection sub-structure tests (task 64).
 
-use reify_test_support::{compile_source, parse_and_compile};
 use reify_core::{DiagnosticCode, Severity};
 use reify_ir::CompiledExprKind;
+use reify_test_support::{compile_source, parse_and_compile};
 
 /// Helper: compile source and assert no error-severity diagnostics.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {

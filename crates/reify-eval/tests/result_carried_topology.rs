@@ -11,7 +11,7 @@
 /// - full round-trip equality
 use reify_core::identity::RealizationNodeId;
 use reify_ir::boundary_attachment::{BoundaryAssociation, NodeAttachment};
-use reify_ir::geometry::{ElementOrderTag, GeometryHandleId, VolumeMesh};
+use reify_ir::geometry::{ElementOrderTag, GeometryHandleId, VolumeConnectivity, VolumeMesh};
 use reify_ir::value::GeometryHandleRef;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
@@ -39,8 +39,10 @@ fn make_populated_topology() -> CarriedTopology {
             1.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
         ],
-        tet_indices: vec![],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: Some(ba),
     };

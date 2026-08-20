@@ -32,8 +32,7 @@ use reify_test_support::compile_source_with_stdlib;
 ///
 /// `steel` is NOT a stdlib top-level binding (only a private Rust helper in
 /// flexures). The full ctor form is required for the compiler to accept it.
-const STEEL_CTOR: &str =
-    r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
+const STEEL_CTOR: &str = r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
 
 /// A distinct, fully-valid `Material(...)` constructor, used to distinguish the
 /// explicitly-provided value from the in-scope ambient steel default.

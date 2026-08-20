@@ -60,6 +60,31 @@ use reify_ir::{GeometryHandleId, GeometryOp, Value};
 /// one component nominally exceeds the tolerance.
 const REVOLVE_DEGENERATE_TOLERANCE: f64 = 1e-12;
 
+/// Number of polyline segments used to discretise a curved profile
+/// ([`GeometryOp::CircleProfile`] / [`GeometryOp::EllipseProfile`]) into a
+/// [`reify_solver_elastic::ProfileBoundary`] outer ring.
+///
+/// A fixed count is a deterministic fidelity default for cross-section meshing;
+/// `auto_mesh_size_from_boundary` derives the Gmsh target edge length from the
+/// shortest emitted segment. Curvature-adaptive / caller-tunable sampling is a
+/// future refinement. 64 segments keeps the chord error well under typical mesh
+/// sizes while staying allocation-light.
+///
+/// Because the target mesh size is the *shortest* emitted chord, the sampler
+/// must keep chords near-uniform — see [`sample_ellipse_ring`], which spaces
+/// points by arc length rather than by uniform θ for exactly this reason.
+const PROFILE_CURVE_SEGMENTS: usize = 64;
+
+/// Sub-intervals per emitted segment used when building the cumulative
+/// arc-length table in [`sample_ellipse_ring`].
+///
+/// The table is integrated with the trapezoid rule, whose error is
+/// `O(h²)`; at 16 sub-intervals per emitted segment (1024 sub-intervals over
+/// the full ellipse) the arc-length positions are accurate to far better than
+/// the chord-uniformity the sampler is trying to achieve, at a one-off cost of
+/// ~1k `sin_cos` evaluations per curved profile.
+const PROFILE_ARC_OVERSAMPLE: usize = 16;
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// Recognised swept-body kinds produced by [`classify_swept_body`].
@@ -88,6 +113,13 @@ pub enum SweptKind {
         /// Total swept length, dimension-tagged as `Type::length()`. Cloned
         /// directly from the source op's `distance` field.
         length: Value,
+        /// Handle of the 2-D profile op the sweep extrudes. Captured from the
+        /// source [`GeometryOp::Extrude`] / [`GeometryOp::ExtrudeSymmetric`]
+        /// `profile` field so the cross-section producer
+        /// (`swept_kind_to_profile_boundary`) can resolve the profile op from
+        /// the parallel handles slice — mirrors
+        /// [`SweptKind::SweepLinear::profile`].
+        profile: GeometryHandleId,
     },
     /// Revolution around an axis by an angle.
     ///
@@ -111,6 +143,12 @@ pub enum SweptKind {
         /// `GeometryOp::Revolve.angle_rad`. The classifier rejects
         /// `|angle_rad| < REVOLVE_DEGENERATE_TOLERANCE`.
         angle_rad: f64,
+        /// Handle of the 2-D profile op the sweep revolves. Captured from the
+        /// source [`GeometryOp::Revolve`] `profile` field so the cross-section
+        /// producer (`swept_kind_to_profile_boundary`) can resolve the profile
+        /// op from the parallel handles slice — mirrors
+        /// [`SweptKind::SweepLinear::profile`].
+        profile: GeometryHandleId,
     },
     /// Single-profile sweep along a *non-twisted* path.
     ///
@@ -134,9 +172,9 @@ pub enum SweptKind {
 /// last entry in `step_handles[handle_start..]`). Cleared and repopulated on
 /// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
 /// `tessellate_snapshot()` call (per-build, not per-realization). Mirrors the
-/// `FeatureTagTable` / `TopologyAttributeTable` shape — same four-method API
-/// (`record` / `lookup` / `len` / `is_empty`) and the same last-write-wins
-/// semantics on duplicate-id `record` calls.
+/// `TopologyAttributeTable` shape — same four-method API (`record` / `lookup`
+/// / `len` / `is_empty`) and the same last-write-wins semantics on
+/// duplicate-id `record` calls.
 #[derive(Debug, Default)]
 pub struct SweptKindTable {
     entries: HashMap<GeometryHandleId, SweptKind>,
@@ -147,10 +185,10 @@ impl SweptKindTable {
     /// recognised swept body of `kind`.
     ///
     /// Overwrites any prior entry for the same id (last-write-wins, matching
-    /// `FeatureTagTable::record` and `TopologyAttributeTable::record`). Phase A
-    /// callers (the engine post-realization wiring) should never produce
-    /// duplicate keys because each successful realization writes its own
-    /// distinct final handle, but the contract is recorded here for symmetry.
+    /// `TopologyAttributeTable::record`). Phase A callers (the engine
+    /// post-realization wiring) should never produce duplicate keys because
+    /// each successful realization writes its own distinct final handle, but
+    /// the contract is recorded here for symmetry.
     pub fn record(&mut self, id: GeometryHandleId, kind: SweptKind) {
         self.entries.insert(id, kind);
     }
@@ -209,17 +247,17 @@ pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> 
         "classify_swept_body: ops and handles must be parallel arrays of equal length"
     );
     match ops.last()? {
-        GeometryOp::Extrude { distance, .. } | GeometryOp::ExtrudeSymmetric { distance, .. } => {
-            Some(SweptKind::Extrude {
-                axis: [0.0, 0.0, 1.0],
-                length: distance.clone(),
-            })
-        }
+        GeometryOp::Extrude { profile, distance }
+        | GeometryOp::ExtrudeSymmetric { profile, distance } => Some(SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: distance.clone(),
+            profile: *profile,
+        }),
         GeometryOp::Revolve {
+            profile,
             axis_origin,
             axis_dir,
             angle_rad,
-            ..
         } => {
             // Reject zero-length axis vector and zero-angle revolves; any
             // other angle (including the full 2π case) qualifies. Use the
@@ -248,6 +286,7 @@ pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> 
                         axis_dir[2] / axis_norm,
                     ],
                     angle_rad: *angle_rad,
+                    profile: *profile,
                 })
             }
         }
@@ -307,10 +346,12 @@ pub fn swept_kind_to_sweep_params(
     use reify_solver_elastic::SweepParams;
     match kind {
         // Step-16: Extrude — forward axis verbatim, extract length as f64.
-        SweptKind::Extrude { axis, length } => length.as_f64().map(|len| SweepParams::Extrude {
-            axis: *axis,
-            length: len,
-        }),
+        SweptKind::Extrude { axis, length, .. } => {
+            length.as_f64().map(|len| SweepParams::Extrude {
+                axis: *axis,
+                length: len,
+            })
+        }
         // Step-18: Revolve — forward fields; rename angle_rad → angle.
         // SweepParams::Revolve.angle must be > 0 (validate_sweep_inputs rejects
         // angle <= 0.0 with DegenerateMagnitude).  SweptKind::Revolve.angle_rad
@@ -322,6 +363,7 @@ pub fn swept_kind_to_sweep_params(
             axis_origin,
             axis_dir,
             angle_rad,
+            ..
         } => {
             let (axis_dir_out, angle_out) = if *angle_rad < 0.0 {
                 ([-axis_dir[0], -axis_dir[1], -axis_dir[2]], -*angle_rad)
@@ -359,10 +401,450 @@ pub fn swept_kind_to_sweep_params(
     }
 }
 
+/// Sample a closed CCW ellipse ring (a circle when `|a| == |b|`) of
+/// [`PROFILE_CURVE_SEGMENTS`] points `[a·cos θ, b·sin θ]`, spaced by **equal
+/// arc length** rather than by equal `θ`.
+///
+/// # Why arc length and not uniform θ
+///
+/// Uniform-θ sampling of an ellipse produces very non-uniform chords. The
+/// longest chord (near `θ = π/2`) is ≈ `a·τ/N`; the shortest (near `θ = 0`) is
+/// `hypot(a·(1 − cos τ/N), b·sin τ/N)`, which is ≈ `b·τ/N` while the minor-axis
+/// term dominates and then saturates on the major-axis sagitta
+/// `a·(τ/N)²/2`. So the max/min chord ratio grows like the aspect ratio `a/b`
+/// up to a ceiling of ≈ `2N/τ` (≈ 20.4 at `N = 64`).
+///
+/// That interacts badly with the consumer:
+/// [`reify_solver_elastic::auto_mesh_size_from_boundary`] takes the SHORTEST
+/// chord in the whole ring as the target mesh size, so under uniform θ the
+/// element size is set by the tip region while the domain spans the major
+/// axis, and element count (≈ `area/h²`) is inflated by up to the square of
+/// that ratio. Measured on the `a = 0.05, b = 0.0005` fixture used by the
+/// chord-uniformity test: uniform θ gives min chord `2.457e-4`, max `4.901e-3`
+/// (ratio `19.95`) and an implied ~1300 elements; equal-arc-length spacing
+/// gives min `3.119e-3`, max `3.126e-3` (ratio `1.0024`, every chord ≈
+/// `perimeter/N = 3.126e-3`) and ~8. The derived mesh size then tracks the
+/// profile as a whole and the element count is aspect-ratio-independent.
+///
+/// # Method
+///
+/// `|dP/dθ| = √(a²sin²θ + b²cos²θ)` is integrated with the trapezoid rule over
+/// `N · PROFILE_ARC_OVERSAMPLE` sub-intervals to give a monotone cumulative
+/// arc-length table, which is then inverted (one linear-interpolated pass) at
+/// the `N` targets `i·total/N`. A circle takes the closed form directly:
+/// uniform θ already IS uniform arc length there, so the common case stays
+/// exact and allocation-light.
+///
+/// # Guarantees
+///
+/// * The `i = 0` sample is bit-exactly `[a, 0]` — target arc length 0 inverts
+///   to `θ = 0.0` exactly, and `cos 0.0 == 1.0` / `sin 0.0 == 0.0` are
+///   IEEE-exact.
+/// * Every circle sample lies on radius `|a|` up to f64 trig rounding (~1e-16),
+///   independently of the θ values chosen.
+/// * The ring is CCW for positive `a, b` because θ advances monotonically from
+///   0; a negative extent flips the winding and is corrected downstream by
+///   [`normalise_ccw`], as for every other sampler arm.
+fn sample_ellipse_ring(a: f64, b: f64) -> Vec<[f64; 2]> {
+    let n = PROFILE_CURVE_SEGMENTS;
+    let point_at = |theta: f64| [a * theta.cos(), b * theta.sin()];
+    let uniform_theta = || {
+        (0..n)
+            .map(|i| point_at(std::f64::consts::TAU * (i as f64) / (n as f64)))
+            .collect::<Vec<[f64; 2]>>()
+    };
+
+    // A circle is already arc-uniform under uniform θ. Equality on |a| covers
+    // the sign-flipped (clockwise) circle too.
+    if a.abs() == b.abs() {
+        return uniform_theta();
+    }
+
+    // Cumulative arc length s(θ) on a fine uniform-θ grid, trapezoid rule.
+    let m = n * PROFILE_ARC_OVERSAMPLE;
+    let dtheta = std::f64::consts::TAU / (m as f64);
+    let speed = |theta: f64| {
+        let (sin_t, cos_t) = theta.sin_cos();
+        ((a * sin_t) * (a * sin_t) + (b * cos_t) * (b * cos_t)).sqrt()
+    };
+    let mut cumulative = Vec::with_capacity(m + 1);
+    cumulative.push(0.0_f64);
+    let mut total = 0.0_f64;
+    let mut prev = speed(0.0);
+    for k in 1..=m {
+        let cur = speed(dtheta * (k as f64));
+        total += 0.5 * (prev + cur) * dtheta;
+        cumulative.push(total);
+        prev = cur;
+    }
+    // Fully degenerate (a == b == 0) leaves nothing to equalise, and an
+    // overflowed perimeter (astronomically large but still "finite" extents)
+    // would make `total · i/n` produce NaN at i = 0. In both cases fall back to
+    // uniform θ and let the consumer's DegenerateBoundary rejection handle it —
+    // the sampler must not mask degeneracy. (A non-finite *extent* cannot reach
+    // here at all; `profile_sample_2d` rejects those.)
+    let arc_length_usable = total.is_finite() && total > 0.0;
+    if !arc_length_usable {
+        return uniform_theta();
+    }
+
+    // Invert s(θ) with a single monotone walk over the table.
+    let mut ring = Vec::with_capacity(n);
+    let mut k = 0_usize;
+    for i in 0..n {
+        let target = total * (i as f64) / (n as f64);
+        while k + 1 < cumulative.len() && cumulative[k + 1] < target {
+            k += 1;
+        }
+        let (s0, s1) = (cumulative[k], cumulative[k + 1]);
+        let frac = if s1 > s0 {
+            (target - s0) / (s1 - s0)
+        } else {
+            0.0
+        };
+        ring.push(point_at(dtheta * (k as f64 + frac)));
+    }
+    ring
+}
+
+/// Reverse `ring` in place iff its signed area is negative, so the returned
+/// ring is counter-clockwise.
+///
+/// Orientation is measured with the mesher's own
+/// [`reify_solver_elastic::ring_signed_area_2d`] — the same predicate
+/// `validate_boundary` uses — so producer and consumer cannot drift apart on
+/// the convention.
+///
+/// The comparison is strictly `< 0.0`, so a zero-area ring (collinear points,
+/// fewer than 3 points, or empty) passes through untouched and still reaches
+/// [`reify_solver_elastic::mesh_swept_profile_2d`]'s existing
+/// `DegenerateBoundary` / `EmptyBoundary` rejection. Normalisation fixes
+/// winding; it must never mask degeneracy.
+fn normalise_ccw(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if reify_solver_elastic::ring_signed_area_2d(&ring) < 0.0 {
+        ring.reverse();
+    }
+    ring
+}
+
+/// Why a [`SweptKind`]'s profile could not be turned into a
+/// [`reify_solver_elastic::ProfileBoundary`].
+///
+/// Carried by [`swept_kind_to_profile_boundary`] in place of a bare `None` so
+/// [`build_swept_2d_mesh`] can name the actual cause in its
+/// [`reify_solver_elastic::Mesh2dError::ProfileUnresolvable`] payload. Without
+/// it every producer-side failure would collapse onto
+/// [`reify_solver_elastic::Mesh2dError::EmptyBoundary`], which that variant's
+/// own docs single out as the conflation to avoid: `EmptyBoundary` means a
+/// boundary WAS produced and its outer ring turned out to be empty, so reusing
+/// it here makes a downstream diagnostic misreport an upstream resolution
+/// failure as a degenerate cross-section.
+///
+/// The [`std::fmt::Display`] text IS the `ProfileUnresolvable` payload — that
+/// crate deliberately takes the reason as text rather than depending on this
+/// enum (see the variant's docs), so this impl is the seam where the typed
+/// reason becomes the reported one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileResolveError {
+    /// The `profile` handle has no positional match in the `handles` slice, so
+    /// no source op could be resolved at all — a malformed `ops`/`handles`
+    /// pair, or a handle from outside this realization's slice (see the
+    /// bare-integer collision caveat on [`swept_kind_to_profile_boundary`]).
+    UnresolvableHandle,
+    /// The handle resolved, but its source op is not one of the recognised
+    /// single-ring 2-D profile ops — e.g. a solid primitive such as
+    /// [`GeometryOp::Box`].
+    NotAProfileOp,
+    /// The source op IS a recognised profile op, but one of its extents (or a
+    /// [`GeometryOp::PolygonProfile`] vertex coordinate) is NaN or infinite, so
+    /// no usable ring can be sampled from it. Reported separately from
+    /// [`ProfileResolveError::NotAProfileOp`] because the op kind is fine and
+    /// only its operands are not.
+    NonFiniteExtent,
+}
+
+impl std::fmt::Display for ProfileResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::UnresolvableHandle => {
+                "profile handle does not resolve to any op in this realization slice"
+            }
+            Self::NotAProfileOp => "profile handle resolves to an op that is not a 2-D profile",
+            Self::NonFiniteExtent => {
+                "profile op has a non-finite (NaN or infinite) extent or vertex coordinate"
+            }
+        };
+        f.write_str(reason)
+    }
+}
+
+/// Sample a 2-D profile op's outer boundary ring as a list of `[x, y]` points
+/// in the profile's local XY plane (`z = 0`).
+///
+/// Each arm emits the ring in its source op's *natural* order — the rectangle's
+/// fixed corner order, the polygon's caller-supplied vertex order, the
+/// parametric sweep direction for the curved arms. Winding is deliberately NOT
+/// this function's concern: counter-clockwise orientation is imposed once,
+/// downstream, by [`swept_kind_to_profile_boundary`], so an arm added later
+/// inherits the postcondition without having to restate it.
+///
+/// Returns `Ok(outer_ring)` for the recognised single-ring profile ops
+/// ([`GeometryOp::RectangleProfile`], [`GeometryOp::PolygonProfile`],
+/// [`GeometryOp::CircleProfile`], [`GeometryOp::EllipseProfile`]) and
+/// [`ProfileResolveError::NotAProfileOp`] for any other op, so
+/// [`swept_kind_to_profile_boundary`] can reject a profile handle that resolves
+/// to a non-profile op (e.g. a solid primitive). The rings are single-ring:
+/// multiply-connected cross-sections (holes parallel to the sweep axis) are
+/// Phase B (PRD task #14).
+///
+/// # Non-finite extents are rejected
+///
+/// Every sampled coordinate is checked with `f64::is_finite`, and a NaN or
+/// infinite extent yields [`ProfileResolveError::NonFiniteExtent`] — reported
+/// separately from [`ProfileResolveError::NotAProfileOp`] so a downstream
+/// diagnostic names the actual cause.
+///
+/// This guard is load-bearing, not belt-and-braces: `profile_rectangle`,
+/// `profile_circle` and `profile_ellipse` (`geometry_ops.rs`) apply no
+/// finiteness check, and [`reify_ir::Value::as_f64`] happily returns
+/// `Some(NaN)` for a NaN `Real`/`Scalar`. A NaN extent would otherwise produce
+/// an all-NaN ring that neither [`normalise_ccw`] (`NaN < 0.0` is false) nor
+/// the consumer's `validate_boundary` (`NaN.abs() < 1e-14` is false) rejects —
+/// so the NaN coordinates would reach Gmsh. Only `PolygonProfile` is already
+/// covered upstream (`eval_all_args_to_f64`); its arm is checked here anyway so
+/// the postcondition is a property of this function rather than of each
+/// caller.
+fn profile_sample_2d(op: &GeometryOp) -> Result<Vec<[f64; 2]>, ProfileResolveError> {
+    // Extract one extent, mapping both "the Value is not numeric" and "the
+    // Value is a non-finite number" onto NonFiniteExtent — at this point the op
+    // IS a recognised profile op, so the only remaining failure mode is a
+    // usable-extent one.
+    let extent = |v: &reify_ir::Value| {
+        v.as_f64()
+            .filter(|x| x.is_finite())
+            .ok_or(ProfileResolveError::NonFiniteExtent)
+    };
+    match op {
+        // Axis-aligned rectangle centred at the origin. The op's contract
+        // (geometry.rs) places corners at (±width/2, ±height/2, 0); emit them
+        // as the 4 CCW corners starting bottom-left.
+        GeometryOp::RectangleProfile { width, height } => {
+            let w = extent(width)?;
+            let h = extent(height)?;
+            Ok(vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ])
+        }
+        // Closed planar polygon: the caller-supplied vertices ARE the outer
+        // ring, in order.
+        GeometryOp::PolygonProfile { points } => {
+            if !points.iter().all(|p| p[0].is_finite() && p[1].is_finite()) {
+                return Err(ProfileResolveError::NonFiniteExtent);
+            }
+            Ok(points.clone())
+        }
+        // Circle: PROFILE_CURVE_SEGMENTS points, each exactly r·[cos θ, sin θ].
+        GeometryOp::CircleProfile { radius } => {
+            let r = extent(radius)?;
+            Ok(sample_ellipse_ring(r, r))
+        }
+        // Ellipse: PROFILE_CURVE_SEGMENTS points at [a·cos θ, b·sin θ].
+        GeometryOp::EllipseProfile {
+            semi_major,
+            semi_minor,
+        } => {
+            let a = extent(semi_major)?;
+            let b = extent(semi_minor)?;
+            Ok(sample_ellipse_ring(a, b))
+        }
+        _ => Err(ProfileResolveError::NotAProfileOp),
+    }
+}
+
+/// Produce the 2-D cross-section [`reify_solver_elastic::ProfileBoundary`] for a
+/// recognised swept body — the "producer" half of the swept hex/wedge meshing
+/// pipeline (PRD-2987 step 1).
+///
+/// Resolves the [`SweptKind`]'s `profile` handle to its source profile op via
+/// the parallel `handles`/`ops` slices (exactly as [`swept_kind_to_sweep_params`]
+/// resolves a `SweepLinear` path handle), samples the op's outer ring with
+/// [`profile_sample_2d`], and wraps it as a single-ring `ProfileBoundary`.
+/// `holes` is always empty — every recognised profile op is single-ring, and
+/// multiply-connected cross-sections are Phase B (PRD task #14).
+///
+/// # Postcondition: the outer ring is counter-clockwise
+///
+/// Any `Some(_)` result has `ring_signed_area_2d(&outer) >= 0.0`. This
+/// discharges the [`reify_solver_elastic::ProfileBoundary`] contract
+/// ("Outer-boundary points (CCW for positive area)", `mesher.rs:96`) and is
+/// what the sweep step relies on downstream: the canonical Wedge6/Hex8 node
+/// orderings "produce det J > 0 when the 2D mesher emits CCW faces"
+/// (`sweep.rs:19`). The consumer does not enforce this for us —
+/// `validate_boundary` only rejects `|area| < 1e-14` — so a clockwise profile
+/// would otherwise reach the mesher unflagged and invert the swept elements.
+///
+/// Normalisation happens here, at the single seam where a sampled ring becomes
+/// a `ProfileBoundary`, rather than inside any [`profile_sample_2d`] arm, so it
+/// holds for all four current arms and for any arm added later. A zero-area
+/// ring is passed through unreversed and left to the consumer's
+/// `DegenerateBoundary` rejection.
+///
+/// # Returns
+///
+/// [`ProfileResolveError::UnresolvableHandle`] when the profile handle has no
+/// positional match in `handles` (a malformed ops/handles pair, or a handle
+/// from outside this realization's slice that happens to collide with no local
+/// id), [`ProfileResolveError::NotAProfileOp`] when the resolved source op is
+/// not a recognised profile op, and [`ProfileResolveError::NonFiniteExtent`]
+/// when it is one but its extents are non-finite (see [`profile_sample_2d`]).
+/// The three are kept distinct so [`build_swept_2d_mesh`] can name the cause
+/// rather than collapsing all of them onto one opaque failure.
+///
+/// # Caveat: bare-integer handle resolution (#4349)
+///
+/// The lookup is a positional scan for an equal [`GeometryHandleId`], the same
+/// resolution [`swept_kind_to_sweep_params`] already performs for a
+/// `SweepLinear` path. A `GeometryHandleId` is only unique *within its own
+/// kernel's handle space* (see the `named_step_reprs` discussion in
+/// `engine_build.rs`), so a profile bound from another realization — e.g. a
+/// `GeomRef::Sub(name)` profile resolved through `named_steps` — is NOT
+/// guaranteed to miss: it can same-integer-collide with an unrelated local
+/// step and silently yield the WRONG cross-section rather than `None`.
+///
+/// This is latent rather than live: the production swept edge is currently
+/// gated (`force_tet = true`). Before that gate opens, the caller should pass
+/// the realization's `named_steps` / `named_step_reprs` and resolve a
+/// non-local profile BY NAME — the discipline `available_for_op` already uses
+/// in `engine_build.rs` — instead of trusting this bare-integer scan. Tracked
+/// as part of the swept-edge activation work in #4746.
+pub fn swept_kind_to_profile_boundary(
+    kind: &SweptKind,
+    ops: &[GeometryOp],
+    handles: &[GeometryHandleId],
+) -> Result<reify_solver_elastic::ProfileBoundary, ProfileResolveError> {
+    // Every recognised swept kind carries the handle of the 2-D profile op it
+    // sweeps; the cross-section is that op's own geometry regardless of the
+    // sweep motion (extrude axis / revolve axis / linear path), so all three
+    // arms share the same resolve → sample → wrap path below.
+    let profile = match kind {
+        SweptKind::Extrude { profile, .. }
+        | SweptKind::Revolve { profile, .. }
+        | SweptKind::SweepLinear { profile, .. } => profile,
+    };
+    let source_op = handles
+        .iter()
+        .position(|h| h == profile)
+        .and_then(|i| ops.get(i))
+        .ok_or(ProfileResolveError::UnresolvableHandle)?;
+    // Single seam: every sampled ring passes through the winding normaliser on
+    // its way to becoming a ProfileBoundary, so the CCW postcondition is a
+    // property of this function rather than of each individual sampler arm.
+    let outer = normalise_ccw(profile_sample_2d(source_op)?);
+    Ok(reify_solver_elastic::ProfileBoundary {
+        outer,
+        holes: vec![],
+    })
+}
+
+/// Build the 2-D cross-section mesh for a recognised swept body — the
+/// production caller path that makes the [`reify_solver_elastic`] 2-D mesher
+/// reachable from a [`SweptKind`].
+///
+/// Produces the [`reify_solver_elastic::ProfileBoundary`] via
+/// [`swept_kind_to_profile_boundary`] and forwards it to
+/// [`reify_solver_elastic::mesh_swept_profile_2d`]. A profile that fails to
+/// resolve — an unresolvable handle, a non-profile source op, or a non-finite
+/// extent — becomes
+/// [`reify_solver_elastic::Mesh2dError::ProfileUnresolvable`] carrying that
+/// [`ProfileResolveError`]'s text, short-circuiting before any Gmsh call.
+///
+/// The reason is reported rather than discarded, and specifically NOT collapsed
+/// onto [`reify_solver_elastic::Mesh2dError::EmptyBoundary`]: that variant
+/// means a boundary was produced and its outer ring turned out to be empty, so
+/// reusing it for "no boundary could be produced at all" would make the
+/// downstream `"swept hex/wedge path failed: …"` diagnostic misreport an
+/// upstream resolution failure as a degenerate cross-section.
+///
+/// This is the producer the swept `gmsh_2d` dispatch edge invokes (see the
+/// `dispatch_volume_mesh` call in `execute_realization_ops`, `engine_build.rs`).
+pub fn build_swept_2d_mesh(
+    kind: &SweptKind,
+    ops: &[GeometryOp],
+    handles: &[GeometryHandleId],
+    target: reify_solver_elastic::SweepElementTarget,
+    options: &reify_solver_elastic::Mesh2dOptions,
+) -> Result<reify_solver_elastic::Mesh2dReport, reify_solver_elastic::Mesh2dError> {
+    match swept_kind_to_profile_boundary(kind, ops, handles) {
+        Ok(boundary) => reify_solver_elastic::mesh_swept_profile_2d(&boundary, target, options),
+        Err(why) => Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(
+            why.to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_ir::Value;
+
+    // ── Shared single-profile extrude fixture ──────────────────────────────
+    // Most producer tests vary exactly ONE thing — the profile op — around an
+    // otherwise-identical two-op realization slice: the profile op at
+    // handles[0], an Extrude of it at handles[1], and a matching
+    // SweptKind::Extrude. `extrude_fixture` owns that boilerplate so each test
+    // reads as "this profile op ⇒ this boundary" instead of restating the
+    // handle layout. Tests whose subject is a DIFFERENT axis (an unresolvable
+    // profile handle) keep the fixture's ops/handles and build their own
+    // SweptKind, so the one field they exercise is the only thing spelled out.
+
+    /// Handle of the profile op — `ops[0]` / `handles[0]`.
+    const FIXTURE_PROFILE_HANDLE: GeometryHandleId = GeometryHandleId(10);
+    /// Handle of the Extrude op itself — `ops[1]` / `handles[1]`.
+    const FIXTURE_EXTRUDE_HANDLE: GeometryHandleId = GeometryHandleId(11);
+    /// Extrusion distance shared by every fixture. Immaterial to the
+    /// cross-section, which is the profile op's own 2-D geometry.
+    const FIXTURE_EXTRUDE_DISTANCE: f64 = 0.01;
+
+    /// Build the standard single-profile extrude slice around `profile_op`:
+    /// the parallel `ops` / `handles` vectors and the `SweptKind::Extrude`
+    /// whose `profile` resolves to `profile_op`.
+    fn extrude_fixture(
+        profile_op: GeometryOp,
+    ) -> (Vec<GeometryOp>, Vec<GeometryHandleId>, SweptKind) {
+        let ops = vec![
+            profile_op,
+            GeometryOp::Extrude {
+                profile: FIXTURE_PROFILE_HANDLE,
+                distance: Value::length(FIXTURE_EXTRUDE_DISTANCE),
+            },
+        ];
+        let handles = vec![FIXTURE_PROFILE_HANDLE, FIXTURE_EXTRUDE_HANDLE];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(FIXTURE_EXTRUDE_DISTANCE),
+            profile: FIXTURE_PROFILE_HANDLE,
+        };
+        (ops, handles, kind)
+    }
+
+    /// [`build_swept_2d_mesh`] with the two knobs every test shares
+    /// (`HexPreferred` + default options), so call sites vary only the fixture.
+    fn build_fixture_mesh(
+        kind: &SweptKind,
+        ops: &[GeometryOp],
+        handles: &[GeometryHandleId],
+    ) -> Result<reify_solver_elastic::Mesh2dReport, reify_solver_elastic::Mesh2dError> {
+        build_swept_2d_mesh(
+            kind,
+            ops,
+            handles,
+            reify_solver_elastic::SweepElementTarget::HexPreferred,
+            &reify_solver_elastic::Mesh2dOptions::default(),
+        )
+    }
 
     // ── Step-1: classifier API surface ─────────────────────────────────────
 
@@ -389,6 +871,7 @@ mod tests {
             Some(SweptKind::Extrude {
                 axis: [0.0, 0.0, 1.0],
                 length: Value::length(0.01),
+                profile: GeometryHandleId(0),
             }),
             "single Extrude op must classify as SweptKind::Extrude with axis=+Z"
         );
@@ -406,8 +889,54 @@ mod tests {
             Some(SweptKind::Extrude {
                 axis: [0.0, 0.0, 1.0],
                 length: Value::length(0.01),
+                profile: GeometryHandleId(0),
             }),
             "single ExtrudeSymmetric op must classify as SweptKind::Extrude with axis=+Z"
+        );
+    }
+
+    // ── Task 5218 step-1: classify captures the profile handle ─────────────
+    // The producer (swept_kind_to_profile_boundary) resolves the profile op
+    // from the handle carried on the SweptKind, so the classifier must capture
+    // the source op's `profile` handle on the Extrude and Revolve arms (the
+    // SweepLinear arm already carries it). These pin that capture.
+
+    #[test]
+    fn classify_swept_body_extrude_captures_profile_handle() {
+        let ops = vec![GeometryOp::Extrude {
+            profile: GeometryHandleId(7),
+            distance: Value::length(0.01),
+        }];
+        let handles = vec![GeometryHandleId(8)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            Some(SweptKind::Extrude {
+                axis: [0.0, 0.0, 1.0],
+                length: Value::length(0.01),
+                profile: GeometryHandleId(7),
+            }),
+            "Extrude must capture its source op's profile handle for the producer"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_captures_profile_handle() {
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(7),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(8)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            Some(SweptKind::Revolve {
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+                profile: GeometryHandleId(7),
+            }),
+            "Revolve must capture its source op's profile handle for the producer"
         );
     }
 
@@ -428,6 +957,7 @@ mod tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 angle_rad: std::f64::consts::FRAC_PI_2,
+                profile: GeometryHandleId(0),
             }),
             "partial-angle revolve with non-degenerate axis must classify as SweptKind::Revolve"
         );
@@ -448,6 +978,7 @@ mod tests {
                 axis_origin: [1.0, 2.0, 3.0],
                 axis_dir: [0.0, 1.0, 0.0],
                 angle_rad: 2.0 * std::f64::consts::PI,
+                profile: GeometryHandleId(0),
             }),
             "full 2π revolve must still classify as SweptKind::Revolve (kernel handles full-revolution edge cases downstream)"
         );
@@ -520,6 +1051,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 // axis_origin and angle_rad must be propagated verbatim.
                 assert_eq!(
@@ -582,6 +1114,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 assert_eq!(
                     axis_origin,
@@ -642,6 +1175,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 assert_eq!(
                     axis_origin,
@@ -697,6 +1231,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 assert_eq!(
                     axis_origin,
@@ -993,6 +1528,7 @@ mod tests {
         let kind = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
+            profile: GeometryHandleId(0),
         };
         let result = swept_kind_to_sweep_params(&kind, &[], &[]);
         match result {
@@ -1013,6 +1549,7 @@ mod tests {
             axis_origin: [1.0, 2.0, 3.0],
             axis_dir: [0.0, 1.0, 0.0],
             angle_rad: std::f64::consts::FRAC_PI_2,
+            profile: GeometryHandleId(0),
         };
         let result = swept_kind_to_sweep_params(&kind, &[], &[]);
         match result {
@@ -1105,6 +1642,7 @@ mod tests {
             axis_origin: [0.0, 0.0, 0.0],
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: -std::f64::consts::FRAC_PI_2,
+            profile: GeometryHandleId(0),
         };
         let result = swept_kind_to_sweep_params(&kind, &[], &[]);
         match result {
@@ -1198,6 +1736,7 @@ mod tests {
         let kind = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
+            profile: GeometryHandleId(0),
         };
         table.record(GeometryHandleId(7), kind.clone());
         assert_eq!(
@@ -1232,6 +1771,7 @@ mod tests {
             SweptKind::Extrude {
                 axis: [0.0, 0.0, 1.0],
                 length: Value::length(0.005),
+                profile: GeometryHandleId(0),
             },
         );
         assert_eq!(
@@ -1248,11 +1788,13 @@ mod tests {
         let first = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.005),
+            profile: GeometryHandleId(0),
         };
         let second = SweptKind::Revolve {
             axis_origin: [0.0, 0.0, 0.0],
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: std::f64::consts::FRAC_PI_2,
+            profile: GeometryHandleId(0),
         };
         table.record(id, first);
         table.record(id, second.clone());
@@ -1265,6 +1807,712 @@ mod tests {
             table.lookup(id),
             Some(&second),
             "second record must overwrite the first (last-write-wins)"
+        );
+    }
+
+    // ── Task 5218 step-3: Rectangle/Polygon cross-section producer ──────────
+    // `swept_kind_to_profile_boundary` resolves the SweptKind's `profile`
+    // handle to its source profile op (via the parallel handles slice, exactly
+    // as `swept_kind_to_sweep_params` resolves a SweepLinear path) and samples
+    // the 2-D outer ring. Rectangle → 4 CCW corners; Polygon → points verbatim;
+    // unresolvable handle → Err(UnresolvableHandle); non-profile source op →
+    // Err(NotAProfileOp). `holes` is always empty (single-ring profiles;
+    // multiply-connected sections are Phase B).
+
+    #[test]
+    fn swept_kind_to_profile_boundary_rectangle_samples_four_ccw_corners() {
+        let w = 0.04;
+        let h = 0.02;
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(w),
+            height: Value::length(h),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer,
+            vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ],
+            "rectangle outer ring must be the 4 CCW corners derived from width/height"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_polygon_returns_points_verbatim() {
+        let points = vec![[0.0, 0.0], [0.03, 0.0], [0.03, 0.05], [0.0, 0.05]];
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: points.clone(),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer, points,
+            "polygon outer ring must be the profile's points verbatim — this \
+             fixture is already CCW, so 'verbatim' here is passthrough, not an \
+             unconditional guarantee; a CW ring is reversed by the winding \
+             normaliser (see ..._clockwise_polygon_is_normalised_ccw)"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_unresolvable_handle_is_rejected() {
+        // The SweptKind's profile handle (99) is absent from `handles`, so the
+        // producer cannot resolve a source op at all.
+        let (ops, handles, _) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+        });
+        // The one varied field: a profile handle absent from `handles`.
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(FIXTURE_EXTRUDE_DISTANCE),
+            profile: GeometryHandleId(99),
+        };
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::UnresolvableHandle),
+            "an unresolvable profile handle must be reported as UnresolvableHandle, \
+             distinctly from a resolved-but-unusable op"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_non_profile_op_is_rejected() {
+        // The profile handle resolves to a Box (a solid primitive, not a 2-D
+        // profile op) → the sampler rejects it.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+            depth: Value::length(0.03),
+        });
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NotAProfileOp),
+            "a profile handle resolving to a non-profile op must be reported as \
+             NotAProfileOp — the handle DID resolve, so it is not UnresolvableHandle"
+        );
+    }
+
+    // ── Task 5218 step-5: Circle/Ellipse cross-section producer ─────────────
+    // Curved profiles are pre-sampled into PROFILE_CURVE_SEGMENTS polyline
+    // points. Circle: every point lies exactly on radius r (only f64 trig
+    // rounding, ~1e-16). Ellipse: the θ=0 sample is [a, 0]. Both rings are
+    // non-degenerate (|shoelace signed area| > 0), measured with the mesher's
+    // own `ring_signed_area_2d` — the same helper `validate_boundary` uses, so
+    // these assertions are stated in the consumer's units rather than a
+    // test-local re-derivation of the shoelace formula.
+
+    #[test]
+    fn swept_kind_to_profile_boundary_circle_samples_on_radius() {
+        let r = 0.03;
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::CircleProfile {
+            radius: Value::length(r),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a CircleProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer.len(),
+            PROFILE_CURVE_SEGMENTS,
+            "circle must be discretised into PROFILE_CURVE_SEGMENTS points"
+        );
+        // Every sampled point lies on the radius-r circle (points are exactly
+        // r·[cos θ, sin θ]; only error is f64 trig rounding ~1e-16 ≪ 1e-9).
+        for p in &boundary.outer {
+            let dist = (p[0] * p[0] + p[1] * p[1]).sqrt();
+            assert!(
+                (dist - r).abs() < 1e-9,
+                "sampled point {p:?} must lie at distance r={r} from the origin; got {dist}"
+            );
+        }
+        // Signed, not |signed|: this pins BOTH halves of the contract at once —
+        // orientation (positive ⇒ CCW, the `ProfileBoundary` postcondition) and
+        // consumer-admissibility (> 1e-14 is exactly `validate_boundary`'s
+        // degeneracy floor, so a ring that clears this assertion cannot be
+        // rejected downstream). An `.abs() > 0.0` form would pass on a CW ring
+        // and on rings the consumer still rejects.
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
+        assert!(
+            area > 1e-14,
+            "circle cross-section must be CCW and clear validate_boundary's 1e-14 \
+             degeneracy floor; got signed area {area}"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_ellipse_samples_theta_zero_at_semi_major() {
+        let a = 0.05;
+        let b = 0.02;
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(a),
+            semi_minor: Value::length(b),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer.len(),
+            PROFILE_CURVE_SEGMENTS,
+            "ellipse must be discretised into PROFILE_CURVE_SEGMENTS points"
+        );
+        // The θ=0 sample (index 0) is [a·cos 0, b·sin 0] = [a, 0].
+        let first = boundary.outer[0];
+        assert!(
+            (first[0] - a).abs() < 1e-9 && first[1].abs() < 1e-9,
+            "θ=0 ellipse sample must be [a, 0] = [{a}, 0]; got {first:?}"
+        );
+        // Signed + consumer-threshold, for the reasons given on the circle test.
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
+        assert!(
+            area > 1e-14,
+            "ellipse cross-section must be CCW and clear validate_boundary's 1e-14 \
+             degeneracy floor; got signed area {area}"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    // ── Task 5218 step-7: Revolve/SweepLinear producer arms ─────────────────
+    // The cross-section is the profile op's 2-D geometry for ALL swept kinds,
+    // so Revolve and SweepLinear reuse the same sampler as Extrude. These pin
+    // that both arms resolve their `profile` handle and produce the outer ring.
+
+    #[test]
+    fn swept_kind_to_profile_boundary_revolve_samples_rectangle() {
+        let w = 0.04;
+        let h = 0.02;
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(w),
+                height: Value::length(h),
+            },
+            GeometryOp::Revolve {
+                profile: profile_handle,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed revolve must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer,
+            vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ],
+            "revolve cross-section must be the profile op's outer ring (same sampler as Extrude)"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_sweep_linear_samples_rectangle() {
+        let w = 0.04;
+        let h = 0.02;
+        let profile_handle = GeometryHandleId(10);
+        let path_handle = GeometryHandleId(11);
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(w),
+                height: Value::length(h),
+            },
+            GeometryOp::LineSegment {
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                z2: 0.05,
+            },
+            GeometryOp::Sweep {
+                profile: profile_handle,
+                path: path_handle,
+            },
+        ];
+        let handles = vec![profile_handle, path_handle, GeometryHandleId(12)];
+        let kind = SweptKind::SweepLinear {
+            profile: profile_handle,
+            path: path_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed linear sweep must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer,
+            vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ],
+            "sweep-linear cross-section must be the profile op's outer ring (same sampler as Extrude)"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    // ── Task 5218 step-14: emitted outer ring is always CCW ─────────────────
+    // `ProfileBoundary` documents its outer ring as "CCW for positive area"
+    // (mesher.rs:96), and the downstream sweep step needs det J > 0
+    // (sweep.rs:19). Neither is enforced by the consumer: `validate_boundary`
+    // only rejects |area| < 1e-14, so a CW ring is waved through. The producer
+    // is therefore the party that must establish the postcondition, and it must
+    // do so for EVERY sampler arm — not just polygons — because a rectangle can
+    // reach the sampler with a negative width (`profile_rectangle` in
+    // geometry_ops.rs applies no positivity check). Orientation is asserted via
+    // the mesher's own `ring_signed_area_2d`, the same predicate the consumer
+    // contract is written in.
+
+    #[test]
+    fn swept_kind_to_profile_boundary_clockwise_polygon_is_normalised_ccw() {
+        // Hand-computed shoelace area of this ring is exactly -0.0015 — CW
+        // beyond any doubt (f64 summation noise here is ~1e-19, some 16 orders
+        // of magnitude below the magnitude being signed).
+        let cw_points = vec![[0.0, 0.0], [0.0, 0.05], [0.03, 0.05], [0.03, 0.0]];
+        assert!(
+            reify_solver_elastic::ring_signed_area_2d(&cw_points) < 0.0,
+            "fixture precondition: the input ring must be clockwise"
+        );
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: cw_points.clone(),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert!(
+            reify_solver_elastic::ring_signed_area_2d(&boundary.outer) > 0.0,
+            "a CW profile ring must be normalised to CCW (positive signed area) \
+             before it becomes a ProfileBoundary; got {}",
+            reify_solver_elastic::ring_signed_area_2d(&boundary.outer)
+        );
+        // Reversal is the minimal orientation fix and is a bit-exact element
+        // permutation, so pin the exact expected ring rather than only its sign.
+        let reversed: Vec<[f64; 2]> = cw_points.iter().rev().copied().collect();
+        assert_eq!(
+            boundary.outer, reversed,
+            "normalisation must be a plain reversal of the input ring"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_ccw_polygon_is_not_reversed() {
+        // Same fixture as the step-3 verbatim test: area +0.0015, already CCW.
+        // Pins that the normaliser does not reverse over-eagerly.
+        let ccw_points = vec![[0.0, 0.0], [0.03, 0.0], [0.03, 0.05], [0.0, 0.05]];
+        assert!(
+            reify_solver_elastic::ring_signed_area_2d(&ccw_points) > 0.0,
+            "fixture precondition: the input ring must be counter-clockwise"
+        );
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: ccw_points.clone(),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer, ccw_points,
+            "an already-CCW ring must pass through byte-identical, not be reversed"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_negative_width_rectangle_is_normalised_ccw() {
+        // A negative width is reachable: `profile_rectangle` (geometry_ops.rs)
+        // forwards `width` unchecked, and the rectangle sampler's corner order
+        // is CCW only for positive extents — at width < 0 the same corner order
+        // traverses clockwise. Normalisation must be total over the sampler
+        // arms, not polygon-only.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(-0.03),
+            height: Value::length(0.05),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed extrude must produce a ProfileBoundary");
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
+        assert!(
+            area > 0.0,
+            "a negative-width rectangle samples clockwise and must be normalised \
+             to CCW (positive signed area); got {area}"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_negative_semi_minor_ellipse_is_normalised_ccw() {
+        // Exactly as reachable as the negative-width rectangle above:
+        // `profile_ellipse` (geometry_ops.rs) applies no positivity check
+        // either. With semi_minor < 0 the ring is [a·cos θ, b·sin θ] with b
+        // negative, i.e. the θ=0..τ traversal runs clockwise. Pins that
+        // normalisation is total over ALL FOUR sampler arms, not just the two
+        // (polygon, rectangle) that were previously covered.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(0.05),
+            semi_minor: Value::length(-0.02),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
+        let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
+        assert!(
+            area > 1e-14,
+            "a negative semi-minor axis samples clockwise and must be normalised to \
+             CCW, clearing validate_boundary's 1e-14 floor; got signed area {area}"
+        );
+    }
+
+    // ── Amendment: curved profiles are sampled by arc length ────────────────
+    // `auto_mesh_size_from_boundary` (mesher.rs) takes the SHORTEST chord in
+    // the ring as the target mesh size, so a sampler that emits wildly uneven
+    // chords makes element count scale with the profile's aspect ratio. These
+    // pin that `sample_ellipse_ring` spaces points by arc length, which keeps
+    // every chord ≈ perimeter/N regardless of aspect ratio.
+
+    /// Consecutive-chord lengths of a closed ring, including the wrap-around
+    /// segment — the same set of segments `auto_mesh_size_from_boundary`
+    /// minimises over.
+    fn closed_ring_chords(ring: &[[f64; 2]]) -> Vec<f64> {
+        (0..ring.len())
+            .map(|i| {
+                let p = ring[i];
+                let q = ring[(i + 1) % ring.len()];
+                ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_high_aspect_ellipse_chords_are_near_uniform() {
+        // 100:1 ellipse. Measured on this fixture, uniform-θ sampling gives
+        // min chord 2.457e-4 / max 4.901e-3 — a max/min ratio of 19.95, which
+        // handed auto_mesh_size_from_boundary a mesh size set by the tip while
+        // the domain spans the major axis. (The ratio saturates near 2N/τ ≈
+        // 20.4 rather than tracking a/b all the way up, because past an aspect
+        // of ≈ 2N/τ the shortest chord is limited by the major-axis sagitta
+        // a·(τ/N)²/2 rather than by b·τ/N.) Arc-length spacing measures
+        // min 3.119e-3 / max 3.126e-3 — ratio 1.0024.
+        let (a, b) = (0.05, 0.0005);
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(a),
+            semi_minor: Value::length(b),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
+        let chords = closed_ring_chords(&boundary.outer);
+        let min = chords.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = chords.iter().copied().fold(0.0_f64, f64::max);
+        assert!(
+            min > 0.0,
+            "no chord may be zero-length (that would zero the derived mesh size)"
+        );
+        // Bound sits an order of magnitude clear on both sides — measured
+        // 1.0024 here, 19.95 under uniform θ — so it fails loudly on a
+        // regression to uniform θ without being brittle about trapezoid /
+        // linear-interpolation residue.
+        let ratio = max / min;
+        assert!(
+            ratio < 2.0,
+            "a {aspect:.0}:1 ellipse must be sampled by arc length so chords stay \
+             near-uniform (uniform-θ sampling measures ≈19.95 on this fixture); \
+             got max/min = {ratio}",
+            aspect = a / b
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_circle_chords_are_uniform() {
+        // The circle path keeps the closed form (uniform θ IS uniform arc
+        // length when a == b); this pins that the arc-length rework did not
+        // perturb it.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::CircleProfile {
+            radius: Value::length(0.03),
+        });
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a CircleProfile-backed extrude must produce a ProfileBoundary");
+        let chords = closed_ring_chords(&boundary.outer);
+        let min = chords.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = chords.iter().copied().fold(0.0_f64, f64::max);
+        assert!(
+            max - min < 1e-15,
+            "a circle's chords must all be equal up to f64 trig rounding; got \
+             min={min}, max={max}"
+        );
+    }
+
+    // ── Amendment: normalisation must not mask degeneracy ───────────────────
+    // `normalise_ccw` compares strictly `< 0.0` precisely so a zero-area ring
+    // passes through untouched and is rejected by the consumer's
+    // DegenerateBoundary guard. That claim was documented but never exercised
+    // through the producer, so nothing pinned that the producer leaves a
+    // degenerate ring alone on its way to the mesher. Both cases short-circuit
+    // in `validate_boundary`, before any Gmsh call, so they are deterministic
+    // in libgmsh and stub builds alike — and both must be DegenerateBoundary,
+    // NOT EmptyBoundary (the producer DID resolve and sample a profile).
+
+    #[test]
+    fn build_swept_2d_mesh_zero_width_rectangle_is_degenerate_boundary() {
+        // width = 0 ⇒ all four corners collapse onto x = ±0.0, so the shoelace
+        // area is exactly 0.0 (every cross term has a ±0.0 factor). `< 0.0` is
+        // false at 0.0, so the ring is not reversed; `|0.0| < 1e-14` is true,
+        // so the consumer rejects it as degenerate.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.0),
+            height: Value::length(0.05),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::DegenerateBoundary)
+            ),
+            "a zero-width rectangle must reach the consumer and be rejected as \
+             DegenerateBoundary (not EmptyBoundary, and not silently reversed); got {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_collinear_polygon_is_degenerate_boundary() {
+        let collinear = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
+        assert_eq!(
+            reify_solver_elastic::ring_signed_area_2d(&collinear),
+            0.0,
+            "fixture precondition: a collinear ring has exactly zero signed area"
+        );
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: collinear.clone(),
+        });
+        // The producer passes the degenerate ring through verbatim — it neither
+        // reverses it (0.0 is not < 0.0) nor perturbs it — so degeneracy is
+        // still visible to the consumer.
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer, collinear,
+            "a zero-area ring must pass through the winding normaliser untouched"
+        );
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::DegenerateBoundary)
+            ),
+            "a collinear polygon profile must be rejected as DegenerateBoundary \
+             (not EmptyBoundary); got {result:?}"
+        );
+    }
+
+    // ── Task 5218 step-9: build_swept_2d_mesh error/forward contract ────────
+    // build_swept_2d_mesh = producer → mesh_swept_profile_2d. When the producer
+    // fails (unresolvable handle / non-profile op / non-finite extent) it
+    // short-circuits to Err(ProfileUnresolvable(reason)) before any Gmsh call —
+    // deliberately NOT EmptyBoundary, which would misreport "no boundary could
+    // be produced" as "a boundary was produced and its outer ring was empty".
+    // A valid boundary validates and is forwarded (Ok in a libgmsh build,
+    // Err(GmshUnavailable) in a stub build). Mesh2dError has no PartialEq →
+    // assert via matches!(&result, …).
+
+    #[test]
+    fn build_swept_2d_mesh_unresolvable_profile_is_profile_unresolvable() {
+        // Profile handle 99 is absent from `handles` → producer
+        // Err(UnresolvableHandle) → Err(ProfileUnresolvable), deterministic in
+        // libgmsh and stub builds alike.
+        let (ops, handles, _) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+        });
+        // The one varied field: a profile handle absent from `handles`.
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(FIXTURE_EXTRUDE_DISTANCE),
+            profile: GeometryHandleId(99),
+        };
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(reason))
+                    if reason == &ProfileResolveError::UnresolvableHandle.to_string()
+            ),
+            "an unresolvable profile handle must short-circuit to \
+             Err(ProfileUnresolvable) carrying the UnresolvableHandle reason — never \
+             EmptyBoundary, which claims a boundary was produced; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_non_profile_op_is_profile_unresolvable() {
+        // Profile handle resolves to a Box (non-profile op) → producer
+        // Err(NotAProfileOp) → Err(ProfileUnresolvable), before any Gmsh call.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+            depth: Value::length(0.03),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(reason))
+                    if reason == &ProfileResolveError::NotAProfileOp.to_string()
+            ),
+            "a non-profile source op must short-circuit to Err(ProfileUnresolvable) \
+             carrying the NotAProfileOp reason; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_valid_rectangle_forwards_past_validation() {
+        // A valid RectangleProfile extrude: the producer builds a
+        // non-degenerate boundary that validates and is forwarded to
+        // mesh_swept_profile_2d. The outcome is Ok in a libgmsh build and
+        // Err(GmshUnavailable) in a stub build — but NEVER
+        // ProfileUnresolvable (the producer DID resolve and sample a profile)
+        // and never EmptyBoundary/DegenerateBoundary. Asserted gmsh-agnostically
+        // so it is deterministic in both build configs.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(0.02),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            !matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+                    | Err(reify_solver_elastic::Mesh2dError::DegenerateBoundary)
+                    | Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(_))
+            ),
+            "a valid rectangle extrude must validate and forward to mesh_swept_profile_2d \
+             (Ok in libgmsh, Err(GmshUnavailable) in stub) — never \
+             ProfileUnresolvable/EmptyBoundary/DegenerateBoundary; got {result:?}"
+        );
+    }
+
+    // ── Amendment: non-finite profile extents are rejected ──────────────────
+    // `profile_rectangle` / `profile_circle` / `profile_ellipse`
+    // (geometry_ops.rs) apply no finiteness check and `Value::as_f64` returns
+    // Some(NaN) for a NaN Scalar, so a NaN extent CAN reach the sampler. It
+    // must not reach Gmsh: an all-NaN ring is invisible to `normalise_ccw`
+    // (NaN < 0.0 is false) AND to the consumer's degeneracy guard
+    // (NaN.abs() < 1e-14 is false), so it would otherwise validate and be
+    // meshed. The sampler is therefore the party that rejects it.
+
+    #[test]
+    fn swept_kind_to_profile_boundary_nan_rectangle_width_is_rejected() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(f64::NAN),
+            height: Value::length(0.02),
+        });
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
+            "a NaN rectangle width must be rejected by the sampler, not forwarded as an all-NaN ring"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_infinite_rectangle_height_is_rejected() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(0.04),
+            height: Value::length(f64::INFINITY),
+        });
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
+            "an infinite rectangle height must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_nan_circle_radius_is_rejected() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::CircleProfile {
+            radius: Value::length(f64::NAN),
+        });
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
+            "a NaN circle radius must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_nan_ellipse_semi_minor_is_rejected() {
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::EllipseProfile {
+            semi_major: Value::length(0.05),
+            semi_minor: Value::length(f64::NAN),
+        });
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
+            "a NaN ellipse semi-minor axis must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_non_finite_polygon_point_is_rejected() {
+        // PolygonProfile points are pre-checked upstream by
+        // `eval_all_args_to_f64`, but the sampler re-checks so the
+        // "no non-finite coordinate leaves this function" postcondition holds
+        // for every arm rather than depending on each caller.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
+            points: vec![
+                [0.0, 0.0],
+                [0.03, 0.0],
+                [0.03, f64::NEG_INFINITY],
+                [0.0, 0.05],
+            ],
+        });
+        assert_eq!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
+            Some(ProfileResolveError::NonFiniteExtent),
+            "a non-finite polygon vertex coordinate must be rejected by the sampler"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_nan_rectangle_width_is_profile_unresolvable() {
+        // End-to-end shape of the rejection: the sampler's NonFiniteExtent is
+        // reported as Err(ProfileUnresolvable) — matching the existing
+        // "unresolvable profile" rejection — and short-circuits before any Gmsh
+        // call, so this is deterministic in libgmsh and stub builds alike.
+        let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
+            width: Value::length(f64::NAN),
+            height: Value::length(0.02),
+        });
+        let result = build_fixture_mesh(&kind, &ops, &handles);
+        assert!(
+            matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::ProfileUnresolvable(reason))
+                    if reason == &ProfileResolveError::NonFiniteExtent.to_string()
+            ),
+            "a NaN profile extent must short-circuit to Err(ProfileUnresolvable) \
+             carrying the NonFiniteExtent reason before Gmsh; got {result:?}"
         );
     }
 }

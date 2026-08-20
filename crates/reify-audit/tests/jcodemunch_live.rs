@@ -29,6 +29,8 @@
 //! always run as part of standard `cargo test` and catch compile-time drift
 //! in the wire shape.
 
+mod common;
+
 // -----------------------------------------------------------------------
 // Finding-shape predicates (pure; no serve needed)
 // -----------------------------------------------------------------------
@@ -353,21 +355,33 @@ fn live_audit_produces_p1_and_pdead_findings() {
 #[cfg(test)]
 mod serve_preflight {
     use super::*;
-    use std::net::TcpListener;
 
-    /// A freed port (bind → record → drop listener) must be reported as
-    /// unreachable.  This mirrors cli.rs's `closed_port_url` idiom and
-    /// exercises the TCP-connect gate the `#[ignore]` capstone uses to
-    /// skip cleanly when jcodemunch-serve is not running.
+    /// The endpoint the preflight gate probes must be unreachable BY
+    /// CONSTRUCTION — not merely unowned at the instant its URL was minted.
+    ///
+    /// A freed port is only unowned: anything that binds an ephemeral port in
+    /// the meantime can be handed that exact port, at which point the gate
+    /// reports "serve is up" and the `#[ignore]` capstone stops skipping
+    /// cleanly. This test collapses that race into a deterministic single
+    /// shot by binding the exact `host:port` the URL names and holding it
+    /// across the probe.
+    ///
+    /// This is not redundant with cli.rs's regression locks: those go through
+    /// ureq/HTTP inside the child binary, whereas `jcodemunch_serve_reachable`
+    /// is a bare `TcpStream::connect_timeout`, so a mere listener — no HTTP
+    /// responder needed — is enough to defeat it.
     #[test]
-    fn closed_port_is_not_reachable() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local_addr").port();
-        drop(listener); // port is now freed
-        let url = format!("http://127.0.0.1:{port}/mcp");
+    fn unreachable_sentinel_is_not_reachable_under_a_racing_binder() {
+        let url = common::net::unreachable_mcp_url();
+        // Play the adversary: occupy the exact address the URL names. Binding
+        // `_hijack` (not `_`) keeps any listener that DID land alive across
+        // the assertion below.
+        let (addr, _hijack) = common::net::try_hijack_url(&url);
+
         assert!(
             !jcodemunch_serve_reachable(&url),
-            "freed port {port} must not be reported as reachable"
+            "{url} must not be reported as reachable even while a racing \
+             binder holds {addr}"
         );
     }
 }

@@ -1,0 +1,33 @@
+// Task 5003 (ε) — PRD docs/prds/v0_3/voxel-to-mesh-surfacing.md task ε:
+// user-facing example of a NON-DEFAULT `iso:` on the `isosurface(...)`
+// builtin (options-threading proof, guards the C-10
+// "declared-but-unexercised" shape).
+//
+// Fixture for iso_example_fixture_surfaces_nonempty in
+// crates/reify-eval/tests/isosurface_iso_option_e2e.rs.
+//
+// Geometry:
+//   solid = box(size, size, size) — a closed 20mm BRep cube, the operand.
+//   shell = isosurface(solid, iso: 3mm) — voxelizes `solid` (Mesh→Voxel on
+//   OpenVDB) and surfaces an offset shell at iso=3mm (0.003m) via marching
+//   cubes (Voxel→Mesh on OpenVDB). 3mm lies within the ~0.01m narrow band of
+//   a 20mm box (narrow_band * h >= longest_extent/2,
+//   crates/reify-kernel-openvdb/src/kernel_real.rs:623-628), so this is a
+//   valid non-empty offset surface — distinct from the default iso=0mm
+//   surface in examples/multi_kernel/voxel_to_mesh.ri.
+//
+// Named bindings are required: a named `param` gives entity
+// "VoxelToMeshIso" a value-cell entry (required by the eval-state graph),
+// and named `let` bindings let `compute_demanded_reprs` resolve the
+// sub-ref (`GeomRef::Sub`) for Voxel demand-seeding — same convention as
+// examples/multi_kernel/voxel_to_mesh.ri.
+//
+// Entity name: VoxelToMeshIso
+// Terminal realization let: shell (highest realization index)
+
+structure VoxelToMeshIso {
+    param size : Length = 20mm
+
+    let solid = box(size, size, size)
+    let shell = isosurface(solid, iso: 3mm)
+}

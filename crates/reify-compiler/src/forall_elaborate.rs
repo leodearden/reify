@@ -517,13 +517,10 @@ pub(crate) fn elaborate_forall_constraint(
                     .iter()
                     .map(|(n, e)| (n.clone(), substitute_expr(e, &bindings)))
                     .collect();
-                let substituted_wc = ci
-                    .where_clause
-                    .as_ref()
-                    .map(|wc| reify_ast::WhereClause {
-                        condition: substitute_expr(&wc.condition, &bindings),
-                        span: wc.span,
-                    });
+                let substituted_wc = ci.where_clause.as_ref().map(|wc| reify_ast::WhereClause {
+                    condition: substitute_expr(&wc.condition, &bindings),
+                    span: wc.span,
+                });
                 let substituted_ci = reify_ast::ConstraintInstDecl {
                     name: ci.name.clone(),
                     args: substituted_args,

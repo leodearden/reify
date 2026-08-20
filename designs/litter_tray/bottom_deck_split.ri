@@ -1,0 +1,165 @@
+module bottom_deck_split
+
+// Two-deck cat litter tray — BOTTOM DECK, two-part split (v1).
+//
+// Joint decisions (2026-07-14, with Leo): shiplap-family + adhesive (PU/epoxy
+// + sealant; PETG solvent-welds poorly) with M3 heat-set inserts for the
+// clamping screws. Print constraint: each half prints floor-down with zero
+// supports, and NOTHING may protrude below the floor plane.
+//
+// Chosen geometry — "pinwheel scarf", IDENTICAL halves:
+//   - The floor seam is a 45° scarf (no down-facing horizontal surfaces on
+//     either half — a classic shiplap top leaf would be a 14mm bridge).
+//   - The scarf direction flips at y=0, so a half mates with a copy of
+//     itself rotated 180° about Z: print the same part twice.
+//   - y>0: this half keeps the BOTTOM wedge (up-facing 45° ramp, prints clean);
+//     y<0: keeps the TOP wedge (45° underside — exactly at the printable limit).
+//   - Walls/rim/ledge butt at the seam plane (seam_gap glue gap), aligned and
+//     clamped by one full-height exterior tab per side: the +y tab (with a
+//     screw clearance hole) lands in the mate's -y registration recess and a
+//     screw drives into an M3 heat-set insert in the mate's lower wall.
+//     Screws: M3 x 8 button head. Adhesive on scarf + butts; sealant bead
+//     smoothed along the interior seam as the secondary liquid barrier.
+//
+// Print check per half: footprint x -18..+240 (258mm), y 263mm incl. proud
+// tab (constraints below pin both against the 265mm U1 envelope).
+
+structure def BottomDeckHalf : Rigid {
+    // ── Shared tray envelope (matches bottom_deck.ri) ───────────────────
+    param outer_length  : Length = 480mm
+    param outer_width   : Length = 260mm
+    param wall_height   : Length = 80mm
+    param corner_radius : Length = 25mm
+    param upper_wall    : Length = 2.4mm
+    param ledge_width   : Length = 5mm
+    param recess_depth  : Length = 15mm
+    param floor_thickness : Length = 4mm
+    param edge_fillet   : Length = 2mm
+    param floor_fillet  : Length = 5mm
+    param ledge_fillet  : Length = 2mm
+
+    // ── Seam / joint ────────────────────────────────────────────────────
+    param seam_gap    : Length = 0.2mm     // glue gap at butt faces
+    param tab_len     : Length = 36mm      // screw tab, centred on the seam
+    param tab_t       : Length = 2.5mm     // tab plate thickness
+    param tab_h       : Length = 50mm      // tab height (stays below the ledge)
+    param recess_d    : Length = 1mm       // registration recess in mate's wall
+    param screw_x     : Length = 9mm       // hole at -screw_x, insert at +screw_x
+    param screw_z     : Length = 35mm      // screw axis height (lower wall zone)
+    param screw_clear_r : Length = 1.7mm   // M3 clearance
+    param insert_r    : Length = 2.0mm     // M3 short heat-set insert, Ø4.0
+    param insert_depth : Length = 4mm    // insert pocket depth
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // ── Derived ─────────────────────────────────────────────────────────
+    let lower_wall = upper_wall + ledge_width
+    let ledge_z    = wall_height - recess_depth
+    let inner_length = outer_length - 2 * lower_wall
+    let inner_width  = outer_width  - 2 * lower_wall
+    let rec_length = outer_length - 2 * upper_wall
+    let rec_width  = outer_width  - 2 * upper_wall
+    let strip_half = floor_thickness / 2            // scarf strip x ∈ [-2, +2]
+
+    // ── Printability & joint sanity ─────────────────────────────────────
+    let bed_limit = 265mm
+    constraint outer_length / 2 + tab_len / 2 <= bed_limit
+    constraint outer_width + 2 * (tab_t - recess_d) <= bed_limit
+    constraint tab_h < ledge_z                       // tab stays off the ledge
+    constraint screw_z + 5mm < tab_h
+    constraint insert_depth + 2mm <= lower_wall - recess_d
+    constraint 2 * insert_r < lower_wall             // insert fits the wall
+    constraint screw_x + 3mm < tab_len / 2           // hole inside the tab
+    constraint seam_gap < 1mm
+
+    // ── Geometry ────────────────────────────────────────────────────────
+    let cx = outer_length / 2 - corner_radius
+    let cy = outer_width / 2 - corner_radius
+    let rec_r = corner_radius - upper_wall
+    let rec_h = recess_depth + 20mm
+    let main_r = corner_radius - lower_wall
+
+    // Scarf cutter placement (45°-rotated boxes intersected with the strip;
+    // face algebra in the session log): ramp planes z = x + strip_half (y>0)
+    // and z = strip_half - x (y<0).
+    let scw = outer_width / 2 + 10mm                 // cutter y reach
+    let half_w = outer_width / 2
+
+    // Full tray (same construction as bottom_deck.ri) inlined, then:
+    // trim to the half + scarf the floor seam → union the tab → cut the
+    // recess and screw features. Tab must be unioned AFTER the seam trims.
+    param geometry : Solid = difference(difference(union_all(
+        difference(difference(difference(difference(
+            // full tray
+            difference(
+                difference(
+                    fillet(union_all(
+                        translate(box(outer_length - 2 * corner_radius, outer_width, wall_height), 0mm, 0mm, wall_height / 2),
+                        translate(box(outer_length, outer_width - 2 * corner_radius, wall_height), 0mm, 0mm, wall_height / 2),
+                        translate(cylinder(corner_radius, wall_height), cx, cy, 0mm),
+                        translate(cylinder(corner_radius, wall_height), -cx, cy, 0mm),
+                        translate(cylinder(corner_radius, wall_height), -cx, -cy, 0mm),
+                        translate(cylinder(corner_radius, wall_height), cx, -cy, 0mm)
+                    ), edge_fillet),
+                    fillet(union_all(
+                        translate(box(rec_length - 2 * rec_r, rec_width, rec_h), 0mm, 0mm, ledge_z + rec_h / 2),
+                        translate(box(rec_length, rec_width - 2 * rec_r, rec_h), 0mm, 0mm, ledge_z + rec_h / 2),
+                        translate(cylinder(rec_r, rec_h), cx, cy, ledge_z),
+                        translate(cylinder(rec_r, rec_h), -cx, cy, ledge_z),
+                        translate(cylinder(rec_r, rec_h), -cx, -cy, ledge_z),
+                        translate(cylinder(rec_r, rec_h), cx, -cy, ledge_z)
+                    ), ledge_fillet)
+                ),
+                fillet(union_all(
+                    translate(box(inner_length - 2 * main_r, inner_width, wall_height), 0mm, 0mm, floor_thickness + wall_height / 2),
+                    translate(box(inner_length, inner_width - 2 * main_r, wall_height), 0mm, 0mm, floor_thickness + wall_height / 2),
+                    translate(cylinder(main_r, wall_height), cx, cy, floor_thickness),
+                    translate(cylinder(main_r, wall_height), -cx, cy, floor_thickness),
+                    translate(cylinder(main_r, wall_height), -cx, -cy, floor_thickness),
+                    translate(cylinder(main_r, wall_height), cx, -cy, floor_thickness)
+                ), floor_fillet)
+            ),
+            // cut everything past the scarf strip
+            translate(box(outer_length, outer_width + 40mm, 4 * wall_height), -strip_half - outer_length / 2, 0mm, 0mm)
+        ),
+            // trim walls/rim back to the seam plane (above the floor)
+            translate(box(outer_length, outer_width + 40mm, 2 * wall_height), seam_gap / 2 - outer_length / 2, 0mm, floor_thickness + wall_height)
+        ),
+            // scarf, y>0: remove TOP wedge (keep bottom wedge, ramp z = x + strip_half)
+            intersection(
+                translate(box(2 * strip_half, scw, 3 * floor_thickness), 0mm, scw / 2, floor_thickness - 1.5 * floor_thickness),
+                translate(rotate(box(40mm, scw, 40mm), 0, 1, 0, 45deg), -6mm, scw / 2, strip_half - 6mm + 28.284mm)
+            )
+        ),
+            // scarf, y<0: remove BOTTOM wedge (keep top wedge, ramp z = strip_half - x)
+            intersection(
+                translate(box(2 * strip_half, scw, 3 * floor_thickness), 0mm, -scw / 2, floor_thickness - 1.5 * floor_thickness),
+                translate(rotate(box(40mm, scw, 40mm), 0, 1, 0, 45deg), -16mm, -scw / 2, -26.284mm + 16mm)
+            )
+        ),
+        // screw tab: full height so it prints from the bed; proud by
+        // tab_t - recess_d once the mate's recess swallows recess_d of it
+        translate(box(tab_len, tab_t, tab_h), 0mm, half_w - recess_d + tab_t / 2, tab_h / 2)
+    ),
+        // -y registration recess (receives the mate's tab)
+        translate(box(tab_len + 0.4mm, 2 * recess_d, tab_h + 0.4mm), 0mm, -half_w, tab_h / 2 + 0.2mm)
+    ),
+        union_all(
+            // tab through-hole (M3 clearance, axis -Y, over the mate's body)
+            translate(rotate(cylinder(screw_clear_r, 40mm), 1, 0, 0, 90deg), -screw_x, half_w + 10mm, screw_z),
+            // heat-set insert pocket in own -y lower wall (axis +Y)
+            translate(rotate(cylinder(insert_r, insert_depth + 0.5mm), 1, 0, 0, -90deg), screw_x, recess_d - half_w - 0.1mm, screw_z)
+        )
+    )
+}
+
+// Exploded assembly: two IDENTICAL halves, the second rotated 180° about Z.
+// Set explode = 0mm to check the mated state.
+structure def BottomDeckSplit {
+    param explode : Length = 40mm
+
+    sub half_a : BottomDeckHalf at transform3(orient_identity(), vec3(explode / 2, 0mm, 0mm))
+    sub half_b : BottomDeckHalf at transform3(orient_axis_angle(vec3(0, 0, 1), 3.141592653589793rad), vec3(0mm - explode / 2, 0mm, 0mm))
+
+    constraint explode >= 0mm
+}

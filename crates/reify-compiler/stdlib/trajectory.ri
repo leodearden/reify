@@ -22,7 +22,7 @@
 //   - structure def JointLimit          (per-joint actuator constraint, PRD §5.2)
 //   - structure def TOTSShaper : Shaper  (time-optimal trajectory shaper, PRD §5.2)
 //   - type Pose3 = Transform3           (rigid-pose alias, task 4577; PRD §6.2)
-//   - type Vec3 / LocationId            (Vec3=Real placeholder; LocationId=Real→Selector, task 4577)
+//   - type Vec3 / LocationId            (Vec3=Vector3<Q> per #4794; LocationId=FaceSelector, resolved #4655)
 //   - structure def EndEffectorTrack    (forward-pass simulator output, η; PRD §6.2)
 //   - fn end_effector_track / deviation_from_nominal / peak_deviation
 //                                       (lazy accessors over EndEffectorTrack, η; PRD §6.2)
@@ -53,15 +53,14 @@
 //      translation), making Pose3 nominally distinct from `Real` (task 4577).
 //      `Vec3` is `Vector3<Length>` (tightened by task #4575, per
 //      affine-map-type.md §4.2), also nominally distinct from Real/Pose3.
-//      `LocationId` REMAINS a `Real` index: routing it to the topology-
-//      `Selector` substrate was deliberately split out of task 4577 because the
-//      trajectory accessors run on the VALUE-EVAL path, where a `Value::Selector`
-//      cannot be constructed (selector construction is a build/realization-path
-//      capability) — a Selector-typed LocationId would evaluate to Undef there.
-//      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct
-//      from Real) while LocationId stays Real pending eval-path selector
-//      construction + runtime resolution (task 4122). See the location-id-type
-//      retarget marker (#4122) at the LocationId alias below.
+//      `LocationId` is now a `FaceSelector` (resolved #4655 / R3c): routing it
+//      to the topology-`Selector` substrate was deliberately split out of task
+//      4577 because the trajectory accessors run on the VALUE-EVAL path, where a
+//      `Value::Selector` could not yet be constructed — both blockers are now
+//      lifted: R2b (4653) mints `Value::Selector` kernel-free on the value-eval
+//      path; R3b (4122) + R3c (4655) supply the runtime resolution in reify-stdlib.
+//      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct from
+//      Real) and LocationId now carries its semantically correct type.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -80,7 +79,8 @@ pub type JointValue = Real
 // Pose3: 3-D rigid-body pose (position + orientation) at a single location
 // and time instant. Aliased to the core `Transform3` rigid-transform type
 // (rotation + translation) — task 4577. `Type::Transform(3)` is the
-// landed rigid-pose substrate (crates/reify-core/src/ty.rs:305/462).
+// landed rigid-pose substrate (the `Type::Transform(n)` variant and its
+// `Type::transform` shorthand in crates/reify-core/src/ty.rs).
 // Aliasing to Transform3 (rather than a distinct struct) makes the round-trip
 // identity-sound: a function expecting Transform3 accepts a Pose3 arg and
 // vice versa, while Pose3 stays nominally distinct from LocationId
@@ -93,34 +93,45 @@ pub type Pose3 = Transform3
 
 // Vec3<Q>: parametric 3-D Euclidean vector over any Dimension Q.
 // Generalised from the monomorphic `Vec3 = Vector3<Length>` by task #4794.
-// Vec3<Length> is the canonical concrete form for trajectory and kinematic
-// axis parameters (dimension is observationally irrelevant for normalized
-// directions, but a concrete Dimension is required syntactically).
-// Per affine-map-type.md §4.2 and the established stdlib convention:
-//   fdm.ri `build_direction : Vec3<Length>`,
-//   ports.ri Frame3 members : Vec3<Length>.
+//
+// RULING (task 5848) — which Q a stdlib field takes is decided by what the
+// field DENOTES, not by what its neighbours spell:
+//   - a DIRECTION (joint axis, frame axis, build direction) takes a
+//     DIMENSIONLESS slot: a unit vector is genuinely dimensionless.
+//   - a POSITION or DISPLACEMENT takes Length.
+// This retired the former guidance here, which claimed a concrete Dimension
+// was "required syntactically" and named fdm.ri's `build_direction` and
+// ports.ri's Frame3 members as the convention to copy. `build_direction` was
+// mis-typed outright and is now dimensionless. Frame3 was mis-typed only in
+// part, and is the clearest illustration of the rule: its three axes moved to
+// the dimensionless slot while `origin` KEEPS Length, because a position is
+// not a direction. Copying a neighbour's spelling is what produced both bugs.
+//
+// Two anchors make the ruling checkable rather than advisory:
+// `validate_dimensionless_unit_axis_vec3` (reify-stdlib/src/helpers.rs), the
+// evaluator guard that already REJECTED a dimensioned joint axis, and the
+// landed `ModalOptions.reference_direction : Vector3<Dimensionless>`
+// (modal_analysis.ri).
+//
 // Vec3<Pressure> (and other non-Length instantiations) exercises the full
 // parametric path — previously this was an arity error on the old 0-param alias.
 pub type Vec3<Q: Dimension> = Vector3<Q>
 
 // LocationId: identifier for a monitoring location on a mechanism link
-// (indexes into the per-location inner lists on EndEffectorTrack). Aliased to
-// `Real` — a numeric index into the accessor's per-location lists.
+// (addresses into the per-location inner lists on EndEffectorTrack). Aliased
+// to `FaceSelector` — a topology selector produced by `faces_by_normal(box,
+// dir, tol)` on the value-eval path (kernel-free via R2a/R2b).
 //
-// Routing LocationId to the topology-`Selector` substrate (task 4116) was
-// deliberately SPLIT OUT of task 4577: the trajectory accessors
-// (`end_effector_track`/`deviation_from_nominal`/`peak_deviation`) run on the
-// VALUE-EVAL path, where a `Value::Selector` cannot be constructed (selector
-// construction is a build/realization-path capability), so a Selector-typed
-// `LocationId` would evaluate to Undef there — not a graceful index. The
-// modal-force `at : Selector` migration WAS kept (those are consumed on the
-// build/solve path); only this value-eval accessor location stays Real.
-//
-// TODO(location-id-type, #4122): retarget to the topology-`Selector` substrate
-// once kernel-free selector construction is available on the value-eval path
-// and runtime selector→mesh-node resolution lands (task 4122). Until then a
-// `Real` index is the correct value-eval-constructable placeholder.
-pub type LocationId = Real
+// Resolved (#4655): routing LocationId to the topology-`Selector` substrate was
+// deliberately SPLIT OUT of task 4577: the trajectory accessors run on the
+// VALUE-EVAL path, where a `Value::Selector` could not yet be constructed. Both
+// blockers are now lifted — R2b (4653) mints `Value::Selector` kernel-free on
+// the value-eval path; R3c (this task, 4655) supplies the self-contained runtime
+// resolution in reify-stdlib (Value::Selector → primary end-effector index 0;
+// Value::Undef location → propagates Undef loudly). The modal-force
+// `at : Selector` migration (task 3823/4122) uses the carried-topology resolver
+// for a different consumer; LocationId uses a simpler self-contained resolution.
+pub type LocationId = FaceSelector
 
 // ── Marker traits ─────────────────────────────────────────────────────────
 
@@ -287,7 +298,8 @@ structure def PiecewisePolynomialProfile : Profile {
     // production code rather than relying solely on test coverage (task
     // 2544 convention; same shape `BucklingOptions.n_modes > 0` uses in
     // `solver_buckling.ri`). The `.count` method on `List` is recognised
-    // in constraint position (`reify-expr/src/lib.rs:1349` evaluator arm;
+    // in constraint position (the `"count"` arm of `eval_method_call` in
+    // `crates/reify-expr/src/lib.rs`;
     // precedent: `constraint vents.count == n` in
     // `forall_statement_lower_tests.rs`).
     //
@@ -357,7 +369,7 @@ structure def EndEffectorTrack {
 //
 // These four functions delegate to undeclared `*_at` intrinsics via the same
 // delegate-to-undeclared-name pattern used by `gcode_import` → `gcode_import_lower`
-// (trajectory.ri:820) and `input_shape` → `input_shape_apply` (trajectory.ri:895).
+// and `input_shape` → `input_shape_apply` (both declared below in this file).
 //
 // Dispatch path for, e.g., `evaluate_profile(p, t)`:
 //   1. The `.ri` declaration shadows the same-named `eval_builtin` entry
@@ -422,10 +434,11 @@ pub fn profile_duration(p: Profile) -> Time { profile_duration_at(p) }
 // named location from an EndEffectorTrack (PRD §6.2).
 //
 // `track : EndEffectorTrack` — the simulator output record.
-// `location : LocationId`    — the location index (LocationId = Real alias)
-//                              selecting the inner slice at each time step.
-//                              (Selector routing deferred out of task 4577 —
-//                              see the LocationId alias note + task 4122.)
+// `location : LocationId`    — the monitoring location (LocationId = FaceSelector,
+//                              resolved #4655): a kernel-free selector from
+//                              `faces_by_normal(box, dir, tol)` that resolves
+//                              at the trampoline layer to the sole end-effector
+//                              monitoring index (index 0).
 //
 // Returns `List<Pose3>` (= List<Transform3> via the Pose3 alias) — one pose per
 // time sample in `track.t_samples` (the combined_pose Z column at `location`).
@@ -436,7 +449,7 @@ pub fn end_effector_track(track: EndEffectorTrack, location: LocationId) -> List
 
 // deviation_from_nominal — compute the per-time-sample Euclidean distance
 // between combined_pose and nominal_pose at a single named location
-// (PRD §6.2).
+// (PRD §6.2). `location : LocationId` is a FaceSelector (resolved #4655).
 //
 // Returns `List<Length>` — one Length scalar per time sample in
 // `track.t_samples` (the per-time `|combined − nominal|` at `location`, which
@@ -448,14 +461,15 @@ pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> 
 
 // peak_deviation — compute the maximum Euclidean deviation from nominal
 // across all time samples at a single named location (PRD §6.2).
+// `location : LocationId` is a FaceSelector (resolved #4655).
 //
 // Returns a scalar `Length` — the single peak value over all time samples
 // (contrast with `deviation_from_nominal` which returns one value per time
 // sample as a `List<Length>`).
 //
-// Body delegates to the `peak_deviation_at` intrinsic (task π), which maxes the
-// `deviation_from_nominal_at` series (0 for an out-of-range location / malformed
-// track); see the section header above for the delegate dispatch path.
+// Body delegates to the `peak_deviation_at` intrinsic (task π); a
+// Value::Undef location propagates Undef loudly (anti-silent-Undef per PRD);
+// see the section header above for the delegate dispatch path.
 pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length { peak_deviation_at(track, location) }
 // ── Shaper marker trait (PRD §5) ──────────────────────────────────────────────
 
@@ -470,8 +484,8 @@ pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length {
 // Kept empty by design: each variant carries its own per-strategy fields;
 // the trait exists only to give the `shaper` param on the `input_shape`
 // dispatcher a single nominal type so the SIR-α nominal type-tag dispatches
-// correctly. Same marker-trait discipline as `trait Profile { }` (:68) and
-// `trait BoundaryCondition { }` (:83).
+// correctly. Same marker-trait discipline as `trait Profile { }` and
+// `trait BoundaryCondition { }` (both declared above in this file).
 trait Shaper { }
 
 // ── JointLimit (PRD §5.2) ─────────────────────────────────────────────────────
@@ -482,7 +496,7 @@ trait Shaper { }
 //   - joint     : Real   — TODO(joint-type): placeholder for the future // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion PRD's Joint type. Same
 //                          encoding as `PiecewisePolynomialProfile.mechanism :
-//                          Real` (:211, TODO(mechanism-type)) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          Real` (its TODO(mechanism-type) note) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion-PRD-owned types that have not
 //                          yet landed. When kinematic-completion lands, both
 //                          retarget via the same refactor sweep.
@@ -546,7 +560,7 @@ structure def JointLimit {
 //                                              the growing-prelude cross-module
 //                                              mechanism (std.modal.analysis
 //                                              loaded before std.trajectory per
-//                                              stdlib_loader.rs:110-116).
+//                                              `stdlib_loader::stdlib_sources`).
 //   - actuator_limits    : List<JointLimit>  — per-joint force limits
 //                                              (JointLimit declared above).
 //   - velocity_limit     : Scalar<Velocity>  — RESOLVED(velocity-scalar): tightened
@@ -579,8 +593,9 @@ structure def TOTSShaper : Shaper {
 
     // tol = 0.000001 = 1e-6 per PRD §5.2. Encoded as the decimal literal
     // because Reify's number-literal grammar has no scientific notation (same
-    // convention as modal_analysis.ri:356 tol = 0.000000001 = 1e-9 and
-    // solver_buckling.ri:79 tol = 0.00000001 = 1e-8). IEEE-754 round-to-
+    // convention as `ModalOptions.tol` = 0.000000001 = 1e-9 in
+    // modal_analysis.ri and `BucklingOptions.tol` = 0.00000001 = 1e-8 in
+    // solver_buckling.ri). IEEE-754 round-to-
     // nearest of this exact decimal literal is deterministic.
     param tol : Real = 0.000001
 
@@ -626,7 +641,7 @@ structure def TOTSShaper : Shaper {
 // ── Impulse shapers (PRD §5.1) ────────────────────────────────────────────────
 //
 // δ task (3857) adds ZVShaper, ZVDShaper, EIShaper, and CascadedShaper — all
-// refining the `trait Shaper { }` marker declared above (:322).
+// refining the `trait Shaper { }` marker declared above.
 // Type/encoding rationale is documented per-structure below; see ZVShaper for
 // the canonical type-decision commentary (Frequency dim, 0Hz constraint, etc.).
 
@@ -653,7 +668,8 @@ structure def TOTSShaper : Shaper {
 //   The constraint RHS MUST be the dimensioned literal `0Hz` → Value::Scalar
 //   {si_value:0.0, dimension:FREQUENCY}; a bare `0` is Type::Real, which is
 //   dim-incompatible with Frequency per the esc-3115 rule documented at
-//   modal_analysis.ri:564-566.
+//   `StepForce.magnitude`'s `constraint magnitude > 0N` note in
+//   modal_analysis.ri.
 structure def ZVShaper : Shaper {
     param target_frequency : Frequency
     param damping_ratio : Real = 0.0
@@ -705,7 +721,7 @@ structure def ZVDShaper : Shaper {
 //                                        (degenerate). Two scalar predicates
 //                                        because Reify's constraint grammar has
 //                                        no interval form — same decomposition
-//                                        as TOTSShaper (:450-451).
+//                                        as `TOTSShaper.vibration_tolerance`.
 //
 // Constraints:
 //   target_frequency > 0Hz     — dimensioned literal (esc-3115 rule).
@@ -730,13 +746,13 @@ structure def EIShaper : Shaper {
 // identity (convolving with nothing = no shaping), so no `shapers.count > 0`
 // constraint is declared. Collection invariants (e.g. non-empty, compatible
 // frequencies) are deferred to the ε consumer, matching the TOTSShaper.modes /
-// actuator_limits discipline (:461-465).
+// actuator_limits discipline (TOTSShaper's "NOT constrained" note above).
 //
 // Fields:
 //   - shapers : List<Shaper>  — the ordered sequence of shapers to cascade.
 //                               Type::List(TraitObject("Shaper")) — same
 //                               encoding as CompositeForce.sources:
-//                               List<ForcingFunction> (modal_analysis.ri:701).
+//                               List<ForcingFunction> (modal_analysis.ri).
 //
 // NOTE — explicitly NOT constrained:
 //   `shapers : List<Shaper>` — an empty cascade is a valid identity (no-op);
@@ -784,7 +800,7 @@ structure def KlipperDialect : GcodeDialect { }
 //
 // `source` is the raw g-code text. `dialect : GcodeDialect` selects the parser
 // (`MarlinDialect` / `KlipperDialect`) via the SIR-α nominal type-tag — the same
-// marker-trait dispatch `evaluate_profile(p: Profile, …)` (:368) uses to accept
+// marker-trait dispatch `evaluate_profile(p: Profile, …)` uses to accept
 // any concrete variant. The result is one `Profile` per contiguous motion
 // segment: non-motion commands (temperature/fan/extruder M-codes,
 // SET_VELOCITY_LIMIT, INPUT_SHAPER) split the motion run, while G92 set-position

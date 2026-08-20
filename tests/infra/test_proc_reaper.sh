@@ -61,6 +61,7 @@ _SENTINEL_SLEEP_SECS="${_SENTINEL_SLEEP_SECS:-600}"
 _POLL_ATTEMPTS=$(load_tolerant_attempts 30)   # reaper_kill_pgroup poll budget
 _POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)  # (legacy; kept for any future callers)
 _POLL_ATTEMPTS_ORPHAN=$(load_tolerant_attempts 20)  # post-SIGKILL orphan-reap budget
+_POLL_ATTEMPTS_PIDFILE=$(load_tolerant_attempts 20)  # pid-file handshake budget (base 20 = historical 6s window)
 
 # ---------------------------------------------------------------------------
 # Zombie-aware "effectively gone" helpers.
@@ -105,6 +106,29 @@ _orphan_ppid_settled() {
     ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ' || echo ""
 }
 
+# _poll_survivor_alive <pid> <n>
+#   Condition-polled proof that <pid> is still alive (task 5148): retries up
+#   to <n> times via the zombie-aware _pid_effectively_gone (tolerating a
+#   transient-empty ps read instead of misreporting it as dead), ticking
+#   load_tolerant_sleep_tick between samples. Returns 0 (alive) on the first
+#   not-gone sample, 1 only once the whole budget is exhausted — still
+#   non-vacuous: a genuinely-dead pid exhausts the poll and returns 1.
+#   Shared by the Part 5 end-to-end survivor check and its Test 5b hermetic
+#   regression lock so BOTH exercise this ONE code path: a reversion to a
+#   single-shot ps sample anywhere in here flips both assertions, rather than
+#   a lock that only guards a duplicated copy of the loop (reviewer
+#   follow-up on the original Test 5b, which inlined its own copy).
+_poll_survivor_alive() {
+    local _pid="$1" _n="$2" _t
+    for ((_t=1; _t<=_n; _t++)); do
+        if ! _pid_effectively_gone "$_pid"; then
+            return 0
+        fi
+        load_tolerant_sleep_tick
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # _spawn_sentinel_pgroup <marker_bin> <count>
 #   Background <count> copies of "<marker_bin>" "${_SENTINEL_SLEEP_SECS}" and
@@ -137,7 +161,7 @@ _spawn_sentinel_pgroup() {
     wait
 }
 
-export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled _spawn_sentinel_pgroup
+export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled _poll_survivor_alive _spawn_sentinel_pgroup
 
 echo "=== lib_proc_reaper.sh unit tests ==="
 
@@ -795,11 +819,11 @@ chmod +x "$_E2E_FAKE"
 
 assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor exists)" \
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
-        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" bash -c '
         _abs_sleep=$(command -v sleep)
-        _abs_ps=$(command -v ps)
         _abs_kill=$(command -v kill)
-        _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
         _pid_file=$(mktemp)
         trap "rm -f \"$_pid_file\"" EXIT
@@ -811,28 +835,124 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
         # Wait for the fake binary to start (poll for PID file).
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
         _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
         [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
 
-        # SIGKILL the parent.
+        # SIGKILL the parent, then confirm it is effectively gone (reparenting
+        # completes at parent death) before sampling the survivor.
         "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
-        "$_abs_sleep" 0.5
+        _poll_pid_gone "$_parent_pid" "$_POLL_ATTEMPTS_ORPHAN" || true
 
-        # Assert the fake binary is still alive after parent SIGKILL.
-        _alive=0
-        "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | "$_abs_grep" -q . && _alive=1 || true
+        # STRUCTURAL/condition-polled survivor-alive proof (task 5148):
+        # replaces a fixed-wait + single ps sample, which raced a
+        # transient-empty ps read under pool load (data/verify-logs/4911).
+        # Delegates to the shared _poll_survivor_alive helper (exported at
+        # top-of-file) instead of an inline loop, so the Test 5b hermetic
+        # regression lock below — which drives this SAME helper — actually
+        # guards this code path: a reversion to a single-shot sample
+        # anywhere inside _poll_survivor_alive flips both this assertion and
+        # the lock, not just a duplicated copy of the loop. Non-vacuous: a
+        # genuinely-dead survivor exhausts the poll and returns 1 (RED).
+        _poll_survivor_alive "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"
+        _alive_rc=$?
         "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
-        exit $((1 - _alive))
+        exit "$_alive_rc"
     '
+
+# -- Test 5b (regression lock, task 5148): the condition-polled survivor
+# check above tolerates a transient-empty ps read instead of misreporting a
+# genuinely-alive survivor as DEAD. Under real pool load this was a race
+# (observed in data/verify-logs/4911 etc: a fixed wait + ONE ps sample could
+# land on a transient-empty read); here it is forced deterministically via a
+# stateful `ps` stub (extends the Part 8 SLOW_PS_STUB idiom below) whose FIRST
+# invocation emits nothing and whose invocations #2+ delegate to the real ps.
+# The shared _poll_survivor_alive helper (see below — the SAME helper driven
+# by the production Test 5 check above) retries past that first empty read
+# and correctly converges on ALIVE. Locks the fix: a reversion to a
+# single-shot sample anywhere in that shared helper would make BOTH this and
+# Test 5 go RED again (as Test 5 did before task 5148).
+_P5_STUB_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P5_STUB_DIR")
+_P5_STUB_COUNTER="$_P5_STUB_DIR/ps_invocation_count"
+_abs_real_ps_p5="$(command -v ps)"
+
+cat > "$_P5_STUB_DIR/ps" <<STUB_PS_EOF
+#!/usr/bin/env bash
+_n=\$(cat "$_P5_STUB_COUNTER" 2>/dev/null || echo 0)
+_n=\$((_n + 1))
+echo "\$_n" > "$_P5_STUB_COUNTER"
+if [ "\$_n" -eq 1 ]; then
+    exit 0
+fi
+exec "$_abs_real_ps_p5" "\$@"
+STUB_PS_EOF
+chmod +x "$_P5_STUB_DIR/ps"
+
+assert "hermetic regression lock: condition-polled survivor check tolerates a transient-empty ps read (retries past invocation #1, task 5148)" \
+    env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" \
+        PATH="$_P5_STUB_DIR:$PATH" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_kill=$(command -v kill)
+        _abs_bash=$(command -v bash)
+        _pid_file=$(mktemp)
+        trap "rm -f \"$_pid_file\"" EXIT
+
+        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
+        _parent_pid=$!
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
+            [ -s "$_pid_file" ] && break
+            "$_abs_sleep" 0.3
+        done
+        _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
+        [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
+
+        # SIGKILL the parent (survivor is now orphaned but still alive).
+        "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
+
+        # Drives the SAME shared _poll_survivor_alive helper (exported at
+        # top-of-file, task 5148) as the production Test 5 check above,
+        # rather than a duplicated for-loop, so this lock actually guards
+        # that shared code path: a regression to a single-shot sample
+        # anywhere inside _poll_survivor_alive flips BOTH Test 5 and this
+        # lock. _pid_effectively_gone (called by the helper) resolves ps via
+        # the PATH prepend above, so the helper FIRST call always hits the
+        # stubbed transient-empty invocation #1 and is retried instead of
+        # misreported as dead.
+        _poll_survivor_alive "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"
+        _alive_rc=$?
+        "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
+        exit "$_alive_rc"
+    '
+
+# ITEM 2a fixture (task 5260): a FOREIGN-run e2e marker used to prove the Part-5
+# pre-clean below does NOT collateral-kill a concurrent run_all instance's
+# suffixed marker. The foreign sentinel is chosen so THIS run's own marker suffix
+# (_SENT_FAKE = $$*10+7) is NOT a substring of the foreign suffix ($$*10+1) —
+# otherwise the suffixed grep (step-4 GREEN) would still substring-match and kill
+# the foreign marker, making GREEN unreachable (see plan design decision).
+_SENT_FAKE_FOREIGN=$(($$ * 10 + 1))
+_FOREIGN_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_FOREIGN_DIR")
+_FOREIGN_BIN="$_FOREIGN_DIR/reify_faketest_e2e_${_SENT_FAKE_FOREIGN}"
+cp "$(command -v sleep)" "$_FOREIGN_BIN"
+chmod +x "$_FOREIGN_BIN"
+"$_FOREIGN_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+_FOREIGN_PID=$!
+assert "foreign-run e2e marker launched alive (precondition, task 5260)" \
+    _poll_survivor_alive "$_FOREIGN_PID" 3
 
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
         _SENT_FAKE="$_SENT_FAKE" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
-        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" bash -c '
         [ -x "$_WRAPPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -842,8 +962,11 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         _pid_file=$(mktemp)
         trap "rm -f \"$_pid_file\"" EXIT
 
-        # Pre-clean stale instances.
-        "$_abs_ps" -A -o pid,exe 2>/dev/null | "$_abs_grep" "reify_faketest_e2e" \
+        # Pre-clean stale instances of THIS run only. Scope the host-wide kill to
+        # the per-run suffixed marker (mirrors the Part 2a pre-clean at :331); the
+        # unsuffixed "reify_faketest_e2e" would collateral-kill a CONCURRENT
+        # run_all fixture reify_faketest_e2e_<other-pid> that is still live (task 5260).
+        "$_abs_ps" -A -o pid,exe 2>/dev/null | "$_abs_grep" "reify_faketest_e2e_${_SENT_FAKE}" \
             | awk "{print \$1}" \
             | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
         "$_abs_sleep" 0.3
@@ -852,7 +975,7 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         # Self-expiring duration — see the sibling E2E assertion above.
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
@@ -880,6 +1003,17 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         # Poll until the fake binary is gone (zombie-aware; bumped budget base 20).
         _poll_pid_gone "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
     '
+
+# ITEM 2a assertion (task 5260): the Part-5 pre-clean (:945) must scope its
+# host-wide `kill -9` to THIS run's suffixed marker (reify_faketest_e2e_${_SENT_FAKE}),
+# NOT the unsuffixed host-wide `reify_faketest_e2e` — otherwise a CONCURRENT
+# run_all instance's live fixture is collateral-killed. The foreign marker
+# launched before the Part-5 assertion above must have SURVIVED that assertion's
+# pre-clean. RED with the unsuffixed grep (foreign marker killed → poll exhausts);
+# GREEN once :945 is suffixed. Then reap the foreign marker.
+assert "e2e pre-clean spares a FOREIGN-suffixed marker — no cross-run collateral (task 5260)" \
+    _poll_survivor_alive "$_FOREIGN_PID" 3
+kill -9 "$_FOREIGN_PID" 2>/dev/null || true
 
 # ===========================================================================
 # Part 6 — zombie-aware orphan-reap poll helper
@@ -1100,19 +1234,26 @@ sleep 30
 SLOW_PS_STUB
 chmod +x "$_P8_BINDIR/ps"
 
-# Test 8a: wall-clock bound -- reap-orphans must complete < 15s even though
-# the stub ps sleeps 30s without the timeout wrapper.
-# REIFY_REAPER_PS_TIMEOUT=2 -> timeout fires at ~2s -> 7x margin under 15s.
-assert "reap-orphans completes < 15s when ps stalls 30s (REIFY_REAPER_PS_TIMEOUT=2 bounds scan)" \
+# Test 8a: MECHANISM proof -- the ps-timeout wrapper fires (marker present in
+# stderr) and the sweep returns promptly under a generous anti-hang ceiling,
+# even though the stub ps sleeps 30s without the timeout wrapper.
+# NON-VACUOUS: unlike an elapsed bound, the marker appears ONLY when
+# _reaper_bounded_ps actually times out. If lib's bounding were removed
+# (bare-ps fallback), the sweep would still finish under the generous 60s
+# ceiling (30s stub < 60s) -- an elapsed bound would pass either way -- but
+# the marker would be ABSENT, so this assertion still goes RED.
+# REIFY_REAPER_PS_TIMEOUT=2 -> internal timeout fires at ~2s; the outer 60s
+# timeout is a pure anti-hang backstop, not a discriminator.
+assert "reap-orphans fires the ps-timeout mechanism under a generous anti-hang ceiling (REIFY_REAPER_PS_TIMEOUT=2 bounds scan)" \
     env LIB_REAPER="$LIB_REAPER" P8_BINDIR="$_P8_BINDIR" bash -c '
-        _start=$(date +%s)
+        _err=$(mktemp)
+        trap "rm -f \"$_err\"" EXIT
         PATH="$P8_BINDIR:$PATH" \
         REIFY_REAPER_PS_TIMEOUT=2 \
         REIFY_REAPER_UID=$(id -u) \
-            bash "$LIB_REAPER" reap-orphans >/dev/null 2>/dev/null || true
-        _end=$(date +%s)
-        _elapsed=$(( _end - _start ))
-        [ "$_elapsed" -lt 15 ]
+            timeout 60 bash "$LIB_REAPER" reap-orphans >/dev/null 2>"$_err"
+        _rc=$?
+        [ "$_rc" -ne 124 ] && grep -qF "host-wide ps scan exceeded" "$_err"
     '
 
 # Test 8b: non-vacuous proof -- stderr must carry the timeout-warning substring.
@@ -1129,5 +1270,182 @@ assert "reap-orphans emits 'host-wide ps scan exceeded' warning to stderr when p
     '
 
 fi  # end: command -v timeout guard
+
+# ===========================================================================
+# Part 9 — esc-5020 run_all false-kill rule-out
+# ===========================================================================
+#
+# Reconstructs the live tests/infra/run_all.sh pool topology: a pool subshell
+# / test_*.sh launcher (bash, no setsid/systemd-run/nohup/disown anywhere in
+# run_all.sh, so ancestry stays intact while live) backgrounds a compiled
+# deps-glob binary child while the run_all invocation is still running.
+# Asserts the host-wide reaper cannot false-kill that child: the orphan-PPID
+# gate (PPID/parent-comm ancestry check) structurally excludes it while its
+# ancestry is intact (PPID = the live launcher, comm=bash — neither in
+# REIFY_REAPER_ORPHAN_PPIDS={1} nor REIFY_REAPER_COMMS={systemd,init}), fully
+# independent of the age gate (isolated here via REIFY_REAPER_MIN_AGE_SECS=0).
+# See esc-5020 and docs/notes/orphaned-test-binary-reaper.md.
+
+echo ""
+echo "--- Part 9: esc-5020 run_all false-kill rule-out ---"
+
+# Hermetic fixture (reuses the Part 2 deps-glob-binary idiom):
+# tmp/target/debug/deps/reify_runall_live_<per-$$>
+_SENT_RUNALL=$(($$ * 10 + 1))
+_P9_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P9_DIR")
+_P9_DEPS="$_P9_DIR/target/debug/deps"
+mkdir -p "$_P9_DEPS"
+_RUNALL_BIN="$_P9_DEPS/reify_runall_live_${_SENT_RUNALL}"
+cp "$(command -v sleep)" "$_RUNALL_BIN"
+chmod +x "$_RUNALL_BIN"
+
+# -- Test 9a: RED DRIVER — dry-run reports a "spared (non-orphan/live
+# ancestry)" diagnostic naming the child pid. --
+# The launcher (this bash -c, standing in for a run_all pool subshell /
+# test_*.sh) backgrounds the deps-glob child and stays alive for the whole
+# assertion window (it never exits until the script's own final `exit`), so
+# the child's PPID is the LIVE launcher (!=1, comm=bash) throughout. Run under
+# the reaper's PRODUCTION-DEFAULT orphan gates (ORPHAN_PPIDS=1, COMMS="systemd
+# init") — the ancestry-intact child must NOT match, and (RED today) no
+# diagnostic exists yet to report why it was spared.
+assert "reap-orphans --dry-run reports a spared/non-orphan diagnostic for a live run_all-topology child (esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_kill=$(command -v kill)
+        _abs_grep=$(command -v grep)
+        _abs_awk=$(command -v awk)
+
+        # Pre-clean stale instances of this fixture binary.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "reify_runall_live_${_SENT_RUNALL}" \
+            | "$_abs_awk" "{print \$1}" \
+            | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
+        "$_abs_sleep" 0.3
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        _err=$(mktemp)
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS=1 \
+        REIFY_REAPER_COMMS="systemd init" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans --dry-run >/dev/null 2>"$_err" || true
+
+        _rc=0
+        grep -qE "spared \(non-orphan/live ancestry\):.*pid=$_child_pid exe=" "$_err" || _rc=1
+
+        "$_abs_kill" -9 "$_child_pid" 2>/dev/null || true
+        wait "$_child_pid" 2>/dev/null || true
+        rm -f "$_err"
+        exit "$_rc"
+    '
+
+# -- Test 9b: REGRESSION LOCK — a NON-dry-run sweep under the SAME
+# production-default orphan gates SPARES the live run_all-topology child
+# (mirrors Test 2b's negative-spare assertion pattern). --
+assert "reap-orphans (non-dry-run) spares a live run_all-topology child under production-default orphan gates (esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_kill=$(command -v kill)
+        _abs_grep=$(command -v grep)
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS=1 \
+        REIFY_REAPER_COMMS="systemd init" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>&1 || true
+
+        _alive=0
+        "$_abs_ps" -o pid= -p "$_child_pid" 2>/dev/null | "$_abs_grep" -q . && _alive=1 || true
+        "$_abs_kill" -9 "$_child_pid" 2>/dev/null || true
+        wait "$_child_pid" 2>/dev/null || true
+        exit $((1 - _alive))
+    '
+
+# -- Test 9c: NON-VACUITY — the SAME fixture IS reaped once
+# REIFY_REAPER_ORPHAN_PPIDS is set to the child's ACTUAL PPID, proving 9b's
+# spare was not vacuous (the child genuinely matches the deps-glob + age
+# filters; only the orphan-PPID/ancestry gate spared it) — mirrors Test 2a.
+# The launcher (this bash -c) never exits before reading the PPID, so the
+# child's PPID is stable and no reparenting can occur (same reasoning as
+# Test 2a). --
+assert "reap-orphans kills the SAME run_all-topology child once ORPHAN_PPIDS matches its real ancestry (non-vacuity for 9b, esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        [ -f "$LIB_REAPER" ] || { echo "FAIL: LIB_REAPER not found at $LIB_REAPER" >&2; exit 1; }
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        _child_ppid=$("$_abs_ps" -o ppid= -p "$_child_pid" 2>/dev/null | tr -d " " || echo "")
+        [ -n "$_child_ppid" ] || { echo "FAIL: could not read PPID of run_all-topology child" >&2; exit 1; }
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS="$_child_ppid" \
+        REIFY_REAPER_COMMS="" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>&1 || true
+
+        _poll_pid_gone "$_child_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
+    '
+
+# -- Test 9d: SILENCE — a NON-dry-run sweep under the SAME production-default
+# orphan gates does NOT emit the "spared (non-orphan/live ancestry)"
+# diagnostic for the live run_all-topology child. This locks the load-bearing
+# claim (lib_proc_reaper.sh header + docs/notes/orphaned-test-binary-reaper.md)
+# that the spare diagnostic is dry-run-only: Test 9b's non-dry-run sweep
+# discards stderr wholesale, so it alone would not catch the diagnostic
+# accidentally being hoisted out of the `[ "$_dry_run" -eq 1 ]` guard and
+# spamming one line per live deps-glob binary on a busy host. --
+assert "reap-orphans (non-dry-run) does not emit the spared/non-orphan diagnostic (esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        [ -f "$LIB_REAPER" ] || { echo "FAIL: LIB_REAPER not found at $LIB_REAPER" >&2; exit 1; }
+        _abs_sleep=$(command -v sleep)
+        _abs_kill=$(command -v kill)
+        _abs_grep=$(command -v grep)
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        _err=$(mktemp)
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS=1 \
+        REIFY_REAPER_COMMS="systemd init" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>"$_err" || true
+
+        _rc=0
+        "$_abs_grep" -qF "spared (non-orphan/live ancestry)" "$_err" && _rc=1
+
+        "$_abs_kill" -9 "$_child_pid" 2>/dev/null || true
+        wait "$_child_pid" 2>/dev/null || true
+        rm -f "$_err"
+        exit "$_rc"
+    '
 
 test_summary

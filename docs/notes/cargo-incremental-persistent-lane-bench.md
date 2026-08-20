@@ -14,7 +14,7 @@ dark_factory:1692) yield a ≥15% lane-wall improvement over the Phase-1-alone b
 `CARGO_INCREMENTAL=0`) with no correctness divergence?
 
 Global context: `CARGO_INCREMENTAL=1` and `RUSTC_WRAPPER=sccache` are **mutually exclusive**
-(CARGO_INCREMENTAL breaks cross-worktree rlib sharing — `orchestrator.yaml` and `scripts/verify.sh`
+(CARGO_INCREMENTAL breaks cross-worktree rlib sharing — `dark-factory-orchestrator.yaml` and `scripts/verify.sh`
 both enforce `CARGO_INCREMENTAL=0` globally). The persistent lane is the only candidate for an
 exception because Phase 1 ensures `target/` is retained between merge checks (reset-in-place),
 providing the stable incremental cache state the experiment requires. All 24 task lanes keep
@@ -96,7 +96,7 @@ broad rep (17 s).
 
 No correctness divergence was observed.
 
-The global `CARGO_INCREMENTAL=0` forbid in `scripts/verify.sh` and `orchestrator.yaml` is
+The global `CARGO_INCREMENTAL=0` forbid in `scripts/verify.sh` and `dark-factory-orchestrator.yaml` is
 **retained**; this adoption is strictly lane-scoped. The 24 task lanes continue to use sccache
 with `CARGO_INCREMENTAL=0`.
 
@@ -116,7 +116,7 @@ git.persistent_merge_worktree.verify_env:
 ```
 
 A dark-factory follow-up task has been filed (via `escalate_info`) to implement this seam.
-The reify-side `orchestrator.yaml` / `scripts/verify.sh` global `CARGO_INCREMENTAL=0` values
+The reify-side `dark-factory-orchestrator.yaml` / `scripts/verify.sh` global `CARGO_INCREMENTAL=0` values
 are **unchanged** — the global forbid remains the floor; only the DF persistent-lane env
 overrides it for `_merge-verify`.
 

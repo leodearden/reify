@@ -221,8 +221,7 @@ fn relate_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.code == Some(DiagnosticCode::RelateExpectsRelation)
-                && d.severity == Severity::Error
+            d.code == Some(DiagnosticCode::RelateExpectsRelation) && d.severity == Severity::Error
         })
         .collect()
 }

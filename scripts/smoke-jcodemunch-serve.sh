@@ -9,7 +9,7 @@
 # Asserts:
 #   1. MCP handshake (initialize → notifications/initialized) over
 #      streamable-HTTP at http://127.0.0.1:8901/mcp returns HTTP 200
-#      with a JSON-RPC body.
+#      with a JSON-RPC body and a server-assigned Mcp-Session-Id header.
 #   2. tools/call get_changed_symbols for the reify repo over a
 #      content-guaranteed commit range returns NON-EMPTY symbol data
 #      (the observable signal); prints the symbol data.
@@ -33,7 +33,8 @@ Usage: scripts/smoke-jcodemunch-serve.sh [-h|--help]
 
 Activation smoke test for the jcodemunch query-serve (L-SERVE).
 Asserts:
-  1. MCP handshake at http://127.0.0.1:8901/mcp returns JSON-RPC body.
+  1. MCP handshake at http://127.0.0.1:8901/mcp returns JSON-RPC body
+     and a server-assigned Mcp-Session-Id header.
   2. get_changed_symbols for reify returns NON-EMPTY symbol data.
   3. jcodemunch-watcher.service is active concurrently with assertion 2.
 Exits 0 on success, 1 on failure.
@@ -106,11 +107,16 @@ if ! grep -q '"jsonrpc"' "$init_body" 2>/dev/null; then
     exit 1
 fi
 
-# Extract server-assigned session-id from response headers (prefer server's value).
-server_session=$(grep -i '^mcp-session-id:' "$SMOKE_TMPDIR/init_headers.txt" 2>/dev/null \
-    | head -1 | sed 's/^[Mm][Cc][Pp]-[Ss]ession-[Ii][Dd]:[[:space:]]*//' | tr -d '\r' || true)
-if [[ -n "$server_session" ]]; then
-    SESSION_ID="$server_session"
+# Extract server-assigned session-id from response headers. grep -i already
+# anchors to the right header line case-insensitively (HTTP header names are
+# case-insensitive per RFC 7230); strip everything up to the first colon so
+# any casing of "Mcp-Session-Id" is handled, not just the canonical form.
+SESSION_ID=$(grep -i '^mcp-session-id:' "$SMOKE_TMPDIR/init_headers.txt" 2>/dev/null \
+    | head -1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
+if [[ -z "$SESSION_ID" ]]; then
+    echo "FAIL [1]: initialize response carried no Mcp-Session-Id header (jcodemunch serve is expected to assign one; see docs/prds/jcodemunch-substrate-restoration.capability-manifest.md server-assigned-session-id-is-the-contract)." >&2
+    echo "       Response headers: $(cat "$SMOKE_TMPDIR/init_headers.txt" 2>/dev/null)" >&2
+    exit 1
 fi
 
 # POST notifications/initialized (fire-and-forget; server may return 202 or 200).

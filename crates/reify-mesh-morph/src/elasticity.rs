@@ -22,7 +22,7 @@ use reify_solver_elastic::{
     IsotropicElastic, SolverMode, apply_dirichlet_row_elimination, assemble_global_stiffness,
     element_stiffness, solve_cg, tet_volume_p1,
 };
-use reify_ir::{ElementOrderTag, VolumeMesh};
+use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
 use crate::MorphOptions;
 use crate::options::StiffnessRule;
@@ -227,17 +227,23 @@ pub enum ElasticityFailure {
 /// ## Failure modes
 ///
 /// See [`ElasticityFailure`].
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh); re-homed from cancelled #3429/#2947
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer task #4744 (done) — the §8 task β morph arm landed via the default-options `elasticity_morph` wrapper below, not this cg_opts variant; remains an in-scope orphan BY DESIGN (advanced-options entry point with no current caller — see PINS in engine_seam_orphans_g_allow.rs); re-homed from cancelled #3429/#2947
 pub fn elasticity_morph_with_cg_opts(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],
     options: &MorphOptions,
     cg_opts: CgSolverOptions,
 ) -> Result<VolumeMesh, ElasticityFailure> {
-    if old_mesh.element_order != ElementOrderTag::P1 {
+    let Some(order) = old_mesh.element_order() else {
+        // Hex/Wedge (task 4986): no ElementOrderTag applies to these — this
+        // tet-only elasticity morph has no hex/wedge analogue, so reuse the
+        // existing "not P1" signal to reject honestly rather than panic.
         return Err(ElasticityFailure::UnsupportedElementOrder(
-            old_mesh.element_order,
+            ElementOrderTag::P2,
         ));
+    };
+    if order != ElementOrderTag::P1 {
+        return Err(ElasticityFailure::UnsupportedElementOrder(order));
     }
 
     // Validate every prescribed_positions index up front (before any
@@ -263,14 +269,19 @@ pub fn elasticity_morph_with_cg_opts(
     // prescribed_positions already fires InvalidNodeIndex via the
     // prescribed-positions bounds-check above; only the tet_indices gate is
     // needed here.
-    if old_mesh.tet_indices.is_empty() {
+    let tet_indices = old_mesh
+        .tet_indices()
+        .expect("connectivity confirmed Tet above");
+    if tet_indices.is_empty() {
         if !prescribed_positions.is_empty() {
             return Err(ElasticityFailure::NoElementsForPrescribedDisplacements);
         }
         return Ok(VolumeMesh {
             vertices: old_mesh.vertices.clone(),
-            tet_indices: old_mesh.tet_indices.clone(),
-            element_order: old_mesh.element_order,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices.to_vec(),
+                order,
+            },
             normals: None,
             boundary: None,
         });
@@ -285,9 +296,9 @@ pub fn elasticity_morph_with_cg_opts(
     // for in-range tails (e.g. [0,1,2,3, 0,1,2] would otherwise quietly discard
     // the trailing triple). The existing bounds-check loop below becomes a pure
     // semantic validator once this gate is in place.
-    if !old_mesh.tet_indices.len().is_multiple_of(4) {
+    if !tet_indices.len().is_multiple_of(4) {
         return Err(ElasticityFailure::MalformedTetIndices {
-            len: old_mesh.tet_indices.len(),
+            len: tet_indices.len(),
         });
     }
 
@@ -298,13 +309,13 @@ pub fn elasticity_morph_with_cg_opts(
     // checks index bounds. Walks the full slice (equivalent to `chunks_exact(4)`
     // here since length is guaranteed to be a multiple of 4) — kept as a flat
     // loop for clarity.
-    for tet_idx in &old_mesh.tet_indices {
+    for tet_idx in tet_indices {
         if (*tet_idx as usize) >= n_nodes {
             return Err(ElasticityFailure::InvalidTetIndex(*tet_idx));
         }
     }
 
-    let n_elements = old_mesh.tet_indices.len() / 4;
+    let n_elements = tet_indices.len() / 4;
 
     // Panic message for the contract assertions below — extracted to avoid
     // repeating a long string literal four times in the chunks_exact loop.
@@ -315,7 +326,7 @@ pub fn elasticity_morph_with_cg_opts(
     // connectivity buffers alive for the `AssemblyElement` borrows.
     let mut k_elements: Vec<ElementStiffness> = Vec::with_capacity(n_elements);
     let mut connectivities: Vec<[usize; 4]> = Vec::with_capacity(n_elements);
-    for tet in old_mesh.tet_indices.chunks_exact(4) {
+    for tet in tet_indices.chunks_exact(4) {
         // Per-tet physical-node coordinates. The upfront validation above
         // guarantees all tet indices are in-range; vertex_f64 cannot return
         // None here.
@@ -428,8 +439,10 @@ pub fn elasticity_morph_with_cg_opts(
 
     Ok(VolumeMesh {
         vertices: out_vertices,
-        tet_indices: old_mesh.tet_indices.clone(),
-        element_order: old_mesh.element_order,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices.to_vec(),
+            order,
+        },
         normals: None,
         boundary: None,
     })
@@ -440,7 +453,6 @@ pub fn elasticity_morph_with_cg_opts(
 ///
 /// See [`elasticity_morph_with_cg_opts`] for full parameter, output-normal, and
 /// failure-mode documentation.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh); re-homed from cancelled #3429/#2947
 pub fn elasticity_morph(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],
@@ -457,13 +469,15 @@ pub fn elasticity_morph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -483,8 +497,8 @@ mod tests {
         assert!(result.is_ok(), "got: {result:?}");
         let mesh = result.unwrap();
         assert!(mesh.vertices.is_empty());
-        assert!(mesh.tet_indices.is_empty());
-        assert_eq!(mesh.element_order, ElementOrderTag::P1);
+        assert!(mesh.tet_indices().unwrap().is_empty());
+        assert_eq!(mesh.element_order(), Some(ElementOrderTag::P1));
         assert!(mesh.normals.is_none());
     }
 
@@ -499,8 +513,10 @@ mod tests {
     fn elasticity_morph_with_node_index_out_of_mesh_vertices_range_returns_invalid_node_index() {
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -536,8 +552,10 @@ mod tests {
                 0.0, 1.0, 0.0, // node 2
                 0.0, 0.0, 1.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -568,8 +586,8 @@ mod tests {
         }
 
         // Structural fields carry through unchanged.
-        assert_eq!(out.tet_indices, vec![0u32, 1, 2, 3]);
-        assert_eq!(out.element_order, ElementOrderTag::P1);
+        assert_eq!(out.tet_indices(), Some(&[0u32, 1, 2, 3][..]));
+        assert_eq!(out.element_order(), Some(ElementOrderTag::P1));
         assert!(out.normals.is_none());
     }
 
@@ -606,13 +624,15 @@ mod tests {
                 0.25, 0.25, 0.25, // 4: p
             ],
             // Four tets all sharing p (node 4).
-            tet_indices: vec![
-                0, 1, 2, 4, // a, b, c, p
-                0, 1, 3, 4, // a, b, d, p
-                0, 2, 3, 4, // a, c, d, p
-                1, 2, 3, 4, // b, c, d, p
-            ],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 4, // a, b, c, p
+                    0, 1, 3, 4, // a, b, d, p
+                    0, 2, 3, 4, // a, c, d, p
+                    1, 2, 3, 4, // b, c, d, p
+                ],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -666,8 +686,10 @@ mod tests {
                 0.0, 1.0, 0.0, // 2
                 0.0, 0.0, 1.0, // 3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: Some(vec![
                 1.0_f32, 0.0, 0.0, // normal for node 0
                 0.0, 1.0, 0.0, // normal for node 1
@@ -712,13 +734,15 @@ mod tests {
                 0.0, 0.0, 1.0, // 3: d
                 0.25, 0.25, 0.25, // 4: p
             ],
-            tet_indices: vec![
-                0, 1, 2, 4, // a, b, c, p
-                0, 1, 3, 4, // a, b, d, p
-                0, 2, 3, 4, // a, c, d, p
-                1, 2, 3, 4, // b, c, d, p
-            ],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 4, // a, b, c, p
+                    0, 1, 3, 4, // a, b, d, p
+                    0, 2, 3, 4, // a, c, d, p
+                    1, 2, 3, 4, // b, c, d, p
+                ],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -734,8 +758,8 @@ mod tests {
         let out_b = elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
 
         assert_eq!(out_a.vertices, out_b.vertices);
-        assert_eq!(out_a.tet_indices, out_b.tet_indices);
-        assert_eq!(out_a.element_order, out_b.element_order);
+        assert_eq!(out_a.tet_indices(), out_b.tet_indices());
+        assert_eq!(out_a.element_order(), out_b.element_order());
         // `normals` is unconditionally None — asserting equality would be
         // tautological. Pinned by step-11.
     }
@@ -809,13 +833,15 @@ mod tests {
             // some yield negative Jacobian determinants.  This is intentional —
             // the fixture exercises element_stiffness's internal `det.abs()`
             // handling for mixed-orientation tets.
-            tet_indices: vec![
-                0, 1, 2, 4, // a, b, c, p  — small vol
-                0, 1, 3, 4, // a, b, d, p  — small vol
-                0, 2, 3, 4, // a, c, d, p  — small vol
-                1, 2, 3, 4, // b, c, d, p  — large vol
-            ],
-            element_order: reify_ir::ElementOrderTag::P1,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 4, // a, b, c, p  — small vol
+                    0, 1, 3, 4, // a, b, d, p  — small vol
+                    0, 2, 3, 4, // a, c, d, p  — small vol
+                    1, 2, 3, 4, // b, c, d, p  — large vol
+                ],
+                order: reify_ir::ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1021,8 +1047,10 @@ mod tests {
     fn elasticity_morph_with_non_empty_vertices_but_empty_tet_indices_returns_input_vertices() {
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: Some(vec![1.0_f32, 0.0, 0.0, 0.0, 1.0, 0.0]),
             boundary: None,
         };
@@ -1032,8 +1060,8 @@ mod tests {
         let out = result.unwrap();
         // Vertices returned unchanged.
         assert_eq!(out.vertices, mesh.vertices);
-        assert!(out.tet_indices.is_empty());
-        assert_eq!(out.element_order, ElementOrderTag::P1);
+        assert!(out.tet_indices().unwrap().is_empty());
+        assert_eq!(out.element_order(), Some(ElementOrderTag::P1));
         // Normals dropped regardless of input.
         assert!(out.normals.is_none());
     }
@@ -1055,8 +1083,10 @@ mod tests {
         // 2 valid nodes → n_nodes == 2; node index 0 is in-range.
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1098,13 +1128,15 @@ mod tests {
                 0.0, 0.0, 1.0, // 3: d
                 0.25, 0.25, 0.25, // 4: p (interior)
             ],
-            tet_indices: vec![
-                0, 1, 2, 4, // a, b, c, p
-                0, 1, 3, 4, // a, b, d, p
-                0, 2, 3, 4, // a, c, d, p
-                1, 2, 3, 4, // b, c, d, p
-            ],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 4, // a, b, c, p
+                    0, 1, 3, 4, // a, b, d, p
+                    0, 2, 3, 4, // a, c, d, p
+                    1, 2, 3, 4, // b, c, d, p
+                ],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1155,8 +1187,10 @@ mod tests {
                 0.0, 1.0, 0.0, // node 2
                 0.0, 0.0, 1.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 99], // index 99 >= n_nodes (4)
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 99], // index 99 >= n_nodes (4)
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1191,8 +1225,10 @@ mod tests {
             // 1 vertex so vertices.is_empty() == false — the P1 guard must
             // fire before any short-circuit.
             vertices: vec![0.0_f32, 0.0, 0.0],
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P2,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P2,
+            },
             normals: None,
             boundary: None,
         };
@@ -1230,8 +1266,10 @@ mod tests {
                 0.0, 1.0, 0.0, // node 2
                 0.0, 0.0, 1.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3, 99], // valid tet + stray OOR tail
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 99], // valid tet + stray OOR tail
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1269,8 +1307,10 @@ mod tests {
                 0.0, 1.0, 0.0, // node 2
                 0.0, 0.0, 1.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3, 0, 1, 2], // valid tet + in-range tail
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 0, 1, 2], // valid tet + in-range tail
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };

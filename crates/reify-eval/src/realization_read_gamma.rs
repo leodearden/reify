@@ -130,17 +130,18 @@ fn probe_receives_volume_mesh_content_through_beta_gamma_seam() {
         .volume_mesh()
         .expect("the probe's handle must carry VolumeMesh content");
     assert_eq!(
-        vm.element_order,
-        ElementOrderTag::P1,
+        vm.element_order(),
+        Some(ElementOrderTag::P1),
         "element_order must survive the β→γ seam"
     );
+    let tet_indices = vm.tet_indices().expect("P1 tet mesh must have tet_indices");
     assert_eq!(
-        vm.tet_indices.len() % 4,
+        tet_indices.len() % 4,
         0,
         "P1 tet_indices must be a multiple of 4; got len {}",
-        vm.tet_indices.len()
+        tet_indices.len()
     );
-    assert!(vm.tet_indices.len() / 4 > 0, "projected mesh must carry ≥1 tet");
+    assert!(tet_indices.len() / 4 > 0, "projected mesh must carry ≥1 tet");
 }
 
 /// Degradation path: a VolumeMesh realization whose producing kernel's
@@ -210,7 +211,7 @@ fn probe_receives_surface_mesh_content_through_beta_gamma_seam() {
     PROBE_CAPTURED.with(|slot| slot.borrow_mut().clear());
 
     // MockGeometryKernel::new() default tessellate returns a deterministic
-    // 1-triangle mesh (indices [0,1,2], 9 vertex floats) — no configuration needed.
+    // Contract-valid closed tetra (12 indices, 12 vertex floats) — no configuration needed.
     let mut engine = engine_with_kernel("gmsh", Box::new(MockGeometryKernel::new()));
     engine.register_compute_fn("test::gamma_probe", probe_capture_fn as ComputeFn);
 
@@ -249,14 +250,17 @@ fn probe_receives_surface_mesh_content_through_beta_gamma_seam() {
     let mesh = captured[0]
         .surface_mesh()
         .expect("the probe's handle must carry SurfaceMesh content");
+    // Task #5105 δ: MockGeometryKernel::tessellate now returns a contract-valid
+    // closed tetra (4 tris / 4 verts) instead of an open triangle, which site 1
+    // rejects under enforce-default.
     assert_eq!(
         mesh.indices.len(),
-        3,
-        "surface_mesh must carry the mock kernel's 1-triangle tessellation (3 indices)"
+        12,
+        "surface_mesh must carry the mock kernel's 4-triangle tessellation (12 indices)"
     );
     assert_eq!(
         mesh.vertices.len(),
-        9,
-        "surface_mesh must carry 3 vertices (9 floats)"
+        12,
+        "surface_mesh must carry 4 vertices (12 floats)"
     );
 }

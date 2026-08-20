@@ -25,7 +25,9 @@ use crate::dynamics::eval::mass_properties_from_value;
 use crate::eval_builtin;
 use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
-use crate::loop_closure_solver::{NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
+use crate::loop_closure_solver::{
+    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure, solve_loop_closure_with_diagnostics,
+};
 use crate::mechanism::is_world;
 use crate::resolve_body_mass;
 
@@ -165,20 +167,30 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // Open-chain mechanisms (empty `loop_closures`) skip the entire
             // block — zero-cost early-out.
             //
-            // Solver choice: this calls `solve_loop_closure` directly
-            // rather than the diagnostic-emitting wrapper because the
-            // wrapper's over-constrained pre-check (`free_b.len() < 6`)
-            // short-circuits the Newton solve to midpoint values for the
-            // simple 1-DOF prismatic-X loops the v0.2 verification fixtures
-            // exercise — those low-DOF chains are physically well-posed
-            // (the rotational components of the 6-vector residual are
-            // trivially zero) and Newton converges in one or two
-            // iterations.  The diagnostic wrapper integration is the
-            // scope of step-12; for step-4 we focus on the integration
-            // plumbing and leave the wrapper's pre-checks to a future
-            // refinement that can decompose `JOINT_KINDS` into
-            // translational vs rotational subspaces and run the
-            // appropriate residual subset.
+            // Solver choice (task 3580): each loop calls
+            // `solve_loop_closure_with_diagnostics` so the singularity
+            // signal is available, but falls back to the plain
+            // `solve_loop_closure` for the FK outcome whenever the report
+            // carries a `KinematicOverconstrained` diagnostic. That
+            // diagnostic means the wrapper's over-constrained pre-check
+            // (`free_dof_count < 6`, single-DOF joints only) short-
+            // circuited to a midpoint `NotConverged` outcome WITHOUT
+            // running Newton — which regresses the simple 1-DOF
+            // prismatic-X loops the v0.2 verification fixtures exercise
+            // (those low-DOF chains are physically well-posed: the
+            // rotational components of the 6-vector residual are
+            // trivially zero, and Newton converges in one or two
+            // iterations). Falling back to the plain solver on that one
+            // branch preserves those numerics AND lets the real Newton
+            // solve determine Converged-vs-Singular for rank-deficient
+            // sub-6-DOF loops. `KinematicOverconstrained` /
+            // `KinematicUnderconstrained` are otherwise intentionally not
+            // surfaced from this path — see the module-level design-
+            // decision note in plan.json (task 3580): the wrapper's
+            // `<6`-twist-count check is a false positive for sub-6
+            // effective-DOF translational/planar loops, and principled
+            // surfacing needs a translational/rotational residual-
+            // subspace decomposition this task defers.
             let loop_closures = match mech_map.get(&Value::String("loop_closures".to_string())) {
                 Some(Value::List(lc)) => lc.as_slice(),
                 // Defense-in-depth: hand-built mechanism Maps that pre-date
@@ -247,6 +259,12 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // kind} stays alphabetically consistent across mechanism
             // shapes).
             let mut free_values: Vec<Value> = Vec::with_capacity(loop_closures.len());
+            // Accumulated across every loop's FINAL outcome (post
+            // over-constrained-fallback, see the solver-choice comment
+            // below) — a single source of truth threaded into
+            // `make_snapshot` so `is_singular` tracks the outcome that
+            // actually produced the FK re-walk's synthesized bindings.
+            let mut any_singular = false;
             let snapshot_bodies = if loop_closures.is_empty() {
                 // Open-chain: walk_fk once with user bindings; that's the
                 // final answer.  Closed-chain mechanisms skip this walk
@@ -305,7 +323,16 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 
                     // KCC-γ step-12: the widened solver consumes
                     // `&[JointValue]` directly; no flatten_dofs bridge.
-                    let outcome = solve_loop_closure(
+                    //
+                    // Task 3580: route through the diagnostics-emitting
+                    // wrapper first. When its over-constrained pre-check
+                    // short-circuited (no Newton solve ran), fall back to
+                    // the plain solver for the FK outcome — see the
+                    // solver-choice comment above. Any other diagnostics
+                    // the wrapper produced (e.g. `KinematicUnderconstrained`)
+                    // are discarded: only singularity is surfaced from this
+                    // path in task 3580.
+                    let report = solve_loop_closure_with_diagnostics(
                         &chain_a,
                         &vals_a,
                         &chain_b,
@@ -314,6 +341,24 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                         &strategy,
                         &NewtonConfig::default(),
                     );
+                    let over_constrained_short_circuit = report
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.code == Some(DiagnosticCode::KinematicOverconstrained));
+                    let outcome = if over_constrained_short_circuit {
+                        solve_loop_closure(
+                            &chain_a,
+                            &vals_a,
+                            &chain_b,
+                            &vals_b_initial,
+                            &free_b,
+                            &strategy,
+                            &NewtonConfig::default(),
+                        )
+                    } else {
+                        report.outcome
+                    };
+                    any_singular |= matches!(outcome, NewtonOutcome::Singular { .. });
 
                     // Extract the converged free-variable values.  We
                     // accept all three "produced an x" variants — converged
@@ -399,7 +444,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 }
             };
 
-            make_snapshot(snapshot_bodies, free_values)
+            make_snapshot(snapshot_bodies, free_values, any_singular)
         }
         "bodies" => {
             // Validation surface (each guard short-circuits to Undef):
@@ -982,8 +1027,11 @@ fn snapshot_bodies(snap: &Value) -> Option<&[Value]> {
 /// - `bodies` → `Value::List(vec![])`
 /// - `free_values` → `Value::List(vec![])`
 /// - `kind` → `Value::String("snapshot")`
+///
+/// Never singular — an empty-bodies mechanism has no `loop_closures` to
+/// solve — so `is_singular` is omitted (see [`make_snapshot`]).
 fn make_empty_snapshot() -> Value {
-    make_snapshot(Vec::new(), Vec::new())
+    make_snapshot(Vec::new(), Vec::new(), false)
 }
 
 /// Build a Snapshot `Value::Map` carrying the supplied list of
@@ -996,13 +1044,24 @@ fn make_empty_snapshot() -> Value {
 /// Open-chain callers pass `Vec::new()` for shape stability — the
 /// `free_values` key is always present, just with an empty outer
 /// List for mechanisms that have no `loop_closures` records.
-fn make_snapshot(bodies: Vec<Value>, free_values: Vec<Value>) -> Value {
+///
+/// `is_singular` (task 3580): when `true`, bakes an
+/// `is_singular = Value::Bool(true)` key onto the Snapshot Map, signalling
+/// that ≥1 loop's solve outcome was `NewtonOutcome::Singular` (rank-
+/// deficient Jacobian). The key is OMITTED (never set to `Bool(false)`)
+/// when `is_singular` is `false` — minimal blast radius, since no
+/// pre-existing Snapshot fixture is singular and every consumer reads
+/// specific keys rather than asserting the full key set.
+fn make_snapshot(bodies: Vec<Value>, free_values: Vec<Value>, is_singular: bool) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("bodies".to_string()), Value::List(bodies));
     m.insert(
         Value::String("free_values".to_string()),
         Value::List(free_values),
     );
+    if is_singular {
+        m.insert(Value::String("is_singular".to_string()), Value::Bool(true));
+    }
     m.insert(
         Value::String("kind".to_string()),
         Value::String("snapshot".to_string()),
@@ -1433,7 +1492,7 @@ mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_z_unit, body_world_transform, length_range_0_to_1m,
-        offset_revolute_z, planar_xy_joint, two_link_offset_chain,
+        offset_prismatic_x, offset_revolute_z, planar_xy_joint, two_link_offset_chain,
     };
     use reify_ir::Value;
     use std::collections::BTreeMap;
@@ -4074,6 +4133,236 @@ mod tests {
             diags.is_empty(),
             "bounding_box must emit no snapshot diagnostics, got {:?}",
             diags
+        );
+    }
+
+    // ── Kinematic singularity: is_singular signal (task 3580) ─────────────
+    //
+    // `snapshot()` bakes `is_singular = Value::Bool(true)` onto the returned
+    // Snapshot Map when a per-loop solve outcome is `NewtonOutcome::Singular`
+    // (rank-deficient Jacobian). The key is OMITTED — never set to `false`
+    // — for any non-singular snapshot (open-chain or well-posed closed-
+    // chain), per the minimal-blast-radius design decision: no existing
+    // fixture is singular, so a variable key set doesn't break any
+    // Snapshot-shape assertion.
+
+    /// Closed-chain mechanism with TWO free (unbound) prismatic joints on
+    /// the SAME +X axis sharing one closing joint (`j_x`): body C anchors
+    /// `j_x` to `j_a` (spanning-tree edge), body D re-anchors `j_x` to `j_b`
+    /// (closing edge) — `path_b = [world, j_b, j_x]`. Binding only `j_a`
+    /// leaves BOTH `j_b` and `j_x` free; since both are prismatic on +X,
+    /// their FD Jacobian columns are identical → rank-1 `JᵀJ` →
+    /// `NewtonOutcome::Singular` at iteration 0 (the same rank-deficiency
+    /// mechanism as the proven 6-DOF fixture in
+    /// `kinematic_diagnostics_e2e.rs`, scaled down to 2 free vars and
+    /// routed through a closed-chain mechanism instead of calling the
+    /// solver directly). With only 2 free DOFs (< 6, single-DOF only), the
+    /// diagnostic wrapper's over-constrained pre-check short-circuits — the
+    /// singular signal must therefore survive `snapshot()`'s fallback to
+    /// the plain solver for the FK outcome.
+    ///
+    /// `j_b`/`j_x` use [`offset_prismatic_x`] at distinct offsets (rather
+    /// than two bare `prismatic(axis_x_unit(), ..)` joints) so they are
+    /// structurally distinct `Value`s: `transform_at`'s `origin ∘
+    /// bare_motion` composition makes the offset a constant shift, so the
+    /// derivative w.r.t. each joint's own free variable is unaffected and
+    /// still the identical +X unit column the rank-deficiency needs. Two
+    /// bare same-axis/same-range prismatic joints would instead be
+    /// byte-identical `Value::Map`s, which alias in `joint_parents` and in
+    /// `extract_loop_closure_chains`'s binding lookup (see the doc-comment
+    /// on `extract_loop_closure_chains_returns_chains_vals_and_free_indices`
+    /// in loop_closure.rs) — collapsing this fixture's 2-free-joint,
+    /// 1-loop-closure topology to a spurious 2-loop-closure self-loop.
+    ///
+    /// `j_b`'s offset must also be non-zero (and specifically ≠ `j_a`'s
+    /// bound value minus `j_b`/`j_x`'s shared range midpoint) so the
+    /// closure residual at the all-midpoints starting guess is non-zero.
+    /// With `j_b`'s offset at 0.0 the residual collapses to exactly 0 at
+    /// that starting point — Newton reports `Converged` at iteration 0
+    /// without ever inverting the (rank-deficient) Jacobian, since a
+    /// zero-residual check short-circuits before the LDLᵀ solve. Offset
+    /// 0.1 breaks that coincidence while leaving the FD columns identical.
+    #[test]
+    fn snapshot_bakes_is_singular_true_for_rank_deficient_closed_chain() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = offset_prismatic_x(0.1);
+        let j_x = offset_prismatic_x(0.3);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        // Closing edge: j_x re-registered with parent=j_b (!= j_a) ->
+        // loop_closures record with path_b = [world, j_b, j_x] (both
+        // free/unbound, same +X axis).
+        let m4 = eval_builtin(
+            "body",
+            &[
+                m3,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+
+        // Sanity: exactly one loop-closure record, no builder error.
+        match &m4 {
+            Value::Map(map) => {
+                assert!(
+                    !map.contains_key(&Value::String("error".to_string())),
+                    "fixture should not produce an errored mechanism"
+                );
+                match map.get(&Value::String("loop_closures".to_string())) {
+                    Some(Value::List(records)) => {
+                        assert_eq!(records.len(), 1, "exactly one loop-closure record expected")
+                    }
+                    other => panic!("expected loop_closures List, got {:?}", other),
+                }
+            }
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        }
+
+        // Only j_a is bound; j_b and j_x are free (same +X axis => identical
+        // Jacobian columns => rank-deficient).
+        let bind_a = eval_builtin("bind", &[j_a, Value::length(0.5)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!(
+                "expected Snapshot Map for a rank-deficient (but structurally resolvable) \
+                 closed chain, got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            smap.get(&Value::String("is_singular".to_string())),
+            Some(&Value::Bool(true)),
+            "rank-deficient closed chain must bake is_singular=true onto the Snapshot Map"
+        );
+    }
+
+    /// Well-posed closed chain (single free var `j_b`; `j_x` pinned) — same
+    /// fixture as `snapshot_records_free_values_for_closed_chain` — must
+    /// OMIT the `is_singular` key: the loop-closure solve converges.
+    #[test]
+    fn snapshot_omits_is_singular_for_well_posed_closed_chain() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[
+                m3,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+
+        let bind_a = eval_builtin("bind", &[j_a, Value::length(0.5)]);
+        let bind_x = eval_builtin("bind", &[j_x, Value::angle(0.0)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a, bind_x])]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        assert!(
+            !smap.contains_key(&Value::String("is_singular".to_string())),
+            "well-posed closed chain must OMIT is_singular, got is_singular={:?}",
+            smap.get(&Value::String("is_singular".to_string()))
+        );
+    }
+
+    /// Open-chain mechanism (no `loop_closures`) must OMIT `is_singular` —
+    /// there is no loop-closure solve to be singular.
+    #[test]
+    fn snapshot_omits_is_singular_for_open_chain() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j.clone()],
+        );
+
+        let bind = eval_builtin("bind", &[j, Value::length(0.002)]);
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![bind])]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        assert!(
+            !smap.contains_key(&Value::String("is_singular".to_string())),
+            "open-chain snapshot must OMIT is_singular, got is_singular={:?}",
+            smap.get(&Value::String("is_singular".to_string()))
         );
     }
 }

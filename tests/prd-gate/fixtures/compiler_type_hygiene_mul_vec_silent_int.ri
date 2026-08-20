@@ -1,0 +1,16 @@
+// PRD probe fixture — docs/prds/v0_6/compiler-type-hygiene.md §2 / task β2 (G6 branch-4 evidence).
+// PRE (2026-07-06, main 4d696e63cb): `reify check` exits 0 with zero diagnostics —
+// Vector*Vector and Vector/Vector silently type as Int (type_compat.rs:1588/:1595
+// `_ => Type::Int`); at eval time v/q/w are Undef (OpContractViolation).
+// POST-LANDED (task β2 / 5055, main c277691a7d): rejection now fires — `reify check` exits 1 with
+// "error: operator `*` is undefined for operand kinds `Vector3<Scalar[m]>` and `Vector3<Scalar[m]>`"
+// (+ the `/` twin). E_ArithOperandKind is attached via .with_code() but NOT rendered in the message
+// text, so the probe matches on the substring "is undefined for operand kinds" (task λ/5070).
+module compiler_type_hygiene_mul_vec_silent_int
+
+structure def P {
+    param a : Vector3<Length> = vec3(1.0m, 2.0m, 3.0m)
+    let v = a * a
+    let q = a / a
+    let w = v + 1
+}

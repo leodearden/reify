@@ -406,11 +406,17 @@ mod tests {
             .tessellate(GeometryHandleId(1), 0.1)
             .expect("tessellate should succeed");
 
-        // MockGeometryKernel returns a single triangle
-        assert_eq!(mesh.vertices.len(), 9); // 3 vertices * 3 coords
-        assert_eq!(mesh.indices.len(), 3); // 1 triangle
+        // MockGeometryKernel returns `mocks::minimal_valid_mesh(true)`: a
+        // closed unit tetrahedron. It used to be a single open triangle, which
+        // `Mesh::validate` rejects under `MeshInvariant::Closed` — see task
+        // #5105 (INV-GEO-1) for why the fixture had to become contract-valid.
+        // This test only asserts the delegation reaches the registered kernel,
+        // so the counts are re-grounded on the tetra rather than pinned to the
+        // old shape.
+        assert_eq!(mesh.vertices.len(), 12); // 4 vertices * 3 coords
+        assert_eq!(mesh.indices.len(), 12); // 4 triangles
         assert!(mesh.normals.is_some());
-        assert_eq!(mesh.normals.unwrap().len(), 9); // 3 normals * 3 coords
+        assert_eq!(mesh.normals.unwrap().len(), 12); // 4 normals * 3 coords
     }
 
     #[test]

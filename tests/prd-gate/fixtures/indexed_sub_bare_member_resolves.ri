@@ -1,0 +1,18 @@
+// Fixture (γ decompose-phase premise, indexed-sub-instantiation §7 ε baseline):
+// PRD probe #7 — BARE indexed member access works today (task 2871 lookup).
+// `idlers[0].od` in a let must evaluate cleanly: d0 = 0.036 m.
+// Contrast with indexed_sub_self_member_misrouted.ri (probe #8), where the
+// self.-prefixed spelling of the SAME path is misrouted.
+module indexed_sub_bare_member_resolves
+
+structure def Pulley {
+    param od : Length = 36mm
+    let body = cylinder(od / 2, 8mm)
+}
+
+structure def Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+
+    let d0 = idlers[0].od
+}

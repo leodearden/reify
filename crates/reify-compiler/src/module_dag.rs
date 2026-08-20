@@ -11,8 +11,8 @@ use indexmap::IndexSet;
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePathParseError, SourceSpan};
 use reify_ir::ConstraintChecker;
 
-use crate::cfg::{CfgSet, cfg_satisfied};
 use crate::CompiledModule;
+use crate::cfg::{CfgSet, cfg_satisfied};
 
 /// Resolves import dot-paths to filesystem paths.
 ///
@@ -234,10 +234,7 @@ fn partial_overlay_diag(
 /// Encapsulates the `check_module_path_decl` call and diagnostic push shared by the
 /// user-module entry points in this file. Call sites that can receive stdlib modules
 /// (i.e. `compile_module`) must guard with `!is_std_path` before calling this.
-fn attach_module_path_diag(
-    compiled: &mut CompiledModule,
-    parsed: &reify_ast::ParsedModule,
-) {
+fn attach_module_path_diag(compiled: &mut CompiledModule, parsed: &reify_ast::ParsedModule) {
     if let Some(diag) = crate::compile_builder::pre_pass::check_module_path_decl(
         parsed.declared_module_path.as_ref(),
         &parsed.path,
@@ -269,10 +266,7 @@ impl ModuleDag {
     /// recursed into, not added to the DAG, not included in any prelude).
     // G-allow: same-file caller only; audit counts cross-file refs
     pub fn with_cfg(cfg: CfgSet) -> Self {
-        Self {
-            cfg,
-            ..Self::new()
-        }
+        Self { cfg, ..Self::new() }
     }
 
     /// Compile a module and all its transitive dependencies.

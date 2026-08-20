@@ -32,11 +32,11 @@
 use std::collections::HashSet;
 
 use reify_core::ty::SelectorKind;
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
+use reify_core::{Diagnostic, DiagnosticCode, hash::ContentHash};
 use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
-    FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError,
-    Role, TopologyAttributeTable, Value,
+    GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Role, TopologyAttributeTable,
+    Value,
 };
 
 use reify_ir::boundary_attachment::NodeAttachment;
@@ -226,7 +226,7 @@ where
 ///
 /// `selector_label` is forwarded to `query_per_subshape` and embedded in
 /// any `check_query_many_len` error message, so each caller should pass its
-/// own distinct label (e.g. `"edges_by_length"` vs `"edges_by_length_with_tags"`).
+/// own distinct label (e.g. `"edges_by_length"` vs `"faces_by_area"`).
 ///
 /// `id` is supplied so predicate-side error messages can name the offending
 /// sub-shape; predicates that don't need it may use `_id`.
@@ -250,34 +250,6 @@ where
         }
     }
     Ok(out)
-}
-
-/// Record a [`FeatureTag`] in `table` for every id in `ids`.
-///
-/// Each tag is derived from `parent_tag` with `sub_index` set to the
-/// enumerate position (overriding `parent_tag.sub_index`). `source_span`
-/// and `step_kind` are copied verbatim from `parent_tag`.
-///
-/// Called by every `*_with_tags` selector **before** applying its filter
-/// predicate, ensuring the table is fully populated regardless of which
-/// sub-shapes pass the predicate. This centralises the per-child tag-
-/// derivation rule so a single change here propagates to all four tagged
-/// variants.
-fn record_subshape_tags(
-    table: &mut FeatureTagTable,
-    ids: &[GeometryHandleId],
-    parent_tag: FeatureTag,
-) {
-    for (i, id) in ids.iter().enumerate() {
-        table.record(
-            *id,
-            FeatureTag {
-                source_span: parent_tag.source_span,
-                step_kind: parent_tag.step_kind,
-                sub_index: i as u32,
-            },
-        );
-    }
 }
 
 /// Return the subset of `extract_edges(handle)` whose length lies in
@@ -312,51 +284,6 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     )
 }
 
-/// Return the subset of `extract_edges(parent_handle)` whose length lies in
-/// `[min_m, max_m]` (inclusive on both ends), while also recording a
-/// [`FeatureTag`] for every extracted edge in `table`.
-///
-/// Mirrors [`edges_by_length`]'s logic exactly — same filter predicate, same
-/// canonical sub-shape order — while additionally populating `table` with
-/// per-edge tags derived from `parent_tag`: each edge at position `i` in the
-/// extracted list gets a tag whose `source_span` and `step_kind` are copied
-/// from `parent_tag` and whose `sub_index` is `i as u32`.
-///
-/// Tags are recorded for **all** extracted edges (before the length-filter
-/// runs), so callers can query the table even for edges that do not pass the
-/// filter. This matches the recording contract established by
-/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
-///
-/// Downstream consumers can pass the populated table to
-/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
-/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
-/// unique-tag invariant is later violated.
-///
-/// # Errors
-///
-/// Same as [`edges_by_length`].
-pub fn edges_by_length_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    min_m: f64,
-    max_m: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let edges = kernel.extract_edges(parent_handle)?;
-    record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(
-        kernel,
-        &edges,
-        "edges_by_length_with_tags",
-        GeometryQuery::EdgeLength,
-        |id, value| {
-            let len = expect_real("EdgeLength", id, value)?;
-            Ok(len >= min_m && len <= max_m)
-        },
-    )
-}
-
 /// Return the subset of `extract_faces(handle)` whose surface area lies in
 /// `[min_m2, max_m2]` (inclusive on both ends).
 ///
@@ -381,53 +308,6 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
         kernel,
         &faces,
         "faces_by_area",
-        GeometryQuery::SurfaceArea,
-        |id, value| {
-            let area = expect_real("SurfaceArea", id, value)?;
-            Ok(area >= min_m2 && area <= max_m2)
-        },
-    )
-}
-
-/// Return the subset of `extract_faces(parent_handle)` whose surface area lies
-/// in `[min_m2, max_m2]` (inclusive on both ends), while also recording a
-/// [`FeatureTag`] for every extracted face in `table`.
-///
-/// Mirrors [`faces_by_area`]'s logic exactly — same filter predicate, same
-/// canonical sub-shape order — while additionally populating `table` with
-/// per-face tags derived from `parent_tag`: each face at position `i` in the
-/// extracted list gets a tag whose `source_span` and `step_kind` are copied
-/// from `parent_tag` and whose `sub_index` is `i as u32` (the parent's
-/// `sub_index` is **not** inherited — each child position determines its own
-/// `sub_index`).
-///
-/// Tags are recorded for **all** extracted faces (before the area-filter
-/// runs), so callers can query the table even for faces that do not pass the
-/// filter. This matches the recording contract established by
-/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
-///
-/// Downstream consumers can pass the populated table to
-/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
-/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
-/// unique-tag invariant is later violated.
-///
-/// # Errors
-///
-/// Same as [`faces_by_area`].
-pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    min_m2: f64,
-    max_m2: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let faces = kernel.extract_faces(parent_handle)?;
-    record_subshape_tags(table, &faces, parent_tag);
-    filter_by_value(
-        kernel,
-        &faces,
-        "faces_by_area_with_tags",
         GeometryQuery::SurfaceArea,
         |id, value| {
             let area = expect_real("SurfaceArea", id, value)?;
@@ -1000,86 +880,6 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     )
 }
 
-/// Return the subset of `extract_edges(parent_handle)` whose midpoint tangent
-/// is (anti-)parallel to `axis` within `angular_tol_rad`, while also recording
-/// a [`FeatureTag`] for every extracted edge in `table`.
-///
-/// Mirrors [`edges_parallel_to`]'s logic exactly — same sign-tolerant predicate
-/// (`|t · axis| >= cos(angular_tol_rad)`), same canonical sub-shape order —
-/// while additionally populating `table` with per-edge tags derived from
-/// `parent_tag`: each edge at position `i` in the extracted list gets a tag
-/// whose `source_span` and `step_kind` are copied from `parent_tag` and whose
-/// `sub_index` is `i as u32`.
-///
-/// **Both tolerance and axis are validated before extraction:** if
-/// `angular_tol_rad` is out of range or non-finite, or if `axis` is the zero
-/// vector or contains a non-finite component, the function returns a
-/// `QueryError::QueryFailed` immediately, before calling `extract_edges` or
-/// touching `table`. This matches the baseline's "fail before kernel touch"
-/// contract.
-///
-/// Tags are recorded for **all** extracted edges (before the axis-filter
-/// runs), so callers can query the table even for edges that do not pass the
-/// filter. This matches the recording contract established by
-/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
-///
-/// Downstream consumers can pass the populated table to
-/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
-/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
-/// unique-tag invariant is later violated.
-///
-/// # Errors
-///
-/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
-///   outside the valid range `[0, π/2]`. Fires before any kernel touch or
-///   table mutation.
-/// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
-///   contains a non-finite component. Fires before any kernel touch or table
-///   mutation.
-/// - Otherwise same as [`edges_parallel_to`].
-pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    axis: [f64; 3],
-    angular_tol_rad: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    // Tolerance validation is FIRST — before axis normalization, extract_edges,
-    // and table mutation. "Fail before kernel touch" contract pinned by
-    // edges_parallel_to_with_tags_*_errors_before_table_mutation tests.
-    validate_angular_tol(
-        "edges_parallel_to_with_tags",
-        angular_tol_rad,
-        std::f64::consts::FRAC_PI_2,
-        "π/2",
-    )?;
-    let axis = normalize3(axis).ok_or_else(|| {
-        QueryError::QueryFailed(
-            "edges_parallel_to_with_tags: axis direction must be non-zero and finite".into(),
-        )
-    })?;
-    let cos_tol = angular_tol_rad.cos();
-    let edges = kernel.extract_edges(parent_handle)?;
-    record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(
-        kernel,
-        &edges,
-        "edges_parallel_to_with_tags",
-        GeometryQuery::EdgeTangent,
-        |id, value| {
-            let raw = parse_xyz_value(value, "EdgeTangent")?;
-            let tan = normalize3(raw).ok_or_else(|| {
-                QueryError::QueryFailed(format!(
-                    "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
-                    id
-                ))
-            })?;
-            Ok(dot3(tan, axis).abs() >= cos_tol)
-        },
-    )
-}
-
 /// Return the subset of `extract_edges(handle)` that lie entirely within
 /// `tol_m` (metres) of the horizontal plane `z = z_m`.
 ///
@@ -1116,111 +916,6 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
             Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
         },
     )
-}
-
-/// Return the subset of `extract_edges(parent_handle)` that lie entirely within
-/// `tol_m` (metres) of the horizontal plane `z = z_m`, while also recording a
-/// [`FeatureTag`] for every extracted edge in `table`.
-///
-/// This is a proof-of-concept variant of [`edges_at_height`] that demonstrates
-/// the feature-tag runtime table (task 2323). It mirrors `edges_at_height`'s
-/// logic exactly — same filter predicate, same canonical sub-shape order — while
-/// additionally populating `table` with per-edge tags derived from `parent_tag`:
-/// each edge at position `i` in the extracted list gets a tag whose
-/// `source_span` and `step_kind` are copied from `parent_tag` and whose
-/// `sub_index` is `i as u32`.
-///
-/// Tags are recorded for **all** extracted edges (before the z-filter runs),
-/// so callers can query the table even for edges that do not pass the filter.
-///
-/// # Errors
-///
-/// Same as [`edges_at_height`].
-pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    z_m: f64,
-    tol_m: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let edges = kernel.extract_edges(parent_handle)?;
-    record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(
-        kernel,
-        &edges,
-        "edges_at_height_with_tags",
-        GeometryQuery::BoundingBox,
-        |_id, value| {
-            let (zmin, zmax) = parse_bbox_z_extents(value)?;
-            Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
-        },
-    )
-}
-
-/// Resolve a `FeatureTag` to a unique candidate geometry handle.
-///
-/// Filters `candidates` to those whose recorded tag in `table` equals `target`
-/// (full `FeatureTag` equality via the `PartialEq` derive). Returns `Some(handle)`
-/// iff exactly one match is found.
-///
-/// If zero or more than one candidates match, returns `None` and pushes a
-/// [`DiagnosticCode::TopologyTagStale`] warning onto `diagnostics` with:
-/// - a primary label at `selector_span` (`"selector call"`), and
-/// - a secondary label at `target.source_span` (`"feature originally produced here"`).
-///
-/// The match count is embedded in the message so callers can distinguish the
-/// zero-match (sub-shape lost) from the multi-match (topology split) case.
-///
-/// # Scope
-/// This is a pure building-block helper: it does not call into the geometry kernel
-/// and does not require any `&mut dyn GeometryKernel` reference. Callers are
-/// expected to have already extracted the candidate handles (via
-/// `kernel.extract_edges` / `kernel.extract_faces`) and populated the table
-/// (via `edges_at_height_with_tags` or equivalent) before calling this resolver.
-///
-/// # Preconditions
-/// Callers SHOULD pass a deduplicated `candidates` slice (the OCCT-backed
-/// kernel extractors guarantee this via `TopoDS_Shape::IsSame`). As a
-/// defense-in-depth measure, the resolver internally deduplicates via a
-/// `HashSet<GeometryHandleId>` so that accidental duplicates from a
-/// misbehaving extractor cannot inflate the match count or produce a spurious
-/// `W_TOPOLOGY_TAG_STALE` diagnostic.
-pub fn resolve_unique_by_tag(
-    table: &FeatureTagTable,
-    candidates: &[GeometryHandleId],
-    target: FeatureTag,
-    selector_span: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<GeometryHandleId> {
-    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
-    let mut found: Option<GeometryHandleId> = None;
-    let mut n: usize = 0;
-    for &id in candidates {
-        if seen.insert(id) && table.lookup(id) == Some(&target) {
-            n += 1;
-            if n == 1 {
-                found = Some(id);
-            }
-        }
-    }
-    match n {
-        1 => found,
-        n => {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "feature-tag selector matched {n} sub-shapes (expected exactly 1; topology may have changed)"
-                ))
-                .with_code(DiagnosticCode::TopologyTagStale)
-                .with_label(DiagnosticLabel::new(selector_span, "selector call"))
-                .with_label(DiagnosticLabel::new(
-                    target.source_span,
-                    "feature originally produced here",
-                )),
-            );
-            None
-        }
-    }
 }
 
 /// Parse a `Value::String` that the kernel formatted as JSON
@@ -1365,7 +1060,7 @@ pub fn resolve<K: GeometryKernel + ?Sized>(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     // Back-compat wrapper (task 4536): the table-free entry point that external
-    // callers (`crates/reify-eval/tests/selector_boundary_gate.rs`) and the
+    // callers (`crates/reify-eval/tests/harness_topology_selector/selector_boundary_gate.rs`) and the
     // legacy in-crate caller (`eval_selector_feature_datum`) keep. Delegates
     // with an empty default attribute table, so a `LeafQuery::ByRole` leaf
     // resolves to empty here — harmless, since those callers never build a
@@ -1504,7 +1199,7 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
         },
         LeafQuery::Named(_label) => {
             // Interim D8 behavior: full name→handle resolution is δ /
-            // persistent-naming-v2. No FeatureTagTable is plumbed through
+            // persistent-naming-v2. No name→handle table is plumbed through
             // resolve(), so emit a stale-tag warning and resolve to the empty
             // selection rather than panicking. The 7 re-typed constructors
             // never build a Named leaf, so this path is unreachable from the
@@ -1545,13 +1240,21 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
             // Correlating `attr.feature_id` to the target body needs the
             // persistent-naming-v2 body→feature map (2570/2302), explicitly NOT
             // pulled forward by this task (it must stay orthogonal to the
-            // `LeafQuery::Named`/FeatureTagTable path). The empty→Undef contract
+            // `LeafQuery::Named` name-resolution path). The empty→Undef contract
             // one layer up therefore holds per-DESIGN ("no body carries this
             // role"), NOT per-BODY.
+            //
+            // Non-threaded reader (interim single-kernel Occt, #4351): this
+            // ByRole leaf is not part of the resolver/ad-hoc-selector scope
+            // threading this task adds (step-6) — every handle recorded
+            // today is Occt-scoped, so collapsing `table.iter()`'s
+            // `KernelHandle` key back to its bare `GeometryHandleId` here is
+            // behavior-preserving. Mixed-kernel selector scoping is
+            // downstream work (e.g. #5071).
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.role == *role)
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
@@ -1571,15 +1274,19 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
         // requires, so inlining the table-walk here (rather than calling
         // them) is the faithful ByRole mirror.
         LeafQuery::CreatedByFeature(fid) => {
+            // Non-threaded reader (interim single-kernel Occt, #4351) — see
+            // rationale on `LeafQuery::ByRole` above.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.feature_id == *fid && role_is_face(attr.role))
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
         }
         LeafQuery::SplitByFeature(fid) => {
+            // Non-threaded reader (interim single-kernel Occt, #4351) — see
+            // rationale on `LeafQuery::ByRole` above.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| {
@@ -1589,7 +1296,7 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
                             .iter()
                             .any(|entry| entry.splitting_feature_id == *fid)
                 })
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
@@ -1649,7 +1356,12 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
 /// same enum. Lives in reify-eval (not as a `Role` method in reify-ir) per
 /// the architect's design decision: role→face classification is a
 /// resolve-time selector concern, not an intrinsic `Role` property.
-fn role_is_face(role: Role) -> bool {
+///
+/// `pub` (not `pub(crate)`): the `topology_attribute_local_features_e2e`
+/// integration test reuses this exact classifier for its provenance
+/// assertions rather than hand-maintaining a duplicate match, so a future
+/// `Role` variant only needs to be classified in this one place.
+pub fn role_is_face(role: Role) -> bool {
     match role {
         Role::Cap(_)
         | Role::Side
@@ -1657,7 +1369,8 @@ fn role_is_face(role: Role) -> bool {
         | Role::AxisFace
         | Role::SweptFace
         | Role::LoftedFace
-        | Role::MidSurfaceFace => true,
+        | Role::MidSurfaceFace
+        | Role::LocalFeatureFace => true,
         Role::NewEdge
         | Role::MidSurfaceEdge
         | Role::CornerVertex { .. }
@@ -1997,7 +1710,8 @@ mod tests {
     use super::*;
     use reify_ir::{
         CapKind, ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryOp,
-        Mesh, ModEntry, Role, TessError, TopologyAttribute, TopologyAttributeTable,
+        KernelHandle, KernelId, Mesh, ModEntry, Role, TessError, TopologyAttribute,
+        TopologyAttributeTable,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2631,251 +2345,6 @@ mod tests {
         );
     }
 
-    // ─── resolve_unique_by_tag tests (task 2332 — W_TOPOLOGY_TAG_STALE) ────────
-
-    /// Happy-path: exactly one candidate matches the target tag.
-    /// Resolver must return `Some(matched_handle)` and push no diagnostics.
-    #[test]
-    fn resolve_unique_by_tag_one_match_returns_some_with_no_diagnostics() {
-        use reify_core::{Diagnostic, SourceSpan};
-        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
-
-        let id1 = GeometryHandleId(1);
-        let id2 = GeometryHandleId(2);
-        let id3 = GeometryHandleId(3);
-
-        let shared_span = SourceSpan::new(0, 10);
-        let tag1 = FeatureTag {
-            source_span: shared_span,
-            step_kind: StepKind::Primitive,
-            sub_index: 0,
-        };
-        let tag2 = FeatureTag {
-            source_span: shared_span,
-            step_kind: StepKind::Primitive,
-            sub_index: 1,
-        };
-        let tag3 = FeatureTag {
-            source_span: shared_span,
-            step_kind: StepKind::Primitive,
-            sub_index: 2,
-        };
-
-        let mut table = FeatureTagTable::default();
-        table.record(id1, tag1);
-        table.record(id2, tag2);
-        table.record(id3, tag3);
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let selector_span = SourceSpan::new(10, 20);
-        let result = resolve_unique_by_tag(
-            &table,
-            &[id1, id2, id3],
-            tag2,
-            selector_span,
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            result,
-            Some(id2),
-            "should return the uniquely-matching handle"
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "no diagnostics on a clean unique match"
-        );
-    }
-
-    /// Zero-match path: no candidates carry the target tag.
-    /// Resolver must return `None` and push exactly one `TopologyTagStale` warning
-    /// with labels pointing at both the selector call site and the tag origin.
-    #[test]
-    fn resolve_unique_by_tag_zero_matches_emits_warning_and_returns_none() {
-        use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
-        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
-
-        let id1 = GeometryHandleId(10);
-        let id2 = GeometryHandleId(11);
-
-        // Both handles carry a non-target tag (sub_index differs from target).
-        let tag_source_span = SourceSpan::new(100, 110);
-        let tag1 = FeatureTag {
-            source_span: tag_source_span,
-            step_kind: StepKind::Boolean,
-            sub_index: 5,
-        };
-        let tag2 = FeatureTag {
-            source_span: tag_source_span,
-            step_kind: StepKind::Boolean,
-            sub_index: 6,
-        };
-
-        let mut table = FeatureTagTable::default();
-        table.record(id1, tag1);
-        table.record(id2, tag2);
-
-        // Target tag is distinct from both (sub_index 99 not present).
-        let target_tag = FeatureTag {
-            source_span: tag_source_span,
-            step_kind: StepKind::Boolean,
-            sub_index: 99,
-        };
-        let selector_span = SourceSpan::new(200, 210);
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = resolve_unique_by_tag(
-            &table,
-            &[id1, id2],
-            target_tag,
-            selector_span,
-            &mut diagnostics,
-        );
-
-        assert!(result.is_none(), "zero matches should return None");
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "exactly one diagnostic on zero matches"
-        );
-
-        let diag = &diagnostics[0];
-        assert_eq!(diag.severity, Severity::Warning, "should be a warning");
-        assert_eq!(
-            diag.code,
-            Some(DiagnosticCode::TopologyTagStale),
-            "must carry TopologyTagStale code"
-        );
-        assert!(
-            diag.message.contains("matched 0 "),
-            "message should contain 'matched 0 ' to pin the exact count, got: {:?}",
-            diag.message,
-        );
-        assert!(
-            diag.labels.iter().any(|l| l.span == selector_span),
-            "labels must include selector_span"
-        );
-        assert!(
-            diag.labels.iter().any(|l| l.span == target_tag.source_span),
-            "labels must include target tag source_span"
-        );
-    }
-
-    /// Multi-match path: THREE candidates all carry the same target tag (ambiguous/split topology).
-    /// Resolver must return `None`, push exactly ONE diagnostic (not one per duplicate),
-    /// the message must name the count "3", and labels include both spans.
-    #[test]
-    fn resolve_unique_by_tag_multiple_matches_emits_warning_and_returns_none() {
-        use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
-        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
-
-        let id1 = GeometryHandleId(20);
-        let id2 = GeometryHandleId(21);
-        let id3 = GeometryHandleId(22);
-
-        // All three handles carry the SAME target tag — ambiguous split scenario.
-        let tag_source_span = SourceSpan::new(50, 60);
-        let target_tag = FeatureTag {
-            source_span: tag_source_span,
-            step_kind: StepKind::Sweep,
-            sub_index: 7,
-        };
-
-        let mut table = FeatureTagTable::default();
-        table.record(id1, target_tag);
-        table.record(id2, target_tag);
-        table.record(id3, target_tag);
-
-        let selector_span = SourceSpan::new(300, 310);
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = resolve_unique_by_tag(
-            &table,
-            &[id1, id2, id3],
-            target_tag,
-            selector_span,
-            &mut diagnostics,
-        );
-
-        assert!(result.is_none(), "multiple matches should return None");
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "must fire exactly one diagnostic regardless of match count"
-        );
-
-        let diag = &diagnostics[0];
-        assert_eq!(diag.severity, Severity::Warning, "should be a warning");
-        assert_eq!(
-            diag.code,
-            Some(DiagnosticCode::TopologyTagStale),
-            "must carry TopologyTagStale code"
-        );
-        assert!(
-            diag.message.contains("matched 3 "),
-            "message must contain 'matched 3 ' to pin the exact count, got: {:?}",
-            diag.message,
-        );
-        assert!(
-            diag.labels.iter().any(|l| l.span == selector_span),
-            "labels must include selector_span"
-        );
-        assert!(
-            diag.labels.iter().any(|l| l.span == target_tag.source_span),
-            "labels must include target tag source_span"
-        );
-    }
-
-    /// Regression: duplicate candidate ids must not inflate the match count to a
-    /// spurious split-topology warning.
-    ///
-    /// If the resolver doesn't deduplicate, passing `&[id1, id1, id1]` for a
-    /// handle that carries the target tag would count `n = 3` and emit a
-    /// `TopologyTagStale` warning — a false positive.  The resolver must treat
-    /// all three slots as one logical match and return `Some(id1)` with zero
-    /// diagnostics.
-    #[test]
-    fn resolve_unique_by_tag_duplicate_candidate_does_not_inflate_match_count() {
-        use reify_core::{Diagnostic, SourceSpan};
-        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
-
-        let id1 = GeometryHandleId(50);
-
-        let tag_source_span = SourceSpan::new(400, 410);
-        let target_tag = FeatureTag {
-            source_span: tag_source_span,
-            step_kind: StepKind::Primitive,
-            sub_index: 0,
-        };
-
-        let mut table = FeatureTagTable::default();
-        table.record(id1, target_tag);
-
-        let selector_span = SourceSpan::new(500, 510);
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        // Pass the SAME id three times — an unguarded resolver would count n=3 and
-        // emit a spurious W_TOPOLOGY_TAG_STALE warning instead of returning Some(id1).
-        let result = resolve_unique_by_tag(
-            &table,
-            &[id1, id1, id1],
-            target_tag,
-            selector_span,
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            result,
-            Some(id1),
-            "duplicate candidate ids must not inflate the match count to a spurious split-topology warning",
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "duplicate candidate ids must not inflate the match count to a spurious split-topology warning; \
-             got diagnostics: {:?}",
-            diagnostics,
-        );
-    }
-
     // ─── filter_by_value tests ───────────────────────────────────────────────
 
     /// Happy-path: `filter_by_value` returns only the ids whose predicate
@@ -3000,71 +2469,6 @@ mod tests {
             kernel.query_calls(),
             0,
             "per-element query must not be called"
-        );
-    }
-
-    /// Regression: dedup must apply to the full candidate set, not only matching
-    /// ids.  Interleaves a matching id with a non-matching id (both duplicated)
-    /// to verify that the dedup gate (`seen.insert`) is evaluated unconditionally
-    /// for every candidate — regardless of tag-match result.
-    ///
-    /// This protects against a future refactor that moves `seen.insert` inside the
-    /// tag-match branch (e.g. swapping the `&&` operands to
-    /// `table.lookup(id) == Some(&target) && seen.insert(id)`), which would
-    /// correctly dedup matching ids but silently skip adding non-matching ids to
-    /// `seen`, leaving them visible to subsequent loop iterations.
-    ///
-    /// Slice under test: `[id_match, id_nomatch, id_nomatch, id_match]`.
-    /// Expected: `Some(id_match)`, zero diagnostics.
-    #[test]
-    fn resolve_unique_by_tag_interleaved_matching_and_nonmatching_duplicates() {
-        use reify_core::{Diagnostic, SourceSpan};
-        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
-
-        let id_match = GeometryHandleId(100);
-        let id_nomatch = GeometryHandleId(200);
-
-        let tag_source_span = SourceSpan::new(600, 620);
-        let target_tag = FeatureTag {
-            source_span: tag_source_span,
-            step_kind: StepKind::Primitive,
-            sub_index: 0,
-        };
-        let other_tag = FeatureTag {
-            source_span: tag_source_span,
-            step_kind: StepKind::Primitive,
-            sub_index: 1,
-        };
-
-        let mut table = FeatureTagTable::default();
-        table.record(id_match, target_tag);
-        table.record(id_nomatch, other_tag);
-
-        let selector_span = SourceSpan::new(700, 720);
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        // Both ids appear twice; they are interleaved so the duplicate of id_match
-        // is not adjacent to its first occurrence.  An unguarded resolver (or one
-        // that only deduplicates matching ids) would count n=2 and emit a spurious
-        // W_TOPOLOGY_TAG_STALE instead of returning Some(id_match).
-        let result = resolve_unique_by_tag(
-            &table,
-            &[id_match, id_nomatch, id_nomatch, id_match],
-            target_tag,
-            selector_span,
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            result,
-            Some(id_match),
-            "duplicate candidate ids must not inflate the match count regardless of tag-match order",
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "no spurious W_TOPOLOGY_TAG_STALE when matching and non-matching duplicates are interleaved; \
-             got diagnostics: {:?}",
-            diagnostics,
         );
     }
 
@@ -4192,10 +3596,10 @@ mod tests {
         // Record face_b (local_index 1) BEFORE face_a (local_index 0) so the
         // output order is governed by the (local_index, id) sort, not by the
         // (unspecified) HashMap iteration / insertion order.
-        table.record(face_b, role_attr(Role::MidSurfaceFace, 1));
-        table.record(face_a, role_attr(Role::MidSurfaceFace, 0));
-        table.record(edge, role_attr(Role::MidSurfaceEdge, 0));
-        table.record(other, role_attr(Role::Side, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_b }, role_attr(Role::MidSurfaceFace, 1));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_a }, role_attr(Role::MidSurfaceFace, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: edge }, role_attr(Role::MidSurfaceEdge, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: other }, role_attr(Role::Side, 0));
 
         // Disjoint sentinel sub-shapes: if the ByRole arm wrongly fell through
         // to extract_faces/extract_edges, the result would contain these.
@@ -4318,11 +3722,11 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // f1's faces recorded OUT OF ORDER (local_index 1 before 0) so the
         // output order is governed by the (local_index, id) sort.
-        table.record(f1_face_b, feature_attr(f1.clone(), Role::Cap(CapKind::Top), 1, vec![]));
-        table.record(f1_face_a, feature_attr(f1.clone(), Role::Side, 0, vec![]));
-        table.record(f1_edge, feature_attr(f1.clone(), Role::NewEdge, 0, vec![]));
-        table.record(f2_face_b, feature_attr(f2.clone(), Role::Cap(CapKind::Bottom), 1, vec![]));
-        table.record(f2_face_a, feature_attr(f2.clone(), Role::Side, 0, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_face_b }, feature_attr(f1.clone(), Role::Cap(CapKind::Top), 1, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_face_a }, feature_attr(f1.clone(), Role::Side, 0, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_edge }, feature_attr(f1.clone(), Role::NewEdge, 0, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f2_face_b }, feature_attr(f2.clone(), Role::Cap(CapKind::Bottom), 1, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f2_face_a }, feature_attr(f2.clone(), Role::Side, 0, vec![]));
 
         // Disjoint sentinel sub-shapes: if the arm wrongly fell through to
         // extract_faces/extract_edges, the result would contain these.
@@ -4391,19 +3795,19 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // Recorded OUT OF ORDER (local_index 1 before 0).
         table.record(
-            split_face_b,
+            KernelHandle { kernel: KernelId::Occt, id: split_face_b },
             feature_attr(other_feature.clone(), Role::Cap(CapKind::Top), 1, vec![split_entry.clone()]),
         );
         table.record(
-            split_face_a,
+            KernelHandle { kernel: KernelId::Occt, id: split_face_a },
             feature_attr(other_feature.clone(), Role::Side, 0, vec![split_entry.clone()]),
         );
         table.record(
-            split_edge,
+            KernelHandle { kernel: KernelId::Occt, id: split_edge },
             feature_attr(other_feature.clone(), Role::NewEdge, 0, vec![split_entry]),
         );
         table.record(
-            unsplit_face,
+            KernelHandle { kernel: KernelId::Occt, id: unsplit_face },
             feature_attr(other_feature, Role::Side, 2, vec![other_entry]),
         );
 
@@ -4481,6 +3885,7 @@ mod tests {
             Role::SweptFace,
             Role::LoftedFace,
             Role::MidSurfaceFace,
+            Role::LocalFeatureFace,
         ] {
             assert!(role_is_face(role), "{role:?} must classify as a face role");
         }

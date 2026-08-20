@@ -209,8 +209,7 @@ fn param_binding_selector_to_list_real_no_match_keeps_code_none() {
         .expect("expected a no-matching-overload error for Selector→List<Real>");
 
     assert_eq!(
-        no_match.code,
-        None,
+        no_match.code, None,
         "Selector→List<Real> no-match must keep code = None (not SelectorKindMismatch); \
          got: {:?}",
         no_match.code

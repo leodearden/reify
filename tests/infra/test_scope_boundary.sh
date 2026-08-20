@@ -43,6 +43,9 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/plan_capture_lib.sh"
 
+[ -f "$SCRIPT_DIR/copy_list_preflight_lib.sh" ] || { echo "ERROR: copy_list_preflight_lib.sh not found at $SCRIPT_DIR/copy_list_preflight_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
+
 source "$REPO_ROOT/scripts/affected-crates-lib.sh"
 
 _TMPDIRS=()
@@ -75,6 +78,15 @@ make_branch_fixture() {
     mkdir -p "$dir/.config"
     cp "$REPO_ROOT/.config/nextest.toml"                 "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
+    # Preflight: fail loudly if verify.sh's TRANSITIVE source closure has a lib
+    # that was not copied to the fixture. Without this check a new source line
+    # (direct or transitive-under-an-already-copied-lib) would be silently
+    # swallowed by the 2>/dev/null on the --print-plan invocations, surfacing
+    # only as an opaque all-plan-non-empty sanity failure. Shared helper
+    # (task #5154) — see tests/infra/copy_list_preflight_lib.sh for the parser
+    # grammar and the transitive-closure rationale (generalizes the direct-only
+    # grep this block used to run inline).
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || exit 1
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"

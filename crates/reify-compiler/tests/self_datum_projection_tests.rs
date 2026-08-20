@@ -57,7 +57,10 @@ fn self_frame_types_as_frame() {
         Type::Frame(3),
         "self.frame must type as Frame(3)"
     );
-    assert!(errors(&module).is_empty(), "self.frame must type-check clean");
+    assert!(
+        errors(&module).is_empty(),
+        "self.frame must type-check clean"
+    );
 }
 
 #[test]
@@ -68,7 +71,10 @@ fn self_xy_plane_types_as_plane() {
         Type::Plane,
         "self.xy_plane must type as Plane"
     );
-    assert!(errors(&module).is_empty(), "self.xy_plane must type-check clean");
+    assert!(
+        errors(&module).is_empty(),
+        "self.xy_plane must type-check clean"
+    );
 }
 
 #[test]
@@ -79,7 +85,10 @@ fn self_yz_plane_types_as_plane() {
         Type::Plane,
         "self.yz_plane must type as Plane"
     );
-    assert!(errors(&module).is_empty(), "self.yz_plane must type-check clean");
+    assert!(
+        errors(&module).is_empty(),
+        "self.yz_plane must type-check clean"
+    );
 }
 
 #[test]

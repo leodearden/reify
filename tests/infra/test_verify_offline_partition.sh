@@ -37,6 +37,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# For nextest_available_ambient (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
 echo "=== offline/gate heavy-test partition drift-guard tests (task 4917 / A6) ==="
 
 # ---------------------------------------------------------------------------
@@ -69,15 +76,51 @@ esac
 NOT_PATTERN='-E "not ('
 
 # ---------------------------------------------------------------------------
-# Detect nextest availability once (role/knob-invariant; probed directly
-# against real verify.sh -- always defined, unlike the driver helpers below).
+# Detect nextest availability once, via the shared detector in
+# tests/infra/nextest_absent_lib.sh (task 5644) -- the same plan-header parse
+# seven suites had each open-coded. Still probed directly against real
+# verify.sh, so it is always defined, unlike the driver helpers below.
+#
+# This probe makes its own dedicated --print-plan capture (read by nothing else
+# in this file), so it takes the AMBIENT form rather than
+# nextest_available_in_plan.
+#
+# The dropped `env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task` pin.
+# nextest_available_ambient runs verify.sh with no env prefix, so this only
+# preserves behaviour if NEXTEST is genuinely role/knob-invariant -- verified in
+# the source: verify.sh's `NEXTEST=0; if cargo nextest --version ...` probe
+# derives NEXTEST from cargo-nextest resolvability ALONE, reading neither
+# DF_VERIFY_ROLE nor REIFY_GATE_EXCLUDE_HEAVY, and the plan header interpolates
+# that same $NEXTEST.
+#
+# UNDER THE NEXTEST-ABSENT HARNESS. This suite is S3 in
+# tests/infra/test_verify_nextest_absent_suites.sh, so it also runs as a child
+# of nx_run. Its "ambient" env IS the harness env there (HOME/PATH already
+# redirected by the parent), and nextest_available_ambient's un-prefixed
+# `bash "$verify" --print-plan` inherits it exactly as the old open-coded
+# capture did -- reading nextest=0, NEXTEST_AVAILABLE=0, unchanged.
+#
+# WHAT THE SHARED PATH TRADES -- not a free robustness win. The lib's extractor
+# is `|| true`-guarded, so it does not remove the old failure mode, it CONVERTS
+# it: where the old unguarded capture aborted the suite under `set -o pipefail`,
+# this one answers "not available" and carries on. That moves the failure TOWARD
+# vacuous green, not away from it, and dropping the role pin supplies a concrete
+# trigger -- an ambient unrecognized role now short-circuits the probe
+# (`DF_VERIFY_ROLE=bogus bash scripts/verify.sh test --scope all --print-plan`
+# exits 64 with nothing on stdout, measured), where the pinned form was immune.
+#
+# What makes that acceptable is NOT the guard -- it is the else arm of every
+# NEXTEST_AVAILABLE branch below. A false "not available" on a nextest-present
+# host routes assertion (b) into `_gate_lacks ... "$NOT_PATTERN"` and assertions
+# (c)/(d) into `_offline_lacks '-E "('`, all three of which then fail loudly
+# against a plan that DOES carry the -E expression. Those else arms are this
+# probe's only detector of a wrong answer: do not delete them as dead weight on
+# a nextest-present host.
 # ---------------------------------------------------------------------------
-_PROBE_HEADER="$(env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task \
-    bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep '^# verify.sh plan')"
 NEXTEST_AVAILABLE=0
-case "$_PROBE_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_ambient "$REPO_ROOT/scripts/verify.sh"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 # ===========================================================================
@@ -110,23 +153,38 @@ plan_for() {
     fi
 }
 
-# gate_plan <role> <knob-mode> — command lines only (header stripped) for a
-# gate role (task/merge), via plan_for.
-gate_plan() {
-    plan_for "$1" "$2" | grep -v '^#'
+# _dump_plan_evidence <label> <raw-plan-text> <rc> — writes the FULL raw
+# plan (header included -- carries the diagnostic nextest=0/1 field) plus
+# the driver's exit code to STDERR under a stable marker, so a failing
+# oracle check preserves its evidence instead of returning 1 silently
+# (esc-4959-57/esc-4959-56). When the checker runs as assert()'s own
+# command argument, assert's tmpfile capture (test_helpers.sh) picks this
+# up and dumps it right after the "  FAIL:" line in the archived verify log.
+_dump_plan_evidence() {
+    local label="$1" raw="$2" rc="$3"
+    echo "  [PLAN-DUMP] $label: driver rc=$rc; full captured plan follows:" >&2
+    printf '%s\n' "$raw" >&2
 }
 
 _gate_has() {
     # $1=role $2=knob-mode $3=needle (fixed string)
-    local out
-    out="$(gate_plan "$1" "$2")" || return 1
-    printf '%s' "$out" | grep -qF -- "$3"
+    local raw rc=0
+    raw="$(plan_for "$1" "$2")" || rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$raw" | grep -v '^#' | grep -qF -- "$3"; then
+        return 0
+    fi
+    _dump_plan_evidence "_gate_has $1 $2 '$3'" "$raw" "$rc"
+    return 1
 }
 _gate_lacks() {
     # $1=role $2=knob-mode $3=needle (fixed string)
-    local out
-    out="$(gate_plan "$1" "$2")" || return 1
-    ! printf '%s' "$out" | grep -qF -- "$3"
+    local raw rc=0
+    raw="$(plan_for "$1" "$2")" || rc=$?
+    if [ "$rc" -eq 0 ] && ! printf '%s\n' "$raw" | grep -v '^#' | grep -qF -- "$3"; then
+        return 0
+    fi
+    _dump_plan_evidence "_gate_lacks $1 $2 '$3'" "$raw" "$rc"
+    return 1
 }
 
 # offline_plan — memoized offline (DF_VERIFY_ROLE=offline) --print-plan
@@ -169,32 +227,56 @@ parse_atoms_from_plan() {
 }
 
 _offline_header_has() {
-    local plan
-    plan="$(offline_plan)" || return 1
-    printf '%s\n' "$plan" | grep '^# verify.sh plan' | grep -qF -- "$1"
+    local plan rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$plan" | grep '^# verify.sh plan' | grep -qF -- "$1"; then
+        return 0
+    fi
+    _dump_plan_evidence "_offline_header_has '$1'" "$plan" "$rc"
+    return 1
 }
 _offline_cmds_has() {
-    local plan
-    plan="$(offline_plan)" || return 1
-    printf '%s\n' "$plan" | grep -v '^#' | grep -qF -- "$1"
+    local plan rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$plan" | grep -v '^#' | grep -qF -- "$1"; then
+        return 0
+    fi
+    _dump_plan_evidence "_offline_cmds_has '$1'" "$plan" "$rc"
+    return 1
 }
 _offline_lacks() {
-    local plan
-    plan="$(offline_plan)" || return 1
-    ! printf '%s\n' "$plan" | grep -qF -- "$1"
+    local plan rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ] && ! printf '%s\n' "$plan" | grep -qF -- "$1"; then
+        return 0
+    fi
+    _dump_plan_evidence "_offline_lacks '$1'" "$plan" "$rc"
+    return 1
 }
 _offline_has_cargo_line() {
-    local plan cmds n
-    plan="$(offline_plan)" || return 1
-    cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
-    n="$(printf '%s\n' "$cmds" | grep -cE '(^| )cargo ' || true)"
-    [ "${n:-0}" -ge 1 ]
+    local plan cmds n rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
+        n="$(printf '%s\n' "$cmds" | grep -cE '(^| )cargo ' || true)"
+        if [ "${n:-0}" -ge 1 ]; then
+            return 0
+        fi
+    fi
+    _dump_plan_evidence "_offline_has_cargo_line" "$plan" "$rc"
+    return 1
 }
 _offline_all_cargo_lines_idle_class() {
-    local plan cmds
-    plan="$(offline_plan)" || return 1
-    cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
-    ! printf '%s\n' "$cmds" | grep -E '(^| )cargo ' | grep -vq 'nice -n 19 ionice -c3 cargo'
+    local plan cmds rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
+        if ! printf '%s\n' "$cmds" | grep -E '(^| )cargo ' | grep -vq 'nice -n 19 ionice -c3 cargo'; then
+            return 0
+        fi
+    fi
+    _dump_plan_evidence "_offline_all_cargo_lines_idle_class" "$plan" "$rc"
+    return 1
 }
 
 # _no_overlap_ok [expr-text] — 0 iff <expr-text> (default:
@@ -396,9 +478,23 @@ fi
 echo ""
 echo "--- Assertion (d): heavy (+) smoke partition -- no overlap, no orphan ---"
 
-assert "offline plan: no orphan -- every heavy atom is present in the emitted -E expression" \
-    _no_orphan_ok
+# The orphan check parses the emitted -E expression, which only exists on the
+# nextest plan -- the cargo-test fallback (nextest=0, a host without
+# cargo-nextest installed) has no -E support at all, so the property is
+# genuinely nextest-only and cannot be recovered by widening a grep (task
+# 5599). Guarded with the same NEXTEST_AVAILABLE idiom already used for
+# assertions (b) and (c-bis) above; guarded by
+# tests/infra/test_verify_nextest_absent_suites.sh.
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline plan: no orphan -- every heavy atom is present in the emitted -E expression" \
+        _no_orphan_ok
+else
+    assert 'offline plan, nextest unavailable: no -E expression exists to orphan-check (cargo-test fallback has no -E support)' \
+        _offline_lacks '-E "('
+fi
 
+# NOT guarded: reads the REIFY_HEAVY_NEXTEST_FILTER env manifest, not the
+# emitted plan, so it holds on both hosts.
 assert "REIFY_HEAVY_NEXTEST_FILTER has no overlap with solver_gate_smoke" \
     _no_overlap_ok
 
@@ -413,11 +509,18 @@ assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (r
 echo ""
 echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms ---"
 
-assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
-    _atom_count_is_6
+# Both parse atoms out of the ACTUAL emitted offline -E expression -- nextest-
+# only, same reasoning as assertion (d)'s orphan check above (task 5599).
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
+        _atom_count_is_6
 
-assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
-    _resolve_atoms_ok
+    assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
+        _resolve_atoms_ok
+else
+    assert 'offline plan atoms, nextest unavailable: no -E expression exists to parse atoms from (cargo-test fallback has no -E support)' \
+        _offline_lacks '-E "('
+fi
 
 # ---------------------------------------------------------------------------
 # Non-vacuity self-check: the guard's own resolve-to-disk / orphan / overlap
@@ -427,7 +530,58 @@ assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/te
 echo ""
 echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
 
-assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
-    assert_guard_rejects
+# Nextest-only: assert_guard_rejects mutates and re-checks the emitted -E
+# expression, which does not exist on the cargo-test fallback (task 5599).
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
+        assert_guard_rejects
+else
+    echo "  (skipped: nextest unavailable -- no -E expression to break and re-check)"
+fi
+
+# ---------------------------------------------------------------------------
+# Dump self-check: a forced oracle miss emits the full raw plan (header incl
+# nextest=) + driver rc to stderr (esc-4959-57/esc-4959-56). Mirrors the
+# assert_guard_rejects non-vacuity idiom above, but pins the Part-2
+# evidence-dump behavior instead of resolve-to-disk/orphan/overlap. RED on
+# base: the checkers currently print nothing on a miss.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Dump self-check: a forced oracle miss emits the full raw plan (header incl nextest=) + driver rc to stderr ---"
+
+_MISS_NEEDLE='NEEDLE_THAT_CANNOT_APPEAR_ZZZ'
+
+# _probe_gate_miss_dumps -- forces a GUARANTEED _gate_has needle miss (this
+# needle can never appear in a real plan) and checks the stderr-only output
+# contains the plan-dump marker, the nextest= header token (host-agnostic --
+# the header always carries nextest=0/1), and a driver rc= field.
+_probe_gate_miss_dumps() {
+    local err
+    if err="$(_gate_has task 1 "$_MISS_NEEDLE" 2>&1 1>/dev/null)"; then
+        return 1
+    fi
+    case "$err" in *PLAN-DUMP*) ;; *) return 1 ;; esac
+    case "$err" in *"nextest="*) ;; *) return 1 ;; esac
+    case "$err" in *"rc="*) ;; *) return 1 ;; esac
+    return 0
+}
+
+# _probe_offline_miss_dumps -- same, driving an _offline_* checker instead
+# of the _gate_* family.
+_probe_offline_miss_dumps() {
+    local err
+    if err="$(_offline_cmds_has "$_MISS_NEEDLE" 2>&1 1>/dev/null)"; then
+        return 1
+    fi
+    case "$err" in *PLAN-DUMP*) ;; *) return 1 ;; esac
+    case "$err" in *"nextest="*) ;; *) return 1 ;; esac
+    case "$err" in *"rc="*) ;; *) return 1 ;; esac
+    return 0
+}
+
+assert "gate oracle miss dumps full raw plan (header incl nextest=) + rc to stderr" \
+    _probe_gate_miss_dumps
+assert "offline oracle miss dumps full raw plan (header incl nextest=) + rc to stderr" \
+    _probe_offline_miss_dumps
 
 test_summary

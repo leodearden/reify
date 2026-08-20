@@ -503,7 +503,7 @@ import json as _json_module
 # Production-faithful verify.sh invocations (actions + scope):
 #   merge — `all --scope all`: matches the hooks/pre-merge-commit gate
 #           (profile=both comes from DF_VERIFY_ROLE=merge, verify.sh role default).
-#   task  — `test --scope all --include-infra`: orchestrator.yaml's task
+#   task  — `test --scope all --include-infra`: dark-factory-orchestrator.yaml's task
 #           test_command uses --scope branch, but the η branch touches no Rust,
 #           so a branch-scope verify here would be near-empty and useless as
 #           the ζ′ slowest-task-wall floor.  --scope all is the conservative

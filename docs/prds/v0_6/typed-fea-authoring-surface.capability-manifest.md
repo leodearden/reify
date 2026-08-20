@@ -2,6 +2,12 @@
 
 Mechanizes G3 + G6 per leaf for `docs/prds/v0_6/typed-fea-authoring-surface.md`. Each capability a task's signal asserts is bound to evidence; any binding resolving to `declared-only | test-only | producer-downstream | producer-absent | fixture-ERROR | bound≤floor` blocks the batch. Verified 2026-06-09 against base `main` @ post-4369 (`bb2f47e062`).
 
+> **Anchored, not live — every `file:line` cite below resolves against the 2026-06-09 base `bb2f47e062` named above, not against HEAD.** This is a dated G3/G6 decompose-gate record, so cite drift is expected and is not a defect: the four `Load`-conformer cites at `:31` (`fea_multi_case.ri:296/363/391/421`) read `315/419/447/477` today, purely from ordinary churn. Cites are deliberately left un-repaired — repairing only the handful that any one landed task falsified would leave a mixed-anchor document, some cites as-of-`bb2f47e062` and some as-of-HEAD, with nothing telling a reader which is which.
+>
+> **One type named here has since been retyped.** α's `direction : List<Real> = [0,0,-1]` (`:30`, `:33`) is now `Vector3<Dimensionless> = vec3(0.0, 0.0, -1.0)`, landed by task 5905 (merge `217b8e1647`) and live on both `PointLoad.direction` and `Gravity.direction` in `crates/reify-compiler/stdlib/fea_multi_case.ri`. For *why* a direction takes the dimensionless slot, see the canonical `RULING (task 5848)` in the `Vec3<Q>` header of `crates/reify-compiler/stdlib/trajectory.ri` — not restated here. Those two are cited by SYMBOL on purpose: they are the one place this document describes HEAD rather than the `bb2f47e062` base, so a `file:line` here would be anchored differently from every cite below it. The as-of-2026-08-08 measured offsets, with per-cite drift history, live in one canonical place — the 2026-08-08 row of §10.9.1 in `docs/notes/dimensioned-construction-blast-radius-2026-07-29.md`.
+>
+> **α's verdict is unaffected.** The α binding asserts the form "parses, conforms to `Load`, and type-checks in `List<Load>`", and the retyped form still satisfies all three. **PASS** stands; no row in the Summary table changes.
+
 ## Summary
 
 | Leaf | Binding class | Verdict |

@@ -27,8 +27,7 @@ use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 /// Case-sensitive: Reify function names are snake_case. (The §3 operation /
 /// function names live in the sibling [`MATH_OPERATION_NAMES`] slice — task
 /// 4182 δ — NOT in this construction-only slice.)
-pub const MATH_CONSTRUCTION_NAMES: &[&str] =
-    &["vec", "matrix", "diag", "identity", "vec3", "vec2"];
+pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity", "vec3", "vec2"];
 
 /// The complete set of math-linalg **operation / function** builtin names
 /// recognised by the compiler (task 4182 δ, the §3 operation family). Sibling
@@ -226,9 +225,9 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // kind (Real stays Real, Scalar stays Scalar) — cloning the type rather
         // than rebuilding a Scalar avoids the Real→Scalar{DIMENSIONLESS} kind
         // drift that would diverge from eval.
-        "clamp" | "lerp" => {
-            first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar())
-        }
+        "clamp" | "lerp" => first
+            .map(|a| a.result_type.clone())
+            .unwrap_or(Type::dimensionless_scalar()),
         // `min` / `max` — two distinct forms:
         //   REDUCE: arg0 is Type::Field{codomain} → returns the scalar that
         //     eval's compute_extremum yields for that codomain (mirrors
@@ -341,7 +340,9 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // Real operands — arg0's type is cloned verbatim, preserving the
         // Real-vs-Scalar kind).
         "complex" => Type::Complex(Box::new(
-            first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar()),
+            first
+                .map(|a| a.result_type.clone())
+                .unwrap_or(Type::dimensionless_scalar()),
         )),
         // `real` / `imag` / `complex_magnitude` collapse a Complex to its inner
         // quantity scalar (degrade to a scalar carrying the arg's dimension when
@@ -349,7 +350,9 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         "real" | "imag" | "complex_magnitude" => complex_inner_or_scalar(first),
         // `conjugate` is identity over the operand type (conj of a Complex is a
         // Complex; conj of a real is itself) — clone verbatim, preserving kind.
-        "conjugate" => first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar()),
+        "conjugate" => first
+            .map(|a| a.result_type.clone())
+            .unwrap_or(Type::dimensionless_scalar()),
         // `phase` / `arg` return an Angle (Scalar{ANGLE}) regardless of operand.
         "phase" | "arg" => Type::angle(),
 
@@ -388,10 +391,9 @@ fn vector_quantity_dimension(t: &Type) -> DimensionVector {
 
 /// The vector quantity dimension of `args[i]` (or `DIMENSIONLESS` if absent).
 fn arg_vector_quantity(args: &[CompiledExpr], i: usize) -> DimensionVector {
-    args.get(i)
-        .map_or(DimensionVector::DIMENSIONLESS, |a| {
-            vector_quantity_dimension(&a.result_type)
-        })
+    args.get(i).map_or(DimensionVector::DIMENSIONLESS, |a| {
+        vector_quantity_dimension(&a.result_type)
+    })
 }
 
 /// The element count `n` of a `Vector` operand, or `0` when not statically
@@ -664,15 +666,36 @@ mod tests {
     /// EXCLUDED — see task-4182 / esc-4182-74.
     const EXPECTED_OPERATION_NAMES: [&str; 26] = [
         // scalar / element-wise
-        "sqrt", "abs", "sign", "pow", "min", "max", "clamp", "lerp",
+        "sqrt",
+        "abs",
+        "sign",
+        "pow",
+        "min",
+        "max",
+        "clamp",
+        "lerp",
         // vector ops
-        "dot", "cross", "normalize", "magnitude", "outer",
+        "dot",
+        "cross",
+        "normalize",
+        "magnitude",
+        "outer",
         // matrix ops
-        "determinant", "inverse", "transpose", "trace",
+        "determinant",
+        "inverse",
+        "transpose",
+        "trace",
         // spectral
-        "eigenvalues", "complex_eigenvalues",
+        "eigenvalues",
+        "complex_eigenvalues",
         // complex
-        "complex", "real", "imag", "conjugate", "complex_magnitude", "phase", "arg",
+        "complex",
+        "real",
+        "imag",
+        "conjugate",
+        "complex_magnitude",
+        "phase",
+        "arg",
     ];
 
     /// `is_math_typed_fn` recognises every math-linalg OPERATION name (the
@@ -727,7 +750,10 @@ mod tests {
             );
         }
         for name in EXPECTED_OPERATION_NAMES {
-            assert!(is_math_typed_fn(name), "operation name {name:?} must resolve");
+            assert!(
+                is_math_typed_fn(name),
+                "operation name {name:?} must resolve"
+            );
         }
     }
 
@@ -806,10 +832,16 @@ mod tests {
     #[test]
     fn is_math_typed_fn_recognises_construction_operation_and_transcendental_alike() {
         for name in EXPECTED_NAMES {
-            assert!(is_math_typed_fn(name), "construction name {name:?} must resolve");
+            assert!(
+                is_math_typed_fn(name),
+                "construction name {name:?} must resolve"
+            );
         }
         for name in EXPECTED_OPERATION_NAMES {
-            assert!(is_math_typed_fn(name), "operation name {name:?} must resolve");
+            assert!(
+                is_math_typed_fn(name),
+                "operation name {name:?} must resolve"
+            );
         }
         for name in EXPECTED_TRANSCENDENTAL_NAMES {
             assert!(
@@ -855,7 +887,10 @@ mod tests {
     /// `Vector{n:3, quantity:Real}`.
     #[test]
     fn vec_result_type_dimensionless_is_vector_n3_real() {
-        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)], Type::dimensionless_scalar());
+        let arg = list_lit(
+            vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)],
+            Type::dimensionless_scalar(),
+        );
         assert_eq!(
             math_fn_result_type("vec", &[arg]),
             Type::Vector {
@@ -923,9 +958,18 @@ mod tests {
     /// (c) `matrix` over a depth-2 2×2 `ListLiteral` → `Tensor{rank:2, n:2, quantity:Real}`.
     #[test]
     fn matrix_result_type_2x2_is_tensor_rank2_n2_real() {
-        let row0 = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::dimensionless_scalar());
-        let row1 = list_lit(vec![real_elem(3.0), real_elem(4.0)], Type::dimensionless_scalar());
-        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::dimensionless_scalar())));
+        let row0 = list_lit(
+            vec![real_elem(1.0), real_elem(2.0)],
+            Type::dimensionless_scalar(),
+        );
+        let row1 = list_lit(
+            vec![real_elem(3.0), real_elem(4.0)],
+            Type::dimensionless_scalar(),
+        );
+        let arg = list_lit(
+            vec![row0, row1],
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        );
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
@@ -939,7 +983,10 @@ mod tests {
     /// (d) `diag` over a 3-element `ListLiteral` → `Tensor{rank:2, n:3, quantity:Real}`.
     #[test]
     fn diag_result_type_is_tensor_rank2_n3_real() {
-        let arg = list_lit(vec![real_elem(3.0), real_elem(5.0), real_elem(7.0)], Type::dimensionless_scalar());
+        let arg = list_lit(
+            vec![real_elem(3.0), real_elem(5.0), real_elem(7.0)],
+            Type::dimensionless_scalar(),
+        );
         assert_eq!(
             math_fn_result_type("diag", &[arg]),
             Type::Tensor {
@@ -1024,7 +1071,10 @@ mod tests {
     /// must STILL resolve to a rank-2 `Type::Tensor` variant, never `Type::List`.
     #[test]
     fn matrix_result_type_non_list_first_row_degrades_to_tensor_not_list() {
-        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::dimensionless_scalar());
+        let arg = list_lit(
+            vec![real_elem(1.0), real_elem(2.0)],
+            Type::dimensionless_scalar(),
+        );
         let result = math_fn_result_type("matrix", &[arg]);
         assert!(
             !matches!(result, Type::List(_)),
@@ -1040,8 +1090,10 @@ mod tests {
     /// resolve to a rank-2 `Type::Tensor` variant, never the first-arg `Type::List`.
     #[test]
     fn diag_result_type_non_literal_arg_degrades_to_tensor_not_list() {
-        let arg =
-            CompiledExpr::value_ref(ValueCellId::new("S", "d"), Type::List(Box::new(Type::dimensionless_scalar())));
+        let arg = CompiledExpr::value_ref(
+            ValueCellId::new("S", "d"),
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        );
         let result = math_fn_result_type("diag", &[arg]);
         assert!(
             !matches!(result, Type::List(_)),
@@ -1104,7 +1156,10 @@ mod tests {
             vec![real_elem(4.0), real_elem(5.0), real_elem(6.0)],
             Type::dimensionless_scalar(),
         );
-        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::dimensionless_scalar())));
+        let arg = list_lit(
+            vec![row0, row1],
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        );
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
@@ -1145,7 +1200,10 @@ mod tests {
     /// so the cell type matches the eval `Value::Real` under `value_type_kind_matches`.
     #[test]
     fn sqrt_of_real_is_real() {
-        assert_eq!(math_fn_result_type("sqrt", &[real_elem(4.0)]), Type::dimensionless_scalar());
+        assert_eq!(
+            math_fn_result_type("sqrt", &[real_elem(4.0)]),
+            Type::dimensionless_scalar()
+        );
     }
 
     /// abs preserves a Scalar's dimension verbatim.
@@ -1170,7 +1228,10 @@ mod tests {
     /// sign is dimensionless regardless of arg → `Type::dimensionless_scalar()`.
     #[test]
     fn sign_is_real() {
-        assert_eq!(math_fn_result_type("sign", &[length_elem(1.0)]), Type::dimensionless_scalar());
+        assert_eq!(
+            math_fn_result_type("sign", &[length_elem(1.0)]),
+            Type::dimensionless_scalar()
+        );
     }
 
     /// pow is pinned to `Type::dimensionless_scalar()` (PRD §3 footnote — prevents the
@@ -1493,7 +1554,9 @@ mod tests {
         let m = typed(tenq(3, DimensionVector::LENGTH));
         assert_eq!(
             math_fn_result_type("complex_eigenvalues", &[m]),
-            Type::List(Box::new(Type::Complex(Box::new(sca(DimensionVector::LENGTH)))))
+            Type::List(Box::new(Type::Complex(Box::new(sca(
+                DimensionVector::LENGTH
+            )))))
         );
     }
 
@@ -1502,7 +1565,9 @@ mod tests {
     fn complex_eigenvalues_of_dimensionless_matrix_is_list_of_complex_real() {
         assert_eq!(
             math_fn_result_type("complex_eigenvalues", &[typed(ten_real(3))]),
-            Type::List(Box::new(Type::Complex(Box::new(Type::dimensionless_scalar()))))
+            Type::List(Box::new(Type::Complex(Box::new(
+                Type::dimensionless_scalar()
+            ))))
         );
     }
 
@@ -1599,7 +1664,10 @@ mod tests {
     #[test]
     fn phase_and_arg_are_angle() {
         let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
-        assert_eq!(math_fn_result_type("phase", std::slice::from_ref(&z)), Type::angle());
+        assert_eq!(
+            math_fn_result_type("phase", std::slice::from_ref(&z)),
+            Type::angle()
+        );
         assert_eq!(math_fn_result_type("arg", &[z]), Type::angle());
     }
 

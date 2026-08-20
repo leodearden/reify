@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Infrastructure tests for typecheck invocation alignment (task 1080).
 # Validates that hooks/project-checks uses `npm run typecheck` (matching
-# orchestrator.yaml lint_command) instead of raw `npx tsc --noEmit`.
+# dark-factory-orchestrator.yaml lint_command) instead of raw `npx tsc --noEmit`.
 
 set -euo pipefail
 
@@ -68,7 +68,7 @@ assert "gui/package.json scripts.typecheck contains tsc --noEmit" \
     bash -c "node -e 'process.exit(/tsc --noEmit/.test(require(\"$PKG\").scripts.typecheck) ? 0 : 1)'"
 
 # -- Regression guard (task 4063): clippy is the sole Rust type-error signal ----
-# orchestrator.yaml's type_check_command is now a no-op ("true") because
+# dark-factory-orchestrator.yaml's type_check_command is now a no-op ("true") because
 # lint_command's `cargo clippy --workspace --all-targets -- -D warnings` is a
 # strict superset of `cargo check`. This assertion pins that invariant: if clippy
 # were ever weakened or removed from verify.sh lint, the per-task type-error check

@@ -159,8 +159,10 @@ fn backward_compat_bracket_compiles_cleanly() {
     // Template should be private (no pub keyword)
     assert_eq!(template.visibility, reify_compiler::Visibility::Private);
 
-    // 5 params + 1 let (volume) = 6 value cells (body is geometry, skipped)
-    assert_eq!(template.value_cells.len(), 6);
+    // 5 params + 2 lets (volume, body) = 7 value cells. γ (task #4954): the
+    // top-level geometry let 'body' now also produces a Type::Geometry Let
+    // cell (graph-completion lowering) instead of being skipped.
+    assert_eq!(template.value_cells.len(), 7);
     assert_eq!(template.constraints.len(), 3);
 
     // All params should be Public

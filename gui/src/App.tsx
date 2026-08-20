@@ -26,6 +26,7 @@ import {
 import type { DiagnosticEntry } from './panels';
 import type { ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
+import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
@@ -39,6 +40,7 @@ import { createViewStateStore, type ViewStateStore } from './stores/viewStateSto
 import { createLayoutStore } from './stores/layoutStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
+import { createFeaModeStoreRegistry, type FeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
@@ -73,8 +75,10 @@ import {
   getEntityAtSourceLocation as bridgeGetEntityAtSourceLocation,
   getDefPreview as bridgeGetDefPreview,
   getMechanismDescriptors as bridgeGetMechanismDescriptors,
+  getUnitLadders as bridgeGetUnitLadders,
   ask as bridgeAsk,
 } from './bridge';
+import type { UnitLadderMap } from './types';
 import {
   navigateToSource,
   navigateToEntity,
@@ -409,6 +413,31 @@ const SPLITTER_THICKNESS = 4;
 
 let toastIdCounter = 0;
 
+/**
+ * Registration-only (renders nothing): publishes App's FeaModeStore registry
+ * onto `__REIFY_DEBUG__` for the debug bridge's set_fea_channel (#5670).
+ *
+ * Rendered UNCONDITIONALLY — outside the <Show> — because there is now exactly
+ * one registry and exactly one writer. The old branch-scoping rationale (that an
+ * unconditional registration would, in single-pane mode, land after
+ * DualViewport's own registration — Solid runs child onMount before parent
+ * onMount — and leave the slot pointing at a store no rendered toolbar drives)
+ * no longer applies: DualViewport neither creates nor registers a store, it is
+ * handed the registry's 'design-main' entry, so nothing can clobber anything and
+ * the registration is correct in both branches.
+ *
+ * Two slots, mirroring the `viewports` / `viewport` precedent:
+ *  - `feaModes` — the registry's LIVE backing record, so entries the `panes`
+ *    mapper adds later are visible through the same reference.
+ *  - `feaMode`  — the legacy scalar mirror of the 'design-main' entry; the
+ *    `get` here also guarantees that entry exists in BOTH branches.
+ */
+function FeaModeDebugRegistrar(props: { registry: FeaModeStoreRegistry }) {
+  registerDebugPanel('feaModes', props.registry.stores);
+  registerDebugPanel('feaMode', props.registry.get('design-main'));
+  return null;
+}
+
 const App: Component = () => {
   const editorStore = createEditorStore();
   const selectionStore = createSelectionStore();
@@ -456,9 +485,26 @@ const App: Component = () => {
   const defPreviewStore = createDefPreviewStore();
   const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
   const bucklingStore = createBucklingStore();
+  // The single owner of every FeaModeStore in the app (#5670). One registry,
+  // keyed by viewportId, serving BOTH render branches: the `panes` mapArray
+  // below draws each pane's store from it, and the DualViewport branch is
+  // handed its `design-main` entry. DualViewport no longer creates or registers
+  // one of its own, so there is exactly one writer of the debug slots and no
+  // competing instance to clobber.
+  //
+  // App scope, not mapper scope, so the store survives a non-structural pulse;
+  // and registry entries are never evicted, so FEA state now survives a flip
+  // between single- and multi-pane layouts (under the old two-singleton design
+  // that flip handed control to a different store and silently reset it).
+  const feaModeStores = createFeaModeStoreRegistry();
 
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
+
+  // Per-dimension display-unit ladders for the Parameters panel's unit picker
+  // (task #5199), fetched once on mount. Empty map means every cell falls
+  // back to its static unit badge.
+  const [unitLadders, setUnitLadders] = createSignal<UnitLadderMap>({});
 
   // Fuzzy-rebind toast bookkeeping (see the rebind effect block below).
   //
@@ -644,7 +690,16 @@ const App: Component = () => {
   // Increment treeGeneration AFTER regenerateAutoViews so that effectiveVisibility
   // always evaluates getAllEffective() with an up-to-date nodeByPath.
   createEffect(() => {
-    viewStateStore.regenerateAutoViews(entityTree());
+    // DisplayOutput subjects route the auto:default view (#5195), ADDITIVELY:
+    // named subjects are forced visible; every other realization keeps its own
+    // default_visible rule. It must be additive because a DisplayOutput may be
+    // appearance-only — collect_display_routing emits a directive for every
+    // occurrence with a defaulted pane 0 — so hiding non-subjects deleted
+    // unrelated bodies from the viewport. Read state.displayPanes INSIDE the
+    // effect so adding or removing a DisplayOutput re-runs this and re-routes
+    // the view. Same subject strings computePaneGroups keys panes on (see :199).
+    const displaySubjects = new Set(engineStore.state.displayPanes.map((d) => d.subject));
+    viewStateStore.regenerateAutoViews(entityTree(), [], displaySubjects);
     setTreeGeneration((v) => v + 1);
   });
 
@@ -798,10 +853,27 @@ const App: Component = () => {
         // design-main only: tensegrity overlay + fit/fly registration callbacks.
         get tensegrityWires() { return pane === 0 ? engineStore.state.tensegrityWires : undefined; },
         get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
-        // feaDiagnostics is NOT threaded to MultiViewport panes.  Wiring it requires
-        // adding feaDiagnostics to PanePassthroughProps in MultiViewport.tsx, which is
-        // outside this task's scope.  The overlay is visible on DualViewport (single-pane
-        // mode) only.  Multi-pane overlay support is a follow-up to this task.
+        // FEA trio — uniform across every pane since #5670. Each pane gets its
+        // OWN store from the keyed registry, so the N toolbars <Viewport>
+        // renders are N independent per-pane controls rather than N views of
+        // one state; each is addressable by the debug bridge via the
+        // data-viewport-id the toolbar stamps.
+        //
+        // Plain eager property, NOT a reactive getter: identity is stable per
+        // viewportId for the pane's lifetime, and eager evaluation guarantees
+        // the entry exists in registry.stores at pane-config construction time
+        // rather than whenever some consumer first reads a lazy getter — which
+        // would make the contents of ctx.feaModes order-dependent on who reads
+        // what first.
+        feaModeStore: feaModeStores.get(viewportId),
+        // feaDiagnostics/feaConvergence are global to the model, so every pane
+        // gets them. Withholding them from pane ≥ 1 was the observable defect
+        // #5670 closes: each pane's diagnosticOverlay.sync (Viewport.tsx)
+        // already intersects the global diagnostics with that pane's OWN
+        // meshes, so routing an FEA-relevant subject to a model pane now
+        // renders its overlay there instead of silently vanishing.
+        get feaDiagnostics() { return engineStore.state.feaDiagnostics; },
+        get feaConvergence() { return engineStore.state.feaConvergence; },
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
         get displayAppearance() { return appearanceData().overrides; },
@@ -873,7 +945,14 @@ const App: Component = () => {
   // behind phase==='idle' (PRD §12 Q3): enforcement must update the instant a
   // body is hidden so the next interactive edit_param prunes its cells. `ghost`
   // and `show` stay demanded; only `hidden` prunes (PRD §12 Q4).
-  createSelectiveDemandSync(engineStore, viewStateStore);
+  //
+  // `treeGeneration` is passed to satisfy the tree-readiness contract documented
+  // on `createSelectiveDemandSync`'s `treeGeneration` @param (task #6052): without
+  // a readiness source the effect's first tracked run hits `getAllEffective`'s
+  // empty-tree short-circuit, subscribes to nothing, and the first post-mount
+  // toggle is silently lost. Same readiness dependency the sibling 4532
+  // `syncObservedDemand` effect above gets via the `effectiveVisibility` memo.
+  createSelectiveDemandSync(engineStore, viewStateStore, treeGeneration);
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the
@@ -1382,6 +1461,48 @@ const App: Component = () => {
     }
 
     if (!alive) return;
+
+    // Fetch the per-dimension display-unit ladders (task #5199) in the
+    // background. Deliberately NOT awaited (task #5199 amend,
+    // reviewer_comprehensive robustness finding): this used to sit on the
+    // critical init path, ahead of the event-subscription block and the
+    // 'ready' transition below — a slow or hung get_unit_ladders call would
+    // have delayed app readiness and every live-update subscription even
+    // though the ladders are purely cosmetic/best-effort. Firing it off
+    // without awaiting means it can never block init, regardless of how
+    // long it takes.
+    //
+    // Tolerate failure: an empty map means every cell keeps its static unit
+    // badge. Surface it as a toast, not just console.warn (task #5199 amend,
+    // reviewer_comprehensive graceful_degradation finding) — the ladders are
+    // fetched once on mount with no retry, so a silent console-only failure
+    // would leave the picker permanently unavailable for the whole session
+    // with no user-visible signal, mirroring how the other best-effort
+    // one-time subscriptions below report their own failures.
+    //
+    // Calling bridgeGetUnitLadders() inside the leading `.then()` (rather
+    // than directly, e.g. `bridgeGetUnitLadders().then(...)`) routes a
+    // SYNCHRONOUS throw from the call itself — not just an async rejection —
+    // into the `.catch()` below. The previous `try { await
+    // bridgeGetUnitLadders() } catch` got this for free from `try`; losing
+    // that wrapper when this became fire-and-forget would otherwise turn a
+    // synchronous throw (e.g. a bridge mock missing this export in a test)
+    // into an unhandled rejection out of `initApp` instead of the intended
+    // graceful degradation.
+    Promise.resolve()
+      .then(() => bridgeGetUnitLadders())
+      .then((ladders) => {
+        if (!alive) return;
+        const map: UnitLadderMap = {};
+        for (const ladder of ladders) {
+          map[ladder.dimension] = ladder.units;
+        }
+        setUnitLadders(map);
+      })
+      .catch((err) => {
+        console.warn('[unit-ladders] fetch failed:', err);
+        showToast('Unit ladders unavailable — parameters will show default units only', 'info');
+      });
 
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
@@ -2021,6 +2142,8 @@ const App: Component = () => {
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
+              {/* Branch-independent: one registry serves both branches (#5670). */}
+              <FeaModeDebugRegistrar registry={feaModeStores} />
               <Show
                 when={hasModelPanes()}
                 fallback={
@@ -2044,6 +2167,7 @@ const App: Component = () => {
                     displayAppearance={appearanceData().overrides}
                     feaDiagnostics={engineStore.state.feaDiagnostics}
                     feaConvergence={engineStore.state.feaConvergence}
+                    feaModeStore={feaModeStores.get('design-main')}
                   />
                 }
               >
@@ -2099,6 +2223,7 @@ const App: Component = () => {
                 onSetParameter={handleSetParameter}
                 onGroupDoubleClick={handleGroupDoubleClick}
                 highlightedParams={selectionStore.state.highlightedParams}
+                unitLadders={unitLadders()}
               />
               <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
               <ConstraintPanel

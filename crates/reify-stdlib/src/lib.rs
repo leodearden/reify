@@ -209,6 +209,7 @@ mod mechanism;
 pub mod modal;
 mod numeric;
 mod orientation;
+mod parse;
 mod snapshot;
 mod stackup;
 mod supports;
@@ -292,6 +293,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = tensegrity::eval_tensegrity(name, args) {
+        return v;
+    }
+    if let Some(v) = parse::eval_parse(name, args) {
         return v;
     }
     Value::Undef

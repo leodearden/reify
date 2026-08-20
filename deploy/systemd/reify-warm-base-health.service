@@ -1,0 +1,26 @@
+[Unit]
+Description=Reify warm-lane base health: autonomous reseed ladder for the CoW pool seed base (boot oneshot, escalation-last self-heal)
+Documentation=file:///home/leo/src/reify/docs/prds/warm-lane-pool-cow-seeding.md
+# After=reify-warm-lane.service: that unit's RemainAfterExit=yes signals the
+# volume is mounted + reflink-probed, making it the concrete "mount ready"
+# predecessor for this health check today. (If PRD §9 Q2 later adopts a
+# systemd .mount/fstab unit for the volume, add it to After= here too.)
+# NO Requires= here — the orchestrator drop-in owns the soft dependency
+# (Wants=reify-warm-base-health.service in orchestrator-reify.service.d/warm-lane.conf).
+# Rung 3 (cold-build) backgrounds itself by default
+# (REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=1), so this ordering can never block
+# boot for the multi-hour cold-build (inv.6 fail-open).
+After=reify-warm-lane.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ExecStart uses the stable main-checkout absolute path — host convention matching
+# reify-warm-lane.service. Bare here (no flags); the installer pins --mount via
+# sed, mirroring the reify-warm-lane.service ExecStart hardening (#4720).
+ExecStart=/home/leo/src/reify/scripts/ensure-warm-base.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

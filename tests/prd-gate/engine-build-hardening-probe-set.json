@@ -1,0 +1,16 @@
+{
+  "probes": [
+    {
+      "capability": "leaf-kappa: mixed-kernel module (Mesh-demanded union + OCCT stages) combined with an attribute-resolved ad-hoc selector (@face) uses only existing grammar and passes `reify check` today (compile-time substrate for the kappa example; the runtime cross-kernel attribute-read assertion is #4351's deliverable, wired upstream)",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/engine_build_hardening_kappa_mixed_kernel_selector.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 0,
+          "stdout_contains": "All constraints satisfied."
+        }
+      }
+    }
+  ]
+}

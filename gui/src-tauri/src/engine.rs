@@ -529,6 +529,12 @@ pub struct EngineSession {
     /// every commit — full-list snapshot including the empty list (to clear a stale overlay).
     /// When `None` (the default), all emit paths are no-ops.
     fea_diagnostics_emitter: Option<Arc<dyn FeaDiagnosticsEmitter>>,
+    /// Optional fea-convergence-changed event sink installed by the GUI layer (task #5032).
+    ///
+    /// When `Some`, `emit_fea_convergence` calls `changed(build_fea_convergence())` on
+    /// every commit — full-value snapshot including `None` (to clear a stale indicator).
+    /// When `None` (the default), all emit paths are no-ops.
+    fea_convergence_emitter: Option<Arc<dyn FeaConvergenceEmitter>>,
     /// Optional mode-shape-frame event sink installed by the GUI layer.
     ///
     /// When `Some`, `emit_mode_shape_frames_if_any` scans `CheckResult.values` for a
@@ -636,6 +642,21 @@ pub trait FeaCaseEmitter: Send + Sync {
 /// The trait is object-safe: no method takes or returns `Self`.
 pub trait FeaDiagnosticsEmitter: Send + Sync {
     fn changed(&self, payload: Vec<crate::types::FeaDiagnosticInfo>);
+}
+
+/// Trait for sinking fea-convergence-changed events to the GUI transport layer (task #5032).
+///
+/// Implemented by `TauriFeaConvergenceEmitter` in `main.rs` for the production path
+/// (calls `event_bus::emit_typed` with channel `"fea-convergence-changed"`), and by
+/// `RecordingFeaConvergenceEmitter` in engine tests.
+///
+/// Payload semantics: full-value snapshot of `Option<FeaConvergenceInfo>` — fires on
+/// EVERY commit including `None` (so a param edit that clears the FEA problem clears
+/// the stale convergence indicator on the frontend).
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait FeaConvergenceEmitter: Send + Sync {
+    fn changed(&self, payload: Option<crate::types::FeaConvergenceInfo>);
 }
 
 /// Trait for sinking mode-shape-frame events to the GUI transport layer (task ι/3458).
@@ -1020,21 +1041,48 @@ impl EngineSession {
     /// Both `new` and `with_registered_kernel` delegate here so the field list
     /// stays in one place and the two constructors cannot drift.
     ///
-    /// CRITICAL: `register_compute_fns` is called HERE (once) rather than in
-    /// `new` or `with_registered_kernel` individually.  Both public constructors
-    /// delegate to this method (`new` → `from_engine(Engine::new(..))`,
+    /// CRITICAL: `register_production_compute_fns` is called HERE (once) rather
+    /// than in `new` or `with_registered_kernel` individually.  Both public
+    /// constructors delegate to this method (`new` → `from_engine(Engine::new(..))`,
     /// `with_registered_kernel` → `from_engine(Engine::with_registered_kernel(..))`),
-    /// so registering here covers both paths.  `register_compute_fns` **panics on
-    /// duplicate registration** (compute_targets/mod.rs:89); calling it in `new`
-    /// *and* here would register twice on the same `Engine` → guaranteed panic.
-    /// PRD §4.5 / esc-2962-66 root cause.
+    /// so registering here covers both paths.  `register_production_compute_fns`
+    /// **panics on duplicate registration** — it inherits the single-install
+    /// discipline of the trampoline registrars it bundles internally (see its
+    /// rustdoc "# Panics" on `Engine::register_production_compute_fns`,
+    /// compute_targets/mod.rs); calling it in `new` *and* here would register
+    /// twice on the same `Engine` → guaranteed panic.
+    /// PRD §4.5 / esc-2962-66 root cause; PRD docs/prds/compute-fea-hardening.md
+    /// task A3.
     fn from_engine(mut engine: Engine) -> Self {
-        // Install FEA / buckling / modal compute trampolines once at session
-        // construction.  This is the single registration site — see doc above.
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
-        // Register the shell-extract trampoline so shell-classified bodies
-        // can produce a ShellExtractionResult (task θ / #3598 pre-1).
-        reify_eval::register_shell_extract_compute_fns(&mut engine);
+        // Canonical production compute-trampoline bundle (INV-FEA-1; PRD
+        // docs/prds/compute-fea-hardening.md task A1/A3): one call installs the
+        // FEA / buckling / modal / form-find / multi-case / dynamics / trajectory
+        // trampolines, the shell-extract trampoline, and — new here, the
+        // esc-2962-66-class gap this migration closes — the mesh-morph producer.
+        //
+        // `reify-mesh-morph` is optional, gated on this crate's `gui` feature,
+        // while this module is ungated — so the non-`gui` lib/bin build cannot
+        // name `reify_mesh_morph::` directly, forcing the cfg split below. See
+        // `MorphRegistration`'s rustdoc (reify-eval's `compute_targets` module)
+        // for the `Unavailable` contract this feeds.
+        #[cfg(feature = "gui")]
+        let morph =
+            reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+        #[cfg(not(feature = "gui"))]
+        let morph = reify_eval::MorphRegistration::Unavailable {
+            // Scoped to the lib/bin (shipping) build, not the test build:
+            // reify-mesh-morph is also an unconditional *dev*-dependency
+            // (`features = ["testing"]`), so it IS on the crate graph for
+            // `cargo test`'s gui-off compilation and this arm still runs
+            // there (the split is on `feature = "gui"`, not `cfg(test)`) —
+            // the reason text must not overclaim un-linkability in that
+            // configuration, only in a real shipping build.
+            reason: "reify-gui lib/bin built without the `gui` feature: \
+                     reify-mesh-morph is an optional (non-dev) dep gated on \
+                     that feature, so no producer fn is linkable in a \
+                     shipping build",
+        };
+        engine.register_production_compute_fns(morph);
         // Enable undef-cause capture before any check/eval so the per-cell
         // origin side-map and post-eval snapshot are populated. Capture is
         // purely additive (PRD A1): values, determinacy, constraints, and
@@ -1053,6 +1101,7 @@ impl EngineSession {
             warm_pool_event_emitter: None,
             fea_case_emitter: None,
             fea_diagnostics_emitter: None,
+            fea_convergence_emitter: None,
             mode_shape_frame_emitter: None,
             solve_cancel_sink: None,
             solver_progress_sink: None,
@@ -1084,22 +1133,34 @@ impl EngineSession {
 
     /// Install a fea-case-changed event emitter on this session.
     ///
-    /// After installation, every `emit_fea_case_if_any` call (co-located with
-    /// `emit_auto_resolve_if_any` at all 4 production sites + the test helper)
-    /// fires `changed(FeaCaseChanged)` when a `MultiCaseResult`-shaped value is
-    /// detected in `CheckResult.values`. Replaces any previously installed emitter.
+    /// After installation, every `emit_fea_case_if_any` call — co-located with
+    /// `emit_auto_resolve_if_any` inside the single `post_engine_call_telemetry`
+    /// choke-point (INV-GUI-2) — fires `changed(FeaCaseChanged)` when a
+    /// `MultiCaseResult`-shaped value is detected in `CheckResult.values`.
+    /// Replaces any previously installed emitter.
     pub fn set_fea_case_emitter(&mut self, emitter: Arc<dyn FeaCaseEmitter>) {
         self.fea_case_emitter = Some(emitter);
     }
 
     /// Install a fea-diagnostics-changed event emitter on this session (task #4884).
     ///
-    /// After installation, every `emit_fea_diagnostics` call (co-located at all 4
-    /// mutating production sites + the test helper) fires `changed(Vec<FeaDiagnosticInfo>)`
-    /// with a full-list snapshot — including the empty list, to clear a stale overlay.
-    /// Replaces any previously installed emitter.
+    /// After installation, every `emit_fea_diagnostics` call — co-located inside
+    /// the single `post_engine_call_telemetry` choke-point (INV-GUI-2) — fires
+    /// `changed(Vec<FeaDiagnosticInfo>)` with a full-list snapshot — including
+    /// the empty list, to clear a stale overlay. Replaces any previously
+    /// installed emitter.
     pub fn set_fea_diagnostics_emitter(&mut self, emitter: Arc<dyn FeaDiagnosticsEmitter>) {
         self.fea_diagnostics_emitter = Some(emitter);
+    }
+
+    /// Install a fea-convergence-changed event emitter on this session (task #5032).
+    ///
+    /// After installation, every `emit_fea_convergence` call — co-located inside
+    /// the single `post_engine_call_telemetry` choke-point (INV-GUI-2) — fires
+    /// `changed(Option<FeaConvergenceInfo>)` with a full-value snapshot — including
+    /// `None`, to clear a stale indicator. Replaces any previously installed emitter.
+    pub fn set_fea_convergence_emitter(&mut self, emitter: Arc<dyn FeaConvergenceEmitter>) {
+        self.fea_convergence_emitter = Some(emitter);
     }
 
     /// Install a mode-shape-frame event emitter on this session.
@@ -1366,17 +1427,7 @@ impl EngineSession {
         let r = self.core.engine_mut().check(compiled);
         // Commit first — all emitters below read via last_check(), matching production.
         self.core.commit_check(r);
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
     }
 
     /// Drive `emit_fea_case_if_any` with a pre-built `CheckResult` in tests.
@@ -1387,6 +1438,58 @@ impl EngineSession {
     #[cfg(test)]
     pub(crate) fn emit_fea_case_for_test_with_result(&self, check: &CheckResult) {
         self.emit_fea_case_if_any(check);
+    }
+
+    /// The single post-engine-call telemetry choke-point (INV-GUI-2).
+    ///
+    /// Every engine-mutating entry point (`check_and_emit_for_test`,
+    /// `load_from_source`, `set_parameter`, `load_file`, `update_source`,
+    /// `load_from_compiled`) calls this ONE method after committing state,
+    /// instead of hand-rolling its own copy of the five-call emit sequence.
+    /// Collapsing to a single call site means every entry point fires the
+    /// full quintet in the same order. There is no separate structural
+    /// source-introspection guard for this; the invariant is enforced by each
+    /// entry point's own behavioral emitter regression test (e.g.
+    /// `load_from_compiled_emits_fea_diagnostics`,
+    /// `fea_diagnostics_emitter_fires_on_set_parameter`), which fails if that
+    /// entry point ever stops routing through here.
+    ///
+    /// Accepted tradeoff (awareness, not enforcement): the entry-point list
+    /// above is not enumerated anywhere the compiler checks. A brand-new
+    /// engine-mutating entry point requires two manual steps — call
+    /// `self.post_engine_call_telemetry()` after committing state, AND add a
+    /// matching `<name>_emits_fea_diagnostics` behavioral test to the
+    /// `FeaDiagnosticsEmitter tests` cluster in `tests/engine_tests.rs`
+    /// (mirror `load_from_compiled_emits_fea_diagnostics`). Skip either step
+    /// and telemetry is silently lost — nothing fails CI until that test
+    /// exists.
+    ///
+    /// Reads `self.core.last_check()` once into a local: every constituent
+    /// emit-helper below reads from that same committed `CheckResult`, matching
+    /// the ordering invariant each call site already established (emit AFTER
+    /// state is committed). Fires, in order: auto-resolve → fea-case →
+    /// mode-shape frames → fea-diagnostics → fea-convergence → warm-pool drain.
+    ///
+    /// Note on the receiver type: this must be `&mut self` (the warm-pool drain
+    /// needs `&mut self`), so it deliberately does NOT take `check: &CheckResult`
+    /// as a parameter — a caller-supplied borrow of `self.core` would alias the
+    /// `&mut self` receiver for the duration of the call. Reading `last_check()`
+    /// into a local instead lets NLL end that shared borrow after its last use
+    /// (`emit_mode_shape_frames_if_any`), before the `&mut self` drain call.
+    /// `emit_fea_diagnostics` and `emit_fea_convergence` each re-read
+    /// `last_check()` themselves (via `build_fea_diagnostics`/`build_fea_convergence`)
+    /// rather than taking `check`, but that re-borrow is `&self` and ends before
+    /// the drain's `&mut self`, so it does not conflict with the `check` local either.
+    fn post_engine_call_telemetry(&mut self) {
+        let check = self.core.last_check().expect(
+            "post_engine_call_telemetry: last_check must be Some after state commit — see cross-cutting ordering invariant",
+        );
+        self.emit_auto_resolve_if_any(check);
+        self.emit_fea_case_if_any(check);
+        self.emit_mode_shape_frames_if_any(check);
+        self.emit_fea_diagnostics();
+        self.emit_fea_convergence();
+        self.drain_and_emit_warm_pool_events();
     }
 
     /// Emit a `fea-diagnostics-changed` event carrying the current full list of
@@ -1414,6 +1517,44 @@ impl EngineSession {
     #[cfg(test)]
     pub(crate) fn emit_fea_diagnostics_for_test(&self) {
         self.emit_fea_diagnostics();
+    }
+
+    /// Emit a `fea-convergence-changed` event carrying the current
+    /// `Option<FeaConvergenceInfo>` derived from `last_check().values`.
+    ///
+    /// Full-value snapshot semantics (mirrors `emit_fea_diagnostics`): the event
+    /// payload is `build_fea_convergence()` — byte-identical to
+    /// `GuiState.fea_convergence`. Fires on EVERY commit including `None` (so a
+    /// param edit that clears the FEA problem clears the stale indicator).
+    ///
+    /// Accepted tradeoff (awareness, not enforcement): this re-derives
+    /// `build_fea_convergence()` independently of `build_gui_state()`'s own
+    /// call to the same helper, so a single commit pays for the
+    /// `extract_fea_convergence` scan twice (once here at the L4 choke-point,
+    /// once whenever `build_gui_state` is next requested). This mirrors
+    /// `emit_fea_diagnostics`'s identical pre-existing duplication and is
+    /// accepted for the same reason: the `ValueMap` scan is small and bounded.
+    /// If this choke-point ever becomes hot, compute the FEA-channel snapshots
+    /// once per commit and thread them into both `build_gui_state` and these
+    /// emit helpers.
+    ///
+    /// Early-returns silently when no emitter is installed.
+    fn emit_fea_convergence(&self) {
+        let emitter = match &self.fea_convergence_emitter {
+            Some(e) => e,
+            None => return,
+        };
+        emitter.changed(self.build_fea_convergence());
+    }
+
+    /// Drive `emit_fea_convergence` in tests without a full engine eval.
+    ///
+    /// Callers must first inject a `CheckResult` via `inject_check_for_test` so
+    /// that `build_fea_convergence()` reads a non-None `last_check`.
+    /// Not callable from production code.
+    #[cfg(test)]
+    pub(crate) fn emit_fea_convergence_for_test(&self) {
+        self.emit_fea_convergence();
     }
 
     /// Drive `emit_mode_shape_frames_if_any` with a pre-built `CheckResult` in tests.
@@ -1483,21 +1624,13 @@ impl EngineSession {
     /// and forward the translated IPC events to the installed
     /// [`WarmPoolEventEmitter`] (if any).
     ///
-    /// Called after each engine call site that may produce donations or
-    /// evictions (check, edit_check, build, tessellate_snapshot, etc.) — the
-    /// same sites that invoke [`Self::emit_auto_resolve_if_any`].
+    /// Called via the single [`Self::post_engine_call_telemetry`] choke-point
+    /// (INV-GUI-2) alongside [`Self::emit_auto_resolve_if_any`], after each
+    /// engine call site that may produce donations or evictions (check,
+    /// edit_check, build, tessellate_snapshot, etc.).
     ///
     /// When no emitter is installed, the drain still records events on the
     /// journal (M-010 wiring) but no IPC emission occurs.
-    ///
-    /// # Design note (follow-up opportunity)
-    ///
-    /// The five call sites that pair `emit_auto_resolve_if_any` + this method
-    /// are shaping into a "post-engine-call telemetry drain" pattern.  A future
-    /// refactor could extract a single `post_engine_call_telemetry(&self, check:
-    /// &CheckResult)` helper so new engine entry points can't forget to drain
-    /// warm-pool events and silently lose telemetry.  Tracked in task review
-    /// suggestion #4 (task 3541 amendment pass).
     fn drain_and_emit_warm_pool_events(&mut self) {
         let raw_events = self.core.engine_mut().drain_and_record_warm_pool_events();
         if let Some(emitter) = &self.warm_pool_event_emitter {
@@ -1906,17 +2039,7 @@ impl EngineSession {
         // session state mutations are committed.  Combined with `core.commit_state` /
         // `core.commit_check` writing `last_check` unconditionally, a panic during state
         // commit cannot leak phantom auto-resolve events to the GUI.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
 
         self.build_gui_state()
     }
@@ -1960,17 +2083,7 @@ impl EngineSession {
         // Commit state first; emit_auto_resolve_if_any reads back via last_check()
         // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
         self.core.commit_check(check_result);
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_check — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_check — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_check — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 
@@ -2121,17 +2234,7 @@ impl EngineSession {
         // the five fields are written.  Atomic-commit invariant: see engine.rs:30-44.
         self.commit_state(parsed, compiled, check_result, module_name, &source, FilePathUpdate::Set(path.to_path_buf()));
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 
@@ -2202,17 +2305,7 @@ impl EngineSession {
         self.commit_state(parsed, compiled, check_result, module_name, content, FilePathUpdate::Preserve);
 
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
 
         self.build_gui_state()
     }
@@ -2678,7 +2771,7 @@ impl EngineSession {
         // build_preview_gui_state) so both paths stay in sync.  Scoped block so
         // the immutable borrows on `compiled` and `check` are released before the
         // mutable engine borrow in the tessellation step below.
-        let (values, constraints) = {
+        let (mut values, mut constraints) = {
             let compiled = self.core.compiled().unwrap();
             let check = self.core.last_check().unwrap();
             (
@@ -2697,6 +2790,28 @@ impl EngineSession {
             let (compiled, engine) = self.core.split_compiled_and_engine_mut();
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
+
+        // ── Task 5194: surface kernel-derived geometry/mass-property cells ──────
+        //
+        // `build_values` / `build_constraints` above read the kernel-LESS
+        // `check.values` (the `eval` / warm `edit_param` result), so a `: Rigid`
+        // body's auto-derived mass-property cells (mass / centroid /
+        // moment_of_inertia / moi_principal) read `Undef` and the
+        // `moi_principal[0] > 0` PD constraint is Indeterminate there. Surface the
+        // kernel-derived cells / re-checked constraints from the kernel-bearing
+        // `tessellate_snapshot` result via a single helper, invoked ONCE here so
+        // every entry point that rebuilds GuiState (load_file, update_source,
+        // set_parameter) surfaces them identically and the load / warm-edit paths
+        // cannot diverge (the helper keys on `ValueCellId`, not the reallocated
+        // kernel handle).
+        if let Some(result) = &tess_result {
+            surface_geometry_derived_cells(
+                self.core.engine(),
+                &mut values,
+                &mut constraints,
+                result,
+            );
+        }
 
         let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
             Some(result) => {
@@ -2994,6 +3109,39 @@ impl EngineSession {
             fea_diagnostics,
             fea_convergence,
         })
+    }
+
+    /// READ-ONLY full-scene snapshot for the debug-MCP `mesh_stats` / `engine_state`
+    /// tools (task 5348).
+    ///
+    /// [`Self::build_gui_state`] returns whatever
+    /// [`reify_eval::Engine::tessellate_snapshot`] produces under the CURRENT
+    /// production demand. Once the frontend has flipped production demand to
+    /// SELECTIVE (via [`Self::sync_demand`]), that result is an incremental DELTA
+    /// (the DELTA CONTRACT, engine_build.rs:5440-5465): HIDDEN or HASH-EXEMPT
+    /// realizations are ABSENT, so a debug read that treats the delta as a full
+    /// snapshot under-reports the realized scene.
+    ///
+    /// This method forces the cold-path full-scope override
+    /// ([`reify_eval::Engine::set_demand_full_scope`], engine_demand.rs:90) for the
+    /// duration of ONE `build_gui_state`, so `tessellate_snapshot` takes the
+    /// full-schedule branch (engine_build.rs:5415-5424) and returns EVERY
+    /// realization's mesh — the complete realized scene, the same set the
+    /// frontend/scene holds — then RESTORES the prior scope so the frontend's
+    /// selective demand survives the read.
+    ///
+    /// The override is bracketed with a plain save/restore (NO `?` between the set
+    /// and the restore) so the flag is restored on the `Err` path too. Re-running
+    /// tessellate is cheap (~0 kernel dispatch: every realization is already cached
+    /// from the cold build). On the rare panic-inside-`build_gui_state` path the
+    /// leaked `full_scope = true` is perf-only (not a correctness bug) and self-heals
+    /// on the next `sync_demand` (`DemandRegistry::new` resets it).
+    pub fn build_gui_state_full_scene(&mut self) -> Result<GuiState, String> {
+        let prev = self.core.engine().demand_is_full_scope();
+        self.core.engine_mut().set_demand_full_scope(true);
+        let result = self.build_gui_state();
+        self.core.engine_mut().set_demand_full_scope(prev);
+        result
     }
 
     /// Return one `MechanismDescriptor` per mechanism cell in the loaded module.
@@ -3558,6 +3706,44 @@ fn cell_kind_tree_str(kind: ValueCellKind) -> &'static str {
 /// `"final"`.  The preview surface only shows values and constraints;
 /// freshness badges are not meaningful for a single-definition preview
 /// evaluated in isolation.
+/// Extract the raw SI magnitude and dimension of a scalar value, for the
+/// per-cell display-unit picker (task #5199). Recurses through
+/// `Value::Option(Some(inner))` (an auto-resolve/optional wrapper) to the
+/// underlying scalar. Returns `None` for anything else — non-scalar values,
+/// `Value::Undef`, `Value::Option(None)` — which surface as `dimension: ""`,
+/// `si_value: None` (no ladder, so the GUI keeps the static unit badge).
+fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
+    match v {
+        reify_ir::Value::Scalar {
+            si_value,
+            dimension,
+        } => Some((*si_value, *dimension)),
+        reify_ir::Value::Option(Some(inner)) => display_scalar(inner),
+        _ => None,
+    }
+}
+
+/// Format the four display fields a `ValueData` cell derives directly from its
+/// `Value`: the default-unit `value` / `unit` pair (`format_value`) plus the
+/// per-cell canonical `si_value` + `dimension` name (`display_scalar`, task
+/// #5199). Returns `(value, unit, si_value, dimension)`.
+///
+/// Shared by `build_values` (every cell) and `surface_geometry_derived_cells`
+/// (each cell surfaced from `Undef` → Determined) so the two sites cannot drift
+/// if the formatting rules change (e.g. dimension naming). For a non-scalar or
+/// `Undef` value, `display_scalar` yields `None`, so `si_value` is `None` and
+/// `dimension` is `""` — the GUI keeps the static unit badge with no ladder,
+/// exactly as `format_value` renders the value itself.
+fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) {
+    let (value, unit) = format_value(val);
+    let (si_value, dim) = match display_scalar(val) {
+        Some((s, d)) => (Some(s), Some(d)),
+        None => (None, None),
+    };
+    let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
+    (value, unit, si_value, dimension)
+}
+
 fn build_values(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
@@ -3567,7 +3753,7 @@ fn build_values(
     for template in &compiled.templates {
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
-            let (formatted_value, unit) = format_value(&val);
+            let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
             let determinacy = match &val {
                 reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
@@ -3620,6 +3806,9 @@ fn build_values(
                 }),
                 _ => None,
             };
+            // `si_value` / `dimension` (task #5199, the substrate for the GUI's
+            // per-cell display-unit picker) are computed once alongside
+            // `value` / `unit` by `format_determined_cell` above.
             values.push(ValueData {
                 cell_id: cell.id.to_string(),
                 name: cell.id.member.clone(),
@@ -3631,6 +3820,8 @@ fn build_values(
                 freshness,
                 reason,
                 last_substantive_value,
+                dimension,
+                si_value,
             });
         }
     }
@@ -3689,6 +3880,121 @@ pub(crate) fn build_constraints(
     // the GUI constraint-panel use case is not sensitive to numeric index order.
     constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     constraints
+}
+
+/// Task 5194: surface the kernel-derived geometry / mass-property cells and the
+/// post-geometry constraint verdicts from a `tessellate_snapshot` `result` onto
+/// the panel `values` / `constraints`.
+///
+/// `build_values` / `build_constraints` read the kernel-LESS `check.values` (the
+/// `eval` / warm `edit_param` result), where the geometry-query post-processes
+/// never ran. A `: Rigid` body's auto-derived `mass = volume(geometry) *
+/// material.density`, `centroid`, `moment_of_inertia`, and `moi_principal` cells
+/// therefore read `Undef` there, and the `moi_principal[0] > 0` PD constraint reads
+/// Indeterminate. The kernel-bearing `tessellate_snapshot` DID run
+/// `run_post_processes`, so `result.values` already carries those computed cells
+/// (the same values CLI `reify eval` reads from `build().values`).
+///
+/// This helper is invoked ONCE from `build_gui_state`, the shared rebuild path for
+/// EVERY GuiState entry point (load_file, update_source, set_parameter), so the
+/// load and warm-edit paths cannot diverge. It keys on `ValueCellId`
+/// (entity+member), which is stable across rebuilds, so a warm edit that clears the
+/// realization cache and re-executes geometry under a fresh `GeometryHandleId`
+/// still re-surfaces the same cells. It adds no kernel query — the constraint
+/// re-check runs the kernel-less checker against the already-resolved
+/// `result.values` — so the P0 kernel-less edit-latency gate is untouched.
+///
+/// Value overlay: for each cell the kernel-less pass left `Undef`
+/// (`determinacy != "determined"`) that `result.values` resolves to a non-`Undef`
+/// value, recompute `value` / `unit` / `determinacy` / `reason` / `si_value` /
+/// `dimension` from the surfaced value (mirroring `build_values`' determined-cell
+/// path). Already-`determined` cells keep their eval-computed values.
+///
+/// Constraint re-check: `tessellate_snapshot`'s own `result.constraint_results`
+/// were checked BEFORE `run_post_processes` patched the mass-property cells, so a
+/// constraint over such a cell still reads Indeterminate there. Re-check the
+/// active constraints against the now-complete `result.values` and adopt any
+/// verdict that resolved from Indeterminate → Satisfied / Violated. This mirrors
+/// the post-geometry constraint re-check in `Engine::build` (engine_build.rs): a
+/// previously Satisfied/Violated constraint cannot regress because the re-check
+/// only ADDS now-resolved geometry cells, so only Indeterminate entries are
+/// touched. Skipped entirely when this pass surfaced no cell, or when nothing is
+/// Indeterminate (the common cases). Narrowing the dispatch further — to only the
+/// constraints that reference a cell surfaced this pass — would need a subset-checking
+/// `Engine` API in reify-eval (out of this task's scope); for a `: Rigid` body the
+/// `moi_principal[0] > 0` PD constraint references a surfaced cell, so its re-check is
+/// inherently required on every warm edit regardless.
+fn surface_geometry_derived_cells(
+    engine: &Engine,
+    values: &mut [ValueData],
+    constraints: &mut [ConstraintData],
+    result: &reify_eval::TessellateResult,
+) {
+    // Track whether this pass surfaced any cell from Undef → Determined. If it
+    // did not, `result.values` resolved nothing the kernel-less panel was
+    // missing, so the constraint re-check below cannot flip any verdict (every
+    // constraint input is a panel cell, and an Indeterminate constraint only
+    // resolves once one of its Undef inputs is surfaced here) — skip it and
+    // spare the full active-constraint dispatch on every warm rebuild.
+    let mut surfaced_any = false;
+    for cell in values.iter_mut() {
+        // Leave already-resolved cells untouched; only surface the ones the
+        // kernel-less panel left Undef (undetermined / auto).
+        if cell.determinacy == "determined" {
+            continue;
+        }
+        let id = ValueCellId::new(&cell.entity_path, &cell.name);
+        let Some(val) = result.values.get(&id) else {
+            continue;
+        };
+        if matches!(val, Value::Undef) {
+            continue;
+        }
+        let (value, unit, si_value, dimension) = format_determined_cell(val);
+        cell.value = value;
+        cell.unit = unit;
+        cell.determinacy = format_determinacy(DeterminacyState::Determined);
+        cell.reason = None;
+        cell.dimension = dimension;
+        cell.si_value = si_value;
+        // The kernel-bearing build resolved this cell to a real, FINAL value —
+        // not a demand-pruned "pending" one. `build_values` sourced `freshness`
+        // (and any `last_substantive_value`) from the kernel-less snapshot, where
+        // an auto-derived geometry cell can read `"pending"` with a stale prior
+        // value; left as-is, the panel would show a Determined value under a
+        // "pending" badge with a stale prior-value surface. Reset both so the
+        // freshness badge and prior-value surface match the surfaced value.
+        cell.freshness = "final".to_string();
+        cell.last_substantive_value = None;
+        surfaced_any = true;
+    }
+
+    if surfaced_any
+        && constraints.iter().any(|c| c.status == "Indeterminate")
+        && let Ok((recheck, _diags)) = engine.check_constraints_with_values(&result.values)
+    {
+        for c in constraints.iter_mut() {
+            if c.status != "Indeterminate" {
+                continue;
+            }
+            let Some(new_sat) = recheck
+                .iter()
+                .find(|e| e.id.to_string() == c.node_id)
+                .map(|e| e.satisfaction)
+            else {
+                continue;
+            };
+            if new_sat == Satisfaction::Indeterminate {
+                continue;
+            }
+            c.status = match new_sat {
+                Satisfaction::Satisfied => "Satisfied",
+                Satisfaction::Violated => "Violated",
+                Satisfaction::Indeterminate => "Indeterminate",
+            }
+            .to_string();
+        }
+    }
 }
 
 // ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────
@@ -4903,6 +5209,139 @@ fn build_preview_gui_state(
 /// guarantees this for well-formed modules. `get_entity_tree` performs a runtime
 /// uniqueness check (O(N)) before iterating templates, emitting a `tracing::warn!`
 /// in release builds and panicking via `debug_assert!` in debug builds.
+/// Collect the names of realizations that are consumed as an operand by some
+/// other realization in the SAME template (#5195).
+///
+/// A consumed realization is intermediate construction geometry — `let body`
+/// and `let holes` in `param geometry = difference(body, holes)` — and is
+/// hidden by default so the viewport shows only the finished part.
+///
+/// # Why the VALUE-CELL layer, not `RealizationDecl.operations` (esc-5195-1)
+/// The obvious-looking source — scanning each realization's `operations` for a
+/// bare `GeomRef::Sub(name)` operand — is NOT viable, and this was MEASURED
+/// rather than assumed. The compiler lowers a sibling-let reference to
+/// `GeomRef::Sub` only on the Modify/Transform/Pattern argument path (the
+/// #4668 sibling pre-check, `reify-compiler/src/geometry.rs:1374-1385`). The
+/// Boolean argument path (`resolve_boolean_arg`,
+/// `reify-compiler/src/geometry_boolean.rs:28-107`) instead INLINES the
+/// operand's initializer as extra ops and refers to it by `GeomRef::Step(n)`,
+/// so the sibling NAME is absent from the consuming realization entirely —
+/// Booleans early-return at `geometry.rs:1290-1308`, above that pre-check.
+/// For `param geometry : Solid = difference(body, holes)` an operations-scan
+/// yields only `{hole}` (the Pattern operand); `body` and `holes` are
+/// invisible to it. That inlining is PINNED by an existing test
+/// (`reify-compiler/tests/harness_langcore/let_scope_tests.rs:552-603`), so it
+/// is deliberate behaviour, not an oversight to patch here.
+/// `reify_eval::deps::extract_realization_edges` gates every arm on
+/// `GeomRef::Sub` and so shares this blind spot — it is deliberately NOT the
+/// contract anchor for this rule.
+///
+/// `template.value_cells` does carry the names: since #4954 every geometry
+/// binding emits a value cell alongside its realization, and that cell's
+/// `default_expr` holds the un-inlined `ValueRef(ValueCellId)` operands.
+///
+/// # Only GEOMETRY-VALUED cells count as consumers
+/// This filter is load-bearing, not a tidiness rule. A `: Rigid` structure
+/// auto-derives `mass`/`centroid`/`moment_of_inertia` lets that all reference
+/// `geometry` — but they are `Scalar`/`Point3`/`Tensor`-typed, not
+/// geometry-valued. Counting them would mark the TERMINAL realization as
+/// consumed and hide the finished part: the exact inverse of this feature.
+///
+/// "Geometry-valued" is [`is_geometry_valued`], NOT an exact `Type::Geometry`
+/// match: a binding that COLLECTS siblings (`let ribs = [rib_a, rib_b]`, typed
+/// `List<Geometry>`) consumes them just as surely as `union(rib_a, rib_b)`
+/// does. Under an exact-variant match such a realization stayed classified as
+/// a product and rendered as a stray body beside the finished part.
+///
+/// # Traversal
+/// Recursion over `CompiledExpr` is delegated to the existing exhaustive
+/// [`reify_ir::CompiledExpr::collect_value_refs`], the repo's
+/// dependency-tracking walk — it covers every nesting variant (`FunctionCall`
+/// args, `BinOp`, `IndexAccess`, `StructureInstanceCtor`, lambda `captures`,
+/// …) and treats `CrossSubGeometryRef` as a `ValueRef` leaf. Reusing it means
+/// `difference(body, translate(holes, ...))` is handled for free, and this
+/// notion of "consumption" cannot drift from the dependency graph's.
+///
+/// # Cost
+/// O(geometry_cells × expr_size) plus one O(value_cells) index build; the
+/// per-reference membership test is O(1). `build_template_node` recurses per
+/// sub-component INSTANCE, so an assembly holding N instances of the same
+/// template repeats this scan N times. That is deliberate for now — the scan
+/// is linear and template expressions are small — but if wide assemblies of
+/// repeated instances become common, memoize the result per template name in
+/// the caller rather than making the scan itself cleverer.
+fn collect_consumed_sibling_names(template: &reify_compiler::TopologyTemplate) -> HashSet<&str> {
+    // Index over this template's own value cells (member → owning entity),
+    // built ONCE. The walk below yields OWNED `ValueCellId`s, so a hit here
+    // does triple duty at O(1): it confirms the referent really is a value cell
+    // of this template, it re-borrows the member name with `template`'s
+    // lifetime (via `get_key_value`), and it checks the OWNING ENTITY too — the
+    // same pair the sibling guard tests, so this existence check can never be
+    // weaker than that guard. Value-cell members are unique within a template,
+    // so keying on the member alone loses nothing.
+    //
+    // Keyed on `str` rather than a `(&str, &str)` tuple deliberately: a tuple
+    // key would force the lookup's short-lived `id.member.as_str()` borrow to
+    // unify with the index's `template` lifetime (E0515).
+    let cells_by_member: HashMap<&str, &str> = template
+        .value_cells
+        .iter()
+        .map(|c| (c.id.member.as_str(), c.id.entity.as_str()))
+        .collect();
+
+    let mut consumed: HashSet<&str> = HashSet::new();
+    for cell in &template.value_cells {
+        // Non-geometry consumers (the `: Rigid` mass/centroid/moment_of_inertia
+        // lets) must NOT count — see the doc-comment above.
+        if !is_geometry_valued(&cell.cell_type) {
+            continue;
+        }
+        let Some(expr) = &cell.default_expr else {
+            continue;
+        };
+        for id in expr.collect_value_refs() {
+            // Same-template siblings only. Both `id.entity` and
+            // `cell.id.entity` are TEMPLATE-scoped (not instance paths), so a
+            // sibling reference shares the consuming cell's entity string;
+            // anything else is a cross-sub/cross-entity ref naming no member
+            // of `template.realizations`. A cell is not a consumer of itself.
+            if id.entity != cell.id.entity || id.member == cell.id.member {
+                continue;
+            }
+            if let Some((&member, &owner)) = cells_by_member.get_key_value(id.member.as_str())
+                && owner == id.entity
+            {
+                consumed.insert(member);
+            }
+        }
+    }
+    consumed
+}
+
+/// True when a value of this type is (or contains) realized geometry (#5195).
+///
+/// Used to decide whether a value cell counts as a CONSUMER of its sibling
+/// realizations. Container variants recurse on the element type because
+/// geometry-ness rides on the element, not the container: `let ribs = [rib_a,
+/// rib_b]` is typed `List<Geometry>` and consumes both ribs.
+///
+/// Deliberately NOT geometry-valued: `Scalar`/`Point`/`Tensor` (the `: Rigid`
+/// auto-derived `mass`/`centroid`/`moment_of_inertia` lets, which reference
+/// `geometry` without consuming it) and `Type::Feature` (a structured identity
+/// token, not a realized-geometry handle — see `reify_core::ty::Type::Feature`).
+fn is_geometry_valued(ty: &reify_core::ty::Type) -> bool {
+    use reify_core::ty::Type;
+    match ty {
+        Type::Geometry => true,
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Option(inner)
+        | Type::Keyed(inner)
+        | Type::Map(_, inner) => is_geometry_valued(inner),
+        _ => false,
+    }
+}
+
 pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
@@ -4914,13 +5353,29 @@ pub(crate) fn build_template_node(
 
     let mut children = Vec::new();
 
+    // Shared by BOTH the value-cell loop and the realization loop below, so the
+    // two sibling nodes a geometry binding emits (#4954) agree on
+    // `trait_geometry` (#5195). Hoisted out of the value-cell loop, where it
+    // used to be recomputed per cell.
+    //
+    // KNOWN LIMITATION (pre-existing, shared by both call sites, out of scope
+    // for #5195): `trait_bounds` holds DECLARED trait names only, so this fires
+    // for `structure def X : Physical` but NOT for `: Rigid` — even though
+    // `Rigid : Physical` refines it (stdlib/structural_physical.ri:76). A
+    // correct check would resolve the refinement chain
+    // (`reify_eval::conforms_to_trait`) and needs the merged module + prelude
+    // trait_defs threaded in here; that is a separable follow-up. The
+    // consumed-intermediate observable does NOT depend on this flag: the
+    // terminal `geometry` realization is consumed by nothing, so it stays
+    // `default_visible == true` and renders either way.
+    let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+
     // Value cells: param, let, auto
     for cell in &template.value_cells {
         let cell_kind = cell_kind_tree_str(cell.kind);
         let member = &cell.id.member;
         let cell_path = format!("{}.{}", entity_path, member);
         let is_geometry_member = member == "geometry";
-        let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
         // Use entity_path (the instance path, e.g. "Parent.rib") rather than
         // cell.id.entity (the template name, e.g. "Child") when constructing
         // the NodeId for the freshness lookup.  Sub-component cells are keyed
@@ -4950,17 +5405,54 @@ pub(crate) fn build_template_node(
 
     // Realizations (geometry-producing bindings: Solid-typed lets/params).
     //
-    // These are NOT in `value_cells` — the compiler routes Solid-typed
-    // bindings into `RealizationDecl` so they can be tessellated. Without
-    // this loop the outline omits exactly the entries the user wants to
-    // toggle visibility on (`let body`, `let hole`, `param geometry: Solid`,
-    // …) and shows only scalar params, which can't be hidden in 3D.
+    // Since #4954 a geometry binding emits BOTH a value cell (above, the
+    // scalar/typed view: `kind: "let"`, `has_mesh: false`) and a realization
+    // node here (`kind: "realization"`, `has_mesh: true`). Meshes key on the
+    // realization node, so this loop emits exactly the entries the user wants
+    // to toggle visibility on (`let body`, `let hole`, `param geometry: Solid`,
+    // …); the value-cell siblings carry no mesh.
     //
     // `entity_path` is the mesh key form (`Entity#realization[N]`) so it
     // matches `engineStore.meshes` and `viewStateStore` directly. The
     // user-friendly binding name is carried in `display_name`. Realizations
     // without a name (test-helper-only code path — see `RealizationDecl.name`
     // doc) fall back to deriving one from the path.
+
+    // Sibling realizations consumed downstream by another realization in this
+    // same template are INTERMEDIATE construction geometry (`let body` feeding
+    // `param geometry = difference(body, holes)`), so they are hidden by
+    // default — the viewport shows the finished part, and the outline toggle
+    // reveals the construction steps (#5195).
+    let consumed = collect_consumed_sibling_names(template);
+
+    // FLOOR on the consumed rule (#5195). The rule classifies by "some
+    // geometry-valued sibling references this name", which a DERIVATION of the
+    // finished part satisfies just as well as a step toward it — `let clearance
+    // = translate(geometry, ...)` or `let envelope = hull(geometry)` kept for a
+    // clearance check both put `geometry` in `consumed`. Without a floor that
+    // hides the part and leaves only the helper on screen: a blank-looking
+    // viewport with no diagnostic. Two guards, applied in order:
+    //
+    //  1. The trait terminal `geometry` is NEVER consumed-hidden. It is the
+    //     structure's published product (`Physical::geometry`), so a sibling
+    //     referencing it is by construction a derivation OF the part.
+    //  2. If the rule would STILL leave this template with zero visible
+    //     realizations, drop it wholesale here. Aux hiding is deliberately NOT
+    //     floored — an all-aux template legitimately shows nothing.
+    //
+    // Unnamed realizations (test-helper-only path) are never consumed-hidden:
+    // `consumed` holds names, so there is nothing to match them against.
+    let is_consumed_intermediate = |name: Option<&str>| -> bool {
+        match name {
+            Some("geometry") | None => false,
+            Some(n) => consumed.contains(n),
+        }
+    };
+    let apply_consumed_rule = template
+        .realizations
+        .iter()
+        .any(|r| !(aux_ancestor || r.is_aux || is_consumed_intermediate(r.name.as_deref())));
+
     for real in &template.realizations {
         let real_path = format!("{}#realization[{}]", entity_path, real.id.index);
         let display_name = real.name.clone();
@@ -4976,14 +5468,22 @@ pub(crate) fn build_template_node(
             type_name: None,
             display_name,
             has_mesh: true,
-            trait_geometry: false,
+            // Mirrors the value-cell heuristic above so the two sibling nodes a
+            // geometry binding emits (#4954) agree — see `parent_has_physical`
+            // for the shared `: Rigid` limitation (#5195).
+            trait_geometry: real.name.as_deref() == Some("geometry") && parent_has_physical,
             children: vec![],
             freshness,
-            // Mirrors the surfacing-walk rule — shared contract anchor:
+            // Extends the surfacing-walk rule — shared contract anchor:
             // `geometry_ops::surface_subtree` / `geometry_ops::realization_is_aux`
-            // (rule: `!(aux_ancestor || realization_is_aux(realization))`).
-            // aux_ancestor is inherited from any containing `aux sub` up the tree.
-            default_visible: !(aux_ancestor || real.is_aux),
+            // (rule: `!(aux_ancestor || realization_is_aux(realization))`) — with
+            // the consumed-intermediate rule (#5195). aux_ancestor is inherited
+            // from any containing `aux sub` up the tree; `is_consumed_intermediate`
+            // means some geometry-valued sibling cell in this template takes this
+            // realization as an operand, subject to the floor documented above.
+            default_visible: !(aux_ancestor
+                || real.is_aux
+                || (apply_consumed_rule && is_consumed_intermediate(real.name.as_deref()))),
         });
     }
 
@@ -5288,16 +5788,7 @@ impl EngineSession {
         self.compile_failure = None;
         self.last_reload_error = None;
         // Emit ordering mirrors the emit-ordering block in load_from_source.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state",
-        ));
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 
@@ -5482,17 +5973,40 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
     Err(format!("Cannot parse value '{}'", s))
 }
 
+/// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+///
+/// Used only by `format_expr` to decide how to pretty-print a string-literal
+/// `IndexAccess` key — a display heuristic, not a real disambiguation between
+/// member access and `Map<String, _>` lookup (see the `IndexAccess` arm).
+fn is_identifier_like(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Format a compiled expression as a human-readable string.
 fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
     use reify_ir::CompiledExprKind;
 
     match &expr.kind {
         CompiledExprKind::Literal(v) => {
+            // Unit-bearing literals render "{val} {unit}" (space-separated).
+            // This is deliberately different from AutoResolveParameterValue's
+            // `display` field, built as "{val}{unit}" with no space
+            // (build_parameters_payload above, pinned by the "4.2mm" golden
+            // in tests/engine_tests.rs) — the two are independently-evolved,
+            // known-divergent value+unit display surfaces pending
+            // unification under docs/prds/display-unit-preference.md §7c
+            // (task 5234). Not an oversight; do not "fix" one to match the
+            // other here.
             let (val, unit) = crate::types::format_value(v);
             if unit.is_empty() {
                 val
             } else {
-                format!("{}{}", val, unit)
+                format!("{} {}", val, unit)
             }
         }
         CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
@@ -5590,7 +6104,27 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
             format!("map{{{}}}", entry_strs.join(", "))
         }
         CompiledExprKind::IndexAccess { object, index } => {
-            format!("{}[{}]", format_expr(object), format_expr(index))
+            // Member access (`obj.member`) is lowered to `IndexAccess` with a
+            // string-literal index — recover the source-form dotted access,
+            // but only when the key looks like an identifier. A `Map` keyed
+            // by an arbitrary string (e.g. `config["max load"]`) compiles to
+            // the identical IR shape, so a non-identifier key falls back to
+            // the quoted bracket form instead of the syntactically-invalid
+            // `config.max load`. An identifier-shaped map key (e.g.
+            // `config["mode"]`) is still indistinguishable from real member
+            // access at this level and will render as `config.mode` — a
+            // known display-only limitation, not re-parsed.
+            match &index.kind {
+                CompiledExprKind::Literal(reify_ir::Value::String(member))
+                    if is_identifier_like(member) =>
+                {
+                    format!("{}.{}", format_expr(object), member)
+                }
+                CompiledExprKind::Literal(reify_ir::Value::String(member)) => {
+                    format!("{}[\"{}\"]", format_expr(object), member)
+                }
+                _ => format!("{}[{}]", format_expr(object), format_expr(index)),
+            }
         }
         CompiledExprKind::MethodCall {
             object,
@@ -6486,6 +7020,115 @@ mod display_style_extract_tests {
         );
         assert_eq!(result.finish, 2u8, "Gloss must map to finish==2");
         assert!(!result.wireframe, "wireframe must be false");
+    }
+}
+
+// ── Unit tests for format_expr (constraint pretty-printer) ────────────────
+
+#[cfg(test)]
+mod format_expr_tests {
+    //! Unit tests for the private `format_expr` constraint pretty-printer.
+    //!
+    //! DSL-based integration tests (engine_tests.rs) exercise `format_expr`
+    //! only indirectly, through full constraint strings. These inline tests
+    //! build `CompiledExpr` fixtures directly to pin three specific defects:
+    //! (1) member access — lowered to `IndexAccess` with a string-literal
+    //! index — was rendering as `obj[index]` instead of `obj.index`; (2)
+    //! unit-bearing literals were rendering with no space and the bare "SI"
+    //! fallback instead of a space plus the composed base-unit label; and
+    //! (3) a genuine `Map` lookup keyed by a non-identifier string (which
+    //! lowers to the same `IndexAccess` shape as member access) was
+    //! mis-rendered as invalid dotted syntax instead of a quoted bracket.
+
+    use super::format_expr;
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, Value};
+
+    /// Build the `IndexAccess` node member access lowers to: `material.density`.
+    fn material_density_access() -> CompiledExpr {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("material_1", "material"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String("density".to_string()), Type::String);
+        CompiledExpr::index_access(object, index, Type::dimensionless_scalar())
+    }
+
+    #[test]
+    fn index_access_with_string_literal_index_renders_as_member_access() {
+        assert_eq!(format_expr(&material_density_access()), "material.density");
+    }
+
+    #[test]
+    fn index_access_with_numeric_index_keeps_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("arr_1", "arr"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "arr[0]");
+    }
+
+    /// A `Map<String, _>` lookup by a non-identifier key lowers to the same
+    /// `IndexAccess { index: Literal(String(..)) }` shape as member access,
+    /// but must not render as invalid dotted syntax (`config.max load`).
+    #[test]
+    fn index_access_with_non_identifier_string_key_keeps_quoted_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("config_1", "config"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String("max load".to_string()), Type::String);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "config[\"max load\"]");
+    }
+
+    #[test]
+    fn index_access_with_empty_string_key_keeps_quoted_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("config_1", "config"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String(String::new()), Type::String);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "config[\"\"]");
+    }
+
+    #[test]
+    fn dimensioned_literal_in_binop_renders_space_and_composed_unit() {
+        let right = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
+        let expr = CompiledExpr::binop(
+            BinOp::Gt,
+            material_density_access(),
+            right,
+            Type::dimensionless_scalar(),
+        );
+
+        assert_eq!(format_expr(&expr), "material.density > 0 kg\u{b7}m^-3");
+    }
+
+    #[test]
+    fn dimensionless_literal_in_binop_has_no_trailing_space() {
+        let left = CompiledExpr::value_ref(
+            ValueCellId::new("x_1", "x"),
+            Type::dimensionless_scalar(),
+        );
+        let right = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Gt, left, right, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "x > 0");
     }
 }
 

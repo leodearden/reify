@@ -34,28 +34,31 @@ use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_param_default_conformance, check_trait_arg_conformance};
-use crate::connect::PendingConnectAutoParam;
-use crate::type_compat::{
-    type_carries_trait_object, type_carries_type_param, unify,
-    resolve_function_overload, OverloadResolution,
+use crate::conformance::{
+    ConformanceRegistries, check_expr_mechanism_joint_bound, check_fn_arg_conformance,
+    check_param_default_conformance, check_trait_arg_conformance,
 };
+use crate::connect::PendingConnectAutoParam;
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
     check_type_param_bounds, compile_entity,
 };
 use crate::expr::compile_expr;
 use crate::scope::CompilationScope;
-use crate::type_resolution::{
-    check_applied_type_arg_bounds, resolve_type_expr_with_aliases, walk_type_for_applied,
-    TypeAliasRegistry,
+use crate::type_compat::{
+    OverloadResolution, resolve_function_overload, type_carries_trait_object,
+    type_carries_type_param, unify,
 };
-use reify_core::ValueCellId;
+use crate::type_resolution::{
+    TypeAliasRegistry, check_applied_type_arg_bounds, resolve_type_expr_with_aliases,
+    walk_type_for_applied,
+};
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
     CompiledTrait, EntityKind, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
 };
 use crate::units::UnitRegistry;
+use reify_core::ValueCellId;
 
 /// Run phase-11 (entity compile) over `parsed.declarations`.
 ///
@@ -88,6 +91,13 @@ pub(crate) fn phase_entities(
     // trait-name fallback.  Collected from local structure/occurrence decls
     // (already in `ctx.seen_entity_names` from pre_pass::collect_decl_refs)
     // and every prelude module's exported templates. See task 1876.
+    //
+    // The module-local `enum N` shadowing rule that reinterprets a name in this
+    // set as `Type::Enum` (task #5429) is NOT installed here: it is installed once
+    // for the whole phase sequence in `compile_with_prelude_context_checked_with_config`,
+    // because `phase_functions`/`phase_traits` run earlier and must agree with this
+    // phase on what the name means (esc-5429-1). See
+    // `enums_phase::build_local_enum_shadow_set`.
     let structure_names: HashSet<String> = ctx
         .seen_entity_names
         .iter()
@@ -509,8 +519,14 @@ fn resolve_ambient_default(
     //     so the pre-pass is their sole report site; non-error diagnostics
     //     re-surface at the injection site where the value is actually used.
     let mut value_diagnostics = Vec::new();
-    let value_type =
-        compile_expr(&decl.value, scope, enum_defs, functions, &mut value_diagnostics).result_type;
+    let value_type = compile_expr(
+        &decl.value,
+        scope,
+        enum_defs,
+        functions,
+        &mut value_diagnostics,
+    )
+    .result_type;
     diagnostics.extend(
         value_diagnostics
             .into_iter()
@@ -643,7 +659,9 @@ fn compile_joint_self_check(
         // match the DOF. A non-`Range<Scalar>` (e.g. Type::Error from an
         // already-diagnosed range) is skipped — anti-cascade.
         if let Type::Range(inner) = &compiled_range.result_type
-            && let Type::Scalar { dimension: range_dim } = inner.as_ref()
+            && let Type::Scalar {
+                dimension: range_dim,
+            } = inner.as_ref()
             && range_dim != dof_dim
         {
             diagnostics.push(
@@ -867,8 +885,16 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
                     &arg_name,
                     &compiled_arg,
                     span,
-                    &template_registry,
-                    &trait_registry,
+                    // task 5465 (family 4): `enum_defs` is `prelude ++
+                    // module-local`, so the walker's general concrete-leaf arm
+                    // can tolerate D1 / F-Mono enum erasure. All three are
+                    // disjoint-field shared borrows alongside the
+                    // `&mut ctx.diagnostics` below.
+                    ConformanceRegistries {
+                        templates: &template_registry,
+                        traits: &trait_registry,
+                        enum_defs: &ctx.resolution_enums,
+                    },
                     &mut ctx.diagnostics,
                 );
             }
@@ -939,7 +965,13 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 
     // Collect (parent_entity_name, scoped_id, cell_type, free, span) for push;
     // collect diagnostics separately so we can mutably borrow ctx.templates below.
-    let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
+    let mut cells_to_push: Vec<(
+        String,
+        ValueCellId,
+        reify_core::Type,
+        bool,
+        reify_core::SourceSpan,
+    )> = Vec::new();
 
     // Track (sub_name, override_member) pairs already diagnosed for absent-member
     // errors, so that a duplicate body like `{ nope = auto\n nope = auto }` (which
@@ -991,7 +1023,13 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 
         let scoped_entity = format!("{}.{}", req.parent_entity_name, req.sub_name);
         let scoped_id = ValueCellId::new(&scoped_entity, req.override_member.as_str());
-        cells_to_push.push((req.parent_entity_name.clone(), scoped_id, cell_type, req.free, req.span));
+        cells_to_push.push((
+            req.parent_entity_name.clone(),
+            scoped_id,
+            cell_type,
+            req.free,
+            req.span,
+        ));
     }
 
     // Apply the collected cell pushes.  We look up the parent template by name
@@ -1009,7 +1047,11 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
             // the scoped id is already present in the parent's value_cells.
             if parent_tmpl.value_cells.iter().any(|c| c.id == scoped_id) {
                 let member = &scoped_id.member;
-                let sub_name = scoped_id.entity.rsplit('.').next().unwrap_or(&scoped_id.entity);
+                let sub_name = scoped_id
+                    .entity
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(&scoped_id.entity);
                 dup_warnings.push(
                     Diagnostic::warning(format!(
                         "sub `{sub_name}`: duplicate override for member `{member}`; first assignment wins",
@@ -1073,7 +1115,13 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 
     // Collect (parent_entity_name, scoped_id, cell_type, free, span) for push;
     // collect diagnostics separately so we can mutably borrow ctx.templates below.
-    let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
+    let mut cells_to_push: Vec<(
+        String,
+        ValueCellId,
+        reify_core::Type,
+        bool,
+        reify_core::SourceSpan,
+    )> = Vec::new();
 
     // Track (scoped_entity, param_name) pairs already diagnosed for absent-param
     // errors, so a duplicate `{ p = auto\n p = auto }` block (which produces two
@@ -1270,15 +1318,31 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // per call (see doc-comment) requires the full table, not a name-keyed map.
     let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
+    // task 5465 (family 4): `prelude ++ module-local` enum table, threaded into
+    // the conformance walker so its general concrete-leaf arm can tolerate
+    // D1/F-Mono enum erasure (see `WalkCtx.enum_defs`). Bound here next to
+    // `resolution_functions` because the `walk` closure below borrows `ctx`
+    // immutably while `new_diagnostics` is borrowed mutably.
+    let resolution_enums: &[EnumDef] = &ctx.resolution_enums;
+
+    // The templates/traits/enums trio the conformance entry points all take.
+    // Built ONCE here rather than unbundled into three trailing arguments at
+    // every call site (task 5465 amendment: reviewer_comprehensive architecture).
+    let registries = ConformanceRegistries {
+        templates: &template_registry,
+        traits: &trait_registry,
+        enum_defs: resolution_enums,
+    };
+
     // Fast-path gate for type-param bound checking (task-4232 γ D5):
     // compute ONCE whether any function in the resolution table has bounded
     // type-params.  If not (e.g. non-generic sources like bracket_source, or any
     // source compiled without user-defined generic functions), skip the per-root
     // expression walk entirely.  This is O(|fns|) once vs O(|exprs| × |fns|)
     // per invocation and returns the check overhead to zero for non-generic sources.
-    let has_bounded_generic_fns = resolution_functions.iter().any(|f| {
-        !f.type_params.is_empty() && f.type_params.iter().any(|tp| !tp.bounds.is_empty())
-    });
+    let has_bounded_generic_fns = resolution_functions
+        .iter()
+        .any(|f| !f.type_params.is_empty() && f.type_params.iter().any(|tp| !tp.bounds.is_empty()));
 
     // Collect diagnostics into a local vec to avoid borrow-checker conflicts
     // (we hold shared borrows on ctx.templates and ctx.resolution_functions via
@@ -1294,33 +1358,20 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         check_expr_fn_calls(
             expr,
             resolution_functions,
-            &template_registry,
-            &trait_registry,
+            registries,
             span,
             has_bounded_generic_fns,
             diags,
         );
         // task 4310 (mechanism γ): L2 compile-time DrivingJoint-bound check.
         // Rejects bind(couple(...), v) etc. with MechanismNonDrivingJoint.
-        check_expr_mechanism_joint_bound(
-            expr,
-            &template_registry,
-            &trait_registry,
-            span,
-            diags,
-        );
+        check_expr_mechanism_joint_bound(expr, &template_registry, &trait_registry, span, diags);
         // task 4444 ζ: StructureInstanceCtor trait-arg conformance for value-cell
         // let bindings.  phase_pending_bound_checks covers sub-component ctor args
         // (queued in entity.rs at sub-lowering time); value-cell `let c = Foo(...)`
         // bindings lower to StructureInstanceCtor expressions and were NOT checked.
         // Walking every StructureInstanceCtor here closes that gap.
-        check_expr_struct_ctor_args(
-            expr,
-            &template_registry,
-            &trait_registry,
-            span,
-            diags,
-        );
+        check_expr_struct_ctor_args(expr, registries, span, diags);
     };
 
     // Walk EVERY CompiledExpr-bearing root field of each entity template via the
@@ -1336,12 +1387,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         // declared cell_type (e.g. `param part : Part = "x"` → rejects String).
         // Geometry/Solid defaults are handled by the Type::Geometry arm of
         // check_param_default_conformance (no separate helper).
-        check_param_default_conformance(
-            template,
-            &template_registry,
-            &trait_registry,
-            &mut new_diagnostics,
-        );
+        check_param_default_conformance(template, registries, &mut new_diagnostics);
     }
 
     // Walk function bodies: param defaults, let-bindings, result expr.
@@ -1352,7 +1398,11 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         for (_, expr) in &f.body.let_bindings {
             walk(expr, SourceSpan::empty(0), &mut new_diagnostics);
         }
-        walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
+        walk(
+            &f.body.result_expr,
+            SourceSpan::empty(0),
+            &mut new_diagnostics,
+        );
     }
 
     // Walk associated-function bodies on every LOCAL template (step-14).
@@ -1384,7 +1434,11 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
             for (_, expr) in &f.body.let_bindings {
                 walk(expr, SourceSpan::empty(0), &mut new_diagnostics);
             }
-            walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
+            walk(
+                &f.body.result_expr,
+                SourceSpan::empty(0),
+                &mut new_diagnostics,
+            );
         }
     }
 
@@ -1416,22 +1470,26 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
 fn check_expr_fn_calls(
     expr: &CompiledExpr,
     functions: &[CompiledFunction],
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
+    // task 5465 (family 4 + amendment): the templates/traits/enums trio,
+    // forwarded verbatim to `check_fn_arg_conformance`.
+    registries: ConformanceRegistries<'_>,
     representative_span: SourceSpan,
     check_bounds: bool,
     diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) {
     expr.walk(&mut |node: &CompiledExpr| {
-        let CompiledExprKind::UserFunctionCall { function_name, args } = &node.kind else {
+        let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &node.kind
+        else {
             return;
         };
 
         // Re-resolve the overload once using the args' result_types.
         // This disambiguates same-name overloads and skips eval-builtins
         // (NoUserFunctions) and already-diagnosed failures (NoMatch / Ambiguous).
-        let arg_result_types: Vec<Type> =
-            args.iter().map(|a| a.result_type.clone()).collect();
+        let arg_result_types: Vec<Type> = args.iter().map(|a| a.result_type.clone()).collect();
         let f = match resolve_function_overload(function_name, &arg_result_types, functions) {
             OverloadResolution::Resolved(f) => f,
             _ => return,
@@ -1454,8 +1512,7 @@ fn check_expr_fn_calls(
                 param_name,
                 arg,
                 representative_span,
-                template_registry,
-                trait_registry,
+                registries,
                 diagnostics,
             );
         }
@@ -1501,8 +1558,8 @@ fn check_expr_fn_calls(
                 &f.type_params,
                 &type_args,
                 function_name,
-                template_registry,
-                trait_registry,
+                registries.templates,
+                registries.traits,
                 diagnostics,
                 representative_span,
             );
@@ -1542,34 +1599,56 @@ fn check_expr_fn_calls(
 /// accepted for a `Vector3<Length>` param (loose-quantity rule).
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
+    // task 5465 (family 4 + amendment): the templates/traits/enums trio,
+    // forwarded verbatim to `check_trait_arg_conformance`.
+    registries: ConformanceRegistries<'_>,
     representative_span: SourceSpan,
     diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) {
     expr.walk(&mut |node: &CompiledExpr| {
-        let CompiledExprKind::StructureInstanceCtor { type_name, ordered_args, .. } = &node.kind
+        let CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            span: ctor_span,
+            ..
+        } = &node.kind
         else {
             return;
         };
+        // task 5302 (Q1 span anchoring): prefer the ctor call-site's own span
+        // (task 4089 `StructureInstanceCtor.span`, populated from the AST
+        // `FunctionCall` node) so the emitted label anchors at the offending
+        // `Foo(...)` call rather than the representative cell span — which is
+        // `SourceSpan::empty(0)` for fn / forall / guard / objective bodies, and
+        // the whole-declaration span for value cells. Falls back to
+        // `representative_span` for synthetic ctors with no source span. The sub
+        // `=` path keeps its own per-arg `arg_expr.span` via PendingBoundCheck
+        // (entity.rs), so this change only refines the StructureInstanceCtor
+        // (expression) path — no per-arg span is added to `ordered_args`.
+        let anchor_span = ctor_span.unwrap_or(representative_span);
         // Resolve the target template once; skip if not found.
-        let Some(template) = template_registry.get(type_name.as_str()) else {
+        let Some(template) = registries.templates.get(type_name.as_str()) else {
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // Scope to List<TraitObject>, StructureRef, Type::Vector, and Selector/AnySelector
-            // params. Bare TraitObject params are skipped — see fn doc-comment rationale.
+            // task 5302 (struct-ctor-conformance α): check ALL named params EXCEPT
+            // a bare `Type::TraitObject(_)`. This generalizes the original 4584
+            // 4-family allowlist (List<TraitObject> / StructureRef / Vector /
+            // Selector) to every concrete field type, routed through the shared
+            // conformance walker at Warning severity (CTOR_FIELD_CONFORMANCE_SEVERITY).
+            //
+            // Bare TraitObject params stay EXEMPT here (D6): they are deliberate
+            // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
+            // ConstitutiveLaw`) and are already covered by the fn-call / sub-
+            // component paths. REVISIT this exemption once those escape-hatch call
+            // sites are migrated — see docs/prds/struct-ctor-field-type-conformance.md; at that
+            // point the `!matches!(… TraitObject …)` guard can be dropped so bare
+            // trait params are checked too.
             let should_check = template
                 .value_cells
                 .iter()
                 .find(|vc| vc.id.member == arg_name.as_str())
-                .is_some_and(|vc| {
-                    matches!(&vc.cell_type,
-                        Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
-                    || matches!(&vc.cell_type, Type::StructureRef(_))
-                    || matches!(&vc.cell_type, Type::Vector { .. })
-                    || matches!(&vc.cell_type, Type::Selector(_) | Type::AnySelector)
-                });
+                .is_some_and(|vc| !matches!(&vc.cell_type, Type::TraitObject(_)));
             if !should_check {
                 continue;
             }
@@ -1577,9 +1656,8 @@ fn check_expr_struct_ctor_args(
                 type_name,
                 arg_name,
                 compiled_arg,
-                representative_span,
-                template_registry,
-                trait_registry,
+                anchor_span,
+                registries,
                 diagnostics,
             );
         }
@@ -1658,7 +1736,8 @@ fn for_each_template_root_expr(
                 | CompiledGeometryOp::Sweep { args, .. }
                 | CompiledGeometryOp::Curve { args, .. }
                 | CompiledGeometryOp::Profile { args, .. }
-                | CompiledGeometryOp::Surface { args, .. } => {
+                | CompiledGeometryOp::Surface { args, .. }
+                | CompiledGeometryOp::Isosurface { args, .. } => {
                     for (_, arg) in args {
                         f(arg, realization.span);
                     }

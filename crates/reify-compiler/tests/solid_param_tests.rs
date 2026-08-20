@@ -4,7 +4,7 @@
 //! BOTH as a `ValueCellDecl{cell_type: Type::Geometry}` AND as a `RealizationDecl`.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
-use reify_core::{DiagnosticCode, RealizationNodeId, Severity, Type};
+use reify_core::{DiagnosticCode, RealizationNodeId, Severity, Type, ValueCellId};
 use reify_ir::CompiledExprKind;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -52,7 +52,11 @@ fn solid_param_has_no_value_cell() {
         .expect("Widget template not found");
 
     // After GHR-γ: exactly one ValueCellDecl for 'g' with Type::Geometry.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -144,7 +148,11 @@ fn solid_param_compiles_as_realization() {
         .expect("Widget template not found");
 
     // (b) After GHR-γ: exactly one ValueCellDecl named "g" with Type::Geometry.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -195,9 +203,12 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         .find(|t| t.name == "W1")
         .expect("W1 template not found");
 
-    // (a) After GHR-γ: `g` (Solid param) has exactly 1 ValueCellDecl with Type::Geometry.
-    //     `other` and `out` are geometry lets — no ValueCellDecl for them.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    // (a) `g` (Solid param) has exactly 1 ValueCellDecl with Type::Geometry.
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -209,11 +220,32 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         Type::Geometry,
         "expected cell_type=Type::Geometry for 'g'"
     );
+    // γ (task #4954): `other` and `out` are TOP-LEVEL geometry lets, so since γ
+    // they ALSO each produce a Type::Geometry Let ValueCellDecl
+    // (graph-completion lowering) alongside `g`'s Param cell — 3 total, not 1.
+    for name in ["other", "out"] {
+        let cells: Vec<_> = template
+            .value_cells
+            .iter()
+            .filter(|c| c.id.member == name)
+            .collect();
+        assert_eq!(
+            cells.len(),
+            1,
+            "expected exactly 1 ValueCellDecl for '{name}' (γ: geometry let); got: {:#?}",
+            cells
+        );
+        assert_eq!(
+            cells[0].cell_type,
+            Type::Geometry,
+            "expected cell_type=Type::Geometry for '{name}'"
+        );
+    }
     assert_eq!(
         template.value_cells.len(),
-        1,
-        "expected exactly 1 ValueCellDecl total (only 'g' is a Solid param; other/out are lets); \
-         got: {:#?}",
+        3,
+        "expected exactly 3 ValueCellDecls total ('g' Param cell + 'other'/'out' \
+         geometry-let cells, γ task #4954); got: {:#?}",
         template.value_cells
     );
 
@@ -314,9 +346,12 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
         .find(|t| t.name == "W2")
         .expect("W2 template not found");
 
-    // (a) After GHR-γ: `g` (Solid param with geometry-ident default) has exactly 1 ValueCellDecl.
-    //     `a` is a geometry let — no ValueCellDecl for it.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    // (a) `g` (Solid param with geometry-ident default) has exactly 1 ValueCellDecl.
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -328,11 +363,30 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
         Type::Geometry,
         "expected cell_type=Type::Geometry for 'g'"
     );
+    // γ (task #4954): `a` is a TOP-LEVEL geometry let, so since γ it ALSO
+    // produces a Type::Geometry Let ValueCellDecl (graph-completion lowering)
+    // — 2 total, not 1.
+    let a_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "a")
+        .collect();
+    assert_eq!(
+        a_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'a' (γ: geometry let); got: {:#?}",
+        a_cells
+    );
+    assert_eq!(
+        a_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'a'"
+    );
     assert_eq!(
         template.value_cells.len(),
-        1,
-        "expected exactly 1 ValueCellDecl total (only 'g' is a Solid param; 'a' is a geometry let); \
-         got: {:#?}",
+        2,
+        "expected exactly 2 ValueCellDecls total ('g' Param cell + 'a' geometry-let \
+         cell, γ task #4954); got: {:#?}",
         template.value_cells
     );
 
@@ -557,19 +611,26 @@ fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
 
 /// REJECTION GUARD (task 4584 — intentional flip of the task-1878 pin-down).
 ///
-/// Documents that `param g : Solid = 42` produces exactly one Error-severity
+/// Documents that `param g : Solid = 42` produces exactly one
 /// `TypeNotConformingToStructureRef` diagnostic: `42` is an integer, not a
 /// geometry-producing expression, so it is rejected for a `Geometry`-typed param.
 ///
 /// Previously locked as `solid_param_with_non_geometry_default_silently_accepts`
-/// (task 1878) with an `errors.is_empty()` assertion; flipped intentionally per
-/// that test's own contract ("Any such change MUST update this test intentionally").
+/// (task 1878) with an `errors.is_empty()` assertion; flipped to a rejection by
+/// task 4584 per that test's own contract ("Any such change MUST update this test
+/// intentionally").
 ///
-/// RED until step-8 (impl): the Geometry branch of check_param_default_conformance
-/// does not yet exist. GREEN once step-8 adds the geometry-aware predicate.
+/// **task 5302 α (D8) downgrade:** the diagnostic is now **Warning**-severity, not
+/// Error. Param-default conformance is one of the ctor-conformance entries governed
+/// by the single `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning at α); the δ
+/// follow-up flips that const back to Error and promotes the whole surface
+/// uniformly. Code is unchanged (`TypeNotConformingToStructureRef`). The assertion
+/// filters by CODE (not severity) because the source omits a `module` decl, so a
+/// `W_MODULE_DECL_MISSING` warning is also present and a bare Warning-count filter
+/// would over-count.
 ///
 /// Structural assertions (b) no-realization, (c) ValueCellDecl shape are
-/// preserved — both still hold after the flip (42 is not geometry-producing).
+/// preserved — both still hold after the downgrade (42 is not geometry-producing).
 #[test]
 fn solid_param_with_non_geometry_default_rejected() {
     let source = r#"structure def W3 {
@@ -582,24 +643,40 @@ fn solid_param_with_non_geometry_default_rejected() {
         .find(|t| t.name == "W3")
         .expect("W3 template not found");
 
-    // (a) Exactly one Error-severity TypeNotConformingToStructureRef diagnostic.
-    let error_diags: Vec<_> = compiled
+    // (a) Exactly one TypeNotConformingToStructureRef diagnostic, now at Warning
+    //     severity (task 5302 α knob downgrade). Filter by CODE — the source has no
+    //     `module` decl so a W_MODULE_DECL_MISSING warning also fires.
+    let conformance_diags: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToStructureRef))
         .collect();
     assert_eq!(
-        error_diags.len(),
+        conformance_diags.len(),
         1,
-        "expected exactly 1 Error-severity diagnostic for `param g : Solid = 42`, \
-         got: {:#?}",
-        error_diags
+        "expected exactly 1 TypeNotConformingToStructureRef diagnostic for \
+         `param g : Solid = 42`, got: {:#?}",
+        conformance_diags
     );
     assert_eq!(
-        error_diags[0].code,
-        Some(DiagnosticCode::TypeNotConformingToStructureRef),
-        "expected TypeNotConformingToStructureRef, got {:?}",
-        error_diags[0].code,
+        conformance_diags[0].severity,
+        Severity::Warning,
+        "task 5302 α: param-default conformance is Warning-severity (knob-governed), got: {:?}",
+        conformance_diags[0]
+    );
+    // The α downgrade means the module no longer hard-errors on this default.
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "task 5302 α: `param g : Solid = 42` must no longer produce any Error-severity \
+         diagnostic (downgraded to Warning), got: {:#?}",
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
     );
 
     // (b) No realization is emitted — `g` is not inserted into geometry_lets
@@ -757,26 +834,32 @@ fn guarded_solid_param_creates_geometry_value_cell() {
 
 /// After GHR-γ step-4 (cross-sub bypass retired), `let copy = self.child.body`
 /// where `body` is a geometry param on a sub-structure MUST produce a
-/// `ValueCellDecl{cell_type: Type::Geometry}` for `copy` on the outer template,
-/// with `default_expr` whose kind is `CompiledExprKind::CrossSubGeometryRef(_)`.
+/// `ValueCellDecl{cell_type: Type::Geometry}` for `copy` on the outer template.
 ///
-/// Currently FAILS because entity.rs:1148-1171 intercepts `CrossSubGeometryRef`
-/// and `continue`s with a Warning, dropping the cell.  Step-4 deletes that bypass.
+/// γ (task #4954) update: `body` here is a TOP-LEVEL (non-guarded) geometry
+/// LET, not a param. Since γ, such a let ALSO produces a `Type::Geometry`
+/// value cell on `Inner` (graph-completion lowering), so `member_type_map_
+/// from_template` (entity.rs) now includes `body` in `sub_member_types["child"]`
+/// — exactly like it already did for a `Solid` param. `self.child.body`
+/// therefore resolves through the ordinary `ValueRef` path (expr.rs ~3667),
+/// and the `CrossSubGeometryRef` bypass this test originally pinned no longer
+/// fires for this scenario: `body` is no longer "absent from sub_member_types",
+/// so the fallback branch that calls `try_resolve_cross_sub_geometry_value_ref`
+/// is never reached. That bypass remains reachable for GUARDED geometry lets
+/// (still realization-only, out of γ's scope; see
+/// `cross_sub_geometry_diagnostic_tests.rs`). Name/section header kept for
+/// history; body flipped to pin the new (correct) behavior — `copy` still
+/// gets its `ValueCellDecl{cell_type: Type::Geometry}`, just via the same
+/// path a Solid param already used.
 ///
 /// Note: the required sub-constructor syntax is `sub child = Inner()` — the grammar
 /// does NOT accept `sub child : Inner` (zero occurrences in the test suite).
 #[test]
 fn bare_cross_sub_geometry_creates_value_cell() {
-    // Use a geometry-LET child member (`let body = sphere(5mm)`) — geometry lets
-    // have only a RealizationDecl (not a ValueCellDecl), so `body` is absent from
-    // `sub_member_types["child"]`.  The expr.rs lookup falls through to
-    // `try_resolve_cross_sub_geometry_value_ref`, which produces
-    // `CompiledExprKind::CrossSubGeometryRef`.  That's the variant the old
-    // bypass matched on; after step-4 retires the bypass the cell is created.
-    //
-    // For `param body : Solid` the child HAS a ValueCellDecl, so `body` IS in
-    // `sub_member_types` and the access resolves to a plain `ValueRef` — the
-    // bypass never fired for that case even before step-4.
+    // `body` is a top-level geometry let. Post-γ it has its own Type::Geometry
+    // value cell on `Inner`, so it IS present in `sub_member_types["child"]`
+    // and `self.child.body` resolves to a plain `ValueRef` — same code path as
+    // a `Solid` param (see doc comment above).
     let source = r#"pub structure Inner {
     let body = sphere(5mm)
 }
@@ -791,7 +874,7 @@ pub structure Outer {
         .find(|t| t.name == "Outer")
         .expect("Outer template not found");
 
-    // After step-4: `copy` must be a ValueCellDecl with Type::Geometry.
+    // `copy` must be a ValueCellDecl with Type::Geometry.
     let copy_cells: Vec<_> = outer
         .value_cells
         .iter()
@@ -811,18 +894,27 @@ pub structure Outer {
         "expected cell_type=Type::Geometry for 'copy', got {:?}",
         cell.cell_type
     );
-    // The default_expr must carry a CrossSubGeometryRef discriminator (not
-    // ValueRef) because the geometry-let child member is absent from
-    // sub_member_types.
+    // γ (task #4954): the default_expr must now carry a plain ValueRef to the
+    // scoped cross-sub cell `Outer.child.body` — NOT CrossSubGeometryRef — since
+    // `body`'s new value cell puts it in sub_member_types (see doc comment).
     let default_expr = cell
         .default_expr
         .as_ref()
         .expect("expected default_expr.is_some() for 'copy'");
-    assert!(
-        matches!(default_expr.kind, CompiledExprKind::CrossSubGeometryRef(_)),
-        "expected default_expr.kind == CrossSubGeometryRef(_) for 'copy', got {:?}",
-        default_expr.kind
-    );
+    match &default_expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                *id,
+                ValueCellId::new("Outer.child", "body"),
+                "expected 'copy' ValueRef to target Outer.child.body, got {:?}",
+                id
+            );
+        }
+        other => panic!(
+            "expected default_expr.kind == ValueRef(Outer.child.body) for 'copy', got {:?}",
+            other
+        ),
+    }
 }
 
 // ─── task-4157 step-7: torus compiler lowering ───────────────────────────────

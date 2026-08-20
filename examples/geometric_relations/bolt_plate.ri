@@ -13,9 +13,13 @@
 // Each sub projects its LOCAL datums single-shot (pose-independent), mirroring
 // examples/geometric_relations/feature_datum_axis.ri's `let a : Axis = cyl.axis`
 // feature→datum projection. The relate-solve rank-partitions the relations into a
-// driving set, hands the driving set to the SolveSpaceSolver, and `ApplyTransform`
-// (task 3901) places the bolt coaxial + flush to the plate; the grounded plate
-// sits at identity.
+// driving set and solves that set with its own damped Gauss–Newton pose solver
+// (not libslvs: the bound `Slvs_*` API models independent point coordinates and
+// has no rigid-group primitive, so a single 6-DOF Frame carrying several rigidly
+// coupled datums cannot be expressed there — see crates/reify-constraints/src/
+// relate_solve.rs's backend note, esc-4386-38). `ApplyTransform` (task 3901) then
+// places the bolt coaxial + flush to the plate; the grounded plate sits at
+// identity.
 //
 // Boundary test B1 (the §1 example). The B2/B3/B5 variants live as inline source
 // constants in the ζ test files.

@@ -35,6 +35,13 @@
 #             TRADEOFF BREADCRUMB: exit-0 here is the safe-default full-gate
 #             route; a cheaper citing-test-subset alternative is supplied
 #             separately via scripts/verify-pipeline-infra-tests.txt)
+#   infra-tests: ANY tests/infra/*.sh path (open-ended glob, matched in code —
+#             not enumerable in --list; not a manifest line, since the
+#             literal-per-file manifest cannot cover not-yet-existent infra
+#             tests). A new/renamed infra test changes the merge-gate suite
+#             itself, so it is definitionally never config-only (task 5256;
+#             recurrence prevention for the 2026-07-19 5247/5249 incident,
+#             PRD docs/prds/merge-gate-health.md W3a).
 #
 # Environment knobs:
 #   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
@@ -48,13 +55,32 @@
 # Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
 # separately; reify ships the oracle, dark-factory does the wiring):
 #
-#   result=$(bash scripts/verify-pipeline-guard.sh requires-full-gate "${changed_files[@]}")
-#   exit_code=$?
+#   exit_code=0
+#   # $result holds the first matched load-bearing path (diagnostics on the
+#   # exit-0 route only; the $exit_code branch below is what decides routing).
+#   result=$(bash scripts/verify-pipeline-guard.sh requires-full-gate "${changed_files[@]}" < /dev/null) || exit_code=$?
+#   # `< /dev/null`: an empty changed_files array expands to zero positional
+#   # args, and with zero args the oracle falls back to reading stdin (see
+#   # requires-full-gate above) — the redirect keeps a legitimate empty-diff
+#   # call from blocking on an inherited/open caller stdin.
 #   if [ "$exit_code" -eq 0 ]; then
-#       # Route to full --scope all gate (or run drift guards at minimum)
+#       : # Route to full --scope all gate (or run drift guards at minimum)
 #   elif [ "$exit_code" -eq 1 ]; then
-#       # Config-only fast-path safe
+#       : # Config-only fast-path safe
+#   else
+#       : # exit 2 = usage error (mis-invocation, not a diff verdict): treat
+#         # as full gate, fail-closed, and log loudly — never fall through
+#         # silently.
 #   fi
+#
+#   CAVEAT: `exit_code=0; result=$(...) || exit_code=$?` is NOT optional
+#   boilerplate — a bare `result=$(...); exit_code=$?` (without the `||`)
+#   would abort the caller's shell AT THE ASSIGNMENT under `set -e` whenever
+#   the oracle exits non-zero (exit 1 = fast-path safe is the oracle's
+#   normal non-zero outcome), because a command-substitution assignment is a
+#   simple command for errexit purposes and the shell never reaches the
+#   following `exit_code=$?` line. The `||` list exempts the assignment
+#   from errexit.
 
 set -euo pipefail
 
@@ -147,6 +173,18 @@ case "$_subcmd" in
                  || true)
         if [ -n "$_match" ]; then
             echo "$_match"
+            exit 0
+        fi
+        # Infra-test glob clause (task 5256; PRD merge-gate-health.md W3a):
+        # ANY tests/infra/*.sh path is definitionally load-bearing — a new/renamed
+        # infra test changes the merge-gate suite itself, so an infra-test diff is
+        # never config-only. Open-ended glob (matches infra tests that don't exist
+        # yet), hence a special-case here rather than a fixed-string manifest line.
+        _infra_match=$(printf '%s\n' "$_normalized" \
+                       | grep -m1 -E '^tests/infra/[^/]*\.sh$' 2>/dev/null \
+                       || true)
+        if [ -n "$_infra_match" ]; then
+            echo "$_infra_match"
             exit 0
         fi
         exit 1

@@ -696,8 +696,7 @@ impl Engine {
     /// Returns constraint check entries and any diagnostics produced by
     /// violated constraints. Uses the current snapshot's constraint graph.
     ///
-    /// This is the shared constraint-checking logic used by both `edit_check`
-    /// (sequential path) and `edit_check_concurrent` (concurrent path).
+    /// This is the shared constraint-checking logic used by `edit_check`.
     pub fn check_constraints_with_values(
         &self,
         values: &ValueMap,

@@ -131,7 +131,17 @@ pub fn find(dep: NativeDep) -> Option<LibLoc> {
 }
 
 fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBuf> {
-    if let Ok(dir) = env::var(env_var) {
+    find_dir_with_override(env::var(env_var).ok().as_deref(), candidates, sentinel)
+}
+
+/// Resolution core of [`find_dir`] with the override passed in as a value, so
+/// precedence is testable without `env::set_var` racing libtest's threads.
+fn find_dir_with_override(
+    override_dir: Option<&str>,
+    candidates: &[&str],
+    sentinel: &str,
+) -> Option<PathBuf> {
+    if let Some(dir) = override_dir {
         return Some(PathBuf::from(dir));
     }
     for p in candidates {
@@ -204,6 +214,78 @@ pub fn emit_rpath_for_tests(dep: NativeDep) -> bool {
     }
 }
 
+/// Absolute path to the tbb-only RUNPATH pin dir materialized by
+/// `scripts/build-manifold-deps.sh` (task #5192, mechanism A″). Contains
+/// EXACTLY one entry — a `libtbb.so.12` symlink chaining to the deps lib —
+/// so prepending it to RUNPATH flips no other soname.
+const TBB_PIN_DIR: &str = "/opt/reify-deps/tbb-pin";
+
+fn tbb_pin_lib() -> PathBuf {
+    Path::new(TBB_PIN_DIR).join("libtbb.so.12")
+}
+
+/// Probe for the tbb-pin dir; if present, emit directives so the calling
+/// package's bin targets carry a DIRECT `NEEDED libtbb.so.12`, resolved via
+/// [`TBB_PIN_DIR`] prepended FIRST in RUNPATH. Fail-soft: no-op (returns
+/// `false`, mirroring [`find_dir`]'s posture) when the pin dir is absent,
+/// so stub-only builds (no `/opt/reify-deps` host) still compile.
+///
+/// Mechanism A″ (task #5192): a workspace binary's own RUNPATH can never
+/// redirect the *transitive* NEEDED `libtbb.so.12` pulled in by system
+/// `libTKernel.so` (OCCT) — DT_RUNPATH is non-transitive. Giving the binary
+/// its OWN direct NEEDED — resolved via this tbb-only pin dir, which the
+/// loader consults for the binary's own direct deps — lets it load the
+/// deps `libtbb.so.12.18` (which has symbols the system `libtbb.so.12`
+/// lacks) *before* the transitive `libTKernel` edge in the loader's BFS, so
+/// every later `libtbb.so.12` soname need binds the same already-loaded
+/// copy.
+///
+/// Call this BEFORE [`emit_rpath_for_bins`] in the binary package's
+/// `build.rs` so the tbb-pin `-rpath` is emitted first and lands first in
+/// DT_RUNPATH (`ld` concatenates `-rpath` occurrences in command-line
+/// order).
+pub fn emit_tbb_pin_for_bins() -> bool {
+    emit_tbb_pin("cargo:rustc-link-arg-bins")
+}
+
+/// Same as [`emit_tbb_pin_for_bins`] but emits the unscoped
+/// `cargo:rustc-link-arg` form so test/example/lib-unittest bins are
+/// covered too — mirrors [`emit_rpath_for_tests`].
+///
+/// For packages with bins of their own (`reify-cli`, `reify-gui`) that call
+/// both this and [`emit_tbb_pin_for_bins`], the bin target receives the
+/// pin `-rpath` and the forced `--no-as-needed -l:libtbb.so.12 --as-needed`
+/// link-arg twice (once bin-scoped, once unscoped) — this is intentional,
+/// the same bin double-emission [`emit_rpath_for_tests`] documents for
+/// `-rpath` alone. A duplicate `-rpath` token is harmlessly idempotent; a
+/// duplicate direct `NEEDED libtbb.so.12` entry resolves identically at
+/// load time (both bind the same pin-dir copy) and is harmless to the
+/// loader, just slightly redundant in the ELF.
+pub fn emit_tbb_pin_for_tests() -> bool {
+    emit_tbb_pin("cargo:rustc-link-arg")
+}
+
+fn emit_tbb_pin(link_arg: &str) -> bool {
+    let pin_lib = tbb_pin_lib();
+    // Re-run if the pin symlink is created/changed later, even in the
+    // fail-soft no-op case below.
+    println!("cargo:rerun-if-changed={}", pin_lib.display());
+    if !pin_lib.exists() {
+        return false;
+    }
+    // Pin dir FIRST in RUNPATH so the exe's own direct NEEDED resolves
+    // there ahead of any transitive libtbb.so.12 need.
+    println!("{link_arg}=-Wl,-rpath,{TBB_PIN_DIR}");
+    // Link-time resolution for the `-l:libtbb.so.12` directive below.
+    println!("cargo:rustc-link-search=native={TBB_PIN_DIR}");
+    // The exe's own objects reference no tbb symbol, so plain --as-needed
+    // (rustc's default posture) would drop the NEEDED entry; force it.
+    // `-l:libtbb.so.12` records the file's SONAME, not an absolute path,
+    // so it stays a normal soname need resolvable via RUNPATH.
+    println!("{link_arg}=-Wl,--no-as-needed,-l:libtbb.so.12,--as-needed");
+    true
+}
+
 /// Read the SONAME suffix encoded into the canonical symlink for `lib_name`
 /// at `lib_dir`. Used by `reify-kernel-occt/build.rs` to pin OCCT linkage to
 /// the exact filename that exists at the resolved `lib_dir` (e.g.
@@ -231,25 +313,28 @@ mod tests {
 
     #[test]
     fn read_soname_version_extracts_trailing_segment() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path();
         let real = tmp.join("libTKernel.so.7.8.1");
         fs::write(&real, b"").unwrap();
         symlink("libTKernel.so.7.8.1", tmp.join("libTKernel.so.7.8")).unwrap();
         symlink("libTKernel.so.7.8", tmp.join("libTKernel.so")).unwrap();
 
         // First-level symlink target is `libTKernel.so.7.8` → version "7.8".
-        assert_eq!(read_soname_version(&tmp, "TKernel"), Some("7.8".to_string()));
+        assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.8".to_string()));
     }
 
     #[test]
     fn read_soname_version_returns_none_for_missing_symlink() {
-        let tmp = tempdir();
-        assert_eq!(read_soname_version(&tmp, "TKernel"), None);
+        let guard = tempdir();
+        let tmp = guard.path();
+        assert_eq!(read_soname_version(tmp, "TKernel"), None);
     }
 
     #[test]
     fn read_soname_version_handles_conda_one_level_symlink() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path();
         let real = tmp.join("libTKernel.so.7.9.3");
         fs::write(&real, b"").unwrap();
         symlink("libTKernel.so.7.9.3", tmp.join("libTKernel.so")).unwrap();
@@ -257,52 +342,117 @@ mod tests {
         // Conda-forge layout: `libTKernel.so → libTKernel.so.7.9.3` directly.
         // We extract the trailing segment verbatim (`"7.9.3"`); a `:lib...` link
         // directive built from this value matches the exact file on disk.
-        assert_eq!(read_soname_version(&tmp, "TKernel"), Some("7.9.3".to_string()));
+        assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.9.3".to_string()));
     }
 
+    /// An override outranks a candidate that would otherwise match, and is
+    /// taken on trust — it is returned even without the sentinel present,
+    /// which is what lets an operator point a build at a lib dir we do not
+    /// know about.
     #[test]
-    fn find_dir_env_var_takes_precedence() {
-        let tmp = tempdir();
-        let sentinel = tmp.join("libgmsh.so");
-        fs::write(&sentinel, b"").unwrap();
+    fn find_dir_override_takes_precedence_over_candidates() {
+        let override_guard = tempdir();
+        let override_dir = override_guard.path();
 
-        // SAFETY: build-script unit tests run serially within a single
-        // process; we mutate a private env var name that no other test reads.
-        let env_name = "REIFY_BUILD_UTILS_TEST_OVERRIDE_LIB_DIR";
-        // SAFETY: unit tests run sequentially in this module; the env name is
-        // private to this test and not read elsewhere.
-        unsafe { env::set_var(env_name, &tmp) };
-        let found = find_dir(env_name, &[], "libgmsh.so");
-        // SAFETY: same justification as the matching set_var above.
-        unsafe { env::remove_var(env_name) };
+        // A candidate that DOES contain the sentinel, so the assertion below
+        // can only pass if the override actually outranks it.
+        let candidate_guard = tempdir();
+        let candidate_dir = candidate_guard.path();
+        fs::write(candidate_dir.join("libgmsh.so"), b"").unwrap();
 
-        assert_eq!(found.as_deref(), Some(tmp.as_path()));
+        let override_str = override_dir.to_string_lossy().into_owned();
+        let candidate_str = candidate_dir.to_string_lossy().into_owned();
+        let found = find_dir_with_override(
+            Some(override_str.as_str()),
+            &[candidate_str.as_str()],
+            "libgmsh.so",
+        );
+
+        assert_eq!(found.as_deref(), Some(override_dir));
     }
 
     #[test]
     fn find_dir_falls_through_candidates_when_env_unset() {
-        let tmp = tempdir();
+        let guard = tempdir();
+        let tmp = guard.path();
         let sentinel = tmp.join("libgmsh.so");
         fs::write(&sentinel, b"").unwrap();
 
         let tmp_str = tmp.to_string_lossy().into_owned();
         let candidates: Vec<&str> = vec!["/definitely/does/not/exist", tmp_str.as_str()];
         let found = find_dir("REIFY_BUILD_UTILS_TEST_UNSET_VAR", &candidates, "libgmsh.so");
-        assert_eq!(found.as_deref(), Some(tmp.as_path()));
+        assert_eq!(found.as_deref(), Some(tmp));
     }
 
-    fn tempdir() -> PathBuf {
-        let base = env::temp_dir().join(format!(
-            "reify-build-utils-test-{}-{}",
-            std::process::id(),
-            rand_suffix(),
-        ));
-        fs::create_dir_all(&base).unwrap();
-        base
+    /// Printed by the child below only after it asserts, so the parent can
+    /// tell a real pass from libtest's filter matching zero tests.
+    const CHILD_ASSERTED: &str = "reify-build-utils: child asserted";
+
+    /// Covers what the seam-level test above deliberately bypasses: `find_dir`
+    /// reads the env var it is named, and `find` routes each override to the
+    /// matching `LibLoc` slot. No-op unless re-exec'd by the parent below,
+    /// which supplies both vars at spawn.
+    #[test]
+    fn find_gmsh_honours_env_overrides_child() {
+        let (Ok(include_dir), Ok(lib_dir)) =
+            (env::var("GMSH_INCLUDE_DIR"), env::var("GMSH_LIB_DIR"))
+        else {
+            return;
+        };
+
+        let found = find(NativeDep::Gmsh).expect("both overrides set, so both dirs resolve");
+        assert_eq!(found.include_dir, PathBuf::from(include_dir));
+        assert_eq!(found.lib_dir, PathBuf::from(lib_dir));
+        println!("{CHILD_ASSERTED}");
     }
 
-    fn rand_suffix() -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos() as u64
+    /// Re-execs this test binary with the overrides set in the child's spawn
+    /// environment; `env::set_var` in-process would race libtest's threads.
+    #[test]
+    fn find_gmsh_honours_env_overrides() {
+        let include_guard = tempdir();
+        let lib_guard = tempdir();
+
+        let exe = env::current_exe().expect("path to this test binary");
+        let out = std::process::Command::new(exe)
+            .args(["--exact", "tests::find_gmsh_honours_env_overrides_child", "--nocapture"])
+            .env("GMSH_INCLUDE_DIR", include_guard.path())
+            .env("GMSH_LIB_DIR", lib_guard.path())
+            .output()
+            .expect("re-exec this test binary");
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "child test failed ({}):\n{stdout}", out.status);
+        assert!(
+            stdout.contains(CHILD_ASSERTED),
+            "child never reached its assertions (filter matched no test?):\n{stdout}"
+        );
+    }
+
+    /// Canary against a future rewrite of `tempdir()` that leaks again.
+    #[test]
+    fn tempdir_removes_directory_on_scope_exit() {
+        let observed: PathBuf;
+        {
+            let guard = tempdir();
+            observed = guard.path().to_path_buf();
+        } // guard dropped here
+
+        assert!(
+            !observed.exists(),
+            "temp dir leaked after scope exit: {}",
+            observed.display()
+        );
+    }
+
+    /// Removed on drop; the `reify-build-utils-test-` prefix keeps debris from
+    /// a SIGKILL (which `Drop` cannot cover) attributable to this crate.
+    /// Bind the guard to a named local — `tempdir().path().to_path_buf()`
+    /// compiles but deletes the dir at the end of that statement.
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("reify-build-utils-test-")
+            .tempdir()
+            .expect("create temp dir")
     }
 }

@@ -105,13 +105,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "dom_query",
-            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect.",
+            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect. Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value to query"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Scope the query to the pane whose [data-viewport-id] subtree contains (or is) the element. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane. A testId not present in the named pane yields { exists: false }, not an error."
                     }
                 },
                 "required": ["testId"]
@@ -124,13 +128,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "click_element",
-            description: "Click a DOM element by data-testid. Dispatches a synthetic click event.",
+            description: "Click a DOM element by data-testid. Dispatches a synthetic click event. Optional viewportId scopes resolution to one viewport pane — required to click a per-pane control unambiguously when several panes are mounted.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value of the element to click"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Click the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -263,13 +271,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "element_screenshot",
-            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Frontend-mediated (no Rust dispatch arm).",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" } as an image content block. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for; omitting it keeps the document-wide first match, and when more than one element matched, the pane diagnostics (viewportId, matchCount) arrive as a SECOND text content block after the image. Frontend-mediated (no Rust dispatch arm).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "Value of the data-testid attribute on the target element (e.g. \"diagnostics-dialog\")."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Crop the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -395,6 +407,49 @@ fn tool_defs() -> Vec<ToolDef> {
                     }
                 },
                 "required": ["case"]
+            }),
+        },
+        ToolDef {
+            name: "set_fea_channel",
+            description: "Select the active FEA scalar channel (e.g. 'errorIndicator', 'vonMises') \
+                          in the FEA-mode toolbar's channel dropdown. A channel switch is pure \
+                          view-state (no engine re-solve, unlike set_fea_case) — frontend-mediated, \
+                          no dispatch_tool arm. Used by the visual-regression harness to select a \
+                          channel before taking a screenshot. Returns { ok: true }, or \
+                          { error: <reason> } if `channel` is missing/non-string, `viewportId` is \
+                          present but not a string, the channel is not an available option, the \
+                          select is disabled, no FEA toolbar select is present in the DOM at all, \
+                          an explicit `viewportId` matches no mounted toolbar (distinct from the \
+                          none-mounted-anywhere case), more than one toolbar is mounted and no \
+                          `viewportId` was given to disambiguate, or the select's value does not \
+                          settle on the requested channel after the change event dispatches. \
+                          (SET_FEA_CHANNEL_ERRORS in bridge.ts is the single source of truth for \
+                          the exact strings; the conditions are what is contracted here.) The \
+                          ambiguity case became reachable in #5670: previously only pane 0 was \
+                          handed a FeaModeStore, so at most one toolbar ever existed; App.tsx now \
+                          gives every pane its own keyed store, so an N-pane document mounts N \
+                          toolbars and `viewportId` is required in practice for multi-pane \
+                          documents. NOTE: the value-settling check only catches a listener \
+                          reverting the value — it cannot detect a silently-inert onChange, since \
+                          the DOM value is set before the event fires (see the set_fea_channel \
+                          comment in bridge.ts).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "Name of the scalar channel to activate (e.g. 'errorIndicator', 'vonMises', 'displacement_magnitude')."
+                    },
+                    // #5670: deliberately NOT the "first populated viewport is targeted"
+                    // boilerplate the nine camera/canvas tools share — pickFeaChannelSelect
+                    // has no first-populated tiebreak, because every mounted toolbar is
+                    // equally valid to drive and guessing would silently misapply a switch.
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional id of the pane whose FEA toolbar to target (e.g. 'design-main', 'pane-1'). When omitted, the single mounted FEA toolbar is targeted; if more than one pane has one, the call fails as ambiguous rather than guessing — pass this to disambiguate."
+                    }
+                },
+                "required": ["channel"]
             }),
         },
         // --- DOM/style/layout/window inspection tools (R1) ---
@@ -544,13 +599,13 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for",
-            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text?, viewportId? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. The selector arm's optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text? } or { kind: 'store', path, equals }"
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -558,7 +613,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -566,6 +621,10 @@ fn tool_defs() -> Vec<ToolDef> {
                     "testId": { "type": "string" },
                     "state": { "type": "string", "enum": ["visible", "gone"] },
                     "text": { "type": "string" },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                    },
                     "timeout_ms": { "type": "integer" }
                 }
             }),
@@ -784,13 +843,18 @@ fn tool_defs() -> Vec<ToolDef> {
             name: "focus_element",
             description: "Focus a DOM element by its data-testid attribute. \
                           Calls el.focus() on the resolved element. \
-                          Returns {ok: true} on success or {error} if not found or testId is missing.",
+                          Returns {ok: true} on success or {error} if not found or testId is missing. \
+                          Optional viewportId scopes resolution to one viewport pane.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value of the element to focus"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Focus the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -817,13 +881,19 @@ fn tool_defs() -> Vec<ToolDef> {
                           DOM mode: pass testId to set scrollTop/scrollLeft on the resolved element. \
                           Editor mode: pass target:'editor' to scroll the CodeMirror scrollDOM. \
                           Returns {ok: true, scrollTop, scrollLeft} with the resulting scroll offsets \
-                          (enabling a get_layout_metrics round-trip to confirm the applied offset).",
+                          (enabling a get_layout_metrics round-trip to confirm the applied offset). \
+                          Optional viewportId scopes DOM-mode resolution to one viewport pane; it is \
+                          ignored in editor mode, which resolves no data-testid.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "data-testid of the DOM element to scroll (DOM mode)"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional, DOM mode only. Scroll the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane. Ignored (never rejected) when target:'editor'."
                     },
                     "target": {
                         "type": "string",
@@ -994,10 +1064,92 @@ struct DebugServerState {
     #[allow(dead_code)]
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
+    /// Shared delta baseline — the SAME `Arc` as `AppState::last_state`
+    /// (INV-GUI-2, task 5035 L6). Refreshed by
+    /// `open_source_into_engine_and_refresh_baseline` /
+    /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent normal
+    /// Tauri command diffs against the post-debug-mutation state.
+    last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 }
 
 fn is_image_tool(name: &str) -> bool {
     matches!(name, "screenshot" | "screenshot_window" | "element_screenshot")
+}
+
+/// Map a successful tool result onto the MCP `tools/call` `{"content": [...]}`
+/// envelope.
+///
+/// Pure (no `DebugServerState`) so the transport is unit-testable: `handle_mcp`
+/// is an axum handler taking `State(DebugServerState)` — an Arc-of-Mutex bundle
+/// of EngineSession, SelectionInfo, DebugBridge and GuiState — which is
+/// impractical to build in `mod tests`, and is why this envelope had no coverage
+/// at all before #5891.
+///
+/// Two properties are load-bearing and neither is arbitrary:
+///
+/// 1. ORDER — the image block stays at `content[0]`, diagnostics are APPENDED.
+///    `parseRpcResponse` (gui/test/visual/rpc.ts, branch table :33) is POSITIONAL
+///    (`content[0].type === "image"`) and gui/test/visual/run.ts:202-211 feeds
+///    `value.data` straight into `Buffer.from(…, "base64")`, so a prepended text
+///    block would be decoded as PNG bytes and corrupt the visual-regression
+///    harness. `normalizeRpcEnvelope` (rpcEnvelope.mjs) instead SEARCHES for the
+///    text block, so appending is invisible to it.
+///
+/// 2. GATING — the diagnostics block is emitted only when the residual (every
+///    top-level key except `data`) is a non-empty object with no top-level string
+///    `error`. Non-empty keeps `screenshot`/`screenshot_window` — which return
+///    `{data}` and nothing else (bridge.ts:689,702) — and every scoped or
+///    single-match `element_screenshot` bit-for-bit unchanged, mirroring the
+///    bridge-side `paneDiagnostics` gate one layer down rather than inventing a
+///    second condition that can drift. The `error` exclusion upholds the
+///    CROSS-LANGUAGE INVARIANT documented at gui/test/visual/rpcEnvelope.mjs:54-58:
+///    `isInBandError` reads any top-level string `error` as a tool FAILURE, so
+///    emitting one beside a successful image would make every driver report a
+///    working screenshot as broken.
+///
+/// Anything else — a non-image tool, or an image tool whose result carries no
+/// string `data` (every `element_screenshot` error shape) — falls through to
+/// today's single pretty-printed text block over the FULL result.
+fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
+    if is_image_tool(tool_name)
+        && let Some(data) = result.get("data").and_then(|d| d.as_str())
+    {
+        // Strip data URL prefix if present
+        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
+        let mut content = vec![json!({
+            "type": "image",
+            "data": base64,
+            "mimeType": "image/png"
+        })];
+
+        // Property 2 above: append the pane-guess diagnostics only when there is
+        // something to say and saying it cannot be misread as a failure.
+        if let Some(obj) = result.as_object() {
+            let residual: serde_json::Map<String, Value> = obj
+                .iter()
+                .filter(|(k, _)| k.as_str() != "data")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let carries_in_band_error = residual.get("error").is_some_and(|v| v.is_string());
+            if !residual.is_empty() && !carries_in_band_error {
+                let residual = Value::Object(residual);
+                let text = serde_json::to_string_pretty(&residual)
+                    .unwrap_or_else(|_| residual.to_string());
+                content.push(json!({"type": "text", "text": text}));
+            }
+        }
+
+        return json!({"content": content});
+    }
+
+    // Standard text content block
+    let text = serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string());
+    json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }]
+    })
 }
 
 // --- Tool dispatch ---
@@ -1050,7 +1202,15 @@ where
 {
     let engine = Arc::clone(engine);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
+    // Task 5357: run the engine closure on a dedicated large-stack thread (256
+    // MiB) rather than the default ~2 MiB, so a deeply-nested compile driven via
+    // the debug/MCP tools cannot overflow the stack. Unlike the previous bare
+    // `std::thread::spawn` (which panics on OS thread-creation failure),
+    // `spawn_on_large_stack` returns an `io::Result` we surface as a clean Err
+    // (consistent with the "engine thread died" string below). The returned
+    // JoinHandle is dropped/ignored exactly as the prior fire-and-forget spawn
+    // was; results still flow via the oneshot channel.
+    crate::large_stack::spawn_on_large_stack(move || {
         // with_engine_lock catches panics and recovers from mutex poisoning,
         // so f() panicking will not leave the mutex poisoned for future callers.
         // The user closure f returns Result<T, String>, so with_engine_lock
@@ -1058,7 +1218,8 @@ where
         let result =
             crate::engine_lock::with_engine_lock(&engine, f).and_then(std::convert::identity);
         let _ = tx.send(result);
-    });
+    })
+    .map_err(|e| format!("failed to spawn engine thread: {e}"))?;
     rx.await.map_err(|_| "engine thread died".to_string())?
 }
 
@@ -1090,69 +1251,16 @@ async fn handle_demand_dispatch(state: &DebugServerState) -> Result<Value, Strin
     demand_dispatch_on_engine(&state.engine).await
 }
 
-/// Histogram of a mesh's per-face `element_kind` bytes.
-///
-/// Returns an empty map when `element_kind` is `None` (tet-only / non-shell
-/// meshes carry no per-face classification). `BTreeMap` keeps the byte keys in
-/// deterministic ascending order so the serialized JSON object
-/// (`{"1": <n>}`) is stable across runs — the PRD §9 θ observable signal.
-pub(crate) fn element_kind_count(
-    mesh: &crate::types::MeshData,
-) -> std::collections::BTreeMap<u8, usize> {
-    let mut counts = std::collections::BTreeMap::new();
-    if let Some(element_kind) = &mesh.element_kind {
-        for &kind in element_kind {
-            *counts.entry(kind).or_insert(0) += 1;
-        }
-    }
-    counts
-}
-
 async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
+    // Delegate to the headless-testable extraction (task 5348). It routes through
+    // `build_gui_state_full_scene`, so `mesh_stats` reports the FULL realized scene
+    // (not the frontend's selective-demand incremental delta) and shares the exact
+    // per-mesh mapping — including `commands::element_kind_count` — with
+    // `engine_state_json`, so the two debug reads can never drift apart. The
+    // element-kind histogram helper was moved to the ungated `commands` module so
+    // this delegation and its headless unit test do not need the `gui` feature.
     run_on_engine(&state.engine, |session| {
-        let gui_state = session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))?;
-
-        let stats: Vec<Value> = gui_state
-            .meshes
-            .iter()
-            .map(|m| {
-                let vertex_count = m.vertices.len() / 3;
-                let face_count = m.indices.len() / 3;
-
-                let mut min = [f32::INFINITY; 3];
-                let mut max = [f32::NEG_INFINITY; 3];
-                for chunk in m.vertices.chunks_exact(3) {
-                    for i in 0..3 {
-                        min[i] = min[i].min(chunk[i]);
-                        max[i] = max[i].max(chunk[i]);
-                    }
-                }
-
-                // Per-face element-kind histogram, byte→count as a JSON object
-                // with string keys (e.g. {"1": <n>}) — the PRD §9 θ signal.
-                let element_kind_hist: serde_json::Map<String, Value> =
-                    element_kind_count(m)
-                        .into_iter()
-                        .map(|(kind, count)| (kind.to_string(), json!(count)))
-                        .collect();
-
-                json!({
-                    "entity_path": m.entity_path,
-                    "vertex_count": vertex_count,
-                    "face_count": face_count,
-                    "element_kind_count": element_kind_hist,
-                    "bounding_box": if vertex_count > 0 {
-                        json!({"min": min, "max": max})
-                    } else {
-                        json!(null)
-                    }
-                })
-            })
-            .collect();
-
-        Ok(json!({"meshes": stats}))
+        crate::commands::mesh_stats_json(session)
     })
     .await
 }
@@ -1270,22 +1378,55 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
     let path = crate::path_key::canonicalize_debug_open_path(raw_path);
 
-    // Read file from disk
+    // Read file from disk — this copy is ONLY for the "content" field of the
+    // frontend open_file push below. `open_source_into_engine_and_refresh_baseline`
+    // (below) independently re-reads the same `path` a second time inside
+    // `load_file_into_engine` -> `EngineSession::load_file`. Two reads, not
+    // one, mirrors the normal (non-debug) GUI path exactly: `open_file_impl`
+    // (frontend content fetch) and `open_file_engine_impl` (engine load) each
+    // read the file independently too (commands.rs). A merged single-read
+    // helper would need an engine.rs load-from-source-with-path variant,
+    // which is out of scope for task #5193. This is benign — not a bug — for
+    // the current sole caller (the serial e2e visual-regression harness over
+    // static fixtures: no concurrent writer, so the two reads cannot diverge
+    // in practice); see PRD §4 D7 for the same serial-debug-ops assumption
+    // the baseline-refresh note below relies on. A debug-only canary below
+    // (search "serial-debug-ops assumption was violated") guards this so a
+    // future non-serial caller cannot silently desync without at least
+    // failing debug/test builds.
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
-    // Load into engine and build GUI state (on OS thread — OCCT panics in tokio)
-    let path_clone = path.clone();
-    let content_clone = content.clone();
-    let gui_state = run_on_engine(&state.engine, move |session| {
-        session
-            .update_source(&path_clone, &content_clone)
-            .map_err(|e| format!("update_source failed: {e}"))?;
-        session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))
-    })
-    .await?;
+    // Load into engine, build GUI state, and refresh the delta baseline
+    // (INV-GUI-2, task 5035 L6) through the same compute_delta choke-point
+    // main.rs's normal command path uses. NOTE: the baseline is refreshed
+    // here, BEFORE the query_frontend push below lands S1 on the frontend —
+    // a normal command interleaved in that window would diff against S1
+    // while the frontend is still at S0. Safe only because debug sessions
+    // (the e2e visual-regression harness) run serially and never overlap a
+    // debug op with a normal command; see PRD §4 D7.
+    let gui_state =
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
+            .await?;
+
+    // Debug-only canary for the serial-debug-ops assumption the double-read
+    // above relies on: if `path`'s contents changed between the `content`
+    // read above and this point, the frontend's `content` and whatever
+    // `open_source_into_engine_and_refresh_baseline` actually loaded into the
+    // engine may have diverged. `debug_assert_eq!` (not a runtime `Err`) so
+    // release builds pay no extra I/O and a real user's debug session never
+    // fails over a benign external edit — it only makes a broken assumption
+    // observable in debug/test builds instead of silently shipping desynced
+    // state to the frontend.
+    #[cfg(debug_assertions)]
+    if let Ok(recheck) = std::fs::read_to_string(&path) {
+        debug_assert_eq!(
+            recheck, content,
+            "open_path_into_engine: {path} changed between the frontend-content read \
+             and the engine load completing — the serial-debug-ops assumption was \
+             violated (see comment above)"
+        );
+    }
 
     // Serialize GUI state for the frontend
     let gui_state_json =
@@ -1301,6 +1442,62 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
         .debug_bridge
         .query_frontend("open_file", file_data)
         .await
+}
+
+// ── INV-GUI-2 (task 5035 L6): debug-mutation delta-baseline refresh ──
+//
+// Debug-server mutations run the engine forward but, without help, never
+// touch `last_state`, the delta baseline `compute_delta` diffs against. The
+// next NORMAL command would then diff against the pre-debug baseline
+// instead of the state the frontend actually has (survey latent bug #7 —
+// the stale-baseline desync). The two helpers below fix this by calling
+// `crate::diff::compute_delta(last_state, &gui_state)` right after the
+// engine mutation, purely for its side effect of refreshing `last_state`;
+// the returned `StateDelta` is intentionally discarded because the full
+// `GuiState` is still delivered to the frontend via the caller's
+// synchronous `query_frontend` push, not `emit_delta` (see PRD §4 D7).
+//
+// Both take `last_state: &std::sync::Mutex<...>` (not `&Arc<Mutex<...>>`) so
+// they're headlessly testable with a plain `Mutex` in unit tests; callers
+// holding an `Arc<Mutex<_>>` (e.g. `DebugServerState::last_state`) pass it
+// in via `&state.last_state`, which deref-coerces cleanly. See also the
+// concurrency note on their call sites (`open_path_into_engine`,
+// `handle_set_fea_case`): the refresh lands before the frontend push, so
+// this assumes debug ops never overlap a normal command.
+
+/// Mirrors `open_path_into_engine`'s engine block (`load_file_into_engine`
+/// on a real OS thread; `UnresolvedGuiState::resolve` afterward, once the
+/// lock is released), then refreshes the delta baseline — see the
+/// INV-GUI-2 note above for why/how. Routes through
+/// `crate::commands::load_file_into_engine` and its returned
+/// `UnresolvedGuiState::resolve` — the same `EngineSession::load_file` and
+/// abs-path-rewrite pair the normal `open_file_engine_impl` command uses —
+/// so the debug bridge's open_file/load_fixture funnel ADOPTS the
+/// newly-opened file's identity (`FilePathUpdate::Set`) instead of preserving
+/// whatever file was previously loaded, which `update_source` would do (task
+/// #5193). `load_file` already routes through `post_engine_call_telemetry`
+/// (the L4 emission choke-point) by construction. The abs-path rewrite runs
+/// AFTER `run_on_engine` returns — i.e. once the engine mutex is released —
+/// so the lock is not held across `std::fs::canonicalize` filesystem I/O
+/// (#5193). On failure, the underlying `load_file_into_engine`
+/// error is wrapped with an "open funnel failed to load {path}" prefix so
+/// debug-harness failure triage can tell the error came from this open
+/// funnel rather than a normal command.
+pub async fn open_source_into_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    path: &str,
+) -> Result<crate::types::GuiState, String> {
+    let path = path.to_owned();
+    let load_path = path.clone();
+    let unresolved = run_on_engine(engine, move |session| {
+        crate::commands::load_file_into_engine(session, std::path::Path::new(&load_path))
+    })
+    .await
+    .map_err(|e| format!("open funnel failed to load {path}: {e}"))?;
+    let gui_state = unresolved.resolve(std::path::Path::new(&path));
+    crate::diff::compute_delta(last_state, &gui_state);
+    Ok(gui_state)
 }
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
@@ -1349,16 +1546,38 @@ pub async fn set_fea_case_on_engine(
     run_on_engine(engine, move |session| session.set_active_fea_case(&case)).await
 }
 
+/// Wraps [`set_fea_case_on_engine`], then refreshes the delta baseline —
+/// see the shared INV-GUI-2 rationale above
+/// [`open_source_into_engine_and_refresh_baseline`] for why/how.
+pub async fn set_fea_case_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    case: &str,
+) -> Result<crate::types::GuiState, String> {
+    let gs = set_fea_case_on_engine(engine, case).await?;
+    crate::diff::compute_delta(last_state, &gs);
+    Ok(gs)
+}
+
 /// Select the active FEA load case on the engine, push the rebuilt `GuiState`
 /// to the frontend via `apply_gui_state`, and return an echo response.
 ///
 /// Flow (mirrors `open_path_into_engine`):
-///  1. `set_fea_case_on_engine` — re-sources scalar_channels for the new case.
+///  1. `set_fea_case_on_engine_and_refresh_baseline` — re-sources
+///     scalar_channels for the new case AND refreshes the delta baseline
+///     (INV-GUI-2, task 5035 L6) so a subsequent normal command diffs
+///     correctly.
 ///  2. `fea_case_frontend_payload` — serializes GuiState + case name into JSON.
 ///  3. `query_frontend("apply_gui_state", ...)` — frontend applies the GuiState
 ///     WITHOUT a view reset so the camera stays fixed across case switches.
 ///  4. Returns `{"ok": true, "case": <name>}` so the visual-regression harness
 ///     can confirm the switch and proceed to screenshot.
+///
+/// NOTE: step 1 refreshes `last_state` BEFORE step 3's push lands S1 on the
+/// frontend, so a normal command interleaved in that window would diff
+/// against S1 while the frontend is still at S0. Safe only because debug
+/// sessions never overlap a debug op with a normal command (the e2e
+/// visual-regression harness runs serially); see PRD §4 D7.
 async fn handle_set_fea_case(
     state: &DebugServerState,
     params: Value,
@@ -1367,7 +1586,8 @@ async fn handle_set_fea_case(
         .as_str()
         .ok_or_else(|| "`case` param is required".to_string())?
         .to_owned();
-    let gs = set_fea_case_on_engine(&state.engine, &case).await?;
+    let gs = set_fea_case_on_engine_and_refresh_baseline(&state.engine, &state.last_state, &case)
+        .await?;
     let fp = fea_case_frontend_payload(&case, &gs)?;
     state.debug_bridge.query_frontend("apply_gui_state", fp).await?;
     Ok(json!({ "ok": true, "case": case }))
@@ -1428,38 +1648,10 @@ async fn handle_mcp(
             let tool_args = req.params.get("arguments").cloned().unwrap_or(json!({}));
 
             match dispatch_tool(&state, tool_name, tool_args).await {
-                Ok(result) => {
-                    // Check if this is an image tool (contains base64 image data)
-                    if is_image_tool(tool_name)
-                        && let Some(data) = result.get("data").and_then(|d| d.as_str())
-                    {
-                        // Strip data URL prefix if present
-                        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
-                        return Json(JsonRpcResponse::ok(
-                            id,
-                            json!({
-                                "content": [{
-                                    "type": "image",
-                                    "data": base64,
-                                    "mimeType": "image/png"
-                                }]
-                            }),
-                        ));
-                    }
-
-                    // Standard text content block
-                    let text = serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|_| result.to_string());
-                    JsonRpcResponse::ok(
-                        id,
-                        json!({
-                            "content": [{
-                                "type": "text",
-                                "text": text
-                            }]
-                        }),
-                    )
-                }
+                // Image and text envelopes share ONE call site: the whole
+                // result→content mapping lives in the pure `mcp_content_blocks`
+                // so it is unit-testable without a DebugServerState (#5891).
+                Ok(result) => JsonRpcResponse::ok(id, mcp_content_blocks(tool_name, &result)),
                 Err(e) => JsonRpcResponse::ok(
                     id,
                     json!({
@@ -1550,32 +1742,62 @@ async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Valu
         .await
 }
 
+/// Default poll deadline for `wait_for_selector`, in milliseconds.
+const WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS: u64 = 5_000;
+
+/// Build the params `wait_for_selector` forwards to the frontend.
+///
+/// This is an explicit ALLOWLIST, unlike every other frontend-mediated tool —
+/// those hand their params to `query_frontend` wholesale, so a new schema
+/// property reaches the bridge with no Rust change at all. Here an un-listed key
+/// is dropped SILENTLY, which is why this is a named, separately-tested function
+/// rather than an inline block: adding a param to the schema without adding it
+/// here advertises a capability the frontend never receives.
+///
+/// `viewportId` (#5891) is copied through VERBATIM, including a wrongly-typed
+/// value. Re-validating it here would create a second rejection site that can
+/// drift from the frontend's wording; the frontend's ladder stays the only one.
+/// When the caller omitted it the key is omitted entirely rather than emitted as
+/// null, because the frontend branches on `viewportId !== undefined` — a null
+/// would read as a scoped request for a pane that can never match.
+///
+/// Pure (no `DebugServerState`) so the contract is unit-testable directly.
+fn canonical_wait_for_selector_params(params: &Value) -> Value {
+    let timeout_ms = params
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .filter(|&n| n > 0)
+        .unwrap_or(WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS);
+
+    let mut canonical = serde_json::Map::new();
+    canonical.insert("timeout_ms".to_string(), json!(timeout_ms));
+    for key in ["testId", "state", "text", "viewportId"] {
+        if let Some(v) = params.get(key) {
+            canonical.insert(key.to_string(), v.clone());
+        }
+    }
+    Value::Object(canonical)
+}
+
 async fn handle_wait_for_selector(
     state: &DebugServerState,
     params: Value,
 ) -> Result<Value, String> {
-    // Validate and canonicalize timeout_ms. Default 5000ms.
-    let timeout_ms: u64 = match params.get("timeout_ms") {
-        None => 5_000,
-        Some(v) => match v.as_u64().filter(|&n| n > 0) {
-            Some(n) => n,
-            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
-        },
-    };
+    // Validate timeout_ms — the only rejection this handler owns. Canonicalization
+    // itself lives in the pure helper below.
+    if let Some(v) = params.get("timeout_ms") {
+        if v.as_u64().filter(|&n| n > 0).is_none() {
+            return Ok(json!({"error": "timeout_ms must be a positive integer"}));
+        }
+    }
 
-    // Build canonical params and pass through to the frontend.
-    let mut canonical_params = serde_json::Map::new();
-    canonical_params.insert("timeout_ms".to_string(), json!(timeout_ms));
-    if let Some(v) = params.get("testId") {
-        canonical_params.insert("testId".to_string(), v.clone());
-    }
-    if let Some(v) = params.get("state") {
-        canonical_params.insert("state".to_string(), v.clone());
-    }
-    if let Some(v) = params.get("text") {
-        canonical_params.insert("text".to_string(), v.clone());
-    }
-    let canonical_params = Value::Object(canonical_params);
+    let canonical_params = canonical_wait_for_selector_params(&params);
+    // Read the timeout back OUT of the canonical params rather than re-deriving it,
+    // so the Rust-side guard and the value the frontend actually polls on cannot
+    // drift apart.
+    let timeout_ms = canonical_params["timeout_ms"]
+        .as_u64()
+        .unwrap_or(WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS);
 
     let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
     state
@@ -1612,6 +1834,7 @@ pub async fn spawn_debug_server(
     engine: Arc<Mutex<EngineSession>>,
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
+    last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 ) -> Result<(), String> {
     // Initialize the measurement-window clock at server spawn so
     // session_start_unix_ms reports the true debug-server start time
@@ -1622,6 +1845,7 @@ pub async fn spawn_debug_server(
         engine,
         selection,
         debug_bridge,
+        last_state,
     };
 
     let app = Router::new()
@@ -2168,7 +2392,7 @@ mod tests {
         // `dispatch_by_realization`). Pin the types here. Deeper VALUE-level
         // coverage — a pruned realization's count being 0/absent vs a dispatched
         // one's > 0 — lives in the engine integration test
-        // (crates/reify-eval/tests/selective_demand_epsilon.rs) and the GUI-side
+        // (crates/reify-eval/tests/harness_selective_demand/selective_demand_epsilon.rs) and the GUI-side
         // §8 boundary rows (gui/src-tauri/src/tests/commands_tests.rs); this test
         // only guards the tool wiring + projection shape on a cold engine.
         assert!(
@@ -2338,6 +2562,17 @@ mod tests {
             "orbit_camera",
             "pan_camera",
             "zoom_camera",
+            "set_fea_channel", // #5670: viewportId disambiguates WHICH pane's FEA toolbar to drive
+            // #5891: the generic data-testid resolvers. Every one of these took the
+            // document-wide FIRST match, so with N panes mounted they silently drove
+            // or described pane 0. click_element and dom_query get their first-ever
+            // Rust schema coverage here.
+            "click_element",
+            "dom_query",
+            "focus_element",
+            "scroll",
+            "element_screenshot",
+            "wait_for_selector",
         ];
         for tool_name in tools {
             let entry = defs
@@ -2357,6 +2592,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    // #5891 step-13 RED → step-14 GREEN.
+    //
+    // Every other frontend-mediated tool passes its params through WHOLESALE via
+    // query_frontend, so a new schema property reaches the bridge with no Rust
+    // change. wait_for_selector is the one exception: it rebuilds its params by
+    // explicit ALLOWLIST, so an un-listed key is dropped SILENTLY — the schema
+    // would advertise viewportId and the frontend would never see it. That makes
+    // this the only load-bearing Rust edit in the change, so the canonicalization
+    // is extracted as a pure function and pinned here, testable without standing
+    // up a DebugServerState.
+    #[test]
+    fn canonical_wait_for_selector_params_forwards_viewport_id() {
+        // Present: copied through verbatim, alongside the pre-existing four keys.
+        let out = canonical_wait_for_selector_params(&json!({
+            "testId": "fea-mode-warp-slider",
+            "state": "visible",
+            "text": "ready",
+            "timeout_ms": 250,
+            "viewportId": "pane-1",
+        }));
+        assert_eq!(out["viewportId"].as_str(), Some("pane-1"));
+        assert_eq!(out["testId"].as_str(), Some("fea-mode-warp-slider"));
+        assert_eq!(out["state"].as_str(), Some("visible"));
+        assert_eq!(out["text"].as_str(), Some("ready"));
+        assert_eq!(out["timeout_ms"].as_u64(), Some(250));
+
+        // Absent: the KEY is omitted entirely, not emitted as null. The frontend
+        // ladder branches on `viewportId !== undefined`, so a forwarded null would
+        // read as a SCOPED request for a pane that can never match — turning every
+        // unscoped wait into a guaranteed timeout.
+        let out = canonical_wait_for_selector_params(&json!({"testId": "x"}));
+        assert!(
+            !out.as_object()
+                .expect("canonical params must be a JSON object")
+                .contains_key("viewportId"),
+            "viewportId must be absent, not null, when the caller omitted it: {out}"
+        );
+        assert_eq!(
+            out["timeout_ms"].as_u64(),
+            Some(5_000),
+            "the default timeout still applies when timeout_ms is omitted"
+        );
+
+        // Wrongly typed: forwarded VERBATIM so the frontend's ladder stays the one
+        // rejection site. Re-validating here would create a second site that can
+        // drift out of sync with the wording the frontend tests pin.
+        let out = canonical_wait_for_selector_params(&json!({"testId": "x", "viewportId": 5}));
+        assert_eq!(out["viewportId"].as_i64(), Some(5));
     }
 
     // step-9 RED → step-10 GREEN: four C1 app-chrome tools registered in tool_defs().
@@ -2902,6 +3187,178 @@ mod tests {
         assert!(!is_image_tool(""));
     }
 
+    // --- #5891 step-16 RED → step-17 GREEN: the MCP `tools/call` response envelope ---
+    //
+    // `element_screenshot`'s pane-guess diagnostics (`viewportId`/`matchCount`) are
+    // the entire point of #5891 for that tool, yet the image branch of `tools/call`
+    // returned EARLY with a content array holding only the image block — so they were
+    // discarded at the transport boundary. The frontend test
+    // (debugFixtureInjection.test.ts:653-658) asserts at the BRIDGE level and stays
+    // green while end-to-end is broken, and `handle_mcp` takes `State(DebugServerState)`
+    // — an Arc-of-Mutex bundle impractical to build here — which is why the envelope
+    // had ZERO coverage. The pure Value→Value mapping is therefore extracted as
+    // `mcp_content_blocks`, the same move step-14 made for
+    // `canonical_wait_for_selector_params`.
+
+    #[test]
+    fn mcp_content_blocks_appends_pane_diagnostics_beside_the_image() {
+        let out = mcp_content_blocks(
+            "element_screenshot",
+            &json!({
+                "data": "data:image/png;base64,AAA=",
+                "viewportId": "design-main",
+                "matchCount": 2,
+            }),
+        );
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            2,
+            "an unscoped multi-match crop must yield the image block PLUS a diagnostics block; got {out}"
+        );
+
+        // The image block stays at index 0. `gui/test/visual/rpc.ts:33` branch 3 is
+        // POSITIONAL — `content[0].type === "image"` — and `run.ts:202-211` feeds
+        // `value.data` straight into `Buffer.from(…, "base64")`, so prepending the
+        // text block would decode pretty-printed JSON as PNG bytes and corrupt the
+        // visual-regression harness.
+        assert_eq!(
+            content[0]["type"].as_str(),
+            Some("image"),
+            "the image block must stay at content[0] (rpc.ts:33 branch 3 is positional); got {out}"
+        );
+        assert_eq!(
+            content[0],
+            json!({"type": "image", "data": "AAA=", "mimeType": "image/png"}),
+            "content[0] must be exactly today's image block, data-URL prefix stripped"
+        );
+
+        // The residual EXCLUDES `data`, so the base64 blob is not duplicated into
+        // the text block.
+        assert_eq!(
+            content[1]["type"].as_str(),
+            Some("text"),
+            "the diagnostics block must be a text block; got {out}"
+        );
+        let residual: Value = serde_json::from_str(
+            content[1]["text"]
+                .as_str()
+                .expect("the diagnostics block must carry a `text` string"),
+        )
+        .expect("the diagnostics block must carry valid JSON");
+        assert_eq!(
+            residual,
+            json!({"viewportId": "design-main", "matchCount": 2}),
+            "the residual must be the result MINUS `data` — never re-embedding the base64 blob"
+        );
+    }
+
+    #[test]
+    fn mcp_content_blocks_leaves_data_only_image_results_byte_identical() {
+        // element_screenshot: every SCOPED or single-match call returns `{data}` and
+        // nothing else, so its envelope must stay bit-for-bit today's single block.
+        // screenshot/screenshot_window: neither ever carries a non-`data` success key
+        // (bridge.ts:689,702), so the new gate must never perturb them — that is what
+        // keeps gui/test/visual/rpcEnvelope.test.ts:320-326's image-only stub accurate.
+        for tool in ["element_screenshot", "screenshot", "screenshot_window"] {
+            let out = mcp_content_blocks(tool, &json!({"data": "data:image/png;base64,BBB="}));
+            let content = out["content"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool}: the envelope must carry a `content` array"));
+            assert_eq!(
+                content.len(),
+                1,
+                "{tool}: a `data`-only result must yield exactly one block; got {out}"
+            );
+            assert_eq!(
+                content[0],
+                json!({"type": "image", "data": "BBB=", "mimeType": "image/png"}),
+                "{tool}: the lone block must be exactly today's image block"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_content_blocks_falls_through_to_one_full_text_block_without_image_data() {
+        // A non-image tool: unchanged single pretty-printed text block over the FULL
+        // result — click_element's own pane diagnostics ride inside it, not beside it.
+        let result = json!({"ok": true, "viewportId": "pane-1", "matchCount": 2});
+        let out = mcp_content_blocks("click_element", &result);
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "a non-image tool must yield one block; got {out}"
+        );
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        let parsed: Value = serde_json::from_str(
+            content[0]["text"]
+                .as_str()
+                .expect("the block must carry a `text` string"),
+        )
+        .expect("the text block must carry valid JSON");
+        assert_eq!(parsed, result, "the text block must carry the FULL result");
+
+        // An image tool whose result has NO string `data` — i.e. every
+        // element_screenshot ERROR shape. The error must reach the caller intact
+        // rather than be swallowed by an image branch with nothing to encode.
+        let err = json!({"error": "element has zero area"});
+        let out = mcp_content_blocks("element_screenshot", &err);
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "an image tool with no string `data` must fall through to one text block; got {out}"
+        );
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        let parsed: Value = serde_json::from_str(
+            content[0]["text"]
+                .as_str()
+                .expect("the block must carry a `text` string"),
+        )
+        .expect("the text block must carry valid JSON");
+        assert_eq!(
+            parsed, err,
+            "the error shape must survive the transport verbatim"
+        );
+    }
+
+    #[test]
+    fn mcp_content_blocks_suppresses_a_residual_carrying_an_in_band_error() {
+        // CROSS-LANGUAGE INVARIANT (gui/test/visual/rpcEnvelope.mjs:54-58): no success
+        // payload may carry a top-level string `error`, because `isInBandError` (:81-83)
+        // reads one as a tool FAILURE. Emitting such a residual beside a successful
+        // image would make every driver report a working screenshot as broken —
+        // strictly worse than omitting a key no handler produces today.
+        let out = mcp_content_blocks(
+            "element_screenshot",
+            &json!({
+                "data": "data:image/png;base64,CCC=",
+                "error": "stale frame",
+                "matchCount": 2,
+            }),
+        );
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "a residual carrying a string `error` must NOT be emitted beside the image; got {out}"
+        );
+        assert_eq!(
+            content[0],
+            json!({"type": "image", "data": "CCC=", "mimeType": "image/png"}),
+            "the image block must still ship, alone"
+        );
+    }
+
     // --- F1: inject_diagnostics + reset_app_state ---
 
     #[test]
@@ -3134,6 +3591,500 @@ mod tests {
             vm,
             &von_mises,
             "vonMises values must survive the serde round-trip byte-identical"
+        );
+    }
+
+    // ── Task 5035 step-2: RED — FEA-case-switch baseline refresh must route
+    // through compute_delta (INV-GUI-2) ──
+    //
+    // `set_fea_case_on_engine_and_refresh_baseline` (added in step-3) wraps
+    // `set_fea_case_on_engine` and additionally refreshes `last_state` via
+    // `compute_delta`, so a subsequent NORMAL command diffs against the
+    // POST-debug-mutation baseline (S1) instead of the pre-debug one (S0).
+    //
+    // FAILS TO COMPILE until step-3 adds
+    // `set_fea_case_on_engine_and_refresh_baseline`.
+    #[tokio::test]
+    async fn set_fea_case_refresh_helper_keeps_baseline_fresh() {
+        let engine = crate::tests::make_test_engine();
+
+        // Load the three-case fixture (same fixture as
+        // `handle_set_fea_case_routes_to_engine`) so the engine has a compiled
+        // module with an active FEA case to switch. `load_from_source`
+        // returns the freshly-built GuiState directly — that's S0, the
+        // pre-debug-mutation baseline.
+        let initial = {
+            let mut locked = engine.lock().unwrap();
+            locked
+                .load_from_source(
+                    include_str!("../../../examples/fea_multi_case_bracket.ri"),
+                    "FeaMultiCaseBracket",
+                )
+                .expect("load_from_source must succeed for fea_multi_case_bracket.ri")
+        };
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(initial));
+
+        // Debug-driven mutation: switch to the "overload" FEA case via the
+        // NOT-YET-EXISTING refresh helper (S0 -> S1).
+        let s1 = set_fea_case_on_engine_and_refresh_baseline(&engine, &last_state, "overload")
+            .await
+            .expect("set_fea_case_on_engine_and_refresh_baseline('overload') must return Ok");
+        assert!(
+            !s1.meshes.is_empty(),
+            "set_fea_case_on_engine_and_refresh_baseline must return GuiState with >= 1 mesh"
+        );
+
+        // The helper must refresh the baseline in the same call — the caller
+        // makes no separate compute_delta call.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "set_fea_case_on_engine_and_refresh_baseline must refresh last_state to S1"
+        );
+
+        // A normal command now runs: set_parameter changes exactly one cell
+        // (width) — unrelated to the FEA-case switch itself.
+        let s2 =
+            crate::commands::set_parameter_impl(&engine, "FeaMultiCaseBracket.width", "150mm")
+                .expect("set_parameter_impl must succeed");
+
+        // The normal command's delta is computed against the FRESH (S1)
+        // baseline, so it must be minimal: it must NOT re-report the
+        // untouched 'length' param. Only a stale (pre-switch) baseline would
+        // cause it to reappear.
+        let delta = crate::diff::compute_delta(&last_state, &s2);
+        assert!(
+            !delta
+                .changed_values
+                .iter()
+                .any(|v| v.cell_id == "FeaMultiCaseBracket.length"),
+            "fresh-baseline delta must be MINIMAL: it must NOT re-report \
+             'FeaMultiCaseBracket.length', which set_parameter never touched"
+        );
+    }
+
+    // ── Shared boilerplate for the baseline-refresh test below and the
+    // #5193 open-funnel-identity regression tests (T1/T2/T3) further down:
+    // each of those tests needs a fixture file written into a tempdir and
+    // canonicalized, and T1/T2/T3 additionally need a launched-on-file-A
+    // precondition. ──
+
+    /// Write `src` to `dir.join(name)` and return the canonicalized
+    /// absolute path as an owned `String` — the form
+    /// `open_source_into_engine_and_refresh_baseline` expects for its
+    /// `path` argument.
+    fn write_and_canonicalize(dir: &std::path::Path, name: &str, src: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, src).unwrap();
+        std::fs::canonicalize(&path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Reproduce the launched-on-a-file precondition T1/T2/T3 depend on:
+    /// load `canonical` directly via `EngineSession::load_file` (bypassing
+    /// the open-funnel helper under test), so `self.file_path ==
+    /// Some(canonical)` before the test drives a SECOND open through
+    /// `open_source_into_engine_and_refresh_baseline`. With `file_path ==
+    /// None`, `update_source` would take its single-file branch and never
+    /// exhibit the stale-identity bug (task #5193).
+    fn launch_via_load_file(engine: &Arc<Mutex<EngineSession>>, canonical: &str) {
+        crate::engine_lock::with_engine_lock(engine, |s| {
+            s.load_file(std::path::Path::new(canonical))
+        })
+        .and_then(std::convert::identity)
+        .expect("load_file launch precondition must succeed");
+    }
+
+    // ── Task 5035 step-4: RED — open_file/load_fixture baseline refresh must
+    // route through compute_delta (INV-GUI-2) ──
+    //
+    // `open_source_into_engine_and_refresh_baseline` (added in step-5) mirrors
+    // `open_path_into_engine`'s engine block (update_source + build_gui_state)
+    // but additionally refreshes `last_state` via `compute_delta`. Without
+    // this refresh, a debug-driven open_file/load_fixture call would advance
+    // the engine to S1 but leave `last_state` stale at S0, so the next
+    // NORMAL command's delta comes back FULL/bloated instead of minimal
+    // relative to S1 (survey latent bug #7 — the stale-baseline desync).
+    // This test proves the routed-through-the-helper path gets a CORRECT
+    // (minimal) delta instead.
+    //
+    // FAILS TO COMPILE until step-5 adds
+    // `open_source_into_engine_and_refresh_baseline`.
+    #[tokio::test]
+    async fn open_source_refresh_helper_keeps_baseline_fresh() {
+        use reify_test_support::bracket_source;
+
+        // make_test_engine() pre-loads bracket_source() at module path
+        // "bracket" already; the helper under test re-drives load_file
+        // (mirroring what open_path_into_engine always does on open/
+        // load-fixture), exercising the same code path a debug-driven
+        // open_file/load_fixture call would.
+        let engine = crate::tests::make_test_engine();
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+
+        // Pre-debug delta baseline (S0): cold, no command has run yet.
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven mutation: open/load bracket.ri via the refresh helper
+        // (S0 -> S1).
+        let s1 = open_source_into_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &bracket_canonical,
+        )
+        .await
+        .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+        assert!(
+            !s1.values.is_empty(),
+            "open_source_into_engine_and_refresh_baseline must return GuiState with >= 1 value"
+        );
+
+        // The helper must refresh the baseline in the same call — the caller
+        // makes no separate compute_delta call.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "open_source_into_engine_and_refresh_baseline must refresh last_state to S1"
+        );
+
+        // A normal command now runs: set_parameter changes exactly one cell.
+        let s2 = crate::commands::set_parameter_impl(&engine, "Bracket.thickness", "9mm")
+            .expect("set_parameter_impl must succeed");
+
+        // The normal command's delta is computed against the FRESH (S1)
+        // baseline, so it must be minimal: it must NOT re-report the
+        // untouched 'Bracket.height' — a STALE (None) baseline would
+        // incorrectly re-report it (survey latent bug #7).
+        let delta = crate::diff::compute_delta(&last_state, &s2);
+        assert!(
+            !delta
+                .changed_values
+                .iter()
+                .any(|v| v.cell_id == "Bracket.height"),
+            "fresh-baseline delta must be MINIMAL: it must NOT re-report \
+             'Bracket.height', which set_parameter never touched (a stale \
+             baseline would incorrectly include it)"
+        );
+    }
+
+    // ── Task 5193 step-1: regression — the debug open funnel must adopt the
+    // newly-opened file's identity, not the previously-loaded file's ──
+    //
+    // `open_source_into_engine_and_refresh_baseline` previously called
+    // `update_source(&path, &content)`. When `self.file_path` was already
+    // `Some` (set by a prior `load_file`), `update_source` derived
+    // `module_name` from the OLD `self.file_path` and committed
+    // `FilePathUpdate::Preserve` — correct for live-buffer edits (task
+    // #3370), but wrong when the caller was opening a DIFFERENT file: the
+    // newly-opened file's content was evaluated under the PREVIOUS file's
+    // identity, so `GuiState::files[].path` and every diagnostic's
+    // `file_path` kept citing the old file.
+    //
+    // Both tests below reproduce the buggy precondition by loading file A
+    // via `load_file` (so `self.file_path = Some`) BEFORE opening file B
+    // through the helper — with `self.file_path == None`, `update_source`
+    // took its single-file branch and would not have exhibited the bug.
+    //
+    // These tests lock in the fix: the helper now routes through
+    // `EngineSession::load_file` (`FilePathUpdate::Set`, via
+    // `crate::commands::load_file_into_engine`) instead of `update_source`,
+    // so the debug open funnel adopts the newly-opened file's identity.
+    //
+    // Files-path assertions below use `any(...)` (contains the expected
+    // entry) paired with `!any(...)` (excludes the stale entry) rather than
+    // `all(...)` (every entry matches). `bracket_source()` and
+    // `warn_source_with_unknown_port_type()` are single-module fixtures
+    // today, so `any`/`all` coincide — but `any`+`!any` stays correct if
+    // either fixture ever grows an `import` and `GuiState::files` gains
+    // additional non-deck/non-warn/non-bracket entries, whereas a bare
+    // `all(...)` would then fail spuriously (#5193).
+
+    /// T1 (open_file variant, files-path facet): launch on bracket.ri, then
+    /// open deck.ri through the helper — `GuiState::files[0].path` must
+    /// adopt deck.ri's identity, never bracket.ri's. Diagnostics-identity
+    /// coverage is intentionally NOT exercised here: deck.ri's content
+    /// (bracket_source) is well-formed and produces zero diagnostics, so a
+    /// `compile_diagnostics` assertion here would be vacuously true and
+    /// could not catch a mis-attribution regression. That facet is covered
+    /// by T2/T3 (warn.ri, which reliably emits a diagnostic).
+    #[tokio::test]
+    async fn open_file_adopts_new_file_identity() {
+        use reify_test_support::bracket_source;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+        let deck_canonical = write_and_canonicalize(dir.path(), "deck.ri", bracket_source());
+
+        let engine = crate::tests::make_test_engine();
+
+        // Reproduce the buggy precondition: launch on bracket.ri via
+        // load_file so self.file_path = Some(bracket.ri).
+        launch_via_load_file(&engine, &bracket_canonical);
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven open of a DIFFERENT file (deck.ri) through the helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &deck_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after opening deck.ri"
+        );
+        assert!(
+            state.files.iter().any(|f| f.path.ends_with("deck.ri")),
+            "GuiState.files must contain an entry for the newly-opened file's identity (deck.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !state.files.iter().any(|f| f.path.ends_with("bracket.ri")),
+            "no files[].path may retain the previously-loaded file's \
+             identity (bracket.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// T2 (load_fixture-after-launch variant, diagnostics facet): launch on
+    /// bracket.ri, then open warn.ri (reliably emits exactly one Warning)
+    /// through the helper — every `compile_diagnostics[].file_path` must
+    /// cite warn.ri, never bracket.ri. Also checks the files-path facet:
+    /// T1 already asserts files-path identity, so this closes the gap
+    /// where a regression fixing only one facet could still pass T2 alone.
+    #[tokio::test]
+    async fn load_fixture_after_launch_diagnostics_cite_fixture() {
+        use reify_test_support::{bracket_source, warn_source_with_unknown_port_type};
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+        let warn_canonical = write_and_canonicalize(
+            dir.path(),
+            "warn.ri",
+            warn_source_with_unknown_port_type(),
+        );
+
+        let engine = crate::tests::make_test_engine();
+
+        // Reproduce the buggy precondition: launch on bracket.ri via
+        // load_file so self.file_path = Some(bracket.ri).
+        launch_via_load_file(&engine, &bracket_canonical);
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven open of a DIFFERENT file (warn.ri, the
+        // fixture-after-launch variant of load_fixture) through the helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &warn_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.compile_diagnostics.is_empty(),
+            "warn.ri must produce a non-empty compile_diagnostics (unknown-port-type warning)"
+        );
+        assert!(
+            state
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.file_path.ends_with("warn.ri")),
+            "every diagnostic's file_path must cite warn.ri, got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !state
+                .compile_diagnostics
+                .iter()
+                .any(|d| d.file_path.ends_with("bracket.ri")),
+            "no diagnostic may cite the previously-loaded file's identity \
+             (bracket.ri), got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after opening warn.ri"
+        );
+        assert!(
+            state.files.iter().any(|f| f.path.ends_with("warn.ri")),
+            "GuiState.files must contain an entry for the newly-opened file's identity (warn.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !state.files.iter().any(|f| f.path.ends_with("bracket.ri")),
+            "no files[].path may retain the previously-loaded file's \
+             identity (bracket.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// T3 (same-file re-open facet, #5193): launch on warn.ri,
+    /// then re-open warn.ri AGAIN — the SAME file, not a different one —
+    /// through the same helper. `GuiState::files[].path` and every
+    /// diagnostic's `file_path` must still cite warn.ri.
+    ///
+    /// T1/T2 lock in that the helper's `load_file` route (`FilePathUpdate::Set`)
+    /// correctly ADOPTS a newly-opened DIFFERENT file's identity instead of
+    /// preserving the previous one. This test guards the other side of that
+    /// change: re-opening the file that is ALREADY loaded must not churn or
+    /// corrupt identity either — i.e. routing the debug open funnel through
+    /// `load_file` instead of `update_source` does not regress the
+    /// same-file re-open/reload path the debug bridge may also exercise.
+    #[tokio::test]
+    async fn open_file_same_file_reopen_keeps_identity() {
+        use reify_test_support::warn_source_with_unknown_port_type;
+
+        let dir = tempfile::tempdir().unwrap();
+        let warn_canonical =
+            write_and_canonicalize(dir.path(), "warn.ri", warn_source_with_unknown_port_type());
+
+        let engine = crate::tests::make_test_engine();
+
+        // Launch on warn.ri via load_file (self.file_path = Some(warn.ri)) —
+        // same launched-file precondition as T1/T2, but here the file being
+        // re-opened through the helper is the SAME file, not a different one.
+        launch_via_load_file(&engine, &warn_canonical);
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven RE-open of the SAME file (warn.ri again) through the
+        // helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &warn_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after re-opening warn.ri"
+        );
+        assert!(
+            state.files.iter().any(|f| f.path.ends_with("warn.ri")),
+            "re-opening the SAME file must still cite warn.ri, got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !state.compile_diagnostics.is_empty(),
+            "warn.ri must still produce its unknown-port-type warning after re-open"
+        );
+        assert!(
+            state
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.file_path.ends_with("warn.ri")),
+            "every diagnostic's file_path must still cite warn.ri after re-open, got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// T4 (failure-path facet, #5193): opening a path that does not exist
+    /// must return an `Err` that identifies itself as an open-funnel load
+    /// failure — the triage marker documented on
+    /// `open_source_into_engine_and_refresh_baseline` above, distinguishing
+    /// this funnel's failures from a normal command's — and names the path.
+    /// T1-T3 only exercise the Ok path, so a regression dropping the triage
+    /// marker (or breaking the underlying error propagation) would otherwise
+    /// go unnoticed. The marker check below is a loose substring match
+    /// rather than the literal prefix string, so a benign rewording of the
+    /// marker's exact wording does not break this test.
+    #[tokio::test]
+    async fn open_source_helper_wraps_load_error_with_funnel_prefix() {
+        let engine = crate::tests::make_test_engine();
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // A path inside a real tempdir that is never written to, so the
+        // underlying `std::fs::read_to_string` inside `load_file` fails.
+        let dir = tempfile::tempdir().unwrap();
+        let missing_path = dir
+            .path()
+            .join("does_not_exist.ri")
+            .to_string_lossy()
+            .into_owned();
+
+        let err = open_source_into_engine_and_refresh_baseline(&engine, &last_state, &missing_path)
+            .await
+            .expect_err("opening a nonexistent path must return Err");
+
+        assert!(
+            err.contains("open funnel") && err.contains("load"),
+            "error must identify itself as an open-funnel load failure, got: {err:?}"
+        );
+        assert!(
+            err.contains(&missing_path),
+            "error must name the path that failed to load, got: {err:?}"
+        );
+    }
+
+    /// T5 (rewrite-failure facet, #5193): `rewrite_files_to_abs`'s `Err` arm
+    /// (commands.rs:464-484) is graceful degradation, not a hard failure —
+    /// when a `files[]` entry can't be canonicalized (e.g. it was removed
+    /// from disk between the engine load and the abs-path rewrite), the
+    /// entry must be left as its stem-only module key rather than panicking,
+    /// erroring the whole open, or silently disappearing from `files[]`.
+    ///
+    /// `source_map` (and so `GuiState::files`) always holds exactly one
+    /// entry: `commit_state` clears and re-inserts a single key per load
+    /// (engine.rs:282-283), and v1 does not add imported modules' content to
+    /// `source_map` either (engine.rs:879-884). So the only way to reach
+    /// this branch is to delete the just-loaded file between
+    /// `load_file_into_engine` (which reads it while it still exists) and
+    /// `resolve` (whose canonicalize call then fails) — exactly what this
+    /// test does, driving the two building blocks `open_file_engine_impl`
+    /// composes directly since neither public entry point offers a hook
+    /// between those two steps.
+    #[test]
+    fn resolve_leaves_stem_only_path_when_canonicalize_fails() {
+        use reify_test_support::bracket_source;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+
+        let engine = crate::tests::make_test_engine();
+
+        let unresolved = crate::engine_lock::with_engine_lock(&engine, |s| {
+            crate::commands::load_file_into_engine(s, std::path::Path::new(&bracket_canonical))
+        })
+        .and_then(std::convert::identity)
+        .expect("load_file_into_engine must succeed while the file still exists");
+
+        // Remove the file so the abs-path rewrite's canonicalize call fails —
+        // the load above already completed successfully, so this isolates
+        // just the rewrite step's failure branch.
+        std::fs::remove_file(&bracket_canonical).unwrap();
+
+        let state = unresolved.resolve(std::path::Path::new(&bracket_canonical));
+
+        assert!(
+            !state.files.is_empty(),
+            "resolve must not drop the files[] entry when canonicalize fails"
+        );
+        assert_eq!(
+            state.files[0].path, "bracket.ri",
+            "when canonicalize fails, files[].path must fall back to the \
+             stem-only module key rather than panicking or erroring the \
+             whole open, got: {:?}",
+            state.files[0].path
         );
     }
 }

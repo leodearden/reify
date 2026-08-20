@@ -28,7 +28,7 @@ _REIFY_LOCK_CHARTER_HARNESS_LIB_SH_SOURCED=1
 LCL_GUARD_RC=0
 LCL_GUARD_OUT=""
 
-# lcl_run_guard <classify|check|--list-extensions> [args...]
+# lcl_run_guard <classify|check|--list-extensions|--list-extensionless> [args...]
 #
 # Run scripts/lock-charter-guard.sh with the given subcommand and arguments.
 # Captures exit code into LCL_GUARD_RC and stdout into LCL_GUARD_OUT.
@@ -45,7 +45,8 @@ lcl_run_guard() {
 # lcl_canonical_extensions
 #
 # Echo the canonical OQ#2 extension allowlist (sorted-unique, one per line).
-# This is the shared α/γ test vector (PRD §11 Q1) — byte-identical to the
+# This is the shared α/γ test vector (PRD §11 Q2 — allowlist completeness; §11
+# Q1 is the separate predicate-transport question) — byte-identical to the
 # output of 'scripts/lock-charter-guard.sh --list-extensions'.
 # Pinned here so the row-3 C-P3 no-drift assertion has a stable reference
 # independent of the script under test.
@@ -54,25 +55,45 @@ lcl_canonical_extensions() {
 c
 cc
 cjs
+conf
 cpp
 css
+csv
 cts
 cxx
+diff
+envrc
+example
+example-systemd-config
 gcode
+gitattributes
+gitignore
+gitkeep
+gitmodules
+golden
+grammar
 h
 hh
 hpp
 html
+icns
+ico
+jq
 js
 json
 jsonc
+jsonl
 jsx
 lock
+log
+manifest
 md
 mjs
 mts
+npmrc
 png
 py
+python-version
 ri
 rs
 scss
@@ -81,13 +102,38 @@ sh
 step
 stl
 svg
+template
+timer
 toml
 ts
 tsx
 txt
+typed
 yaml
 yml
 EXTS_EOF
+}
+
+# lcl_canonical_extensionless
+#
+# Echo the canonical extensionless-basename allowlist (sorted-unique BYTE order,
+# one per line).  This is the shared α/γ test vector (PRD §11 Q2) — byte-identical
+# to the output of 'scripts/lock-charter-guard.sh --list-extensionless'.
+# Pinned here so the row-3c C-P3 no-drift assertion has a stable reference
+# independent of the script under test.
+# BYTE order (uppercase first), not this host's locale order: γ's mirror
+# (dark_factory:3248) sorts with Python sorted(), which is code-point order.
+lcl_canonical_extensionless() {
+    cat <<'EXTLESS_EOF'
+Dockerfile
+LICENSE
+cargo
+cargo-audit-orphans
+pre-commit
+pre-merge-commit
+project-checks
+reference-transaction
+EXTLESS_EOF
 }
 
 # ──────────────────────────────────────────────────────────────────────────────

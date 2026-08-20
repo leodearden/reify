@@ -200,7 +200,6 @@ impl<'k> Projector for KernelProjector<'k> {
 /// attached B-rep entity — never the globally-closest entity. See the critical
 /// correctness anchor in this module's doc-comment and the regression-guard
 /// test `compute_dirichlet_bcs_corner_node_projects_onto_attached_face_not_globally_closest_face`.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh); re-homed from cancelled #3429/#2947
 pub fn compute_dirichlet_bcs(
     old_mesh: &VolumeMesh,
     boundary: &BoundaryAssociation,
@@ -277,7 +276,8 @@ mod tests {
     use reify_eval::CorrespondenceMap;
     use reify_ir::{
         ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-        GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh,
+        GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+        VolumeConnectivity, VolumeMesh,
     };
 
     use super::*;
@@ -293,8 +293,10 @@ mod tests {
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -304,8 +306,10 @@ mod tests {
     fn mesh_with_vertices(flat_xyz: Vec<f32>) -> VolumeMesh {
         VolumeMesh {
             vertices: flat_xyz,
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }

@@ -13,6 +13,13 @@ reify-ir.workspace = true
 reify-expr.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
+# Task A (#4934): compute-node contract value types (ComputeFn, ComputeOutcome,
+# StructuredComputeDetail, DispatchError, RealizedContent, RealizationReadHandle,
+# CancellationHandle, ElasticResult, ShellChannels + the shared f64-slab codec)
+# were extracted into this OCCT-free foundation crate so a future non-OCCT
+# evaluation engine (reify-eval-fea, task B) can depend on them without OCCT.
+# reify-eval re-exports every moved type at its original public paths.
+reify-compute-contract.workspace = true
 # Task 4386 (geometric-relations ζ): src/relate_solve.rs's per-scope relate-solve
 # orchestration (`solve_relate_scope`) calls `reify_constraints::relate_solve`'s
 # `partition_driving_set` / `solve_frame` / `max_relation_residual` over realized

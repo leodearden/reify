@@ -299,7 +299,10 @@ mod tests {
     /// residual (1, 3).
     #[test]
     fn residual_kinds_parallel_leaves_one_rot_three_trans() {
-        let body = [rel("parallel", vec![arg(Type::Direction), arg(Type::Direction)])];
+        let body = [rel(
+            "parallel",
+            vec![arg(Type::Direction), arg(Type::Direction)],
+        )];
         assert_eq!(residual_kinds(&body), DofKinds::new(1, 3));
     }
 
@@ -331,7 +334,10 @@ mod tests {
     fn residual_kinds_saturates_at_zero() {
         let body = [
             rel("coincident", vec![arg(Type::Frame(3)), arg(Type::Frame(3))]),
-            rel("perpendicular", vec![arg(Type::Direction), arg(Type::Direction)]),
+            rel(
+                "perpendicular",
+                vec![arg(Type::Direction), arg(Type::Direction)],
+            ),
         ];
         assert_eq!(residual_kinds(&body), DofKinds::new(0, 0));
     }
@@ -401,7 +407,10 @@ mod tests {
     fn dof_kind_of_classifies_the_three_valid_kinds() {
         assert_eq!(dof_kind_of(&Type::angle()), Some(DofKinds::new(1, 0)));
         assert_eq!(dof_kind_of(&Type::length()), Some(DofKinds::new(0, 1)));
-        assert_eq!(dof_kind_of(&Type::Orientation(3)), Some(DofKinds::new(3, 0)));
+        assert_eq!(
+            dof_kind_of(&Type::Orientation(3)),
+            Some(DofKinds::new(3, 0))
+        );
     }
 
     /// An unclassifiable declared type (a dimensionless `Scalar`, or a datum like
@@ -471,8 +480,7 @@ mod tests {
     #[test]
     fn check_joint_dof_b1_revolute_matches() {
         assert!(
-            check_joint_dof("revolute", DofKinds::new(1, 0), DofKinds::new(1, 0), span())
-                .is_none(),
+            check_joint_dof("revolute", DofKinds::new(1, 0), DofKinds::new(1, 0), span()).is_none(),
             "matching (1,0)==(1,0) must produce no diagnostic"
         );
     }
@@ -482,8 +490,13 @@ mod tests {
     #[test]
     fn check_joint_dof_b4_cylindrical_matches() {
         assert!(
-            check_joint_dof("cylindrical", DofKinds::new(1, 1), DofKinds::new(1, 1), span())
-                .is_none(),
+            check_joint_dof(
+                "cylindrical",
+                DofKinds::new(1, 1),
+                DofKinds::new(1, 1),
+                span()
+            )
+            .is_none(),
             "matching (1,1)==(1,1) must produce no diagnostic"
         );
     }

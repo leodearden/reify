@@ -17,9 +17,12 @@ pub mod debug_server;
 #[cfg(feature = "gui")]
 pub mod event_bus;
 pub mod diff;
+pub mod display_units;
 pub mod engine;
 pub mod engine_lock;
+pub mod gui_state_schema;
 pub mod kernel_status;
+pub mod large_stack;
 pub mod lsp_bridge;
 pub mod mcp_context;
 pub mod types;

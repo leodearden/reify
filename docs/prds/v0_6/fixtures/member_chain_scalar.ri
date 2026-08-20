@@ -1,0 +1,12 @@
+structure def Inner {
+    param x: Length = 5mm
+    let doubled = x * 2
+}
+structure def Mid {
+    let inner = Inner(x: 7mm)
+}
+structure def Test {
+    let m = Mid()
+    let v = m.inner.doubled
+    let direct = m.inner.x
+}

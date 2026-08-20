@@ -22,10 +22,27 @@
 //! `scripts/assert-crate-dag.sh` under task η. This guard catches the common
 //! cases and is sufficient as a per-crate fast check.
 
+/// Resolves the manifest directory to use when locating this crate's
+/// `Cargo.toml` at test time.
+///
+/// Prefers the runtime `CARGO_MANIFEST_DIR` (correct for whatever worktree is
+/// actually running the test) over the compile-time `env!()` bake, which
+/// goes stale when a seeded warm-lane `target/` is reused from a
+/// since-deleted worktree (`CARGO_MANIFEST_DIR` is not part of cargo's
+/// fingerprint, so a content-identical rebuild is never triggered). See
+/// esc-4906-57.
+fn resolve_manifest_dir(runtime: Result<String, std::env::VarError>) -> String {
+    runtime.unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+}
+
+fn manifest_dir() -> String {
+    resolve_manifest_dir(std::env::var("CARGO_MANIFEST_DIR"))
+}
+
 #[test]
 fn reify_ast_depends_only_on_reify_core() {
     let cargo_toml = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+        std::path::Path::new(&manifest_dir()).join("Cargo.toml"),
     )
     .expect("failed to read crates/reify-ast/Cargo.toml");
 
@@ -68,7 +85,7 @@ fn reify_ast_depends_only_on_reify_core() {
 #[test]
 fn reify_ast_has_no_tree_sitter_dependency() {
     let cargo_toml = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+        std::path::Path::new(&manifest_dir()).join("Cargo.toml"),
     )
     .expect("failed to read crates/reify-ast/Cargo.toml");
 
@@ -86,5 +103,44 @@ fn reify_ast_has_no_tree_sitter_dependency() {
         "B2 invariant violated: reify-ast/Cargo.toml must not reference any \
          tree-sitter dependency, but found these lines:\n{}",
         tree_sitter_lines.join("\n")
+    );
+}
+
+/// Pins the warm-lane CoW-reuse fix: the manifest-dir resolution policy must
+/// prefer the runtime `CARGO_MANIFEST_DIR` (correct for whatever worktree is
+/// actually running the test) over the compile-time `env!()` bake (which goes
+/// stale when a seeded warm-lane `target/` is reused from a since-deleted
+/// worktree). See esc-4906-57.
+#[test]
+fn resolve_manifest_dir_prefers_runtime_then_compile_time() {
+    // (a) runtime value present — returned verbatim, not the compile-time bake.
+    assert_eq!(
+        resolve_manifest_dir(Ok("/runtime/worktree/crates/reify-ast".to_string())),
+        "/runtime/worktree/crates/reify-ast"
+    );
+
+    // (b) runtime value absent — falls back to the compile-time env!() bake.
+    assert_eq!(
+        resolve_manifest_dir(Err(std::env::VarError::NotPresent)),
+        env!("CARGO_MANIFEST_DIR")
+    );
+}
+
+/// Exercises the real runtime seam — `manifest_dir()` itself, not the
+/// injected-argument policy pin above — by asserting it resolves (via
+/// `std::env::var("CARGO_MANIFEST_DIR")` read at test-execution time) to a
+/// directory that actually contains this crate's `Cargo.toml`. A regression
+/// that reverted `manifest_dir()` to read only the compile-time `env!()` bake
+/// would still pass the pure `resolve_manifest_dir` pin test above (which
+/// never calls `manifest_dir()`); this test names the composed wiring
+/// directly so a break surfaces with an unambiguous message. See esc-4906-57.
+#[test]
+fn manifest_dir_resolves_to_a_readable_cargo_toml() {
+    let cargo_toml_path = std::path::Path::new(&manifest_dir()).join("Cargo.toml");
+    assert!(
+        cargo_toml_path.is_file(),
+        "manifest_dir() resolved to {cargo_toml_path:?}, which does not \
+         contain a readable Cargo.toml — the runtime CARGO_MANIFEST_DIR \
+         wiring is broken"
     );
 }

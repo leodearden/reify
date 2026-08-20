@@ -16,12 +16,14 @@
 //   The `Conforms` callout declares a 0.1 mm flatness tolerance zone. Because the
 //   measured 0.5 mm deviation EXCEEDS the 0.1 mm zone, the constraint is VIOLATED.
 //
-// The tolerance type is re-declared locally WITH the `: GeometricTolerance`
-// trait bound: `compile_with_stdlib` provides stdlib defs as a compilation
-// context, but the η pass resolves the callout's type against module.templates,
-// where a locally-redeclared type without the bound would fail the
-// `satisfies_trait_bound` GeometricTolerance check. The `: GeometricTolerance`
-// bound makes that check pass directly.
+// FlatnessCallout is a LOCAL tolerance type — it has no stdlib counterpart —
+// and it carries the `: GeometricTolerance` trait bound explicitly. That bound
+// is load-bearing: the η pass resolves the callout's type against
+// module.templates and runs a `satisfies_trait_bound` GeometricTolerance check
+// there, which a local type declared without the bound would fail.
+//
+// MaterialCondition, by contrast, IS a stdlib type and is consumed from the
+// prelude with no local re-declaration (crates/reify-compiler/stdlib/tolerancing.ri).
 //
 // The `tolerance:` arg MUST be an INLINE constructor (not a `let`-cached
 // instance): a cached callout would freeze `feature` at its kernel-less eval
@@ -35,9 +37,6 @@
 //     → exit 0, Indeterminate
 //            (without OCCT — no kernel → deviation cannot be measured → C1
 //             graceful degradation, never a false Violated)
-
-// Local enum re-declaration (eval-time availability; mirrors m8_tolerancing.ri).
-enum MaterialCondition { MMC, LMC, RFS }
 
 // Local GeometricTolerance callout type. The `: GeometricTolerance` bound is what
 // the η pass's `satisfies_trait_bound` check keys on (PRD C5). `feature` carries a

@@ -7,9 +7,10 @@
 //! `tracing` event, a `snapshot()` accessor for the downstream debug RPC, and
 //! a `format_summary()` renderer for the `--verbose` exit line.
 //!
-//! Engine call-site wiring is deferred (see the `// G-allow:` markers on the
-//! recorder functions); the events fire from the engine integration in
-//! `reify-eval`'s `engine_build.rs` (PRD task #10).
+//! The recorder functions are wired into the morph pipeline: `compose_morph`
+//! (crates/reify-mesh-morph/src/lib.rs) fires them on the matching outcome, and
+//! the events surface through the engine integration in `reify-eval`'s
+//! `engine_build.rs` (PRD task #10).
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -163,7 +164,6 @@ fn counter(outcome: MorphOutcome) -> &'static AtomicU64 {
 // this module path (`reify_mesh_morph::diagnostics`).
 
 /// Record a successful morph.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_morphed() {
     tracing::trace!("mesh morph: morphed");
     counter(MorphOutcome::Morphed).fetch_add(1, Ordering::Relaxed);
@@ -174,7 +174,6 @@ pub fn record_morphed() {
 /// [`QualityVerdict::Pass`] is not a remesh trigger — the engine only calls this
 /// on a fail verdict — so it is a no-op here. The `debug_assert!` makes that
 /// contract loud in debug builds at no release-build cost.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_quality_remesh(verdict: &QualityVerdict) {
     let outcome = match verdict {
         QualityVerdict::HardFail(details) => {
@@ -200,12 +199,18 @@ pub fn record_quality_remesh(verdict: &QualityVerdict) {
             );
             return;
         }
+        QualityVerdict::Unsupported => {
+            debug_assert!(
+                false,
+                "record_quality_remesh called with QualityVerdict::Unsupported (not a remesh trigger)"
+            );
+            return;
+        }
     };
     counter(outcome).fetch_add(1, Ordering::Relaxed);
 }
 
 /// Record an ineligible edit, bucketed by reject category.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_ineligible(reason: &Reason) {
     tracing::trace!(reason = ?reason, "mesh morph: ineligible edit");
     let outcome = match reason {
@@ -217,7 +222,6 @@ pub fn record_ineligible(reason: &Reason) {
 }
 
 /// Record a caught morph panic; `detail` is surfaced in the ERROR log message.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_panicked(detail: &str) {
     tracing::error!("mesh morph panicked: {detail}");
     counter(MorphOutcome::Panicked).fetch_add(1, Ordering::Relaxed);
@@ -309,6 +313,17 @@ pub fn reset_for_test() {
     reset();
 }
 
+/// Serializes test access to the process-global diagnostic counters across
+/// BOTH this module's own test suite and `lib.rs`'s `compose_morph` tests,
+/// which mutate the same [`COUNTERS`] statics via the public recorders and
+/// [`reset_for_test`]. `pub(crate)` so `lib.rs`'s `#[cfg(test)]` tests can
+/// acquire this exact lock — a lock private to this module's `tests`
+/// submodule would only serialize this module's own tests against each
+/// other, leaving the cross-module race against `lib.rs`'s `compose_morph`
+/// tests (task 4744 step-9) open.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,7 +332,6 @@ mod tests {
     use crate::types::{InversionDetails, SoftFailDetails};
     use crate::{BijectionFailure, NamingLayerErrorReason, SubShapeKind};
     use reify_test_support::{CapturingSubscriberBuilder, prime_tracing_callsite_cache};
-    use std::sync::Mutex;
     use tracing::Level;
 
     /// The default event target for `tracing` events emitted from this module —
@@ -360,15 +374,13 @@ mod tests {
         }
     }
 
-    /// Serialize parallel test access to the process-global diagnostic
-    /// counters. Each test acquires this before resetting state so tests don't
-    /// interfere with each other regardless of execution order. Mirrors the
-    /// `TEST_LOCK` discipline in `stats.rs`.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Run `f` under `TEST_LOCK` with freshly-reset counters.
+    /// Run `f` under the shared [`super::TEST_LOCK`] with freshly-reset
+    /// counters. Each test acquires this before resetting state so tests
+    /// don't interfere with each other regardless of execution order —
+    /// including `lib.rs`'s `compose_morph` tests, which acquire the same
+    /// lock directly. Mirrors the `TEST_LOCK` discipline in `stats.rs`.
     fn with_locked_state<F: FnOnce()>(f: F) {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = super::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_test();
         f();
     }
@@ -494,28 +506,62 @@ mod tests {
     fn record_quality_remesh_pass_never_touches_a_counter() {
         with_locked_state(|| {
             // `QualityVerdict::Pass` is not a remesh trigger: the engine only
-            // calls this on a fail verdict. In debug builds the `debug_assert!`
-            // fires (caught here); in release the call is a silent early return.
-            // The release no-op path is otherwise untested — a regression that
-            // incremented a bucket on `Pass` would slip through release runs.
+            // calls this on a fail verdict, so this recorder must never touch a
+            // counter for it. That invariant holds *profile-invariantly*: in debug
+            // the `debug_assert!(false, …)` unwinds before the counter mutation
+            // (caught here); in release the arm is a silent early `return;` before
+            // the counter. Either way no bucket moves — asserted below without any
+            // `cfg!(debug_assertions)` branch. The debug-only panic is a
+            // language-guaranteed consequence of `debug_assert!` and is no longer
+            // pinned by this test (task 5270: exit the release-sensitive scope).
             let prev_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(|_| {})); // silence the expected debug-only panic
-            let outcome = std::panic::catch_unwind(|| {
+            // `catch_unwind` is still required to absorb the debug-only
+            // `debug_assert!` panic so the counter-snapshot assertion below runs in
+            // debug builds; its `#[must_use]` Result is intentionally discarded now
+            // that the outcome is no longer inspected.
+            let _ = std::panic::catch_unwind(|| {
                 record_quality_remesh(&QualityVerdict::Pass);
             });
             std::panic::set_hook(prev_hook);
 
-            // Debug: the `debug_assert!` unwinds before any counter mutation.
-            // Release: the call returns without touching a counter.
-            assert_eq!(
-                outcome.is_err(),
-                cfg!(debug_assertions),
-                "Pass must panic via debug_assert! only in debug builds"
-            );
             assert_eq!(
                 snapshot(),
                 DiagnosticSnapshot::default(),
                 "QualityVerdict::Pass must not increment any counter"
+            );
+        });
+    }
+
+    #[test]
+    fn record_quality_remesh_unsupported_never_touches_a_counter() {
+        with_locked_state(|| {
+            // `QualityVerdict::Unsupported` is not a remesh trigger either: the
+            // engine's compose_morph seam intercepts it with an early
+            // structured-error return before this recorder is ever called (see
+            // lib.rs), so this arm exists only as a defensive `debug_assert!`.
+            // Mirrors `record_quality_remesh_pass_never_touches_a_counter` above —
+            // the "never touches a counter" invariant holds profile-invariantly
+            // (debug: `debug_assert!` unwinds before the counter mutation, caught
+            // here; release: silent early `return;`), so it is asserted below
+            // without a `cfg!(debug_assertions)` branch. The debug-only panic is a
+            // language-guaranteed `debug_assert!` consequence, no longer pinned
+            // by this test (task 5270: exit the release-sensitive scope).
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {})); // silence the expected debug-only panic
+            // `catch_unwind` is still required to absorb the debug-only
+            // `debug_assert!` panic so the counter-snapshot assertion below runs in
+            // debug builds; its `#[must_use]` Result is intentionally discarded now
+            // that the outcome is no longer inspected.
+            let _ = std::panic::catch_unwind(|| {
+                record_quality_remesh(&QualityVerdict::Unsupported);
+            });
+            std::panic::set_hook(prev_hook);
+
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot::default(),
+                "QualityVerdict::Unsupported must not increment any counter"
             );
         });
     }

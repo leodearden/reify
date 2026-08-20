@@ -27,10 +27,12 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
+use reify_ir::*;
+use reify_test_support::{
+    collect_value_ref_members, compile_source_with_stdlib, errors_only, warnings_only,
+};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -253,7 +255,10 @@ fn rayleigh_damping_param_shape() {
     );
 
     // (b) param names + types in declaration order
-    let expected: &[(&str, Type)] = &[("alpha", Type::dimensionless_scalar()), ("beta", Type::dimensionless_scalar())];
+    let expected: &[(&str, Type)] = &[
+        ("alpha", Type::dimensionless_scalar()),
+        ("beta", Type::dimensionless_scalar()),
+    ];
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
         let cell = &params[i];
         assert_eq!(
@@ -753,7 +758,7 @@ fn modal_options_param_defaults_match_spec() {
 /// design-decision 7), not re-verified here. These structure-def
 /// declarations feed the SIR-α generic constraint-firing pipeline, which is
 /// pinned end-to-end by
-/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// (constraint → `Satisfaction::Violated` diagnostic) and the
 /// `Value::StructureInstance` round-trip in
 /// `crates/reify-eval/tests/structure_instance_e2e.rs`. A modal-specific
@@ -809,7 +814,11 @@ fn modal_options_constrains_positivity_invariants() {
             // (mirrors buckling_stdlib_compile.rs:356-360 future-proofing).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left)
+                            .iter()
+                            .any(|m| m.as_str() == *required)
+                    {
                         return false;
                     }
                     match &right.kind {
@@ -940,10 +949,7 @@ fn step_force_struct_has_correct_param_shape() {
 
     // (d) refines ForcingFunction
     assert!(
-        template
-            .trait_bounds
-            .iter()
-            .any(|t| t == "ForcingFunction"),
+        template.trait_bounds.iter().any(|t| t == "ForcingFunction"),
         "StepForce should refine ForcingFunction; got trait_bounds: {:?}",
         template.trait_bounds
     );
@@ -1028,10 +1034,7 @@ fn impulse_force_struct_has_correct_param_shape() {
 
     // (d) refines ForcingFunction
     assert!(
-        template
-            .trait_bounds
-            .iter()
-            .any(|t| t == "ForcingFunction"),
+        template.trait_bounds.iter().any(|t| t == "ForcingFunction"),
         "ImpulseForce should refine ForcingFunction; got trait_bounds: {:?}",
         template.trait_bounds
     );
@@ -1121,9 +1124,10 @@ fn harmonic_force_struct_has_correct_param_shape() {
     // phase = 0deg — must have a default that is a zero Angle literal
     let phase_default = require_default(template, "phase");
     match &phase_default.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-            if *si_value == 0.0 && *dimension == DimensionVector::ANGLE =>
-        {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *si_value == 0.0 && *dimension == DimensionVector::ANGLE => {
             // correct: 0deg = 0 radians in SI
         }
         CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {
@@ -1137,10 +1141,7 @@ fn harmonic_force_struct_has_correct_param_shape() {
 
     // (d) refines ForcingFunction
     assert!(
-        template
-            .trait_bounds
-            .iter()
-            .any(|t| t == "ForcingFunction"),
+        template.trait_bounds.iter().any(|t| t == "ForcingFunction"),
         "HarmonicForce should refine ForcingFunction; got trait_bounds: {:?}",
         template.trait_bounds
     );
@@ -1222,10 +1223,7 @@ fn sampled_force_struct_has_correct_param_shape() {
 
     // (d) refines ForcingFunction
     assert!(
-        template
-            .trait_bounds
-            .iter()
-            .any(|t| t == "ForcingFunction"),
+        template.trait_bounds.iter().any(|t| t == "ForcingFunction"),
         "SampledForce should refine ForcingFunction; got trait_bounds: {:?}",
         template.trait_bounds
     );
@@ -1263,24 +1261,22 @@ fn sampled_force_constrains_samples_nonempty() {
     );
 
     for required_member in &["time_samples", "force_samples"] {
-        let matched = template.constraints.iter().any(|c| {
-            match &c.expr.kind {
-                CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt {
-                        return false;
-                    }
-                    let pairs = collect_method_call_chain(left);
-                    if !pairs.contains(&("count", *required_member)) {
-                        return false;
-                    }
-                    match &right.kind {
-                        CompiledExprKind::Literal(Value::Int(0)) => true,
-                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                        _ => false,
-                    }
+        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt {
+                    return false;
                 }
-                _ => false,
+                let pairs = collect_method_call_chain(left);
+                if !pairs.contains(&("count", *required_member)) {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
             }
+            _ => false,
         });
         assert!(
             matched,
@@ -1334,25 +1330,25 @@ fn harmonic_force_constrains_amplitude_and_frequency_positive() {
         ("amplitude", DimensionVector::FORCE),
         ("frequency", DimensionVector::FREQUENCY),
     ] {
-        let matched = template.constraints.iter().any(|c| {
-            match &c.expr.kind {
-                CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt
-                        || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required_member)
-                    {
-                        return false;
-                    }
-                    match &right.kind {
-                        CompiledExprKind::Literal(Value::Scalar {
-                            si_value,
-                            dimension,
-                        }) if *si_value == 0.0 && dimension == required_dim => true,
-                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                        _ => false,
-                    }
+        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == *required_member)
+                {
+                    return false;
                 }
-                _ => false,
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *si_value == 0.0 && dimension == required_dim => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
             }
+            _ => false,
         });
         assert!(
             matched,
@@ -1483,26 +1479,24 @@ fn step_force_constrains_magnitude_positive() {
             .collect::<Vec<_>>()
     );
 
-    let matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "magnitude")
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Scalar { si_value, .. })
-                        if *si_value == 0.0 =>
-                    {
-                        true
-                    }
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+    let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "magnitude")
+            {
+                return false;
             }
-            _ => false,
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Scalar { si_value, .. }) if *si_value == 0.0 => {
+                    true
+                }
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         matched,
@@ -1658,24 +1652,22 @@ fn forcing_time_history_constrains_sources_nonempty() {
             .collect::<Vec<_>>()
     );
 
-    let matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt {
-                    return false;
-                }
-                let pairs = collect_method_call_chain(left);
-                if !pairs.contains(&("count", "sources")) {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+    let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt {
+                return false;
             }
-            _ => false,
+            let pairs = collect_method_call_chain(left);
+            if !pairs.contains(&("count", "sources")) {
+                return false;
+            }
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(0)) => true,
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         matched,
@@ -1717,7 +1709,10 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
 
     // ── (a) modal has NO local ElementOrder enum_def ──────────────────────────
     assert!(
-        modal_module.enum_defs.iter().all(|e| e.name != "ElementOrder"),
+        modal_module
+            .enum_defs
+            .iter()
+            .all(|e| e.name != "ElementOrder"),
         "std/modal/analysis should NOT declare a local `enum ElementOrder` after \
          task-4108 drops the duplicate; got enum_defs: {:?}",
         modal_module
@@ -1731,7 +1726,9 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
     let modal_options = find_structure("ModalOptions");
     let element_order_default = require_default(modal_options, "element_order");
     match &element_order_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(
                 type_name, "ElementOrder",
                 "element_order default type_name should be \"ElementOrder\", got: {:?}",
@@ -1906,7 +1903,10 @@ fn displacement_time_history_part_is_part_type() {
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
         ("part", Type::StructureRef("Part".to_string())),
-        ("modal_result", Type::StructureRef("ModalResult".to_string())),
+        (
+            "modal_result",
+            Type::StructureRef("ModalResult".to_string()),
+        ),
         (
             "t_samples",
             Type::List(Box::new(Type::Scalar {
@@ -1980,17 +1980,20 @@ structure PartLeniencySmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errors = errors_only(&module);
+    // task 5302 α (Option-A uniform downgrade): StructureRef ctor conformance
+    // (task 4584) is emitted at CTOR_FIELD_CONFORMANCE_SEVERITY (Warning); code
+    // and count are unchanged, δ later flips the knob back to Error.
+    let warnings = warnings_only(&module);
     assert_eq!(
-        errors.len(),
+        warnings.len(),
         1,
-        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+        "expected exactly 1 Warning-severity diagnostic (TypeNotConformingToStructureRef) \
          for ForcingTimeHistory(part: \"beam\", ...) where part : Part; \
          got {}: {:#?}",
-        errors.len(),
-        errors,
+        warnings.len(),
+        warnings,
     );
-    let d = &errors[0];
+    let d = &warnings[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::TypeNotConformingToStructureRef),
@@ -2017,17 +2020,20 @@ structure PartDefaultSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errors = errors_only(&module);
+    // task 5302 α (Option-A uniform downgrade): StructureRef param-default
+    // conformance (task 4584) is emitted at CTOR_FIELD_CONFORMANCE_SEVERITY
+    // (Warning); code and count are unchanged, δ later flips the knob to Error.
+    let warnings = warnings_only(&module);
     assert_eq!(
-        errors.len(),
+        warnings.len(),
         1,
-        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+        "expected exactly 1 Warning-severity diagnostic (TypeNotConformingToStructureRef) \
          for `param part : Part = \"x\"`; got {}: {:#?}",
-        errors.len(),
-        errors,
+        warnings.len(),
+        warnings,
     );
-    let d = &errors[0];
-    assert_eq!(d.severity, reify_core::Severity::Error);
+    let d = &warnings[0];
+    assert_eq!(d.severity, reify_core::Severity::Warning);
     assert_eq!(
         d.code,
         Some(DiagnosticCode::TypeNotConformingToStructureRef),
@@ -2172,16 +2178,17 @@ structure StepForceRealAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: 0.0, ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -2212,16 +2219,17 @@ structure StepForceStringAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: \"tip\", ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -2252,16 +2260,17 @@ structure StepForceIntAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: 5, ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -2293,16 +2302,17 @@ structure StepForceValueRefAtSmoke {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let errs = errors_only(&module);
+    // 5302 α: Selector ctor conformance (task 4598) downgraded Error→Warning (knob).
+    let warns = warnings_only(&module);
     assert_eq!(
-        errs.len(),
+        warns.len(),
         1,
-        "expected exactly 1 Error-severity ArgTypeMismatch diagnostic for \
+        "expected exactly 1 Warning-severity ArgTypeMismatch diagnostic for \
          StepForce(at: <Real ValueRef>, ...) where at : Selector; got {}: {:#?}",
-        errs.len(),
-        errs,
+        warns.len(),
+        warns,
     );
-    let d = &errs[0];
+    let d = &warns[0];
     assert_eq!(
         d.code,
         Some(DiagnosticCode::ArgTypeMismatch),

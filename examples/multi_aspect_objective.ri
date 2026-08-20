@@ -1,0 +1,78 @@
+module multi_aspect_objective
+
+// PRD v0_6 multi-aspect-objective-units-coherence §δ headline: a coherent
+// multi-aspect objective — Money AND Mass combined in ONE dimensionless
+// `minimize` term — solves end-to-end. Task δ (#5020) integration-gate
+// example (BT4 positive; the negative sibling is
+// `multi_aspect_objective_mixed.ri`, BT1).
+//
+// A part has its own material thickness (stress/clearance requirement:
+// thickness ≥ 2mm, same idiom as `examples/continuous_cost_min.ri`). Both
+// material cost AND mass grow with thickness, so the design wants to
+// minimise a WEIGHTED COMBINATION of the two aspects — but cost is Money and
+// mass is Mass, and summing incommensurable dimensions directly is
+// physically meaningless (that is exactly what α's compile-time guard,
+// `DiagnosticCode::ObjectiveDimensionIncoherent` / `E_OBJECTIVE_MIXED_DIMENSION`,
+// rejects — see the sibling negative fixture). The coherent idiom this file
+// ships is to NORMALISE each aspect to a dimensionless ratio before summing:
+//
+//   minimize unit_cost*(thickness/1mm)/1USD + w*mass_per_mm*(thickness/1mm)/1kg
+//
+// Both summands are dimensionless (Money*dimensionless/Money and
+// Real*Mass*dimensionless/Mass), so the inner `+` is dimension-honest and,
+// being ONE term, never reaches the multi-term coherence guard (that guard
+// only fires for `terms.len() > 1`). `w` is a dimensionless weight trading
+// off the two normalised aspects.
+//
+// Integration test:
+//   crates/reify-eval/tests/multi_aspect_objective_example_e2e.rs
+//   asserts no `ObjectiveDimensionIncoherent` (compile AND eval) and
+//   `thickness` resolves to a finite, feasible Length strictly above the
+//   2mm constraint boundary.
+//
+// # Why the solver parks at the seed instead of the 2mm boundary
+//
+// The objective is dimensionless (not Money), so `objective_is_money` is
+// false and NO robustness floor is synthesised (contrast
+// `continuous_cost_min.ri`, whose Money objective DOES get a floor). Both
+// summands increase with `thickness`, so Nelder-Mead drives toward the 2mm
+// lower bound, drifts sub-boundary, becomes infeasible, and falls back to
+// the initially-feasible SEED (~10mm) via the `initially_feasible` fallback
+// (`crates/reify-constraints/src/solver.rs`) — landing well off the boundary
+// without any floor mechanism. This is the same seed-fallback behaviour
+// `continuous_cost_min.ri` documents, just without the floor diagnostic.
+//
+// # Why auto(free), not strict auto
+//
+// A strict `auto` triggers the uniqueness re-solve (perturbing the start and
+// checking convergence within `UNIQUENESS_SD_TOLERANCE`). Because the
+// eval-layer solver returns the initially-feasible SEED rather than a unique
+// convergent point, the perturbed re-solve does not reconverge to the same
+// value, and `ConstraintNonUnique` would mask the result. `auto(free)` skips
+// the uniqueness check here — feasibility and dimension-coherence are the
+// concerns, not uniqueness. Same reasoning as `continuous_cost_min.ri`.
+//
+// # Why a plain structure (not Costed/Massive conformance)
+//
+// `unit_cost` and `mass_per_mm` are plain closed-form params scaled by
+// `thickness`, not the frozen `Costed`/`Massive` trait fields (those aspects
+// and their `.sum` cross-scope aggregation idiom are proven by
+// `examples/aspect_massive.ri`, task β). Cross-scope aggregation over
+// children is out of scope here — task #4785's territory — this example's
+// job is the single-scope objective-COMBINATION seam: normalising and
+// summing two aspects into one coherent term.
+structure MultiAspectPart {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+    param mass_per_mm : Mass = 0.2kg
+    param w : Real = 0.5
+
+    // Stress/clearance minimum-thickness, same idiom as continuous_cost_min.ri.
+    constraint thickness > 2mm
+
+    // ONE normalised dimensionless objective term combining both aspects:
+    // Money*(dimensionless)/Money = dimensionless; Real*Mass*(dimensionless)/Mass
+    // = dimensionless. Dimension-honest `+`, single ObjectiveTerm — never
+    // reaches the multi-term coherence guard.
+    minimize unit_cost * (thickness / 1mm) / 1USD + w * mass_per_mm * (thickness / 1mm) / 1kg
+}

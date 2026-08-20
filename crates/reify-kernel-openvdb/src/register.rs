@@ -129,6 +129,16 @@ pub const OPENVDB_KERNEL_VERSION: &str = "13.0.0";
 /// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`)
 /// until task ε wires the wrapper into engine dispatch (no `GeometryOp`
 /// Mesh-input variant exists, so trait-execute routing is structurally deferred).
+///
+/// The `(Surface, Mesh)` entry (task 5033, PRD `voxel-to-mesh-surfacing.md`
+/// §10 OQ-1 option (a)) is an **EXECUTABLE** declaration for the isosurface
+/// terminal-anchor op: the dispatcher's final-stage probe requires a literal
+/// `(op, demanded)` match, reached for a Voxel-only operand via the
+/// `Convert{from:Voxel}, Mesh` expansion edge immediately above — the plan's
+/// sole conversion stage IS the marching-cubes surfacing that produces the
+/// Mesh this entry promises. `OpenVdbKernel::execute`'s `GeometryOp::Surface`
+/// arm (kernel_real.rs) is a thin same-kernel finalize over that already-
+/// produced mesh, not a second computation.
 pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
     use Operation::*;
     let supports = vec![
@@ -141,6 +151,9 @@ pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
         // Voxel→Mesh surfacing via openvdb::tools::volumeToMesh (task ι).
         // Executable primitive: realize_mesh_from_voxel_with_options / tessellate.
         (Convert { from: ReprKind::Voxel }, ReprKind::Mesh),
+        // Isosurface terminal anchor (task 5033): thin finalize over the
+        // Convert{Voxel→Mesh} stage's already-produced mesh. See doc above.
+        (Surface, ReprKind::Mesh),
     ];
     CapabilityDescriptor { supports }
 }

@@ -41,8 +41,8 @@ fi
 _REIFY_HEAVY_TEST_FILTER_LIB_SOURCED=1
 
 # The `heavy` set (PRD §3): reify-solver-elastic {determinism,
-# analytical_validation, modal_benchmarks} + reify-eval {buckling_smoke,
-# tensegrity_t0a, fea_diagnostics_e2e}. Positive expression only — the gate
-# view derives `not ($REIFY_HEAVY_NEXTEST_FILTER)` at the A4 consumer, so this
-# is the one place membership can ever change.
-export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval) & binary(fea_diagnostics_e2e))'
+# analytical_validation, modal_benchmarks} + reify-eval {tensegrity_t0a} +
+# reify-eval-fea-tests {buckling_smoke, fea_diagnostics_e2e}. Positive
+# expression only — the gate view derives `not ($REIFY_HEAVY_NEXTEST_FILTER)`
+# at the A4 consumer, so this is the one place membership can ever change.
+export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval-fea-tests) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e))'

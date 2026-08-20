@@ -279,10 +279,10 @@ fn run_compute_dispatch_folds_mid_surface_attributes_into_engine_table() {
     // All synthetic IDs must have the high bit set (disjoint from OCCT handles).
     for (id, _attr) in table.iter() {
         assert_eq!(
-            id.0 & 0x8000_0000_0000_0000,
+            id.id.0 & 0x8000_0000_0000_0000,
             0x8000_0000_0000_0000,
             "synthetic GeometryHandleId {:#018x} must have the high bit set",
-            id.0,
+            id.id.0,
         );
     }
 }
@@ -337,7 +337,7 @@ fn mid_surface_fold_table_entries_are_deterministic_across_fresh_engines() {
             .iter()
             .map(|(id, attr)| {
                 (
-                    id.0,
+                    id.id.0,
                     attr.role,
                     attr.local_index,
                     attr.feature_id.to_string(),

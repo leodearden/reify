@@ -9,8 +9,8 @@
 //! prelude_template_registry, so it lowers to a `UserFunctionCall` with no matching
 //! overload → poison diagnostic + error.  Step-2 (GREEN) adds the skeleton pre-pass.
 
-use reify_ir::*;
 use reify_core::*;
+use reify_ir::*;
 
 // ─── source fixture ───────────────────────────────────────────────────────────
 
@@ -296,9 +296,7 @@ fn skeleton_pass_produces_no_spurious_parametric_alias_info_diagnostics() {
     let spurious: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Info && d.message.contains("parametric prelude alias")
-        })
+        .filter(|d| d.severity == Severity::Info && d.message.contains("parametric prelude alias"))
         .collect();
     assert!(
         spurious.is_empty(),
@@ -355,11 +353,14 @@ fn fn_returned_struct_ctor_carries_non_poison_lets() {
 
     // The fn body must be a StructureInstanceCtor.
     match &func.body.result_expr.kind {
-        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
             assert_eq!(type_name, "Tol", "fn body ctor type_name must be Tol");
             // RED: currently lets is Vec::new() because step_4 skeleton doesn't attach lets.
             assert_eq!(
-                lets.len(), 1,
+                lets.len(),
+                1,
                 "fn-returned Tol ctor must carry 1 let (upper_limit); got {} lets: {:?}",
                 lets.len(),
                 lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
@@ -376,7 +377,10 @@ fn fn_returned_struct_ctor_carries_non_poison_lets() {
                 "let expr result_type must not be Error (sibling refs must resolve in skeleton)"
             );
         }
-        other => panic!("make_tol body should be StructureInstanceCtor; got: {:?}", other),
+        other => panic!(
+            "make_tol body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
     }
 }
 
@@ -434,7 +438,9 @@ fn fn_returned_struct_ctor_excludes_guarded_lets() {
         });
 
     match &func.body.result_expr.kind {
-        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
             assert_eq!(type_name, "G", "fn body ctor type_name must be G");
 
             let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
@@ -454,7 +460,10 @@ fn fn_returned_struct_ctor_excludes_guarded_lets() {
                 let_names
             );
         }
-        other => panic!("make_g body should be StructureInstanceCtor; got: {:?}", other),
+        other => panic!(
+            "make_g body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
     }
 }
 
@@ -516,7 +525,9 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
         });
 
     match &func.body.result_expr.kind {
-        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name, lets, ..
+        } => {
             assert_eq!(type_name, "H", "fn body ctor type_name must be H");
 
             let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
@@ -550,6 +561,9 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
                 "`scaled` let expr result_type must not be Error"
             );
         }
-        other => panic!("make_h body should be StructureInstanceCtor; got: {:?}", other),
+        other => panic!(
+            "make_h body should be StructureInstanceCtor; got: {:?}",
+            other
+        ),
     }
 }

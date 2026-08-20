@@ -26,8 +26,8 @@
 //!   `cargo test -p reify-compiler --test string_interp_lowering_tests`
 
 use reify_core::{Severity, Type};
+use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{BinOp, CompiledExprKind, Value, ValueMap};
-use reify_expr::{eval_expr, EvalContext};
 use reify_test_support::{compile_source, get_let_expr};
 
 /// `"x={1+1}"` must lower to a render-then-concat fold: a `BinOp::Add` whose
@@ -106,8 +106,7 @@ structure S {
         );
     };
     assert_eq!(
-        function.qualified_name,
-        "std::__interp_render",
+        function.qualified_name, "std::__interp_render",
         "expected right operand function qualified_name == \"std::__interp_render\", got {:?}",
         function.qualified_name,
     );
@@ -214,8 +213,7 @@ structure S {
         );
     };
     assert_eq!(
-        function.qualified_name,
-        "std::__interp_render",
+        function.qualified_name, "std::__interp_render",
         "expected function qualified_name == \"std::__interp_render\" for hole-only string, got {:?}",
         function.qualified_name,
     );

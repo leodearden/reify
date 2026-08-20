@@ -232,7 +232,62 @@ export interface ValueData {
    * `null` / absent for final/intermediate/failed cells (mirrors `reason`).
    */
   last_substantive_value?: string | null;
+  /**
+   * Canonical dimension name for this cell's value (e.g. `"Volume"`,
+   * `"Length"`), from `DimensionVector::canonical_name()`. Empty string /
+   * absent for non-scalar, dimensionless, or composed-dimension values
+   * (task #5199: drives the Parameters panel's per-cell unit picker — only
+   * cells with a non-empty `dimension` AND a ladder of >=2 units get a
+   * `<select>` instead of the static unit badge).
+   */
+  dimension?: string;
+  /**
+   * The cell's raw canonical SI magnitude (e.g. cubic metres for a Volume
+   * cell), for converting into whichever display unit the user picks:
+   * `displayed = si_value / chosenUnit.si_scale`. `null` / absent for
+   * non-scalar values (mirrors `dimension` being empty/absent). This is
+   * canonical-SI data alongside the existing default-unit-formatted
+   * `value`/`unit` pair — the unit picker's own selection never crosses
+   * the IPC wire (task #5199 engine_state decision: additive-only).
+   */
+  si_value?: number | null;
 }
+
+/** One selectable display unit within a {@link DimensionLadder} (task #5199). */
+export interface UnitOption {
+  /** User-facing unit label (e.g. `"mm"`, `"L"`). */
+  label: string;
+  /** `displayMagnitude = si_value / si_scale`. */
+  si_scale: number;
+  /** Exactly one option per ladder has `is_default: true`. */
+  is_default: boolean;
+}
+
+/** The ordered set of display-unit options for one canonical dimension. */
+export interface DimensionLadder {
+  /** Canonical dimension name (`DimensionVector::canonical_name()`, e.g. `"Volume"`). */
+  dimension: string;
+  /** Selectable units, in picker display order. */
+  units: UnitOption[];
+  /**
+   * Curated derived-unit label for this dimension (PRD
+   * display-unit-preference §4) — equals the `is_default` rung's label.
+   * Optional/additive: mirrors the `derived_unit_name` serde field from
+   * `reify_core::display_units` for forthcoming L4/L5 consumers; existing
+   * picker consumers ignore it (task #5232).
+   */
+  derived_unit_name?: string;
+  /**
+   * Per-dimension auto-scaling policy (PRD display-unit-preference §5), or
+   * `null`/absent when the dimension is excluded from auto-scaling.
+   * Optional/additive: mirrors the `auto_scale` serde field; existing
+   * consumers ignore it (task #5232).
+   */
+  auto_scale?: { enabled: boolean; band_lo: number; band_hi: number } | null;
+}
+
+/** Canonical dimension name -> its selectable unit ladder, as returned by `get_unit_ladders`. */
+export type UnitLadderMap = Record<string, UnitOption[]>;
 
 /** Status and label of a constraint node. */
 export interface ConstraintData {
@@ -672,9 +727,17 @@ export interface EntityTreeNode {
    * Whether this realization node is visible by default.
    * Mirrors Rust `EntityTreeNode.default_visible`.
    * - Absent or `true` → visible (all non-realization nodes and product realizations).
-   * - Explicit `false` → hidden by default (aux body or aux-subtree descendant).
+   * - Explicit `false` → hidden by default, for any of three reasons: the
+   *   realization is `aux`, it descends from an `aux sub` subtree, or it is a
+   *   consumed intermediate — some sibling realization in the same template
+   *   takes it as an operand, so it is construction geometry rather than the
+   *   finished part (#5195).
    * Only explicit `false` triggers hidden-by-default; undefined/absent preserves
    * all existing visibility behavior.
+   *
+   * Hidden-by-default is a starting state, not a restriction: the outline lists
+   * these nodes and toggling one reveals it, and the All-Geometry view shows
+   * everything regardless.
    */
   default_visible?: boolean;
   /** Child nodes (value cells, sub-components, ports, realizations). */

@@ -41,11 +41,11 @@ Leaves (no batch task depends on them): **δ, ε, ζ**. Intermediates (other bat
 depend on them): **α, β, γ** — their RED-test contracts are validated in the appendix
 since they carry observable signals too.
 
-### δ — `orchestrator.yaml cpu_governance:` policy block + CLAUDE.md + cross-PRD prose
+### δ — `dark-factory-orchestrator.yaml cpu_governance:` policy block + CLAUDE.md + cross-PRD prose
 
 | Capability asserted by signal | Evidence | Verdict |
 |---|---|---|
-| `orchestrator.yaml` admits a new top-level `cpu_governance:` block | `grep:orchestrator.yaml:103` shows the sibling `jobserver:` block — same shape (top-level map); YAML-parse of the augmented file is the observable | PASS (`wired`) |
+| `dark-factory-orchestrator.yaml` admits a new top-level `cpu_governance:` block | `grep:dark-factory-orchestrator.yaml:103` shows the sibling `jobserver:` block — same shape (top-level map); YAML-parse of the augmented file is the observable | PASS (`wired`) |
 | The block's knobs (`W_task`/`W_merge`, `REIFY_CPU_ADMIT_AGENT_THRESHOLD`, enable flags, `DF_AGENT_CPU_GOVERN`) are actually consumed | producer = **α** (`cpu-admit.sh` threshold) and **γ** (`cpu-governed-exec.sh` weights), both **upstream** of δ; their `tests/infra` harnesses read the same env | PASS (`producer:α,γ upstream`) |
 | `cpu-admit.sh` added to the verify-pipeline path manifest **iff** α makes it a `source`d verify dep | `grep:scripts/verify-pipeline-paths.txt` (static manifest exists; CLAUDE.md "Drift-guard exception" makes this load-bearing) — the manifest entry is the observable | PASS (`wired`) |
 | CLAUDE.md "Test concurrency" documents the compose order (`cpu-governed-exec` placement → `cpu-admit` per heavy command → existing semaphore region) | CLAUDE.md §"Test concurrency" exists with the three-control compose order today; δ extends it | PASS (`wired`) |

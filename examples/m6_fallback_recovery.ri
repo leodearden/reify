@@ -1,0 +1,53 @@
+// Fallback recovery worked example — exercises the Layer-A `Option` recovery
+// combinators (`unwrap_or`, `or_else`, `is_some`) over a fallible stdlib op
+// (`parse_length`) that yields `Option<Length>` (task 3986, result-and-fallback
+// PRD `docs/prds/v0_6/result-and-fallback.md` §1 / §8 Phase 4 task δ — THE
+// integration gate / primary user-observable signal).
+//
+// User-observable signal: a recoverable miss becomes a language value the
+// model branches on, instead of an uncatchable `Freshness::Failed` node (§5
+// D1). `reify eval` reports:
+//
+//   MountValid (raw="12mm",    parses):  bore = 12mm, pin = 12mm, has_bore = true
+//   MountBad   (raw="garbage", fails):    bore = 6mm,  pin = 4mm,  has_bore = false
+//
+// PRD §1 shows a single `Mount` whose two cases are observed by manually
+// editing `raw` and re-running; this example instead declares BOTH cases as
+// separate structures sharing identical recovery logic, so both signals are
+// observable — and CI-testable — from one file without editing.
+//
+// `unwrap_or` / `or_else` / `is_some` are prelude-callable (std.option_recovery
+// is in the prelude) — no explicit import is needed. No new grammar.
+//
+// Covered by crates/reify-eval/tests/fallback_recovery_e2e.rs (numeric eval
+// signal), crates/reify-cli/tests/cli_eval_fallback_recovery.rs (rendered CLI
+// stdout signal), and the examples compile-clean smoke sweep.
+
+structure def MountValid {
+    // A fallible stdlib op already yields Option today (an optional lookup,
+    // a may-fail parse). Recover with a language-level default instead of an
+    // opaque graph-level Failed node.
+    param raw : String = "12mm"
+
+    // `unwrap_or` : recovery to a concrete default when the Option is `none`.
+    let bore : Length = unwrap_or(parse_length(raw), 6mm)
+
+    // `or_else` : chain a second fallible attempt before defaulting.
+    let pin : Length = unwrap_or(or_else(parse_length(raw), parse_length("4mm")), 4mm)
+
+    // `is_some` : branch on presence without unwrapping.
+    let has_bore : Bool = is_some(parse_length(raw))
+}
+
+// Same recovery logic as MountValid, but `raw` fails to parse: every
+// `unwrap_or`/`or_else` falls through to its default and `has_bore` flips to
+// false.
+structure def MountBad {
+    param raw : String = "garbage"
+
+    let bore : Length = unwrap_or(parse_length(raw), 6mm)
+
+    let pin : Length = unwrap_or(or_else(parse_length(raw), parse_length("4mm")), 4mm)
+
+    let has_bore : Bool = is_some(parse_length(raw))
+}

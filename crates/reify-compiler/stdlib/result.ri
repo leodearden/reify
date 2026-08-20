@@ -1,0 +1,105 @@
+#no_prelude
+// Stdlib: Result<T, E> (task B-α #4035 — PRD docs/prds/v0_6/result-and-fallback.md
+// §4.3/§8.B)
+//
+// A plain generic data-carrying enum (PRD fork F4-a / D5: "just" a generic DCE
+// enum, NOT a Value intrinsic). Declared bare (no `pub`) — mirrors the
+// convention of every other stdlib enum/structure — and self-contained (only
+// the type params T, E), so `#no_prelude` is safe: it needs no other stdlib
+// type. This is byte-for-byte the same shape validated as a USER module in
+// task γ #4031's construction-inference tests (RESULT_ENUM_SOURCE), now shipped
+// prelude-side so `Ok { .. }` / `Err { .. }` are callable from any `.ri` file
+// with no explicit declaration.
+//
+// Construction resolution, payload-driven type-arg inference, the same-param-
+// conflict check, and the pinned-annotation VariantPayloadType check are all
+// delivered free by the existing generic-variant-construction machinery (task
+// γ #4031's `compile_variant_construct`, threaded via `ctx.resolution_enums` =
+// prelude ++ local) — this module adds no Rust logic of its own.
+//
+// Registration: stdlib_loader.rs::stdlib_sources() inserts this module
+// adjacent to std.option_recovery and BEFORE std.determinacy.purposes (which
+// must remain LAST). No `import` edges → compile_modules_topo keeps the
+// identity order.
+//
+// result-fallback Layer-B γ (task #4037): six generic recovery combinators
+// declared below, co-located with the enum so `Result<T,E>` resolves as a
+// same-module LOCAL enum type (std.option_recovery loads BEFORE std.result,
+// so it cannot see Result). All bodies are TYPECHECK-ONLY placeholders —
+// result_type is derived from generic-signature substitution at the call
+// site (expr.rs resolve_function_overload → type_compat::unify →
+// substitute_type_params), independent of the body, exactly as in
+// option_recovery.ri. Real tag-driven recovery eval lives in the shared
+// reify-expr intercept (crates/reify-expr/src/option_recovery.rs, extended
+// to dispatch on Value::Enum{type_name:"Result",..} alongside Value::Option)
+// plus a dedicated ctx-aware map_err branch in reify-expr/src/lib.rs
+// (mirroring map_or) — applying `f` needs the EvalContext.
+//
+// merge_prelude_functions dedups by the (name, arity, param_types) triple,
+// not by name alone, so these Result overloads coexist with the
+// same-named Option overloads in std.option_recovery; type_compat.rs's
+// head-match disambiguation (#4991) picks the right one per call by the
+// subject's constructor head (some/none → Option, Ok/Err → Result).
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+/// Extract the inner value of `r`, or return `dflt` if `r` is `Err`.
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with Result<T,E>'s Ok-payload type T.
+pub fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }
+
+/// Return `r` if it holds `Ok`, otherwise return `alt`.
+///
+/// Both arguments must be `Result<T,E>` for the same T, E.
+pub fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E> { r }
+
+/// Extract the inner value of `r`, or return `dflt` if `r` is `Err`.
+/// Free-function alias of `unwrap_or` (PRD fork F2-a, decision D6) — task
+/// result-fallback Layer-B δ #4038.
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with Result<T,E>'s Ok-payload type T.
+///
+/// Like every combinator in this module, the body is a TYPECHECK-ONLY
+/// placeholder: `result_type` is derived from generic-signature substitution
+/// at the call site (expr.rs resolve_function_overload → type_compat::unify
+/// → substitute_type_params), independent of the body. Real tag-driven
+/// recovery eval is delivered by the shared `eval_extract_or_default` arm in
+/// `reify-expr/src/option_recovery.rs` (already dispatches
+/// `Value::Enum{type_name:"Result",variant:"Ok"/"Err"}` and already lists
+/// `"fallback"` in `is_combinator` — extended to `Result` by task γ #4037 —
+/// so no reify-expr change is needed here).
+pub fn fallback<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }
+
+/// Return true if `r` is `Ok`, false if it is `Err`.
+pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }
+
+/// Return true if `r` is `Err`, false if it is `Ok`.
+pub fn is_err<T, E>(r: Result<T, E>) -> Bool { false }
+
+/// Map the error payload of `r` through `f`, leaving an `Ok` unchanged:
+/// `Ok{value} → Ok{value}` (unchanged, `f` NOT applied), `Err{error:e} →
+/// Err{error:f(e)}` (and `undef → undef`, Kleene propagation).
+///
+/// The `f: (E) -> F` parameter is an arrow type, type-checked against a
+/// lambda argument by the existing generic-fn resolver with no new resolver
+/// code (mirrors map_or, task 4595).
+pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }
+
+/// Convert `o` to a `Result`: `some(x) → Ok{value:x}`, `none → Err{error:err}`
+/// (the standard Option→Result bridge; and `undef → undef`, Kleene
+/// propagation).
+///
+/// Placeholder body returns `err` directly (NOT `Err { error: err }`):
+/// variant-construction payload fields must be compile-time literals
+/// (variant_construct.rs's v1 non-constant-payload restriction), and `err` is
+/// a runtime param reference, so constructing `Err { error: err }` here draws
+/// an Error diagnostic ("non-constant payload value for field 'error'").
+/// result_type is derived from call-site signature substitution independent
+/// of the body (exactly as every other combinator above), so a bare param
+/// reference is a safe, minimal placeholder — the real Option→Result bridge
+/// runs in eval (option_recovery.rs's eval_ok_or, step 4).
+pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { err }

@@ -81,8 +81,35 @@ use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, RealizationNodeId
 
 use crate::cache::NodeId;
 use crate::deps::DependencyTrace;
-use crate::dirty::DebugOrd;
 use crate::graph::EvaluationGraph;
+
+/// Wrapper for [`NodeId`] that implements `Ord` on the Debug representation.
+///
+/// The crate's single source of total ordering over nodes. Every order-sensitive
+/// step of the scheduling core rides it — the Kahn worklist's `BTreeSet`
+/// ready-set (`pop_first`), Tarjan's outer iteration and successor enumeration,
+/// the inter-SCC order, and the diagnostic vector — so schedules and diagnostics
+/// are byte-identical across runs and trace-map insertion orders.
+///
+/// It lives HERE, next to the core that consumes it, rather than in
+/// [`crate::dirty`] where it was introduced (task 4357 δ): `dirty` calls INTO
+/// this module for its sort (`dirty::topological_sort` delegates to
+/// [`run_unified_pass_seeded`]), so keeping the tie-break here leaves exactly one
+/// dependency direction between the two modules instead of a cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DebugOrd(pub(crate) NodeId);
+
+impl PartialOrd for DebugOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DebugOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        format!("{:?}", self.0).cmp(&format!("{:?}", other.0))
+    }
+}
 
 /// Output of [`run_unified_pass`] — a pure structural plan (no node execution).
 ///
@@ -853,7 +880,7 @@ mod tests {
     /// (Resolution→Value). `run_unified_pass` must produce a valid topological
     /// schedule covering EXACTLY the trace-map keys, with empty residue and zero
     /// diagnostics. The realization→realization edge pins that `realization_reads`
-    /// participates in in-degree (which `compute_levels` ignores).
+    /// participates in in-degree (which the retired reads-only level sort ignored).
     ///
     /// RED until step-8 implements `run_unified_pass`.
     #[test]
@@ -1124,8 +1151,8 @@ mod tests {
     }
 
     /// Task 4357 δ (step-11c): a cross-kind cycle of a DIFFERENT pair —
-    /// realization ↔ realization via `realization_reads` (the GeomRef::Sub edge
-    /// `compute_levels` ignores) — must emit one `E_EVAL_CYCLE`, proving the
+    /// realization ↔ realization via `realization_reads` (the GeomRef::Sub edge the
+    /// retired reads-only level sort ignored) — must emit one `E_EVAL_CYCLE`, proving the
     /// detector is kind-agnostic over every edge kind α's trace map encodes.
     #[test]
     fn unified_pass_realization_cycle_is_kind_agnostic() {
@@ -1231,6 +1258,144 @@ mod tests {
             cycle_diags(&result).len(),
             0,
             "acyclic realization must not emit E_EVAL_CYCLE"
+        );
+    }
+
+    /// [Re-homed from `reify-eval/src/concurrent.rs:1008`, task ξ (#5046), ahead
+    /// of task ο's deletion of the dead concurrent stack.] Verify that
+    /// `run_unified_pass` returns an acyclic, linear schedule for a module with
+    /// multiple geometry realizations, exercised against the LIVE Engine/compiler
+    /// pipeline (not the hand-built graphs the rest of this suite uses).
+    ///
+    /// PRD Open Q4: "serialize conservatively — already serial; concurrent
+    /// value-eval never executes realizations." Two realizations sharing a
+    /// named_steps namespace are always placed sequentially because
+    /// `run_unified_pass` returns `Vec<NodeId>` (a single flat list, NOT
+    /// `Vec<Vec<NodeId>>` parallel levels), and the per-template build loop
+    /// executes them one at a time.  Concurrent value-eval
+    /// (`resolve_concurrent_edit`, now dead) was expression-only and never
+    /// touched realizations — so no intra-level realization serializer was ever
+    /// required. This pin now guards the property directly on the live
+    /// `run_unified_pass` planner so coverage survives the dead stack's removal.
+    ///
+    /// **What this test asserts:**
+    /// - All Realization nodes are present in the schedule (not stranded in
+    ///   the residue).
+    /// - The residue is empty (no cycles for an acyclic box+union graph).
+    /// - Each node appears exactly once (no duplicates in the flat list).
+    /// - `result = union(a, b)` is scheduled strictly AFTER both `a` and `b`
+    ///   — the actual topologically-valid-order property. The no-duplicates
+    ///   check alone is tautological (Kahn's worklist enqueues each node's
+    ///   in-degree hitting zero exactly once, so it holds for any correct —
+    ///   or even mildly broken — planner) and would not catch a scheduler
+    ///   that emits a valid-but-wrong order.
+    ///
+    /// The `Vec<NodeId>` return type is the structural proof that the schedule
+    /// is sequential rather than parallel.
+    #[test]
+    fn run_unified_pass_returns_acyclic_linear_schedule() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_ir::GeometryKernel;
+        use reify_test_support::{MockGeometryKernel, compile_source};
+
+        // NodeId + run_unified_pass are already in scope via `use super::*`.
+
+        // A module with multiple geometry realizations (box + union chain).
+        // Each `let` with a geometry op is a Realization node in the graph.
+        const SRC: &str = r#"pub structure MultiBody {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let result = union(a, b)
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
+        );
+        // eval() populates eval_state.snapshot.graph + eval_state.trace_map,
+        // including Realization nodes for the box/union ops.
+        engine.eval(&compiled);
+
+        let state = engine
+            .eval_state()
+            .expect("eval_state must be set after eval()");
+
+        // run_unified_pass is the Kahn planner — returns a single Vec<NodeId>
+        // (NOT Vec<Vec<NodeId>> or levels), so realizations are always sequential.
+        let pass = run_unified_pass(&state.snapshot.graph, &state.trace_map);
+
+        // Realization nodes must appear in the schedule (not stranded in residue).
+        let realization_count = pass
+            .schedule
+            .iter()
+            .filter(|n| matches!(n, NodeId::Realization(_)))
+            .count();
+        // Exactly 3 (a, b, result) — a tight bound, not `>= 2`, so a dropped
+        // realization fails here with a clear message instead of surfacing
+        // later as an opaque HashMap-index panic at the `pos[&r_result]`
+        // lookup below.
+        assert_eq!(
+            realization_count, 3,
+            "schedule must contain exactly 3 Realization nodes (a, b, result) for this \
+             module; got {realization_count} Realization node(s) in a schedule of {} node(s) \
+             total",
+            pass.schedule.len(),
+        );
+
+        // Residue must be empty — an acyclic box+union graph has no cycles.
+        assert!(
+            pass.residue.is_empty(),
+            "run_unified_pass residue must be empty for an acyclic geometry module; \
+             got {} stranded node(s): {:?}",
+            pass.residue.len(),
+            pass.residue,
+        );
+
+        // The Vec<NodeId> return type itself is the structural proof that the
+        // schedule is a single linear order — not a set of parallel levels.
+        // Both Realization nodes must appear exactly once (no duplication).
+        let sched_set: std::collections::HashSet<_> = pass.schedule.iter().collect();
+        assert_eq!(
+            sched_set.len(),
+            pass.schedule.len(),
+            "schedule must have no duplicates (each node appears exactly once in the linear order)",
+        );
+
+        // The no-duplicates check above cannot catch a scheduling regression
+        // by itself — assert the actual topological-order property: `result
+        // = union(a, b)` must come after both `a` and `b`. Realization
+        // indices are assigned in source declaration order by the compiler's
+        // realization-emission loop (reify_compiler::entity), so `a`/`b`/
+        // `result` map directly onto indices 0/1/2 of entity "MultiBody".
+        // Reuses this suite's `positions()` helper (see
+        // `unified_pass_acyclic_all_edge_kinds_schedules_everything` above
+        // for the same idiom).
+        let r_a = NodeId::Realization(RealizationNodeId::new("MultiBody", 0));
+        let r_b = NodeId::Realization(RealizationNodeId::new("MultiBody", 1));
+        let r_result = NodeId::Realization(RealizationNodeId::new("MultiBody", 2));
+        let pos = positions(&pass.schedule);
+        // `.get(...).expect(...)` rather than direct HashMap indexing: the
+        // `realization_count == 3` check above only proves three
+        // Realization nodes exist, not that they carry indices 0/1/2 for
+        // entity "MultiBody" — if a future compiler change makes realization
+        // indices non-contiguous or reordered, this must fail with an
+        // explanatory message instead of an opaque HashMap-index panic.
+        let pos_a = *pos
+            .get(&r_a)
+            .expect("box `a` (MultiBody index 0) must be scheduled — index-to-declaration-order assumption broke");
+        let pos_b = *pos
+            .get(&r_b)
+            .expect("box `b` (MultiBody index 1) must be scheduled — index-to-declaration-order assumption broke");
+        let pos_result = *pos
+            .get(&r_result)
+            .expect("union `result` (MultiBody index 2) must be scheduled — index-to-declaration-order assumption broke");
+        assert!(
+            pos_result > pos_a && pos_result > pos_b,
+            "union(a, b) realization must be scheduled after both box \
+             realizations it depends on; got positions a={pos_a}, b={pos_b}, \
+             result={pos_result} in schedule {:?}",
+            pass.schedule,
         );
     }
 

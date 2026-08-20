@@ -1,0 +1,34 @@
+module discrete_balance_inline
+
+// Natural Bool formulation of the 6-pulley (2^64 = 64 config) static balance,
+// fairleads on a unit hexagon. Constraints inline against the auto Bools
+// (let-indirection still severs connectivity — separate gap).
+// Expect: a balanced config (up-set {0,120,240} or {60,180,300}).
+
+structure N1 {
+    param up1 : Bool = auto(free)  // 0 deg
+    param up2 : Bool = auto(free)  // 60 deg
+    param up3 : Bool = auto(free)  // 120 deg
+    param up4 : Bool = auto(free)  // 180 deg
+    param up5 : Bool = auto(free)  // 240 deg
+    param up6 : Bool = auto(free)  // 300 deg
+
+    // force sum == 0
+    constraint (if up1 then 1.0 else -1.0) + (if up2 then 1.0 else -1.0)
+             + (if up3 then 1.0 else -1.0) + (if up4 then 1.0 else -1.0)
+             + (if up5 then 1.0 else -1.0) + (if up6 then 1.0 else -1.0) == 0.0
+
+    // moment about x: sum sin(theta_i) * s_i == 0
+    constraint 0.8660254 * (if up2 then 1.0 else -1.0)
+             + 0.8660254 * (if up3 then 1.0 else -1.0)
+             - 0.8660254 * (if up5 then 1.0 else -1.0)
+             - 0.8660254 * (if up6 then 1.0 else -1.0) == 0.0
+
+    // moment about y: sum cos(theta_i) * s_i == 0
+    constraint (if up1 then 1.0 else -1.0)
+             + 0.5 * (if up2 then 1.0 else -1.0)
+             - 0.5 * (if up3 then 1.0 else -1.0)
+             - (if up4 then 1.0 else -1.0)
+             - 0.5 * (if up5 then 1.0 else -1.0)
+             + 0.5 * (if up6 then 1.0 else -1.0) == 0.0
+}

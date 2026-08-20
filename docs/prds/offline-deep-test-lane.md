@@ -21,7 +21,7 @@ handling + the gate flip) is a separate PRD owned by dark-factory — see §6.
 | `DF_VERIFY_ROLE=offline` role in `scripts/verify.sh` | **`scripts/run-offline-deep.sh`** (reify-local one-shot runner) executes it | the DF singleton lane worker invokes `run-offline-deep.sh` |
 | `scripts/run-offline-deep.sh` one-shot runner | operator / local timer (manual bridge) | the DF lane worker's `subprocess` entry point |
 | thin gate smoke binary (`solver_gate_smoke.rs`) | the merge/task gate runs it (it is outside the `heavy` pattern) | — |
-| `REIFY_GATE_EXCLUDE_HEAVY` knob (default **0** = current behavior) | verify.sh gate roles read it; **default keeps the heavy set on the gate** | Part B flips it to `1` (orchestrator.yaml verify env) the moment the lane is live |
+| `REIFY_GATE_EXCLUDE_HEAVY` knob (default **0** = current behavior) | verify.sh gate roles read it; **default keeps the heavy set on the gate** | Part B flips it to `1` (dark-factory-orchestrator.yaml verify env) the moment the lane is live |
 | `tests/infra/test_verify_offline_partition.sh` drift-guard | the verify pipeline (infra step) | — |
 
 **User-observable surface (the reify-local leaf signals, G2):**
@@ -144,7 +144,7 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   is pending.)
 - **DA2 — The flip is an off-by-default env knob, pulled by Part B via a cross-project dep, immediate.**
   `scripts/verify.sh` gate roles read `REIFY_GATE_EXCLUDE_HEAVY` (default `0`). Part B sets it to `1`
-  in `orchestrator.yaml`'s verify env the moment the async lane is live — a one-line, immediate,
+  in `dark-factory-orchestrator.yaml`'s verify env the moment the async lane is live — a one-line, immediate,
   reversible config deploy, **not** a reify code change. A real `add_dependency` edge makes Part B's
   `flip-gate-exclude-heavy` task depend on **both** Part A's knob leaf **and** Part B's lane-live leaf,
   so the flip fires exactly when the lane can catch the offline runs (no lingering double-pay, no gap).
@@ -192,12 +192,12 @@ warm-lane D8 seam in `CLAUDE.md`: **reify ships the primitives, dark-factory wir
 | singleton lane worker: single-flight / coalesce / always-from-head (`workflow.py`) | **dark-factory (Part B)** | Part A; warmer-builds Phase-1 (warm-lane pool — **live**, task ε #4663) |
 | dedup'd fix-task spawn (failing-test-set signature) + `escalate_info`/`escalate_blocker` staging | **dark-factory (Part B)** | Part A |
 | second persistent-worktree instantiation (`_offline-deep`, Phase-1 machinery, `git_ops.py`) | **dark-factory (Part B)** | warm-lane pool (live) |
-| **`flip-gate-exclude-heavy`** — set `REIFY_GATE_EXCLUDE_HEAVY=1` in `orchestrator.yaml` verify env | **dark-factory (Part B)** | **cross-project edge → Part A knob leaf** + Part B lane-live leaf |
+| **`flip-gate-exclude-heavy`** — set `REIFY_GATE_EXCLUDE_HEAVY=1` in `dark-factory-orchestrator.yaml` verify env | **dark-factory (Part B)** | **cross-project edge → Part A knob leaf** + Part B lane-live leaf |
 
 **The flip seam contract (the one interface both PRDs must agree on):**
 > `scripts/verify.sh`, on role `task`/`merge`, applies the nextest filter `not (heavy)` **iff**
 > `REIFY_GATE_EXCLUDE_HEAVY` is exactly `1`; for any other value (unset/empty/0) the gate runs the
-> full set unchanged. The variable is read from the environment so `orchestrator.yaml`'s verify env
+> full set unchanged. The variable is read from the environment so `dark-factory-orchestrator.yaml`'s verify env
 > can set it without a reify code change. Flipping it is immediate and reversible.
 
 **Ownership is unambiguous — no reciprocal "the other owns it" pattern.** Part A owns the seam + the

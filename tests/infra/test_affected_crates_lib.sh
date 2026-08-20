@@ -15,6 +15,20 @@
 #   8. reverse closure of reify-ir is NOT the ALL sentinel
 #   9. cargo metadata failure -> ALL (C5)
 #  10. global anywhere in arg list -> ALL
+#  11. (task 4938) dev-dep non-transitivity: an OCCT-seed closure excludes a
+#      dev-dep-of-a-dev-dep (reify-eval-fea-tests) whose own test binary links
+#      no OCCT, while still including the seed (reify-kernel-occt) and a
+#      direct dev-dependent (reify-eval) that does compile OCCT
+#  12. (task 4938) tests/infra/* non-crate allowlist composes with crate
+#      accumulation in a mixed diff (narrows; does not force ALL)
+#  13. (task 4938 amendment; unified by task 5124) drift guard:
+#      affected_crates(occt-seed) equals occt_touching_set — both now
+#      delegate to the single shared _reify_compile_closure helper
+#      (scripts/occt-scope-lib.sh), and this cross-check fails loudly if
+#      that ever regresses
+#  14. (task 5124) _reify_compile_closure — the shared helper both wrappers
+#      delegate to — is exercised directly: its output equals
+#      occt_touching_set and contains the seed crate
 
 set -euo pipefail
 
@@ -26,6 +40,13 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 [ -f "$REPO_ROOT/scripts/affected-crates-lib.sh" ] || { echo "ERROR: affected-crates-lib.sh not found at $REPO_ROOT/scripts/affected-crates-lib.sh"; exit 1; }
 source "$REPO_ROOT/scripts/affected-crates-lib.sh"
+
+# Also source occt-scope-lib.sh (read-only usage — sourcing, not editing) so
+# this file can cross-check _reverse_closure's ported compile-closure
+# algorithm against occt_touching_set's independent implementation of the
+# same model. See the drift-guard assertion below.
+[ -f "$REPO_ROOT/scripts/occt-scope-lib.sh" ] || { echo "ERROR: occt-scope-lib.sh not found at $REPO_ROOT/scripts/occt-scope-lib.sh"; exit 1; }
+source "$REPO_ROOT/scripts/occt-scope-lib.sh"
 
 echo "=== affected-crates-lib drift tests ==="
 
@@ -49,6 +70,9 @@ assert "docs path -> empty" \
 
 assert "gui frontend -> empty" \
     test -z "$(affected_crates gui/src/App.tsx)"
+
+assert "tests/infra shell/python -> empty (no ALL)" \
+    test -z "$(affected_crates tests/infra/test_cpu_load_governance.sh)"
 
 # ---------------------------------------------------------------------------
 # Step 5: C5 fail-wide — unmappable path forces ALL
@@ -107,6 +131,154 @@ _check_reify_ir_not_ALL() {
 assert "reify-ir closure is NOT the ALL sentinel" _check_reify_ir_not_ALL
 
 # ---------------------------------------------------------------------------
+# Task 4938 Fix #1: dev-dep non-transitivity (cargo-accurate compile closure)
+#
+# cargo's compile semantics are NOT transitive over dev-deps: testing crate X
+# compiles normal/build-closure(X) plus normal/build-closure(each DIRECT
+# dev-dep of X); dev-deps of X's transitive deps never compile. A reverse
+# closure that walks ALL dep kinds (null/build/dev) transitively
+# over-approximates this.
+#
+# Ground-truth facts (independently known, not a clone of _reverse_closure's
+# algorithm — verified against scripts/occt-scope-lib.sh:occt_touching_set,
+# which computes the OCCT-touching set from the FORWARD direction):
+#   - reify-eval dev-deps reify-kernel-occt (crates/reify-eval/Cargo.toml) ->
+#     reify-eval's own tests DO compile OCCT.
+#   - reify-eval-fea-tests dev-deps reify-eval (its [dependencies] is empty) ->
+#     a two-hop dev chain (occt <- reify-eval <- reify-eval-fea-tests) exists,
+#     but reify-eval-fea-tests's test binary links no OCCT: normal-closure of
+#     its direct dev-dep reify-eval does not carry reify-eval's OWN dev-dep on
+#     OCCT. It must be EXCLUDED from an OCCT-seeded affected set.
+#
+# Placed BEFORE the cargo-metadata-failure stub below: that stub's `cargo()`
+# shell function is defined in the current shell (assert invokes checkers
+# directly, not in a subshell, per esc-4959-57) and is never unset, so it
+# would otherwise leak into every assertion that follows it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 4938 Fix #1: dev-dep non-transitivity ---"
+
+_check_not_contains() {
+    # Usage: _check_not_contains <unexpected-crate> <input-file-path>
+    local unexpected="$1" input_path="$2"
+    ! affected_crates "$input_path" | grep -qx "$unexpected"
+}
+
+_check_occt_seed_not_ALL() {
+    local out
+    out="$(affected_crates crates/reify-kernel-occt/src/lib.rs)"
+    [ "$out" != "ALL" ]
+}
+assert "OCCT-seed closure is NOT the ALL sentinel" _check_occt_seed_not_ALL
+
+assert "OCCT-seed closure does NOT contain reify-eval-fea-tests (dev-dep of a dev-dep; its test binary links no OCCT)" \
+    _check_not_contains reify-eval-fea-tests crates/reify-kernel-occt/src/lib.rs
+
+assert "OCCT-seed closure contains reify-kernel-occt (the seed itself)" \
+    _check_contains reify-kernel-occt crates/reify-kernel-occt/src/lib.rs
+
+assert "OCCT-seed closure contains reify-eval (direct dev-dependent whose own tests compile OCCT)" \
+    _check_contains reify-eval crates/reify-kernel-occt/src/lib.rs
+
+# ---------------------------------------------------------------------------
+# Amendment (code-review follow-up, task 4938; unified by task 5124): drift
+# guard between the two callers of the shared compile-closure model.
+#
+# _reverse_closure (scripts/affected-crates-lib.sh) and occt_touching_set
+# (scripts/occt-scope-lib.sh) both delegate to the single shared
+# `_reify_compile_closure` helper (scripts/occt-scope-lib.sh) for the
+# adj_normal/adj_dev + normal_closure algorithm (the PRD calls this "reused
+# verbatim and parameterized" — docs/prds/verify-scope-contract.md §3),
+# rather than each carrying its own copy. This equality check remains as a
+# regression guard: it fails loudly if either wrapper's seed handling, or
+# the shared helper itself, ever regresses.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Drift guard: affected_crates(occt-seed) == occt_touching_set ---"
+
+_check_occt_seed_matches_touching_set() {
+    local from_affected from_occt
+    from_affected="$(affected_crates crates/reify-kernel-occt/src/lib.rs | sort -u)"
+    from_occt="$(occt_touching_set | sort -u)"
+    [ "$from_affected" = "$from_occt" ]
+}
+assert "affected_crates(occt-seed) equals occt_touching_set (both delegate to the shared helper)" \
+    _check_occt_seed_matches_touching_set
+
+# ---------------------------------------------------------------------------
+# Task 5124: direct exercise of the extracted shared helper.
+#
+# _reify_compile_closure (scripts/occt-scope-lib.sh) is the single
+# implementation of the adj_normal/adj_dev + normal_closure model that both
+# occt_touching_set and _reverse_closure delegate to. This calls it directly
+# (bypassing both wrappers) to guard against a helper that silently returns
+# nothing — a regression the drift-guard assert above would miss if both
+# wrappers happened to be broken identically.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 5124: _reify_compile_closure direct exercise ---"
+
+_check_compile_closure_matches_occt() {
+    local from_helper from_occt
+    from_helper="$(cargo metadata --format-version 1 2>/dev/null | _reify_compile_closure reify-kernel-occt | sort -u)"
+    from_occt="$(occt_touching_set | sort -u)"
+    [ "$from_helper" = "$from_occt" ]
+}
+assert "_reify_compile_closure(reify-kernel-occt) equals occt_touching_set" \
+    _check_compile_closure_matches_occt
+
+_check_compile_closure_contains_seed() {
+    cargo metadata --format-version 1 2>/dev/null | _reify_compile_closure reify-kernel-occt | grep -qx reify-kernel-occt
+}
+assert "_reify_compile_closure(reify-kernel-occt) contains reify-kernel-occt (seed itself)" \
+    _check_compile_closure_contains_seed
+
+# ---------------------------------------------------------------------------
+# Task 4938 Fix #2 composition guard: the tests/infra/* non-crate allowlist
+# (already landed, ab021821fa) must compose with crate accumulation in a
+# mixed diff — a tests/infra/* path contributes no crates but must not force
+# ALL nor prevent a co-changed crate path from narrowing the set normally.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 4938 Fix #2 composition: tests/infra/* + crate path narrows together ---"
+
+_check_mixed_not_ALL() {
+    local out
+    out="$(affected_crates tests/infra/test_cpu_load_governance.sh crates/reify-doc/src/lib.rs)"
+    [ "$out" != "ALL" ]
+}
+assert "mixed tests/infra + crate diff is NOT the ALL sentinel" _check_mixed_not_ALL
+
+_check_mixed_contains_reify_doc() {
+    affected_crates tests/infra/test_cpu_load_governance.sh crates/reify-doc/src/lib.rs | grep -qx reify-doc
+}
+assert "mixed tests/infra + crate diff contains reify-doc" _check_mixed_contains_reify_doc
+
+# ---------------------------------------------------------------------------
+# Amendment (code-review follow-up, task 6277): --locked non-mutation check.
+#
+# --locked's whole purpose is refusing to rewrite Cargo.lock rather than
+# silently updating it (scripts/affected-crates-lib.sh _reverse_closure).
+# Must run against the REAL cargo, so it is placed here — before the
+# cargo-failure stub section below redefines cargo() for the rest of this
+# shell (see that section's own placement comment). This only holds while
+# the repo's Cargo.lock is valid/in-sync, which every closure assertion
+# above already depends on (each needs a real `cargo metadata` to succeed).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Amendment (task 6277): affected_crates does not mutate Cargo.lock ---"
+
+_check_cargo_lock_unchanged() {
+    local before after
+    [ -f "$REPO_ROOT/Cargo.lock" ] || return 1
+    before="$(cat "$REPO_ROOT/Cargo.lock")"
+    affected_crates crates/reify-core/src/lib.rs >/dev/null
+    after="$(cat "$REPO_ROOT/Cargo.lock")"
+    [ "$before" = "$after" ]
+}
+assert "affected_crates leaves Cargo.lock byte-for-byte unchanged" _check_cargo_lock_unchanged
+
+# ---------------------------------------------------------------------------
 # Step 11: C5 metadata-failure fail-wide + C4 global precedes crates in list
 # ---------------------------------------------------------------------------
 echo ""
@@ -125,5 +297,37 @@ assert "cargo metadata failure -> ALL" _check_cargo_fail_all
 
 assert "global anywhere in list -> ALL" \
     test "$(affected_crates crates/reify-cli/src/main.rs Cargo.lock)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# Amendment (code-review follow-up, task 6277): argv coverage for --locked.
+#
+# The C5 cargo-failure->ALL assertion above proves the fallback fires on any
+# cargo error, but it passes identically whether or not --locked is on the
+# invocation — a future revert of the flag would be silently green here.
+# This records the literal argv _reverse_closure hands to cargo so a revert
+# fails loudly and specifically.
+#
+# Placed LAST: like the stub above, cargo() gets redefined in the current
+# shell (assert invokes checkers directly, not in a subshell) and is never
+# unset, so nothing after this point may rely on the real cargo.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Amendment (task 6277): cargo metadata invoked with --locked ---"
+
+_check_cargo_invoked_with_locked() {
+    local argv_file
+    argv_file="$(mktemp "${TMPDIR:-/tmp}/reify-cargo-argv.XXXXXX")" || return 1
+    # shellcheck disable=SC2317  # invoked indirectly, via _reverse_closure
+    cargo() { printf '%s\n' "$*" >"$argv_file"; return 1; }
+    affected_crates crates/reify-core/src/lib.rs >/dev/null
+    local recorded
+    recorded="$(cat "$argv_file" 2>/dev/null)"
+    rm -f "$argv_file"
+    case "$recorded" in
+        metadata*--locked*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+assert "_reverse_closure invokes cargo metadata with --locked" _check_cargo_invoked_with_locked
 
 test_summary

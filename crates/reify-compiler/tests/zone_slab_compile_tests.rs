@@ -3,8 +3,8 @@
 //! RED until step-6 adds `ModifyKind::ZoneSlab` — this file references that
 //! variant directly, causing a compile error until it exists.
 
-use reify_compiler::{CompiledGeometryOp, ModifyKind, GEOMETRY_FUNCTION_NAMES};
 use reify_compiler::geometry_traits_inference::{GeomDim, try_infer_traits_for_function_call};
+use reify_compiler::{CompiledGeometryOp, GEOMETRY_FUNCTION_NAMES, ModifyKind};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// zone_slab must appear in GEOMETRY_FUNCTION_NAMES (which backs is_geometry_function).
@@ -39,7 +39,15 @@ structure S {
         .realizations
         .iter()
         .flat_map(|r| r.operations.iter())
-        .find(|op| matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::ZoneSlab, .. }));
+        .find(|op| {
+            matches!(
+                op,
+                CompiledGeometryOp::Modify {
+                    kind: ModifyKind::ZoneSlab,
+                    ..
+                }
+            )
+        });
 
     assert!(
         zone_op.is_some(),
@@ -52,7 +60,12 @@ structure S {
     );
 
     // Verify the width arg is present.
-    if let Some(CompiledGeometryOp::Modify { kind: ModifyKind::ZoneSlab, args, .. }) = zone_op {
+    if let Some(CompiledGeometryOp::Modify {
+        kind: ModifyKind::ZoneSlab,
+        args,
+        ..
+    }) = zone_op
+    {
         assert!(
             args.iter().any(|(name, _)| name == "width"),
             "ZoneSlab Modify op must carry a \"width\" arg, got: {:?}",

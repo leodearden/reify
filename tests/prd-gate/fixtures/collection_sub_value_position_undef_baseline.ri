@@ -1,0 +1,22 @@
+// γ-verification ADVERSARY baseline fixture — indexed-sub-instantiation.md §7 γ,
+// PRD probe #10 / §6.2 "Collection consumable as ordered list" (assigned to γ).
+// Premise the prover missed: γ's ordered-collection deliverable (`let bodies =
+// idlers` yields the per-instance list with REAL elements) rests on the bare
+// collection reference in value position working today. Verified 2026-07-25 @
+// 94e1631111: `reify check` exits 0; `reify eval` exits 0 with ZERO error
+// diagnostics and prints `Rig.bodies = [undef, undef]` — the value-position
+// substrate EXISTS and its element-undef state is part of the same silent
+// pre-state γ replaces. If this fixture ever errored, γ's §6.4 scope would
+// grow (value-position plumbing, not just realization).
+module collection_sub_value_position_undef_baseline
+
+structure def P {
+    param r : Length = 5mm
+    let body = cylinder(r, 10mm)
+}
+
+structure def Rig {
+    sub ps : List<P>
+    constraint ps.count == 2
+    let bodies = ps
+}

@@ -12,9 +12,9 @@
 //! trait-object param type (preserving the task-1874 pathway).
 
 use reify_compiler::{EntityKind, stdlib_loader};
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::CompiledExprKind;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── step-3: canonical Material struct is present in the stdlib ─────────────
 

@@ -77,6 +77,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
+init_isolated_lane_root test-warm-pool
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PATH-stub infrastructure (reused from test_seed_warm_lane.sh)
 # Used by Block FC to exercise the fail-closed guards of seed-warm-lane.sh
@@ -144,6 +151,99 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/git"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# _PSRC_STUB_DIR — dedicated PATH-stub for run_passset()'s rc-classification
+# coverage (Block PS-RC, task #5885). DELIBERATELY SEPARATE from STUB_DIR
+# above: Blocks FC/SG/PRIV prepend STUB_DIR to PATH to drive the REAL
+# seed-warm-lane.sh, so planting a `cargo`/`cargo-nextest` stub there could
+# silently alter those blocks. Nothing here compiles anything — argv is
+# recorded, output/rc are canned via env knobs — so Block PS-RC's arms run in
+# milliseconds with zero cargo invocations.
+#
+# Split into two directories so a caller can independently control whether
+# `command -v cargo-nextest` succeeds, which run_passset's branch-selection
+# `if` OR-gates against `cargo nextest --version`:
+#   $_PSRC_STUB_DIR          — the `cargo` stub only.
+#   $_PSRC_STUB_DIR_NEXTEST  — a NESTED dir holding a `cargo-nextest` stub,
+#                              kept out of $_PSRC_STUB_DIR itself so a PATH
+#                              can include the former without the latter.
+#                              Arm C (nextest branch) puts BOTH dirs on PATH;
+#                              arm D (cargo-test fallback) puts ONLY
+#                              $_PSRC_STUB_DIR on PATH (plus /usr/bin:/bin,
+#                              excluding ~/.cargo/bin) so `command -v
+#                              cargo-nextest` genuinely fails rather than
+#                              finding either our stub or the host's real
+#                              plugin — the only way to reach the `cargo
+#                              nextest --version` half of the OR-gate that
+#                              REIFY_TEST_PASSSET_NEXTEST=0 controls.
+# Nested under $_PSRC_STUB_DIR (not a second _TMPDIRS entry): the parent's
+# `rm -rf` in cleanup() already reclaims it.
+#
+# Env knobs read by the `cargo` stub:
+#   REIFY_TEST_PASSSET_CALLS    — argv sink (both stubs); default /dev/null.
+#   REIFY_TEST_PASSSET_NEXTEST  — `cargo nextest --version` probe result:
+#                                 "1" (default) → exit 0 (available);
+#                                 anything else → exit 1 (unavailable).
+#   REIFY_TEST_PASSSET_OUT      — path to a file whose contents are cat'd to
+#                                 stdout for a `nextest run` / `test`
+#                                 invocation (the canned fixture).
+#   REIFY_TEST_PASSSET_RC       — exit code for a `nextest run` / `test`
+#                                 invocation; default 0.
+# ─────────────────────────────────────────────────────────────────────────────
+_PSRC_STUB_DIR="$(mktemp -d /tmp/test-warm-pool-psrc-stub-XXXXXX)"
+_TMPDIRS+=("$_PSRC_STUB_DIR")
+
+_PSRC_STUB_DIR_NEXTEST="$_PSRC_STUB_DIR/nextest-plugin"
+mkdir -p "$_PSRC_STUB_DIR_NEXTEST"
+
+_PSRC_CALLS_FILE="$(mktemp /tmp/test-warm-pool-psrc-calls-XXXXXX)"
+_TMPDIRS+=("$_PSRC_CALLS_FILE")
+
+_PSRC_ERRF="$(mktemp /tmp/test-warm-pool-psrc-err-XXXXXX)"
+_TMPDIRS+=("$_PSRC_ERRF")
+
+# cargo stub: record argv; answer `nextest --version` per
+# REIFY_TEST_PASSSET_NEXTEST; for `nextest run …` / `test …`, cat the canned
+# fixture named by REIFY_TEST_PASSSET_OUT (if set) to stdout, then exit
+# REIFY_TEST_PASSSET_RC (default 0). Any other invocation shape is a loud
+# failure rather than a silent pass-through, so a call this stub does not
+# recognize cannot masquerade as a canned result.
+cat > "$_PSRC_STUB_DIR/cargo" << 'PSRC_CARGO_EOF'
+#!/usr/bin/env bash
+echo "cargo $*" >> "${REIFY_TEST_PASSSET_CALLS:-/dev/null}"
+
+if [ "${1:-}" = "nextest" ] && [ "${2:-}" = "--version" ]; then
+    if [ "${REIFY_TEST_PASSSET_NEXTEST:-1}" = "1" ]; then
+        echo "cargo-nextest-stub 0.0.0 (canned)"
+        exit 0
+    fi
+    exit 1
+fi
+
+case "${1:-}" in
+    nextest|test)
+        if [ -n "${REIFY_TEST_PASSSET_OUT:-}" ] && [ -f "${REIFY_TEST_PASSSET_OUT:-}" ]; then
+            cat "${REIFY_TEST_PASSSET_OUT}"
+        fi
+        exit "${REIFY_TEST_PASSSET_RC:-0}"
+        ;;
+esac
+
+echo "cargo-stub (Block PS-RC, #5885): unhandled invocation: $*" >&2
+exit 127
+PSRC_CARGO_EOF
+chmod +x "$_PSRC_STUB_DIR/cargo"
+
+# cargo-nextest stub: argv-recording only, always exit 0. Lives in the nested
+# $_PSRC_STUB_DIR_NEXTEST (see header above) so it can be included/excluded
+# from PATH independently of the cargo stub.
+cat > "$_PSRC_STUB_DIR_NEXTEST/cargo-nextest" << 'PSRC_NEXTEST_EOF'
+#!/usr/bin/env bash
+echo "cargo-nextest $*" >> "${REIFY_TEST_PASSSET_CALLS:-/dev/null}"
+exit 0
+PSRC_NEXTEST_EOF
+chmod +x "$_PSRC_STUB_DIR_NEXTEST/cargo-nextest"
+
 # run_helper — invoke SEED_SCRIPT under stub PATH; capture OUT/ERR_OUT/RC.
 run_helper() {
     local rc=0
@@ -158,6 +258,58 @@ run_helper() {
 }
 
 reset_calls() { > "$CALLS_FILE"; }
+
+# _seed_lane_capture <label> <target_dir> <seed invocation...>
+#   Shared caller-obligation guard for every SEED-MODE (CoW-clone) call site in
+#   this suite (scripts/seed-warm-lane.sh:63-79). Non-empty stdout (with exit
+#   0) is the ONLY signal that a seed-mode invocation certifies <target_dir>
+#   warm-safe to build in; its fail-closed post-condition guards
+#   (inv.9/inv.12/inv.13) legitimately abort with a non-zero exit ONTO the
+#   hazardous half-seeded state (target/ already CoW-cloned, sources already
+#   bulk-stamped) rather than un-doing it themselves. Two obligations follow
+#   for every caller, centralized here rather than copy-pasted per site
+#   (task #5880 amendment; originally landed inline per-site by task #5875
+#   [B13] and task #5880 [B6, B3+B4]):
+#     1. rc + stdout MUST be captured via `|| rc=$?`, never a bare command
+#        substitution assignment: under this file's `set -euo pipefail`, a
+#        bare assignment aborts the ENTIRE SUITE with no PASS/FAIL lines and
+#        no "Results:" tally the instant a guard fires.
+#     2. On refusal, the half-seeded target/ must be discarded rather than
+#        left for downstream code to build on — that would silently inherit
+#        exactly the stale-artifact false green the guard fired to prevent.
+#   Deliberately does NOT redirect the seed invocation's stderr: seed's `err`
+#   diagnostics on a fail-closed abort are the diagnostic payload and must
+#   stay visible in the run log.
+#
+#   Sets in caller scope (fixed names — callers copy these into their own
+#   site-specific variables immediately after the call, same convention
+#   _b13_build_fresh_counts below uses for _B13_FRESH_TOTAL/_B13_DEP_FRESH):
+#     _SEED_CAP_RC  — seed's exit code
+#     _SEED_CAP_OUT — seed's stdout (guaranteed empty on any refusal, by the
+#                     caller-obligation contract itself)
+#   Callers still decide, themselves, what to do on refusal beyond the target
+#   discard performed here (e.g. skip a downstream build and record sentinels
+#   so the affected asserts fail distinctly rather than measuring a
+#   half-seeded/cold-rebuilt lane — see the call sites).
+_seed_lane_capture() {
+    local label="$1"
+    local target_dir="$2"
+    shift 2
+
+    local rc=0
+    local out=""
+    out="$("$@")" || rc=$?
+    _SEED_CAP_RC="$rc"
+    _SEED_CAP_OUT="$out"
+
+    if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+        echo "$label: seed REFUSED to certify the lane warm-safe (rc=$rc, stdout=${out:-<empty>}) — removing the half-seeded target at $target_dir (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        rm -rf "$target_dir" 2>/dev/null || true
+        if [ -d "$target_dir" ]; then
+            echo "$label: WARNING — failed to remove the hazardous half-seeded target at $target_dir; it may still be present for a later step to (mis)measure" >&2
+        fi
+    fi
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Passthrough cp stub — Block PG scaffolding (added by task #4667)
@@ -186,6 +338,24 @@ chmod +x "$PASSTHROUGH_STUB_DIR/cp"
 # ─────────────────────────────────────────────────────────────────────────────
 # Substrate helper functions
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Exercising the substrate-gated layer (Blocks B11/B13 etc.) on a pool host,
+# without sudo/losetup: warm-lane worktrees live ON the XFS pool volume, so
+# pointing TMPDIR at a scratch dir INSIDE the worktree makes rung 2's reflink
+# probe below succeed —
+#
+#   mkdir -p .b11-scratch && TMPDIR="$PWD/.b11-scratch" bash tests/infra/test_warm_lane_pool.sh
+#
+# — and Blocks B11/B13 actually run for real. Under DEFAULT env (no TMPDIR
+# override) both rung 1 and rung 2 fail on a pool host: /tmp is ext4 (no
+# reflink support, so rung 2's default ${TMPDIR:-/tmp} probe fails), and the
+# pool volume's ROOT is not writable from inside a lane's Landlock scope (so
+# an explicit REIFY_WARM_LANE_MOUNT pointed at the volume root would fail
+# rung 1 too). The whole substrate-gated layer then SKIPs ("SKIP: no XFS
+# reflink substrate") and the suite reports an all-green result that proves
+# NOTHING about B11/B13 — this is exactly the discoverability gap that let
+# the B11 fixture bug (reader releasing flock -s before the flip's Step-6 GC
+# ran) live on main undetected by the merge gate. Task #5866.
 
 # detect_substrate() — Substrate acquisition ladder; sets _GATE_DIR on success.
 #   Returns 0 when a reflink-capable directory is found, 1 otherwise.
@@ -397,10 +567,26 @@ _b6_clone_and_refresh() {
     # ── Step 1: CoW-seed sibling from base/target (in-flight snapshot) ────────
     # --fresh-checkout: bulk-stamps sibling sources to 2020-01-01, touches leaf now.
     # base_ws/target may be a symlink; seed receives the path — seed resolves it.
-    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    #
+    # REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1: this fixture builds its base with
+    # REAL cargo, so target/<profile>/.fingerprint/ exists and the clone crosses
+    # inv.13's hazard gate; and B6's in-flight-independence assertion DEPENDS on
+    # warm_dep's sources staying at 2020-01-01 so the dep reports fresh:true
+    # against the ORIGINAL base's artifacts — i.e. this arm exercises the D5
+    # accept path deliberately. Why the knob is the accurate annotation for such
+    # a site (a deliberate ACCEPT, not a workaround): PRD §9.5 inv.13, which
+    # names this site. (Not git-init + --base-commit HEAD: see the note at the
+    # B3+B4 seed site for why re-ordering the commit would risk B7's own
+    # invariant.)
+    # rc/stdout capture + refusal cleanup: see _seed_lane_capture (~line 168).
+    _seed_lane_capture "B6" "$sibling_ws/target" \
+        env REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+            RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
         bash "$SEED_SCRIPT" "$base_ws/target" "$sibling_ws" \
             --fresh-checkout \
-            --touch "$sibling_ws/warm_leaf/src/lib.rs" >/dev/null
+            --touch "$sibling_ws/warm_leaf/src/lib.rs"
+    _B6_SEED_RC="$_SEED_CAP_RC"
+    _B6_SEED_OUT="$_SEED_CAP_OUT"
 
     # ── Step 2: Normalize lane_ws tree clean (required by provenance guard) ───
     # git checkout -- . resets tracked files; git clean -xfd -e target removes
@@ -451,19 +637,24 @@ _b7_init_git_lane() {
 #
 # Builds a warm at-head base (symlink-gen, gen.1) from a synth workspace on the
 # substrate, then exercises torn-base coherence by running a concurrent
-# cp -a --reflink=always clone of the resolved gen.1 dir during a generation flip:
+# CoW clone of the resolved gen.1 dir during a generation flip:
 #
 #   1. Build synth workspace in $ws_root/lane (cargo cold-build on substrate).
 #   2. git-init the lane (committed, no target/) so the provenance guard passes.
 #   3. First refresh: base.gen.1 created, $ws_root/base → base.gen.1 symlink.
 #   4. Resolve $ws_root/base → concrete gen.1 path.
-#   5. Background reader: takes flock -s on gen.1.lock (D8 seam; holds dir-entry
-#      refcount) AND runs cp -a --reflink=always gen.1_dir → clone/target.
+#   5. _spawn_pinning_reader: takes flock -s on gen.1.lock (D8 seam; holds
+#      dir-entry refcount), clones gen.1_dir → clone/target, signals the
+#      clone-done marker, then HOLDS flock -s until explicitly killed — the
+#      lock's lifetime is the consumer's, not the copy's (task #5866; see
+#      step 9).
 #   6. Records _B11_DF_BEFORE_AVAIL (df --output=avail on substrate, MiB).
 #   7. Flip: second refresh → base.gen.2, symlink re-pointed; GC attempt deferred
-#      (reader holds flock -s → flock -n -x fails → rm skipped).
+#      (reader still holds flock -s → flock -n -x fails → rm skipped).
 #   8. Records _B11_DF_AFTER_AVAIL.
-#   9. Joins the reader (flock -s released, clone complete).
+#   9. Waits for the clone-done marker (walk genuinely complete), then
+#      kill+wait tears the reader down, releasing flock -s so the post-drain
+#      refresh can reap gen.1.
 #
 # Sets in the caller's scope:
 #   _B11_CLONE_DIR        — parent dir of the concurrent clone ($ws_root/clone)
@@ -505,25 +696,36 @@ _b11_concurrent_clone_during_flip() {
     local _b11_gen1
     _b11_gen1="$(readlink "$_b11_base")"
     local _b11_gen1_lock="${_b11_gen1}.lock"
-    touch "$_b11_gen1_lock" 2>/dev/null || true
+    # _spawn_pinning_reader touches lock_file itself; no need to duplicate it here.
 
-    # Step 5: background reader — holds flock -s on gen.1.lock AND runs
-    # cp -a --reflink=always gen.1_dir → clone/target concurrently.
-    # The flock is held for the entire duration of the cp walk (D8 seam: consumer
-    # holds flock -s to signal "dir entry must remain live during the walk").
+    # Step 5: _spawn_pinning_reader — holds flock -s on gen.1.lock across the
+    # ENTIRE operation below (clone + flip + teardown), not just the cp -a walk.
+    #
+    # The reader signals copy completion via the clone-done marker (step 9
+    # waits on it) but DELIBERATELY keeps flock -s held until explicitly
+    # killed. This fixture's reader used to release flock -s the instant its
+    # cp -a finished; on a reflink substrate that CoW copy (~120ms measured)
+    # completes well before the flip's Step-6 GC sweep runs (~490ms measured
+    # for the whole flip, refresh-warm-base.sh) — so the reader was always
+    # gone by the time GC ran, GC correctly saw no active reader, and reaped
+    # gen.1 out from under this test (task #5866). _wait_for_marker on the
+    # ready marker only proves the lock was ACQUIRED, never that it is still
+    # HELD later — the walk's duration is exactly what determines whether
+    # the reader is still gone or still holding by the time GC fires.
     local _b11_clone_dir="$ws_root/clone"
     local _b11_ready="${_b11_gen1}.ready-marker"
+    local _b11_clone_done="${_b11_gen1}.clone-done"
     mkdir -p "$_b11_clone_dir"
-    (
-        flock -s 9
-        touch "$_b11_ready"  # signal READY after acquiring flock -s (#4847)
-        cp -a --reflink=always "$_b11_gen1" "$_b11_clone_dir/target"
-    ) 9>"$_b11_gen1_lock" &
-    local _b11_reader_pid=$!
+    # hold_s left as "" (falls through to the helper's default); reflink_mode
+    # is pinned to "always" — B11 runs only once detect_substrate/
+    # detect_private_substrate have confirmed a reflink-capable mount, so a
+    # clone that silently degraded to a full byte copy here would be a real
+    # substrate regression, not something to paper over with =auto (#5866).
+    _spawn_pinning_reader "$_b11_gen1_lock" "$_b11_ready" "$_b11_clone_done" \
+        "$_b11_gen1" "$_b11_clone_dir/target" "" always
+    local _b11_reader_pid="$_PINNING_READER_PID"
     # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
-    # B11 only requires the reader to HOLD flock -s during the flip; the cp -a walk's duration is
-    # irrelevant to the GC-defer invariant (GC defers when flock -n -x fails, not when cp finishes).
-    _wait_for_reader_lock "$_b11_ready" 30
+    _wait_for_marker "$_b11_ready" 30
 
     # Step 6: record df --output=avail before the flip (MiB)
     # Measured on ws_root (the block's actual workspace dir) rather than the
@@ -543,7 +745,14 @@ _b11_concurrent_clone_during_flip() {
     _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
-    # Step 9: join the reader (clone complete, flock -s released)
+    # Step 9: wait for the clone-done marker — a causal guarantee the cp -a
+    # walk actually completed (technique R), not just that it started, so
+    # the coherence diff never compares a partial tree — then tear the
+    # reader down (kill+wait), releasing flock -s so the post-drain refresh
+    # can reap gen.1. Generous anti-hang deadline (technique T); measured
+    # slack is large (copy ~120ms vs. the flip alone ~490ms).
+    _wait_for_marker "$_b11_clone_done" 300
+    kill "$_b11_reader_pid" 2>/dev/null || true
     wait "$_b11_reader_pid" 2>/dev/null || true
 
     # Set output variables
@@ -564,9 +773,15 @@ _b11_concurrent_clone_during_flip() {
 #      build to populate base_ws/target, first refresh → ws_root/base (symlink-gen).
 #   2. git-init the advancing lane (ws_root/base_ws, committed at mtime-2020-01-01
 #      state via _b7_init_git_lane after seeding) so the provenance guard passes.
-#   3. Create a staled lane in ws_root/stale_lane: copy sources from base_ws,
-#      then apply a non-trivial delta (one new fn in warm_leaf); the lane's target/
-#      is pinned far behind head by CoW-seeding from a stale cold build.
+#   3. Create a staled lane in ws_root/stale_lane (cloned from base_ws, so it
+#      shares git history with _b13_base_head): regress warm_dep to a single fn
+#      and cold-build (target/ now holds artifacts for OLD dep code), restore
+#      the at-head dep from git, then apply a non-trivial delta (one new fn in
+#      warm_leaf) and commit on top of the clone. Reset-in-place ends up
+#      near-cold because both the dep-restore and the leaf-delta land AFTER
+#      the stale build — their mtimes out-date its recorded fingerprints, and
+#      a clean committed tree means control's `git checkout -- .` cannot undo
+#      that (it only preserves; it never re-stales).
 #
 # Control arm (reset-in-place):
 #   4. git checkout -- . && git clean -xfd -e target in stale_lane (resets source
@@ -575,14 +790,62 @@ _b11_concurrent_clone_during_flip() {
 #
 # Treatment arm (re-seed from at-head base):
 #   6. Resolve ws_root/base symlink → concrete .gen.N path.
-#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path).
+#   7. Call seed-warm-lane.sh --fresh-checkout <gen_dir> <stale_lane> (D10 path;
+#      deliberately NO --touch — the leaf delta is already git-diff-visible
+#      from the cloned history, so this exercises _touch_git_delta's
+#      base-commit resolution directly instead of an explicit touch).
 #   8. First build → _B13_TREAT_FRESH + _B13_TREAT_WALL_MS.
 #
 # Sets in caller scope:
-#   _B13_CTRL_FRESH    — fresh compiler-artifact count for the control build
-#   _B13_TREAT_FRESH   — fresh compiler-artifact count for the treatment build
-#   _B13_CTRL_WALL_MS  — build wall-time for the control (ms)
-#   _B13_TREAT_WALL_MS — build wall-time for the treatment (ms)
+#   _B13_CTRL_FRESH     — fresh compiler-artifact count for the control build
+#   _B13_TREAT_FRESH    — fresh compiler-artifact count for the treatment build
+#   _B13_CTRL_WALL_MS   — build wall-time for the control (ms)
+#   _B13_TREAT_WALL_MS  — build wall-time for the treatment (ms)
+#   _B13_SEED_RC        — exit code of the treatment seed-warm-lane.sh invocation
+#   _B13_SEED_OUT       — stdout of the treatment seed-warm-lane.sh invocation
+#                         (the caller-obligation contract: non-empty == warm-safe)
+#   _B13_LEAF_MTIME     — post-seed mtime (epoch secs) of warm_leaf/src/lib.rs
+#   _B13_DEP_MTIME      — post-seed mtime (epoch secs) of warm_dep/src/lib.rs
+#   _B13_STALE_EPOCH    — epoch secs for the 2020-01-01 bulk-stamp (computed,
+#                         TZ-robust; never the hardcoded 1577836800)
+#   _B13_CTRL_DEP_FRESH  — tri-state "true"/"false"/"" for the control build's
+#                          warm_dep unit freshness ("" when no warm_dep
+#                          artifact line exists at all, e.g. the build failed)
+#   _B13_TREAT_DEP_FRESH — tri-state "true"/"false"/"" for the treatment build's
+#                          warm_dep unit freshness (also "" when the seed
+#                          refused to certify and no treatment build ran)
+
+# _b13_build_fresh_counts(lane_dir, json_out_path) — run `cargo build
+# --message-format=json` on lane_dir's workspace (same env as every other
+# fresh-unit measurement in this file: CARGO_INCREMENTAL=0 RUSTC_WRAPPER=""
+# RUSTFLAGS=""), keep the compiler-artifact lines at json_out_path (callers
+# place this under $ws_root so the suite's _TMPDIRS cleanup reclaims it), and
+# set in caller scope:
+#   _B13_FRESH_TOTAL — count of compiler-artifact lines with "fresh":true
+#   _B13_DEP_FRESH   — tri-state "true"/"false"/"" (empty when no warm_dep
+#                      artifact line exists at all — e.g. the build failed
+#                      outright): NOT a 0/1 collapse, so a build that never
+#                      reports on warm_dep cannot silently read the same as
+#                      one that legitimately reports fresh:false. Mirrors B3's
+#                      tri-state idiom (_B3_DEP_FRESH, ~line 2056).
+# Used by BOTH the control and treatment arms so the two builds are measured
+# identically; callers copy these two outputs into their own arm-specific
+# _B13_*_FRESH / _B13_*_DEP_FRESH variables immediately after the call.
+_b13_build_fresh_counts() {
+    local lane_dir="$1"
+    local json_out="$2"
+
+    CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$lane_dir/Cargo.toml" \
+            --message-format=json 2>/dev/null \
+        | grep '"reason":"compiler-artifact"' > "$json_out" || true
+
+    _B13_FRESH_TOTAL="$(grep -c '"fresh":true' "$json_out" || true)"
+
+    _B13_DEP_FRESH="$(grep '"name":"warm_dep"' "$json_out" | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+}
+
 _b13_reseed_vs_resetinplace() {
     local ws_root="$1"
     local _b13_base_ws="$ws_root/base_ws"
@@ -597,8 +860,16 @@ _b13_reseed_vs_resetinplace() {
         cargo build --manifest-path "$_b13_base_ws/Cargo.toml" >/dev/null 2>&1
 
     # Record base provenance sidecar (RUSTFLAGS guard for seed)
+    # rc captured via `|| rc=$?` (record-base mode has no stdout-emptiness
+    # caller obligation like seed mode — the sidecar path this prints is
+    # discarded here, unused — but a bare failing command is still a plain
+    # simple command under this file's `set -euo pipefail`, so an unguarded
+    # non-zero exit here would abort the whole suite exactly like the
+    # seed-mode call sites; task #5880 amendment).
+    _B13_RECORD_BASE_RC=0
     RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-        bash "$SEED_SCRIPT" --record-base "$_b13_base_ws/target" >/dev/null
+        bash "$SEED_SCRIPT" --record-base "$_b13_base_ws/target" >/dev/null \
+            || _B13_RECORD_BASE_RC=$?
 
     # git-init base_ws at the mtime-2020-01-01 state so provenance guard passes
     _b7_init_git_lane "$_b13_base_ws"
@@ -614,34 +885,54 @@ _b13_reseed_vs_resetinplace() {
     local _b13_gen
     _b13_gen="$(readlink "$_b13_base")"
 
-    # Step 2: create the staled lane — copy sources from base_ws, add a delta,
-    # then CoW-seed from base_ws/target (same build artifacts as gen.1, "at head")
-    # and STALE the target by rebuilding with one extra fn (simulates drift).
-    mkdir -p "$_b13_stale_lane"
-    cp "$_b13_base_ws/Cargo.toml" "$_b13_stale_lane/Cargo.toml"
-    cp "$_b13_base_ws/Cargo.lock" "$_b13_stale_lane/Cargo.lock" 2>/dev/null || true
-    cp -a "$_b13_base_ws/warm_dep" "$_b13_stale_lane/"
-    cp -a "$_b13_base_ws/warm_leaf" "$_b13_stale_lane/"
+    # Step 2: create the staled lane by CLONING the already-committed base
+    # workspace, rather than an independent copy + standalone `git init`. The
+    # lane needs GIT HISTORY that actually contains _b13_base_head: seed's
+    # `_touch_git_delta` runs `git -C "$LANE_DIR" diff --name-only "$sha"`,
+    # which fails closed (exit 128, "fatal: bad object") when `$sha` is not
+    # reachable in the LANE's own repo — an independently `git init`-ed lane
+    # never shares history with base_ws, no matter how the sha reaches it
+    # (`.basecommit` or `--base-commit`). `--no-hardlinks` keeps the two object
+    # stores independent so teardown order under ws_root cannot matter.
+    # Confirmed properties: carries the committed Cargo.lock (base_ws is
+    # committed after its own cold build, by _b7_init_git_lane above); never
+    # carries target/ (untracked, excluded by _b7_init_git_lane's ':!target'
+    # pathspec); lands at now-mtimes (irrelevant — seed's --fresh-checkout
+    # bulk-stamp and this arm's own commit below are what set the mtimes that
+    # matter).
+    git clone --no-hardlinks --quiet "$_b13_base_ws" "$_b13_stale_lane"
 
-    # Apply the "staling" delta to the lane's source (extra fn in warm_dep so the
-    # stale target/ is behind head by a non-trivial compilation unit)
-    local _b13_stale_fn_count="${REIFY_WARM_LANE_GATE_DEP_FNS:-500}"
-    printf '\npub fn stale_delta_fn() -> u64 { %d }\n' \
-        "$(( _b13_stale_fn_count + 1 ))" >> "$_b13_stale_lane/warm_dep/src/lib.rs"
-
-    # Cold-build the stale lane (produces stale artifacts in stale_lane/target)
-    echo "B13: cold build for stale lane..." >&2
+    # Stale the target from a source state genuinely BEHIND head (not ahead of
+    # it): regress the heavy dep to a single fn and cold-build — target/ now
+    # holds artifacts for OLD dep code, and this is CHEAPER than building the
+    # full dep_fns count. warm_leaf's only call is to fn_1 (gen_synth_workspace),
+    # which the regressed dep still provides, so the build is valid.
+    printf 'pub fn fn_1() -> u64 { 1 }\n' > "$_b13_stale_lane/warm_dep/src/lib.rs"
+    echo "B13: cold build for stale lane (regressed dep)..." >&2
     CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
         cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" >/dev/null 2>&1
 
-    # git-init the stale lane so reset-in-place (git checkout -- .) is faithful.
-    # Commit after the cold build so the leaf sources are at current mtime.
-    git -C "$_b13_stale_lane" init -q
-    git -C "$_b13_stale_lane" add -- . ':!target'
+    # Restore the at-head dep from git: content differs from the index (the
+    # regression above), so checkout REWRITES the file — its mtime becomes now,
+    # strictly newer than the stale build's just-recorded fingerprint. This is
+    # what makes reset-in-place near-cold below: after the commit two lines
+    # down, the tree is clean, so control's `git checkout -- .` is a no-op that
+    # PRESERVES this mtime rather than re-staling it.
+    git -C "$_b13_stale_lane" checkout -- warm_dep/src/lib.rs
+
+    # Apply the head-ward delta to the LEAF (matches Setup-3 above) and commit
+    # on top of the cloned base commit. warm_dep is already clean (the restore
+    # above made it match the index), so this commit's -a picks up only the
+    # leaf. Committing it here (rather than relying on an explicit --touch at
+    # the treatment call below) means `git diff --name-only $_b13_base_head`
+    # inside the lane already lists this path, so seed's _touch_git_delta
+    # touches it on its own — the leaf-mtime assertion below then pins
+    # base-commit resolution itself, not a trivially-satisfied explicit touch.
+    printf '\npub fn delta_fn() -> u64 { 42 }\n' >> "$_b13_stale_lane/warm_leaf/src/lib.rs"
     git -C "$_b13_stale_lane" \
         -c user.email="warm-lane-test@localhost" \
         -c user.name="Warm Lane Test" \
-        commit -q -m "initial: B13 staled lane"
+        commit -qam "stale: B13 staled lane (head-ward delta in warm_leaf)"
 
     # ── CONTROL: reset-in-place rebuild ───────────────────────────────────────
     # Reset source to committed state; stale target/ preserved (-e target).
@@ -652,13 +943,9 @@ _b13_reseed_vs_resetinplace() {
         && git clean -xfd -e target -q 2>/dev/null) || true
     local _b13_ctrl_t0
     _b13_ctrl_t0="$(date +%s%3N)"
-    _B13_CTRL_FRESH="$(
-        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
-                --message-format=json 2>/dev/null \
-        | grep '"reason":"compiler-artifact"' \
-        | grep -c '"fresh":true' || true
-    )"
+    _b13_build_fresh_counts "$_b13_stale_lane" "$ws_root/b13-ctrl-fresh.json"
+    _B13_CTRL_FRESH="$_B13_FRESH_TOTAL"
+    _B13_CTRL_DEP_FRESH="$_B13_DEP_FRESH"
     _B13_CTRL_WALL_MS=$(( $(date +%s%3N) - _b13_ctrl_t0 ))
 
     # ── TREATMENT: re-seed from at-head base ──────────────────────────────────
@@ -667,33 +954,100 @@ _b13_reseed_vs_resetinplace() {
     # Remove the stale lane/target first so seed's clobber guard passes.
     echo "B13: treatment — re-seed from at-head base..." >&2
     rm -rf "$_b13_stale_lane/target" 2>/dev/null || true
-    RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    # rc/stdout capture + refusal cleanup: see _seed_lane_capture (~line 168).
+    #
+    # No --touch here (deliberately): the leaf delta is already committed on
+    # top of the cloned base commit (see the commit above), so it is already
+    # listed by `git diff --name-only $_b13_base_head` inside the lane. An
+    # explicit --touch would touch that same path unconditionally, BEFORE base
+    # resolution even runs — masking a base-commit-resolution regression
+    # behind a leaf mtime that would look fine regardless. Leaving it out
+    # makes the leaf-mtime assertion below a genuine pin on
+    # _touch_git_delta's git-diff resolution. This weakens no guard: PRD
+    # §9.5 inv.13 (_assert_delta_touch_base_substantiated) already keys only
+    # on base-commit resolution, not on the explicit --touch list.
+    _seed_lane_capture "B13" "$_b13_stale_lane/target" \
+        env RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
         bash "$SEED_SCRIPT" "$_b13_gen" "$_b13_stale_lane" \
-            --fresh-checkout \
-            --touch "$_b13_stale_lane/warm_leaf/src/lib.rs" >/dev/null
-    local _b13_treat_t0
-    _b13_treat_t0="$(date +%s%3N)"
-    _B13_TREAT_FRESH="$(
-        CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-            cargo build --manifest-path "$_b13_stale_lane/Cargo.toml" \
-                --message-format=json 2>/dev/null \
-        | grep '"reason":"compiler-artifact"' \
-        | grep -c '"fresh":true' || true
-    )"
-    _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+            --fresh-checkout
+    _B13_SEED_RC="$_SEED_CAP_RC"
+    _B13_SEED_OUT="$_SEED_CAP_OUT"
+
+    # TZ-robust stale-bulk-stamp epoch (mirrors seed's own
+    # _assert_no_stale_delta_stamp idiom, scripts/seed-warm-lane.sh:455) —
+    # never the hardcoded 1577836800, which is only correct under TZ=UTC.
+    _B13_STALE_EPOCH="$(date -d '2020-01-01T00:00:00' +%s)"
+
+    # Honour the caller obligation: an empty stdout (or non-zero rc) means the
+    # seed refused to certify the lane warm-safe, and it aborted ONTO the
+    # hazardous state (CoW clone already in place, sources already bulk-stamped
+    # to 2020-01-01). Building here would inherit exactly the stale-artifact
+    # false green the guard fired to prevent, so skip the build entirely and
+    # record a sentinel so the warmth comparison fails loudly too.
+    if [ "$_B13_SEED_RC" -eq 0 ] && [ -n "$_B13_SEED_OUT" ]; then
+        # Delta-touch set: pin WHAT the re-seed actually touched, immediately
+        # after it returns and before the build can observe/alter anything.
+        # The head-ward leaf must be newer than the 2020 bulk stamp — and,
+        # since no --touch is passed for it (see the call above), that can
+        # only come from _touch_git_delta's git-diff resolution, making this
+        # a genuine pin on base-commit resolution. The unchanged heavy dep
+        # must still BE at the 2020 bulk stamp — together, the delta-touch
+        # set is exactly the head-ward delta, nothing more.
+        _B13_LEAF_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_leaf/src/lib.rs")"
+        _B13_DEP_MTIME="$(stat -c '%Y' "$_b13_stale_lane/warm_dep/src/lib.rs")"
+
+        local _b13_treat_t0
+        _b13_treat_t0="$(date +%s%3N)"
+        _b13_build_fresh_counts "$_b13_stale_lane" "$ws_root/b13-treat-fresh.json"
+        _B13_TREAT_FRESH="$_B13_FRESH_TOTAL"
+        _B13_TREAT_DEP_FRESH="$_B13_DEP_FRESH"
+        _B13_TREAT_WALL_MS=$(( $(date +%s%3N) - _b13_treat_t0 ))
+    else
+        echo "B13: treatment seed REFUSED to certify the lane (rc=$_B13_SEED_RC, stdout=${_B13_SEED_OUT:-<empty>}) — skipping the treatment build rather than measuring a half-seeded lane (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+        # Sentinels chosen so EVERY treatment-side assertion below FAILs
+        # (rather than accidentally passing, or crashing reading a missing/
+        # stale file): _B13_LEAF_MTIME equal to the stale epoch fails the
+        # "-ne" leaf assertion; _B13_DEP_MTIME not equal to it fails the
+        # "-eq" dep assertion; _B13_TREAT_FRESH=-1 fails the "-gt" aggregate
+        # comparison; _B13_TREAT_DEP_FRESH="" (absent, matching the tri-state
+        # "no build ran" case — never "false") fails the "= true" per-unit
+        # dep-freshness check.
+        _B13_LEAF_MTIME="$_B13_STALE_EPOCH"
+        _B13_DEP_MTIME=-1
+        _B13_TREAT_FRESH=-1
+        _B13_TREAT_DEP_FRESH=""
+        _B13_TREAT_WALL_MS=-1
+    fi
 
     echo "B13: ctrl fresh=${_B13_CTRL_FRESH} wall=${_B13_CTRL_WALL_MS}ms  treat fresh=${_B13_TREAT_FRESH} wall=${_B13_TREAT_WALL_MS}ms" >&2
 }
 
 # _passset_normalize_nextest — pure stdin→stdout normalizer for `cargo nextest run`
-# output.  Selects PASS/FAIL/SKIP lines, strips the volatile bracketed duration
-# column (e.g. `[   0.012s]`), collapses internal whitespace, trims, and sorts →
-# produces a timing-free, byte-stable pass-set string suitable for comparison.
+# output.  Selects PASS/FAIL/SKIP lines, strips BOTH volatile columns nextest
+# emits per result line — the bracketed duration (e.g. `[   0.012s]`) and the
+# `(N/M)` progress counter — collapses internal whitespace, trims, and sorts →
+# produces a byte-stable pass-set string suitable for comparison.
+#
+# The `(N/M)` counter must be stripped too, not just the timing (#5878): it
+# encodes nondeterministic test-COMPLETION order (nextest runs test binaries
+# in parallel), so leaving it in place makes the trailing `sort` order by
+# completion rather than by test identifier — serializing an identical test
+# set into two different byte strings depending on which test happened to
+# finish first.
+#
+# nextest RIGHT-ALIGNS the counter's numerator to the width of the run
+# total, so `(1/2)`, `( 1/12)`, and `(  1/105)` are all the same token with
+# 0/1/2 leading spaces of padding — the strip regex must tolerate that
+# padding. Without it, the strip silently no-ops on padded lines while
+# still succeeding on unpadded ones in the very same run, yielding a
+# partially-normalized, interleaved stream that is harder to diagnose than
+# a clean failure (#5878).
 #
 # Used by run_passset's nextest branch and the PS-NORM always-run regression block.
 _passset_normalize_nextest() {
     grep -E '^\s*(PASS|FAIL|SKIP)' \
     | sed -E 's/\[[^]]*\]//g' \
+    | sed -E 's/\([[:space:]]*[0-9]+\/[0-9]+\)//' \
     | sed -E 's/[[:space:]]+/ /g' \
     | sed -E 's/^ //;s/ $//' \
     | sort
@@ -708,6 +1062,120 @@ _passset_normalize_cargo_test() {
     | sort
 }
 
+# _passset_classify_rc(runner, rc, nresults) — pure classifier: reads cargo's
+# raw exit status (plus the count of normalized result lines already parsed
+# by the caller) and emits exactly ONE classification token on stdout:
+#   ok | test-failures | build-failure | no-tests-run | runner-error
+# Always exits 0 and touches no globals — a plain function of its three
+# positional args, unit-testable with canned integers (Block PS-RC arm A).
+#
+# rc table is EMPIRICALLY PROBED on this host (cargo-nextest 0.9.136), not
+# guessed — see Block PS-RC's header for the full probe writeup:
+#   nextest:    0→ok (or no-tests-run if nresults==0); 4→no-tests-run;
+#               100→test-failures, UNLESS nresults==0: rc=100 with ZERO
+#               parsed result lines means _passset_normalize_nextest parsed
+#               nothing (output-format drift, the #5878 failure shape) —
+#               not an honest test failure — so that combination is
+#               runner-error instead; 101→build-failure; else→runner-error.
+#   cargo-test: libtest returns rc=101 for BOTH a compile failure and an
+#               honest test failure — the exit code alone cannot
+#               distinguish them, so nresults is the disambiguator: rc==0 is
+#               ok (or no-tests-run if nresults==0); rc==101 is test-failures
+#               when nresults>0, else build-failure. Any OTHER nonzero rc
+#               (127 command-not-found, 130/137 signal death, a bad
+#               manifest/argument, …) is runner-error, NOT build-failure —
+#               101 is the only code libtest overloads for a compile
+#               failure, so mislabeling an unrelated nonzero rc as
+#               build-failure would misdirect the reader exactly the way
+#               the #5885 defect did.
+#   unknown runner → runner-error, so a typo in the caller can never
+#               silently read as "ok".
+#
+# Honest limitation: a multi-crate `cargo test` where one crate fails to
+# compile AFTER another crate already emitted its results would classify as
+# test-failures rather than build-failure (nresults>0 masks the later
+# compile error). Not fixed here — cargo stops at the first compile error in
+# practice, so this shape is not reachable today.
+_passset_classify_rc() {
+    local runner="$1" rc="$2" nresults="$3"
+    case "$runner" in
+        nextest)
+            case "$rc" in
+                0)   if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi ;;
+                4)   echo "no-tests-run" ;;
+                100) if [ "$nresults" -eq 0 ]; then echo "runner-error"; else echo "test-failures"; fi ;;
+                101) echo "build-failure" ;;
+                *)   echo "runner-error" ;;
+            esac
+            ;;
+        cargo-test)
+            if [ "$rc" -eq 0 ]; then
+                if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi
+            elif [ "$rc" -eq 101 ]; then
+                if [ "$nresults" -gt 0 ]; then echo "test-failures"; else echo "build-failure"; fi
+            else
+                echo "runner-error"
+            fi
+            ;;
+        *)
+            echo "runner-error"
+            ;;
+    esac
+    return 0
+}
+
+# _passset_report_failure(class, manifest, rc, runner) — loud, greppable
+# diagnostic for a run_passset() classification other than ok/test-failures.
+# Writes a multi-line block to STDERR ONLY (grouped `{ …; } >&2`) and never
+# touches stdout, so a fatal run's diagnostic can never corrupt the pass-set
+# string the caller captures via `$( )` — that byte-stability is what keeps
+# Block PS's comparison semantics unchanged (#5885). Always returns 0; all
+# four fields are interpolated from the arguments, never hardcoded.
+#
+# Line 1 carries the single stable marker token PASSSET-RUN-FAILURE plus
+# machine-readable class=/runner=/rc=/manifest= fields (grep-friendly).
+# The remaining lines exist to stop the #5878-shaped misdiagnosis by name:
+# a reader who sees Block PS's identity assert fail must land here and learn
+# this is a BUILD/RUNNER failure, NOT a warm-lane CoW divergence.
+_passset_report_failure() {
+    local class="$1" manifest="$2" rc="$3" runner="$4"
+    {
+        echo "ERROR: PASSSET-RUN-FAILURE class=$class runner=$runner rc=$rc manifest=$manifest"
+        echo "  run_passset() could not produce a valid pass-set: the cargo run"
+        echo "  did not complete (see class= above)."
+        echo "  This is a BUILD/RUNNER failure, NOT a warm-lane CoW divergence (#5885)."
+    } >&2
+    return 0
+}
+
+# _passset_finish(runner, rc, nresults, manifest) — shared tail of BOTH
+# run_passset() branches (amendment, #5885): classify the run via
+# _passset_classify_rc and, for any class other than ok/test-failures, emit
+# the loud diagnostic via _passset_report_failure. Returns 0 for ok/
+# test-failures (an honest pass or an honest test failure — the caller's
+# already-printed pass-set is the right thing to compare) and 3 otherwise.
+# Before this helper existed the nextest and cargo-test branches carried a
+# byte-for-byte copy of this classify→report→return dispatch; extracting it
+# keeps the two branches from drifting out of sync by hand.
+#
+# Caller contract: the pass-set MUST already be printf'd to stdout BEFORE
+# calling this — _passset_finish itself writes nothing to stdout (only
+# _passset_report_failure's stderr diagnostic, and only on the fatal path),
+# so that ordering is what keeps a caller's captured `$( )` pass-set string
+# byte-stable even when the run turns out to be unusable.
+_passset_finish() {
+    local runner="$1" rc="$2" nresults="$3" manifest="$4"
+    local class
+    class="$(_passset_classify_rc "$runner" "$rc" "$nresults")"
+    case "$class" in
+        ok|test-failures) return 0 ;;
+        *)
+            _passset_report_failure "$class" "$manifest" "$rc" "$runner"
+            return 3
+            ;;
+    esac
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
@@ -715,49 +1183,89 @@ _passset_normalize_cargo_test() {
 #
 # Normalization:
 #   - nextest branch: PASS/FAIL/SKIP lines → _passset_normalize_nextest (strips
-#     the volatile `[...]` timing column → byte-stable across independent builds).
-#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free)
-#     → grep + sort only (no timing column to strip).
+#     the volatile `[...]` timing column AND the `(N/M)` progress counter →
+#     byte-stable across independent builds and parallel-run completion order).
+#   - cargo test branch: `test ... ok/FAILED/ignored` lines (already timing-free
+#     and counter-free) → grep + sort only (nothing volatile to strip).
 # The output format is designed to be byte-comparable between two runs on
 # semantically identical workspaces.
+#
+# rc contract (#5885): cargo's exit status is classified via
+# _passset_classify_rc (dispatched through the shared _passset_finish tail —
+# see its docblock above) and is NOT swallowed. Returns 0 for the ok/
+# test-failures classes (an honest pass or an honest test failure — the
+# caller's pass-set comparison is the right way to observe those). Returns 3
+# for build-failure/no-tests-run/runner-error — a run that did NOT produce a
+# trustworthy pass-set. In both cases the pass-set string is printed to
+# STDOUT FIRST, so a caller capturing via `$( )` sees the exact same bytes
+# it always has; the fatal-path diagnostic (_passset_report_failure) goes to
+# STDERR ONLY and never touches stdout, so it cannot corrupt that captured
+# string. See Block PS-RC (arms C/D) for the wiring coverage and Block PS
+# for the consumer.
 run_passset() {
     local manifest="$1"
     local test_output passed=0 failed=0 ignored=0
+    local rc=0 nresults=0
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
-        # nextest: normalize via _passset_normalize_nextest (strips timing column)
-        test_output="$(
+        # Capture raw output + rc FIRST, normalize SECOND — keeps
+        # _passset_normalize_nextest a pure stdin→stdout filter and makes rc
+        # a plain local, avoiding PIPESTATUS (which cannot escape the `$( )`
+        # that captures the pass-set). `raw` is declared bare on its own
+        # line: `local raw="$(cmd)" || rc=$?` would capture `local`'s exit
+        # status instead of cargo's, silently reintroducing the swallow.
+        local raw
+        raw="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo nextest run \
                     --manifest-path "$manifest" \
-                    --no-fail-fast 2>&1 \
-            | _passset_normalize_nextest \
-            || true
-        )"
+                    --no-fail-fast 2>&1
+        )" || rc=$?
+        test_output="$(printf '%s\n' "$raw" | _passset_normalize_nextest || true)"
         # Count outcomes from the NORMALIZED (timing-free) lines
         passed="$(printf '%s\n' "$test_output" | grep -c '^PASS' || true)"
         failed="$(printf '%s\n' "$test_output" | grep -c '^FAIL' || true)"
+        nresults="$(printf '%s\n' "$test_output" | grep -c '.' || true)"
         printf 'passed=%s failed=%s\n%s\n' "$passed" "$failed" "$test_output"
+        _passset_finish nextest "$rc" "$nresults" "$manifest" || return 3
     else
-        # cargo test: capture test names and the summary line
-        test_output="$(
+        # cargo test: capture raw output + rc FIRST, normalize SECOND — same
+        # split as the nextest branch above, same rationale (avoids
+        # PIPESTATUS; keeps the normalizer a pure filter; `raw` declared
+        # bare so its assignment's own exit status, not `local`'s, reaches
+        # `|| rc=$?`).
+        #
+        # NOTE: no `-- --test-output immediate-fail` here. That flag is
+        # NEXTEST-only; libtest rejects it (`error: Unrecognized option:
+        # 'test-output'`, probed empirically) and aborts before running any
+        # test, so restoring it would make this branch report
+        # build-failure on EVERY run, healthy or not (#5885) — do not add
+        # it back.
+        local raw
+        raw="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo test \
-                    --manifest-path "$manifest" \
-                    -- --test-output immediate-fail 2>&1 \
-            || true
-        )"
+                    --manifest-path "$manifest" 2>&1
+        )" || rc=$?
         # Extract sorted test identifiers via _passset_normalize_cargo_test
         local test_lines
-        test_lines="$(printf '%s\n' "$test_output" \
+        test_lines="$(printf '%s\n' "$raw" \
             | _passset_normalize_cargo_test \
             || true)"
         passed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ok$' || true)"
         failed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. FAILED$' || true)"
         ignored="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ignored$' || true)"
+        # _passset_normalize_cargo_test's regex matches ONLY ok/FAILED/ignored
+        # lines (no other category passes through), so the total result-line
+        # count is exactly their sum — no need for a 4th grep pass over
+        # $test_lines to recompute what these three greps already counted.
+        nresults=$(( passed + failed + ignored ))
         printf 'passed=%s failed=%s ignored=%s\n%s\n' \
             "$passed" "$failed" "$ignored" "$test_lines"
+        # libtest exits 101 for BOTH a compile failure and an honest test
+        # failure — nresults (not rc alone) is what tells them apart.
+        _passset_finish cargo-test "$rc" "$nresults" "$manifest" || return 3
     fi
 }
 
@@ -865,6 +1373,30 @@ _refresh_capture() {
     fi
 }
 
+# _wait_for_marker <marker-file> <deadline-seconds>
+# Generic causal-ordering (technique R) poll: waits for <marker-file> to
+# appear, polling in 0.05s ticks, returning 0 as soon as it exists, or
+# non-zero once the generous deadline elapses (technique T anti-hang guard).
+# The deadline is deliberately generous — it is an anti-hang guard only,
+# never a timing discriminator.
+#
+# Extracted from _wait_for_reader_lock (task #4847), which delegates to this
+# for its flock-acquisition-specific marker; also used directly for a
+# copy-completion handshake (_spawn_pinning_reader, task #5866).
+_wait_for_marker() {
+    local marker="$1"
+    local deadline_s="$2"
+    # Poll every 0.05s; max_ticks = deadline_s × 20
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
 # Causal ordering (technique R) for reader-readiness: polls for the READY
 # marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
@@ -880,17 +1412,74 @@ _refresh_capture() {
 # Used by Block RH (unit test) and the rewired SGSWAP3/SGSWAP4/GC/B11 fixtures.
 # Task: #4847
 _wait_for_reader_lock() {
-    local ready_marker="$1"
-    local deadline_s="$2"
-    # Poll every 0.05s; max_ticks = deadline_s × 20
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$ready_marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
+    _wait_for_marker "$1" "$2"
+}
+
+# _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s] [reflink_mode]
+# Backgrounds a reader that: takes flock -s on <lock_file>, signals
+# <ready_marker>, runs `cp -a --reflink=<reflink_mode> <src> <dst>`, signals
+# <clone_done_marker> — then DELIBERATELY keeps holding flock -s
+# (`exec sleep hold_s`, default 3600) until the caller kills it.
+#
+# hold_s defaults to a large-but-bounded 3600s: a belt-and-braces anti-hang
+# ceiling, not a timing dependency. The operation under test while the lock
+# must stay held (a real cargo build + refresh-warm-base.sh flip, in B11's
+# case) is not bounded by this file's design, so a short fixed window (the
+# previous default of 120) can itself become a source of intermittent
+# flakes on a loaded host — teardown is solely the caller's kill+wait.
+# The subshell's final statement is `exec sleep`, not a bare `sleep`, so
+# the PID returned to the caller is GUARANTEED — independent of bash's
+# undocumented last-command fork-suppression optimization — to be the
+# fd-205 holder: do not append a further command after it, or `kill` would
+# reap an orphaned sleep that keeps flock -s (and thus the lock) held for
+# the rest of the window. The subshell's stdout/stderr are redirected to
+# /dev/null so a reader stranded by a caller bug (teardown skipped) cannot
+# hold a capturing pipe (e.g. run_all.sh) open for up to hold_s.
+#
+# reflink_mode defaults to "auto": this helper is shared between the
+# always-run Block BH (plain /tmp, no reflink support required or expected)
+# and the substrate-gated B11 fixture (a confirmed reflink-capable mount).
+# =auto opportunistically takes the CoW path whenever the underlying FS
+# supports it and falls back to a normal copy elsewhere instead of
+# hard-failing, which is what makes Block BH genuinely FS-agnostic. B11
+# passes "always" explicitly so that a substrate which turns out not to be
+# reflink-capable fails loud, rather than silently degrading to a full byte
+# copy that would still pass every remaining B11 assertion.
+#
+# The shared lock models the D8 dir-entry refcount ("this gen must stay
+# live"): its lifetime is the CONSUMER's, not the copy's. Signalling
+# copy-completion via a separate marker (rather than releasing the lock
+# there) is what lets a caller wait for "clone finished" and "lock
+# released" as two independent, causally-ordered events instead of
+# conflating them — the conflation is exactly today's B11 bug (task #5866).
+#
+# The caller is responsible for teardown: `kill "$_PINNING_READER_PID"
+# 2>/dev/null || true; wait "$_PINNING_READER_PID" 2>/dev/null || true` —
+# the same pattern as Block RH / SGSWAP3 / SGSWAP4 / Block GC.
+#
+# Sets in the caller's scope: _PINNING_READER_PID — the background PID.
+# (A `pid=$(...)` capture is impossible here: command substitution would
+# run the reader in a subshell that exits immediately, dropping the flock.)
+#
+# fd 205: 9, 200 and 201 are already in use elsewhere in this file.
+# Task: #5866
+_spawn_pinning_reader() {
+    local lock_file="$1"
+    local ready_marker="$2"
+    local clone_done_marker="$3"
+    local src="$4"
+    local dst="$5"
+    local hold_s="${6:-3600}"
+    local reflink_mode="${7:-auto}"
+    touch "$lock_file" 2>/dev/null || true
+    (
+        flock -s 205
+        touch "$ready_marker"
+        cp -a --reflink="$reflink_mode" "$src" "$dst"
+        touch "$clone_done_marker"
+        exec sleep "$hold_s"
+    ) 205>"$lock_file" >/dev/null 2>&1 &
+    _PINNING_READER_PID=$!
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -992,8 +1581,19 @@ echo "--- Block FC: fail-closed wiring (B5/B2/preflight) ---"
 # ── FC fixture: a base dir whose .warm-base-meta records a DIFFERENT RUSTFLAGS
 FC_BASE_PARENT="$(mktemp -d /tmp/test-warm-pool-FC-base-XXXXXX)"
 FC_BASE="$FC_BASE_PARENT/target"
-FC_LANE="$(mktemp -d /tmp/test-warm-pool-FC-lane-XXXXXX)"
-_TMPDIRS+=("$FC_BASE_PARENT" "$FC_LANE")
+# FC_LANE/FC_LANE2 are LANE_DIR args passed to run_helper -> SEED_SCRIPT, whose
+# --fresh-checkout acquire-time lane-lock flocks the SIBLING path
+# "${LANE_DIR}.lock" (scripts/seed-warm-lane.sh) -- a path OUTSIDE whatever
+# directory is registered in _TMPDIRS. A bare `mktemp -d /tmp/...` registered
+# directly (as this used to do) leaves that sibling .lock unreachable by
+# `rm -rf` on the registered dir, leaking it into machine-shared /tmp on every
+# green run (task #5628; same shape task #5609 fixed for
+# tests/infra/test_seed_warm_lane.sh). Nesting each lane under a private
+# per-run parent -- and registering ONLY the parent -- makes the sibling lock
+# a child of the registered dir, so `rm -rf "$FC_LANE_ROOT"` reclaims it.
+FC_LANE_ROOT="$(mktemp -d /tmp/test-warm-pool-FC-lane-root-XXXXXX)"
+_TMPDIRS+=("$FC_BASE_PARENT" "$FC_LANE_ROOT")
+FC_LANE="$(mktemp -d "$FC_LANE_ROOT/FC-lane-XXXXXX")"
 mkdir -p "$FC_BASE"
 cat > "$FC_BASE_PARENT/.warm-base-meta" <<'SIDECAR_EOF'
 RUSTFLAGS=original-flags
@@ -1012,8 +1612,10 @@ assert "FC1: cp never invoked on RUSTFLAGS mismatch (guard fires first)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 # ── FC2: B2 — reflink-failure → non-zero exit with actionable message
-FC_LANE2="$(mktemp -d /tmp/test-warm-pool-FC-lane2-XXXXXX)"
-_TMPDIRS+=("$FC_LANE2")
+# Nested under FC_LANE_ROOT (see FC_LANE comment above) — NOT registered as
+# its own _TMPDIRS entry — so its sibling ${FC_LANE2}.lock is reclaimed by
+# the existing `rm -rf "$FC_LANE_ROOT"` rather than leaking into bare /tmp.
+FC_LANE2="$(mktemp -d "$FC_LANE_ROOT/FC-lane2-XXXXXX")"
 reset_calls
 RUSTFLAGS="original-flags" REIFY_TEST_REFLINK_OK=0 \
     run_helper "$FC_BASE" "$FC_LANE2" --fresh-checkout
@@ -1223,29 +1825,144 @@ assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears
     test "$_RH_NEG_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
+# Block BH — pinning-reader hold contract (ALWAYS-RUN)
+#
+# Unit-tests the _spawn_pinning_reader helper (from step-4 onward) that
+# models a consumer holding a shared flock -s across an operation rather
+# than releasing it the instant the operation completes — the seam B11's
+# fixture was missing (task #5866).
+#
+# The generic marker-poll seam this helper is built on (_wait_for_marker,
+# extracted from _wait_for_reader_lock, task #4847) is already unit-tested
+# by Block RH's RH-POS/RH-NEG immediately above, via the delegating
+# _wait_for_reader_lock — Block BH deliberately does NOT retest that same
+# poll contract a second time under the new name (that would be the same
+# code path covered twice under two names). The handshake waits below are
+# plumbing to set up BH1-BH3, guarded so a stuck handshake FAILs by name
+# instead of aborting the suite under set -euo pipefail.
+#
+# _spawn_pinning_reader <lock> <ready> <clone-done> <src> <dst> contract
+# (task #5866 — the actual regression this block exists to guard):
+#   (BH1) the concurrent clone lands and is byte-identical to src.
+#   (BH2, REGRESSION ANCHOR) a foreground flock -n -x probe on the lock
+#     FAILS even though the clone-done marker is already present — proving
+#     the reader still holds flock -s after its copy finished. This is
+#     exactly what today's B11 reader (whose subshell ends at the cp) does
+#     NOT do, and exactly what the flip's Step-6 GC
+#     (scripts/refresh-warm-base.sh:428) tests with the identical
+#     flock -n -x idiom.
+#   (BH3, negative control) after kill+wait teardown, the same probe
+#     SUCCEEDS — proving teardown genuinely releases the lock, so a
+#     post-drain GC still has a free lock to reap against.
+#
+# RED until step-4: _spawn_pinning_reader is undefined → command not found
+# under set -euo pipefail → non-zero exit.
+# Task: #5866
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block BH: pinning-reader hold contract ---"
+
+_BH_PARENT="$(mktemp -d /tmp/test-warm-pool-BH-XXXXXX)"
+_TMPDIRS+=("$_BH_PARENT")
+
+# ── Setup: a tiny 3-file source dir + lock/ready/clone-done paths — plain
+# flock, no reflink required, so this runs on every host (merge gate incl.).
+_BH_SRC="$_BH_PARENT/src"
+mkdir -p "$_BH_SRC"
+echo "one"   > "$_BH_SRC/a"
+echo "two"   > "$_BH_SRC/b"
+echo "three" > "$_BH_SRC/c"
+_BH_DST="$_BH_PARENT/dst"
+_BH_LOCK="$_BH_PARENT/pin.lock"
+_BH_READY="$_BH_PARENT/pin-ready"
+_BH_CLONE_DONE="$_BH_PARENT/pin-clone-done"
+
+# Call the helper (undefined until step-4 → command not found under
+# set -euo pipefail → script aborts → RED).
+_spawn_pinning_reader "$_BH_LOCK" "$_BH_READY" "$_BH_CLONE_DONE" "$_BH_SRC" "$_BH_DST"
+_BH_READER_PID="$_PINNING_READER_PID"
+
+# Guarded handshake waits: capture the rc via `|| var=$?` (as BH-NEG-style
+# calls elsewhere in this file already do) rather than calling
+# _wait_for_marker bare — a bare non-zero return here would trip
+# set -euo pipefail and abort the whole suite mid-block, surfacing as an
+# unattributable abort instead of a named FAIL line in run_all.sh's
+# per-test summary.
+_BH_HS_READY_RC=0
+_wait_for_marker "$_BH_READY" 30 || _BH_HS_READY_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals ready within deadline" \
+    test "$_BH_HS_READY_RC" -eq 0
+_BH_HS_CLONE_RC=0
+_wait_for_marker "$_BH_CLONE_DONE" 30 || _BH_HS_CLONE_RC=$?
+assert "BH-HANDSHAKE: _spawn_pinning_reader signals clone-done within deadline" \
+    test "$_BH_HS_CLONE_RC" -eq 0
+
+# ── BH1: the concurrent clone actually landed and matches src ──
+assert "BH1: _spawn_pinning_reader's clone lands (dst exists)" \
+    test -d "$_BH_DST"
+assert "BH1: _spawn_pinning_reader's clone is byte-identical to src" \
+    diff -r "$_BH_SRC" "$_BH_DST"
+
+# ── BH2 (REGRESSION ANCHOR): reader still holds flock -s AFTER its copy
+# completed. Mirrors RH-POS's probe idiom (flock -n -x on the same lock).
+_BH2_PROBE_RC=0
+flock -n -x "$_BH_LOCK" true 2>/dev/null || _BH2_PROBE_RC=$?
+assert "BH2: flock -n -x probe FAILS after clone-done (reader still holds flock -s post-copy)" \
+    test "$_BH2_PROBE_RC" -ne 0
+
+# ── BH3 (negative control): kill+wait teardown genuinely releases the lock ──
+kill "$_BH_READER_PID" 2>/dev/null || true
+wait "$_BH_READER_PID" 2>/dev/null || true
+_BH3_PROBE_RC=1
+flock -n -x "$_BH_LOCK" true 2>/dev/null && _BH3_PROBE_RC=0 || _BH3_PROBE_RC=$?
+assert "BH3: flock -n -x probe SUCCEEDS after kill+wait teardown (lock released)" \
+    test "$_BH3_PROBE_RC" -eq 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block PS-NORM — Pass-set normalizer volatile-column regression (ALWAYS-RUN)
 #
 # Exercises run_passset()'s nextest-branch normalization WITHOUT invoking cargo.
-# Feeds two canned `cargo nextest run` outputs that are byte-identical EXCEPT
-# for the volatile per-test duration column (the `[   0.0NNs]` token) through
+# Covers BOTH volatile columns real nextest output carries per result line:
+# the bracketed per-test duration (`[   0.0NNs]`) and the `(N/M)` progress
+# counter.
+#
+# Arm 1 (timing): feeds two canned `cargo nextest run` outputs that are
+# byte-identical EXCEPT for the duration column through
 # _passset_normalize_nextest and asserts:
 #   (a) the two normalized outputs are BYTE-IDENTICAL;
 #   (b) their derived PASS/FAIL counts match.
-#
 # Premise (exactness): the inputs differ ONLY inside the bracketed `[...]`
 # token; the normalizer strips every `[...]` token so post-normalization byte
 # streams are identical by construction.
 #
-# Without timing stripping the `[   0.0NNs]` column is retained → strings
-# differ → assertion fails → RED.  _passset_normalize_nextest is defined in
-# impl-passset-timing-strip; until then, calling it under set -euo pipefail
-# aborts the script → RED.
+# Arm 2 (progress counter, #5878): feeds two canned outputs shaped like REAL
+# nextest 0.9.136 output — every line carries BOTH the `[...]` duration AND
+# the `(N/M)` counter, the counter positioned after the bracket, matching a
+# probe of actual nextest output — that differ in the counter-TO-TEST
+# binding (i.e. which test won the completion race), mirroring the genuine
+# nondeterminism of nextest's parallel test execution, and asserts the same
+# (a)/(b) pair.
+# Premise (exactness): the inputs differ ONLY inside the `[...]` and `(N/M)`
+# tokens, both of which the normalizer strips; post-normalization byte
+# streams contain the same token multiset and `sort` is a total order on
+# test identifiers, so byte-identity is a theorem, not a tolerance.
+#
+# Arm 1 without timing-column stripping: the `[   0.0NNs]` column survives →
+# strings differ → assertion (a) fails → RED. (Historically, before
+# _passset_normalize_nextest existed at all, this block instead aborted the
+# whole script under set -euo pipefail with "command not found".)
+#
+# Arm 2 without progress-counter stripping: the `(N/M)` counter survives, its
+# binding to a test varies by completion order, and the trailing `sort` keys
+# off it → strings differ → assertion (a) fails → RED (#5878). The function
+# already exists at this point, so this arm's RED is an assertion failure,
+# not a script abort.
 #
 # Also asserts cargo-test fallback lines (already timing-free) are sort-stable
 # across different emission orderings (regression guard).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block PS-NORM: pass-set normalizer timing-strip regression ---"
+echo "--- Block PS-NORM: pass-set normalizer volatile-column regression ---"
 
 # ── Canned nextest outputs — differ ONLY in the [   0.0NNs] timing column ─────
 _PSNORM_COLD_INPUT="$(cat << 'PSNORM_EOF'
@@ -1273,6 +1990,99 @@ _PSNORM_WARM_PASS="$(printf '%s\n' "$_PSNORM_WARM_NORM" | grep -c 'PASS' || echo
 assert "PS-NORM: derived PASS count matches between cold and warm normalized outputs" \
     test "$_PSNORM_COLD_PASS" -eq "$_PSNORM_WARM_PASS"
 
+# ── Canned nextest outputs (#5878) — nextest right-aligns the `(N/M)` counter's
+# numerator to the width of the run total, so the counter has THREE observed
+# shapes: unpadded at ≤9 total (`(1/2)`), one-space-padded at 10-99 total
+# (`( 1/12)`), and two-space-padded at 100+ total (`(  1/105)`). This arm pins
+# the UNPADDED width — every line carries both the `[...]` duration AND the
+# unpadded `(N/M)` counter (probed against real nextest 0.9.136). Differ in
+# the counter-TO-TEST binding (which test won the completion race), mirroring
+# nextest's genuine parallel-run nondeterminism — not just in counter values.
+# Arm 3 (below) pins the padded widths.
+_PSNORM_CTR_COLD_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.017s] (1/2) warm_leaf tests::leaf_smoke
+  PASS [   0.024s] (2/2) warm_dep tests::dep_smoke
+PSNORM_EOF
+)"
+_PSNORM_CTR_WARM_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.031s] (1/2) warm_dep tests::dep_smoke
+  PASS [   0.052s] (2/2) warm_leaf tests::leaf_smoke
+PSNORM_EOF
+)"
+
+# Normalize through the same helper. Discriminating power: a normalizer
+# that leaves the `(N/M)` counter unstripped keeps a token that encodes
+# nondeterministic test-completion order, so the trailing `sort` keys off
+# it — swapping which test claims which counter slot then yields two
+# different byte streams → assertion (a) fails (#5878). The shipped
+# normalizer strips the counter → GREEN.
+_PSNORM_CTR_COLD_NORM="$(printf '%s\n' "$_PSNORM_CTR_COLD_INPUT" | _passset_normalize_nextest)"
+_PSNORM_CTR_WARM_NORM="$(printf '%s\n' "$_PSNORM_CTR_WARM_INPUT" | _passset_normalize_nextest)"
+
+assert "PS-NORM: nextest normalized output is byte-identical across progress-counter assignment (#5878)" \
+    test "$_PSNORM_CTR_COLD_NORM" = "$_PSNORM_CTR_WARM_NORM"
+
+# ── Derived PASS count must be exactly 2 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
+_PSNORM_CTR_COLD_PASS="$(printf '%s\n' "$_PSNORM_CTR_COLD_NORM" | grep -c 'PASS' || echo 0)"
+_PSNORM_CTR_WARM_PASS="$(printf '%s\n' "$_PSNORM_CTR_WARM_NORM" | grep -c 'PASS' || echo 0)"
+assert "PS-NORM: derived PASS count for progress-counter arm (cold) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_COLD_PASS" -eq 2
+assert "PS-NORM: derived PASS count for progress-counter arm (warm) is exactly 2 (#5878)" \
+    test "$_PSNORM_CTR_WARM_PASS" -eq 2
+
+# ── Canned nextest outputs (#5878) — PADDED progress-counter shapes. nextest
+# right-aligns the `(N/M)` numerator to the width of the run total: a 12-test
+# run pads single-digit numerators with ONE leading space (`( 1/12)`) while
+# double-digit numerators need no padding (`(12/12)`); a 105-test run pads
+# single-digit numerators with TWO leading spaces (`(  1/105)`) while
+# triple-digit numerators need no padding (`(105/105)`) — so a single run's
+# output MIXES padded and unpadded counters. This arm mixes BOTH the
+# one-space (10-99 total) and two-space (100+ total) widths on one fixture
+# pair, differing in the counter-TO-TEST binding as arm 2 does — so all
+# three documented counter widths (arm 2's unpadded plus this arm's two
+# padded widths) are pinned by fixtures.
+_PSNORM_PAD_COLD_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.009s] ( 1/12) warm_leaf tests::leaf_smoke
+  PASS [   0.031s] (12/12) warm_dep tests::dep_smoke
+  PASS [   0.011s] (  1/105) nxprobe2 tests::t001
+  PASS [   0.044s] (105/105) nxprobe2 tests::t105
+PSNORM_EOF
+)"
+_PSNORM_PAD_WARM_INPUT="$(cat << 'PSNORM_EOF'
+  PASS [   0.014s] ( 1/12) warm_dep tests::dep_smoke
+  PASS [   0.052s] (12/12) warm_leaf tests::leaf_smoke
+  PASS [   0.017s] (  1/105) nxprobe2 tests::t105
+  PASS [   0.061s] (105/105) nxprobe2 tests::t001
+PSNORM_EOF
+)"
+
+# Normalize through the same helper. Discriminating power: a counter regex
+# that anchors `(` directly against a digit leaves padded tokens like
+# `( 1/12)` and `(  1/105)` intact while stripping unpadded tokens like
+# `(12/12)` and `(105/105)` on the SAME fixture, producing a
+# partially-normalized, interleaved stream whose sort order flips →
+# assertion (a) fails (#5878). The shipped `[[:space:]]*`-tolerant regex
+# strips every width uniformly → GREEN.
+_PSNORM_PAD_COLD_NORM="$(printf '%s\n' "$_PSNORM_PAD_COLD_INPUT" | _passset_normalize_nextest)"
+_PSNORM_PAD_WARM_NORM="$(printf '%s\n' "$_PSNORM_PAD_WARM_INPUT" | _passset_normalize_nextest)"
+
+assert "PS-NORM: nextest normalized output is byte-identical across PADDED progress-counter assignment (#5878)" \
+    test "$_PSNORM_PAD_COLD_NORM" = "$_PSNORM_PAD_WARM_NORM"
+
+# ── Derived PASS count must be exactly 4 (the preceding byte-identity
+# assertion already proves cold == warm, so cross-comparing the two counts
+# would be tautological; asserting the absolute value instead genuinely
+# discriminates a normalizer that drops or duplicates a result line) ──────
+_PSNORM_PAD_COLD_PASS="$(printf '%s\n' "$_PSNORM_PAD_COLD_NORM" | grep -c 'PASS' || echo 0)"
+_PSNORM_PAD_WARM_PASS="$(printf '%s\n' "$_PSNORM_PAD_WARM_NORM" | grep -c 'PASS' || echo 0)"
+assert "PS-NORM: derived PASS count for padded progress-counter arm (cold) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_COLD_PASS" -eq 4
+assert "PS-NORM: derived PASS count for padded progress-counter arm (warm) is exactly 4 (#5878)" \
+    test "$_PSNORM_PAD_WARM_PASS" -eq 4
+
 # ── Cargo-test fallback regression guard ─────────────────────────────────────
 # Cargo-test `... ok/FAILED/ignored` lines carry no timing column; they are
 # normalized by the cargo branch (grep + sort only, no sed strip).  Assert that
@@ -1284,6 +2094,417 @@ _PSNORM_CT_REV="$(printf 'test b::smoke ... ok\ntest a::smoke ... ok\n' | \
     _passset_normalize_cargo_test)"
 assert "PS-NORM: cargo-test lines normalize stably via _passset_normalize_cargo_test" \
     test "$_PSNORM_CT_FWD" = "$_PSNORM_CT_REV"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block PS-RC — run_passset() rc classification (ALWAYS-RUN, task #5885)
+#
+# Charter: unit + wiring coverage for the rc-classification layer that keeps
+# run_passset() from swallowing cargo's exit status with `|| true`. Nothing
+# in this block invokes a real cargo build — arm A is pure-function table
+# testing, arm B is a diagnostic-emitter contract test, and arms C/D drive
+# run_passset() end-to-end through the _PSRC_STUB_DIR canned cargo (prereq
+# above) — so the whole block runs in milliseconds, always, on every host.
+#
+# Background (#5885): run_passset()'s nextest AND cargo-test branches both
+# discard cargo's exit code via `| _passset_normalize_* || true`. One side
+# failing to build silently empties that side's pass-set, which Block PS's
+# identity assert (`_PS_COLD = _PS_WARM`) misreports as "warm-lane test
+# identifiers == cold control" mismatch — sending the reader hunting a
+# CoW-divergence bug that does not exist. Worse: if BOTH sides fail to
+# build, both emit the identical `passed=0 failed=0` string and the identity
+# assert reports a false GREEN on a workspace that never compiled (arm C4
+# below reproduces this directly).
+#
+# _passset_classify_rc(runner, rc, nresults) is the pure classifier this
+# block exists to pin. Its rc table is EMPIRICALLY PROBED on this host, not
+# guessed:
+#   cargo-nextest 0.9.136:
+#     rc=0   → all tests ran, none failed                    → ok
+#     rc=4   → no tests were run at all                       → no-tests-run
+#     rc=100 → an HONEST test failure (PASS/FAIL lines present) → test-failures,
+#              UNLESS nresults==0 too — rc=100 with ZERO parsed result lines
+#              means the normalizer parsed nothing (output-format drift, the
+#              #5878 shape), not an honest failure, so THAT combination is
+#              runner-error instead (amendment; arm A pins both rows).
+#     rc=101 → a BUILD failure (zero PASS/FAIL/SKIP lines)      → build-failure
+#   cargo test (libtest): rc=101 on BOTH a compile failure AND an honest
+#     test failure — the exit code ALONE cannot distinguish them, which is
+#     why the classifier also takes nresults (the count of parsed
+#     `test … ok/FAILED/ignored` lines): zero → build-failure, nonzero →
+#     test-failures. Any OTHER nonzero rc (127 command-not-found, a signal
+#     death, a bad manifest/argument, …) is runner-error, NOT build-failure —
+#     101 is the only code libtest overloads this way, so routing every
+#     nonzero rc through the same build-failure label would misdiagnose things
+#     that have nothing to do with a compile error (amendment; arm A pins this).
+#
+# Discriminating power: the nextest 100→test-failures row is what stops this
+# guard from firing on an honest test failure (the failure mode the task
+# explicitly warns against); the 101→build-failure row is the misdiagnosis
+# this task exists to fix; the nresults-gated 100 row and the cargo-test
+# non-101→runner-error row (both added in the amendment pass) keep those two
+# same guarantees from leaking into their respective ambiguous edges.
+#
+# RED (arm A): _passset_classify_rc does not exist yet. Every table-row
+# assertion below captures via `"$(_passset_classify_rc … 2>/dev/null ||
+# true)"` — under this file's `set -euo pipefail`, calling an undefined
+# function inside a bare command substitution would abort the WHOLE script
+# (the historical failure mode Block PS-NORM's header already documents);
+# `2>/dev/null || true` instead yields an empty string, so RED here is one
+# clean per-row assertion FAIL, and the suite still runs to its summary line.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PS-RC: run_passset() rc classification (#5885) ---"
+
+# ── Arm A: _passset_classify_rc <runner> <rc> <nresults> truth table ────────
+# nextest rows
+_PSRC_A_NX_OK="$(_passset_classify_rc nextest 0 2 2>/dev/null || true)"
+_PSRC_A_NX_NORESULT_RC0="$(_passset_classify_rc nextest 0 0 2>/dev/null || true)"
+_PSRC_A_NX_NOTESTS="$(_passset_classify_rc nextest 4 0 2>/dev/null || true)"
+_PSRC_A_NX_TESTFAIL="$(_passset_classify_rc nextest 100 2 2>/dev/null || true)"
+_PSRC_A_NX_BUILDFAIL="$(_passset_classify_rc nextest 101 0 2>/dev/null || true)"
+_PSRC_A_NX_RUNNERERR="$(_passset_classify_rc nextest 137 0 2>/dev/null || true)"
+# amendment: rc=100 (nextest's "honest test failure" code) with ZERO parsed
+# result lines is the exact false-green shape #5878 already showed us once —
+# the normalizer parsed nothing, so this is NOT an honest test failure.
+_PSRC_A_NX_TESTFAIL_ZERONRESULTS="$(_passset_classify_rc nextest 100 0 2>/dev/null || true)"
+
+# cargo-test rows
+_PSRC_A_CT_OK="$(_passset_classify_rc cargo-test 0 2 2>/dev/null || true)"
+_PSRC_A_CT_NORESULT_RC0="$(_passset_classify_rc cargo-test 0 0 2>/dev/null || true)"
+_PSRC_A_CT_TESTFAIL="$(_passset_classify_rc cargo-test 101 2 2>/dev/null || true)"
+_PSRC_A_CT_BUILDFAIL="$(_passset_classify_rc cargo-test 101 0 2>/dev/null || true)"
+# amendment: rc=127 (command-not-found) is NOT the ambiguous libtest
+# compile-vs-test code (101) — must not be mislabeled build-failure.
+_PSRC_A_CT_RUNNERERR="$(_passset_classify_rc cargo-test 127 0 2>/dev/null || true)"
+
+# unknown-runner row
+_PSRC_A_UNKNOWN="$(_passset_classify_rc bogus 0 2 2>/dev/null || true)"
+
+assert "PS-RC A: nextest rc=0 nresults=2 → ok" \
+    test "$_PSRC_A_NX_OK" = "ok"
+assert "PS-RC A: nextest rc=0 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_NX_NORESULT_RC0" = "no-tests-run"
+assert "PS-RC A: nextest rc=4 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_NX_NOTESTS" = "no-tests-run"
+assert "PS-RC A: nextest rc=100 nresults=2 → test-failures (NOT a build failure — must not fire on honest test failures)" \
+    test "$_PSRC_A_NX_TESTFAIL" = "test-failures"
+assert "PS-RC A: nextest rc=101 nresults=0 → build-failure (the #5885 defect this task fixes)" \
+    test "$_PSRC_A_NX_BUILDFAIL" = "build-failure"
+assert "PS-RC A: nextest rc=137 nresults=0 → runner-error" \
+    test "$_PSRC_A_NX_RUNNERERR" = "runner-error"
+assert "PS-RC A: nextest rc=100 nresults=0 → runner-error, NOT test-failures (zero parsed results means the normalizer saw nothing — output-format drift/#5878, not an honest test failure)" \
+    test "$_PSRC_A_NX_TESTFAIL_ZERONRESULTS" = "runner-error"
+
+assert "PS-RC A: cargo-test rc=0 nresults=2 → ok" \
+    test "$_PSRC_A_CT_OK" = "ok"
+assert "PS-RC A: cargo-test rc=0 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_CT_NORESULT_RC0" = "no-tests-run"
+assert "PS-RC A: cargo-test rc=101 nresults=2 → test-failures (libtest's rc=101 is ambiguous; nresults disambiguates)" \
+    test "$_PSRC_A_CT_TESTFAIL" = "test-failures"
+assert "PS-RC A: cargo-test rc=101 nresults=0 → build-failure" \
+    test "$_PSRC_A_CT_BUILDFAIL" = "build-failure"
+assert "PS-RC A: cargo-test rc=127 nresults=0 → runner-error, NOT build-failure (rc≠101 is not the ambiguous libtest code)" \
+    test "$_PSRC_A_CT_RUNNERERR" = "runner-error"
+
+assert "PS-RC A: unknown runner → runner-error (a typo can never silently read as ok)" \
+    test "$_PSRC_A_UNKNOWN" = "runner-error"
+
+# ── Arm B: _passset_report_failure <class> <manifest> <rc> <runner> diagnostic
+# contract. Stderr/stdout captured SEPARATELY via the SG3 idiom (:1424):
+# `2>&1 1>/dev/null` inside the `$( )` routes stderr into the capture and
+# discards stdout; `2>/dev/null` does the inverse. This is the byte-stability
+# guard for Block PS — a diagnostic that leaked onto stdout would corrupt the
+# captured pass-set string run_passset's caller compares.
+_PSRC_B_ERR="$(_passset_report_failure build-failure /nonexistent/Cargo.toml 101 nextest 2>&1 1>/dev/null || true)"
+_PSRC_B_OUT="$(_passset_report_failure build-failure /nonexistent/Cargo.toml 101 nextest 2>/dev/null || true)"
+
+assert "PS-RC B: stderr contains the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the class (class=build-failure)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=build-failure"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the rc (rc=101)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "rc=101"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the runner (runner=nextest)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "runner=nextest"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the manifest path (manifest=/nonexistent/Cargo.toml)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "manifest=/nonexistent/Cargo.toml"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr states this is a build/runner failure, NOT a warm-lane CoW divergence (anti-misdiagnosis)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "not a warm-lane cow divergence"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stdout is EMPTY (a diagnostic on stdout would corrupt Block PS's pass-set comparison)" \
+    test -z "$_PSRC_B_OUT"
+
+# Anti-tautology: a second invocation with DIFFERENT class/rc/runner must
+# show those fields tracking the arguments, not a hardcoded string.
+_PSRC_B2_ERR="$(_passset_report_failure runner-error /other/Cargo.toml 137 cargo-test 2>&1 1>/dev/null || true)"
+assert "PS-RC B: second invocation's stderr tracks its OWN class (class=runner-error, not hardcoded)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=runner-error"' _ "$_PSRC_B2_ERR"
+assert "PS-RC B: second invocation's stderr tracks its OWN rc (rc=137, not hardcoded)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "rc=137"' _ "$_PSRC_B2_ERR"
+
+# ── Arm C: end-to-end wiring of run_passset()'s NEXTEST branch, driven by the
+# _PSRC_STUB_DIR canned cargo (prereq above) — no real compilation, ms-scale.
+# Each sub-case temp-env-prefixes a single `run_passset` call (bash exports
+# prefix assignments into the environment for that call AND any subprocess
+# it forks — verified: the stub `cargo` sees them), captures stdout via
+# `$( )`, rc via `|| _RC=$?`, and stderr via a trailing `2>"$_PSRC_ERRF"` on
+# the same call (the _refresh_capture idiom, :1112-1128).
+#
+# C2/C3 are "must NOT fire" controls: honest-test-failure and all-pass are
+# NOT the defect this task fixes, so their assertions already hold under
+# today's unmodified run_passset and stay green start-to-finish — they exist
+# to catch a regression in step-6's rewiring, not to be RED now.
+#
+# RED: today's run_passset swallows the rc, so C1 and C4 (both build-failure
+# scenarios) return 0 and _passset_report_failure is never called — their
+# rc==3 and marker-present assertions FAIL. C4's byte-equality assertion is
+# green FROM THE START, which is the point: it proves the double-build-
+# failure symmetric case ALREADY produces byte-identical pass-sets today —
+# only the new out-of-band rc (also asserted here, and RED) can see it.
+echo ""
+echo "--- Block PS-RC arm C: run_passset() nextest-branch wiring ---"
+
+_PSRC_C1_MANIFEST="/nonexistent/psrc-c1/Cargo.toml"
+_PSRC_C1_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c1-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C1_FIXTURE")
+cat > "$_PSRC_C1_FIXTURE" << 'PSRC_C1_EOF'
+error[E0433]: failed to resolve: use of undeclared crate or module `foo`
+ --> src/lib.rs:3:5
+  |
+3 |     foo::bar();
+  |     ^^^ use of undeclared crate or module `foo`
+
+error: could not compile `warm_leaf` (lib) due to 1 previous error
+PSRC_C1_EOF
+
+# (C1) canned BUILD FAILURE: zero PASS/FAIL/SKIP lines, rc=101.
+_PSRC_C1_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C1_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C1_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C1_RC=$?
+_PSRC_C1_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC C1: build failure (nextest, rc=101, zero result lines) → run_passset returns exactly 3" \
+    test "$_PSRC_C1_RC" -eq 3
+assert "PS-RC C1: stderr carries the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C1_ERR"
+assert "PS-RC C1: stderr names the manifest path passed in" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' _ "$_PSRC_C1_ERR" "$_PSRC_C1_MANIFEST"
+assert "PS-RC C1: stdout keeps the unchanged passed=0 failed=0 shape" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=0 failed=0"' _ "$_PSRC_C1_OUT"
+
+# (C2) canned HONEST TEST FAILURE: real-shaped nextest output, one PASS + one
+# FAIL line, rc=100 — the guard must NOT fire on this.
+_PSRC_C2_MANIFEST="/nonexistent/psrc-c2/Cargo.toml"
+_PSRC_C2_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c2-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C2_FIXTURE")
+cat > "$_PSRC_C2_FIXTURE" << 'PSRC_C2_EOF'
+  PASS [   0.012s] warm_dep tests::dep_smoke
+  FAIL [   0.008s] warm_leaf tests::leaf_smoke
+PSRC_C2_EOF
+
+_PSRC_C2_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C2_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C2_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=100 \
+        run_passset "$_PSRC_C2_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C2_RC=$?
+_PSRC_C2_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC C2: honest test failure (nextest, rc=100) → run_passset returns 0 (guard must NOT fire)" \
+    test "$_PSRC_C2_RC" -eq 0
+assert "PS-RC C2: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C2_ERR"
+assert "PS-RC C2: stdout's first line is exactly passed=1 failed=1" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=1 failed=1"' _ "$_PSRC_C2_OUT"
+
+# (C3) canned ALL PASS: two PASS lines, rc=0.
+_PSRC_C3_MANIFEST="/nonexistent/psrc-c3/Cargo.toml"
+_PSRC_C3_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c3-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C3_FIXTURE")
+cat > "$_PSRC_C3_FIXTURE" << 'PSRC_C3_EOF'
+  PASS [   0.012s] warm_dep tests::dep_smoke
+  PASS [   0.008s] warm_leaf tests::leaf_smoke
+PSRC_C3_EOF
+
+_PSRC_C3_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C3_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C3_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=0 \
+        run_passset "$_PSRC_C3_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C3_RC=$?
+_PSRC_C3_ERR="$(cat "$_PSRC_ERRF")"
+
+# Expected byte-exact output — empirically verified against the REAL
+# _passset_normalize_nextest run against this exact fixture (not hand-
+# guessed): strips the [ ] timing column, squeezes whitespace, sorts.
+# "PASS warm_dep…" sorts before "PASS warm_leaf…" (d < l).
+_PSRC_C3_EXPECTED="$(printf 'passed=2 failed=0\nPASS warm_dep tests::dep_smoke\nPASS warm_leaf tests::leaf_smoke')"
+
+assert "PS-RC C3: all pass (nextest, rc=0) → run_passset returns 0" \
+    test "$_PSRC_C3_RC" -eq 0
+assert "PS-RC C3: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C3_ERR"
+assert "PS-RC C3: stdout is byte-equal to the expected passed=2 failed=0 + sorted pass-set" \
+    test "$_PSRC_C3_OUT" = "$_PSRC_C3_EXPECTED"
+
+# (C4) SYMMETRIC FALSE-GREEN NEGATIVE CONTROL: the C1 build-failure fixture,
+# invoked TWICE under different manifest paths standing in for cold/warm.
+_PSRC_C4_COLD_MANIFEST="/nonexistent/psrc-c4-cold/Cargo.toml"
+_PSRC_C4_WARM_MANIFEST="/nonexistent/psrc-c4-warm/Cargo.toml"
+
+_PSRC_C4_COLD_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C4_COLD_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C4_COLD_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C4_COLD_RC=$?
+
+_PSRC_C4_WARM_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C4_WARM_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C4_WARM_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C4_WARM_RC=$?
+
+assert "PS-RC C4: symmetric false-green — cold/warm build-failure pass-sets are BYTE-EQUAL (Block PS's identity assert alone cannot see this)" \
+    test "$_PSRC_C4_COLD_OUT" = "$_PSRC_C4_WARM_OUT"
+assert "PS-RC C4: cold-side rc is 3 (the out-of-band signal that IS able to see it)" \
+    test "$_PSRC_C4_COLD_RC" -eq 3
+assert "PS-RC C4: warm-side rc is 3 (the out-of-band signal that IS able to see it)" \
+    test "$_PSRC_C4_WARM_RC" -eq 3
+
+# ── Arm D: end-to-end wiring of run_passset()'s CARGO-TEST FALLBACK branch.
+# Forced by PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" — a full REPLACEMENT of
+# PATH (not a prepend), so ~/.cargo/bin (and any other real cargo-nextest
+# location) is excluded outright, PLUS REIFY_TEST_PASSSET_NEXTEST=0 so the
+# stub cargo's `nextest --version` probe also fails. Deliberately NO
+# $_PSRC_STUB_DIR_NEXTEST on this PATH (see the prereq header) — that is
+# what makes `command -v cargo-nextest` genuinely fail rather than finding
+# either stub.
+#
+# NON-VACUITY GUARD FIRST: without proving the fallback branch actually ran,
+# a host that happens to ship cargo-nextest under /usr/bin (this one does
+# not — checked) would silently take the NEXTEST branch instead, and every
+# assertion below would test nothing.
+#
+# RED on D1/D2 (not D3): today's cargo-test branch still passes the
+# nextest-only `-- --test-output immediate-fail` flag (D1) and still
+# swallows the rc (D2's rc/marker checks). D3 (an honest test failure) is a
+# "must NOT fire" control — our canned stub does not simulate the real
+# libtest flag-rejection, so it already holds unmodified and exists to catch
+# a step-8 regression, not to be RED now.
+echo ""
+echo "--- Block PS-RC arm D: run_passset() cargo-test fallback-branch wiring ---"
+
+_PSRC_D2_MANIFEST="/nonexistent/psrc-d2/Cargo.toml"
+_PSRC_D2_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-d2-XXXXXX)"
+_TMPDIRS+=("$_PSRC_D2_FIXTURE")
+cat > "$_PSRC_D2_FIXTURE" << 'PSRC_D2_EOF'
+error[E0433]: failed to resolve: use of undeclared crate or module `bar`
+ --> src/lib.rs:5:5
+  |
+5 |     bar::baz();
+  |     ^^^ use of undeclared crate or module `bar`
+
+error: could not compile `warm_dep` (lib) due to 1 previous error
+PSRC_D2_EOF
+
+> "$_PSRC_CALLS_FILE"
+_PSRC_D2_RC=0
+> "$_PSRC_ERRF"
+_PSRC_D2_OUT="$(
+    PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=0 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_D2_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_D2_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_D2_RC=$?
+_PSRC_D2_ERR="$(cat "$_PSRC_ERRF")"
+_PSRC_D2_CALLS="$(cat "$_PSRC_CALLS_FILE")"
+
+assert "PS-RC D: non-vacuity — the fallback branch actually ran (stub invoked as \`cargo test …\`)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^cargo test "' _ "$_PSRC_D2_CALLS"
+assert "PS-RC D: non-vacuity — the NEXTEST branch did NOT run (no \`cargo nextest run\` recorded)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run"' _ "$_PSRC_D2_CALLS"
+
+# (D1) --test-output is a NEXTEST-only flag; libtest rejects it with
+# `error: Unrecognized option: 'test-output'` (verified empirically on this
+# host), making the fallback branch emit zero result lines UNCONDITIONALLY.
+assert "PS-RC D1: recorded argv carries NO --test-output token (nextest-only flag; libtest rejects it)" \
+    bash -c '! printf "%s\n" "$1" | grep -q -- "--test-output"' _ "$_PSRC_D2_CALLS"
+
+# (D2) canned COMPILE FAILURE: zero `test … ok` lines, rc=101.
+assert "PS-RC D2: compile failure (cargo-test, rc=101, zero result lines) → run_passset returns exactly 3" \
+    test "$_PSRC_D2_RC" -eq 3
+assert "PS-RC D2: stderr carries the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_D2_ERR"
+assert "PS-RC D2: stderr names class=build-failure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=build-failure"' _ "$_PSRC_D2_ERR"
+assert "PS-RC D2: stderr names runner=cargo-test" \
+    bash -c 'printf "%s\n" "$1" | grep -q "runner=cargo-test"' _ "$_PSRC_D2_ERR"
+# amendment: the cargo-test branch's counterpart to C1's stdout-shape check —
+# run_passset()'s docblock claims the pass-set is printed to stdout BEFORE
+# the fatal return on BOTH branches; only C1 pinned that for nextest. Without
+# this, a regression that swapped the printf/return order (or dropped the
+# printf) in the cargo-test branch ONLY would go undetected.
+assert "PS-RC D2: stdout keeps the unchanged passed=0 failed=0 ignored=0 shape" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=0 failed=0 ignored=0"' _ "$_PSRC_D2_OUT"
+
+# (D3) canned TEST FAILURE: rc=101 — the SAME rc a compile failure produces
+# under libtest — so only the result-line count (not rc alone) can tell
+# them apart. The guard must NOT fire on this.
+_PSRC_D3_MANIFEST="/nonexistent/psrc-d3/Cargo.toml"
+_PSRC_D3_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-d3-XXXXXX)"
+_TMPDIRS+=("$_PSRC_D3_FIXTURE")
+cat > "$_PSRC_D3_FIXTURE" << 'PSRC_D3_EOF'
+running 2 tests
+test a::smoke ... ok
+test b::smoke ... FAILED
+
+failures:
+    b::smoke
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+PSRC_D3_EOF
+
+_PSRC_D3_RC=0
+> "$_PSRC_ERRF"
+_PSRC_D3_OUT="$(
+    PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" \
+    REIFY_TEST_PASSSET_NEXTEST=0 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_D3_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_D3_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_D3_RC=$?
+_PSRC_D3_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC D3: honest test failure (cargo-test, rc=101 — SAME rc as a compile failure) → run_passset returns 0 (guard must NOT fire)" \
+    test "$_PSRC_D3_RC" -eq 0
+assert "PS-RC D3: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_D3_ERR"
+assert "PS-RC D3: stdout's first line is exactly passed=1 failed=1 ignored=0" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=1 failed=1 ignored=0"' _ "$_PSRC_D3_OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block PG — Provenance-guard refusal + rename-negative-control (ALWAYS-RUN)
@@ -1593,6 +2814,26 @@ assert "GC2: retired gen IS reaped after reader releases lock (dir removed)" \
 #   REIFY_WARM_LANE_MOUNT=/path/to/xfs-mount   — use an existing XFS volume
 #   REIFY_RUN_WARM_LANE_GATE=1                 — self-provision an ephemeral loop
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
+#
+# Sited HERE, immediately BEFORE the top-level substrate gate below: _skip()
+# calls test_summary and exits 0, so anything after the gate is DEAD in the
+# default CI environment (no REIFY_WARM_LANE_MOUNT, /tmp ext4) — which is every
+# ordinary run of this suite. TRASH1 is hermetic and substrate-independent, so
+# it belongs on the always-runs path unconditionally. TRASH3 at the end of the
+# file re-checks TRASH2 after the substrate-gated real seed runs.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
+
 if ! detect_substrate 2>/dev/null; then
     _skip "no XFS reflink substrate; set REIFY_WARM_LANE_MOUNT or REIFY_RUN_WARM_LANE_GATE=1"
 fi
@@ -1627,8 +2868,19 @@ gen_synth_workspace "$_WS_BASE"
 echo "B3+B4: workspace generated at $_WS_BASE (${REIFY_WARM_LANE_GATE_DEP_FNS:-500} dep fns)" >&2
 
 # ── Stamp base provenance so seed-warm-lane.sh RUSTFLAGS guard passes ─────────
+# rc captured via `|| rc=$?` (record-base mode has no stdout-emptiness caller
+# obligation like seed mode — the sidecar path this prints is discarded here,
+# unused — but a bare failing command is still a plain simple command under
+# this file's `set -euo pipefail`, so an unguarded non-zero exit here would
+# abort the whole suite exactly like the seed-mode call sites below; task
+# #5880 amendment).
+_B34_RECORD_BASE_RC=0
 RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
-    bash "$SEED_SCRIPT" --record-base "$_WS_BASE/target" >/dev/null
+    bash "$SEED_SCRIPT" --record-base "$_WS_BASE/target" >/dev/null \
+        || _B34_RECORD_BASE_RC=$?
+
+assert "B3+B4: record-base stamped the base's provenance sidecar (exits 0)" \
+    test "$_B34_RECORD_BASE_RC" -eq 0
 
 # ── Cold control build: empty target → all from scratch (B3 wall baseline) ───
 _B3_COLD_WALL="$(build_walltime "$_WS_BASE/Cargo.toml")"
@@ -1652,35 +2904,83 @@ cp -a "$_WS_BASE/warm_leaf" "$_WS_LANE/"
 # --fresh-checkout: bulk-stamps all lane sources to 2020-01-01 (older than any
 # artifact → dep appears fresh), then touches the leaf to NOW (newer than its
 # artifact → cargo rebuilds just the leaf).
-RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+#
+# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1: the base is built with REAL cargo, so
+# target/<profile>/.fingerprint/ exists and the clone crosses inv.13's hazard
+# gate; and the warm-skip assertion below depends on the 2020-01-01 bulk stamp
+# making warm_dep report fresh:true — i.e. this arm exercises the D5 accept path
+# deliberately. Why the knob is the accurate annotation for such a site (a
+# deliberate ACCEPT, not a workaround): PRD §9.5 inv.13, which names this site.
+#
+# Deliberately NOT git-init + --base-commit HEAD: that would require committing
+# $_WS_LANE BEFORE this seed, and _b7_init_git_lane below documents a
+# load-bearing dependence on committing AFTER the seed so git's index stat-cache
+# records the 2020-01-01 mtimes and a later `git checkout -- .` does not rewrite
+# warm_dep. Re-ordering that would put B7's own stated critical invariant at
+# risk for no coverage gain.
+# rc/stdout capture + refusal cleanup: see _seed_lane_capture (~line 168).
+_seed_lane_capture "B3+B4" "$_WS_LANE/target" \
+    env REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 \
+        RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
     bash "$SEED_SCRIPT" "$_WS_BASE/target" "$_WS_LANE" \
         --fresh-checkout \
-        --touch "$_WS_LANE/warm_leaf/src/lib.rs" >/dev/null
+        --touch "$_WS_LANE/warm_leaf/src/lib.rs"
+_B34_SEED_RC="$_SEED_CAP_RC"
+_B34_SEED_OUT="$_SEED_CAP_OUT"
+
+assert "B3+B4: lane seed certified the lane warm-safe (rc=0, non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B34_SEED_RC" "$_B34_SEED_OUT"
 
 # ── Warm lane build: heavy dep reused via CoW (fresh:true), leaf rebuilt ──────
-# Capture JSON to inspect per-crate freshness (B3 warm-skip) AND measure wall.
-_B3_WARM_T0="$(date +%s%3N)"
-_WARM_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-    cargo build --manifest-path "$_WS_LANE/Cargo.toml" \
-        --message-format=json 2>/dev/null)"
-_B3_WARM_WALL=$(( $(date +%s%3N) - _B3_WARM_T0 ))
+# Skipped entirely when the seed refused to certify the lane (mirrors B13's
+# treatment-arm shape, task #5880 amendment): the verdict is already decided
+# by the assert above, so building would either fail against the now-missing
+# target/ or, worse, silently succeed as a full COLD build — which would make
+# the "leaf delta-closure is fresh:false" assert below pass VACUOUSLY (a cold
+# build reports every unit fresh:false regardless of mechanism) instead of
+# testing the warm-skip mechanism it exists to test. Sentinels below are
+# chosen so every downstream B3/B4 assertion FAILs distinctly on refusal
+# rather than silently passing or crashing on a missing/stale JSON capture.
+#
+# rc is still captured on the run branch itself via `|| _B34_WARM_RC=$?`: a
+# cargo failure unrelated to seeding (e.g. a genuine compile error) must not
+# silently abort the suite either — same bare-command-under-errexit hazard as
+# the seed call above, just for the build instead of the seed.
+_B34_WARM_RC=0
+if [ "$_B34_SEED_RC" -eq 0 ] && [ -n "$_B34_SEED_OUT" ]; then
+    # Capture JSON to inspect per-crate freshness (B3 warm-skip) AND measure wall.
+    _B3_WARM_T0="$(date +%s%3N)"
+    _WARM_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_WS_LANE/Cargo.toml" \
+            --message-format=json 2>/dev/null)" || _B34_WARM_RC=$?
+    _B3_WARM_WALL=$(( $(date +%s%3N) - _B3_WARM_T0 ))
 
-# ── Extract B3/B4 signals from warm lane build output ────────────────────────
-_B3_DEP_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
-    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+    # ── Extract B3/B4 signals from warm lane build output ────────────────────
+    _B3_DEP_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
 
-_B3_LEAF_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep '"name":"warm_leaf"' | \
-    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+    _B3_LEAF_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep '"name":"warm_leaf"' | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
 
-_B4_WARM_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep -c '"fresh":true' || true)"
+    _B4_WARM_FRESH="$(printf '%s\n' "$_WARM_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep -c '"fresh":true' || true)"
+else
+    echo "B3+B4: skipping warm lane build — seed refused to certify the lane warm-safe (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+    _B34_WARM_RC=-1
+    _B3_WARM_WALL=-1
+    _B3_DEP_FRESH="<seed-refused>"
+    _B3_LEAF_FRESH="<seed-refused>"
+    _B4_WARM_FRESH=-1
+fi
 
 # Record signals to stderr (direction-only; no frozen thresholds per G6/PRD §9)
 echo "B3 wall: cold=${_B3_COLD_WALL}ms warm=${_B3_WARM_WALL}ms delta=$((${_B3_COLD_WALL} - ${_B3_WARM_WALL}))ms" >&2
 echo "B4 fresh counts: inplace=${_B4_INPLACE_FRESH} warm=${_B4_WARM_FRESH}" >&2
 
+assert "B3+B4: warm lane build exits 0" \
+    test "$_B34_WARM_RC" -eq 0
 assert "B3: heavy dep unit is fresh:true in warm lane (CoW-reused, not recompiled)" \
     test "$_B3_DEP_FRESH" = "true"
 assert "B3: leaf delta-closure is fresh:false in warm lane (was rebuilt)" \
@@ -1701,15 +3001,50 @@ assert "B4: fresh-unit count in warm lane == in-place control (path-independence
 # run_passset(manifest) is defined in impl-passset. Until then, calling it
 # errors under set -euo pipefail → RED on a substrate (SKIP on non-substrate
 # because the substrate gate fires first).
+#
+# rc asserts (#5885): run_passset() no longer swallows cargo's exit status
+# (Block PS-RC pins the classifier/diagnostic/wiring, always-run). The two
+# new asserts below discriminate a BUILD/RUNNER failure on EACH side, by
+# name, BEFORE the identity assert runs — every pass-set must be trustworthy
+# independently. This closes a false-GREEN gap the identity assert alone
+# cannot see: if BOTH sides fail to build, both emit the identical
+# `passed=0 failed=0` string and the identity assert reports GREEN on a
+# workspace that never compiled (reproduced directly by Block PS-RC's arm
+# C4). run_passset()'s stderr diagnostic (_passset_report_failure) is NOT
+# captured by the `$( )` below — stdout only — so on a real failure it still
+# reaches the console/verify log even though only the rc is asserted here.
+#
+# Identity assert is GUARDED on both rcs being 0 (amendment): running it
+# unconditionally would still show a misleading PASS line — "warm-lane test
+# identifiers == cold control" — on the exact symmetric double-build-failure
+# case the two rc asserts above exist to catch, since two untrustworthy
+# empty pass-sets are trivially byte-equal to each other. The suite as a
+# whole still correctly fails (via the rc asserts), but a reader scanning for
+# the FAILING line would see this one reported green right next to it. When
+# either side's rc is nonzero the comparison is skipped outright — logged,
+# not asserted — rather than reusing this file's whole-script _skip()
+# (:478), which calls test_summary and exit 0 and would abort every block
+# still to come (B6/B11/B13/TRASH3).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PS: identical test pass-set (warm vs cold) ---"
 
-_PS_COLD="$(run_passset "$_WS_BASE/Cargo.toml")"
-_PS_WARM="$(run_passset "$_WS_LANE/Cargo.toml")"
+_PS_COLD_RC=0
+_PS_COLD="$(run_passset "$_WS_BASE/Cargo.toml")" || _PS_COLD_RC=$?
+_PS_WARM_RC=0
+_PS_WARM="$(run_passset "$_WS_LANE/Cargo.toml")" || _PS_WARM_RC=$?
 
-assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
-    test "$_PS_COLD" = "$_PS_WARM"
+assert "PS: cold-control pass-set run completed without a build/runner failure (#5885)" \
+    test "$_PS_COLD_RC" -eq 0
+assert "PS: warm-lane pass-set run completed without a build/runner failure (#5885)" \
+    test "$_PS_WARM_RC" -eq 0
+
+if [ "$_PS_COLD_RC" -eq 0 ] && [ "$_PS_WARM_RC" -eq 0 ]; then
+    assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
+        test "$_PS_COLD" = "$_PS_WARM"
+else
+    echo "  PS-IDENTITY-SUPPRESSED: warm-lane test identifiers == cold control — comparison skipped because a pass-set run failed above (see PASSSET-RUN-FAILURE and the failed rc assert); two untrustworthy pass-sets can be byte-equal without meaning anything (#5885 arm C4)." >&2
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block B7 — Reset-in-place stability: K cycles (SUBSTRATE-GATED)
@@ -1811,15 +3146,28 @@ _B6_SIBLING_LANE="$_GATE_WS_ROOT/synth-sibling"
 # _b6_clone_and_refresh is defined in impl-lifecycle → RED until then.
 _b6_clone_and_refresh "$_WS_BASE" "$_WS_LANE" "$_B6_SIBLING_LANE"
 
-# After the refresh, build the sibling lane and check dep freshness.
-_B6_SIBLING_RC=0
-_B6_SIBLING_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
-    cargo build --manifest-path "$_B6_SIBLING_LANE/Cargo.toml" \
-        --message-format=json 2>/dev/null)" || _B6_SIBLING_RC=$?
+assert "B6: sibling seed certified the lane warm-safe (rc=0, non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B6_SEED_RC" "$_B6_SEED_OUT"
 
-_B6_SIBLING_DEP_FRESH="$(printf '%s\n' "$_B6_SIBLING_JSON" | \
-    grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
-    grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+# After the refresh, build the sibling lane and check dep freshness — skipped
+# entirely when the sibling seed refused to certify (mirrors the B3+B4
+# treatment above, task #5880 amendment): the verdict is already decided by
+# the assert above, and a build against the (already target-less) sibling
+# would just waste a cold cargo build that has no chance of resolving warm.
+_B6_SIBLING_RC=0
+if [ "$_B6_SEED_RC" -eq 0 ] && [ -n "$_B6_SEED_OUT" ]; then
+    _B6_SIBLING_JSON="$(CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
+        cargo build --manifest-path "$_B6_SIBLING_LANE/Cargo.toml" \
+            --message-format=json 2>/dev/null)" || _B6_SIBLING_RC=$?
+
+    _B6_SIBLING_DEP_FRESH="$(printf '%s\n' "$_B6_SIBLING_JSON" | \
+        grep '"reason":"compiler-artifact"' | grep '"name":"warm_dep"' | \
+        grep -o '"fresh":[a-z]*' | head -1 | sed 's/"fresh"://;s/"//g')"
+else
+    echo "B6: skipping sibling lane build — sibling seed refused to certify the lane warm-safe (caller obligation, scripts/seed-warm-lane.sh:63-79)" >&2
+    _B6_SIBLING_RC=-1
+    _B6_SIBLING_DEP_FRESH="<seed-refused>"
+fi
 
 assert "B6: sibling lane build exits 0 after base refresh (in-flight independence)" \
     test "$_B6_SIBLING_RC" -eq 0
@@ -1984,6 +3332,53 @@ _TMPDIRS+=("$_B13_WS_ROOT")
 # on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
 _b13_reseed_vs_resetinplace "$_B13_WS_ROOT"
 
+# ── (contract) Base provenance sidecar was recorded successfully ─────────────
+# Guards the --record-base call inside the helper above (task #5880
+# amendment): without this, a record-base failure would just silently
+# proceed (missing sidecar → RUSTFLAGS guard below defaults to "", which may
+# or may not matter) instead of surfacing as its own diagnosable FAIL line.
+assert "B13: record-base stamped the at-head base's provenance sidecar (exits 0)" \
+    test "$_B13_RECORD_BASE_RC" -eq 0
+
+# ── (contract) Treatment honoured seed-warm-lane.sh's caller obligation ───────
+# Non-empty stdout (with exit 0) is the ONLY signal the seed considers the lane
+# warm-safe (scripts/seed-warm-lane.sh:63-79). Asserting this explicitly means a
+# fail-closed abort in the treatment seed is now an isolated, diagnosable RED
+# line instead of the whole-suite abort it used to be.
+assert "B13: treatment re-seed honoured seed-warm-lane.sh's caller contract (exit 0 + non-empty stdout)" \
+    bash -c '[ "$1" -eq 0 ] && [ -n "$2" ]' _ "$_B13_SEED_RC" "$_B13_SEED_OUT"
+
+# ── (delta-touch set) The re-seed touched exactly the head-ward delta ────────
+# Pins WHAT the re-seed actually delta-touched: the resolved base commit must
+# produce a MEANINGFUL (leaf touched to now) yet MINIMAL (dep left alone)
+# delta, so the aggregate comparison below can never pass for the wrong reason
+# (e.g. a repair that silently widened or emptied the delta-touch set). The
+# treatment call passes no --touch for the leaf (see _b13_reseed_vs_resetinplace
+# above), so the leaf assertion below exercises _touch_git_delta's git-diff
+# base-commit resolution directly rather than being trivially satisfied by an
+# explicit touch that fires regardless of whether base resolution succeeded.
+echo "B13 mtimes: leaf=${_B13_LEAF_MTIME} dep=${_B13_DEP_MTIME} stale_epoch=${_B13_STALE_EPOCH}" >&2
+assert "B13: re-seed delta-touched the head-ward leaf to now (not the 2020 bulk stamp)" \
+    bash -c '[ "$1" -ne "$2" ]' _ "$_B13_LEAF_MTIME" "$_B13_STALE_EPOCH"
+assert "B13: re-seed left the unchanged heavy dep at the 2020 bulk stamp (delta-touch set == head-ward delta only)" \
+    bash -c '[ "$1" -eq "$2" ]' _ "$_B13_DEP_MTIME" "$_B13_STALE_EPOCH"
+
+# ── (warmth mechanism) Per-unit freshness explains the aggregate comparison ──
+# The aggregate fresh-unit comparison below has only two compilation units, so
+# a bare inequality is satisfiable by accident. Assert the MECHANISM directly:
+# the treatment's unchanged heavy dep is CoW-reused from the at-head base
+# (fresh:true), while the control's reset-in-place rebuild is genuinely
+# near-cold for that same dep (fresh:false). Tri-state string comparison
+# ("true"/"false"), not -eq 1/0: a build that emits no warm_dep
+# compiler-artifact line at all (e.g. it failed outright) yields an EMPTY
+# _B13_*_DEP_FRESH, which fails both checks below instead of silently
+# matching the "rebuilt"/"not fresh" case.
+echo "B13 dep-fresh: control=${_B13_CTRL_DEP_FRESH:-<absent>} treatment=${_B13_TREAT_DEP_FRESH:-<absent>}" >&2
+assert "B13: treatment keeps the unchanged heavy dep warm (warm_dep fresh:true from the CoW base clone)" \
+    test "$_B13_TREAT_DEP_FRESH" = "true"
+assert "B13: control rebuilt the heavy dep (reset-in-place is genuinely near-cold)" \
+    test "$_B13_CTRL_DEP_FRESH" = "false"
+
 # ── (a) Treatment is warmer than control ──────────────────────────────────────
 # Re-seed from at-head base gives a higher fresh-unit count than reset-in-place.
 # Improvement-direction only; no frozen threshold (PRD §9/G6 convention).
@@ -1991,5 +3386,13 @@ echo "B13 fresh-units: control(reset-in-place)=${_B13_CTRL_FRESH} treatment(re-s
 echo "B13 wall-ms: control=${_B13_CTRL_WALL_MS}ms treatment=${_B13_TREAT_WALL_MS}ms delta=$(( _B13_CTRL_WALL_MS - _B13_TREAT_WALL_MS ))ms" >&2
 assert "B13: treatment fresh-unit count > control (re-seed warmer than reset-in-place)" \
     bash -c '[ "$1" -gt "$2" ]' _ "$_B13_TREAT_FRESH" "$_B13_CTRL_FRESH"
+
+# TRASH3 re-checks TRASH2 after the substrate-gated blocks — the only part of
+# this suite that drives the REAL seed, and therefore the only part that could
+# actually litter. TRASH1/TRASH2 run before the top-level substrate gate so they
+# cover every invocation including the `_skip` early exit (the default CI path);
+# this one covers the lanes those blocks seeded, which they ran too early to see.
+assert "TRASH3: ... and still none after the substrate-gated real seed runs" \
+    assert_no_shared_trash_litter
 
 test_summary

@@ -37,9 +37,8 @@ enum Result<T, E> {
 /// "enum `Result` does not accept type arguments".
 #[test]
 fn annotation_generic_enum_applied_type_cell_type() {
-    let source = format!(
-        "{RESULT_ENUM_SOURCE}\nstructure def D {{ param r : Result<Length, String> }}"
-    );
+    let source =
+        format!("{RESULT_ENUM_SOURCE}\nstructure def D {{ param r : Result<Length, String> }}");
     let module = compile_with_stdlib_helper(&source);
 
     let errors: Vec<_> = module
@@ -126,9 +125,7 @@ structure def UseDir {
 /// arity-mismatch diagnostic instead of silently building a wrong-arity Applied.
 #[test]
 fn annotation_generic_enum_too_few_args_errors() {
-    let source = format!(
-        "{RESULT_ENUM_SOURCE}\nstructure def D {{ param r : Result<Length> }}"
-    );
+    let source = format!("{RESULT_ENUM_SOURCE}\nstructure def D {{ param r : Result<Length> }}");
     let module = compile_with_stdlib_helper(&source);
 
     let errors: Vec<_> = module
@@ -376,7 +373,10 @@ structure def TestExh {{
     assert!(
         exhaustive_errors.is_empty(),
         "exhaustive match on generic Result<L,S> must produce no non-exhaustiveness error; got: {:?}",
-        exhaustive_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        exhaustive_errors
+            .iter()
+            .map(|e| &e.message)
+            .collect::<Vec<_>>()
     );
 }
 

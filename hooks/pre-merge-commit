@@ -13,7 +13,7 @@
 # merges are not main and are gated by the orchestrator's own verify).
 #
 # --profile both (NOT debug): the merge gate is where release coverage lives.
-# Per-task verify (orchestrator.yaml) and the per-commit gate (hooks/project-
+# Per-task verify (dark-factory-orchestrator.yaml) and the per-commit gate (hooks/project-
 # checks) both run --profile debug for fast feedback; release reruns far less
 # often, so it is pinned here, at the merge boundary. This is also where the
 # heavy release-only tests in reify-solver-elastic — gated behind

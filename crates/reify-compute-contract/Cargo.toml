@@ -1,0 +1,32 @@
+[package]
+name = "reify-compute-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure ComputeFn contract value types for Reify — OCCT-free foundation crate shared by reify-eval and future non-OCCT evaluation engines (task A / #4934)"
+
+[dependencies]
+reify-core.workspace = true
+reify-ir.workspace = true
+# StructuredComputeDetail::Fea wraps reify_solver_elastic::FeaDiagnosticDetail
+# and ElasticResult's drift-guard `From` impls consume
+# reify_solver_elastic::progressive::PartialElasticResult — this is the
+# load-bearing OCCT-free edge (gmsh's normal deps do not reach OCCT; see
+# scripts/occt-touching-crates.txt).
+reify-solver-elastic.workspace = true
+# Wire-format toolchain for ElasticResult's PersistentlyCacheable impl,
+# mirroring the precedent at reify-eval::persistent_cache.rs (bincode 1.3
+# fixint-LE header, zstd 0.13 level-0 compression, bytemuck zero-copy LE
+# f64/u32 slab casts, serde-derive for the header struct).
+serde = { workspace = true, features = ["derive"] }
+bincode.workspace = true
+bytemuck.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+# Self-dep-free duplicate of the normal dep above: the moved
+# `From<&/PartialElasticResult> for ElasticResult` unit tests construct
+# `PartialElasticResult` fixtures directly (mirrors reify-eval's own
+# Cargo.toml convention of listing a crate in both [dependencies] and
+# [dev-dependencies] when both library code and its tests need it named).
+reify-solver-elastic.workspace = true

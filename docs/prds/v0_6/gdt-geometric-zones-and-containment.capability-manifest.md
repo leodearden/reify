@@ -32,7 +32,7 @@ dep-edge-gated producer) / **FAIL**.
 | GeometricTolerance hierarchy + `nominal_zone` scalar exist (additive base) | wired-on-main | `crates/reify-compiler/stdlib/tolerancing.ri:46-51` (trait + `nominal_zone` let); 18 callout structures below; shipped by 4265–4268 | PASS |
 | Enum + trait/structure grammar for `ZoneShape`, `StraightnessOfAxis`, `…Related` variants, required `datum_refs` | grammar-fixture | `/tmp/prd-gate-fixtures/gdt-zones-2.ri` parses (exit 0, 2026-06-10); mirrors `enum MaterialCondition { MMC, LMC, RFS }` (`tolerancing.ri:13`) | PASS |
 | Structures may re-declare inherited trait params (the α mechanism for per-callout `zone_shape`/`datum_refs`) | wired-on-main | `trait_requirements.rs` re-declaration semantics (substrate correction, PRD §3); the 18 shipped structures already re-declare `tolerance_value`/`feature`/`material_condition` | PASS |
-| B4 regression target exists (Test A/B) | wired-on-main | `examples/tolerancing/std_tolerancing_surface.ri` + `crates/reify-cli/tests/cli_tolerancing_eval.rs:22` (CI-gated) | PASS |
+| B4 regression target exists (Test A/B) | wired-on-main | `examples/tolerancing/std_tolerancing_surface.ri` + `crates/reify-cli/tests/harness_cli/cli_tolerancing_eval.rs:22` (CI-gated) | PASS |
 | Template-count assertions updatable | wired-on-main | same CI test asserts template counts today; α updates them — its own scope | PASS (producer-self) |
 
 ## Leaf β — check-time GD&T legality diagnostics (Rust)

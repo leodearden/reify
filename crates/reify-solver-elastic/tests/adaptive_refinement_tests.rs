@@ -8,7 +8,7 @@
 //! control be exercised deterministically (the task's "stub indicator +
 //! refiner" strategy).
 
-use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use reify_kernel_gmsh::MeshingOptions;
 use reify_solver_elastic::volume_refine::RefineError;
 use reify_solver_elastic::{
@@ -239,11 +239,13 @@ fn two_tet_bipyramid() -> VolumeMesh {
             0.0, 0.0, 1.0, // 3
             0.0, 0.0, -1.0, // 4
         ],
-        tet_indices: vec![
-            0, 1, 2, 3, // tet A
-            0, 1, 2, 4, // tet B
-        ],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
+                0, 1, 2, 3, // tet A
+                0, 1, 2, 4, // tet B
+            ],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }

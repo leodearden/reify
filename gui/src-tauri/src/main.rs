@@ -17,10 +17,13 @@ use tracing::warn;
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_eval::SolverProgressSink;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
-use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaDiagnosticsEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter};
-use reify_eval::SolverProgressSink;
+use reify_gui::engine::{
+    AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaConvergenceEmitter,
+    FeaDiagnosticsEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter,
+};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -164,6 +167,24 @@ impl FeaDiagnosticsEmitter for TauriFeaDiagnosticsEmitter {
     }
 }
 
+/// Emits `fea-convergence-changed` events to the frontend on every commit (task #5032).
+///
+/// Payload is a full-value snapshot of `Option<FeaConvergenceInfo>` — fires including
+/// `None` so a param edit that clears the FEA problem clears the stale convergence
+/// indicator. Installed during `setup()` alongside [`TauriFeaDiagnosticsEmitter`] and
+/// other emitters.
+struct TauriFeaConvergenceEmitter {
+    app: tauri::AppHandle,
+}
+
+impl FeaConvergenceEmitter for TauriFeaConvergenceEmitter {
+    fn changed(&self, payload: Option<reify_gui::types::FeaConvergenceInfo>) {
+        if let Err(e) = emit_typed(&self.app, "fea-convergence-changed", &payload) {
+            warn!("fea-convergence-changed emit failed: {}", e);
+        }
+    }
+}
+
 /// Emits `mode-shape-frame` events to the frontend whenever a BucklingResult-shaped
 /// value is observed at commit time (task ι/3458).
 ///
@@ -234,11 +255,22 @@ fn create_watcher(
                         // The failure path therefore surfaces a compile-diagnostics Tauri
                         // event to the frontend instead of being silently dropped (the
                         // former behaviour with update_source_impl's Err branch).
-                        if let Ok(gui_state) = reify_gui::commands::reload_for_watch_impl(
-                            &state.engine,
-                            &path_str,
-                            &content,
-                        ) {
+                        // Defense-in-depth (task 5357): this is the
+                        // highest-frequency full-recompile path (edit the .ri on
+                        // disk → notify event → recompile), and it runs on the
+                        // FileWatcher's own worker thread (watcher.rs spawns it
+                        // with a bare `std::thread::spawn`, i.e. the default
+                        // ~2 MiB stack). Route it onto the large-stack thread
+                        // like the Tauri-command entry points. The scoped helper
+                        // borrows the locals/`State` deref directly — no clone.
+                        let reload_result = reify_gui::large_stack::run_on_large_stack(|| {
+                            reify_gui::commands::reload_for_watch_impl(
+                                &state.engine,
+                                &path_str,
+                                &content,
+                            )
+                        });
+                        if let Ok(gui_state) = reload_result {
                             let delta = compute_delta(&state.last_state, &gui_state);
                             emit_delta(&handle, &delta);
                         }
@@ -356,7 +388,13 @@ fn update_source(
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
-    let result = reify_gui::commands::reload_for_watch_impl(&state.engine, &path, &content);
+    // Defense-in-depth (task 5357): run the full recompile on a dedicated
+    // large-stack thread so deeply-nested geometry cannot overflow the ~2 MiB
+    // tokio worker stack. The scoped helper borrows &state.engine/&path/&content
+    // directly (no Arc clone); surrounding logic stays on the command thread.
+    let result = reify_gui::large_stack::run_on_large_stack(|| {
+        reify_gui::commands::reload_for_watch_impl(&state.engine, &path, &content)
+    });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
@@ -382,7 +420,13 @@ fn open_file_engine(
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
-    let result = reify_gui::commands::open_file_engine_impl(&state.engine, &path);
+    // Defense-in-depth (task 5357): run the compile on a dedicated large-stack
+    // thread so deeply-nested geometry cannot overflow the ~2 MiB tokio worker
+    // stack. The scoped helper borrows &state.engine/&path directly (no Arc
+    // clone); the watcher re-target and delta emission stay on the command thread.
+    let result = reify_gui::large_stack::run_on_large_stack(|| {
+        reify_gui::commands::open_file_engine_impl(&state.engine, &path)
+    });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
@@ -554,8 +598,11 @@ fn debug_response(
 /// - `claude-tool-call`, `claude-tool-result`
 /// - `claude-done`, `claude-error`
 ///
-/// `reify_` prefixed tool calls are intercepted and executed in-process
-/// via the MCP registry before a `tool_result` is written back to the sidecar.
+/// Tool calls (including any `reify_` prefixed names) are forwarded to the
+/// frontend as `claude-tool-call` events only; there is no in-process engine-
+/// mutating interception here (deleted per gui-state-sync PRD L8). A future
+/// properly-wired, synced re-introduction of engine-mutating sidecar tools is
+/// owned by docs/prds/v0_6/ai-native-editing.md.
 #[tauri::command]
 async fn claude_send_message(
     app: tauri::AppHandle,
@@ -563,8 +610,6 @@ async fn claude_send_message(
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
-    use std::sync::Arc;
-
     // Resolve the sidecar binary path. Tauri's externalBin (declared in
     // tauri.conf.json) copies the sidecar binary to `<resource_dir>/<basename>`
     // in both dev (`target/<profile>/reify-sidecar`) and bundled builds —
@@ -596,8 +641,6 @@ async fn claude_send_message(
         .filter(|p| p.exists());
 
     let app_for_events = app.clone();
-    let engine = Arc::clone(&state.engine);
-    let selection = Arc::clone(&state.selection);
 
     // Lazily spawn the sidecar (if not running) and wait for it to become ready.
     reify_gui::claude_bridge::ensure_sidecar_ready(
@@ -605,18 +648,14 @@ async fn claude_send_message(
         move || {
             let path = sidecar_path;
             let app_c = app_for_events;
-            let eng = engine;
-            let sel = selection;
             let ws = workspace;
             let le = landlock_exec_path;
             async move {
                 reify_gui::claude_bridge::spawn_sidecar_impl(
                     &path,
-                    eng,
                     move |name, payload| {
                         app_c.emit(&name, payload).ok();
                     },
-                    sel,
                     &ws,
                     le.as_deref(),
                 )
@@ -676,6 +715,14 @@ fn get_kernel_status() -> reify_gui::kernel_status::KernelStatus {
     reify_gui::kernel_status::current_kernel_status()
 }
 
+/// Return the per-dimension display-unit ladders backing the Parameters
+/// panel's per-cell unit picker (task #5199). Pure data table — no engine
+/// state involved, so this command takes no `AppState`.
+#[tauri::command]
+fn get_unit_ladders() -> Vec<reify_gui::display_units::DimensionLadder> {
+    reify_gui::display_units::unit_ladders()
+}
+
 /// Cancel an in-flight FEA solve (GR-016 ζ, PRD §11 Q2).
 ///
 /// Reads `AppState::pending_solve_cancel`, calls `.cancel()` on the handle if
@@ -692,9 +739,7 @@ fn cancel_solve(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// `None` means the active case has never been set (engine defaults to
 /// lex-first). Returns `Some(name)` after a `set_active_fea_case` call.
 #[tauri::command]
-fn get_active_fea_case(
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<String>, String> {
+fn get_active_fea_case(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
     reify_gui::commands::get_active_fea_case_impl(&state.engine)
 }
 
@@ -740,9 +785,7 @@ fn main() {
     let mut session = session;
     let mut initial_file: Option<std::path::PathBuf> = None;
     if let Some(path_str) = std::env::args().nth(1) {
-        if let Some(canonical_path) =
-            reify_gui::commands::resolve_initial_file_path(&path_str)
-        {
+        if let Some(canonical_path) = reify_gui::commands::resolve_initial_file_path(&path_str) {
             if let Err(e) = session.load_file(&canonical_path) {
                 eprintln!(
                     "Warning: failed to load initial file {}: {}",
@@ -767,9 +810,15 @@ fn main() {
     let solve_cancel_slot: Arc<Mutex<Option<reify_eval::CancellationHandle>>> =
         Arc::new(Mutex::new(None));
 
+    // Shared delta baseline — the SAME `Arc` is handed to `DebugServerState`
+    // below so a debug-driven mutation and a normal Tauri command diff
+    // against the SAME baseline (INV-GUI-2, task 5035 L6).
+    let last_state_arc: Arc<Mutex<Option<reify_gui::types::GuiState>>> =
+        Arc::new(Mutex::new(None));
+
     let app_state = AppState {
         engine: Arc::clone(&engine_arc),
-        last_state: std::sync::Mutex::new(None),
+        last_state: Arc::clone(&last_state_arc),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::clone(&selection_arc),
@@ -795,9 +844,6 @@ fn main() {
             let emitter = Arc::new(TauriAutoResolveEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_auto_resolve_emitter(emitter);
-            }
 
             // Install the warm-pool emitter so the frontend receives eviction/donation events.
             // The backend emits unconditionally; the WarmPoolDebugPanel only subscribes under
@@ -805,9 +851,6 @@ fn main() {
             let warm_pool_emitter = Arc::new(TauriWarmPoolEventEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_warm_pool_event_emitter(warm_pool_emitter);
-            }
 
             // Install the fea-case-changed emitter so the frontend FeaCasePickerDropdown
             // receives the active case set whenever a MultiCaseResult is observed at commit
@@ -815,9 +858,6 @@ fn main() {
             let fea_case_emitter = Arc::new(TauriFeaCaseEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_fea_case_emitter(fea_case_emitter);
-            }
 
             // Install the fea-diagnostics-changed emitter so the frontend FEA diagnostic
             // overlay refreshes live on every commit (task #4884 — param-edit re-solve path).
@@ -825,9 +865,14 @@ fn main() {
             let fea_diagnostics_emitter = Arc::new(TauriFeaDiagnosticsEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_fea_diagnostics_emitter(fea_diagnostics_emitter);
-            }
+
+            // Install the fea-convergence-changed emitter so the frontend FEA convergence
+            // indicator refreshes live on every commit (task #5032 — param-edit re-solve
+            // path). Payload is a full-value snapshot including None to clear a stale
+            // indicator.
+            let fea_convergence_emitter = Arc::new(TauriFeaConvergenceEmitter {
+                app: app.handle().clone(),
+            });
 
             // Install the mode-shape-frame emitter so the frontend BucklingPanel
             // receives reference frames (one undeformed base + one peak per mode)
@@ -835,27 +880,43 @@ fn main() {
             let mode_shape_frame_emitter = Arc::new(TauriModeShapeFrameEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_mode_shape_frame_emitter(mode_shape_frame_emitter);
-            }
 
             // Install the solve-cancellation sink so cancel_solve_impl can reach
             // the in-flight FEA handle (task γ/4086).  The sink holds the same
             // Arc as AppState.pending_solve_cancel — writes are visible to reads.
-            let solve_cancel_sink = Arc::new(
-                reify_gui::commands::PendingSolveCancelSink::new(Arc::clone(&solve_cancel_slot)),
-            );
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_solve_cancel_sink(solve_cancel_sink);
-            }
+            let solve_cancel_sink = Arc::new(reify_gui::commands::PendingSolveCancelSink::new(
+                Arc::clone(&solve_cancel_slot),
+            ));
 
             // Install the solver-progress sink so the frontend receives per-CG-iteration
             // progress events on the "solver-progress" IPC channel (task 4079).
             let solver_progress_emitter = Arc::new(TauriSolverProgressEmitter {
                 app: app.handle().clone(),
             });
+
+            // Install all session emitters/sinks in a single lock acquisition instead of
+            // one lock/unlock per emitter — they all target the same engine_arc mutex, so
+            // there is no isolation benefit to separate critical sections (amendment,
+            // task #5032 review).
             if let Ok(mut session) = engine_arc.lock() {
+                session.set_auto_resolve_emitter(emitter);
+                session.set_warm_pool_event_emitter(warm_pool_emitter);
+                session.set_fea_case_emitter(fea_case_emitter);
+                session.set_fea_diagnostics_emitter(fea_diagnostics_emitter);
+                session.set_fea_convergence_emitter(fea_convergence_emitter);
+                session.set_mode_shape_frame_emitter(mode_shape_frame_emitter);
+                session.set_solve_cancel_sink(solve_cancel_sink);
                 session.set_solver_progress_sink(solver_progress_emitter);
+            } else {
+                // A poisoned mutex here silently skips installing ALL emitters/sinks,
+                // degrading the GUI to no live events with no other signal (amendment,
+                // task #5032 review) — surface it so a poisoned lock at startup is
+                // observable instead of a silent no-op.
+                warn!(
+                    "engine_arc lock poisoned during setup(): no session emitters/sinks \
+                     installed — GUI will not receive live auto-resolve/warm-pool/fea-case/\
+                     fea-diagnostics/fea-convergence/mode-shape/solver-progress events"
+                );
             }
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
@@ -866,18 +927,25 @@ fn main() {
             if debug_enabled {
                 let engine_for_debug = Arc::clone(&engine_arc);
                 let selection_for_debug = Arc::clone(&selection_arc);
+                let last_state_for_debug = Arc::clone(&last_state_arc);
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = reify_gui::debug_server::spawn_debug_server(
                         engine_for_debug,
                         selection_for_debug,
                         debug_bridge,
+                        last_state_for_debug,
                     )
                     .await
                     {
                         eprintln!("Debug server failed: {e}");
                     }
                 });
-                eprintln!("REIFY_DEBUG=1: debug server starting on {}", reify_gui::debug_server::debug_endpoint_url(reify_gui::debug_server::resolve_debug_port()));
+                eprintln!(
+                    "REIFY_DEBUG=1: debug server starting on {}",
+                    reify_gui::debug_server::debug_endpoint_url(
+                        reify_gui::debug_server::resolve_debug_port()
+                    )
+                );
             }
 
             // Notify the frontend of the kernel availability at startup.
@@ -921,6 +989,7 @@ fn main() {
             is_debug_enabled,
             debug_response,
             get_kernel_status,
+            get_unit_ladders,
             read_view_sidecar,
             write_view_sidecar,
             cancel_solve,

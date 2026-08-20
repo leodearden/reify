@@ -1,0 +1,12 @@
+structure def Cutter {
+    param d: Length = 3mm
+    param depth: Length = 10mm
+    let body = cylinder(d / 2, depth)
+}
+
+structure def Test {
+    let c = Cutter(d: 3.4mm, depth: 8mm)
+    let cut = c.body
+    let plate = box(20mm, 20mm, 5mm)
+    let drilled = difference(plate, cut)
+}

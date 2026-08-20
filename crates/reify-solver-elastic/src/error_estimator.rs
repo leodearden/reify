@@ -290,7 +290,7 @@ mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;
     use crate::result::StressElement;
-    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
     fn dimensionless_steel_like() -> IsotropicElastic {
         IsotropicElastic {
@@ -319,8 +319,10 @@ mod tests {
                 0.0, 0.0, 1.0, // node 3
                 1.0, 1.0, 1.0, // node 4
             ],
-            tet_indices: vec![0, 1, 2, 3, 1, 2, 3, 4],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 1, 2, 3, 4],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -583,8 +585,10 @@ mod tests {
         ];
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32; 30], // 10 nodes × 3 coords
-            tet_indices: vec![0, 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -649,8 +653,10 @@ mod tests {
         }];
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32; 30], // 10 nodes × 3 coords
-            tet_indices: vec![0; 10],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0; 10],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };

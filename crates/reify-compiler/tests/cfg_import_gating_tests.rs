@@ -9,7 +9,9 @@ use std::fs;
 use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::{compile_project_with_entry_source_cfg, ModuleDag, ModuleResolver};
+use reify_compiler::module_dag::{
+    ModuleDag, ModuleResolver, compile_project_with_entry_source_cfg,
+};
 use reify_test_support::{compile_source, warnings_only};
 
 // ── S5: DAG gating ───────────────────────────────────────────────────────────
@@ -21,7 +23,10 @@ fn module_names(modules: &[reify_compiler::CompiledModule]) -> Vec<String> {
 
 /// Helper: make a CfgSet with only a target set.
 fn target_cfg(target: &str) -> CfgSet {
-    CfgSet { target: Some(target.to_string()), ..Default::default() }
+    CfgSet {
+        target: Some(target.to_string()),
+        ..Default::default()
+    }
 }
 
 /// Write the standard three-sibling layout into `dir`.
@@ -33,8 +38,16 @@ fn write_gating_fixtures(dir: &Path) {
                      #cfg(target = \"wasm\")\nimport platform_wasm\n\
                      import common";
     fs::write(dir.join("main.ri"), entry_src).unwrap();
-    fs::write(dir.join("platform_linux.ri"), "structure LinuxOnly { param x: Real }").unwrap();
-    fs::write(dir.join("platform_wasm.ri"), "structure WasmOnly { param x: Real }").unwrap();
+    fs::write(
+        dir.join("platform_linux.ri"),
+        "structure LinuxOnly { param x: Real }",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("platform_wasm.ri"),
+        "structure WasmOnly { param x: Real }",
+    )
+    .unwrap();
     fs::write(dir.join("common.ri"), "structure Common { param x: Real }").unwrap();
 }
 
@@ -121,14 +134,23 @@ fn cfg_gating_via_with_cfg_entrypoint() {
     let mid_src = "#cfg(target = \"linux\")\nimport sib_linux\n\
                    #cfg(target = \"wasm\")\nimport sib_wasm";
     fs::write(dir.join("mid.ri"), mid_src).unwrap();
-    fs::write(dir.join("sib_linux.ri"), "structure SibLinux { param x: Real }").unwrap();
-    fs::write(dir.join("sib_wasm.ri"), "structure SibWasm { param x: Real }").unwrap();
+    fs::write(
+        dir.join("sib_linux.ri"),
+        "structure SibLinux { param x: Real }",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("sib_wasm.ri"),
+        "structure SibWasm { param x: Real }",
+    )
+    .unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let cfg = target_cfg("linux");
 
     let mut dag = ModuleDag::with_cfg(cfg);
-    dag.compile_module("mid", &resolver).expect("compile_module should succeed");
+    dag.compile_module("mid", &resolver)
+        .expect("compile_module should succeed");
 
     assert!(
         dag.modules.contains_key("sib_linux"),
@@ -156,17 +178,24 @@ fn cfg_gating_transitive_two_levels() {
     let mid_src = "#cfg(target = \"linux\")\nimport sib_linux\n\
                    #cfg(target = \"wasm\")\nimport sib_wasm";
     fs::write(dir.join("mid.ri"), mid_src).unwrap();
-    fs::write(dir.join("sib_linux.ri"), "structure SibLinux { param x: Real }").unwrap();
-    fs::write(dir.join("sib_wasm.ri"), "structure SibWasm { param x: Real }").unwrap();
+    fs::write(
+        dir.join("sib_linux.ri"),
+        "structure SibLinux { param x: Real }",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("sib_wasm.ri"),
+        "structure SibWasm { param x: Real }",
+    )
+    .unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let entry_path = dir.join("entry.ri");
     let entry_src = fs::read_to_string(&entry_path).unwrap();
     let cfg = target_cfg("linux");
 
-    let modules =
-        compile_project_with_entry_source_cfg(&entry_path, &entry_src, &resolver, &cfg)
-            .expect("compilation should succeed");
+    let modules = compile_project_with_entry_source_cfg(&entry_path, &entry_src, &resolver, &cfg)
+        .expect("compilation should succeed");
 
     let names = module_names(&modules);
     assert!(
@@ -204,7 +233,11 @@ fn cfg_gating_stacked_predicates_and_semantics() {
                      import stacked\n\
                      import always";
     fs::write(dir.join("main_stacked.ri"), entry_src).unwrap();
-    fs::write(dir.join("stacked.ri"), "structure Stacked { param x: Real }").unwrap();
+    fs::write(
+        dir.join("stacked.ri"),
+        "structure Stacked { param x: Real }",
+    )
+    .unwrap();
     fs::write(dir.join("always.ri"), "structure Always { param x: Real }").unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
@@ -212,9 +245,13 @@ fn cfg_gating_stacked_predicates_and_semantics() {
 
     // Under target=linux: first predicate is satisfied but second (#cfg(target="wasm")) is not.
     // AND-of-predicates → stacked is skipped.
-    let modules =
-        compile_project_with_entry_source_cfg(&entry_path, entry_src, &resolver, &target_cfg("linux"))
-            .expect("compilation should succeed under linux");
+    let modules = compile_project_with_entry_source_cfg(
+        &entry_path,
+        entry_src,
+        &resolver,
+        &target_cfg("linux"),
+    )
+    .expect("compilation should succeed under linux");
     let names = module_names(&modules);
     assert!(
         names.iter().all(|n| n != "stacked"),
@@ -229,9 +266,13 @@ fn cfg_gating_stacked_predicates_and_semantics() {
 
     // Under target=wasm: first predicate (#cfg(target="linux")) is not satisfied.
     // AND → stacked is still skipped.
-    let modules2 =
-        compile_project_with_entry_source_cfg(&entry_path, entry_src, &resolver, &target_cfg("wasm"))
-            .expect("compilation should succeed under wasm");
+    let modules2 = compile_project_with_entry_source_cfg(
+        &entry_path,
+        entry_src,
+        &resolver,
+        &target_cfg("wasm"),
+    )
+    .expect("compilation should succeed under wasm");
     let names2 = module_names(&modules2);
     assert!(
         names2.iter().all(|n| n != "stacked"),
@@ -259,8 +300,12 @@ fn cfg_gating_unsatisfied_import_never_resolved() {
 
     // Under linux: #cfg(target="wasm") is unsatisfied → ghost is skipped entirely,
     // never resolved from disk.
-    let result =
-        compile_project_with_entry_source_cfg(&entry_path, entry_src, &resolver, &target_cfg("linux"));
+    let result = compile_project_with_entry_source_cfg(
+        &entry_path,
+        entry_src,
+        &resolver,
+        &target_cfg("linux"),
+    );
     assert!(
         result.is_ok(),
         "gated-out import to non-existent 'ghost' module should not error under linux \
@@ -270,8 +315,12 @@ fn cfg_gating_unsatisfied_import_never_resolved() {
 
     // Satisfied import at the same missing path MUST error (module must be resolved).
     let entry_src_satisfied = "#cfg(target = \"linux\")\nimport ghost\nimport anchor";
-    let result_bad =
-        compile_project_with_entry_source_cfg(&entry_path, entry_src_satisfied, &resolver, &target_cfg("linux"));
+    let result_bad = compile_project_with_entry_source_cfg(
+        &entry_path,
+        entry_src_satisfied,
+        &resolver,
+        &target_cfg("linux"),
+    );
     assert!(
         result_bad.is_err(),
         "satisfied import pointing at missing 'ghost' module should return Err, got Ok"
@@ -298,9 +347,8 @@ fn cfg_gating_out_module_not_in_entry_prelude() {
     let entry_src = fs::read_to_string(&entry_path).unwrap();
     let cfg = target_cfg("linux");
 
-    let modules =
-        compile_project_with_entry_source_cfg(&entry_path, &entry_src, &resolver, &cfg)
-            .expect("compilation should succeed");
+    let modules = compile_project_with_entry_source_cfg(&entry_path, &entry_src, &resolver, &cfg)
+        .expect("compilation should succeed");
 
     // Entry module is last in topological order.
     let entry = modules.last().expect("at least one module returned");
@@ -322,7 +370,10 @@ fn cfg_gating_out_module_not_in_entry_prelude() {
         1,
         "expected exactly 1 'not resolved' diagnostic for gated-out platform_wasm \
          (proving its symbols are absent from entry's prelude), got {:?}",
-        unresolved_wasm.iter().map(|d| &d.message).collect::<Vec<_>>()
+        unresolved_wasm
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 
     // Satisfied imports (platform_linux, common) are in the prelude → no "not resolved".
@@ -334,7 +385,10 @@ fn cfg_gating_out_module_not_in_entry_prelude() {
     assert!(
         resolved_linux.is_empty(),
         "platform_linux (satisfied) should NOT have 'not resolved' diagnostic, got {:?}",
-        resolved_linux.iter().map(|d| &d.message).collect::<Vec<_>>()
+        resolved_linux
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 

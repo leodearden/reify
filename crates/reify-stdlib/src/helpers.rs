@@ -189,14 +189,18 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
 
 /// Validate that `v` is a usable topology-selector target.
 ///
-/// The topology-selector stdlib bindings (PRD `topology-selectors.md` task 5)
-/// have not yet landed — there is no `Value::Face` / `Value::Edge` / `Value::Body`
-/// variant today. Until those land, only two placeholder shapes are accepted:
+/// Three shapes are accepted:
 ///
+/// - `Value::Selector` — the typed region reference (`face(b, "x_max")`,
+///   `faces(b)`, …) from the topology-selector substrate (task 4116/α). This is
+///   the migrated FEA-target form (task 4370, C4 contract): a resolved selector
+///   is exactly what a selector-typed field carries once the String→typed
+///   migration lands.
 /// - `Value::Map` — the canonical opaque-selector shape used by the existing
 ///   stub fixtures (e.g. a Map with `kind: "face_stub"`).
-/// - `Value::String` — reserved for future named-selector sentinels, analogous
-///   to `PressureLoad`'s `"normal"` direction sentinel.
+/// - `Value::String` — the pre-migration named-selector sentinel form, analogous
+///   to `PressureLoad`'s `"normal"` direction sentinel. Kept for transition
+///   safety.
 ///
 /// Every other variant is rejected, including numeric primitives
 /// (`Real`/`Int`/`Bool`/`Undef`) and dimensioned containers
@@ -213,7 +217,7 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
 /// `None` otherwise.
 pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
     match v {
-        Value::Map(_) | Value::String(_) => Some(()),
+        Value::Selector(_) | Value::Map(_) | Value::String(_) => Some(()),
         _ => None,
     }
 }
@@ -1446,6 +1450,40 @@ mod tests {
             validate_selector_target(&Value::String("body_all".to_string())),
             Some(()),
             "Arbitrary body-selector String should be accepted as placeholder"
+        );
+    }
+
+    /// step-9 RED (task 4370): a typed `Value::Selector` is an acceptable FEA
+    /// selector target — the migrated `FaceSelector`/`Option[FaceSelector]` field
+    /// form (a `face(b, "x_max")` named-leaf region reference). Per the documented
+    /// C4 FEA-target contract, a resolved region reference is precisely what a
+    /// selector-typed field is meant to carry, so it must validate alongside the
+    /// legacy Map/String placeholders.
+    ///
+    /// RED on main: `validate_selector_target` accepts only `Value::Map |
+    /// Value::String`; a `Value::Selector` falls through to `_ => None`. GREENed
+    /// by step-10.
+    #[test]
+    fn validate_selector_target_selector_accepted() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestBody", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: None,
+        };
+        let sel = SelectorValue::leaf(
+            SelectorKind::Face,
+            target,
+            LeafQuery::Named("x_max".to_string()),
+        )
+        .expect("LeafQuery::Named accepts any SelectorKind");
+        assert_eq!(
+            validate_selector_target(&Value::Selector(sel)),
+            Some(()),
+            "Value::Selector (typed region reference) should be accepted as a selector target"
         );
     }
 

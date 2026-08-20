@@ -1,15 +1,12 @@
 //! Tests for meta block compilation — `meta { key = "value" }` and `meta.key` access.
 
 use reify_compiler::TopologyTemplate;
-use reify_test_support::compile_first_template;
 use reify_core::Severity;
 use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_test_support::compile_first_template;
 
 /// Helper: get the default_expr for a value cell by member name.
-fn get_cell_expr<'a>(
-    template: &'a TopologyTemplate,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
+fn get_cell_expr<'a>(template: &'a TopologyTemplate, member: &str) -> &'a reify_ir::CompiledExpr {
     let cell = template
         .value_cells
         .iter()

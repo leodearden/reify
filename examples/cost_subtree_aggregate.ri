@@ -1,0 +1,69 @@
+// Example: `cost(collection)` subtree-cost aggregate objective (task 5015,
+// M-WHOLE γ). See `docs/prds/v0_6/continuous-cost-minimisation.md` §2.1 for
+// the design rationale.
+//
+// `cost(self.descendants)` sums the `line_cost` of every `Costed`-conforming
+// descendant into a single `Scalar<Money>` total — the builtin sugar form of
+// the `filter(_,Trait)` (task 3991, δ) + `.sum` (task 2381) idiom demonstrated
+// in `examples/cost_aggregation.ri`. Unlike that hand-written
+// `[self.bolts.line_cost, self.mounts.line_cost].sum` form, `cost(...)`
+// discovers and filters the Costed descendants itself — no per-line member
+// access to enumerate.
+//
+// Subassembly layout (depth-1 descendants only — see v1 boundary note below):
+//   Subassembly
+//     sub bolt   = CapScrew()             — Costed:  bolt   = 0.12USD * 24 = 2.88 USD
+//     sub mount  = MotorMount()           — Costed:  mount  = 8.50USD * 4  = 34.00 USD
+//     sub screws : List<CapScrew> [2]     — Costed:  screws[0..1] = 2 * 2.88 = 5.76 USD
+//     sub bracket = Bracket()             — NOT Costed (no Costed trait bound) — excluded
+//
+// Hand-derived total:
+//   bolt 2.88 + mount 34.00 + screws[0] 2.88 + screws[1] 2.88 = 42.64 USD
+//   (bracket excluded — it has no `line_cost`, so it is dropped by the
+//   internal Costed filter before any line_cost lookup happens)
+//
+// `subtree_cost_filtered` demonstrates that the explicit passthrough form
+// `cost(filter(self.descendants, Costed))` yields the SAME total as the bare
+// `cost(self.descendants)` — the builtin's internal Costed filter is
+// idempotent against an already-Costed-filtered list.
+//
+// v1 BOUNDARY: `cost(self.descendants)` reliably aggregates only DEPTH-1
+// Costed descendants (direct subs + top-level collection elements) — sub
+// elaboration is flat, so a depth-2 Costed descendant's `line_cost` cell
+// would not resolve at its instance path (a documented limitation, not
+// exercised here; see plan.json design_decisions).
+
+structure def CapScrew : Costed {
+    param supplier          : String = "McMaster-Carr"
+    param part_number       : String = "91251A190"
+    param unit_cost         : Money  = 0.12USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 24.0
+}
+
+structure def MotorMount : Costed {
+    param supplier          : String = "Misumi"
+    param part_number       : String = "BNVAS25-30"
+    param unit_cost         : Money  = 8.50USD
+    param lead_time         : Time   = 72h
+    param quantity_produced : Real   = 4.0
+}
+
+// A structural node with no Costed bound — demonstrates that cost(...)
+// excludes non-Costed descendants rather than erroring on their absent
+// line_cost.
+structure Bracket {}
+
+structure Subassembly {
+    sub bolt = CapScrew()
+    sub mount = MotorMount()
+    sub screws : List<CapScrew>
+    constraint screws.count == 2
+    sub bracket = Bracket()
+
+    // 42.64 USD: bolt(2.88) + mount(34.00) + screws[0](2.88) + screws[1](2.88)
+    let subtree_cost : Money = cost(self.descendants)
+
+    // Explicit-filter passthrough — must equal subtree_cost exactly.
+    let subtree_cost_filtered : Money = cost(filter(self.descendants, Costed))
+}

@@ -29,7 +29,10 @@ fn std_determinacy_purposes_module_exists() {
         found,
         "expected stdlib module 'std.determinacy.purposes' (path 'std/determinacy/purposes') \
          to be present; found paths: {:?}",
-        modules.iter().map(|m| format!("{}", m.path)).collect::<Vec<_>>()
+        modules
+            .iter()
+            .map(|m| format!("{}", m.path))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -96,8 +99,7 @@ fn std_determinacy_purposes_has_simulation_ready() {
         purpose.params
     );
     assert_eq!(
-        purpose.params[0].entity_kind,
-        "Structure",
+        purpose.params[0].entity_kind, "Structure",
         "simulation_ready param must have entity_kind 'Structure'"
     );
 }
@@ -246,7 +248,10 @@ structure Part {
         "expected exactly 1 'simulation_ready' purpose (user shadows stdlib); \
          found {}: {:?}",
         sim_ready_purposes.len(),
-        sim_ready_purposes.iter().map(|p| &p.name).collect::<Vec<_>>()
+        sim_ready_purposes
+            .iter()
+            .map(|p| &p.name)
+            .collect::<Vec<_>>()
     );
 
     // The surviving purpose must be the user's, NOT the prelude-merged one.
@@ -305,8 +310,7 @@ fn std_determinacy_purposes_has_design_review() {
         purpose.params
     );
     assert_eq!(
-        purpose.params[0].entity_kind,
-        "Structure",
+        purpose.params[0].entity_kind, "Structure",
         "design_review param must have entity_kind 'Structure'"
     );
 }

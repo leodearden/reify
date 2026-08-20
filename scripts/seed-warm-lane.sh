@@ -17,12 +17,90 @@
 # Usage (seed mode):
 #   lane_target=$(scripts/seed-warm-lane.sh <base_target_dir> <lane_dir> \
 #                    (--fresh-checkout|--reset-in-place) \
-#                    [--base-commit <sha>] [--touch <path>]...)
+#                    [--base-commit <sha>] [--touch <path>]... \
+#                    [--lane-lock] [--assume-lane-lock-held])
+#
+#   Lane-lock exclusivity (PRD §9.5 inv.11; esc-5214/task 5354 fail-safe flip):
+#     an EXCLUSIVE flock on the sibling-path ${LANE_DIR}.lock -- the same
+#     convention thin-warm-lane.sh (T3) and warm-lane-gc.sh (live-consumer probe)
+#     use -- acquired BEFORE any target mutation and held across the whole run,
+#     so a destructive reseed never races a live consumer (inv.2). Under
+#     --fresh-checkout it is acquired BY DEFAULT: the #5223 guard was opt-in via
+#     --lane-lock and thus bypassable by an acquire-path caller that simply
+#     omitted the flag (exactly esc-5214, where a reseed clobbered a live
+#     consumer's in-flight build). Non-blocking by default: refuses when a live
+#     consumer already holds it -- with EX_TEMPFAIL (75) by default, or 77 under
+#     --distinct-lock-refusal-rc (task #5568). Either way the refusal is
+#     prefixed `LANE_LOCK_CONTENDED:` on stderr.
+#   --lane-lock: still accepted (now implied under --fresh-checkout; still the
+#     explicit opt-in for the --reset-in-place control arm, which does not lock
+#     by default).
+#     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is acquired): 0
+#     (default) = non-blocking refuse; N>0 = queue up to N seconds (flock -w N)
+#     before refusing; "unlimited" = block until acquired, never refuses. A
+#     refused acquirer of a task lane can just try a different FREE lane, but
+#     the SINGLETON _merge-verify lane has no alternate -- it QUEUEs instead.
+#     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): a caller that
+#     lets seed acquire the lock MUST NOT itself hold a load-bearing FD 9 open
+#     across this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
+#     RELEASE CONTRACT (task #5705): when seed acquires the lock itself, it is
+#     released by an EXPLICIT `flock -u 9` in an EXIT trap -- NOT by process
+#     exit -- and announced on stderr ("... explicit flock -u before exit ...").
+#     An inherited FD 9 is never unlocked. Full rationale, signal coverage and
+#     measured rates: the LANE-LOCK RELEASE CONTRACT block at the flock acquire
+#     below (single source of truth; do not restate it here).
+#   --assume-lane-lock-held: opt OUT of the default acquire for a caller that
+#     ALREADY holds ${LANE_DIR}.lock itself (thin-warm-lane.sh --reseed on FD 9,
+#     warm-lane-gc.sh reclaim on FD 8). flock is not re-entrant across a process
+#     tree, so having seed re-open+flock the same file would self-refuse against
+#     the caller's own held lock; this flag makes seed skip its own acquire, so
+#     the caller's lock provides the inv.2 exclusivity. Mutually exclusive with
+#     --lane-lock (passing both is a usage error, exit 2).
 #
 # Usage (record-base mode):
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
 #
 # Stdout (seed mode):   resolved <lane_dir>/target path on success.
+#
+#   CALLER OBLIGATION on an EMPTY stdout. Non-empty stdout is the ONLY signal
+#   that the returned lane is safe to build WARM; an empty stdout obliges the
+#   caller to REMOVE (or re-seed over) <lane_dir>/target before building
+#   anything in that lane. This is load-bearing rather than advisory because the
+#   three fail-closed post-conditions -- _assert_no_stale_delta_stamp (inv.9),
+#   _assert_delta_newer_than_build_outputs (inv.12) and
+#   _assert_delta_touch_base_substantiated (inv.13) -- all run AFTER target/ has
+#   been replaced with the CoW clone and the sources bulk-stamped to 2020-01-01.
+#   Each therefore ABORTS ONTO exactly the hazardous state it just refused to
+#   certify, and a "cold fallback" that merely re-runs cargo in the same lane
+#   inherits the stale-artifact false green the guard fired to prevent. The seed
+#   deliberately does not rm -rf the clone itself: that would destroy the
+#   forensic evidence inv.12's operator remedy sends an operator to read, so an
+#   operator driving this script by hand keeps an inspectable lane.
+#   Both production callers (warm-lane-gc.sh, thin-warm-lane.sh) ENFORCE the
+#   caller side, discarding <lane_dir>/target on a non-zero exit from this script
+#   -- the same predicate as an empty stdout, since this script runs under
+#   `set -euo pipefail` and writes stdout exactly once, at the terminal echo.
+#   (§9.5 inv.13 "Caller obligation on the fail-closed path" is the ruling.)
+#
+#   PIPE-SAFE (task #6219): every DETACHED child this script forks (the
+#   orphan-trash sweep and the reseed-trash rm) holds NO descriptor of the
+#   caller's: fd 0, fd 1 and fd 2 are ALL redirected away EXPLICITLY
+#   (`</dev/null >/dev/null 2>&1` on the whole group -- the stdin half is
+#   spelled out rather than left to bash's async-list default, which does not
+#   reach a detach nested inside a redirected construct; see
+#   `_close_inherited_fds`'s doc-comment for the measurement, not restated
+#   here), and every OTHER inherited descriptor is
+#   closed generically by `_close_inherited_fds` (defined with the log
+#   helpers below) -- so ANY lock FD a caller holds is closed in the child,
+#   not just the two this pool's callers happen to use today (FD 9: seed's
+#   own --lane-lock acquire and thin-warm-lane.sh's --reseed; FD 8:
+#   warm-lane-gc.sh's reclaim). So a caller may capture this stdout through a
+#   pipe -- `$(...)`, `| consumer`, or the `2>&1 | while read` shape
+#   warm-lane-gc.sh:648-649 uses -- without blocking on that background rm of
+#   a possibly large tree, and without the rm silently outliving the
+#   caller's own lock release. A future caller's lock FD is covered
+#   automatically, with no closer to edit (task #6219 amendment).
+#
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
 #
@@ -48,7 +126,31 @@
 # Mtime (D5):
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
 #                     then touch delta (--touch paths + git diff --name-only <base_commit>) to now.
+#                     No base resolved from any of the three tiers → nothing is
+#                     delta-touched, so every tracked source keeps the 2020-01-01
+#                     stamp; warns, and `_assert_delta_touch_base_substantiated`
+#                     then REFUSES if the clone carries recorded prior
+#                     compilations to wrongly re-Freshen (task 5632 — full
+#                     statement: §9.5 inv.13).
+#     Knobs: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT (see below).
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
+#
+# REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 — HERMETIC-FIXTURE / deliberate-accept
+#   seam, NOT a production knob. Downgrades inv.13's refusal to a [warn] (the
+#   downgrade is itself logged) so a fixture that intentionally exercises the
+#   no-base accept path can still seed; exporting it in production re-opens
+#   the false green inv.13 exists to prevent. Exact `= "1"` match (the
+#   REIFY_WARM_LANE_RESEED_TRASH_SYNC idiom): 0, yes and a stray empty export
+#   all fail safe into the abort. Default-OFF; polarity rationale: §9.5 inv.13
+#   (G7 — not restated here).
+#
+# Build-script freshness references (task 5630 — full statement: §9.5 inv.12):
+#   No step here may leave a build-script replay file
+#   (target/**/build/<pkg>-<hash>/output) at or after a delta-touched source's
+#   mtime. So the links-metadata/OUT_DIR relocation sweep PRESERVES each rewritten
+#   file's mtime across its `sed -i`, and `_assert_delta_newer_than_build_outputs`
+#   enforces the ordering fail-closed at the end of --fresh-checkout (violation →
+#   abort → empty stdout → the caller falls back to a cold rebuild).
 
 set -euo pipefail
 
@@ -58,12 +160,74 @@ ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
 warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 
+# _close_inherited_fds (task #6219 amendment) -- closes every file descriptor
+# >= 3 open in the calling shell. Called as the FIRST statement inside every
+# detached background job this script forks (the orphan-trash sweep, the
+# reseed-trash rm), so the child holds NO descriptor inherited from its
+# caller -- whatever it may be, present or future -- instead of enumerating
+# each caller's private FD-locking convention by number at every call site.
+# This codebase's callers currently use FD 9 for seed's own --lane-lock
+# acquire and thin-warm-lane.sh's --reseed, and FD 8 for warm-lane-gc.sh's
+# reclaim; before this function existed, a third convention would have
+# needed a third numbered close added at both call sites below -- an
+# inverted dependency (the callee needing to track every caller's private
+# implementation detail) that had already produced the same class of leak
+# twice (FD 9 in #5705, FD 8 in #6219). See the LANE-LOCK RELEASE CONTRACT
+# block below for why an inherited dup of a caller's flock'd descriptor
+# matters at all (short version: a flock is attached to the OPEN FILE
+# DESCRIPTION, not the descriptor, so a detached child holding a dup keeps
+# the caller's lock held for the child's entire lifetime, even after the
+# caller itself releases and exits).
+# fd 0/1/2 are deliberately EXCLUDED (-ge 3): the group this runs inside
+# applies its own `</dev/null >/dev/null 2>&1` redirect to the WHOLE group
+# before any statement in the group body runs, so by the time this loop runs
+# those three descriptors are already the group's own, not the caller's --
+# closing them here would break the pipe-safety this exists to provide rather
+# than help it.
+# The stdin half is spelled EXPLICITLY at both call sites rather than left to
+# bash's async-list /dev/null default (amendment 2, correcting this
+# doc-comment's earlier claim that the default sufficed): that default applies
+# only "in the absence of any explicit redirections", and the orphan-sweep
+# detach lives inside `while IFS= read ... done < <(find ...)`, so without an
+# explicit `</dev/null` its child inherits the LOOP's redirected stdin
+# instead. MEASURED with the shipped shape: the non-loop reseed-trash detach
+# reports fd 0 = /dev/null, the loop-nested one reports fd 0 = pipe:[...] (the
+# process substitution). Benign in itself -- that pipe is seed's own,
+# already-exhausted find, not the caller's -- but it made the invariant this
+# design leans on ("a future caller's lock FD is covered automatically") false
+# for fd 0, so a future detach placed inside a construct whose stdin IS the
+# caller's would have silently reintroduced the leak class. The explicit
+# redirect makes it true by construction; Block V's V14-V17 in
+# tests/infra/test_seed_warm_lane.sh pin it behaviourally and structurally.
+#
+# `2>/dev/null` sits OUTSIDE the eval'd string, scoping it to the eval builtin
+# (amendment 2). Inside the string it is a redirection on an `exec` with NO
+# command, which bash applies PERMANENTLY to the shell that runs it --
+# silently destroying this script's whole diagnostic channel (the header's
+# "Stderr: all diagnostics, progress messages, and errors" contract, err()
+# included) for any future caller of this helper that does not already
+# pre-redirect fd 2, which the doc above actively invites. Masked until now
+# only because both call sites wrap the helper in a group that is itself
+# already `>/dev/null 2>&1`. The suppression is belt-and-braces either way:
+# bash returns 0 silently when closing an unopened descriptor. Block V's V18
+# in tests/infra/test_seed_warm_lane.sh pins this against the SHIPPED body
+# (extracted from this file, not retyped), with a mutation control that
+# re-inserts the old spelling and asserts it goes red.
+_close_inherited_fds() {
+    local _fd _n
+    for _fd in /proc/self/fd/*; do
+        _n="${_fd##*/}"
+        [ "$_n" -ge 3 ] 2>/dev/null && eval "exec ${_n}<&-" 2>/dev/null
+    done
+}
+
 # ── usage ─────────────────────────────────────────────────────────────────────
 _usage() {
     cat >&2 <<'EOF'
 Usage:
   seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout|--reset-in-place) \
-      [--base-commit <sha>] [--touch <path>]...
+      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held] \
+      [--distinct-lock-refusal-rc]
   seed-warm-lane.sh --record-base <base_target_dir>
 
 Seed mode: CoW-clone a warm base target/ into a pool lane.
@@ -76,6 +240,53 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       production acquires always use --fresh-checkout).  No bulk stamp.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
+  --lane-lock         Accepted; IMPLIED under --fresh-checkout, where the lane lock
+                      is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
+                      explicit opt-in for the --reset-in-place control arm. Holds an
+                      exclusive flock on the sibling ${LANE_DIR}.lock across the whole
+                      run, BEFORE any target mutation; refuses if a live consumer
+                      already holds it (inv.2 one-consumer-per-lane) -- with
+                      EX_TEMPFAIL 75 by default, 77 under --distinct-lock-refusal-rc.
+                      REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is
+                      acquired): 0 (default) = non-blocking refuse (flock -n); N>0 =
+                      queue up to N seconds before refusing (flock -w N); "unlimited"
+                      (case-insensitive) = block until acquired, never refuses
+                      (flock). Anything else is a usage error (exit 64).
+                      Uses a fixed FD 9 (matching thin-warm-lane.sh's T3): a caller
+                      that lets seed acquire the lock must not itself hold a
+                      load-bearing FD 9 open across this invocation.
+                      Released by an explicit `flock -u 9` in an EXIT trap (task
+                      #5705), NOT by process exit; see the LANE-LOCK RELEASE
+                      CONTRACT block at the flock acquire in this script for why.
+  --assume-lane-lock-held
+                      Opt OUT of the default acquire for a caller that ALREADY holds
+                      ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on
+                      FD 8). flock is not re-entrant across a process tree, so having
+                      seed re-acquire the same file would self-refuse; this makes seed
+                      skip its own acquire. Mutually exclusive with --lane-lock (usage
+                      error, exit 2). Seed never unlocks an FD 9 it did not open, so
+                      the caller's own lock is untouched (#5705).
+  --distinct-lock-refusal-rc
+                      Exit 77 (EX_NOPERM — "another consumer owns this lane")
+                      instead of 75 (EX_TEMPFAIL) on a lane-lock refusal — either
+                      arm: the flock -n immediate refusal and the flock -w N queue
+                      timeout share ONE code (same cause, same remediation).
+                      OPT-IN: omit the flag and the exit code is unchanged at 75.
+                      Task #5568; the rationale (why 75 is the wrong code, why the
+                      flag is opt-in rather than an unconditional flip, the
+                      dark-factory arm) lives in ONE place — see
+                      docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.11.
+                      ACCEPTED-BUT-INERT wherever no refusal is reachable
+                      (--assume-lane-lock-held, --record-base, WAIT=unlimited) --
+                      never a usage error, so a caller may pass it unconditionally
+                      without replicating this script's internal mode logic.
+                      The flag string above is what dark-factory's capability probe
+                      text-greps the lane's own copy of this script for, so it must
+                      stay a literal in the arg parser.
+                      INDEPENDENT of this flag, both refusal arms ALWAYS prefix
+                      `LANE_LOCK_CONTENDED:` onto the first stderr line, so
+                      `grep LANE_LOCK_CONTENDED` separates lock contention from disk
+                      pressure even on a fleet still receiving 75.
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -108,6 +319,9 @@ RESET_IN_PLACE=""
 BASE_COMMIT=""
 TOUCH_PATHS=()
 RECORD_BASE_DIR=""
+LANE_LOCK_OPT=""
+ASSUME_LANE_LOCK_HELD=""
+DISTINCT_LOCK_REFUSAL_RC=""
 _POSITIONALS=()
 
 while [ $# -gt 0 ]; do
@@ -122,6 +336,23 @@ while [ $# -gt 0 ]; do
             ;;
         --reset-in-place)
             RESET_IN_PLACE=1
+            shift
+            ;;
+        --lane-lock)
+            LANE_LOCK_OPT=1
+            shift
+            ;;
+        --assume-lane-lock-held)
+            ASSUME_LANE_LOCK_HELD=1
+            shift
+            ;;
+        # NOTE: this flag string must stay a LITERAL here. dark-factory's
+        # capability probe text-greps the LANE's own copy of this script for
+        # it (the proven _seed_script_supports_assume_lane_lock_held
+        # mechanism), so a value synthesised from a variable would be
+        # invisible to the probe and the flag would never be passed.
+        --distinct-lock-refusal-rc)
+            DISTINCT_LOCK_REFUSAL_RC=1
             shift
             ;;
         --base-commit)
@@ -184,6 +415,17 @@ else
         err "Run '$(basename "$0") --help' for usage."
         exit 2
     fi
+    # --assume-lane-lock-held (opt-out for callers that already hold the lane
+    # lock) and --lane-lock (tell seed to acquire it) are contradictory: one
+    # asserts the caller already holds ${LANE_DIR}.lock so seed must NOT acquire,
+    # the other tells seed to acquire it. Reject loudly (naming BOTH flags)
+    # rather than silently pick a precedence — a both-passed argv is caller
+    # confusion, exactly what this guard exists to surface (esc-5214/task 5354).
+    if [ -n "$ASSUME_LANE_LOCK_HELD" ] && [ -n "$LANE_LOCK_OPT" ]; then
+        err "--assume-lane-lock-held and --lane-lock are mutually exclusive: --assume-lane-lock-held asserts the caller already holds \${LANE_DIR}.lock (seed must NOT acquire), while --lane-lock tells seed to acquire it. Pass at most one."
+        err "Run '$(basename "$0") --help' for usage."
+        exit 2
+    fi
 
     BASE_TARGET_DIR="${_POSITIONALS[0]}"
     LANE_DIR="${_POSITIONALS[1]}"
@@ -224,10 +466,53 @@ _read_basecommit_stamp() {
     local base_target_dir="$1"
     local stamp="${base_target_dir}.basecommit"
     if [ -f "$stamp" ]; then
+        local content
+        content="$(cat "$stamp")"
+        # Trim trailing whitespace: a stamp write interrupted mid-`printf`
+        # (refresh-warm-base.sh Step 4b) or padded with a stray trailing
+        # newline/space must not smuggle a whitespace-only value past the
+        # caller's [ -n ] check as a falsely-resolved base (task 5632
+        # amendment). The caller's presence-vs-empty attribution for this
+        # stamp is built at the resolve site below, not here: this reader
+        # returns a VALUE, the resolver owns presence-vs-empty.
+        # Pinned from both sides by Block U — U4b (a whitespace-only stamp must
+        # not resolve) and U4d (a real sha padded with trailing whitespace must
+        # still resolve, trimmed). U4d's pad is a SPACE, not a newline, because
+        # $(...) already strips trailing newlines and a newline-only fixture
+        # would stay green with this trim deleted.
+        printf '%s' "${content%"${content##*[![:space:]]}"}"
+    else
+        echo ""
+    fi
+}
+
+# Read the per-gen build-worktree stamp written by refresh-warm-base.sh (Step 4b):
+#   ${base_target_dir}.buildroot
+# Mirrors _read_basecommit_stamp above: per the D8 resolve convention the caller
+# resolves the base symlink to its concrete gen path before passing
+# base_target_dir here, so this is a direct file read with no symlink traversal.
+# Returns "" if the stamp is absent (pre-fix base, or refresh has not yet run
+# the Step 4b write) — the caller treats an absent stamp as a fail-safe
+# "relink" case (see the env!()-baked-path relink gate below, task 4983).
+_read_buildroot_stamp() {
+    local base_target_dir="$1"
+    local stamp="${base_target_dir}.buildroot"
+    if [ -f "$stamp" ]; then
         cat "$stamp"
     else
         echo ""
     fi
+}
+
+# Escape <string> (anything outside [a-zA-Z0-9_]) for safe interpolation as a
+# LITERAL into a `sed -E` pattern or replacement (task 5126). Backslash-escaping
+# every non-word byte defeats ERE metacharacters (. * + ? | { } ( ) [ ] ^ $ \)
+# on the pattern side and the &/\ specials on the replacement side. ERE (-E),
+# not BRE: under plain BRE, \+ \? \| \{ \} \( \) are GNU *extensions* that turn
+# ON special meaning, which would invert this escaping and corrupt any baked
+# path containing those bytes.
+_sed_escape() {
+    printf '%s' "$1" | sed -e 's/[^a-zA-Z0-9_]/\\&/g'
 }
 
 # Seed-time post-condition: assert no file listed by `git diff --name-only <sha>`
@@ -280,6 +565,146 @@ _assert_no_stale_delta_stamp() {
     info "Post-condition OK: no stale 2020-01-01 stamp on delta file(s) from $sha"
 }
 
+# Seed-time post-condition (§9.5 inv.12, task 5630): assert every delta-touched
+# tracked source is STRICTLY NEWER than every build-script replay file cargo uses
+# as a freshness reference. Sibling of _assert_no_stale_delta_stamp above, same
+# defense-in-depth posture. Mechanism, measured cargo repro and operator remedy
+# live in PRD §9.5 inv.12 — not restated here.
+#
+# Implementation notes (local to this site):
+#   - Compares with bash's `-nt`, NOT `stat -c '%Y'` integers: `-nt` resolves at
+#     nanosecond precision and calls an exact tie "not newer", matching cargo's
+#     strict `>`. Pinned by Block S/S2e (tie) and S2f (sub-second) — an integer
+#     comparison keeps S2a/S2d green while re-opening both holes.
+#   - `-maxdepth 5`: the same bound and rationale as the relocation sweep's walk
+#     (depth 4 for <profile>/build/<pkg>-<hash>/output, depth 5 for a
+#     cross-compile <triple>/ prefix), so the guard's coverage cannot drift apart
+#     from the sweep it protects. This deliberately RE-walks rather than reusing
+#     a newest-`output` tracked inside the sweep loop: the guard's whole value is
+#     observing the FINAL mtimes, and a value captured before the later
+#     mtime-mutating steps would be blind to exactly the class of regression it
+#     exists to catch. Measured cost on a 185 GB lane target (53.6k entries under
+#     the depth bound, 219 `output` files): 0.27–0.64 s, and a build-dir-scoped
+#     two-stage walk measured no faster (0.24–0.41 s) — dentry-cache-warm from
+#     the sweep either way, so the simpler final-state walk stands.
+#   - Skips vacuously (info, return 0) when there is no delta path on disk or no
+#     `output` file: nothing was rescued from the bulk stamp, so there is no
+#     inversion to detect and nothing to assert.
+#   - A violation errs naming BOTH offending paths + return 1. Under set -e that
+#     aborts the seed before `echo "$LANE_TARGET"`, leaving stdout empty → the
+#     caller falls back to a cold rebuild (slow but CORRECT).
+_assert_delta_newer_than_build_outputs() {
+    if [ "${#_DELTA_PATHS[@]}" -eq 0 ]; then
+        info "Post-condition skipped: no delta-touched path to compare against build-script freshness references"
+        return 0
+    fi
+    # Oldest delta path: the weakest link. If even IT out-dates the newest
+    # `output`, every other delta path does too.
+    local oldest_delta="" _p
+    for _p in "${_DELTA_PATHS[@]}"; do
+        [ -e "$_p" ] || continue
+        if [ -z "$oldest_delta" ] || [ "$_p" -ot "$oldest_delta" ]; then
+            oldest_delta="$_p"
+        fi
+    done
+    if [ -z "$oldest_delta" ]; then
+        info "Post-condition skipped: no delta-touched path exists on disk"
+        return 0
+    fi
+    # Newest `output`: the strongest suppressor. If the oldest delta beats it,
+    # no build script anywhere in the lane can be wrongly considered Fresh.
+    local newest_output="" _f
+    while IFS= read -r -d '' _f; do
+        if [ -z "$newest_output" ] || [ "$_f" -nt "$newest_output" ]; then
+            newest_output="$_f"
+        fi
+    done < <(find "$LANE_TARGET" -maxdepth 5 -type f -name output -print0)
+    if [ -z "$newest_output" ]; then
+        info "Post-condition skipped: no build-script output file under $LANE_TARGET"
+        return 0
+    fi
+    if [ "$oldest_delta" -nt "$newest_output" ]; then
+        info "Post-condition OK: oldest delta path ($oldest_delta) is newer than the newest build-script output ($newest_output)"
+        return 0
+    fi
+    err "Build-script freshness-reference inversion: $newest_output is NOT older than the delta path $oldest_delta"
+    err "cargo compares watched sources against build/<pkg>-<hash>/output and reruns only when STRICTLY NEWER, so this lane would treat a changed source as Fresh and link the base's stale compiled artifact (§9.5 inv.12)"
+    # Where to look: this seed no longer advances those mtimes itself, so an
+    # inversion here almost always arrived IN the cloned base (clock step during
+    # the base build, or a target/ promoted under an odd clock) — in which case
+    # EVERY acquire against that generation aborts identically and the pool
+    # degrades to cold fallback until the base is re-promoted. Say so, so an
+    # operator is not left diagnosing the lane. (Self-healing by backdating the
+    # offending `output` was evaluated and REJECTED — see §9.5 inv.12.)
+    err "The offending mtime is under $LANE_TARGET, which is a CoW clone of ${BASE_TARGET_DIR} — if the inversion came with the base, every acquire against that generation aborts the same way; re-promote a clean base with scripts/refresh-warm-base.sh --landed-commit <sha>"
+    err "_assert_delta_newer_than_build_outputs: seed aborted (cold rebuild forced)"
+    return 1
+}
+
+# Seed-time post-condition (task 5632): under --fresh-checkout, when all three
+# delta-touch-base resolution tiers come back empty, the seed must REFUSE
+# rather than return a lane whose freshness claim it cannot substantiate.
+# Sibling of _assert_no_stale_delta_stamp and _assert_delta_newer_than_build_outputs
+# above, same defense-in-depth posture.
+#
+# The normative statement — including WHY the refusal is conditioned on the
+# clone carrying recorded prior compilations, why it keys on base resolution
+# only (an explicit --touch list does NOT substantiate: see the usage block
+# above), and the operator remedy — lives in ONE place —
+# docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 — deliberately NOT
+# restated here (G7 no-lockstep-duplication), exactly as
+# _assert_delta_newer_than_build_outputs points at inv.12. Pinned by Block U:
+# U1/U1b the .fingerprint gate, U1e the probe's own find-traversal-failure
+# branch (find exits non-zero without ever assigning fingerprint_dir),
+# U1c/U1d the -maxdepth 3 bound, U2/U2b what the guard keys on, U3/U3b/U3c the
+# opt-out knob's exact-"1" contract, U4/U4b/U4c the per-tier attribution this
+# err shares with the resolve site's warn.
+#
+# Implementation notes (local to this site):
+#   - -maxdepth 3 mirrors the non-relocatable build-dir deletion sweep's walk
+#     below (rationale: §9.5 inv.13). -print -quit makes this an early-exit
+#     probe rather than a full walk.
+#   - The probe's exit status is captured EXPLICITLY rather than left to
+#     set -e on a bare assignment: no-match and early--quit both exit 0, but a
+#     TRAVERSAL failure (unreadable subdirectory, or LANE_TARGET missing) exits
+#     non-zero, which would abort the whole seed with find's own stderr and no
+#     attribution to a seed guard. An unknown probe result cannot substantiate
+#     the claim either, so it becomes an attributed fail-closed abort.
+#   - A violation errs + return 1. Under set -e that aborts the seed before
+#     `echo "$LANE_TARGET"`, leaving stdout empty → the caller falls back to a
+#     cold rebuild (slow but CORRECT); see the CALLER OBLIGATION in the stdout
+#     contract at the top of this file.
+_assert_delta_touch_base_substantiated() {
+    local fingerprint_dir
+    if ! fingerprint_dir="$(find "$LANE_TARGET" -maxdepth 3 -type d -name .fingerprint -print -quit)"; then
+        err "Delta-touch-base substantiation probe FAILED to walk $LANE_TARGET (find exited non-zero — unreadable subdirectory, or the lane target is missing), so whether the clone carries recorded prior compilations is UNKNOWN and the no-base freshness claim cannot be substantiated (§9.5 inv.13)"
+        err "_assert_delta_touch_base_substantiated: seed aborted (cold rebuild forced)"
+        return 1
+    fi
+    if [ -z "$fingerprint_dir" ]; then
+        info "Post-condition skipped: no .fingerprint dir under $LANE_TARGET — the clone records no prior compilation for the 2020-01-01 bulk stamp to wrongly re-Freshen"
+        return 0
+    fi
+    # Probe FIRST, knob second: the vacuous no-.fingerprint skip above keeps its
+    # own distinct info line, and this warn only ever appears when the knob
+    # actually suppressed a refusal.
+    if [ "${REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT:-}" = "1" ]; then
+        warn "REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 honoured: accepting a lane with NO delta-touch base despite the recorded prior compilations at $fingerprint_dir — this lane's cloned artifacts may be treated as Fresh against un-delta-touched sources (§9.5 inv.13)"
+        return 0
+    fi
+    err "Unsubstantiated delta-touch base: no base resolved (${_BASE_COMMIT_ATTRIBUTION}), so NOTHING is delta-touched (§9.5 inv.13)"
+    err "The clone records prior compilations at $fingerprint_dir, and every tracked source keeps the 2020-01-01 bulk stamp — so no changed source can out-date any cloned artifact and cargo would report them Fresh"
+    err "Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists"
+    err "_assert_delta_touch_base_substantiated: seed aborted (cold rebuild forced)"
+    return 1
+}
+
+# Delta path set accumulated during --fresh-checkout: the explicit --touch paths
+# plus every path _touch_git_delta actually touched. Consumed by
+# _assert_delta_newer_than_build_outputs at the end of the block, so both delta
+# sources are visible at one call site without re-running `git diff` a third time.
+_DELTA_PATHS=()
+
 # Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
 # Fail-closed: a non-zero git diff exit aborts the seed (err + return 1 →
 # set -e propagates → stdout stays empty → caller falls back to cold rebuild).
@@ -300,6 +725,7 @@ _touch_git_delta() {
             local abs_path="$LANE_DIR/$rel_path"
             if [ -e "$abs_path" ]; then
                 touch "$abs_path"
+                _DELTA_PATHS+=("$abs_path")
                 count=$((count + 1))
             fi
         done <<< "$diff_out"
@@ -337,6 +763,27 @@ fi
 
 info "seed-warm-lane.sh: base=$BASE_TARGET_DIR  lane=$LANE_DIR"
 
+# ── Base-absent guard (distinct from reflink-unsupported; esc-triaged 2026-07-03) ──
+# A MISSING CoW base (absent dir / removed-or-dangling base symlink / non-dir) is
+# NOT a reflink-capability fault. Fail with a distinct code (76) and an accurate
+# diagnostic BEFORE the clone so operators + DF's BASE_ABSENT discriminant are not
+# sent down a reflink/filesystem dead-end (the actual cp error would be
+# "cannot stat <base>/target: No such file or directory").
+#
+# MUST run before the sidecar read / RUSTFLAGS / invocation guards below: on a
+# full teardown (base parent dir — and its sidecar — gone entirely, not just the
+# target dir), _sidecar_read would see a missing sidecar and default both
+# recorded values to "". Under a typical non-empty env RUSTFLAGS, that would
+# make the RUSTFLAGS guard fire first with a misleading "RUSTFLAGS mismatch"
+# message instead of the true "base is missing" cause — exactly the wrong signal
+# for DF's BASE_ABSENT discriminant this guard exists to serve.
+if [ ! -d "$BASE_TARGET_DIR" ]; then
+    err "Warm base target dir absent/unresolvable: $BASE_TARGET_DIR"
+    err "The warm base is missing — run scripts/refresh-warm-base.sh (or scripts/seed-warm-base-initial.sh for first standup) to (re)establish it."
+    err "NOT a reflink-capability fault; the CoW base source does not exist."
+    exit 76
+fi
+
 # ── read sidecar ──────────────────────────────────────────────────────────────
 SIDECAR="$(_sidecar_path "$BASE_TARGET_DIR")"
 RECORDED_RUSTFLAGS="$(_sidecar_read "$SIDECAR" "RUSTFLAGS")"
@@ -358,6 +805,244 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     err "The base artifact was built with a different invocation fingerprint — seeding would produce a cold rebuild."
     err "Re-build the warm base with matching REIFY_WARM_LANE_INVOCATION, or update via --record-base."
     exit 1
+fi
+
+# ── acquire-time lane-lock exclusivity (PRD §9.5 inv.11; esc-5214/task 5354) ──
+# Acquire an EXCLUSIVE flock on the sibling-path ${LANE_DIR}.lock -- the SAME
+# convention thin-warm-lane.sh's T3 (FD 9) and warm-lane-gc.sh's live-consumer
+# probe (FD 8) already use -- BEFORE any target mutation (i.e. before the
+# mode-split below / the fresh-checkout mv), and hold it across the whole run so
+# the destructive replace+clone never races a live consumer (inv.2: one consumer
+# per lane at a time). Runs before the mode-split so it guards BOTH
+# --fresh-checkout and --reset-in-place.
+#
+# FAIL-SAFE DEFAULT (esc-5214/task 5354): acquire whenever --fresh-checkout is in
+# effect, OR when --lane-lock is explicitly passed (the latter preserves the
+# --reset-in-place opt-in). The #5223 guard was opt-in via --lane-lock and thus
+# BYPASSABLE by any acquire-path caller (dark-factory ζ) that simply omitted the
+# flag -- exactly esc-5214, where a --fresh-checkout reseed clobbered a live
+# consumer's in-flight build (zero-byte rmeta, ENOENT). A fail-safe default
+# cannot be bypassed by omission. Per the "reify ships the primitive,
+# dark-factory wires the invocation" seam, the durable fix belongs here in the
+# primitive; dark-factory needs no change (it already handles exit-75/queue per
+# #5223, it just never triggered it because the flag was never passed).
+#
+# flock is NOT re-entrant across a process tree, so a caller that ALREADY holds
+# ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on FD 8) must opt
+# OUT via --assume-lane-lock-held rather than have seed re-open+flock the same
+# file (which would self-refuse against the caller's own held lock).
+_should_acquire_lane_lock=""
+if [ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]; then
+    _should_acquire_lane_lock=1
+fi
+# --assume-lane-lock-held (opt-out): the caller asserts it ALREADY holds
+# ${LANE_DIR}.lock (thin --reseed on FD 9, gc reclaim on FD 8). flock is not
+# re-entrant across a process tree, so seed re-opening+flocking the same file
+# would self-refuse against the caller's own held lock. Skip our own acquire
+# entirely; the caller's held lock already provides the inv.2 exclusivity.
+if [ -n "$ASSUME_LANE_LOCK_HELD" ]; then
+    _should_acquire_lane_lock=""
+fi
+if [ -n "$_should_acquire_lane_lock" ]; then
+    LANE_LOCK="${LANE_DIR}.lock"
+    # Mirrors thin-warm-lane.sh's breadcrumb: the pool's acquire/release
+    # convention (inv.2) guarantees this lock file already exists for any
+    # lane that went through acquire_lane; a missing lock here likely means
+    # the lane never was.
+    [ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
+
+    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): a refused
+    # acquirer of an ordinary task lane should just try a different FREE
+    # lane (0 -> flock -n, non-blocking refuse) -- but the SINGLETON
+    # _merge-verify lane has no alternate to fall back to, so it can QUEUE
+    # instead: N>0 -> flock -w N (bounded queue, refuse on timeout);
+    # "unlimited" (case-insensitive) -> flock (block until acquired, never
+    # refuses). Validation mirrors lib_lane_x_flock.sh's
+    # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
+    # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
+    # bad knob can never touch the target.
+    # ══ LANE-LOCK REFUSAL EXIT CODE (task #5568) ═════════════════════════════
+    #
+    # WHY (75-as-disk-pressure conflation, esc-5556-1, why the flag is opt-in,
+    # the reserved-code survey, the dark-factory arm): docs/prds/
+    # warm-lane-pool-cow-seeding.md §9.5 inv.11 is the SINGLE normative home.
+    # Deliberately not restated here (G7 no-lockstep-duplication) -- the same
+    # pointer-not-copy discipline inv.12 already uses for this script.
+    #
+    # MECHANICS (defined ONCE here, used by BOTH refusal arms below -- the
+    # flock -n immediate refusal and the flock -w queue timeout share ONE code):
+    #   75 (EX_TEMPFAIL) by DEFAULT -- unchanged from before #5568.
+    #   77 (EX_NOPERM)   under --distinct-lock-refusal-rc.
+    # (Tests: Block Q H11a/H11b, H12a/H12b.)
+    LANE_LOCK_REFUSAL_RC=75
+    if [ -n "$DISTINCT_LOCK_REFUSAL_RC" ]; then
+        LANE_LOCK_REFUSAL_RC=77
+    fi
+    # The flag is ACCEPTED-BUT-INERT, never a usage error, wherever no refusal
+    # is reachable (--assume-lane-lock-held, --record-base, WAIT=unlimited), so
+    # a caller may pass it unconditionally. (H11d/H11e/H11f pin the inert
+    # paths; contrast --assume-lane-lock-held + --lane-lock, which IS a usage
+    # error because those two contradict each other.) The `LANE_LOCK_CONTENDED:`
+    # stderr prefix both arms emit is INDEPENDENT of this flag -- always on.
+    # (Tests: Block Q H13.)
+    # ═════════════════════════════════════════════════════════════════════════
+
+    LANE_LOCK_WAIT="${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}"
+    _llw_unlimited=0
+    case "$LANE_LOCK_WAIT" in
+        [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _llw_unlimited=1 ;;
+    esac
+    if [ "$_llw_unlimited" -eq 0 ]; then
+        # The '' alternative is defensive-only: LANE_LOCK_WAIT is assigned via
+        # ${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}, and `:-` substitutes the
+        # default for both unset AND empty, so LANE_LOCK_WAIT can never
+        # actually be empty here -- kept in case that assignment ever changes.
+        case "$LANE_LOCK_WAIT" in
+            ''|*[!0-9]*)
+                err "REIFY_WARM_LANE_LANE_LOCK_WAIT must be a non-negative integer or 'unlimited' (got '${LANE_LOCK_WAIT}')"
+                exit 64
+                ;;
+        esac
+    fi
+
+    # Fixed FD 9 (matches thin-warm-lane.sh's T3 convention, not dynamically
+    # allocated): this silently reassigns any FD 9 already open in this
+    # process, so callers passing --lane-lock must not hold a load-bearing
+    # FD 9 of their own across this invocation -- see the --lane-lock header
+    # note above and thin-warm-lane.sh --reseed, the one caller that already
+    # holds ${LANE_DIR}.lock on FD 9 itself and therefore omits --lane-lock.
+    exec 9>"$LANE_LOCK"
+    if [ "$_llw_unlimited" -eq 1 ]; then
+        flock 9   # block until acquired -- never refuses, no refusal-rc case
+    elif [ "$LANE_LOCK_WAIT" = "0" ]; then
+        if ! flock -n 9; then
+            exec 9>&-
+            err "LANE_LOCK_CONTENDED: Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+            err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+            exit "$LANE_LOCK_REFUSAL_RC"
+        fi
+    else
+        if ! flock -w "$LANE_LOCK_WAIT" 9; then
+            exec 9>&-
+            err "LANE_LOCK_CONTENDED: Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
+            err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+            exit "$LANE_LOCK_REFUSAL_RC"
+        fi
+    fi
+    unset _llw_unlimited
+    # FD 9 stays open (lock held) for the rest of the run -- spanning the
+    # mv+clone below with no check-then-act gap.
+    #
+    # ══ LANE-LOCK RELEASE CONTRACT (task #5705) ══════════════════════════════
+    #
+    # THIS BLOCK IS THE SINGLE SOURCE OF TRUTH for the mechanism and for the
+    # measured rates. Every other site that touches FD 9 -- the --lane-lock
+    # header note, _usage(), the two detached background jobs below (each
+    # spelled `{ _close_inherited_fds; rm -rf ...; } </dev/null >/dev/null 2>&1 &`,
+    # task #6219 amendment), tests/infra/test_seed_lane_lock_release_soak.sh,
+    # tests/infra/README.md --
+    # carries a ONE-LINE POINTER here, never a copy of the argument or of the
+    # numbers. Re-measuring (which is exactly what the soak harness exists to
+    # make easy) must then edit one place, not six; the house G7
+    # no-lockstep-duplication rule, and the reason the pre-amendment version of
+    # this comment was cut down.
+    #
+    # WHY AN EXPLICIT LOCK_UN AND NOT JUST PROCESS EXIT / `exec 9>&-`:
+    # a flock is attached to the OPEN FILE DESCRIPTION, not to the descriptor.
+    # The detached background jobs below (the orphan sweep and the
+    # reseed-trash rm) close every inherited descriptor, INCLUDING this one,
+    # via `_close_inherited_fds` (see its own doc-comment near the log
+    # helpers) in the forked CHILD, AFTER the fork -- so between fork() and
+    # that close the child holds a dup of this very OFD and the exclusive
+    # lock is STILL HELD, even once this process has exited. A consumer
+    # probing the instant seed exits then sees a held lock, and
+    # acquire_lane's default is a non-blocking `flock -n` (refusing with
+    # $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77 under
+    # --distinct-lock-refusal-rc), so it is spuriously refused. Note the
+    # refusal is spurious EITHER WAY: #5568's rc only makes a real refusal
+    # legible, it does not make this window benign. `flock -u` on any
+    # descriptor referring to the OFD drops the lock for every process holding
+    # a dup, which closes the window; closing our own descriptor provably does
+    # not. Measured on a 32-core host under 24 busy-spin workers (against the
+    # then-current explicit `9<&-` close; `_close_inherited_fds` closes FD 9
+    # the same way -- in the child, after the fork -- just discovered
+    # generically rather than by number, so this timing measurement is
+    # unchanged by the task #6219 amendment), held-after-exit over 200
+    # trials: `9<&-` alone 16/200, `9<&-` + parent `exec 9>&-` 14/200,
+    # `9<&-` + parent `flock -u 9` 0/200.
+    #
+    # WHY AN EXIT TRAP AND NOT A STATEMENT AT THE SUCCESS TAIL: a tail
+    # statement is unreachable the moment seed aborts after acquiring -- the
+    # hard reflink error, the same-FS check, and every `set -euo pipefail`
+    # abort in the mid-run find walks / the _assert_delta_newer_than_build_
+    # outputs post-condition are all DOWNSTREAM of the orphan sweep that has
+    # already forked a detached child, so they carry the identical race.
+    # (test_seed_warm_lane.sh H4e pins that failure-path coverage.)
+    #
+    # SIGNAL COVERAGE -- what "every exit path" does and does not include:
+    # an EXIT trap covers signal death too, for TERM/INT/HUP. That is not an
+    # assumption, it is bash's documented termsig_handler behaviour: on a
+    # terminating signal bash runs the EXIT trap FIRST and only then re-raises
+    # the signal against itself, so the exit status stays signal-accurate.
+    # Measured directly against this release shape (parent holds the lock, a
+    # live child holds a dup of the OFD and never closes it, probe fires after
+    # the parent is gone), for both a foreground-child and a builtin-loop
+    # victim: TERM -> trap ran, rc 143, lock FREE; INT -> trap ran, rc 130,
+    # lock FREE; HUP -> trap ran, rc 129, lock FREE; KILL -> trap did NOT run,
+    # lock HELD. So SIGKILL is the ONE uncovered case, and it is uncoverable in
+    # principle: no userspace release can run. Its residual exposure is the
+    # same fork window described above and no wider -- the kernel closes FD 9,
+    # and only a detached child forked microseconds earlier can still be
+    # holding a dup; in the dominant real shapes (systemd stop, an orchestrator
+    # tearing down a cgroup, Ctrl-C on a pipeline) the signal reaches the whole
+    # process group, so that child dies with us.
+    # REJECTED ALTERNATIVE -- adding `trap _release_lane_lock EXIT INT TERM HUP`
+    # explicitly: it is redundant given the above, and it would be actively
+    # harmful. Installing a handler for a terminating signal switches bash from
+    # "die now" to bash's DEFERRED-trap semantics -- a trapped signal received
+    # while a foreground command runs is not delivered until that command
+    # completes -- so a SIGTERM arriving during the multi-GB `cp -a` clone or a
+    # whole-tree `find` walk would be ignored for the duration, blowing through
+    # an orchestrator stop window that today kills seed promptly.
+    #
+    # WHY THE TRAP IS INSTALLED *HERE* RATHER THAN UNCONDITIONALLY WITH AN
+    # IN-BODY GUARD: under --assume-lane-lock-held (thin --reseed on FD 9,
+    # warm-lane-gc.sh reclaim) _should_acquire_lane_lock is empty, we never
+    # open FD 9, and FD 9 is INHERITED from the caller -- an unguarded
+    # `flock -u 9` would release the CALLER's lock, strictly worse than the bug
+    # being fixed. Installing inside this branch makes that structurally
+    # impossible rather than conditionally avoided: on the inheritance path the
+    # trap does not exist at all. (H7b pins it.)
+    #
+    # Ordering note: the $LANE_LOCK_REFUSAL_RC refusal paths above do their own `exec 9>&-`
+    # and error out BEFORE this line, so they never reach the trap and there is
+    # no double-close. The script has no other trap to compose with.
+    # ═════════════════════════════════════════════════════════════════════════
+    _release_lane_lock() {
+        # $? on the FIRST line captures the status that triggered the trap;
+        # `return $_rc` preserves it so exit codes are unchanged (notably the
+        # exit 1 of the reflink hard-error path, which is downstream of here).
+        local _rc=$?
+        # Every command is `|| true`-guarded: `set -euo pipefail` is in force,
+        # and a failing command inside an EXIT trap would abort the trap
+        # mid-way and lose the exit status. `exec 9>&-` is deliberately NOT
+        # written as `exec 9>&- 2>/dev/null || true` -- an `exec` carrying
+        # redirections and NO command applies them PERMANENTLY to the shell,
+        # so that `2>/dev/null` would silence every later diagnostic rather
+        # than just this close.
+        flock -u 9 2>/dev/null || true
+        exec 9>&- || true
+        # STRUCTURAL RELEASE MARKER (technique S, docs/prds/
+        # infra-test-wallclock-deflake.md §2): proves this path ran without a
+        # timing assertion. test_seed_warm_lane.sh's H4b/H4e grep the literal
+        # phrase "explicit flock -u before exit" -- keep it verbatim. STDERR
+        # only, via info(): STDOUT is seed's machine-readable contract with
+        # acquire_lane (exactly "<lane_dir>/target", pinned by H7; asserted
+        # EMPTY on the fail-closed path by H3), so nothing may be added to it.
+        info "Lane lock released (explicit flock -u before exit): $LANE_LOCK" || true
+        return $_rc
+    }
+    trap _release_lane_lock EXIT
 fi
 
 # ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
@@ -462,9 +1147,28 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # <lane>.<pid> entry under RESEED_TRASH_DIR cannot be from a concurrent live
         # seed — it is always a prior-crash orphan and is safe to reclaim now.
         # Background rm mirrors the main rm (large tree, must not block acquire).
+        # _close_inherited_fds (task #6219 amendment): see its own doc-comment
+        # near the log helpers for the full argument -- not restated here
+        # (G7). Closes any lane-lock FD this or another caller may hold,
+        # generically. It only NARROWS the fork-to-close window and cannot
+        # close it entirely -- see the LANE-LOCK RELEASE CONTRACT block at
+        # the flock acquire above (#5705).
+        # </dev/null >/dev/null 2>&1 (task #6219): same rationale as the
+        # reseed-trash rm below (see its comment for the full fd-1/fd-2
+        # argument) -- this detached child must not hold a descriptor of a
+        # pipe-capturing caller either. A failed rm here is still surfaced:
+        # this very sweep re-finds and re-warns about the entry on the lane's
+        # next seed, and warm-lane-gc-sweep.sh's _reap_stale_trash reaps it
+        # pool-wide.
+        # The </dev/null half is LOAD-BEARING AT THIS SITE SPECIFICALLY
+        # (amendment 2): this detach is nested inside the `while ... done <
+        # <(find ...)` below, so bash's async-list /dev/null stdin default
+        # does not apply and the child would otherwise inherit the loop's
+        # redirected stdin. Measurement and the general argument live in
+        # `_close_inherited_fds`'s doc-comment -- not restated here (G7).
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } &
+            { _close_inherited_fds; rm -rf "$_rp_orphan"; } </dev/null >/dev/null 2>&1 &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
@@ -524,6 +1228,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     if [ "${#TOUCH_PATHS[@]}" -gt 0 ]; then
         info "Touching ${#TOUCH_PATHS[@]} explicit delta path(s) to now ..."
         touch "${TOUCH_PATHS[@]}"
+        _DELTA_PATHS+=("${TOUCH_PATHS[@]}")
     fi
 
     # Resolve the delta-touch base commit with 3-tier priority (esc-3468-75):
@@ -533,6 +1238,26 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     #   3. .warm-base-meta BASE_COMMIT (legacy fallback; drift-prone)
     # An empty result means no base is known → no delta-touch (Block D unchanged).
     EFFECTIVE_BASE_COMMIT=""
+    # Per-tier attribution for tiers 2/3, threaded into the no-base warn/err
+    # messages below so an operator is told "present but empty" rather than a
+    # false "absent" when a stamp/sidecar file exists but its value read back
+    # blank (e.g. a write truncated mid-printf) — the file is right there, and
+    # the fix is to inspect it, not to `ls` for something already present
+    # (task 5632 amendment). Pinned by Block U's U4/U4b/U4c.
+    #
+    # set -e SAFETY of the two `[ -f X ] && VAR=...` promotions below — measured,
+    # not assumed. In an `A && B` list a failing A is exempt from errexit (only
+    # the command after the FINAL && is not), so a false `[ -f X ]` leaves the
+    # status at "absent" and execution continues; verified against the exact
+    # nested if/else shape used here. That exemption is POSITIONAL, not a
+    # property of the idiom: the same list as the LAST command of a function
+    # makes the function return non-zero, and errexit then kills the seed at the
+    # CALL site (measured: `set -e; g(){ [ -f /nonexistent ] && FOO=1; }; g`
+    # exits 1 without reaching the next statement). So no `|| true` is needed
+    # where these lines sit today, but moving either one to a function's tail
+    # makes one mandatory.
+    _BASE_COMMIT_TIER2_STATUS="absent"
+    _BASE_COMMIT_TIER3_STATUS="absent"
     if [ -n "$BASE_COMMIT" ]; then
         EFFECTIVE_BASE_COMMIT="$BASE_COMMIT"
         # Tier 1 (CLI --base-commit): source is self-evident; logged below.
@@ -542,6 +1267,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             # Tier 2: authoritative per-gen stamp (refresh-written, TOCTOU-free).
             info "delta-touch base from authoritative .basecommit: $EFFECTIVE_BASE_COMMIT"
         else
+            [ -f "${BASE_TARGET_DIR}.basecommit" ] && _BASE_COMMIT_TIER2_STATUS="present but empty"
             EFFECTIVE_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
             if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
                 # Tier 3: legacy fallback.  Stamp absent means either a pre-fix base
@@ -549,9 +1275,17 @@ if [ -n "$FRESH_CHECKOUT" ]; then
                 # unresolved symlink instead of the concrete .gen.N path (D8 seam
                 # contract violation).  Either way, this is diagnosable from logs.
                 warn "delta-touch base from legacy .warm-base-meta BASE_COMMIT (authoritative stamp absent — caller may have passed an unresolved symlink): $EFFECTIVE_BASE_COMMIT"
+            else
+                [ -f "$SIDECAR" ] && grep -q "^BASE_COMMIT=" "$SIDECAR" 2>/dev/null && _BASE_COMMIT_TIER3_STATUS="present but empty"
             fi
         fi
     fi
+    # Single attribution string shared by the warn below and by
+    # _assert_delta_touch_base_substantiated's err (§9.5 inv.13): naming
+    # "present but empty" instead of "absent" for a tier whose file exists
+    # sends an operator to inspect the file's CONTENT, not to hunt for a file
+    # that was there all along.
+    _BASE_COMMIT_ATTRIBUTION="--base-commit absent, ${BASE_TARGET_DIR}.basecommit ${_BASE_COMMIT_TIER2_STATUS}, .warm-base-meta BASE_COMMIT ${_BASE_COMMIT_TIER3_STATUS}"
 
     if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
         info "Touching git diff --name-only $EFFECTIVE_BASE_COMMIT paths to now ..."
@@ -560,6 +1294,21 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # no tracked file listed by git diff may still carry the 2020-01-01 bulk-stamp
         # epoch. Violations abort the seed (fail-closed → stdout empty → cold rebuild).
         _assert_no_stale_delta_stamp "$EFFECTIVE_BASE_COMMIT"
+    else
+        # All three resolution tiers came back empty, so NOTHING is delta-touched
+        # and every tracked source keeps the 2020-01-01 bulk stamp above. Report
+        # the condition and what it implies; do not diagnose why it happened,
+        # then refuse via _assert_delta_touch_base_substantiated immediately
+        # below (task 5632 — full statement: §9.5 inv.13).
+        warn "No delta-touch base resolved (${_BASE_COMMIT_ATTRIBUTION}) — no tracked source is touched to now, so every tracked source keeps the 2020-01-01 bulk stamp and cannot out-date any cloned build artifact; cargo will treat stale build-script outputs as Fresh. Pass --base-commit <sha>, or re-run scripts/refresh-warm-base.sh so the authoritative .basecommit stamp exists."
+        # Called HERE — before the non-relocatable build-dir invalidation, the
+        # links-metadata/OUT_DIR relocation sweep and the env!() relink below —
+        # so a doomed seed pays none of those walks. This is the mirror-image of
+        # _assert_delta_newer_than_build_outputs, which is called LAST because it
+        # must observe FINAL mtimes; this guard depends on nothing later.
+        # The warn above is retained: it is the human-readable diagnosis and
+        # still fires on the paths where the seed legitimately proceeds.
+        _assert_delta_touch_base_substantiated
     fi
 
     # ── non-relocatable build-script output-dir invalidation ──────────────────
@@ -609,6 +1358,163 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 
+    # Base build-worktree stamp (refresh-warm-base.sh Step 4b), shared by the
+    # relocation sweep below and the env!()-relink gate further down.
+    _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
+    _lane_rp="$(realpath -m "$LANE_DIR")"
+
+    # ── non-relocatable links-metadata/OUT_DIR path relocation (task 5126) ────
+    # cxx/reify-kernel-occt/reify-kernel-openvdb/libsqlite3-sys/zstd-sys/etc. sit
+    # outside the _NONRELOCATABLE_BUILD_GLOBS allow-list above, so the foreign
+    # buildroot baked into two build-script replay files survives the CoW seed
+    # verbatim -> ENOENT once the base's own worktree is refreshed or cleaned:
+    #   `output`      — links-metadata cargo emits, e.g. cxx's
+    #                   cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include
+    #   `root-output` — the build script's OUT_DIR, replayed so
+    #                   include!(concat!(env!("OUT_DIR"), ...)) opens the right dir
+    # Rewrite the foreign prefix to this lane's root in place rather than
+    # deleting the build dir: the CoW copy already placed identical out/
+    # content at the lane-relative path, so relocating keeps the compiled
+    # rlib/.o/.a Fresh (path-independent fingerprint) instead of forcing a
+    # multi-minute native/C++ rebuild.
+    # Gate (distinct from the env!()-relink gate below): an ABSENT stamp means
+    # the foreign prefix is UNKNOWN, so this skips with a warn rather than
+    # relinking-on-uncertainty like the env!() case — an empty search prefix
+    # would match every byte of every candidate file and corrupt it, whereas
+    # the env!() relink's fail-safe action (a bare `touch`) has no such risk.
+    #
+    # SCOPE BOUNDARY (deliberate, not exhaustive): only files NAMED `output` or
+    # `root-output` are candidates — a filename filter, not a content scan — so
+    # a sibling `.d` depfile or a compiled `.o`/`.a`/`.rlib` that happens to
+    # also contain the foreign prefix is NEVER touched, even though it exists
+    # in the same build dir. `.d` depfiles are advisory (a stale entry forces
+    # at most a localized recompile, never ENOENT); binaries are already
+    # compiled and path-independent, and rewriting their bytes is a corruption
+    # risk with no upside. This mirrors the _NONRELOCATABLE_BUILD_GLOBS
+    # allow-list's philosophy of a narrow, explicit surface rather than a
+    # broad one. MAINTENANCE: if cargo ever bakes a foreign-path-carrying
+    # replay file under a NEW name (beyond `output`/`root-output`), add it to
+    # the `-name` clause below rather than widening this into a content scan.
+    if [ -z "$_recorded_buildroot" ]; then
+        warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate baked links-metadata/OUT_DIR path(s); an empty search prefix would match every byte and corrupt files, so skipping rather than guessing. Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
+    else
+        _foreign_rp="$(realpath -m "$_recorded_buildroot")"
+        if [ "$_foreign_rp" != "$_lane_rp" ]; then
+            _relocate_search_esc="$(_sed_escape "$_foreign_rp")"
+            _relocate_replace_esc="$(_sed_escape "$_lane_rp")"
+            _relocate_candidate_count=0
+            _relocated_count=0
+            # -maxdepth 5: output/root-output live at target/<profile>/build/<pkg>-<hash>/{output,root-output}
+            # (depth 4) or, for cross-compiled targets, target/<triple>/<profile>/build/<pkg>-<hash>/{output,root-output}
+            # (depth 5) — mirrors the -maxdepth 3 bound on the tauri/reify-gui deletion sweep's directory
+            # walk above, applied one filename-match level deeper here since this find locates leaf files
+            # rather than `build` dirs. Bounding this avoids a full unbounded descent into every out/
+            # subdir and incremental-fingerprint dir under the (potentially huge) warm target tree.
+            while IFS= read -r -d '' _rl_file; do
+                _relocate_candidate_count=$((_relocate_candidate_count + 1))
+                if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
+                    # MTIME PRESERVATION (§9.5 inv.12) — load-bearing, not
+                    # cosmetic: rewriting a baked path is a CONTENT correction,
+                    # not evidence the build script ran, and `sed -i` replaces
+                    # via temp+rename so the file would otherwise land at SEED
+                    # time, above the sources delta-touched two find-walks
+                    # earlier. Pinned by Block S/S1c.
+                    # `stat -c '%y'` + GNU `touch -d` round-trip full sub-second
+                    # precision: required, since cargo compares at nanosecond
+                    # resolution. Deliberately NOT `|| true`-guarded — under
+                    # `set -euo pipefail` a stat/touch failure aborts the seed
+                    # (empty stdout → cold rebuild), the correct fail-closed
+                    # posture for a freshness invariant.
+                    _rl_ts="$(stat -c '%y' "$_rl_file")"
+                    sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
+                    touch -d "$_rl_ts" "$_rl_file"
+                    _relocated_count=$((_relocated_count + 1))
+                fi
+            done < <(find "$LANE_TARGET" -maxdepth 5 -type f \( -name output -o -name root-output \) -print0)
+            if [ "$_relocated_count" -eq 0 ] && [ "$_relocate_candidate_count" -gt 0 ]; then
+                # Candidates exist (cargo DID write output/root-output files) yet NONE carried the
+                # recorded foreign prefix, even though the buildroot gate says foreign != lane. That
+                # combination is only expected if the .buildroot stamp and the bytes actually baked into
+                # these files were canonicalized inconsistently (e.g. the base was built through a
+                # symlinked worktree path while the stamp records the realpath, or vice-versa) — grep -qF
+                # would then silently match nothing on every candidate, nothing gets rewritten, and the
+                # foreign path(s) survive verbatim, reproducing the exact ENOENT this fix targets. Warn
+                # instead of a bare "Relocated 0" so canonicalization drift surfaces instead of reading
+                # as success.
+                warn "Relocated 0 of $_relocate_candidate_count links-metadata/OUT_DIR candidate file(s) even though recorded buildroot ($_foreign_rp) differs from this lane ($_lane_rp) — none contained the expected foreign prefix. This may mean the .buildroot stamp and the baked paths were canonicalized inconsistently (e.g. symlinked vs realpath worktree root); if so, the foreign path(s) will survive uncorrected and the lane may hit ENOENT. Re-check the stamp written by refresh-warm-base.sh."
+            else
+                info "Relocated $_relocated_count of $_relocate_candidate_count links-metadata/OUT_DIR candidate file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
+            fi
+        else
+            info "Skipping links-metadata/OUT_DIR relocation: recorded buildroot matches this lane ($_lane_rp)"
+        fi
+    fi
+
+    # ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
+    # A TEST or BENCH source can bake an absolute worktree path at compile time
+    # via a cargo-internal env!() macro (CARGO_MANIFEST_DIR, OUT_DIR,
+    # CARGO_TARGET_TMPDIR, CARGO_BIN_EXE_*).  These macros are NOT part of
+    # cargo's fingerprint, so after a CoW clone from a base built under a
+    # DIFFERENT worktree, the frozen 2020-01-01 source mtime makes cargo treat
+    # the test/bench binary as Fresh and it keeps serving the BASE's baked
+    # path — a deterministic runtime NotFound (Cargo.toml missing) once that
+    # worktree is deleted or holds different content (esc-4906-57; confirmed
+    # manual fix: touching the offending sources forces cargo to recompile and
+    # relink).
+    #
+    # Fix: touch (to now) only the seeded tests/ and benches/ .rs sources that
+    # contain one of these macros, forcing cargo to recompile+relink ONLY those
+    # integration/bench test binaries (each is its own compilation-unit root —
+    # no lib rlib cascade).  src/ unit-test env!() usage is an accepted,
+    # documented limitation (touching a src/ file would force a lib recompile
+    # and cascade to every downstream dependent — expensive and unobserved).
+    #
+    # MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
+    # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
+    # convention above).  Currently covers the CARGO_* macros known to bake
+    # absolute build-time paths into compiled test/bench binaries.
+    _ENV_PATH_MACRO_RE='env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_]+)"\)'
+
+    # ── buildroot-match gate ───────────────────────────────────────────────
+    # Compare the base's recorded build-worktree (refresh-warm-base.sh Step 4b
+    # .buildroot stamp) against THIS consuming lane.  In production the base
+    # is always built under _merge-verify while the consuming lane is
+    # _lane-K, so these realpaths always DIFFER and the relink below fires on
+    # every acquire — correctly, because the baked path is never the lane's
+    # own, and trusting that the base's original build worktree still exists
+    # with identical content is exactly the esc-4906-57 failure mode (that
+    # worktree gets refreshed or deleted out from under the stale baked
+    # path). ABSENT (no stamp — pre-fix base, or refresh has not yet run the
+    # Step 4b write) fails safe and relinks too, since the baked path's
+    # provenance is unknown. Only an EXACT match (the base was built under
+    # this lane's own path) skips the relink as a genuine no-op.
+    # (_recorded_buildroot/_lane_rp already computed above, shared with the
+    # links-metadata/OUT_DIR relocation sweep.)
+    if [ -z "$_recorded_buildroot" ] || [ "$(realpath -m "$_recorded_buildroot")" != "$_lane_rp" ]; then
+        _relinked_count=0
+        while IFS= read -r -d '' _rs_file; do
+            # grep -q exits 1 on no-match; under set -euo pipefail a bare/&&-
+            # chained call would abort the seed on the (common) no-match
+            # case, so guard it in an `if` instead.
+            if grep -qE "$_ENV_PATH_MACRO_RE" "$_rs_file" 2>/dev/null; then
+                touch "$_rs_file"
+                _relinked_count=$((_relinked_count + 1))
+            fi
+        done < <(find "$LANE_DIR" -type f -name '*.rs' \
+                      \( -path '*/tests/*' -o -path '*/benches/*' \) \
+                      -not -path "$LANE_DIR/target/*" -print0)
+        info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own CARGO_MANIFEST_DIR (recorded buildroot=${_recorded_buildroot:-<absent>}, lane=$_lane_rp)"
+    else
+        info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($_lane_rp)"
+    fi
+
+    # Seed-time post-condition (§9.5 inv.12). Called HERE — last of the
+    # mtime-mutating steps, after the relocation sweep AND the env!()-relink
+    # touch — so it observes the FINAL mtimes rather than an intermediate state
+    # any later step could invalidate. Placed before the reseed-trash rm below to
+    # honour that block's "start only once every find walk is complete" ordering.
+    _assert_delta_newer_than_build_outputs
+
     # Remove the reseed trash AFTER all find walks of LANE_DIR are complete.
     # Deferring to here (rather than immediately after the cp clone) prevents the
     # concurrent find/rm race: the find above prunes target.reseed-trash.* so it
@@ -618,12 +1524,38 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
     # Background by default (production: large lane rm must not block acquire).
     # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
+    # _close_inherited_fds (task #6219 amendment): see its own doc-comment
+    # near the log helpers for the full argument -- not restated here (G7).
+    # The SYNC (foreground) branch needs no change: it completes before seed
+    # exits either way, so it never forks a detached child to close anything
+    # for. As at the orphan sweep above, the close only NARROWS the
+    # fork-to-close window -- see the LANE-LOCK RELEASE CONTRACT block at the
+    # flock acquire above (#5705).
+    # </dev/null >/dev/null 2>&1 (task #6219): this script's stdout is a single-use
+    # machine-readable result channel -- exactly one echo "$LANE_TARGET" at
+    # the very end (see the Stdout contract in the header) -- so a detached
+    # child must never hold a descriptor of it. Without this redirect, a
+    # caller that captures stdout through a PIPE rather than a file (e.g.
+    # scripts/warm-lane-gc.sh:648-649's `2>&1 | while IFS= read -r line; do
+    # ...; done`) blocks until this background rm of a possibly large tree
+    # ALSO exits, defeating the point of detaching it. Applied after the fd
+    # close so a lock-fd leak can never masquerade as a stdout leak; a failed
+    # rm here is no longer observable on this fd, but a leaked entry is
+    # still reported by two other mechanisms: the orphan-trash sweep above
+    # re-finds and re-warns about it on this lane's next seed, and
+    # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
+    # The </dev/null half is redundant HERE -- this detach is not nested in a
+    # redirected construct, so bash's async-list default already gives it
+    # /dev/null -- and is spelled anyway so the two sites share ONE shape that
+    # V17's structural guard can require uniformly, rather than one that holds
+    # by construction and one that holds by a conditional bash default (see
+    # `_close_inherited_fds`'s doc-comment, amendment 2; not restated, G7).
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } &
+            { _close_inherited_fds; rm -rf "$RESEED_TRASH"; } </dev/null >/dev/null 2>&1 &
         fi
     fi
 fi

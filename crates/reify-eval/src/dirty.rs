@@ -5,7 +5,7 @@
 //! intersection of the dirty cone and the demand cone, topologically sorted
 //! so that dependencies are evaluated before their dependents.
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::cache::NodeId;
 use crate::demand::DemandRegistry;
@@ -143,96 +143,45 @@ pub fn compute_dirty_cone_with_realizations(
     dirty
 }
 
-/// Topologically sort a set of nodes using Kahn's algorithm.
+/// Topologically sort a set of nodes — a thin delegate to the ONE scheduling core.
 ///
-/// Only considers edges within the node set (external dependencies are ignored).
-/// Tie-breaking uses Debug representation for deterministic output.
+/// This function owns no scheduling logic of its own: it forwards to
+/// [`crate::engine_fixpoint::run_unified_pass_seeded`], the single Kahn core
+/// (INV-EVAL-5) shared with the cold, build, edit and concurrent paths. For the
+/// order's mechanics — drain shape, which reads contribute in-degree, how
+/// out-of-set producers are treated — read that function's doc; deliberately not
+/// restated here, so this comment cannot drift out of sync with the core.
 ///
-/// This is a convenience wrapper around [`compute_levels`] that flattens the
-/// leveled output into a single ordered vector.
+/// # Cycle-drop contract
+///
+/// The one property callers rely on that is NOT visible from the core's
+/// signature: this delegate is PURE and must stay so — it must never append
+/// cyclic residue to recover a total order. A node inside a dependency cycle
+/// never reaches in-degree 0, so it is absent from the returned vector, and
+/// `sorted.len() < nodes.len()` is exactly the cycle signal three production
+/// sites rely on: [`crate::engine_eval`]'s `detect_let_cycle` and
+/// `build_combined_param_let_graph` (which checks it twice — once on the combined
+/// param+let graph, once on the let-only re-check), and [`crate::unfold`]'s
+/// `elaborate_child_lets_only`. Appending residue here would silently disable all
+/// three cycle diagnostics while leaving their call sites looking correct.
+/// Callers that need a total order over a possibly-cyclic set must append the
+/// residue *themselves*, at their own call site, where the choice is visible.
 pub fn topological_sort(
     nodes: &HashSet<NodeId>,
     traces: &HashMap<NodeId, DependencyTrace>,
 ) -> Vec<NodeId> {
-    compute_levels(nodes, traces)
-        .into_iter()
-        .flatten()
-        .collect()
-}
-
-/// Compute topological levels from a set of nodes using Kahn's algorithm.
-///
-/// Each level contains nodes whose in-set dependencies have all been placed
-/// in earlier levels. Nodes within a level have no dependencies on each other
-/// and can safely execute concurrently.
-///
-/// Only considers edges within the node set (external dependencies are ignored).
-/// Tie-breaking uses Debug representation for deterministic output within each level.
-pub fn compute_levels(
-    nodes: &HashSet<NodeId>,
-    traces: &HashMap<NodeId, DependencyTrace>,
-) -> Vec<Vec<NodeId>> {
-    if nodes.is_empty() {
-        return Vec::new();
-    }
-
-    // Build in-degree map (only counting edges within the node set)
-    let mut in_degree: HashMap<NodeId, usize> = nodes.iter().map(|n| (n.clone(), 0)).collect();
-
-    for node in nodes {
-        if let Some(trace) = traces.get(node) {
-            // Deduplicate reads to avoid over-counting in-degree
-            // (e.g. expression `a * a` reads 'a' twice but has only 1 unique dep)
-            let unique_deps: HashSet<&ValueCellId> = trace.reads.iter().collect();
-            for dep_cell in unique_deps {
-                let dep_node = NodeId::Value(dep_cell.clone());
-                if nodes.contains(&dep_node) {
-                    *in_degree.get_mut(node).unwrap() += 1;
-                }
-            }
-        }
-    }
-
-    // Use BTreeSet with Debug repr for deterministic tie-breaking
-    let mut ready: BTreeSet<DebugOrd> = in_degree
-        .iter()
-        .filter(|(_, deg)| **deg == 0)
-        .map(|(n, _)| DebugOrd(n.clone()))
-        .collect();
-
-    let mut levels = Vec::new();
-
-    while !ready.is_empty() {
-        // All nodes currently ready form one level
-        let current_level: Vec<NodeId> = ready.iter().map(|d| d.0.clone()).collect();
-        ready.clear();
-
-        // Decrement in-degree for dependents of nodes in this level
-        for node in &current_level {
-            if let NodeId::Value(vcid) = node {
-                for candidate in nodes {
-                    if let Some(trace) = traces.get(candidate)
-                        && trace.reads.contains(vcid)
-                    {
-                        let deg = in_degree.get_mut(candidate).unwrap();
-                        debug_assert!(*deg > 0, "in-degree underflow: node {:?}", candidate);
-                        *deg -= 1;
-                        if *deg == 0 {
-                            ready.insert(DebugOrd(candidate.clone()));
-                        }
-                    }
-                }
-            }
-        }
-
-        levels.push(current_level);
-    }
-
-    levels
+    // Argument order is the core's: (traces, seed).
+    crate::engine_fixpoint::run_unified_pass_seeded(traces, nodes)
 }
 
 /// Compute the evaluation set: intersection of dirty cone and demand cone,
 /// topologically sorted so dependencies are evaluated before dependents.
+///
+/// The sort is [`topological_sort`], so this entry point inherits the ONE
+/// scheduling core's order — and its cycle-drop contract — transitively. This is
+/// the order the edit path re-evaluates in, and it is the same order the
+/// cold/build paths schedule; the two surfaces cannot diverge because there is
+/// only one implementation to diverge from.
 pub fn compute_eval_set(
     dirty: &HashSet<NodeId>,
     demand: &DemandRegistry,
@@ -406,28 +355,6 @@ pub(crate) fn assert_dag_complete_from_graph(
     let traces = crate::deps::build_trace_map_and_fields(graph, fields);
     if let Err(violation) = check_dag_complete(&traces, exec_order) {
         panic!("{}", violation.describe());
-    }
-}
-
-/// Wrapper for NodeId that implements Ord based on Debug representation.
-/// Used for deterministic tie-breaking in topological sort.
-///
-/// Promoted to `pub(crate)` (task 4357 δ) so `engine_fixpoint::run_unified_pass`
-/// reuses the SAME determinism tie-break for its Kahn worklist ready-set and
-/// Tarjan outer-iteration/successor order — a single source of total ordering,
-/// no duplicated wrapper.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DebugOrd(pub(crate) NodeId);
-
-impl PartialOrd for DebugOrd {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for DebugOrd {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        format!("{:?}", self.0).cmp(&format!("{:?}", other.0))
     }
 }
 
@@ -1507,102 +1434,6 @@ mod tests {
             !eval_set.contains(&NodeId::Realization(RealizationNodeId::new(e, 0))),
             "realization should not be in eval_set"
         );
-    }
-
-    // --- compute_levels tests ---
-
-    #[test]
-    fn compute_levels_empty_input() {
-        use crate::deps::DependencyTrace;
-        use crate::dirty::compute_levels;
-        use std::collections::HashMap;
-
-        let nodes: HashSet<NodeId> = HashSet::new();
-        let traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
-        let levels = compute_levels(&nodes, &traces);
-        assert!(levels.is_empty());
-    }
-
-    #[test]
-    fn compute_levels_fan_out() {
-        // a -> b, a -> c => levels: [[a], [b, c]]
-        use crate::deps::DependencyTrace;
-        use crate::dirty::compute_levels;
-        use std::collections::HashMap;
-
-        let a = NodeId::Value(ValueCellId::new("X", "a"));
-        let b = NodeId::Value(ValueCellId::new("X", "b"));
-        let c = NodeId::Value(ValueCellId::new("X", "c"));
-
-        let mut nodes = HashSet::new();
-        nodes.insert(a.clone());
-        nodes.insert(b.clone());
-        nodes.insert(c.clone());
-
-        let mut traces = HashMap::new();
-        traces.insert(a.clone(), DependencyTrace::default());
-        traces.insert(
-            b.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "a")],
-            },
-        );
-        traces.insert(
-            c.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "a")],
-            },
-        );
-
-        let levels = compute_levels(&nodes, &traces);
-        assert_eq!(levels.len(), 2, "expected 2 levels, got {:?}", levels);
-        assert_eq!(levels[0], vec![a.clone()]);
-        // b and c should both be in level 1 (order determined by DebugOrd)
-        assert_eq!(levels[1].len(), 2);
-        assert!(levels[1].contains(&b));
-        assert!(levels[1].contains(&c));
-    }
-
-    #[test]
-    fn compute_levels_chain() {
-        // a -> b -> c => levels: [[a], [b], [c]]
-        use crate::deps::DependencyTrace;
-        use crate::dirty::compute_levels;
-        use std::collections::HashMap;
-
-        let a = NodeId::Value(ValueCellId::new("X", "a"));
-        let b = NodeId::Value(ValueCellId::new("X", "b"));
-        let c = NodeId::Value(ValueCellId::new("X", "c"));
-
-        let mut nodes = HashSet::new();
-        nodes.insert(a.clone());
-        nodes.insert(b.clone());
-        nodes.insert(c.clone());
-
-        let mut traces = HashMap::new();
-        traces.insert(a.clone(), DependencyTrace::default());
-        traces.insert(
-            b.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "a")],
-            },
-        );
-        traces.insert(
-            c.clone(),
-            DependencyTrace {
-                realization_reads: Vec::new(),
-                reads: vec![ValueCellId::new("X", "b")],
-            },
-        );
-
-        let levels = compute_levels(&nodes, &traces);
-        assert_eq!(levels.len(), 3, "expected 3 levels, got {:?}", levels);
-        assert_eq!(levels[0], vec![a]);
-        assert_eq!(levels[1], vec![b]);
-        assert_eq!(levels[2], vec![c]);
     }
 
     // --- check_dag_complete positive tests (step-1) ---

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 4051 (Cycles A-B), task 4078 (Cycle C), and
-# task 4913/A2 (Cycles D-E).
+# Infrastructure test for task 4051 (Cycles A-B), task 4078 (Cycle C),
+# task 4913/A2 (Cycles D-E), and task 5210 (Cycle F).
 # Covers:
 #   Cycle A — DF_VERIFY_ROLE validation / exit-64 contract (step-1 / step-2)
 #   Cycle B — CARGO_PRIO prefix-wrapping contract         (step-3 / step-4)
@@ -10,6 +10,9 @@
 #             (task 4913/A2 step-1 / step-2)
 #   Cycle E — offline positive heavy filter + --run-ignored all + jobserver detach
 #             (task 4913/A2 step-3 / step-4)
+#   Cycle F1 — background role recognition, idle-class CARGO_PRIO, gated
+#              (non-exempt) admission plan-lines, task-FIFO jobserver
+#              (task 5210 step-1 / step-2)
 #
 # Drives verify.sh via --print-plan (hermetic: never builds anything).
 
@@ -21,6 +24,27 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
+
+# For nextest_available_in_plan (the plan-header availability probe below).
+# Sourcing the lib installs no trap and builds no environment — only
+# nextest_absent_init does that, and this suite deliberately never calls it.
+[ -f "$SCRIPT_DIR/nextest_absent_lib.sh" ] || {
+    echo "ERROR: nextest_absent_lib.sh not found at $SCRIPT_DIR/nextest_absent_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/nextest_absent_lib.sh"
+
+# Hermetic against the ambient REIFY_RELEASE_DELTA_SKIP knob (task #5280 zeta;
+# dark-factory-orchestrator.yaml exports it into the whole merge-gate verify.sh
+# process tree once armed). The knob is consulted ONLY under DF_VERIFY_ROLE=merge
+# (scripts/verify.sh's _RELEASE_DELTA_SKIP block) and, when 1 on a delta-clean
+# tree, swaps a captured release nextest pass for the frozen
+# 'RELEASE-PASS: skipped (delta-clean)' marker. This file re-asserts
+# DF_VERIFY_ROLE=merge inline for several --print-plan captures below (Cycle B
+# and Cycle C), so neutralize the knob for the WHOLE file exactly once here --
+# mirroring tests/infra/run_all.sh's pool-wide `export REIFY_RELEASE_DELTA_SKIP=0`
+# -- rather than per-capture, so a future merge-role capture can't reintroduce
+# the same masking gap (task 5460). A test that legitimately exercises the knob
+# would set it inline per-command, which overrides this export.
+export REIFY_RELEASE_DELTA_SKIP=0
 
 echo "=== DF_VERIFY_ROLE validation and cargo priority prefix tests ==="
 
@@ -45,7 +69,7 @@ assert "DF_VERIFY_ROLE=bogus: exits 64" \
 
 # (b) stderr must contain the exact diagnostic (em-dash U+2014 is literal in the string below)
 assert "DF_VERIFY_ROLE=bogus: stderr contains expected ERROR diagnostic" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "verify.sh: ERROR — unknown DF_VERIFY_ROLE '"'"'bogus'"'"' (want task|merge|offline)"' \
+    bash -c 'printf "%s\n" "$1" | grep -qF "verify.sh: ERROR — unknown DF_VERIFY_ROLE '"'"'bogus'"'"' (want task|merge|offline|background)"' \
     _ "$_bogus_stderr"
 
 # (c) valid role 'task' must exit 0
@@ -153,6 +177,8 @@ echo "--- Cycle C: PROFILE default by DF_VERIFY_ROLE ---"
 
 # Capture full plan and commands-only plan for each case.
 # C1: merge + no explicit --profile => profile=both (release coverage on merge path)
+# (the file-level REIFY_RELEASE_DELTA_SKIP=0 export above keeps this capture's
+# release-pass-present assertion below hermetic against the ambient knob)
 C1_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 C1_CMDS="$(printf '%s\n' "$C1_FULL" | grep -v '^#')"
 
@@ -293,14 +319,40 @@ esac
 POSITIVE_PATTERN='-E "('
 NEGATIVE_PATTERN='-E "not ('
 
-# nextest availability — reuse the Cycle D offline plan header (NEXTEST is
-# role/knob-invariant, computed once in verify.sh before role logic runs;
-# same probe idiom as the A4 test).
-_OFFLINE_HEADER="$(printf '%s\n' "$OFFLINE_FULL" | grep '^# verify.sh plan')"
+# nextest availability — reuse the Cycle D offline plan header, read back OUT of
+# the already-captured OFFLINE_FULL via the shared detector in
+# tests/infra/nextest_absent_lib.sh (task 5644), which is where the "same probe
+# idiom as the A4 test" now lives for all eight suites that carry it. No extra
+# verify.sh invocation; OFFLINE_FULL stays, since the Cycle D asserts read it.
+#
+# Reading availability out of a plan captured under DF_VERIFY_ROLE=offline is
+# sound because NEXTEST is role/knob-invariant. The old comment justified that by
+# saying NEXTEST is "computed once in verify.sh before role logic runs" — it is
+# not; verify.sh computes it AFTER DF_VERIFY_ROLE is defaulted. The invariance
+# holds for a checkable reason instead: that `NEXTEST=0; if cargo nextest
+# --version ...` probe derives NEXTEST from cargo-nextest resolvability ALONE
+# and never reads the role, and the plan header interpolates that same $NEXTEST.
+#
+# WHAT THE SHARED PATH TRADES — not a free robustness win. The old inline parse
+# had no `|| true`, so an empty OFFLINE_FULL aborted this suite under pipefail;
+# _nextest_absent_header_of is `|| true`-guarded, so the same empty capture now
+# answers "not available" and the suite carries on. That CONVERTS a loud abort
+# into a quiet skip of every assert in the nextest arm below — a move toward
+# vacuous green, not away from it.
+#
+# What makes that acceptable is NOT the guard — it is that an empty OFFLINE_FULL
+# still fails loudly elsewhere, unconditionally: the Cycle D assert
+# "offline+no-profile: header shows profile=release" greps OFFLINE_FULL outside
+# any NEXTEST_AVAILABLE branch, so it cannot be skipped by a wrong availability
+# answer. A false "not available" on a nextest-present host is caught by the
+# else arm below ("offline, nextest unavailable: plan has NO ..."), which then
+# fails against a plan that DOES carry the positive heavy filter. Neither check
+# is dead weight on a nextest-present host — together they are this probe's only
+# detectors of a wrong answer.
 NEXTEST_AVAILABLE=0
-case "$_OFFLINE_HEADER" in
-    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
-esac
+if nextest_available_in_plan "$OFFLINE_FULL"; then
+    NEXTEST_AVAILABLE=1
+fi
 echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
@@ -343,5 +395,112 @@ fi
 assert "offline: plan has NO 'export CARGO_MAKEFLAGS=' line (off the merge jobserver)" \
     bash -c '! printf "%s\n" "$1" | grep -q "export CARGO_MAKEFLAGS="' \
     _ "$OFFLINE_FULL"
+
+# ---------------------------------------------------------------------------
+# Cycle F1: background role — recognition, idle-class CARGO_PRIO, gated
+# (non-exempt) admission plan-lines, task-FIFO jobserver (task 5210)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle F1: background role (task 5210) ---"
+
+# (a) valid role 'background' must exit 0 (recognized role)
+assert "DF_VERIFY_ROLE=background: exits 0" \
+    bash -c 'DF_VERIFY_ROLE=background bash "$1/scripts/verify.sh" test --scope all --print-plan >/dev/null 2>&1' \
+    _ "$REPO_ROOT"
+
+# Capture the background plan. Guarded with '|| true' so an as-yet-unrecognized
+# role (RED phase, pre step-2) reports clean assertion FAILs below instead of
+# tripping this script's own `set -e` on the failing command substitution.
+BACKGROUND_FULL="$(DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+BACKGROUND_CMDS="$(printf '%s\n' "$BACKGROUND_FULL" | grep -v '^#')"
+
+# (b) idle-class CARGO_PRIO prefix contract — byte-identical to offline's,
+# mirrors the Cycle D offline prefix idiom (own arm, own warning text — the
+# CARGO_PRIO string itself is identical by design, task 5210 design decision).
+assert "background/test/all: at least 1 cargo command line (sanity)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "(^| )cargo " || echo 0)" -ge 1 ]' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background/test/all: all cargo lines prefixed with 'nice -n 19 ionice -c3 cargo'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 19 ionice -c3 cargo"' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background/test/all: only cargo lines carry the nice/ionice prefix (non-cargo lines clean)" \
+    bash -c '! printf "%s\n" "$1" | grep -F "nice -n 19 ionice -c3 " | grep -vq "cargo"' \
+    _ "$BACKGROUND_CMDS"
+
+# (c) admission plan-lines PRESENT exactly as task/offline (background is
+# gated, NOT admission-exempt — contrast the merge role, whose plan carries
+# these same role-invariant lines but bypasses them at RUNTIME).
+assert "background: plan contains './scripts/verify.sh psi-gate'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "./scripts/verify.sh psi-gate"' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background: plan contains './scripts/verify.sh compile-gate'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "./scripts/verify.sh compile-gate"' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background: plan contains the test-run semaphore ACQUIRE region marker/comment" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "test-run semaphore.*ACQUIRE"' \
+    _ "$BACKGROUND_FULL"
+
+# (d) jobserver: background rides the TASK (non-merge, non-offline-detached)
+# FIFO path. Sentinel non-existent FIFO paths make this host-FIFO-independent
+# — a live merge FIFO on the test host would otherwise make the negative
+# assertion vacuously true for the wrong reason.
+_BG_SENTINEL_TASK_FIFO="/tmp/reify-test-sentinel-task-fifo-nonexistent-$$-$RANDOM"
+_BG_SENTINEL_MERGE_FIFO="/tmp/reify-test-sentinel-merge-fifo-nonexistent-$$-$RANDOM"
+BACKGROUND_FIFO_FULL="$(DF_VERIFY_ROLE=background \
+    REIFY_JOBSERVER_TASK_FIFO="$_BG_SENTINEL_TASK_FIFO" \
+    REIFY_JOBSERVER_MERGE_FIFO="$_BG_SENTINEL_MERGE_FIFO" \
+    bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+
+assert "background: plan names the TASK FIFO sentinel path (took the task branch)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+    _ "$BACKGROUND_FIFO_FULL" "$_BG_SENTINEL_TASK_FIFO"
+
+assert "background: plan does NOT reference the MERGE FIFO sentinel path (never took the merge branch)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+    _ "$BACKGROUND_FIFO_FULL" "$_BG_SENTINEL_MERGE_FIFO"
+
+assert "background: plan does NOT carry offline's 'off the merge jobserver' unset comment" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "off the merge jobserver"' \
+    _ "$BACKGROUND_FIFO_FULL"
+
+# ---------------------------------------------------------------------------
+# Cycle F2: background profile default — merge-level completeness (task 5210
+# step-3 / step-4). Mirrors Cycle C1/C2 (merge) with role=background.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle F2: background profile default (task 5210) ---"
+
+# F2a: background + no explicit --profile => profile=both (release coverage,
+# same as merge — a main integrity sweep needs full dev+release coverage).
+F2A_FULL="$(DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+F2A_CMDS="$(printf '%s\n' "$F2A_FULL" | grep -v '^#')"
+
+assert "F2a: background+no-profile: header shows profile=both" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=both"' \
+    _ "$F2A_FULL"
+
+assert "F2a: background+no-profile: a release test pass is present (sensitivity-scoped, no --workspace)" \
+    bash -c 'printf "%s\n" "$1" | grep -v "cargo-test-occt-gated.sh" | grep -qE "cargo (test|nextest run).*--release"' \
+    _ "$F2A_CMDS"
+
+assert "F2a: background+no-profile: a non-release (debug) --workspace pass is also present" \
+    bash -c 'printf "%s\n" "$1" | grep -E "cargo (test|nextest run) --workspace" | grep -qv -- "--release"' \
+    _ "$F2A_CMDS"
+
+# F2b: background + explicit --profile debug => debug (explicit still wins)
+F2B_FULL="$(DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all --profile debug --print-plan || true)"
+F2B_CMDS="$(printf '%s\n' "$F2B_FULL" | grep -v '^#')"
+
+assert "F2b: background+--profile debug: header shows profile=debug (explicit wins)" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=debug"' \
+    _ "$F2B_FULL"
+
+assert "F2b: background+--profile debug: no release workspace pass (explicit wins)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--release"' \
+    _ "$F2B_CMDS"
 
 test_summary

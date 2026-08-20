@@ -308,6 +308,17 @@ impl TetSpatialIndex {
             .collect();
 
         // Centroid of each padded AABB (used for median-split sorting).
+        //
+        // A NaN input coordinate propagates to a NaN centroid here.
+        // Deliberately not guarded by a `debug_assert`: that would
+        // reintroduce, in debug/test builds, exactly the panic that
+        // `centroid_axis_cmp`'s `total_cmp` (INV-FEA-3, task #5090) removes
+        // from the median-split sort. A NaN centroid signals upstream mesh
+        // corruption; per the PRD (compute-fea-hardening.md task E3) the
+        // accepted tradeoff is that the sort stays panic-free and
+        // deterministic in both debug and release, while any `locate()`
+        // result reached through the resulting NaN-poisoned AABB subtree is
+        // silently geometrically meaningless.
         let centroids: Vec<[f64; 3]> = elem_aabbs
             .iter()
             .map(|ab| {
@@ -332,6 +343,28 @@ impl TetSpatialIndex {
         );
 
         TetSpatialIndex { bvh_nodes, root, perm, n_nodes: nodes.len() }
+    }
+
+    /// Total-order comparator for element centroids along `axis`, used by
+    /// the median-split sort in [`Self::build_recursive`].
+    ///
+    /// `total_cmp`: NaN-safe IEEE-754 total order keeps the median split
+    /// panic-free + deterministic; a NaN centroid is upstream corruption
+    /// (INV-FEA-3, task #5090). Pulled out to a named function — rather
+    /// than inlined in the sort closure — so a test can assert this
+    /// *exact* comparator's total-order postcondition (see
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
+    /// in `bvh_tests`) instead of only re-testing `f64::total_cmp` itself:
+    /// reverting this body back to
+    /// `partial_cmp(..).unwrap_or(Ordering::Equal)` breaks that test.
+    #[inline]
+    fn centroid_axis_cmp(
+        centroids: &[[f64; 3]],
+        axis: usize,
+        a: usize,
+        b: usize,
+    ) -> std::cmp::Ordering {
+        centroids[a][axis].total_cmp(&centroids[b][axis])
     }
 
     fn build_recursive(
@@ -384,11 +417,9 @@ impl TetSpatialIndex {
         }
 
         // Median split: sort perm[start..end] by centroid along `axis`.
-        perm[start..end].sort_unstable_by(|&a, &b| {
-            centroids[a][axis]
-                .partial_cmp(&centroids[b][axis])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // See `Self::centroid_axis_cmp` for the comparator and rationale.
+        perm[start..end]
+            .sort_unstable_by(|&a, &b| Self::centroid_axis_cmp(centroids, axis, a, b));
 
         let mid = start + count / 2;
 
@@ -678,6 +709,101 @@ mod bvh_tests {
 
         // (d) Far-outside point → None in both BVH and oracle.
         check("far outside", [10.0, 10.0, 10.0]);
+    }
+
+    /// Smoke test (task #5090, PRD compute-fea-hardening.md task E3 /
+    /// INV-FEA-3): `build()` and `locate()` must not panic when the mesh
+    /// contains a NaN centroid (signalling upstream mesh corruption). This
+    /// is a plain build-and-query check, not a toolchain-sensitive
+    /// regression guard —
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
+    /// below is the durable, toolchain-independent guard on the comparator
+    /// property this fix actually relies on.
+    ///
+    /// Only panic-freedom is asserted. A NaN centroid poisons its element's
+    /// padded AABB — and possibly an ancestor union AABB, since `NaN < x`
+    /// and `NaN > x` are both `false` — so any `locate()` result routed
+    /// through a NaN-poisoned subtree is geometrically meaningless by
+    /// design; return values are intentionally not checked.
+    #[test]
+    fn build_recursive_nan_centroid_is_panic_free() {
+        // N must exceed `LEAF_MAX` (8) so `build` actually reaches the
+        // median-split sort at least once.
+        const N: usize = 10;
+        const SPACING: f64 = 10.0;
+        let nan_at = N / 2;
+
+        let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(N * 4);
+        let mut elems: Vec<[usize; 4]> = Vec::with_capacity(N);
+        for i in 0..N {
+            let x = (i as f64) * SPACING;
+            let base = nodes.len();
+            // conn[0]: AABB-init sets min=max=nodes[conn[0]], then only
+            // updates from the other 3 nodes via `<`/`>` (both false
+            // against a NaN incumbent or a NaN candidate). A NaN placed on
+            // conn[1..3] would therefore be silently swallowed to a finite
+            // centroid; conn[0] is the only node whose NaN survives.
+            let v0_x = if i == nan_at { f64::NAN } else { x };
+            nodes.push([v0_x, 0.0, 0.0]);
+            nodes.push([x + 1.0, 0.0, 0.0]);
+            nodes.push([x, 1.0, 0.0]);
+            nodes.push([x, 0.0, 1.0]);
+            elems.push([base, base + 1, base + 2, base + 3]);
+        }
+        let tol = 1e-9_f64;
+
+        let idx = TetSpatialIndex::build(&nodes, &elems, tol);
+        let probes = [
+            [0.0_f64, 0.0, 0.0],
+            [SPACING * (N as f64) * 0.5, 0.25, 0.25],
+            [-5.0, -5.0, -5.0],
+        ];
+        for p in probes {
+            let _ = idx.locate(&nodes, &elems, p, tol);
+        }
+    }
+
+    /// Direct, toolchain-independent guard on
+    /// [`TetSpatialIndex::centroid_axis_cmp`], the exact comparator
+    /// `build_recursive`'s median-split sort calls (task #5090, INV-FEA-3);
+    /// complements the plain smoke test in
+    /// `build_recursive_nan_centroid_is_panic_free` above with a guarantee
+    /// that doesn't depend on the standard library's best-effort
+    /// non-total-order panic detection. Calling `centroid_axis_cmp` itself
+    /// — rather than re-testing
+    /// `f64::total_cmp` directly — means this test actually covers the fix:
+    /// reverting `centroid_axis_cmp`'s body back to
+    /// `partial_cmp(..).unwrap_or(Ordering::Equal)` breaks it, because that
+    /// comparator is not transitive across a NaN entry and so does not, in
+    /// general, sort this NaN-bearing fixture into `total_cmp` order.
+    ///
+    /// Asserts the postcondition any valid total-order comparator must
+    /// satisfy: sorting indices into a centroid slice containing NaN,
+    /// -0.0/+0.0, and infinities yields a permutation (no indices lost or
+    /// duplicated) whose centroids are fully ordered per `total_cmp`
+    /// itself, with NaN (a positive quiet NaN, as produced by `f64::NAN`)
+    /// sorted strictly last.
+    #[test]
+    fn centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order() {
+        let axis = 0;
+        let raw =
+            [3.0_f64, f64::NAN, -1.0, f64::INFINITY, 0.0, -0.0, f64::NEG_INFINITY, 2.5, -7.25];
+        let centroids: Vec<[f64; 3]> = raw.iter().map(|&x| [x, 0.0, 0.0]).collect();
+        let mut perm: Vec<usize> = (0..centroids.len()).collect();
+        let original_len = perm.len();
+
+        perm.sort_unstable_by(|&a, &b| TetSpatialIndex::centroid_axis_cmp(&centroids, axis, a, b));
+
+        assert_eq!(perm.len(), original_len, "sort must not lose or duplicate indices");
+        let sorted: Vec<f64> = perm.iter().map(|&i| centroids[i][axis]).collect();
+        assert!(
+            sorted.windows(2).all(|w| w[0].total_cmp(&w[1]) != std::cmp::Ordering::Greater),
+            "sorted output must be non-decreasing under total_cmp's own order: {sorted:?}",
+        );
+        assert!(
+            sorted.last().unwrap().is_nan(),
+            "NaN must sort strictly last under total_cmp: {sorted:?}",
+        );
     }
 }
 

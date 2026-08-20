@@ -24,6 +24,7 @@ pub(crate) mod containment_graph;
 /// Re-export the shared forward-adjacency helper at the crate root so `reify-eval`
 /// can call it without knowing the private module layout.
 pub use containment_graph::sub_component_forward_adjacency;
+mod builtin_signatures;
 mod datum_projection;
 mod diagnostics;
 mod entity;
@@ -38,22 +39,25 @@ pub mod geometry_traits;
 pub mod geometry_traits_inference;
 mod geometry_transform;
 mod guards;
+mod hoist_nested_selectors;
 mod ice;
-mod list_helpers;
-mod joint_signatures;
 mod joint_self_check;
-mod builtin_signatures;
+mod joint_signatures;
+mod list_helpers;
 mod math_signatures;
+mod member_path;
+mod parse_signatures;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
-pub mod relation_signatures;
-mod signatures_common;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
+pub(crate) mod recursion_guard;
+pub mod relation_signatures;
 mod scc;
 mod scope;
 pub mod si_units;
+mod signatures_common;
 pub mod stdlib_loader;
 pub(crate) mod stdlib_topo;
 mod termination;
@@ -66,17 +70,16 @@ mod units;
 mod variant_construct;
 
 pub use annotations::materialize::{
-    compile_materialization_annotation_args, MaterializationAnnotationArg,
-    MaterializationArgType,
+    MaterializationAnnotationArg, MaterializationArgType, compile_materialization_annotation_args,
 };
 pub use compile_builder::pre_pass::check_module_path_decl;
 pub use entity::satisfies_trait_bound;
-pub use geometry::derive_feature_tags;
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 
 // Re-export submodule items for internal cross-module access via `use super::*;`
+pub(crate) use analysis_signatures::*;
 pub(crate) use annotations::*;
 pub(crate) use arg_check::*;
 pub(crate) use conformance::*;
@@ -94,10 +97,10 @@ pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
-pub(crate) use list_helpers::*;
-pub(crate) use analysis_signatures::*;
 pub(crate) use joint_signatures::*;
+pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
+pub(crate) use parse_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;
@@ -108,13 +111,34 @@ pub(crate) use traits::*;
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
 pub(crate) use units::*;
-pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry, UnitResolveError, resolve_unit_expr};
+// The cross-crate re-exports below (8 name families + 2 result-type fns,
+// widened from `pub(crate)`) exist so `reify-eval`'s
+// `registry_drift_tests` module can compare the compiler-side builtin-name
+// registries against the eval-side dispatch oracles directly, instead of
+// hand-duplicating name lists (task 5055 γ; see
+// `reify-eval/src/invariants.rs`'s `DYNAMICS_QUERY_NAMES`/
+// `KINEMATIC_QUERY_NAMES` local literals for the drift this closes).
+pub use units::{
+    DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
+    GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
+    GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, UnitEntry, UnitRegistry,
+    UnitResolveError, geometry_query_result_type, resolve_unit_expr,
+    topology_selector_result_type,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, RealizationNodeId, Severity, SourceSpan, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, ConstraintChecker, DeterminacyPredicateKind, ObjectiveCombination, ObjectiveSet, ObjectiveSense, ObjectiveTerm, ResolvedFunction, SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp, Value};
+use reify_core::{
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
+    FIELD_ENTITY_PREFIX, RealizationNodeId, Severity, SourceSpan, Type, ValueCellId,
+};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintChecker, DeterminacyPredicateKind,
+    ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolvedFunction,
+    SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp,
+    Value,
+};
 
 /// Expose `validate_annotations` to integration tests without plumbing a full
 /// compilation context.
@@ -135,6 +159,28 @@ pub fn __validate_annotations_for_parity_test(
     let mut diagnostics = Vec::new();
     annotations::validate_annotations(annotations, context, &mut diagnostics);
     diagnostics
+}
+
+/// Expose `infer_mul_div_result` to the static-vs-runtime Mul/Div parity
+/// integration test without widening the compiler's public API.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #5063 (done) — test-support-gated parity shim, consumed by
+// tests/mul_div_static_runtime_parity.rs (static-vs-runtime Mul/Div parity,
+// INV-COMP-3 enforcement).
+pub fn __infer_mul_div_result_for_parity_test(
+    op: reify_ir::BinOp,
+    left: &reify_core::Type,
+    right: &reify_core::Type,
+) -> Option<reify_core::Type> {
+    type_compat::infer_mul_div_result(op, left, right)
 }
 
 /// Compile a parsed module into a compiled module.
@@ -527,7 +573,40 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     // Seed `ctx.resolution_enums` from the same prelude set (skips re-flattening
     // the prelude modules on every call).
-    compile_builder::enums_phase::build_resolution_enums_from_cache(&mut compile_ctx, prelude_enums);
+    compile_builder::enums_phase::build_resolution_enums_from_cache(
+        &mut compile_ctx,
+        prelude_enums,
+    );
+
+    // #5429 / PRD docs/prds/v0_6/uniform-member-access.md §4 M5, D8: a MODULE-LOCAL
+    // `enum N` shadows a PRELUDE `structure def N` in declared-type positions, so
+    // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than being
+    // conflated with std.tolerancing's `structure def Fit` (stdlib/tolerancing.ri:268).
+    //
+    // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
+    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
+    // `phase_entities` alone made a trait requirement / fn signature param keep
+    // `Type::StructureRef("Fit")` while the conforming structure's param became
+    // `Type::Enum("Fit")` — conformance and overload resolution then rejected the
+    // pair, turning a previously-WARNING module into a hard ERROR (esc-5429-1).
+    //
+    // Placed here because both inputs are final: `ctx.enum_defs` and
+    // `ctx.seen_entity_names` are seeded by `pre_pass::collect_decl_refs` and
+    // `resolve_enum_variant_payloads` has already run. The set-construction rules
+    // (local-only, minus local structure names) live in ONE place — see
+    // `enums_phase::build_local_enum_shadow_set`.
+    //
+    // Bound to a leading-underscore NAME, never `let _ = …` (which would drop the
+    // guard immediately and make the scope a silent no-op). It drops at the end of
+    // this function, leaving the ambient set empty for every other caller. This is
+    // orthogonal to the `EnumNameScope` guards that `functions.rs`/`entity.rs`
+    // install: that set is a LAST-RESORT fallback consulted only after the
+    // structure-name arm fails, whereas this one OVERRIDES that arm's result — they
+    // are separate thread-locals and compose without interfering.
+    let _local_enum_shadow_scope = crate::type_resolution::LocalEnumShadowScope::new(
+        compile_builder::enums_phase::build_local_enum_shadow_set(&compile_ctx),
+    );
 
     compile_builder::functions_phase::phase_functions(
         &mut compile_ctx,
@@ -635,6 +714,17 @@ pub fn compile_with_prelude_context_checked_with_config(
     // Empty-safe: when #no_prelude is active, prelude_refs is &[] and the
     // helper no-ops (the inner for loop does not execute).
     let compiled_purposes = merge_prelude_purposes(compiled_purposes, prelude_refs);
+
+    // task 4370 (AXIS-1 step-6): hoist nested selector-ctor field values into
+    // synthetic top-level `__sel_N` Let cells (+ ValueRef rewrites), so the
+    // kernel-free symbolic selector mint (which visits only top-level
+    // value_cells) resolves them and the R3d in-walk mint orders each before its
+    // consumer. Runs after phase_augment_composed_captures / phase_purposes (so
+    // purposes reflect user-declared members, not the synthetic cells) and before
+    // compute_module_hash (so the minted cells + refreshed template content_hashes
+    // fold into the module hash — design decision 5).
+    hoist_nested_selectors::phase_hoist_nested_selector_ctors(&mut compile_ctx);
+
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
 

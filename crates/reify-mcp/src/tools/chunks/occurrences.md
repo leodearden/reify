@@ -23,6 +23,8 @@ occurrence def Welding : Joining {
 }
 ```
 
+> **Note:** As with `structure`, the `def` keyword is optional here too (same grammar rule) — bare `occurrence Welding { ... }` is likewise a silently-accepted alias.
+
 ## Key Properties
 
 - `in`/`out` on ports express flow direction

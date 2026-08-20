@@ -1,0 +1,41 @@
+module dcr_shaper_frequency_dimension_silent
+
+// D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaf ζ — AMENDED at decompose. PRD §9 phrases ζ's signal as
+// "`ZVShaper(target_frequency: 50rad/s)` exits 1", but the CONSTRUCTOR alone
+// never reaches the reader: `read_scalar_si`
+// (crates/reify-stdlib/src/trajectory/input_shape.rs:51) runs only inside
+// `build_train_for_shaper` (:109), which is reached from the `.ri` surface via
+// `input_shape(profile, shaper)` (crates/reify-compiler/stdlib/trajectory.ri:873).
+// The signal fixture must therefore CONSUME the shaper — this one does.
+//
+// MEASURED at decompose (2026-07-28, main efba5a8036): `reify eval` EXIT 0,
+// ZERO diagnostics, both shaped profiles produced (1024 resampled waypoints
+// each). `target_frequency` is declared `Frequency` (trajectory.ri:656) with
+// `constraint target_frequency > 0Hz`, yet `50rad/s` — a DIFFERENT
+// DimensionVector (rad*s^-1 vs s^-1) — is stored verbatim as `50 rad*s^-1`,
+// the reader strips the dimension, and the Hz -> rad/s marshalling
+// (input_shape.rs:90-102) multiplies by 2*pi, so the shaper is silently
+// designed for 314 rad/s instead of 50 rad/s — a 6.28x error.
+//
+// Needs no kernel and runs in well under a second, so ζ's signal is
+// gate-resident by construction.
+
+structure def DcrShaperFrequencyDimensionSilent {
+    let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
+    let wp1 = Waypoint(t: 1.0s, values: [0.5], vels: none, accels: none)
+    let wp2 = Waypoint(t: 2.0s, values: [1.0], vels: none, accels: none)
+
+    let profile = PiecewisePolynomialProfile(
+        mechanism: 1.0,
+        waypoints: [wp0, wp1, wp2],
+        boundary: NaturalSpline(),
+        spline_kind: SplineKind.CubicSpline
+    )
+
+    let shaper_hz    = ZVShaper(target_frequency: 50Hz,    damping_ratio: 0.0)
+    let shaper_rads  = ZVShaper(target_frequency: 50rad/s, damping_ratio: 0.0)
+
+    let shaped_hz    = input_shape(profile, shaper_hz)
+    let shaped_rads  = input_shape(profile, shaper_rads)
+}

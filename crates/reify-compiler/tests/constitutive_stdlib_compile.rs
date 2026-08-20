@@ -12,8 +12,8 @@
 //! Mirrors the `fdm_stdlib_compile.rs` helper trio and discipline.
 
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +61,16 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
 
 // ─── MaterialFrame shape ─────────────────────────────────────────────────────
 
+/// MaterialFrame's four members SPLIT by what each one denotes (task 5848):
+///   - `origin` is a POSITION  → `Type::Point { n: 3, quantity: Length }`
+///   - `x_axis`/`y_axis`/`z_axis` are DIRECTIONS → `Type::Vector { n: 3,
+///     quantity: Dimensionless }`
+///
+/// The `origin` half is the load-bearing fence, and it is NOT a copy of
+/// `frame3_structure_surface`'s (ports_stdlib_compile.rs): Frame3's origin is
+/// a `Type::Vector`, MaterialFrame's is a `Type::Point`. Asserting the Point
+/// variant explicitly proves the retype discriminates position from direction
+/// without collapsing the two origin spellings into one another.
 #[test]
 fn frame_has_origin_and_three_axes() {
     let template = find_structure("MaterialFrame");
@@ -72,26 +82,35 @@ fn frame_has_origin_and_three_axes() {
         "MaterialFrame should have exactly (origin, x_axis, y_axis, z_axis) in that order"
     );
 
-    let length_scalar = Type::Scalar { dimension: DimensionVector::LENGTH };
-    let point3_length = Type::Point { n: 3, quantity: Box::new(length_scalar.clone()) };
-    let vec3_length = Type::Vector { n: 3, quantity: Box::new(length_scalar) };
+    let point3_length = Type::Point {
+        n: 3,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+    };
+    let vec3_dimensionless = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        }),
+    };
 
-    let expected: &[(&str, Type)] = &[
-        ("origin", point3_length),
-        ("x_axis", vec3_length.clone()),
-        ("y_axis", vec3_length.clone()),
-        ("z_axis", vec3_length),
+    let expected: &[(&str, Type, &str)] = &[
+        ("origin", point3_length, "a POSITION"),
+        ("x_axis", vec3_dimensionless.clone(), "a DIRECTION"),
+        ("y_axis", vec3_dimensionless.clone(), "a DIRECTION"),
+        ("z_axis", vec3_dimensionless, "a DIRECTION"),
     ];
 
-    for (member, expected_ty) in expected {
+    for (member, expected_ty, why) in expected {
         let cell = params
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| panic!("MaterialFrame missing param '{}'", member));
         assert_eq!(
             cell.cell_type, *expected_ty,
-            "MaterialFrame.{} should be {:?}, got {:?}",
-            member, expected_ty, cell.cell_type
+            "MaterialFrame.{} denotes {}, so it must be {:?}; got {:?}",
+            member, why, expected_ty, cell.cell_type
         );
     }
 }
@@ -134,8 +153,16 @@ fn constitutive_law_trait_is_empty_marker() {
         "ConstitutiveLaw trait should be an empty marker (body intentionally \
          empty; producer-side dispatch lives in reify-solver-elastic), \
          got requirements: {:?}, defaults: {:?}",
-        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
-        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>(),
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -144,8 +171,7 @@ fn constitutive_law_trait_is_empty_marker() {
 #[test]
 fn orthotropic_material_has_nine_elastic_constants_plus_density_plus_provenance() {
     let template = find_structure("OrthotropicMaterial");
-    let trait_bound_names: Vec<&str> =
-        template.trait_bounds.iter().map(|s| s.as_str()).collect();
+    let trait_bound_names: Vec<&str> = template.trait_bounds.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         trait_bound_names,
         vec!["ConstitutiveLaw"],
@@ -231,8 +257,7 @@ fn orthotropic_material_has_nine_elastic_constants_plus_density_plus_provenance(
 #[test]
 fn transverse_isotropic_material_has_five_elastic_constants_plus_density_plus_provenance() {
     let template = find_structure("TransverseIsotropicMaterial");
-    let trait_bound_names: Vec<&str> =
-        template.trait_bounds.iter().map(|s| s.as_str()).collect();
+    let trait_bound_names: Vec<&str> = template.trait_bounds.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         trait_bound_names,
         vec!["ConstitutiveLaw"],
@@ -371,9 +396,9 @@ structure def AnisotropicConstructionProbe {
     )
     let mat_frame = MaterialFrame(
         origin: point3(0m, 0m, 0m),
-        x_axis: vec3(1m, 0m, 0m),
-        y_axis: vec3(0m, 1m, 0m),
-        z_axis: vec3(0m, 0m, 1m),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     let aniso = AnisotropicMaterial(law: ortho_law, frame: mat_frame)
 }

@@ -5,7 +5,9 @@
 //! otherwise performing no compilation work — that happens in the later
 //! phase modules.
 
-use reify_ast::{Declaration, FieldDef, FnDef, ParsedModule, StructureDef, TraitDecl, TypeAliasDecl, UnitDecl};
+use reify_ast::{
+    Declaration, FieldDef, FnDef, ParsedModule, StructureDef, TraitDecl, TypeAliasDecl, UnitDecl,
+};
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
 use crate::CompiledModule;
@@ -66,7 +68,10 @@ pub(crate) fn effective_prelude<'a>(
 ///
 /// This is a pure helper so it can be unit-tested without a full compilation context.
 /// Re-exported from the crate root so `reify-cli` can call it via `reify_compiler::check_module_path_decl`.
-pub fn check_module_path_decl(declared: Option<&ModulePath>, expected: &ModulePath) -> Option<Diagnostic> {
+pub fn check_module_path_decl(
+    declared: Option<&ModulePath>,
+    expected: &ModulePath,
+) -> Option<Diagnostic> {
     match declared {
         None => Some(Diagnostic::warning(format!(
             "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
@@ -136,7 +141,11 @@ pub(crate) fn collect_decl_refs<'a>(
             Declaration::Enum(e) => {
                 ctx.enum_defs.push(reify_ir::EnumDef {
                     name: e.name.clone(),
-                    variants: e.variants.iter().map(|v| reify_ir::EnumVariantDef::unit(v.name.clone())).collect(),
+                    variants: e
+                        .variants
+                        .iter()
+                        .map(|v| reify_ir::EnumVariantDef::unit(v.name.clone()))
+                        .collect(),
                     doc: e.doc.clone(),
                     // β: lower the declared type-param head via the shared converter (INV-1).
                     // enums_phase builds its own type_param_names from the AST directly,

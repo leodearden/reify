@@ -11,6 +11,7 @@ reify-core.workspace = true
 reify-ir.workspace = true
 cxx = "1"
 inventory.workspace = true
+tracing.workspace = true
 tokio = { workspace = true }
 # Optional dep behind the `mesh-morph` feature flag — gates the `OcctProjector`
 # impl of `reify_mesh_morph::Projector` in `src/projector_impl.rs`. Kept
@@ -43,11 +44,10 @@ reify-build-utils.workspace = true
 # trait but deliberately NOT on `reify-eval` — keeping the adapter → eval dep
 # direction inverted preserves the layering that lets `reify-eval` depend on
 # adapter crates without a cycle. As a dev-dep, `reify-eval` is only pulled
-# into the link closure of the `tests/dispatcher_integration.rs` test binary;
+# into the link closure of the `tests/harness_occt/dispatcher_integration.rs` test binary;
 # the production library stays free of the eval dependency.
 #
-# The cycle with `reify-eval/Cargo.toml:40 [dev-dependencies]
-reify-ir.workspace = true
+# The cycle with `reify-eval/Cargo.toml [dev-dependencies]
 # reify-kernel-occt.workspace = true` is allowed by Cargo because dev-deps
 # do not transitively propagate to consumers — verified safe by the existing
 # openvdb/manifold/gmsh adapters which already exercise this same pattern.

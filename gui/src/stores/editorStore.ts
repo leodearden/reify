@@ -43,7 +43,28 @@ export function createEditorStore() {
     if (!exists) {
       setState('openFiles', (files) => [...files, canonical]);
     } else {
-      updateFileContent(key, file.content);
+      // Reopen of an already-open path (debug bridge open_file, File→Open, launch).
+      // Mirror App.onFileChanged's dirty/clean split so watcher-detected and
+      // reopen-detected disk divergence are reconciled the same way (task-5359, a
+      // regression of 3892/3893). One deliberate refinement over onFileChanged: on a
+      // dirty reopen we raise the externally-changed flag only when the incoming disk
+      // content actually diverges from the stored buffer, so a no-op reopen (same
+      // content re-delivered) does not surface a spurious conflict — whereas
+      // onFileChanged flags every change to a dirty file unconditionally.
+      if (state.dirtyFiles.includes(key)) {
+        // Dirty buffer holds unsaved edits: do NOT overwrite it. If the incoming
+        // disk content diverges, surface a conflict so a subsequent save routes
+        // to the externally-changed prompt instead of silently clobbering edits.
+        const stored = state.openFiles.find((f) => f.path === key)?.content;
+        if (file.content !== stored) {
+          markExternallyChanged(key);
+        }
+      } else {
+        // Clean reopen: refresh the buffer from fresh disk content and reconcile
+        // the tab by clearing any stale disk-diverged flag.
+        updateFileContent(key, file.content);
+        clearExternallyChanged(key);
+      }
     }
     setState('activeFile', key);
   }

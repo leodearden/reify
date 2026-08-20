@@ -1,0 +1,73 @@
+module symmetry_mirror
+
+// symmetry_mirror.ri — IDIOM: build a symmetric part once and reflect it.
+//
+//     let twin = union(arm, mirror(arm, plane_yz(0mm)))
+//
+// ANTI-PATTERN this replaces: authoring both halves by hand, so that every
+// later edit has to be applied twice and the two sides silently drift apart.
+//
+// Verified contracts:
+//
+//   `mirror` returns a REFLECTED COPY. It does not move, consume or extend the
+//   original, so the result must be unioned back in to get a symmetric part.
+//   Measured: volume(arm) = volume(mirror(arm, ...)) = 1e-6 m^3 and
+//   volume(union(arm, mirror(arm, ...))) = 2e-6 m^3 — a copy, not a pattern
+//   that includes its seed.
+//
+//   Two call forms, and only two:
+//     * plane-value (2 args): mirror(g, plane_yz(0mm))     <- prefer this
+//     * scalar      (7 args): mirror(g, ox,oy,oz, nx,ny,nz)
+//   Any other arity is a compile diagnostic:
+//     "mirror() expects 7 arguments (scalar) or 2 (plane-value), got N".
+//
+//   In the 7-arg form the ORIGIN components must be dimensioned Lengths while
+//   the NORMAL components stay bare dimensionless numbers:
+//       mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)     // correct
+//       mirror(g,   0,   0,   0, 1, 0, 0)     // WRONG — bare-0 origin
+//   The wrong form yields "mirror: ox argument expects Length, got Int; pass a
+//   dimensioned length such as `5mm`" and then a hard geometry-compile error
+//   ("missing or non-Length argument 'ox' for mirror").
+//
+//   TRAP: that error does NOT appear under `reify check` — check reports "All
+//   constraints satisfied" on the bare-0 form. It only surfaces at `reify eval`
+//   / build time. A green check is not evidence that a geometry call's argument
+//   dimensions are right.
+//
+//   Plane constructors: plane_xy(z), plane_xz(y), plane_yz(x) — each takes
+//   EXACTLY ONE offset argument, naming the axis the plane spans (so the
+//   argument is the offset along the remaining, normal axis). There is no
+//   generic `plane(...)`.
+//
+//   TRAP: these datum constructors are arity-blind at the type level, so a
+//   wrong-arity `plane_yz(0mm, 0mm)` is NOT a compile error — it evaluates to
+//   `undef` with no diagnostic at check time, and any geometry built on it
+//   silently fails downstream. Same for `point3`/`axis_*`. Count the arguments.
+
+structure def SymmetryMirror {
+    param arm_len   : Length = 40mm
+    param arm_width : Length = 8mm
+    param hub_r     : Length = 10mm
+
+    // One arm, authored once, sitting entirely on the +X side of the YZ plane.
+    let arm = translate(
+        box(arm_len, arm_width, arm_width),
+        arm_len / 2 + hub_r,
+        0mm,
+        0mm
+    )
+
+    // THE IDIOM: reflect across x = 0 and union the copy back in.
+    let arm_mirrored = mirror(arm, plane_yz(0mm))
+    let arms = union(arm, arm_mirrored)
+
+    let hub  = cylinder_centered(hub_r, arm_width)
+    let body = union(arms, hub)
+
+    // The equivalent 7-arg scalar form: dimensioned origin, bare normal.
+    let arm_mirrored_scalar = mirror(arm, 0mm, 0mm, 0mm, 1, 0, 0)
+
+    constraint arm_len > arm_width
+    constraint arm_width > 1mm
+    constraint hub_r > arm_width / 2
+}

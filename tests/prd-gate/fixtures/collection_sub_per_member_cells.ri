@@ -1,0 +1,17 @@
+/// γ-enumerator baseline fixture — indexed-sub-instantiation.md §7 β, PRD probe #1.
+///
+/// Today-probeable baseline (pre-state, EXISTS on main): collection-sub
+/// elaboration with per-member value cells. `sub idlers : List<Pulley>` +
+/// `constraint idlers.count == 2` elaborates 2 members; `reify eval` exits 0
+/// and prints a per-member cell `Rig.idlers[0].od = 0.036… m` and a count cell
+/// `Rig.__count_idlers = 2`. Template: examples/structural_query_children_members.ri.
+module collection_sub_per_member_cells
+
+pub structure Pulley {
+    param od : Length = 36mm
+}
+
+structure Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+}

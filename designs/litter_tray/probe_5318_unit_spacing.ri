@@ -1,0 +1,19 @@
+module probe_5318_unit_spacing
+
+// 5318 probe P11: identical to P7 (minimal top_deck replica — nested
+// fillet base, union of two patterns) but with unit-ful spacings.
+// 13 holes if the nested composition is innocent and units are the bug.
+structure def Probe : Rigid {
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+    param geometry : Solid = difference(
+        difference(
+            fillet(translate(box(40mm, 40mm, 10mm), 0mm, 0mm, 5mm), 1mm),
+            fillet(translate(box(30mm, 30mm, 10mm), 0mm, 0mm, 10mm), 1mm)
+        ),
+        union_all(
+            linear_pattern_2d(translate(cylinder(2mm, 7mm), -10mm, -10mm, -1mm), 1, 0, 0, 3, 10mm, 0, 1, 0, 3, 10mm),
+            linear_pattern_2d(translate(cylinder(2mm, 7mm), -5mm, -5mm, -1mm), 1, 0, 0, 2, 10mm, 0, 1, 0, 2, 10mm)
+        )
+    )
+    sub display = DisplayOutput(subject: geometry)
+}

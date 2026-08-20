@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 3666.
-# Validates that orchestrator.yaml's lint_command includes a guarded invocation
+# Validates that dark-factory-orchestrator.yaml's lint_command includes a guarded invocation
 # of scripts/check_event_inventory.sh in warning mode (no --strict, no
 # --bidirectional), following the test_pm_standardization.sh convention.
 
@@ -15,7 +15,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 echo "=== check_event_inventory.sh wiring tests ==="
 
 # Since task 3766 the orchestrator runs scripts/verify.sh, so check_event_inventory
-# wiring is asserted against the verify.sh lint plan, not orchestrator.yaml.
+# wiring is asserted against the verify.sh lint plan, not dark-factory-orchestrator.yaml.
 # --include-infra so the lint-side infra leaf appears; --scope all for the full
 # plan; env lines stripped via `grep -v '^#'`.
 LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --include-infra --print-plan | grep -v '^#')"

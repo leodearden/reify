@@ -19,7 +19,13 @@ use crate::watcher::FileWatcher;
 pub struct AppState {
     pub engine: Arc<Mutex<EngineSession>>,
     /// Last emitted state for computing minimal diffs.
-    pub last_state: Mutex<Option<GuiState>>,
+    ///
+    /// Shared (via `Arc`) with `DebugServerState::last_state` so a
+    /// debug-driven mutation and a normal Tauri command diff against the
+    /// SAME baseline (INV-GUI-2, task 5035 L6) — without this, the debug
+    /// server (spawned outside Tauri's managed-state world) would advance
+    /// the engine without the normal command path ever finding out.
+    pub last_state: Arc<Mutex<Option<GuiState>>>,
     /// File watcher for the currently loaded .ri file (re-targeted on open_file_engine).
     pub watcher: Mutex<Option<FileWatcher>>,
     /// Claude Code SDK sidecar handle (lazily spawned on first claude_send_message).
@@ -176,6 +182,17 @@ pub fn update_source_impl(
 /// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
 ///   `stale` (bool), `reload_error` (string or null).
 ///
+/// # Full realized scene (task 5348)
+///
+/// The `meshes` projection reflects the FULL realized scene — every realization
+/// that produces geometry — via [`EngineSession::build_gui_state_full_scene`], NOT
+/// the frontend's selective-demand incremental delta. Once the frontend has flipped
+/// production demand selective (`sync_demand`), the plain `build_gui_state` returns
+/// only the delta subset (the DELTA CONTRACT); this tool forces a full-scope
+/// snapshot so `engine_state` (and the `mesh_stats` tool, which shares the same
+/// builder) stays consistent with `viewport_state.meshCount` — the complete scene
+/// the frontend accumulates — regardless of the live selective-demand scope.
+///
 /// # One-snapshot invariant (task 4258)
 ///
 /// `files[].content` and `compile_diagnostics` are computed from the **same**
@@ -207,9 +224,11 @@ pub fn update_source_impl(
 /// `files[].content` will produce incorrect positions.  Use `get_source_location`
 /// spans only when `stale == false`.
 pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    // Full-scene snapshot (task 5348): report every realized body, not the
+    // frontend's selective-demand incremental delta. See the doc-comment above.
     let gui_state = session
-        .build_gui_state()
-        .map_err(|e| format!("build_gui_state failed: {e}"))?;
+        .build_gui_state_full_scene()
+        .map_err(|e| format!("build_gui_state_full_scene failed: {e}"))?;
 
     let meshes: Vec<serde_json::Value> = gui_state
         .meshes
@@ -262,6 +281,92 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
         "demand_prune_measurement": gui_state.demand_prune_measurement,
         "last_dispatch_count_post_refresh": last_dispatch_count_post_refresh,
     }))
+}
+
+/// Histogram of a mesh's per-face `element_kind` bytes.
+///
+/// Returns an empty map when `element_kind` is `None` (tet-only / non-shell meshes
+/// carry no per-face classification). `BTreeMap` keeps the byte keys in
+/// deterministic ascending order so the serialized JSON object (`{"1": <n>}`) is
+/// stable across runs — the PRD §9 θ observable signal.
+///
+/// Lives here (ungated `commands`), not in the `#[cfg(feature = "gui")]`
+/// `debug_server`, so [`mesh_stats_json`] and its headless unit test can reuse it
+/// without pulling in the Tauri/gui feature (task 5348).
+pub(crate) fn element_kind_count(
+    mesh: &crate::types::MeshData,
+) -> std::collections::BTreeMap<u8, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    if let Some(element_kind) = &mesh.element_kind {
+        for &kind in element_kind {
+            *counts.entry(kind).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Build a debug-API JSON projection of per-mesh statistics for the `mesh_stats`
+/// tool (task 5348).
+///
+/// Extracted from `debug_server::handle_mesh_stats` so tests can call it directly
+/// without a `DebugServerState` (which wraps a non-headless Tauri `AppHandle`) —
+/// the same seam pattern as [`engine_state_json`] / [`demand_dispatch_json`].
+/// `handle_mesh_stats` delegates here.
+///
+/// Uses [`EngineSession::build_gui_state_full_scene`] so the stats cover the FULL
+/// realized scene — one entry per rendered body — not the frontend's selective-
+/// demand incremental delta (the task 5348 under-report fix). Shares that builder
+/// with [`engine_state_json`], so the two debug reads can never drift apart.
+///
+/// Each entry carries `entity_path`, `vertex_count` (`vertices.len() / 3`),
+/// `face_count` (`indices.len() / 3`), `element_kind_count` (the per-face
+/// element-kind histogram via [`element_kind_count`]), and `bounding_box`
+/// (`{min, max}`, or `null` when the mesh has zero vertices).
+pub fn mesh_stats_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    let gui_state = session
+        .build_gui_state_full_scene()
+        .map_err(|e| format!("build_gui_state_full_scene failed: {e}"))?;
+
+    let stats: Vec<serde_json::Value> = gui_state
+        .meshes
+        .iter()
+        .map(|m| {
+            let vertex_count = m.vertices.len() / 3;
+            let face_count = m.indices.len() / 3;
+
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for chunk in m.vertices.chunks_exact(3) {
+                for i in 0..3 {
+                    min[i] = min[i].min(chunk[i]);
+                    max[i] = max[i].max(chunk[i]);
+                }
+            }
+
+            // Per-face element-kind histogram, byte→count as a JSON object with
+            // string keys (e.g. {"1": <n>}) — the PRD §9 θ signal. Reuses the
+            // `pub(crate)` helper so mesh_stats and its former inline body agree.
+            let element_kind_hist: serde_json::Map<String, serde_json::Value> =
+                element_kind_count(m)
+                    .into_iter()
+                    .map(|(kind, count)| (kind.to_string(), serde_json::json!(count)))
+                    .collect();
+
+            serde_json::json!({
+                "entity_path": m.entity_path,
+                "vertex_count": vertex_count,
+                "face_count": face_count,
+                "element_kind_count": element_kind_hist,
+                "bounding_box": if vertex_count > 0 {
+                    serde_json::json!({"min": min, "max": max})
+                } else {
+                    serde_json::json!(null)
+                }
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({ "meshes": stats }))
 }
 
 /// Build a debug-API JSON projection of the engine's selective-demand dispatch
@@ -401,41 +506,113 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("Error writing {}: {}", path, e))
 }
 
+/// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`
+/// entries are still stem-only module keys rather than canonical absolute
+/// paths. The only way to get a plain [`GuiState`] back out is
+/// [`resolve`](Self::resolve) — that keeps the rewrite step paired with the
+/// load at the type level, so a future call site cannot return the
+/// unresolved state directly (or forget the rewrite) and silently ship
+/// stem-only paths to the frontend, which is exactly the class of identity
+/// bug #5193 fixed.
+pub(crate) struct UnresolvedGuiState(GuiState);
+
+impl UnresolvedGuiState {
+    /// Rewrite each stem-only `files[].path` entry to a canonical absolute
+    /// path, resolved against `canonical`'s parent directory, and unwrap to
+    /// a plain `GuiState`.
+    ///
+    /// Note: `engine.source_map()` stores entries under `module_key(name)` =
+    /// `"{name}.ri"` (a stem-only key). This gives callers a stable absolute
+    /// identity key regardless of how the original input path was spelled.
+    ///
+    /// Deliberately a separate step from [`load_file_into_engine`] (#5193):
+    /// it is filesystem I/O that touches no engine state, so
+    /// callers call this AFTER releasing the engine lock that produced
+    /// `self`, rather than holding the mutex across N
+    /// `std::fs::canonicalize` syscalls.
+    pub(crate) fn resolve(mut self, canonical: &Path) -> GuiState {
+        rewrite_files_to_abs(&mut self.0, canonical);
+        self.0
+    }
+}
+
+/// Load `canonical` into the engine, adopting its identity via
+/// `EngineSession::load_file` (`FilePathUpdate::Set`).
+///
+/// Shared choke-point for both open-file entry points — [`open_file_engine_impl`]
+/// (the normal Tauri command) and `debug_server::open_source_into_engine_and_refresh_baseline`
+/// (the debug bridge's open_file/load_fixture funnel) — so the load_file
+/// call cannot drift between them again (task #5193).
+///
+/// Returns an [`UnresolvedGuiState`]: callers MUST call
+/// [`UnresolvedGuiState::resolve`] to obtain a `GuiState` fit to hand to a
+/// caller. See that method's docs for why the step is separate rather than
+/// inlined here.
+pub(crate) fn load_file_into_engine(
+    session: &mut EngineSession,
+    canonical: &Path,
+) -> Result<UnresolvedGuiState, String> {
+    session.load_file(canonical).map(UnresolvedGuiState)
+}
+
+/// Rewrite each stem-only `GuiState::files[].path` entry to a canonical
+/// absolute path, resolved against `canonical`'s parent directory.
+///
+/// Private implementation detail of [`UnresolvedGuiState::resolve`], the
+/// only caller — kept as a separate function for readability.
+fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
+    if let Some(entry_dir) = canonical.parent() {
+        for f in &mut state.files {
+            let resolved = entry_dir.join(&f.path);
+            match std::fs::canonicalize(&resolved) {
+                Ok(c) => f.path = c.to_string_lossy().into_owned(),
+                // Leave `f.path` as its stem-only module key (e.g. "bracket.ri")
+                // on failure — still a valid, if ambiguous, identity — rather
+                // than erroring the whole open. Warn so a transient FS failure
+                // here is observable instead of silently reintroducing the
+                // stem-only identity ambiguity #5193 eliminated.
+                Err(error) => tracing::warn!(
+                    path = %resolved.display(),
+                    %error,
+                    "rewrite_files_to_abs: canonicalize failed; leaving files[].path as stem-only key {:?}",
+                    f.path
+                ),
+            }
+        }
+    } else {
+        // `canonical.parent()` is `None` only for a root path (e.g. "/") or an
+        // empty path — in practice unreachable, since every caller passes a
+        // `canonicalize_document_key`/`canonicalize_debug_open_path` realpath,
+        // which always has a parent. Warn rather than silently no-op'ing, so a
+        // degenerate input is observable instead of quietly reintroducing the
+        // stem-only `files[].path` identity ambiguity #5193 eliminated.
+        tracing::warn!(
+            canonical = %canonical.display(),
+            "rewrite_files_to_abs: canonical path has no parent directory; leaving all files[].path entries as stem-only keys"
+        );
+    }
+}
+
 /// Load a file into the engine and return the initial state.
 ///
 /// The input `path` is canonicalised to an absolute realpath via
 /// [`crate::path_key::canonicalize_document_key`] before being passed to
-/// `EngineSession::load_file`.  This propagates the canonical key into the
+/// [`load_file_into_engine`], which propagates the canonical key into the
 /// engine's `file_path` field (used later by `update_source` for import
-/// resolution) and ensures the returned [`GuiState::files`] contains
-/// absolute paths rather than bare module-key filenames.
-///
-/// Note: `engine.source_map()` stores entries under `module_key(name)` =
-/// `"{name}.ri"` (a stem-only key).  After loading, this function rewrites
-/// each `FileData.path` in the returned `GuiState` by resolving it against the
-/// canonical entry path's parent directory, so the frontend receives a stable
-/// absolute identity key regardless of how the caller spelled the input path.
+/// resolution). [`UnresolvedGuiState::resolve`] then runs AFTER the engine
+/// lock is released, so the returned [`GuiState::files`] contains absolute
+/// paths rather than bare module-key filenames without the engine mutex
+/// being held across the canonicalize filesystem calls (#5193).
 pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
 ) -> Result<GuiState, String> {
     let canonical = crate::path_key::canonicalize_document_key(path);
-    let mut state =
-        crate::engine_lock::with_engine_lock(engine, |s| s.load_file(Path::new(&canonical)))
-            .and_then(std::convert::identity)?;
-
-    // source_map keys are "{name}.ri" (stem-only). Resolve each against the
-    // canonical entry directory so the frontend receives absolute paths.
-    if let Some(entry_dir) = Path::new(&canonical).parent() {
-        for f in &mut state.files {
-            let resolved = entry_dir.join(&f.path);
-            if let Ok(c) = std::fs::canonicalize(&resolved) {
-                f.path = c.to_string_lossy().into_owned();
-            }
-        }
-    }
-
-    Ok(state)
+    let state = crate::engine_lock::with_engine_lock(engine, |s| {
+        load_file_into_engine(s, Path::new(&canonical))
+    })
+    .and_then(std::convert::identity)?;
+    Ok(state.resolve(Path::new(&canonical)))
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for

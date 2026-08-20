@@ -1,31 +1,15 @@
 //! Collection compilation tests (step-29 through step-36).
 
-use reify_test_support::parse_and_compile;
 use reify_core::Type;
 use reify_ir::{CompiledExprKind, Value, ValueMap};
-
-/// Helper: get the default_expr for a value cell by member name.
-fn get_cell_expr<'a>(
-    compiled: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &compiled.templates[0];
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("should have '{}' value cell", member));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{}' should have a default expr", member))
-}
+use reify_test_support::{get_let_expr, parse_and_compile};
 
 // ─── step-29: List, Set, Map, IndexAccess compilation ───
 
 #[test]
 fn compile_list_literal() {
     let compiled = parse_and_compile("structure S { let x = [1, 2, 3] }");
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::ListLiteral(elems) => {
             assert_eq!(elems.len(), 3);
@@ -52,7 +36,7 @@ fn compile_list_literal() {
 #[test]
 fn compile_list_literal_empty() {
     let compiled = parse_and_compile("structure S { let x = [] }");
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::ListLiteral(elems) => {
             assert_eq!(elems.len(), 0);
@@ -64,7 +48,7 @@ fn compile_list_literal_empty() {
 #[test]
 fn compile_set_literal() {
     let compiled = parse_and_compile("structure S { let x = set{1, 2} }");
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::SetLiteral(elems) => {
             assert_eq!(elems.len(), 2);
@@ -86,7 +70,7 @@ fn compile_set_literal() {
 #[test]
 fn compile_map_literal() {
     let compiled = parse_and_compile(r#"structure S { let x = map{"a" => 1} }"#);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::MapLiteral(entries) => {
             assert_eq!(entries.len(), 1);
@@ -111,7 +95,7 @@ fn compile_map_literal() {
 #[test]
 fn compile_index_access() {
     let compiled = parse_and_compile("structure S { let items = [10, 20, 30]  let x = items[0] }");
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::IndexAccess { object, index } => {
             // object should be a ValueRef to items
@@ -137,7 +121,7 @@ fn compile_index_access() {
 fn compile_member_access_count() {
     // items.count should compile to MethodCall { method: "count", args: [] }
     let compiled = parse_and_compile("structure S { let items = [1, 2, 3]  let n = items.count }");
-    let expr = get_cell_expr(&compiled, "n");
+    let expr = get_let_expr(&compiled, "n");
     match &expr.kind {
         CompiledExprKind::MethodCall {
             object,
@@ -159,7 +143,7 @@ fn compile_member_access_count() {
 #[test]
 fn compile_member_access_sum() {
     let compiled = parse_and_compile("structure S { let items = [1, 2, 3]  let s = items.sum }");
-    let expr = get_cell_expr(&compiled, "s");
+    let expr = get_let_expr(&compiled, "s");
     match &expr.kind {
         CompiledExprKind::MethodCall {
             object,
@@ -181,7 +165,7 @@ fn compile_member_access_sum() {
 #[test]
 fn compile_member_access_keys() {
     let compiled = parse_and_compile(r#"structure S { let m = map{"a" => 1}  let k = m.keys }"#);
-    let expr = get_cell_expr(&compiled, "k");
+    let expr = get_let_expr(&compiled, "k");
     match &expr.kind {
         CompiledExprKind::MethodCall {
             object,
@@ -203,7 +187,7 @@ fn compile_member_access_keys() {
 #[test]
 fn compile_member_access_values() {
     let compiled = parse_and_compile(r#"structure S { let m = map{"a" => 1}  let v = m.values }"#);
-    let expr = get_cell_expr(&compiled, "v");
+    let expr = get_let_expr(&compiled, "v");
     match &expr.kind {
         CompiledExprKind::MethodCall {
             object,
@@ -227,7 +211,7 @@ fn compile_member_access_values() {
 #[test]
 fn e2e_list_literal() {
     let compiled = parse_and_compile("structure S { let x = [1, 2, 3] }");
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     let values = ValueMap::new();
     let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
     match result {
@@ -244,7 +228,7 @@ fn e2e_list_literal() {
 #[test]
 fn e2e_set_literal() {
     let compiled = parse_and_compile("structure S { let x = set{1, 2, 3} }");
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     let values = ValueMap::new();
     let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
     match result {
@@ -261,7 +245,7 @@ fn e2e_set_literal() {
 #[test]
 fn e2e_map_literal() {
     let compiled = parse_and_compile(r#"structure S { let x = map{"a" => 1, "b" => 2} }"#);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     let values = ValueMap::new();
     let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
     match result {
@@ -283,7 +267,7 @@ fn e2e_map_literal() {
 #[test]
 fn e2e_empty_list() {
     let compiled = parse_and_compile("structure S { let x = [] }");
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     let values = ValueMap::new();
     let result = reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values));
     match result {
@@ -300,8 +284,8 @@ fn e2e_empty_list() {
 fn e2e_list_count() {
     let compiled = parse_and_compile("structure S { let items = [1, 2, 3]  let n = items.count }");
     // First evaluate 'items' to populate the ValueMap, then evaluate 'n'
-    let items_expr = get_cell_expr(&compiled, "items");
-    let n_expr = get_cell_expr(&compiled, "n");
+    let items_expr = get_let_expr(&compiled, "items");
+    let n_expr = get_let_expr(&compiled, "n");
 
     let mut values = ValueMap::new();
     let items_id = reify_core::ValueCellId::new("S", "items");
@@ -315,8 +299,8 @@ fn e2e_list_count() {
 #[test]
 fn e2e_list_index_access() {
     let compiled = parse_and_compile("structure S { let items = [10, 20, 30]  let x = items[1] }");
-    let items_expr = get_cell_expr(&compiled, "items");
-    let x_expr = get_cell_expr(&compiled, "x");
+    let items_expr = get_let_expr(&compiled, "items");
+    let x_expr = get_let_expr(&compiled, "x");
 
     let mut values = ValueMap::new();
     let items_id = reify_core::ValueCellId::new("S", "items");
@@ -331,8 +315,8 @@ fn e2e_list_index_access() {
 fn e2e_map_index_access() {
     let compiled =
         parse_and_compile(r#"structure S { let m = map{"a" => 10, "b" => 20}  let x = m["a"] }"#);
-    let m_expr = get_cell_expr(&compiled, "m");
-    let x_expr = get_cell_expr(&compiled, "x");
+    let m_expr = get_let_expr(&compiled, "m");
+    let x_expr = get_let_expr(&compiled, "x");
 
     let mut values = ValueMap::new();
     let m_id = reify_core::ValueCellId::new("S", "m");
@@ -346,8 +330,8 @@ fn e2e_map_index_access() {
 #[test]
 fn e2e_list_sum() {
     let compiled = parse_and_compile("structure S { let items = [1, 2, 3]  let s = items.sum }");
-    let items_expr = get_cell_expr(&compiled, "items");
-    let s_expr = get_cell_expr(&compiled, "s");
+    let items_expr = get_let_expr(&compiled, "items");
+    let s_expr = get_let_expr(&compiled, "s");
 
     let mut values = ValueMap::new();
     let items_id = reify_core::ValueCellId::new("S", "items");
@@ -367,7 +351,7 @@ fn e2e_list_sum() {
 #[test]
 fn compile_single_infers_element_type() {
     let compiled = parse_and_compile("structure S { let top = single([42]) }");
-    let expr = get_cell_expr(&compiled, "top");
+    let expr = get_let_expr(&compiled, "top");
     assert_eq!(
         expr.result_type,
         Type::Int,
@@ -383,7 +367,7 @@ fn compile_single_infers_element_type() {
 #[test]
 fn compile_flat_map_infers_lambda_return_type_bool() {
     let compiled = parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x > 0]) }");
-    let expr = get_cell_expr(&compiled, "xs");
+    let expr = get_let_expr(&compiled, "xs");
     assert_eq!(
         expr.result_type,
         Type::List(Box::new(Type::Bool)),
@@ -403,7 +387,7 @@ fn compile_flat_map_infers_lambda_return_type_bool() {
 #[test]
 fn compile_flat_map_infers_lambda_return_type_real() {
     let compiled = parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x, x]) }");
-    let expr = get_cell_expr(&compiled, "xs");
+    let expr = get_let_expr(&compiled, "xs");
     assert_eq!(
         expr.result_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
@@ -434,7 +418,7 @@ fn compile_flat_map_infers_lambda_return_type_real() {
 #[test]
 fn compile_single_non_list_arg_falls_back_to_first_arg_type() {
     let compiled = parse_and_compile("structure S { let bad = single(42) }");
-    let expr = get_cell_expr(&compiled, "bad");
+    let expr = get_let_expr(&compiled, "bad");
     assert_eq!(
         expr.result_type,
         Type::Int,
@@ -449,7 +433,7 @@ fn compile_single_non_list_arg_falls_back_to_first_arg_type() {
 #[test]
 fn compile_flat_map_non_function_second_arg_falls_back_to_first_arg_type() {
     let compiled = parse_and_compile("structure S { let bad = flat_map([1, 2], 7) }");
-    let expr = get_cell_expr(&compiled, "bad");
+    let expr = get_let_expr(&compiled, "bad");
     assert_eq!(
         expr.result_type,
         Type::List(Box::new(Type::Int)),
@@ -470,7 +454,7 @@ fn compile_flat_map_non_function_second_arg_falls_back_to_first_arg_type() {
 #[test]
 fn compile_flat_map_non_list_lambda_body_falls_back_to_first_arg_type() {
     let compiled = parse_and_compile("structure S { let bad = flat_map([1, 2], |x| x) }");
-    let expr = get_cell_expr(&compiled, "bad");
+    let expr = get_let_expr(&compiled, "bad");
     assert_eq!(
         expr.result_type,
         Type::List(Box::new(Type::Int)),

@@ -9,7 +9,7 @@
 //!   - step-7 RED: anti-cascade — declared-but-unbound poisons to Error without cascade
 //!   - step-9 RED: cycle guard — normalize_type terminates on cyclic bindings
 
-use reify_core::{diagnostics::DiagnosticCode, Type};
+use reify_core::{Type, diagnostics::DiagnosticCode};
 use reify_test_support::{compile_source, errors_only};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

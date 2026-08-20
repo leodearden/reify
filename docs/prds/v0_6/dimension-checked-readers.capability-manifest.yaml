@@ -1,0 +1,1016 @@
+prd: docs/prds/v0_6/dimension-checked-readers.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5791
+  title: 'dimension-checked-readers α: relocate arg_acceptance into reify-ir; add
+    the PRD-5 spec constructors, accept_field, the Option arm and two DiagnosticCode
+    variants'
+  capabilities:
+  - name: reify-ir-is-a-reachable-home-for-both-crates
+    binding: grep — reify-ir/Cargo.toml deps reify-core + reify-ast; `pub enum Value`
+      at crates/reify-ir/src/value.rs:993; `pub struct StructureInstanceData` at :1277;
+      `DiagnosticCode` ALREADY imported at value.rs:6; crates/reify-stdlib/Cargo.toml
+      already deps reify-ir; crates/reify-eval/Cargo.toml:51 normal-deps reify-stdlib
+      (edge runs eval -> stdlib, so stdlib can never reach reify-eval). Verified at
+      decompose HEAD efba5a8036.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct StructureInstanceData
+      paths:
+      - crates/reify-ir/src/value.rs
+      expect: present
+  - name: relocation-is-not-verbatim-13-self-paths
+    binding: 'FALSIFIES PRD §3 Leg A / §6 decision 8 / §5 seam row, all of which say
+      "verbatim". crates/reify-eval/src/arg_acceptance.rs carries 13 fully-qualified
+      `reify_ir::Value` CODE paths (:117 :119 :120 :134 :136 :137 :146 :147 :148 plus
+      tests :159 :173 :188 :209) plus one doc mention (:21); workspace is edition
+      2024 and crates/reify-ir/src/ has NO `extern crate self as reify_ir`. RESOLVED
+      by amendment A1 in the task text: rewrite the paths to `crate::` or add the
+      self-alias. Not a substrate absence.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify_ir::Value
+      paths:
+      - crates/reify-eval/src/arg_acceptance.rs
+      expect: present
+  - name: accept-arg-has-no-Option-arm-but-the-gated-fields-are-Option
+    binding: 'UNLISTED PREMISE found at decompose. arg_acceptance.rs:117-130 matches
+      Undef / Scalar / `other => Rejected` — an `Option(Some(Scalar))` falls to Rejected.
+      But flexures/common.rs:109/:126 deliberately recurse into `Option(Some(_))`
+      (documented at :117-125) because `yield_stress : Option<Pressure>` (materials_fea.ri:114),
+      `FDMCouponOverride.ex/ey/ez/gxy : Option<Pressure>` (fdm_correlations.ri:242+)
+      and `shell_voxel_size : Option<Length>` (solver_elastic.ri:292) are all Option-wrapped.
+      RESOLVED by amendment A2: α adds Option handling and decision 3 gains `Option(None)
+      ≡ Absent`. Probe evidence: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Option
+      paths:
+      - crates/reify-ir/src/arg_acceptance.rs
+      expect: present
+  - name: eight-classifiers-not-nine
+    binding: FALSIFIES PRD §4. crates/reify-stdlib/src/lib.rs has exactly 8 `pub use
+      … as *_diagnose` (:20 :31 :46 :54 :63 :74 :105 :118) with 8 dispatch sites in
+      crates/reify-expr/src/lib.rs (:1973 :1977 :1982 :1986 :1993 :2021 :2066 :2089).
+      Text correction carried into the task.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a count, not a behaviour; the corrected number lives in the task text
+        and would go stale as a grep the moment a ninth classifier is added.
+  - name: eval-exit-gate-anchor-is-1661-not-1545
+    binding: FALSIFIES PRD §4. crates/reify-cli/src/main.rs:1545 sits inside `if compiled.diagnostics.iter().any(…)`
+      — the COMPILE-time gate that returns before eval runs. The eval-time gate is
+      :1661 `if diagnostics.iter().any(|d| d.severity == Severity::Error)`. Every
+      leaf signal in this PRD depends on :1661. Text correction carried into every
+      leaf.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: d\.severity == Severity::Error
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: I5-specific-UndefCause-has-no-exercised-path-today
+    binding: 'UNLISTED PREMISE. `push_op_contract_failure` (crates/reify-expr/src/lib.rs:2898)
+      takes the code as a parameter but BOTH call sites (:620, :3918) pass the generic
+      `OpContractViolation`, and :620 fires for ANY undef builtin result. Probe-confirmed:
+      the shipped E_StackupDimMismatch exemplar still records `OpContractViolation`.
+      RESOLVED by amendment A6: the specific cause must be pushed BEFORE :620 and
+      rely on INV-SF-1''s never-overwrite half; α owns proving the ordering.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn push_op_contract_failure
+      paths:
+      - crates/reify-expr/src/lib.rs
+      expect: present
+- label: β
+  task_id: 5795
+  title: 'dimension-checked-readers β: flexure reader adoption + the dimension-rejection
+    classifier arm'
+  capabilities:
+  - name: rejection-mechanism-observed-firing-1e12x
+    binding: 'PROBE (D3 prover, PASS): `reify eval tests/prd-gate/fixtures/dcr_material_dimension_silent.ri`
+      EXIT 0, zero Errors, spring_rate 1.3802083333333336e-12 m^2·kg·s^-2·rad^-1;
+      the 200GPa twin (dcr_material_dimension_correct.ri) gives 1.3802083333333335.
+      Exactly 1e12x, measured at HEAD efba5a8036. That is the RED this leaf must flip.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Scalar \{ si_value
+      paths:
+      - crates/reify-stdlib/src/flexures/common.rs
+      expect: absent
+  - name: B5-fixture-in-the-PRD-is-ill-formed
+    binding: 'FALSIFIES PRD §8 row B5. `Material` (materials_mechanical.ri:82) has
+      NO `yield_stress` field — §2.4 correction 3 says so and B5 contradicts it. Probed:
+      `Material(…, yield_stress: 310mm)` lowers the arg to a POSITIONAL `__arg3: 0.31
+      m`. RESOLVED: committed replacement fixture tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri
+      uses `Steel_AISI_1045(yield_stress: some(310mm))` and is a stronger RED — prb_validity_range
+      collapses from ±0.08726646259971647 rad to ±1.2097560975609757e-10 rad, EXIT
+      0, zero Errors.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Steel_AISI_1045\(yield_stress: some\(310mm\)\)'
+      paths:
+      - tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri
+      expect: present
+  - name: flexure-classifier-runs-on-BOTH-paths
+    binding: grep:crates/reify-stdlib/src/lib.rs:70-74 — `flexure_diagnose` is documented
+      as running on BOTH the success and Undef paths, unlike stackup_diagnose/fea_diagnose
+      which fire only on Value::Undef. It is therefore the correct host for a rejection
+      that must fire regardless of the result shape.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub use flexures::flexure_diagnose
+      paths:
+      - crates/reify-stdlib/src/lib.rs
+      expect: present
+  - name: seven-yield_stress-production-readers
+    binding: grep — beam.rs:89, hinge.rs:98/:252, compound.rs:102/:281, notch.rs:135,
+      prismatic.rs:110, all above their files' `#[cfg(test)]` boundary. PRD §2.4 correction
+      2 is right that the research note's "zero consumers" claim holds only when scoped
+      to compute_targets/**.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: yield_stress
+      paths:
+      - crates/reify-stdlib/src/flexures
+      expect: present
+- label: γ1
+  task_id: 5797
+  title: 'dimension-checked-readers γ1: widen BOTH FEA solvers'' load readers to one
+    shared reader; add buckling''s missing type_name guard'
+  capabilities:
+  - name: the-inversion-measured-end-to-end
+    binding: 'PROBE (D3 prover, PASS): `PointLoad(force: 1000.0)` -> ElasticResult.max_von_mises
+      5139325.408614099 kg·m^-1·s^-2, iterations 719 (0.33 s); `PointLoad(force: 1000N)`
+      -> max_von_mises **0**, iterations **0** (0.18 s). Same scene, EXIT 0 both times,
+      zero Error diagnostics. Committed fixtures tests/prd-gate/fixtures/dcr_solver_load_dropped_{bare,dimensioned}.ri.
+      No kernel required — both solvers synthesize their own mesh.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Some\(Value::Real\(f\)\) = data\.fields\.get\("force"\)
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: absent
+  - name: B1-as-written-is-NOT-expressible
+    binding: 'FALSIFIES PRD §8 row B1. Neither result type carries an applied load,
+      BY DESIGN: ElasticResult (solver_elastic.ri:499-578) and BucklingResult (solver_buckling.ri:206-210,
+      frozen to 4 fields), stated verbatim at solver_buckling_fns.ri:66-79 and restated
+      at buckling.rs:743-748; "reaction" appears nowhere in crates/. RESOLVED by amendment
+      C1: assert `max_von_mises` 0 -> 5139325.408614099 Pa instead. No result-type
+      unfreeze needed.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ElasticResult stores no load
+      paths:
+      - crates/reify-compiler/stdlib/solver_buckling_fns.ri
+      expect: present
+  - name: buckling-has-no-type_name-guard-and-panics-on-non-List
+    binding: grep:crates/reify-eval/src/compute_targets/buckling.rs:714-742 — `extract_total_load`
+      sums unsigned magnitudes with NO `type_name` guard, ignores `direction`, `panic!`s
+      on a non-List loads value (:717), and falls back to a 1.0 N sentinel (:741).
+      elastic_static.rs:4013 dispatches 3 type_name arms with 4 inconsistent value-shape
+      gates. Same crate, so "one shared reader" has no visibility blocker — but it
+      is real work, not a rename.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: panic!\(
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling.rs
+      expect: absent
+- label: γ2
+  task_id: 5798
+  title: 'dimension-checked-readers γ2: retype the four fea_multi_case.ri load fields
+    and migrate every in-scope call site'
+  capabilities:
+  - name: retype-target-is-existing-grammar
+    binding: 'PROBE (D3 prover, PASS, grammar + check): tests/prd-gate/fixtures/dcr_load_retype_target_resolves.ri
+      declares `param force : Force = 0N`, `param magnitude : Pressure = 0Pa`, `param
+      force_density : ForceDensity = 0N/m^3` plus dimensioned ctor args — `tree-sitter
+      parse --quiet` 0 ERROR nodes, `reify check` EXIT 0, `reify eval` EXIT 0 zero
+      diagnostics. Shipped precedent: modal_analysis.ri:483 `param magnitude : Force`
+      called as `magnitude: 10N`.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'param force *: *Force'
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+      expect: present
+  - name: PRD-blast-radius-figures-are-internally-inconsistent
+    binding: 'FALSIFIES PRD §2.3. "90 in-scope … split 35 .ri / 77 .rs" — 35+77=112,
+      matching neither 90 nor any measurement; the arithmetic omits BodyForce entirely
+      while retyping BodyForce.force_density, and the "-4 shadowed PressureLoad defs"
+      correction is a no-op (those defs at struct_ctor_field_conformance_tests.rs:170/:194/:215/:472
+      pass `face:` only). Independent decompose sweep: 92 in-scope, 32 .ri / 60 .rs,
+      bucketed 77 bare-literal / 0 expression / 15 no-value-at-all. RESOLVED by amendment
+      D1: the leaf re-derives its own set and reports the count.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a measured count that the leaf must re-derive at implementation time;
+        pinning today's number as a grep would encode a figure the leaf is explicitly
+        told not to trust.
+  - name: migration-sets-are-provably-disjoint-from-PRD-4
+    binding: producer:task-5756 upstream — PRD 4 α item 6 FLAGS AND EXCLUDES all four
+      fea_multi_case.ri load-struct fields so PRD 4's and PRD 5's migration lists
+      are provably disjoint; task 5758 (PRD 4 β)'s 17-site ledger contains none of
+      them. Read back at decompose from both task records.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-task ledger agreement, verified by reading tasks 5756 and 5758
+        at decompose; not expressible as a repo grep.
+  - name: unknown-ctor-field-lowers-silently-to-a-positional-arg
+    binding: 'UNLISTED PREMISE (migration hazard). Probed: `ZVShaper(target_frequency:
+      50rad/s, nonexistent_field: 7)` is accepted and the unknown argument lowers
+      to `__arg2: 7` with ZERO diagnostics — so a codemod that mangles a field name
+      fails SILENTLY. RESOLVED by amendments D4+D5: the leaf carries a count-based
+      completeness assertion. (The lowering itself is PRD 4''s ctor-conformance surface,
+      not PRD 5''s mechanism.)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the hazard is a property of ctor lowering owned by PRD 4; PRD 5's mitigation
+        is the completeness assertion, checked by the leaf's own signal.
+  - name: two-tests-assert-on-literal-source-text
+    binding: grep:crates/reify-compiler/tests/multi_load_bracket_example_tests.rs:217/:222
+      — `src.contains("PointLoad(")`. A textual codemod that reflows those call sites
+      breaks them; named in the task text so the implementer checks them explicitly.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PointLoad\(
+      paths:
+      - crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
+      expect: present
+- label: γ3
+  task_id: 5802
+  title: 'dimension-checked-readers γ3: narrow the FEA load readers; reject TractionLoad
+    and BodyForce loudly'
+  capabilities:
+  - name: TractionLoad-and-BodyForce-have-zero-solver-occurrences
+    binding: 'grep — the strings "TractionLoad" and "BodyForce" have ZERO occurrences
+      anywhere in crates/reify-eval/src/compute_targets/elastic_static.rs, which dispatches
+      exactly three type_name arms. Both structures construct cleanly (probe: EXIT
+      0), so the load is dropped in complete silence — INV-SF-3.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TractionLoad
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: present
+  - name: the-3457-deferral-is-an-orphaned-malformed-cite
+    binding: grep:crates/reify-eval/src/compute_targets/buckling.rs — TWO occurrences
+      of "task θ/3457" (the module doc and the sentinel comment at ~:741). Task 3457
+      is `done`, and the prose form "task θ/3457" resolves to `malformed-cite` under
+      the PTODO grammar (docs/prds/reify-audit-ptodo-detector.md §8). γ3 deletes the
+      sentinel and repoints/removes both cites.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '3457'
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling.rs
+      expect: absent
+  - name: the-rejection-follow-up-cites-a-live-task
+    binding: producer:task-σ (filed live in this batch) — the E_FeaLoadKindUnsupported
+      diagnostic cites the TractionLoad/BodyForce wire-up owner in canonical PTODO
+      `#NNNN` form. Filed AT DECOMPOSE rather than by γ3 at implementation time, so
+      the cite is never a forward reference (INV-SF-5).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FeaLoadKindUnsupported
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: present
+- label: δ
+  task_id: 5803
+  title: 'dimension-checked-readers δ: close length_input''s bare hole and key jointvalue_from_bound_value
+    per joint kind'
+  capabilities:
+  - name: length_input-accepts-bare-Real-as-metres
+    binding: 'grep:crates/reify-stdlib/src/joints.rs:1181-1197 — after the LENGTH-checked
+      Scalar arm it falls through to `Value::Real(r) if r.is_finite() => Some(*r)`
+      and `Value::Int(i) => Some(*i as f64)`. Call sites with the hole: :539 couple
+      offset, :587 screw lead, :660 rack pitch_radius, :1763 prismatic displacement.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn length_input
+      paths:
+      - crates/reify-stdlib/src/joints.rs
+      expect: present
+  - name: the-strict-twin-already-exists-in-the-same-crate
+    binding: grep:crates/reify-stdlib/src/joints.rs:1221-1227 `cylindrical_motion_vars`
+      does `length_input(&items[0])?` + `trig_input(&items[1])?` — the correct per-kind
+      discrimination — while crates/reify-stdlib/src/loop_closure.rs:691-730 uses
+      bare `as_f64()` five times with no kind discrimination at all. One contradicts
+      the other inside the same crate; δ makes loop_closure match.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn cylindrical_motion_vars
+      paths:
+      - crates/reify-stdlib/src/joints.rs
+      expect: present
+  - name: JointValue-retarget-is-NOT-owned-here
+    binding: producer:task-5412 (pending, `placeholder-type-eradication-ratchet` η)
+      owns `pub type JointValue = Real` (trajectory.ri:77) and its four TODO(joint-value-type)
+      markers. δ fixes the READS per joint kind, which is independent of the alias.
+      Read-only here; the seam is not double-owned.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub type JointValue
+      paths:
+      - crates/reify-compiler/stdlib/trajectory.ri
+      expect: present
+- label: ε
+  task_id: 5804
+  title: 'dimension-checked-readers ε: consolidate the three cell_f64 copies and gate
+    mass/com/inertia/spring_rate/damping'
+  capabilities:
+  - name: the-PRD-signal-as-written-is-FALSE
+    binding: 'FALSIFIES PRD §9 ε. Probed: `mass_properties(2m, …)` ALREADY returns
+      Value::Undef, because that builtin routes through the STRICT `cell_mass_f64`
+      (crates/reify-stdlib/src/dynamics/eval.rs:78). The genuinely blind site is `mass_properties_from_value`
+      (:349-358), which reads `mass` at :354 through the blind `cell_f64` copy (:55)
+      off a MassProperties structure instance, consumed at :784 and :1345 via `resolve_body_mass`.
+      RESOLVED by amendment F1: ε retargets that path and additionally makes the already-strict
+      rejection LOUD (specific UndefCause + named Error instead of today''s generic
+      OpContractViolation).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn cell_mass_f64
+      paths:
+      - crates/reify-stdlib/src/dynamics/eval.rs
+      expect: present
+  - name: ctor-side-RED-is-real
+    binding: 'PROBE (D3 prover, PASS): `MassProperties(mass: 2m, com: point3(0mm,0mm,0mm))`
+      is accepted at `reify eval` EXIT 0 and stores `mass: 2 m` — committed fixture
+      tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri. `constraint mass
+      >= 0kg` (dynamics.ri:87) does not fire at eval.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'MassProperties\(mass: 2m'
+      paths:
+      - tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri
+      expect: present
+  - name: three-byte-identical-cell_f64-copies
+    binding: grep — crates/reify-stdlib/src/dynamics/eval.rs:55, crates/reify-eval/src/dynamics_ops.rs:49,
+      crates/reify-eval/src/dynamics_psd.rs:56. The ≥2-duplicate hoist norm applies.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn cell_f64
+      paths:
+      - crates/reify-eval/src/dynamics_ops.rs
+      expect: absent
+  - name: rotational-stiffness-dimension-is-under-question-and-OWNED
+    binding: 'DimensionVector::ROTATIONAL_STIFFNESS (crates/reify-core/src/dimension.rs:275,
+      [(0,2),(1,1),(2,-2),(7,-1)]) is byte-identical to DimensionVector::TORQUE
+      (crates/reify-core/src/dimension.rs:328, same exponent tuple), registered as the
+      NAMED_DIMENSIONS row (DimensionVector::TORQUE, "Torque") at dimension.rs:627.
+      [Repointed 2026-07-31: this clause used to cite the stdlib alias `pub type Torque
+      = Force * Length / Angle` at crates/reify-compiler/stdlib/ports_mechanical.ri:29.
+      η (task 5785, merge commit 61300d09) retired that alias and promoted `Torque` to
+      a built-in named dimension, so the byte-identity claim is unchanged but its twin
+      is now the registry const, not a .ri type-alias.] And k = τ/θ arguably implies
+      rad^-2. Handed to PRD 5 by PRD 3''s landed text. RESOLVED,
+      not guessed: task ρ (filed live in this batch) owns the ruling; ε reads the
+      vector FROM the registry const by reference so a later re-dimensioning is a
+      one-line change and the gate can never reject a correctly-declared corpus site.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DimensionVector::ROTATIONAL_STIFFNESS
+      paths:
+      - crates/reify-core/src/dimension.rs
+      expect: present
+- label: ζ
+  task_id: 5805
+  title: 'dimension-checked-readers ζ: consolidate the trajectory readers and gate
+    target_frequency / waypoint t / limits'
+  capabilities:
+  - name: the-ctor-alone-never-reaches-the-reader
+    binding: 'FALSIFIES PRD §9 ζ''s fixture. `read_scalar_si` (crates/reify-stdlib/src/trajectory/input_shape.rs:51)
+      runs only inside `build_train_for_shaper` (:109), reached from `.ri` via `input_shape(profile,
+      shaper)` (crates/reify-compiler/stdlib/trajectory.ri:873). A bare `ZVShaper(target_frequency:
+      50rad/s)` evaluates at EXIT 0 with zero diagnostics and simply stores `50 rad·s^-1`.
+      RESOLVED by amendment G1 + the committed consuming fixture.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_train_for_shaper
+      paths:
+      - crates/reify-stdlib/src/trajectory/input_shape.rs
+      expect: present
+  - name: consuming-fixture-is-reachable-cheap-and-RED
+    binding: 'PROBE (D3 prover, PASS, grammar + ir): tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri
+      feeds a 3-waypoint PiecewisePolynomialProfile through `input_shape` with BOTH
+      a 50Hz and a 50rad/s shaper — `reify eval` EXIT 0, zero diagnostics, both shaped
+      profiles produced (1024 resampled waypoints each), no kernel, well under a second.
+      Gate-resident by construction.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: input_shape\(profile, shaper_rads\)
+      paths:
+      - tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri
+      expect: present
+  - name: the-error-is-2pi-and-silent
+    binding: 'grep:crates/reify-stdlib/src/trajectory/input_shape.rs:90-102 — the
+      Hz->rad/s marshalling `ω_n = 2π·f` happens after the dimension has been stripped,
+      so a `rad/s` input is silently designed for 314 rad/s instead of 50. `ZVShaper.target_frequency
+      : Frequency` with `constraint target_frequency > 0Hz` (trajectory.ri:656/:659)
+      does not catch it — `rad·s^-1` and `s^-1` are different DimensionVectors and
+      cross-dimension ctor args are silent today.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn field_f64
+      paths:
+      - crates/reify-stdlib/src/trajectory/trampoline.rs
+      expect: absent
+- label: η
+  task_id: 5806
+  title: 'dimension-checked-readers η: gate the FDM / as-printed readers'
+  capabilities:
+  - name: field_scalar-and-opt_f64-are-dimension-blind
+    binding: 'grep:crates/reify-eval/src/compute_targets/as_printed_material.rs:237
+      `field_scalar` and :317 `opt_f64` — neither checks a dimension, while `AsPrintedOptions.line_width
+      : Length = 0.4mm` (fdm_as_printed.ri:38) and `FDMCouponOverride.ex/ey/ez/gxy
+      : Option<Pressure>` (fdm_correlations.ri:242+) are fully dimensioned.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn field_scalar
+      paths:
+      - crates/reify-eval/src/compute_targets/as_printed_material.rs
+      expect: present
+  - name: both-defects-measured
+    binding: 'PROBE (D3 prover, PASS): tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri
+      — `AsPrintedOptions(line_width: 0.4)` stores a bare 0.4 (read as METRES, a 1000x
+      error on a 0.4 mm extrusion width) and `FDMCouponOverride(ex: 2mm)` stores `ex:
+      0.002 m` (read as 0.002 Pa). EXIT 0, zero diagnostics.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'AsPrintedOptions\(line_width: 0\.4\)'
+      paths:
+      - tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri
+      expect: present
+  - name: transport-is-ComputeOutcome-Failed-not-the-classifier
+    binding: UNLISTED PREMISE. These readers run inside the `@optimized("fdm::as_printed_material_r_fast")`
+      ComputeNode trampoline (fdm_as_printed.ri:61), so they surface via `ComputeOutcome::Failed
+      { diagnostics, structured_detail }` (crates/reify-compute-contract/src/dispatch.rs:64
+      — house policy per esc-2929-40), NOT via the reify-stdlib `diagnose` classifier.
+      The signal fixture therefore needs a realized Solid. Carried into the task text
+      with contract I6 (identical wording and code across both channels).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ComputeOutcome::Failed
+      paths:
+      - crates/reify-compute-contract/src/dispatch.rs
+      expect: present
+- label: θ
+  task_id: 5807
+  title: 'dimension-checked-readers θ: gate safety_factor at BOTH entry points and
+    retype analysis.ri''s yield_strength'
+  capabilities:
+  - name: both-entry-points-exist-and-only-one-is-obvious
+    binding: grep — (1) crates/reify-stdlib/src/analysis.rs:271 `safety_factor(args)`
+      reads `yield_val` through a bare `as_f64()`; (2) crates/reify-expr/src/lib.rs:390-394
+      intercepts `"safety_factor"` when `evaluated_args[0]` is a `Value::Field` and
+      routes to `analysis::compute_safety_factor`. Gating only (1) leaves the actual
+      FEA consumer path un-gated.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: analysis::compute_safety_factor
+      paths:
+      - crates/reify-expr/src/lib.rs
+      expect: present
+  - name: the-silent-wrong-answers-are-measured
+    binding: 'PROBE (D3 prover, PASS): with `sigma = 100000000Pa * outer(vec3(1,0,0),
+      vec3(1,0,0))` — `safety_factor(sigma, 250mm)` = 2.5e-9, `safety_factor(sigma,
+      250.0)` = 2.5e-6, `safety_factor(sigma, 250MPa)` = 2.5. EXIT 0, zero diagnostics.
+      Committed fixture tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: safety_factor\(sigma, 250mm\)
+      paths:
+      - tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri
+      expect: present
+  - name: analysis.ri-retype-has-zero-migration-cost
+    binding: 'grep — `trait Analysis` (crates/reify-compiler/stdlib/analysis.ri:45-49,
+      `param yield_strength : Real`) and `trait AnalysisResult` have ZERO conformers
+      repo-wide, so the Real->Pressure retype costs nothing (decision 9). `AnalysisResult`''s
+      six Real params stay — analysis.ri:23-28 declares them a dimension-agnostic
+      structural contract.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'param yield_strength : Real'
+      paths:
+      - crates/reify-compiler/stdlib/analysis.ri
+      expect: absent
+  - name: the-example-migration-is-a-PAIR-not-a-line
+    binding: UNLISTED PREMISE. examples/fields_analysis.ri:43 builds a BARE tensor
+      (`100.0 * outer(e1, e1)`) and :46 calls `safety_factor(sigma, 250.0)`. Under
+      an absolute PRESSURE spec BOTH must become dimensioned in the same diff. PROBE-VERIFIED
+      that `safety_factor(100000000Pa * outer(e1,e1), 250000000Pa)` = EXACTLY 2.5
+      — the same number the example asserts today. Comments at :7/:14/:40/:46 also
+      state the bare form.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: safety_factor\(sigma, 250\.0\)
+      paths:
+      - examples/fields_analysis.ri
+      expect: absent
+- label: ι
+  task_id: 5808
+  title: 'dimension-checked-readers ι: gate envelope_critical_load and make shell_voxel_size
+    apply'
+  capabilities:
+  - name: the-critical_load-half-of-the-signal-is-VACUOUS
+    binding: 'PROBE (D3 prover, PASS, negative-assertion vacuity guard): `critical_load`
+      is a `.ri` fn with `reference_load : Force` (solver_buckling_fns.ri:74-79),
+      already covered by `resolve_function_overload`''s strict `param_ty == arg_ty`
+      (type_compat.rs:1155, :1194-1200). Committed fixture tests/prd-gate/fixtures/dcr_fn_force_param_already_rejects.ri
+      gives EXIT 1 on BOTH `reify eval` and `reify check` — "no matching overload
+      for scale_load(Scalar[m])". RESOLVED by amendment H1: ι targets `envelope_critical_load`
+      instead.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'reference_load : Force'
+      paths:
+      - crates/reify-compiler/stdlib/solver_buckling_fns.ri
+      expect: present
+  - name: envelope_critical_load-is-a-bare-eval_builtin-with-no-overload-gate
+    binding: grep — `envelope_critical_load` is defined at crates/reify-stdlib/src/fea.rs:1455
+      with ZERO `.ri` declarations anywhere under crates/reify-compiler/stdlib/, and
+      is called directly from `.ri` at examples/buckling_multi_case_smoke.ri:57. It
+      requires args[1] to be a Value::Scalar but PROPAGATES that Scalar's dimension
+      verbatim into the returned "critical load".
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: envelope_critical_load
+      paths:
+      - crates/reify-stdlib/src/fea.rs
+      expect: present
+  - name: shell_voxel_size-double-miss-with-zero-corpus-coverage
+    binding: 'grep — crates/reify-compiler/stdlib/solver_elastic.ri:292 declares `param
+      shell_voxel_size : Option<Length> = none` while crates/reify-eval/src/shell_extract_compute.rs:550
+      reads `if let Some(Value::Real(v))` — a miss on BOTH the Option wrapper AND
+      the Scalar variant. `git grep "shell_voxel_size:"` finds NO override anywhere
+      in code or examples, so no test could have caught it. PATH CORRECTION: the PRD
+      cites compute_targets/shell_extract_compute.rs; the real path is crates/reify-eval/src/shell_extract_compute.rs
+      (line number exact).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Some\(Value::Real\(v\)\) = data\.fields\.get\("shell_voxel_size"\)
+      paths:
+      - crates/reify-eval/src/shell_extract_compute.rs
+      expect: absent
+  - name: no-existing-test-needs-retargeting-for-the-propagation
+    binding: FALSIFIES PRD §9 ι's "retargets the test that pins the propagation (fea.rs:6502)".
+      `envelope_critical_load_dimension_propagates_from_reference` asserts FORCE-in
+      -> FORCE-out, which stays GREEN under a FORCE gate. ι ADDS a negative twin rather
+      than retargeting.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: envelope_critical_load_dimension_propagates_from_reference
+      paths:
+      - crates/reify-stdlib/src/fea.rs
+      expect: present
+- label: κ
+  task_id: 5809
+  title: 'dimension-checked-readers κ: reject cross-dimension min/max and enforce
+    inverse-trig dimensionless discipline'
+  capabilities:
+  - name: cross-dimension-min-max-silently-discards-the-dimension
+    binding: 'PROBE (D3 prover, PASS): `min(10mm, 5kg)` = 0.01 (a bare Real), `max(10mm,
+      5kg)` = 5, `asin(3mm)` = 0.0030000045000182253 rad, `atan2(1mm, 1kg)` = 0.0009999996666668668
+      rad — all at EXIT 0 with zero diagnostics. Controls hold: `min(10mm, 20mm)`
+      = 0.01 m, `min(3, 7.0)` = 3, `asin(0.5)` = 0.5235987755982989 rad. Committed
+      fixture tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: match \(a\.as_f64\(\), b\.as_f64\(\)\)
+      paths:
+      - crates/reify-stdlib/src/numeric.rs
+      expect: absent
+  - name: atan2-cross-dimension-is-unlisted-in-Leg-D
+    binding: 'UNLISTED PREMISE found at decompose: PRD §3 Leg D enumerates asin/acos/atan/atan2/sinh/cosh/tanh
+      but does not note that atan2 has TWO argument positions with DIFFERENT silently-wrong
+      answers per order — `atan2(1mm, 1kg)` = 0.001 rad, `atan2(1kg, 1mm)` = 1.5697963271282298
+      rad. Carried into the task text.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: atan2\(1mm, 1kg\)
+      paths:
+      - tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri
+      expect: present
+  - name: corpus-exposure-is-approximately-zero
+    binding: PRD §3 Leg D measured 10 non-comment min/max uses in `.ri`, all unary
+      field reductions or same-dimension; inverse trig used only on genuinely dimensionless
+      arguments (examples/math_linalg.ri:49, examples/kernel_queries/angle_smoke.ri:7).
+      The task text instructs a re-derived sweep before landing rather than trusting
+      the figure.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a corpus measurement the leaf must re-derive; a grep pinning today's
+        count would be stale on the next corpus change.
+- label: λ
+  task_id: 5810
+  title: 'dimension-checked-readers λ: closure-guard SECOND UNIVERSE'
+  capabilities:
+  - name: harness-producer-is-upstream
+    binding: producer:task-5752 upstream — PRD 1's closure-guard harness leaf, wired
+      as a HARD cross-PRD `add_dependency` edge. 5752's own text designates PRD 5's
+      second universe as an EXTENSION POINT and requires the universe and allowlist
+      be data so both PRD 3 and PRD 5 are pure additions.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction binding verified by the wired add_dependency edge; not
+        a repo grep.
+  - name: PRD-1s-universe-cannot-see-this-surface
+    binding: grep — `plane_xy`/`plane_xz`/`plane_yz` (crates/reify-stdlib/src/geometry.rs:818-820),
+      `axis_x/y/z` (:823-825) and `point3` (:942) are pure `eval_builtin` arms with
+      no compiler signature; `reify_compiler::units::GEOMETRY_FUNCTION_NAMES` (64
+      names, verified by 5752) contains none of the prb_*/joint/FEA/trajectory family
+      either.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"plane_yz" => make_plane'
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+      expect: present
+  - name: the-derived-universe-is-feasible-and-must-recurse
+    binding: 'MEASURED at decompose: a token scan of `eval_*` sub-dispatcher match-arm
+      string literals under crates/reify-stdlib/src yields 235 distinct literal builtin
+      names with ZERO computed/starts_with/constant-driven dispatch sites. CRITICAL
+      WRINKLE NOT IN THE PRD: `eval_flexures` (flexures/mod.rs) is a NESTED dispatcher
+      delegating to eval_beam/eval_compound/eval_hinge/eval_notch/eval_prismatic —
+      a single-level scan silently loses the whole prb_* family, this PRD''s headline
+      surface. Carried into the task with a `prb_cantilever_beam ∈ universe` self-test.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"prb_cantilever_beam" =>'
+      paths:
+      - crates/reify-stdlib/src/flexures/beam.rs
+      expect: present
+  - name: the-LSP-union-is-genuinely-needed-in-both-directions
+    binding: 'MEASURED at decompose: `BUILTIN_FUNCTIONS` (crates/reify-lsp/src/completion.rs:314-896)
+      has exactly 95 unique entries, covering plane_*/axis_*/point3/min/max/asin but
+      NOT prb_* (zero), revolute, safety_factor, critical_load or mass_properties.
+      Confirms PRD decision 10''s union, and confirms the eval_builtin scan is not
+      redundant.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const BUILTIN_FUNCTIONS
+      paths:
+      - crates/reify-lsp/src/completion.rs
+      expect: present
+  - name: point3-is-polymorphic-and-the-openvdb-site-is-OWNED
+    binding: 'PROBED at decompose: `point3(0.85,0,0)` -> a DIMENSIONLESS point, `point3(0.85m,0m,0m)`
+      -> a LENGTH point, `point3(0.85m,0kg,0m)` -> Undef (homogeneity already enforced).
+      So the allowlist entry is "polymorphic; homogeneity-checked", not "un-gated".
+      HANDOFF DISCHARGED: examples/imported_field/openvdb_stress.ri:36-38 uses a bare
+      `point3(0.85, 0.0, 0.0)` inside `sample(...)` routed through crates/reify-expr/src/lib.rs:293,
+      NOT PRD 1''s point3_components — CI-gated by crates/reify-cli/tests/harness_cli/cli_imported_field_eval.rs.
+      λ owns it, with a measure-then-decide disposition rule in the task text.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: point3\(0\.85, 0\.0, 0\.0\)
+      paths:
+      - examples/imported_field/openvdb_stress.ri
+      expect: absent
+  - name: drift-guard-registrations-same-diff
+    binding: Gate-test drift-guard registration rule (project overlay). λ adds a gate-resident
+      test, so its own diff carries the `.config/nextest.toml` partition entry (guarded
+      by tests/infra/test_nextest_slow_priority.sh), any run-all-classification.manifest
+      row, and the wallclock-bounds registration. Never a follow-up, never ordered
+      by prose — esc-4914-162.
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/verify-pipeline-guard.sh
+      args:
+      - requires-full-gate
+      - .config/nextest.toml
+      timeout_secs: 60
+- label: μ
+  task_id: 5811
+  title: 'dimension-checked-readers μ: doc-chunk coverage for the dimensioned stdlib-reader
+    surface'
+  capabilities:
+  - name: zero-chunk-presence-today
+    binding: grep — none of the 17 chunks under crates/reify-mcp/src/tools/chunks/
+      mentions `prb_cantilever_beam`, `PointLoad` or `solve_elastic_static`. The whole
+      flexure/FEA authoring surface this PRD changes is undocumented in-tool.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PointLoad
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: check-visibility-is-PRD-2s-and-the-edge-is-real
+    binding: 'PROBE (D3 prover, PASS + adversary confirmation): `reify check tests/prd-gate/fixtures/dcr_dimension_rejection_channel_fires.ri`
+      PRINTS `error: E_StackupDimMismatch: …` and EXITS 0 with "All constraints satisfied.",
+      while `reify eval` on the same file exits 1. That is the INV-SF-2 outlier PRD
+      2 owns via task 5403. A real `add_dependency` edge μ -> 5403 is wired so the
+      chunk''s guidance is TRUE when written; the two new codes must never enter PRD
+      2''s CHECK_ERROR_EXIT_ALLOWLIST.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-PRD ordering guarantee, carried by the wired add_dependency edge
+        onto task 5403; not expressible as a repo grep.
+- label: ν
+  task_id: 5812
+  title: 'dimension-checked-readers ν: exemplar-corpus entry + INDEX.md row'
+  capabilities:
+  - name: corpus-and-index-exist-and-are-compile-gated
+    binding: grep — examples/best_practices/ holds 6 exemplars + INDEX.md, auto-compile-gated
+      by crates/reify-compiler/tests/examples_smoke.rs; `.claude/skills/reify-design/SKILL.md:22`
+      instructs authors to grep that index before probing the language. The idiom
+      shape to imitate is examples/best_practices/negation.ri.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dimensioned_analysis_inputs
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: every-demonstrated-idiom-is-probe-measured
+    binding: 'Each anti-pattern the exemplar contrasts was MEASURED at decompose:
+      1e12x spring rate (200mm vs 200GPa), ±1.2e-10 vs ±0.0873 rad (yield_stress 310mm
+      vs 310MPa), max_von_mises 0 vs 5139325.408614099 Pa (force 1000N vs 1000.0),
+      2.5e-6/2.5e-9 vs 2.5 (safety_factor), 6.28x (50rad/s vs 50Hz). No invented numbers.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the exemplar's prose cites measurements captured in the D3 fixtures;
+        correctness is enforced by examples_smoke.rs compiling the file, not by a
+        grep.
+- label: ξ
+  task_id: 5813
+  title: 'dimension-checked-readers ξ: cheatsheet index line + discoverability acceptance'
+  capabilities:
+  - name: the-cheatsheet-index-is-a-real-one-line-surface
+    binding: grep:.claude/skills/reify-design/SKILL.md:22 and :61-63 — "One line per
+      idiom. Worked, compile-gated exemplars live in examples/best_practices/ … Catalogued
+      in examples/best_practices/INDEX.md; grep that index before probing the language."
+      An index ENTRY is the sanctioned shape; an inline playbook is not.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dimensioned_analysis_inputs
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+  - name: intent-level-discoverability-is-the-acceptance
+    binding: Docs-truth gate item 4. The three goal phrasings ("make sure my FEA loads
+      actually get applied", "check my material's units are right", "why is my flexure
+      stiffness insane") must each reach the exemplar or the μ chunk in one hop with
+      no function name known in advance — the gap the 2026-07-24 language review measured
+      (#5389/#5347/#5364).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a human-walk acceptance; the leaf records the three walk transcripts
+        in its completion note.
+- label: ο
+  task_id: 5814
+  title: 'dimension-checked-readers ο: correct the stale stdlib-reference material
+    declarations and register the declared-only properties'
+  capabilities:
+  - name: the-stale-3111-annotations-are-real-and-counted
+    binding: 'MEASURED at decompose: 13 stale items in docs/reify-stdlib-reference.md
+      — NINE `// shipped: Real (aspiration pending #3111)` annotations at :1017 :1019
+      :1023 :1024 :1025 :1034 :1035 :1046 :1047 plus FOUR stale prose/declaration
+      items at :981 :992 :993 :1007. PRD says "~12". Lines :1018 :1029 :1042 :1043
+      are CORRECTLY Real and must not be touched. #3111 is `done`; the live declarations
+      are `density : Density` / `youngs_modulus : Pressure` (materials_mechanical.ri:82-87).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '3111'
+      paths:
+      - docs/reify-stdlib-reference.md
+      expect: absent
+  - name: thermal_conductivity-is-NOT-declared-only
+    binding: FALSIFIES PRD §2.4 correction 2. `crates/reify-compiler/stdlib/structural_physical.ri:150
+      constraint thermal_conductivity > 0W/(m*K)` is a live DSL reader. The claim
+      is true only when scoped to Rust/host readers. `shear_modulus` (materials_mechanical.ri:100)
+      and `thermal_expansion` (materials_thermal.ri:41) ARE genuinely reader-free;
+      `cte` does not exist as an identifier anywhere.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: thermal_conductivity
+      paths:
+      - crates/reify-compiler/stdlib/structural_physical.ri
+      expect: present
+  - name: the-declared-only-register-cites-a-live-task
+    binding: producer:task-τ (filed live in this batch) owns `shear_modulus` and `thermal_expansion`
+      so "no task yet owns it" is impossible (INV-SF-5). Filed AT DECOMPOSE so ο's
+      register is never a forward reference.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the cite is stamped into the doc at implementation time against the
+        task id commit_planning writes into this sidecar; not gre-pable before the
+        leaf runs.
+- label: π
+  task_id: 5815
+  title: 'dimension-checked-readers π: integration gate — the §8 boundary suite runs
+    green as a gate-resident test'
+  capabilities:
+  - name: every-prerequisite-is-upstream
+    binding: 'DAG-direction: π depends on β, γ3, δ, ε, ζ, η, θ, ι and λ via real add_dependency
+      edges. No capability π asserts is owned by a task that depends on π.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction binding verified by the nine wired add_dependency edges.
+  - name: B1-is-expressible-after-the-re-specification
+    binding: 'PROBE (D3 prover, PASS): the committed paired fixtures give max_von_mises
+      5139325.408614099 Pa / 719 iterations (bare) vs 0 / 0 (dimensioned) at 0.33
+      s and 0.18 s. π asserts APPLICATION of the load, not the presence of a warning.
+      Neither ElasticResult nor BucklingResult needs unfreezing.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'force: 1000N'
+      paths:
+      - tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri
+      expect: present
+  - name: gate-residency-is-per-binary-and-sizing-is-load-bearing
+    binding: UNLISTED PREMISE. The heavy filter is PER-BINARY (scripts/heavy-test-filter-lib.sh
+      names 6 binaries; REIFY_GATE_EXCLUDE_HEAVY=1 live in dark-factory-orchestrator.yaml),
+      and crates/reify-eval-fea-tests is drift-guarded OCCT-free (tests/infra/test_fea_e2e_crate_occt_free.sh)
+      with both solvers synthesizing their own mesh — so a NEW binary there is gate-resident
+      by construction. But the 20x20x800 mm buckling column costs ~100-108 s debug
+      while a 10x10x1 mm scene costs ~0.2 s. Tiny geometry is mandatory; carried into
+      the task text.
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/verify-pipeline-guard.sh
+      args:
+      - requires-full-gate
+      - .config/nextest.toml
+      timeout_secs: 60
+- label: ρ
+  task_id: 5799
+  title: '[MILESTONE] dimension-checked-readers ρ: rule on the ROTATIONAL_STIFFNESS
+    ≡ Torque DimensionVector collision'
+  capabilities:
+  - name: the-collision-is-real-and-byte-identical
+    binding: 'MEASURED at decompose (pre-η — retained verbatim as provenance; this
+      was the state of the tree when the decompose ran): crates/reify-core/src/dimension.rs:275
+      ROTATIONAL_STIFFNESS = [(0,2),(1,1),(2,-2),(7,-1)] is byte-identical to crates/reify-compiler/stdlib/ports_mechanical.ri:29
+      `pub type Torque = Force * Length / Angle`. `Torque` is ABSENT from NAMED_DIMENSIONS
+      (49 entries), so canonical_name()''s first-match scan (dimension.rs:368) returns
+      "RotationalStiffness" for the shared vector — every torque-valued rejection
+      would render as "RotationalStiffness Scalar".
+
+
+      SUPERSEDED IN ITS EVIDENCE, NOT IN ITS CLAIM — corrected 2026-07-31 against η
+      (task 5785, merge commit 61300d09). Three measurements above no longer describe
+      the tree: (1) the ports_mechanical.ri:29 alias is GONE — η deleted it, and :17-28
+      is now a pointer comment recording that no module-level alias is needed because
+      a NAMED_DIMENSIONS lookup outranks a module type-alias. (2) "`Torque` is ABSENT
+      from NAMED_DIMENSIONS (49 entries)" is false on BOTH counts: (DimensionVector::TORQUE,
+      "Torque") IS registered at dimension.rs:627, and the table holds 52 rows
+      (dimension.rs:565-650). (3) the canonical_name() first-match cite has moved from
+      dimension.rs:368 to dimension.rs:402-406.
+
+
+      THE CLAIM ITSELF STANDS — verdict stays PASS. The collision SURVIVES η in a new
+      form: DimensionVector::TORQUE (dimension.rs:328) and DimensionVector::ROTATIONAL_STIFFNESS
+      (dimension.rs:275) still share the vector [(0,2),(1,1),(2,-2),(7,-1)], and because
+      the `Torque` row (:627) sits immediately AFTER `RotationalStiffness` (:623) — an
+      ordering deliberately pinned by the test `torque_named_dimension_registered_as_alias_after_rotational_stiffness`
+      (dimension.rs:1599) — canonical_name()''s forward first-match STILL returns
+      "RotationalStiffness" for the shared vector. ρ''s premise is intact; only its
+      evidence moved from the .ri alias to the registry.
+
+
+      FORWARD NOTE: ρ''s own binding ruling (Leo, 2026-07-29, esc-5799-1) re-dimensions
+      ROTATIONAL_STIFFNESS/ROTATIONAL_DAMPING to rad^-2, which dissolves this collision
+      outright and flips canonical_name() for the torque vector to "Torque". When ρ lands
+      this capability is discharged, and the "placed AFTER RotationalStiffness" ordering
+      rationale (plus its pinning test) should be retired with it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub type Torque
+      paths:
+      - crates/reify-compiler/stdlib/ports_mechanical.ri
+      expect: absent
+  - name: PRD-5-is-protected-without-the-ruling
+    binding: 'RESOLUTION, not a guess: α/δ/ε read every DimensionVector FROM the reify-core
+      registry const by reference, never a hand-written exponent tuple, so the gate
+      is self-consistent with every RotationalStiffness-declared corpus site BY CONSTRUCTION
+      and a later re-dimensioning is a one-line change. This discharges PRD 3''s handoff
+      without blocking any PRD-5 leaf.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a decision task with no code deliverable until it dispatches; its interim
+        deliverable is being the live cite target for ε's and δ's residuals.
+- label: σ
+  task_id: 5800
+  title: '[MILESTONE] dimension-checked-readers σ: own the TractionLoad / BodyForce
+    solver wire-up'
+  capabilities:
+  - name: the-kernel-primitives-already-exist
+    binding: 'producer evidence for the eventual bridge: `apply_traction_load` (reify-solver-elastic,
+      task 2918 done) and `apply_body_force` / `integrate_body_force_generic` (crates/reify-solver-elastic/src/boundary/neumann.rs:242/:137,
+      wired for Gravity by task 4440). So σ is a bridging task, not a kernel task.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn apply_body_force
+      paths:
+      - crates/reify-solver-elastic/src/boundary/neumann.rs
+      expect: present
+  - name: the-type-surface-extension-is-why-gamma3-rejects
+    binding: grep — TractionLoad (fea_multi_case.ri:446-449) and BodyForce (:476-479)
+      self-identify as placeholders for Vector3<Pressure> / Vector3<ForceDensity>
+      (:437 / :467) and NEITHER carries a `direction` field, so a meaningful wire-up
+      needs a type-surface extension PRD 5 does not own. INV-SF-3 forbids the silent
+      no-op, hence γ3's loud rejection citing this task.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: structure def TractionLoad
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+      expect: present
+- label: τ
+  task_id: 5801
+  title: '[MILESTONE] dimension-checked-readers τ: own the declared-only material
+    properties'
+  capabilities:
+  - name: the-two-genuinely-reader-free-properties
+    binding: 'MEASURED at decompose: `shear_modulus` (crates/reify-compiler/stdlib/materials_mechanical.ri:100)
+      and `thermal_expansion` (crates/reify-compiler/stdlib/materials_thermal.ri:41)
+      have ZERO production readers repo-wide. `thermal_conductivity` does NOT belong
+      here (structural_physical.ri:150 reads it in a constraint), and `yield_stress`
+      does not either (7 flexure readers).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: param shear_modulus
+      paths:
+      - crates/reify-compiler/stdlib/materials_mechanical.ri
+      expect: present
+  - name: no-consumer-exists-to-build-here
+    binding: There is no thermal solver and no orthotropic-shear solver in the workspace
+      to consume either property, so building a consumer is far outside PRD 5's charter.
+      The declared-only-is-fiction norm is satisfied by a NAMED live owner rather
+      than by a fabricated consumer (INV-SF-5).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a tracking task whose interim deliverable is being ο's live cite target;
+        no code deliverable until a consumer or a retirement is chosen.

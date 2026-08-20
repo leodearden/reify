@@ -312,14 +312,21 @@ structure def BadAsm {
 }
 "#;
     let compiled = compile_source_with_stdlib(SOURCE);
-    let errors = collect_errors(&compiled.diagnostics);
+    // task 5302 α: ctor-site trait conformance (the `sub =` path) now emits at
+    // Severity::Warning under the CTOR_FIELD_CONFORMANCE_SEVERITY knob, not Error.
+    // Filter warnings (was collect_errors). Diagnostic code/message unchanged.
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
     assert!(
-        errors
+        warnings
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("ElasticMaterial")),
         "passing a non-conforming `PointLoad()` to an ElasticMaterial-typed param \
-         must produce a trait-conformance error; got: {errors:?}"
+         must produce a trait-conformance warning; got: {warnings:?}"
     );
 }
 
@@ -711,8 +718,13 @@ structure def NonPsdFixture {
 /// task 4245 step-1 RED — `PointLoad.direction` field default and round-trip.
 ///
 /// Compiles two `PointLoad` instances:
-///   (a) default constructor — `direction` must carry the default `[0.0, 0.0, -1.0]`.
-///   (b) explicit override  — `direction: [0.0, -1.0, 0.0]` must round-trip.
+///   (a) default constructor — `direction` must carry the default `vec3(0.0, 0.0, -1.0)`.
+///   (b) explicit override  — `direction: vec3(0.0, -1.0, 0.0)` must round-trip.
+///
+/// task 5905 retyped the param from `List<Real>` to `Vector3<Dimensionless>`
+/// (trajectory.ri's direction-field rule), so both values materialise as
+/// `Value::Vector`, not `Value::List` — the two are disjoint variants, and the
+/// disjointness is exactly what this test pins.
 ///
 /// RED: the `direction` field does not exist yet in `fea_multi_case.ri`, so
 /// `field(..., "direction")` is `None` and the assertions fail.
@@ -723,7 +735,7 @@ structure def DirectionFixture {
     let a = PointLoad()
     // `direction` is the LAST param (ctors bind positionally), so an explicit
     // override must also supply point/force in declaration order.
-    let b = PointLoad(point: "", force: 0.0, direction: [0.0, -1.0, 0.0])
+    let b = PointLoad(point: "", force: 0.0, direction: vec3(0.0, -1.0, 0.0))
 }
 "#;
 
@@ -731,14 +743,14 @@ structure def DirectionFixture {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    // ── (a) default: direction = [0.0, 0.0, -1.0] ────────────────────────────
+    // ── (a) default: direction = vec3(0.0, 0.0, -1.0) ────────────────────────
     let a = result
         .values
         .get(&ValueCellId::new("DirectionFixture", "a"))
         .unwrap_or_else(|| panic!("DirectionFixture.a cell missing from eval result"));
     match a {
         Value::StructureInstance(data) => match field(&data.fields, "direction") {
-            Some(Value::List(items)) => {
+            Some(Value::Vector(items)) => {
                 assert_eq!(
                     items.len(),
                     3,
@@ -762,45 +774,45 @@ structure def DirectionFixture {
                 );
             }
             other => panic!(
-                "expected Value::List for PointLoad().direction, got {:?}",
+                "expected Value::Vector for PointLoad().direction, got {:?}",
                 other
             ),
         },
         other => panic!("expected Value::StructureInstance for DirectionFixture.a, got {other:?}"),
     }
 
-    // ── (b) override: direction = [0.0, -1.0, 0.0] ───────────────────────────
+    // ── (b) override: direction = vec3(0.0, -1.0, 0.0) ───────────────────────
     let b = result
         .values
         .get(&ValueCellId::new("DirectionFixture", "b"))
         .unwrap_or_else(|| panic!("DirectionFixture.b cell missing from eval result"));
     match b {
         Value::StructureInstance(data) => match field(&data.fields, "direction") {
-            Some(Value::List(items)) => {
+            Some(Value::Vector(items)) => {
                 assert_eq!(
                     items.len(),
                     3,
-                    "PointLoad(direction:[0,-1,0]).direction must have 3 elements; got {:?}",
+                    "PointLoad(direction:vec3(0,-1,0)).direction must have 3 elements; got {:?}",
                     items
                 );
                 assert_eq!(
                     items[0],
                     Value::Real(0.0),
-                    "PointLoad(direction:[0,-1,0]).direction[0] must be 0.0"
+                    "PointLoad(direction:vec3(0,-1,0)).direction[0] must be 0.0"
                 );
                 assert_eq!(
                     items[1],
                     Value::Real(-1.0),
-                    "PointLoad(direction:[0,-1,0]).direction[1] must be -1.0"
+                    "PointLoad(direction:vec3(0,-1,0)).direction[1] must be -1.0"
                 );
                 assert_eq!(
                     items[2],
                     Value::Real(0.0),
-                    "PointLoad(direction:[0,-1,0]).direction[2] must be 0.0"
+                    "PointLoad(direction:vec3(0,-1,0)).direction[2] must be 0.0"
                 );
             }
             other => panic!(
-                "expected Value::List for PointLoad(direction:[0,-1,0]).direction, got {:?}",
+                "expected Value::Vector for PointLoad(direction:vec3(0,-1,0)).direction, got {:?}",
                 other
             ),
         },

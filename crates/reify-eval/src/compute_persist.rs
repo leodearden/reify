@@ -495,6 +495,7 @@ mod tests {
             divergence: vec![3.0; total_nodes],
             gradient: vec![4.0; total_nodes * 9],
             curl: vec![5.0; total_nodes * 3],
+            aposteriori: None,
         }
     }
 

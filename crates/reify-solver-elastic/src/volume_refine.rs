@@ -114,7 +114,13 @@ pub(crate) fn nodes_per_element(order: ElementOrderTag) -> usize {
 /// Number of tetrahedral elements in `volume_mesh` (`tet_indices.len()` divided
 /// by the per-element node count for its [`ElementOrderTag`]).
 pub(crate) fn element_count(volume_mesh: &VolumeMesh) -> usize {
-    volume_mesh.tet_indices.len() / nodes_per_element(volume_mesh.element_order)
+    volume_mesh
+        .tet_indices()
+        .expect("volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)")
+        .len()
+        / nodes_per_element(volume_mesh.element_order().expect(
+            "volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)",
+        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -165,11 +171,16 @@ pub(crate) fn project_per_element_sizes_to_vertices(
     per_element_sizes: &[f64],
 ) -> Vec<f64> {
     let n_verts = volume_mesh.vertices.len() / 3;
-    let nodes_per_elem = nodes_per_element(volume_mesh.element_order);
+    let nodes_per_elem = nodes_per_element(volume_mesh.element_order().expect(
+        "volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)",
+    ));
 
     let mut vertex_sizes = vec![f64::INFINITY; n_verts];
 
-    for (elem_idx, chunk) in volume_mesh.tet_indices.chunks(nodes_per_elem).enumerate() {
+    let tet_indices = volume_mesh
+        .tet_indices()
+        .expect("volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)");
+    for (elem_idx, chunk) in tet_indices.chunks(nodes_per_elem).enumerate() {
         let size = per_element_sizes[elem_idx];
         for &v_idx in chunk {
             let v = v_idx as usize;
@@ -249,7 +260,9 @@ pub fn refine_with_size_field(
         surface,
         &surface_vertex_sizes,
         options,
-        volume_mesh.element_order,
+        volume_mesh.element_order().expect(
+            "volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)",
+        ),
     )
     .map_err(map_geometry_error)
 }
@@ -354,6 +367,7 @@ pub(crate) fn map_geometry_error(err: GeometryError) -> RefineError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_ir::VolumeConnectivity;
 
     fn two_tet_bipyramid() -> VolumeMesh {
         // 5-vertex bipyramid:
@@ -368,11 +382,13 @@ mod tests {
                 0.0, 0.0, 1.0, // 3
                 0.0, 0.0, -1.0, // 4
             ],
-            tet_indices: vec![
-                0, 1, 2, 3, // tet A
-                0, 1, 2, 4, // tet B
-            ],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 3, // tet A
+                    0, 1, 2, 4, // tet B
+                ],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }

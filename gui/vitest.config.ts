@@ -34,6 +34,15 @@ export default defineConfig({
     teardownTimeout: isVerifyLane ? 120_000 : 10_000,
     environment: 'jsdom',
     globals: true,
+    // Global jsdom Range rectangle-measurement polyfills (task #5361 /
+    // esc-5361-2). jsdom's Range lacks getClientRects/getBoundingClientRect;
+    // CodeMirror's drawSelection() (newly activated by the PRIMARY-selection
+    // guard) measures selection rects via a Range and routes the resulting
+    // throw to console.error, tripping ide-affordances.e2e.test.ts's
+    // zero-console-error gate. The setup file installs standards-shaped stubs
+    // only when absent. Must be a global setupFile: per-test jsdom isolation
+    // means an in-test polyfill can't reach other test files.
+    setupFiles: ['./vitest.setup.ts'],
     exclude: ['sidecar/**', 'node_modules/**'],
     transformMode: {
       web: [/\.[jt]sx?$/],

@@ -266,9 +266,11 @@ fn find_template<'a>(
         .templates
         .iter()
         .find(|t| t.name == name)
-        .unwrap_or_else(|| panic!("expected template '{name}' in module; templates: {:?}", {
-            module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-        }))
+        .unwrap_or_else(|| {
+            panic!("expected template '{name}' in module; templates: {:?}", {
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            })
+        })
 }
 
 /// Helper: find a `Param` cell by member name within a template.
@@ -277,11 +279,17 @@ fn find_param_cell<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Valu
         .value_cells
         .iter()
         .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == member)
-        .unwrap_or_else(|| panic!(
-            "expected param '{member}' in template '{}'; value_cells: {:?}",
-            template.name,
-            template.value_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
-        ))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected param '{member}' in template '{}'; value_cells: {:?}",
+                template.name,
+                template
+                    .value_cells
+                    .iter()
+                    .map(|vc| &vc.id)
+                    .collect::<Vec<_>>()
+            )
+        })
 }
 
 /// Precedence pin: `param d : Direction` in a structure must compile with

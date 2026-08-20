@@ -72,12 +72,16 @@ structure InlineMerge {
 
 /// Find the named template, panicking with the full diagnostics on miss.
 fn template<'a>(module: &'a CompiledModule, name: &str) -> &'a TopologyTemplate {
-    module.templates.iter().find(|t| t.name == name).unwrap_or_else(|| {
-        panic!(
-            "no template {name:?} in compiled module; diagnostics: {:#?}",
-            module.diagnostics
-        )
-    })
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "no template {name:?} in compiled module; diagnostics: {:#?}",
+                module.diagnostics
+            )
+        })
 }
 
 /// Find the named sub-component of a template.

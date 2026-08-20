@@ -49,9 +49,10 @@ pub use color::Rgb8;
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
-    ConstraintInput, ConstraintResult, ConstraintSolver, ObjectiveCombination,
-    ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimizedImpl,
-    OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult, TermContribution,
+    ConstraintInput, ConstraintResult, ConstraintSolver, DimensionIncoherence,
+    ObjectiveCombination, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm,
+    OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult,
+    TermContribution, dimension_of, objective_terms_coherent,
 };
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
@@ -68,12 +69,12 @@ pub use geometry::{
     DEFAULT_GEO_EQUIV_SAMPLE_COUNT, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
     DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, ExportOptions,
     ExportWarning, FaceSurfaceKind,
-    FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
+    FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
-    QueryCapability, QueryError, ReprKind, Role, StepKind, StepSchema, SweepOpHistoryRecords, TessError,
-    TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
+    QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
+    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, debug_assert_query_many_invariant,
 };
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,

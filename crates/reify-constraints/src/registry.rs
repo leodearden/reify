@@ -5,7 +5,7 @@
 
 use crate::decompose::decompose_into_components;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
 use std::collections::HashMap;
 
 // ε-band constants (task ε — PRD §12.1).
@@ -102,21 +102,51 @@ impl SolverRegistry {
     /// component through `solver.solve_ranked()` so the domain solver's real
     /// [`OptimalityStatus`] (and objective score) is recovered and returned to the
     /// caller — this is what lets `reify eval` surface `W_SOLVER_OPTIMALITY_UNPROVEN`
-    /// (task #4804 γ) instead of the generic default-lift reason.  The merged
-    /// resolved values are identical on both paths: the domain solver's
-    /// `solve_ranked` is a read-only projection of `solve()` (invariant I1), so
-    /// swapping the call cannot change which solution is returned.
+    /// (task #4804 γ) instead of the generic default-lift reason.
+    ///
+    /// # δ best-of-K propagation (task #5016)
+    ///
+    /// The merged resolved values are NOT guaranteed identical on both paths
+    /// in general: when the objective component is multistart-eligible (see
+    /// `DimensionalSolver::solve_ranked`'s dim>=2 gate), `solve_ranked` can
+    /// find a STRICTLY BETTER point than the single-seed `solve()` path
+    /// (best-of-K dominance, not identity — see `SolverRegistry::solve_ranked`'s
+    /// doc comment). `solve()` itself (`want_optimality = false`) is
+    /// completely unaffected: the guard on the ranked-dispatch arm below is
+    /// `want_optimality && is_objective_component`, so with
+    /// `want_optimality = false` every component, including the would-be
+    /// objective one, always takes the plain `solver.solve()` arm exactly as
+    /// before (I1 for `solve()` itself is preserved byte-for-byte).
+    ///
+    /// The 4th return slot carries the objective component's FULL
+    /// [`RankedCandidate`] vector (already cross-merged with every other
+    /// component's shared values — see the cross-merge step at the end of
+    /// this function), captured only when that component was actually
+    /// dispatched via the `solver.solve_ranked` arm below (i.e. always `None`
+    /// when `want_optimality = false`, or when the objective is absent,
+    /// lexicographic, or the solve produced no feasible component at all).
+    /// The 1st slot's `SolveResult` always reflects the WINNER (best
+    /// candidate) merged with every other component — i.e. slot 1 and
+    /// `objective_candidates[0]` (slot 4, post cross-merge) describe the same
+    /// solution whenever slot 4 is `Some`.
     fn solve_inner(
         &self,
         problem: &ResolutionProblem,
         want_optimality: bool,
-        dispatch: Option<&dyn ComputeDispatch>,
-    ) -> (SolveResult, Option<OptimalityStatus>, Option<f64>) {
+    ) -> (
+        SolveResult,
+        Option<OptimalityStatus>,
+        Option<f64>,
+        Option<Vec<RankedCandidate>>,
+    ) {
         // Optimality/score recovered from the objective component (None on the
         // `want_optimality = false` path or when the objective component is solved
         // via a route that does not surface optimality, e.g. lexicographic staging).
         let mut captured_optimality: Option<OptimalityStatus> = None;
         let mut captured_score: Option<f64> = None;
+        // δ (task #5016): the objective component's full best-of-K candidate
+        // vector — see the "δ best-of-K propagation" doc section above.
+        let mut captured_candidates: Option<Vec<RankedCandidate>> = None;
 
         // Early exit: no auto params → already solved
         if problem.auto_params.is_empty() {
@@ -127,8 +157,17 @@ impl SolverRegistry {
                 },
                 None,
                 None,
+                None,
             );
         }
+
+        // For each dependent cell, the autos it reads TRANSITIVELY (task #5720).
+        // Computed ONCE per solve — never inside the component loop below, which
+        // also consumes it as the per-component fold filter.
+        let dependent_auto_reads = crate::decompose::dependent_cell_auto_reads(
+            &problem.dependent_cells,
+            &problem.auto_params,
+        );
 
         // Collect value-refs from ALL objective terms for objective-aware decomposition.
         // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
@@ -138,11 +177,35 @@ impl SolverRegistry {
                 for term in &obj.terms {
                     crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
                 }
+                // Expand through `dependent_cells` (task #5720): a ref to a
+                // derived cell also means every auto that cell transitively
+                // drives.  `dependent_cell_auto_reads` is already transitive, so
+                // one pass over the syntactic refs closes the set.
+                let reached: Vec<ValueCellId> = refs
+                    .iter()
+                    .filter_map(|id| dependent_auto_reads.get(id))
+                    .flat_map(|autos| autos.iter().cloned())
+                    .collect();
+                refs.extend(reached);
                 refs
             });
 
-        // Decompose into connected components, merging any components
-        // whose auto params are co-referenced by the objective expression(s)
+        // Decompose into connected components. Decomposition FOLLOWS
+        // `dependent_cells`: because `obj_refs` above was expanded through them,
+        // an objective that reads a derived cell unions every auto that cell
+        // transitively drives into ONE component, and `objective_component`'s
+        // first-match lookup below therefore resolves for real.
+        //
+        // Why the expansion is load-bearing (task #5720): the canonical
+        // joint-drive shape (task #5189 β) is an objective that reads a bare
+        // derived cell and NO auto directly, so the unexpanded `obj_refs` held
+        // no auto ids at all. `decompose_into_components`' objective-union step
+        // filters to auto indices, got an empty set, and unioned nothing — two
+        // autos coupled only through that cell landed in separate components,
+        // and the lookup below fell through to the hardcoded `0`, handing the
+        // objective to an arbitrary component of a nondeterministic `HashMap`
+        // iteration while the other component's autos were solved
+        // feasibility-only against stale seeds.
         let components =
             decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
 
@@ -154,6 +217,7 @@ impl SolverRegistry {
                     values: HashMap::new(),
                     unique: true,
                 },
+                None,
                 None,
                 None,
             );
@@ -180,6 +244,12 @@ impl SolverRegistry {
 
         let mut merged_values: HashMap<ValueCellId, Value> = HashMap::new();
         let mut all_unique = true;
+        // δ (task #5016): values/unique accumulated over every component
+        // EXCEPT the one whose candidates got captured (i.e. the shared,
+        // non-objective-multistart portion of the merged result) — unioned
+        // into EVERY cross-merged candidate below, not just the winner.
+        let mut other_values: HashMap<ValueCellId, Value> = HashMap::new();
+        let mut other_unique = true;
 
         for (ci, component) in components.iter().enumerate() {
             // Build sub-ResolutionProblem for this component
@@ -202,12 +272,109 @@ impl SolverRegistry {
                 None
             };
 
+            // Per-component `dependent_cells` (task #5720). Retain, IN STORED
+            // ORDER, only the cells whose transitively-read autos are a SUBSET
+            // of this component's own autos.  `iter().filter()` over the
+            // original slice, never a rebuild from a set or a `HashMap`
+            // iteration: the result must be a SUBSEQUENCE of the stored order,
+            // which is the topological guarantee `build_dependent_cells`
+            // produces once upstream and `fold_dependent_cells` consumes
+            // (PRD §6.3 — single authority on order).
+            let sub_dependent_cells: Vec<(ValueCellId, CompiledExpr)> = problem
+                .dependent_cells
+                .iter()
+                .filter(|(id, _)| {
+                    dependent_auto_reads
+                        .get(id)
+                        .is_some_and(|autos| autos.is_subset(&component.auto_params))
+                })
+                .cloned()
+                .collect();
+
+            // β (task #5189): build from `..problem.clone()` and override only the
+            // fields that genuinely differ per component.  The functional update
+            // syntax is load-bearing, NOT cosmetic: `dependent_cells` must reach
+            // the domain solver or `fold_dependent_cells` takes its empty-vector
+            // early return and the per-trial recompute silently never runs on the
+            // production path (`SolverRegistry::production()` is what the CLI
+            // wires in `configured_eval_engine`).  Listing fields explicitly here
+            // is how that field got zeroed in the first place; spreading means the
+            // NEXT field added to `ResolutionProblem` cannot be silently dropped.
+            // That warning still holds for every field this literal does not name.
+            //
+            // # Why `dependent_cells` is FILTERED per component (task #5720)
+            //
+            // It used to be passed wholesale, on the rationale that `sub_values`
+            // carries every cell in `problem.current_values` so every dependent
+            // expression stays evaluable.  That is FALSE for an auto owned by
+            // ANOTHER component: such an auto is in neither `sub_auto_params` nor
+            // (necessarily) `current_values`, so the fold evaluates its `ValueRef`
+            // to `Undef`, writes `Undef` into the cell, and an objective reading
+            // that cell reports `NoProgress { reason: "objective expression
+            // evaluated to undefined at solution point" }`.
+            //
+            // The load-bearing invariants of the filter:
+            //
+            // - A component only ever folds cells whose every transitively-read
+            //   auto it OWNS.  That is what makes the cross-component `Undef`
+            //   STRUCTURALLY IMPOSSIBLE rather than merely unlikely, and it also
+            //   bounds the per-trial fold cost by the component's own cells
+            //   instead of the whole model's list.
+            // - The `obj_refs` expansion above is what makes the filter SAFE for
+            //   the objective-bearing component: it guarantees every auto the
+            //   objective transitively drives lands in ONE component, so every
+            //   cell the objective reads survives the subset test there.
+            //   `build_scoring_values` and the lexicographic ε-band anchor below
+            //   therefore still score a COMPLETE map.  Landing the filter without
+            //   the expansion would drop objective-relevant cells from an
+            //   arbitrarily-chosen component — a differently wrong answer.
+            // - Filtering is internal to `solve_inner`'s sub-problems and never
+            //   escapes the registry.  reify-eval's post-solve
+            //   `materialize_dependent_cells` still consumes the engine-level
+            //   FULL list from both of its post-solve write-back paths (the
+            //   per-template Let re-eval and the cross-scope cluster path), so
+            //   cross-component cells are still written back.
+            // - When all autos are in one component every cell's read set is
+            //   trivially a subset, so the filter is the IDENTITY and every
+            //   pre-existing single-component solve stays byte-identical
+            //   (PRD §6.2 / I1).
+            // - A cell absent from `dependent_auto_reads` is dropped.  For a
+            //   well-formed problem the only such cells are cycle members, which
+            //   `dependent_cell_auto_reads` deliberately omits rather than
+            //   publish a partial auto set (reify-eval's `build_dependent_cells`
+            //   drops cycles upstream anyway).  Dropping is the safe direction: a
+            //   cell whose auto reads are unknown is exactly one we cannot prove
+            //   is foldable here.
+            //
+            // # SCOPE of "structurally impossible" — objective refs only
+            //
+            // The expansion above is applied to `obj_refs` ONLY.
+            // `decompose_into_components` still unions a CONSTRAINT's autos
+            // purely SYNTACTICALLY, so the guarantee is scoped to reads that
+            // happen inside the fold and the objective, NOT to every read in the
+            // model.  A constraint that reaches a second auto only THROUGH a
+            // derived cell — `a + side >= K` where `side = SIDE_COEFF*c` — still
+            // splits `a` and `c` into separate components, because the union
+            // step sees only the syntactic ref `side` and filters it away as a
+            // non-auto.  This filter then also removes `side` from the `{a}`
+            // component, since `{c}` is not a subset of `{a}`, and the
+            // constraint is evaluated each trial against whatever stale `side`
+            // sits in `current_values`.
+            //
+            // That coupling gap PRE-DATES task #5720 — decomposition has always
+            // unioned constraint refs syntactically — but this filter does change
+            // its symptom, from a loud `Undef` (the wholesale list folded `side`
+            // against an unowned `c`) to a silent stale read.  Closing it means
+            // expanding constraint refs through `dependent_auto_reads` the same
+            // way, which changes decomposition for every existing model and is
+            // deliberately OUT OF SCOPE here; it is filed as its own follow-up.
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
                 current_values: sub_values,
                 objective: sub_objective,
-                functions: problem.functions.clone(),
+                dependent_cells: sub_dependent_cells,
+                ..problem.clone()
             };
 
             // Select solver based on component domain
@@ -224,15 +391,23 @@ impl SolverRegistry {
             // component on the `solve()` path, every non-objective component, and
             // the lexicographic staged path — keeps `solver.solve()` exactly as
             // before (so `solve()` stays byte-for-byte unchanged, I1).
+            //
+            // δ (task #5016): this branch now RETAINS the full candidate vector
+            // (instead of `swap_remove(0)`-and-discard) in `component_candidates`,
+            // so `solve_ranked` can cross-merge the whole best-of-K set instead of
+            // collapsing to 1 (registry.rs pre-δ). The winner (candidates[0]) is
+            // still what feeds `merged_values`/`captured_score` below, so `solve()`
+            // and the single-candidate fallback are unaffected.
             let is_objective_component = objective_component == Some(ci);
+            let mut component_candidates: Option<Vec<RankedCandidate>> = None;
             let result = match &sub_problem.objective {
                 Some(obj) if obj.combination == ObjectiveCombination::Lexicographic => {
-                    solve_lexicographic(solver, &sub_problem, dispatch)
+                    solve_lexicographic(solver, &sub_problem)
                 }
                 Some(_) if want_optimality && is_objective_component => {
-                    match solver.solve_ranked_with_dispatch(&sub_problem, dispatch) {
+                    match solver.solve_ranked(&sub_problem) {
                         RankedSolveResult::Ranked {
-                            mut candidates,
+                            candidates,
                             optimality,
                         } => {
                             // I2: candidates is non-empty; index 0 is the optimum.
@@ -244,13 +419,17 @@ impl SolverRegistry {
                                 !candidates.is_empty(),
                                 "RankedSolveResult::Ranked must carry >=1 candidate (I2) (registry seam)"
                             );
-                            let candidate = candidates.swap_remove(0);
                             captured_optimality = Some(optimality);
-                            captured_score = candidate.objective_score;
-                            SolveResult::Solved {
-                                values: candidate.values,
-                                unique: candidate.unique,
-                            }
+                            captured_score = candidates[0].objective_score;
+                            let winner = SolveResult::Solved {
+                                values: candidates[0].values.clone(),
+                                unique: candidates[0].unique,
+                            };
+                            // Stash the FULL vector (δ) for the cross-merge step
+                            // below; `winner` above already captured candidate 0's
+                            // values/unique for the pre-δ merged-result shape.
+                            component_candidates = Some(candidates);
+                            winner
                         }
                         RankedSolveResult::Infeasible { diagnostics } => {
                             SolveResult::Infeasible { diagnostics }
@@ -260,22 +439,77 @@ impl SolverRegistry {
                         }
                     }
                 }
-                _ => solver.solve_with_dispatch(&sub_problem, dispatch),
+                _ => solver.solve(&sub_problem),
             };
 
             match result {
                 SolveResult::Solved { values, unique } => {
-                    merged_values.extend(values);
                     all_unique &= unique;
+                    match component_candidates {
+                        Some(candidates) => {
+                            // The objective component: its winner's values are
+                            // already folded into `merged_values`; the full
+                            // candidate set is deferred to the cross-merge step
+                            // below (needs `other_values`/`other_unique` from
+                            // every OTHER component first).
+                            merged_values.extend(values);
+                            captured_candidates = Some(candidates);
+                        }
+                        None => {
+                            // Every other component: folds into both the merged
+                            // result AND the shared "other" accumulator that gets
+                            // unioned into each cross-merged candidate.
+                            merged_values.extend(values.clone());
+                            other_values.extend(values);
+                            other_unique &= unique;
+                        }
+                    }
                 }
                 SolveResult::Infeasible { diagnostics } => {
-                    return (SolveResult::Infeasible { diagnostics }, None, None);
+                    return (SolveResult::Infeasible { diagnostics }, None, None, None);
                 }
                 SolveResult::NoProgress { reason } => {
-                    return (SolveResult::NoProgress { reason }, None, None);
+                    return (SolveResult::NoProgress { reason }, None, None, None);
                 }
             }
         }
+
+        // δ (task #5016): cross-merge the objective component's captured
+        // best-of-K set (if any) with the shared non-objective values, so
+        // EVERY ranked candidate — not just the winner — carries the full
+        // merged-cluster value map. `objective_candidates[0]` (post
+        // cross-merge) is by construction exactly `(merged_values, all_unique)`
+        // below: `other_values ∪ candidates[0].values == merged_values` and
+        // `other_unique && candidates[0].unique == all_unique`, since
+        // `merged_values`/`all_unique` above were folded from the SAME
+        // `other_values`/`other_unique` plus the SAME winner.
+        // Perf: when there is no independent non-objective component,
+        // `other_values` is empty and `other_values.clone().extend(c.values)`
+        // is exactly `c.values` — skip the clone-and-rehash for every one of
+        // the K captured candidates in that (common, single-component
+        // merged-cluster) case instead of paying an unconditional
+        // allocation+rehash K times over. When `other_values` IS non-empty (a
+        // real independent component to cross-merge, e.g. the (c) test
+        // fixture), behaviour is unchanged.
+        let objective_candidates = captured_candidates.map(|candidates| {
+            candidates
+                .into_iter()
+                .map(|c| {
+                    let values = if other_values.is_empty() {
+                        c.values
+                    } else {
+                        let mut values = other_values.clone();
+                        values.extend(c.values);
+                        values
+                    };
+                    RankedCandidate {
+                        values,
+                        objective_score: c.objective_score,
+                        unique: c.unique && other_unique,
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
 
         (
             SolveResult::Solved {
@@ -284,26 +518,47 @@ impl SolverRegistry {
             },
             captured_optimality,
             captured_score,
+            objective_candidates,
         )
     }
 }
 
-impl SolverRegistry {
-    /// Shared `solve_ranked` lift body: run [`Self::solve_inner`] with optimality
-    /// recovery ON, threading `dispatch`, and project the `SolveResult` into a
-    /// `RankedSolveResult` (preferring the optimality recovered from the objective
-    /// component).
+impl ConstraintSolver for SolverRegistry {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        // I1: delegate to the shared core with optimality recovery OFF, which
+        // reproduces the historical dispatch path byte-for-byte.
+        self.solve_inner(problem, false).0
+    }
+
+    /// δ (task #5016) contract: `solve_ranked` is a best-of-K propagation, NOT
+    /// a pure single-point projection of `solve()`. When the objective
+    /// component is multistart-eligible (`DimensionalSolver::solve_ranked`'s
+    /// dim>=2 gate), the FULL candidate set it produces is cross-merged with
+    /// the other components' (shared) values into K ranked merged candidates
+    /// here — `candidates[0]` is always the best (I2), and for a single-basin
+    /// problem (every start converges to the same point) it is operationally
+    /// identical to `solve()`; for a multi-basin problem it can be STRICTLY
+    /// BETTER (dominance: `candidates[0]`'s score is never worse than
+    /// `solve()`'s, but not guaranteed byte-identical — see
+    /// `solve_ranked_registry_candidate0_dominates_solve` /
+    /// `solve_ranked_multistart_dominates_single_start_solve`). Falls back to
+    /// the pre-δ single-candidate lift whenever `solve_inner` captured no
+    /// objective-component candidate set (no objective, lexicographic
+    /// staging, dim<=1, or a degenerate/all-infeasible solve) — every dim=1
+    /// fixture (F-result I1 byte-identical test, B1/B2, BT6) stays on this
+    /// unchanged fallback path.
     ///
-    /// Factored out (task #4880 step-12) so that [`ConstraintSolver::solve_ranked`]
-    /// (`dispatch = None`, byte-identical to pre-#4880) and
-    /// [`ConstraintSolver::solve_ranked_with_dispatch`] (dispatch threaded) share one
-    /// projection and cannot drift.
-    fn solve_ranked_lift(
-        &self,
-        problem: &ResolutionProblem,
-        dispatch: Option<&dyn ComputeDispatch>,
-    ) -> RankedSolveResult {
-        let (result, optimality, objective_score) = self.solve_inner(problem, true, dispatch);
+    /// `candidates[1..]` are NOT deduplicated: they are
+    /// `DimensionalSolver::solve_ranked`'s non-winning starts cross-merged
+    /// verbatim, so for a single-basin objective (most merged clusters) they
+    /// may be near-/byte-identical repeats of the SAME resolved point rather
+    /// than distinct alternative designs — best-of-K runner-ups, not a
+    /// guaranteed-distinct alternative set. Callers that need genuinely
+    /// distinct alternatives must dedupe by resolved-value fingerprint
+    /// themselves.
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        let (result, optimality, objective_score, objective_candidates) =
+            self.solve_inner(problem, true);
         match result {
             SolveResult::Solved { values, unique } => {
                 // Prefer the optimality recovered from the objective component.
@@ -323,12 +578,21 @@ impl SolverRegistry {
                         OptimalityStatus::FeasibilityOnly
                     }
                 });
-                RankedSolveResult::Ranked {
-                    candidates: vec![RankedCandidate {
+                // δ: propagate the full cross-merged K-candidate set when
+                // `solve_inner` captured one; otherwise fall back to the pre-δ
+                // single-candidate lift. `values`/`objective_score`/`unique`
+                // here already equal `objective_candidates[0]` whenever the
+                // latter is `Some` (see `solve_inner`'s cross-merge comment),
+                // so the two arms agree on candidates[0] in every case.
+                let candidates = objective_candidates.unwrap_or_else(|| {
+                    vec![RankedCandidate {
                         values,
                         objective_score,
                         unique,
-                    }],
+                    }]
+                });
+                RankedSolveResult::Ranked {
+                    candidates,
                     optimality,
                 }
             }
@@ -337,48 +601,6 @@ impl SolverRegistry {
                 .into_ranked_pass_through()
                 .expect("Solved arm handled above"),
         }
-    }
-}
-
-impl ConstraintSolver for SolverRegistry {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        // I1: delegate to the shared core with optimality recovery OFF and no dispatch,
-        // which reproduces the historical dispatch path byte-for-byte.
-        self.solve_inner(problem, false, None).0
-    }
-
-    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
-        // I1: no dispatch — byte-identical to pre-#4880.
-        self.solve_ranked_lift(problem, None)
-    }
-
-    /// `solve`, threading the compute-dispatch hook into each per-component inner-solver
-    /// call so `@optimized` calls (e.g. `solve_elastic_static`) reached inside a
-    /// constraint/objective/bound resolve through the real trampoline instead of
-    /// `Value::Undef`.
-    ///
-    /// This closes `integration_gap_feature_noop_in_production` (task #4880 step-12):
-    /// `SolverRegistry::production()` is the `ConstraintSolver` installed by the CLI and
-    /// GUI engines, and the engine_eval.rs resolve site calls this method on it. Without
-    /// the override, the registry inherited the trait DEFAULT that discards `dispatch`, so
-    /// the #4880 hook never reached the inner `DimensionalSolver` cost loop in production.
-    fn solve_with_dispatch(
-        &self,
-        problem: &ResolutionProblem,
-        dispatch: Option<&dyn ComputeDispatch>,
-    ) -> SolveResult {
-        self.solve_inner(problem, false, dispatch).0
-    }
-
-    /// `solve_ranked`, threading the compute-dispatch hook (see
-    /// [`Self::solve_with_dispatch`]). Shares [`Self::solve_ranked_lift`] with
-    /// `solve_ranked` so the two projections cannot drift.
-    fn solve_ranked_with_dispatch(
-        &self,
-        problem: &ResolutionProblem,
-        dispatch: Option<&dyn ComputeDispatch>,
-    ) -> RankedSolveResult {
-        self.solve_ranked_lift(problem, dispatch)
     }
 }
 
@@ -405,11 +627,7 @@ impl ConstraintSolver for SolverRegistry {
 /// uniqueness-verified).  The final stage's own `unique` verdict is preserved — given
 /// the accumulated ε-band constraints, the final rank may itself be uniquely determined.
 /// Infeasible / NoProgress from any stage propagates immediately.
-fn solve_lexicographic(
-    solver: &dyn ConstraintSolver,
-    base: &ResolutionProblem,
-    dispatch: Option<&dyn ComputeDispatch>,
-) -> SolveResult {
+fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) -> SolveResult {
     let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
 
     // --- Group terms into ranks by distinct priority, sorted DESCENDING ---
@@ -426,12 +644,13 @@ fn solve_lexicographic(
         let ws_objective = ObjectiveSet {
             terms: obj.terms.clone(),
             combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
         };
         let ws_problem = ResolutionProblem {
             objective: Some(ws_objective),
             ..base.clone()
         };
-        return solver.solve_with_dispatch(&ws_problem, dispatch);
+        return solver.solve(&ws_problem);
     }
 
     // Multi-rank staged loop.
@@ -453,6 +672,7 @@ fn solve_lexicographic(
         let stage_objective = ObjectiveSet {
             terms: rank_terms.clone(), // clone kept for band computation below
             combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
         };
 
         // Force all auto-params to free=true for intermediate stages so that the
@@ -465,15 +685,22 @@ fn solve_lexicographic(
             .map(|ap| AutoParam { free: true, ..ap.clone() })
             .collect();
 
+        // β (task #5189): mirror the degenerate single-priority path above, which
+        // builds `ws_problem` as `ResolutionProblem { objective, ..base.clone() }`
+        // and therefore inherits `dependent_cells`.  Enumerating fields here made
+        // the same function behave differently depending on how many distinct
+        // priorities the objective carries — a multi-rank lexicographic objective
+        // over a joint-drive cluster dropped the per-trial fold at every stage.
+        // Override only what genuinely differs per stage.
         let stage_problem = ResolutionProblem {
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
             current_values: current_values.clone(),
             objective: Some(stage_objective),
-            functions: base.functions.clone(),
+            ..base.clone()
         };
 
-        let stage_result = solver.solve_with_dispatch(&stage_problem, dispatch);
+        let stage_result = solver.solve(&stage_problem);
 
         match stage_result {
             SolveResult::Solved { values, unique: stage_unique } => {
@@ -489,29 +716,57 @@ fn solve_lexicographic(
                 // uniqueness-verified.  The final stage's own verdict is preserved —
                 // given the accumulated ε-band constraints it may be fully determined.
                 let result_unique = is_final && stage_unique;
-                last_result = Some(SolveResult::Solved { values, unique: result_unique });
-
-                if is_final {
-                    break;
-                }
 
                 // Freeze this rank's realized optimum as an ε-band for the next stage.
                 // If any term is non-finite, skip the band and warn — the lexicographic
                 // ordering is NOT enforced for this rank, so later ranks may freely
                 // sacrifice it.
-                match eval_rank_cost(&rank_terms, &current_values, &base.functions, dispatch) {
-                    Some(obj_star) => {
-                        accumulated_constraints
-                            .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                //
+                // esc-5189-7: `obj*` MUST be measured on the same folded map the next
+                // stage evaluates the band against.  `build_band_constraints` bakes
+                // `obj*` in as a LITERAL, while the band's `cost_expr` is built from
+                // this rank's term exprs — which read the cluster's dependent cells and
+                // are therefore folded by the next stage's cost surface (the stage
+                // problem inherits `dependent_cells` via `..base.clone()` above).
+                // Reading `obj*` off `current_values` measured the two sides of ONE
+                // constraint on two different value maps: `current_values` carries the
+                // warm-started solved AUTOS, but `SolveResult::Solved` returns only
+                // autos, so every dependent cell in it is still at its stale base
+                // value.  A trivially feasible model then reported
+                // `ConstraintUnsatisfiable`, off by the full stale-vs-folded gap.
+                // `build_scoring_values` is the single fold authority (solver.rs) —
+                // this site is the reason its INVARIANT is crate-scoped, not
+                // module-scoped.
+                //
+                // Computed here, before `values` is moved into `last_result`, and only
+                // on the non-final path — the final stage builds no band.
+                if !is_final {
+                    let scored = crate::solver::build_scoring_values(
+                        &current_values,
+                        &values,
+                        &base.dependent_cells,
+                        &base.functions,
+                    );
+                    match eval_rank_cost(&rank_terms, &scored, &base.functions) {
+                        Some(obj_star) => {
+                            accumulated_constraints
+                                .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                        }
+                        None => {
+                            tracing::warn!(
+                                stage = stage_idx,
+                                "solve_lexicographic: stage {} rank produced non-finite obj*; \
+                                 ε-band skipped — lexicographic ordering not enforced for this rank",
+                                stage_idx,
+                            );
+                        }
                     }
-                    None => {
-                        tracing::warn!(
-                            stage = stage_idx,
-                            "solve_lexicographic: stage {} rank produced non-finite obj*; \
-                             ε-band skipped — lexicographic ordering not enforced for this rank",
-                            stage_idx,
-                        );
-                    }
+                }
+
+                last_result = Some(SolveResult::Solved { values, unique: result_unique });
+
+                if is_final {
+                    break;
                 }
             }
             infeasible_or_no_progress => {
@@ -537,18 +792,23 @@ fn eval_rank_cost(
     rank_terms: &[ObjectiveTerm],
     values: &ValueMap,
     functions: &[CompiledFunction],
-    dispatch: Option<&dyn ComputeDispatch>,
 ) -> Option<f64> {
-    // Attach the compute-dispatch hook (task #4880 step-12) so the ε-band freeze cost also
-    // honours `@optimized` dispatch; `dispatch = None` is byte-identical to pre-#4880.
-    let ctx = reify_expr::EvalContext::new(values, functions);
-    let ctx = match dispatch {
-        Some(d) => ctx.with_compute_dispatch(d),
-        None => ctx,
-    };
+    // I-UNITS backstop (PRD D2/I-UNITS, task α #5018): this does NOT re-diagnose —
+    // the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, `check_objective_dimension_coherence`
+    // in reify-compiler/src/entity.rs) is the sole user-facing diagnostic and already
+    // rejects every authored incoherent multi-term objective before it can reach a
+    // solve. This assert only guards the upstream-guaranteed invariant against a
+    // future ungated ObjectiveSet (e.g. hand-built or solve-time-synthesized).
+    debug_assert!(
+        reify_ir::objective_terms_coherent(rank_terms).is_ok(),
+        "eval_rank_cost: I-UNITS violated (task α #5018) — objective_terms_coherent() \
+         reported Err for a set that reached the fold; the compile-time gate \
+         (E_OBJECTIVE_MIXED_DIMENSION, reify-compiler/src/entity.rs) should have \
+         rejected this ObjectiveSet before it ever reached eval_rank_cost"
+    );
     let mut acc = 0.0_f64;
     for term in rank_terms {
-        let v = reify_expr::eval_expr(&term.expr, &ctx)
+        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
             .as_f64()
             .filter(|v| v.is_finite())?;
         match term.sense {

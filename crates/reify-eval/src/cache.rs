@@ -275,6 +275,16 @@ pub struct NodeCache {
     /// Failed entries do NOT set this field — a Failed node is itself the
     /// chain root, not a forwarder.
     pub pending_cause: Option<NodeId>,
+    /// The cell's runtime diagnostics captured at evaluation time (task κ,
+    /// `eval-cell-commit-substrate.md` §2.7, INV-EVAL-3 "data").
+    ///
+    /// Replayed on cache-hit serves by task μ so a per-cell-branch warning
+    /// is not silently dropped on a cache hit (the 2259/2267
+    /// "fast-path-swallow" class). Empty when no diagnostics were recorded
+    /// for this node. NOT part of `result_hash` — diagnostics are metadata,
+    /// not result content, so two results that are otherwise identical
+    /// still early-cutoff-match regardless of attached diagnostics.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Clone for NodeCache {
@@ -291,6 +301,10 @@ impl Clone for NodeCache {
             // pairing invariant called out on the field.
             cost_per_byte: 0.0,
             pending_cause: self.pending_cause.clone(),
+            // Unlike warm_state/cost_per_byte above, diagnostics are replay
+            // content (task μ replays them on cache-hit serves) and must
+            // survive a clone, not a transient optimization hint.
+            diagnostics: self.diagnostics.clone(),
         }
     }
 }
@@ -300,12 +314,31 @@ impl NodeCache {
     ///
     /// `pending_cause` defaults to `None`; the diagnostic chain is populated
     /// by [`CacheStore::mark_pending_with_cause`] at the wire site, not by
-    /// this constructor.
+    /// this constructor. `diagnostics` defaults to an empty vec — use
+    /// [`NodeCache::new_with_diagnostics`] to construct an entry that
+    /// carries the cell's runtime diagnostics.
     pub fn new(
         result: CachedResult,
         freshness: Freshness,
         dependency_trace: DependencyTrace,
         basis_version: VersionId,
+    ) -> Self {
+        Self::new_with_diagnostics(result, freshness, dependency_trace, basis_version, Vec::new())
+    }
+
+    /// Create a new cache entry carrying an explicit set of runtime
+    /// diagnostics, automatically computing the result hash.
+    ///
+    /// This is the required-arg constructor task μ wires real diagnostics
+    /// through — passing `diagnostics` explicitly (rather than defaulting
+    /// it) means no construction path can forget it. `pending_cause`
+    /// defaults to `None`, matching [`NodeCache::new`].
+    pub fn new_with_diagnostics(
+        result: CachedResult,
+        freshness: Freshness,
+        dependency_trace: DependencyTrace,
+        basis_version: VersionId,
+        diagnostics: Vec<Diagnostic>,
     ) -> Self {
         let result_hash = result.content_hash();
         Self {
@@ -317,6 +350,7 @@ impl NodeCache {
             warm_state: None,
             cost_per_byte: 0.0,
             pending_cause: None,
+            diagnostics,
         }
     }
 }
@@ -428,6 +462,40 @@ impl CacheStore {
     /// Store or overwrite a cache entry.
     pub fn put(&mut self, node: NodeId, cache: NodeCache) {
         self.caches.insert(node, cache);
+    }
+
+    /// Overwrite the stored per-cell runtime diagnostics for `node` (task μ,
+    /// #5062).
+    ///
+    /// This is μ's storage seam for the `NodeCache.diagnostics` field κ (#5042)
+    /// added: the eval / eval_cached / edit_param capture sites call it AFTER
+    /// recording the node, passing the runtime-sink length-delta captured
+    /// around the cell's `eval_expr`. The `eval_cached` clean-serve arms then
+    /// replay `NodeCache.diagnostics` so a per-cell-branch warning
+    /// (`W_FIELD_OUT_OF_BOUNDS`, `W_FIELD_SAMPLED_INVALID_CONFIG`) is not
+    /// silently dropped on a cache hit (the 2259/2267 "fast-path-swallow"
+    /// class).
+    ///
+    /// A single post-record setter is used — rather than threading a
+    /// diagnostics arg through `record_evaluation` /
+    /// `record_evaluation_with_freshness` /
+    /// `record_evaluation_propagating_freshness` / `commit_cell_result` —
+    /// because the dominant let/param commit sites use
+    /// `record_evaluation_propagating_freshness`, which α's
+    /// `commit_cell_result` cannot represent (its `Freshness::Final`-only
+    /// scope gap). One setter is uniform across all three record paths.
+    ///
+    /// Semantics: UNCONDITIONAL overwrite when the entry exists — an empty vec
+    /// CLEARS, so a cell re-evaluated to no-longer-warning drops its stale
+    /// replay content. Safe no-op when `node` is absent (there is no cache
+    /// entry to attach metadata to). NOT reflected in `result_hash` —
+    /// diagnostics are metadata, not result content (see the
+    /// `NodeCache.diagnostics` field doc), so this never perturbs early-cutoff
+    /// comparison.
+    pub fn set_node_diagnostics(&mut self, node: &NodeId, diagnostics: Vec<Diagnostic>) {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.diagnostics = diagnostics;
+        }
     }
 
     /// Remove a cached entry and its dirty state.
@@ -733,6 +801,7 @@ impl CacheStore {
                 warm_state: None,
                 cost_per_byte: 0.0,
                 pending_cause: None,
+                diagnostics: Vec::new(),
             },
         );
         EvalOutcome::Changed
@@ -1106,6 +1175,7 @@ impl CacheStore {
                         warm_state: None,
                         cost_per_byte: 0.0,
                         pending_cause: Some(NodeId::Compute(c_id.clone())),
+                        diagnostics: Vec::new(),
                     },
                 );
                 self.pending_transition_count += 1;
@@ -3104,6 +3174,103 @@ mod tests {
         assert_eq!(
             result2.eval_result.values.get(&ValueCellId::new(e, "y")),
             Some(&Value::Int(21))
+        );
+    }
+
+    /// Task 4152: `eval_cached`'s per-call stats and `Engine::cache_stats()`
+    /// are coherent, and the three eval-cache counters ACCUMULATE.
+    ///
+    /// Two contracts:
+    ///
+    /// - **`realization_entries` coherence.** The `realization_entries` in a
+    ///   `CachedEvalResult`'s stats block reports the same live cache counter
+    ///   `Engine::cache_stats()` does. Both are 0 throughout here, and must be:
+    ///   `eval_cached` dispatches no compute nodes, so it realizes no geometry
+    ///   (and this engine has no kernel at all).
+    /// - **Accumulation.** `cache_stats()`'s `cache_hits` / `cache_misses` /
+    ///   `early_cutoffs` are cumulative totals across every `eval_cached` call,
+    ///   not the last call's figures — so after two calls the engine-level
+    ///   total equals the sum of the two per-call values. `CachedEvalResult::stats`
+    ///   remains the place to read one call's own numbers.
+    #[test]
+    fn cache_stats_accumulates_eval_cache_counters_and_agrees_on_realization_entries() {
+        use reify_core::{ModulePath, Type, VersionId};
+        use reify_ir::BinOp;
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let e = "T";
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                    .let_binding(
+                        e,
+                        "y",
+                        Type::Int,
+                        binop(
+                            BinOp::Add,
+                            value_ref_typed(e, "a", Type::Int),
+                            literal(Value::Int(100)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+
+        assert_eq!(
+            engine.cache_stats().realization_entries,
+            0,
+            "a kernel-less engine starts with no realizations"
+        );
+
+        let r1 = engine.eval_cached(&module, VersionId(1));
+        let (h1, m1, c1) = (
+            r1.stats.cache_hits,
+            r1.stats.cache_misses,
+            r1.stats.early_cutoffs,
+        );
+        assert_eq!(
+            r1.stats.realization_entries,
+            engine.cache_stats().realization_entries,
+            "the per-call stats block's realization_entries must agree with the \
+             engine-level counter at that moment"
+        );
+        assert_eq!(
+            r1.stats.realization_entries, 0,
+            "eval_cached dispatches no compute nodes, so it can realize nothing"
+        );
+
+        let after1 = engine.cache_stats();
+        assert_eq!(
+            (after1.cache_hits, after1.cache_misses, after1.early_cutoffs),
+            (h1, m1, c1),
+            "after one call the cumulative totals equal that call's own figures"
+        );
+
+        // Second call, same version: served from cache.
+        let r2 = engine.eval_cached(&module, VersionId(1));
+        let (h2, m2, c2) = (
+            r2.stats.cache_hits,
+            r2.stats.cache_misses,
+            r2.stats.early_cutoffs,
+        );
+
+        let after2 = engine.cache_stats();
+        assert_eq!(
+            (after2.cache_hits, after2.cache_misses, after2.early_cutoffs),
+            (h1 + h2, m1 + m2, c1 + c2),
+            "cache_stats() must ACCUMULATE across eval_cached calls, not report \
+             only the last call's figures"
+        );
+        assert_eq!(
+            r2.stats.realization_entries,
+            engine.cache_stats().realization_entries,
+            "per-call/engine-level coherence must hold on every call"
         );
     }
 
@@ -5282,6 +5449,7 @@ mod tests {
                 warm_state: Some(OpaqueState::new(7i32, 4)),
                 cost_per_byte: 0.9,
                 pending_cause: None,
+                diagnostics: Vec::new(),
             },
         );
 
@@ -5690,5 +5858,125 @@ mod tests {
         let result = store.write_intermediate(&missing, 1);
         assert!(result.is_none(), "absent node must return None (no-op)");
         assert_eq!(store.len(), 0, "absent node must not alter cache len");
+    }
+
+    // ── κ / task 5042 step-1: diagnostics field on NodeCache ─────────────────
+    //
+    // These pin the new `diagnostics: Vec<Diagnostic>` field and the
+    // `NodeCache::new_with_diagnostics` explicit-vec constructor. Task μ will
+    // thread real runtime diagnostics through `record_evaluation*` and wire
+    // cache-hit replay; this task only adds the data field + constructor.
+
+    /// `NodeCache::new_with_diagnostics` round-trips a non-empty diagnostics
+    /// vec through construction + read (the task's done-criteria).
+    #[test]
+    fn node_cache_new_with_diagnostics_round_trips_non_empty_vec() {
+        let diags = vec![reify_core::Diagnostic::warning("field index out of bounds")];
+        let entry = NodeCache::new_with_diagnostics(
+            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+            diags,
+        );
+        assert_eq!(entry.diagnostics.len(), 1);
+        assert_eq!(entry.diagnostics[0].message, "field index out of bounds");
+        assert_eq!(entry.diagnostics[0].severity, reify_core::Severity::Warning);
+    }
+
+    /// `NodeCache::new` (the existing 4-arg constructor) must default
+    /// `diagnostics` to an empty vec — mirrors
+    /// `node_cache_new_defaults_pending_cause_to_none` /
+    /// `node_cache_new_defaults_cost_per_byte_to_zero`.
+    #[test]
+    fn node_cache_new_defaults_diagnostics_to_empty() {
+        assert!(
+            make_seed_entry().diagnostics.is_empty(),
+            "NodeCache::new must default diagnostics to an empty vec"
+        );
+    }
+
+    /// `Clone` must PRESERVE `diagnostics` — they are replay content (task μ
+    /// will replay them on cache-hit serves), not a transient optimization
+    /// hint like `warm_state`/`cost_per_byte`. Parallels
+    /// `node_cache_clone_drops_cost_per_byte_to_zero` but asserts the
+    /// OPPOSITE semantics for this field.
+    #[test]
+    fn node_cache_clone_preserves_diagnostics() {
+        let entry = NodeCache::new_with_diagnostics(
+            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+            vec![reify_core::Diagnostic::warning("carried")],
+        );
+
+        let cloned = entry.clone();
+        assert_eq!(
+            cloned.diagnostics.len(),
+            1,
+            "Clone must PRESERVE diagnostics — they are replay content, not a transient hint"
+        );
+        assert_eq!(
+            cloned.diagnostics[0].message, "carried",
+            "Clone must PRESERVE diagnostics — they are replay content, not a transient hint"
+        );
+    }
+
+    // ── μ / task 5062 step-1: set_node_diagnostics storage seam ──────────────
+    //
+    // `CacheStore::set_node_diagnostics` is the post-record setter μ writes the
+    // per-cell runtime diagnostics through (into κ's `NodeCache.diagnostics`
+    // field). Chosen over threading a diagnostics arg through
+    // record_evaluation / record_evaluation_propagating_freshness /
+    // commit_cell_result so a single post-record call is uniform across all
+    // three record paths. It OVERWRITES unconditionally (an empty vec clears),
+    // so a re-evaluated cell that stops warning drops its stale replay content.
+
+    /// `set_node_diagnostics` round-trips a non-empty vec, CLEARS on a
+    /// subsequent empty vec (overwrite, not append), and is a safe no-op on an
+    /// absent node.
+    #[test]
+    fn set_node_diagnostics_overwrites_and_no_ops_on_absent() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("S", "oob_a"));
+
+        // Record the node — record_evaluation leaves diagnostics empty by default.
+        store.record_evaluation(
+            node.clone(),
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            VersionId(1),
+            DependencyTrace::default(),
+        );
+        assert!(
+            store.get(&node).unwrap().diagnostics.is_empty(),
+            "record_evaluation must leave diagnostics empty by default"
+        );
+
+        // Non-empty vec must round-trip through get().
+        store.set_node_diagnostics(
+            &node,
+            vec![reify_core::Diagnostic::warning("field 'f' out of bounds")],
+        );
+        let stored = &store.get(&node).unwrap().diagnostics;
+        assert_eq!(stored.len(), 1, "set_node_diagnostics must store the supplied vec");
+        assert_eq!(stored[0].message, "field 'f' out of bounds");
+        assert_eq!(stored[0].severity, reify_core::Severity::Warning);
+
+        // Empty vec must CLEAR (overwrite semantics, not append) — a cell that
+        // stops warning on re-eval must drop its stale replay content.
+        store.set_node_diagnostics(&node, Vec::new());
+        assert!(
+            store.get(&node).unwrap().diagnostics.is_empty(),
+            "set_node_diagnostics with an empty vec must CLEAR, not append"
+        );
+
+        // Absent node — safe no-op (no panic, no phantom insertion).
+        let absent = NodeId::Value(ValueCellId::new("S", "missing"));
+        store.set_node_diagnostics(&absent, vec![reify_core::Diagnostic::warning("ignored")]);
+        assert!(
+            store.get(&absent).is_none(),
+            "set_node_diagnostics on an absent node must be a no-op (no insertion)"
+        );
     }
 }

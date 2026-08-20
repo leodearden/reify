@@ -1,0 +1,51 @@
+// Fixture: precision-nominal α (task 6166) — MESH-MATCHED cost-split subject.
+//
+// Not an envelope probe.  This one exists to separate the cost of TESSELLATING a
+// mesh from the cost of MEASURING its deviation, using only the shipped CLI.
+// See docs/notes/precision-refine-envelope-calibration.md.
+//
+// ── THE THREE VECTORS ──
+//
+//   T_build = reify build --verbose <this>   parse + compile + eval + B-rep
+//   T_stl   = reify build -o x.stl <this>    + tessellate + STL write
+//   T_check = reify check <this>             + tessellate + measure
+//
+// `build` never calls `set_capture_repr_tol`, so `achieved_repr_tol` stays empty
+// and NO measurement runs on either build vector (PRD §3.2).  That is what makes
+// T_stl a clean tessellate-only vector.
+//
+// ── WHY #precision(100mm) AND A SWEPT RADIUS ──
+//
+// `build -o *.stl` ignores `#precision` and tessellates at a hardcoded 0.1 m
+// (DEFAULT_STL_TESSELLATION_TOLERANCE — that defect is task 6085's, not this
+// note's).  Useless as a PRECISION probe; sound as a COST vector, because it
+// tessellates at a KNOWN FIXED deflection.  For the subtraction to mean anything
+// both vectors must tessellate the SAME MESH, so this fixture pins
+// `#precision(100mm)` = 0.1 m to match the STL constant exactly, and the sweep
+// varies only the RADIUS.  PRD §2's exactly-verified d/R scale-invariance is what
+// licenses that: at fixed d, radius is the facet-count knob.
+//
+// ── THE PREMISE IS FALSIFIABLE AND MUST BE CHECKED, NOT ASSUMED ──
+//
+// Mesh identity is testable: for binary STL, triangle count = (filesize - 84) / 50.
+// That count must track the facet count the check vector measures across the radius
+// sweep.  If the two meshes diverge, the subtraction is meaningless and the only
+// defensible statement is the bracketing bound  measure_cost >= T_check - T_stl.
+// The note reports which of those two cases actually held.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_cost_split_sphere
+
+#precision(100mm)
+
+// Subject: a sphere whose RADIUS is the swept parameter.  d is pinned at 100 mm,
+// so d/R — and therefore the facet count — is set entirely by this radius.
+structure PnrgCostSphere {
+    let s = sphere(1000mm)
+}
+
+structure PnrgCostSphereCheck {
+    param subject : PnrgCostSphere
+    constraint RepresentationWithin(subject, 0.001mm)
+}

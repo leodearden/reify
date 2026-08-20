@@ -1,0 +1,364 @@
+prd: docs/prds/v0_6/indexed-sub-instantiation.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5481
+  title: 'indexed-sub α: grammar + parsers — indexer clause on the sub instantiation
+    arm'
+  capabilities:
+  - name: target-surface-grammar-producer
+    binding: 'signal premise — committed fixture fixtures/indexed_sub_instantiation_surface.ri
+      FAILS today: tree-sitter ERROR confined to [17,14]–[17,25] (the indexer clause),
+      hand parser rejects too (''Parse error: invalid sub''); α IS the grammar producer
+      (grammar_confirmed=false; D3 re-verified 2026-07-25)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: field\('binder'
+      paths:
+      - tree-sitter-reify/grammar.js
+      expect: present
+  - name: existing-arms-regression-floor
+    binding: 'floor CORRECTED by D3 adversary — tree-sitter test NOT green on main
+      (218/219, pre-existing imaginary_literal.txt failure #5492, corpus not CI-run);
+      floor = 4 committed baselines tests/prd-gate/fixtures/indexed_sub_{inst,coll,spec}_arm_baseline.ri
+      + indexed_sub_forall_range_baseline.ri (all exit 0 / 0 ERROR, re-verified 2026-07-25)
+      + reify-syntax suites incl. sub_decl_specialization_body_parser_tests.rs'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioral floor: baseline fixtures re-parse + reify-syntax suites
+        green; blanket tree-sitter test exit 0 would false-fail on the pre-existing
+        #5492 red'
+- label: β
+  task_id: 5482
+  title: 'indexed-sub β: compiler lowering — indexed template → collection-sub expansion
+    + E_INDEXED_SUB_DYNAMIC_COUNT / E_INDEXED_SUB_RELATE_UNSUPPORTED'
+  capabilities:
+  - name: collection-elaboration-substrate
+    binding: 'substrate, probe #1 — CollectionSubInfo + EvaluationGraph::from_templates
+      (graph.rs:320) elaborate per-member value cells at positional NodeId paths;
+      D3 anti-vacuity witness: member cell consumable by constraints (OK→VIOLATED
+      under mutation, fixtures/collection_sub_member_cell_consumable.ri); ir-kind
+      probes of this baseline must bind observation=''absent'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: CollectionSubInfo
+      paths:
+      - crates/reify-eval
+      expect: present
+  - name: dynamic-count-rejection
+    binding: G6 branch 4, producer-self — E_INDEXED_SUB_DYNAMIC_COUNT is β's deliverable;
+      negative fixture observes it fire; never a silent zero-element elaboration
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_INDEXED_SUB_DYNAMIC_COUNT
+      paths:
+      - crates
+      expect: present
+  - name: relate-rejection
+    binding: 'G6 branch 4, producer-self — E_INDEXED_SUB_RELATE_UNSUPPORTED on per-element
+      relate blocks (INV-SF-3: loud, not parse-and-ignore); points at the placement/relations
+      seam'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_INDEXED_SUB_RELATE_UNSUPPORTED
+      paths:
+      - crates
+      expect: present
+- label: γ
+  task_id: 5483
+  title: 'indexed-sub γ: per-instance realization + posing + surfacing + W_INDEXED_SUB_NO_POSE'
+  capabilities:
+  - name: silent-undef-baseline
+    binding: 'signal premise, probe #2 — per-member geometry silently undef today
+      (eval ''.body = undef'', zero diagnostics; fixtures/indexed_sub_silent_undef_baseline.ri);
+      baseline inverts on delivery (INV-SF-1: replacement loud where it must be)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline inverts on delivery; γ's own tests assert the loud replacement
+        + UndefCause on failure paths
+  - name: posing-surfacing-substrate
+    binding: 'substrate, probe #13 REFINED by D3 — build pipeline real for hand-placed
+      N=2 (2 disjoint solids at expected AABBs in STL + STEP) but eval-value sub .body
+      cells are undef even hand-placed, and posed-body distance queries unresolvable
+      (fixtures/posed_subs_distance_query_unresolvable.ri): §6.2 rows 1/4 are NEW
+      capability γ delivers, not single-sub parity'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ApplyTransform
+      paths:
+      - crates/reify-eval
+      expect: present
+  - name: no-pose-warning
+    binding: G6 branch 4, producer-self — W_INDEXED_SUB_NO_POSE when count>1 with
+      no at clause (open Q2 decided at γ); γ's test observes it
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: W_INDEXED_SUB_NO_POSE
+      paths:
+      - crates
+      expect: present
+  - name: shared-expansion-helper
+    binding: G7 no-lockstep-duplication — ONE expansion helper (template × index →
+      cells/pose/realization) shared by cold from_templates and σ1's engine_edit collection-count
+      phase
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: architectural single-implementation fact; σ1's diff is the second caller,
+        reviewed there
+- label: δ
+  task_id: 5484
+  title: 'indexed-sub δ: range iteration in forall/exists — Range<Int> domains, literal-bound
+    unroll'
+  capabilities:
+  - name: forall-collection-lowering-substrate
+    binding: 'substrate, probe #5 — forall over collection subs works today with per-element
+      OK forall@ lines (task 2364 lowering; fixtures/forall_collection_resolves.ri,
+      D3 re-verified)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: forall_templates
+      paths:
+      - crates/reify-eval
+      expect: present
+  - name: range-domain-rejected-today
+    binding: 'signal premise, probe #6 — Range<Int> forall domains rejected loudly
+      today in BOTH statement + quantifier-expression forms (fixtures/forall_range_domain_rejected.ri,
+      quantifier_expr_range_domain_rejected.ri); δ lifts exactly this rejection, no
+      silent-accept to displace'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline inverts on delivery; δ's fixtures assert acceptance + per-element
+        OK lines post-delivery
+  - name: dynamic-bound-rejection
+    binding: G6 branch 4, shared diagnostic — non-literal bounds emit E_INDEXED_SUB_DYNAMIC_COUNT
+      (same code as β's site; one phase-2 lift for both); δ's negative fixture observes
+      it at the forall site
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_INDEXED_SUB_DYNAMIC_COUNT
+      paths:
+      - crates
+      expect: present
+- label: ε
+  task_id: 5485
+  title: 'indexed-sub ε: addressing hygiene — self.-path parity via the uniform member
+    resolver + out-of-range diagnostics'
+  capabilities:
+  - name: bare-indexed-access-works
+    binding: 'substrate, probe #7 — bare idlers[0].od evaluates today (task 2871 lineage;
+      fixtures/indexed_sub_bare_member_resolves.ri, D3 re-verified)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioral substrate pinned by ε's parity tests (bare path is the parity
+        reference)
+  - name: misroute-baselines-both-variants
+    binding: 'signal premise, probe #8 + D3 second variant — self.<coll>[k].<member>
+      mis-diagnoses today in BOTH element-type variants: geometry-membered (''Geometry
+      has no projection'') and no-geometry (''member access not yet supported'', expr.rs
+      poison tail); fixtures/indexed_sub_self_member_misrouted.ri + indexed_sub_self_member_nogeom_unsupported.ri;
+      silent divergence is the only forbidden outcome'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baselines invert on delivery; ε asserts parity-or-redirect on both fixtures
+  - name: uniform-resolver-upstream
+    binding: 'capability→producer:#5424 upstream (uniform-member-access α, HARD dep
+      edge; batch-shape change 1) — indexed access = this PRD, post-index-hop member
+      resolution = their resolver; ε must not re-patch the matchers #5430 retires
+      (INV-5)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'cross-batch DAG-direction binding; #5424''s own suite carries the resolver''s
+        mechanical tests'
+  - name: out-of-range-rejection
+    binding: G6 branch 4, producer-self vs D3 silent baselines — literal AND computed
+      out-of-range are silent-undef today (fixtures/indexed_sub_oob_{literal,computed}_silent_undef.ri);
+      ε delivers compile-time error (literal/static, open Q3) + E_INDEXED_SUB_INDEX_OUT_OF_RANGE
+      (computed, eval)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_INDEXED_SUB_INDEX_OUT_OF_RANGE
+      paths:
+      - crates
+      expect: present
+- label: ζ
+  task_id: 5486
+  title: 'indexed-sub ζ: phase-1 integration gate — printer-pattern indexed-array
+    example, parity-verified vs hand-placed twin'
+  capabilities:
+  - name: hand-placed-twin-substrate
+    binding: 'binding CORRECTED by D3 — twin is real on the BUILD surface only (STL
+      + STEP, 2 solids at expected AABBs; eval-value .body undef even hand-placed):
+      parity binds to mesh dump + STEP; eval-surface assertions are γ-capability checks'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'kernel-tolerance parity asserted by ζ''s own suite on the build surface
+        (open Q4: T5 golden-AABB harness vs body-set comparator, decided at ζ)'
+  - name: printer-idiom-anchor
+    binding: 'consumer premise, anchor REFRESHED — printer.ri now 679 lines / 16 IdlerPulley
+      at-transform3 sites (PRD''s 995/38/34 stale); ζ distills into examples/, no
+      printer.ri contention with belt μ #5445; orient_identity warning is #5344''s
+      territory (pending, with follow-up #5380)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'idlers\[i in '
+      paths:
+      - examples
+      expect: present
+  - name: examples-ci-substrate
+    binding: substrate — examples_smoke.rs recursively compile-gates examples/**/*.ri
+      (recursive discovery since 2026-04-26); parity assertions extend existing reify-eval
+      suites, no new gate-resident test file (drift-guard registration not tripped)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn discover
+      paths:
+      - crates/reify-compiler/tests/examples_smoke.rs
+      expect: present
+  - name: full-stack-upstream
+    binding: G6 branch 3 — every capability the parity signal asserts is produced
+      by ζ's dependency closure {α,β,γ,δ,ε}, hard edges wired; nothing lives downstream
+      of ζ
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction fact; edges verified at decompose (5486 ← 5483, 5484,
+        5485)
+- label: η
+  task_id: 5487
+  title: 'indexed-sub η: GUI — instance arrays in tree + inspector'
+  capabilities:
+  - name: debug-mcp-substrate
+    binding: substrate — debug_server.rs viewport_state/meshCount/store_state surface
+      (grep re-verified 2026-07-25); η's signal uses the established debug-MCP assertion
+      shape
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: viewport_state
+      paths:
+      - gui/src-tauri/src
+      expect: present
+  - name: entity-path-substrate
+    binding: 'substrate — collection subs already carry positional NodeId paths (probe
+      #1); η renders indexed children with the EXISTING entity-path scheme (open Q5
+      decides rendering only)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioral; σ2's continuity scenario is the downstream mechanical check
+- label: θ
+  task_id: 5488
+  title: 'indexed-sub θ: docs, chunks, skill cheatsheet, best-practices exemplar,
+    discoverability (docs-truth gate)'
+  capabilities:
+  - name: chunk-files-exist
+    binding: substrate — chunks/{collections,structures}.md present (ls re-verified
+      2026-07-25); signatures registry-verified in θ's own diff (#5347/#5364 phantom-signature
+      precedent)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\[i in '
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: best-practices-exemplar
+    binding: 'batch-shape change 2 (docs-truth item 2) — exemplar under examples/best_practices/
+      + INDEX.md line, auto-gated by examples_smoke recursive discovery; #5397 (corpus
+      seed) live-blocked, θ adds ADDITIVELY'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\[i in '
+      paths:
+      - examples/best_practices
+      expect: present
+  - name: discoverability-acceptance
+    binding: producer-self, overlay docs-truth item 4 — intent queries ('place N pulleys
+      in a row') surface the indexed-sub chunk section
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: acceptance transcript/check is θ's own deliverable
+- label: σ1
+  task_id: 5489
+  title: 'indexed-sub σ1: phase 2 — dynamic domain bound, warm re-elaboration of instances
+    + tail eviction'
+  capabilities:
+  - name: collection-count-phase-substrate
+    binding: 'substrate, probe #11 — engine_edit.rs collection-count re-elaboration
+      phase landed (child_value_cells + forall_emitted ledger ~1984–2206; 2629/2690
+      twins; grep re-verified 2026-07-25); σ1 extends with γ''s helper, NOT waiting
+      on #4684''s SchemaNode machinery'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: forall_emitted
+      paths:
+      - crates/reify-eval/src/engine_edit.rs
+      expect: present
+  - name: eviction-and-dangling-refs
+    binding: producer-self — dropped-tail realization/mesh eviction is σ1's named
+      risk with own assertions; surviving refs to dropped indices get E_INDEXED_SUB_INDEX_OUT_OF_RANGE
+      (ε's code), never silent undef (INV-SF-1)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: warm edit_param behavior; asserted in σ1's engine-edit suite additions
+- label: σ2
+  task_id: 5490
+  title: 'indexed-sub σ2: phase-2 integration gate — identity/GUI continuity under
+    count edits'
+  capabilities:
+  - name: identity-contract-observable
+    binding: §3.2 contract fixed in phase 1 (grow appends / shrink truncates / no
+      renumbering) — σ2 asserts NodeId/entity-path/selection survival + mesh removal
+      at the GUI surface, composing η (5487) + σ1 (5489), hard edges wired
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: debug-MCP scenario (select idlers[1], edit 4→5→3) is the signal; not
+        grep-expressible
+- label: σ3
+  task_id: 5491
+  title: 'indexed-sub σ3: phase 2 — range-forall dynamic bounds via the forall_templates
+    ledger'
+  capabilities:
+  - name: forall-ledger-substrate
+    binding: substrate — forall_templates/forall_emitted count-keyed re-emission ledger
+      in engine_edit.rs (2629/2690 test pattern σ3 sits beside); constraint + connect
+      arms, chain stays compile-time-info
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: forall_templates
+      paths:
+      - crates/reify-eval/src/engine_edit.rs
+      expect: present
+  - name: range-lowering-upstream
+    binding: DAG-direction — δ's literal-bound unroll is the template σ3 makes count-keyed
+      (hard edges σ3 ← σ1, δ wired)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-task DAG fact; re-emission asserted in σ3's engine-edit suite
+        additions

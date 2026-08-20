@@ -429,6 +429,9 @@ pub(crate) fn eigensolve_modal(
         phi_full.push(phi_u);
     }
 
+    // ---- Diagnostics (message-based, code: None; design_decision #6) ------
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
     // ---- Enforce the ascending-frequency contract explicitly --------------
     // stdlib `first_frequency`/`mode_frequency` and the ModalResult contract
     // require modes[0] to be the fundamental. The eigensolver returns eigenpairs
@@ -438,26 +441,27 @@ pub(crate) fn eigensolve_modal(
     // order and displace the fundamental. A stable sort by frequency is a no-op
     // in the normal case but makes the ordering self-enforcing rather than
     // dependent on the solver invariant (suggestion 3 / architecture).
-    let mut order: Vec<usize> = (0..n_modes_out).collect();
-    order.sort_by(|&a, &b| {
-        frequencies[a]
-            .partial_cmp(&frequencies[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    if order.iter().enumerate().any(|(i, &src)| i != src) {
-        frequencies = permute_by(frequencies, &order);
-        eigenvalues = permute_by(eigenvalues, &order);
-        participation_mass = permute_by(participation_mass, &order);
-        phi_free = permute_by(phi_free, &order);
-        phi_full = permute_by(phi_full, &order);
+    if let Some(order) = frequency_ascending_order(&frequencies) {
+        if order.iter().enumerate().any(|(i, &src)| i != src) {
+            frequencies = permute_by(frequencies, &order);
+            eigenvalues = permute_by(eigenvalues, &order);
+            participation_mass = permute_by(participation_mass, &order);
+            phi_free = permute_by(phi_free, &order);
+            phi_full = permute_by(phi_full, &order);
+        }
+        debug_assert!(
+            frequencies.windows(2).all(|w| w[0] <= w[1]),
+            "modal frequencies must be sorted ascending after the reorder",
+        );
+    } else {
+        // Fail-closed: surface the pathology structurally, not only via the
+        // transient WARN log inside frequency_ascending_order — a NaN ω does
+        // not trip the rigid-body check below (NaN comparisons are always
+        // `false`), so without this a caller inspecting `diagnostics` would
+        // see no evidence of the non-finite frequency (suggestion 1 /
+        // robustness).
+        diagnostics.push(non_finite_frequency_diagnostic(frequencies.len()));
     }
-    debug_assert!(
-        frequencies.windows(2).all(|w| w[0] <= w[1]),
-        "modal frequencies must be sorted ascending after the reorder",
-    );
-
-    // ---- Diagnostics (message-based, code: None; design_decision #6) ------
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // Rigid-body / spurious near-zero modes: ω ≈ 0 signals an under-constrained
     // model. RIGID_BODY_OMEGA_TOL sits in the wide gap between rigid modes
@@ -670,6 +674,59 @@ fn permute_by<T: Default>(mut items: Vec<T>, order: &[usize]) -> Vec<T> {
         .iter()
         .map(|&i| std::mem::take(&mut items[i]))
         .collect()
+}
+
+/// Compute the permutation that reorders `frequencies` ascending, for
+/// [`permute_by`] to apply in lockstep across `eigensolve_modal`'s five
+/// per-mode arrays (frequencies, eigenvalues, participation_mass, phi_free,
+/// phi_full).
+///
+/// Fail-closed: a non-finite frequency would otherwise poison `partial_cmp`
+/// (`None` → `unwrap_or(Ordering::Equal)` silently treats NaN as
+/// equal-to-everything), scrambling the very ascending-frequency order this
+/// resort exists to guarantee. On non-finite input this emits a WARN and
+/// returns `None` — the signal for the caller to skip the resort entirely
+/// and keep the eigensolver's own ascending-|λ| order instead.
+fn frequency_ascending_order(frequencies: &[f64]) -> Option<Vec<usize>> {
+    if frequencies.iter().any(|f| !f.is_finite()) {
+        tracing::warn!(
+            target: "reify_eval::modal_ops",
+            reason = "non_finite_frequency",
+            n_modes = frequencies.len(),
+            "Modal frequency-ascending resort skipped: encountered non-finite \
+             frequency (likely upstream pathology in the eigensolve); \
+             preserving the eigensolver's ascending-|λ| order to avoid \
+             silently scrambling the mode ordering"
+        );
+        return None;
+    }
+
+    let mut order: Vec<usize> = (0..frequencies.len()).collect();
+    order.sort_by(|&a, &b| {
+        frequencies[a]
+            .partial_cmp(&frequencies[b])
+            .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all frequencies finite here (non-finite → early return None above at :691)
+    });
+    Some(order)
+}
+
+/// The [`ModalCoreResult::diagnostics`] entry pushed when
+/// [`frequency_ascending_order`] fail-closes (returns `None`) on a
+/// non-finite frequency. That function only emits a transient
+/// `tracing::warn!`, which a caller inspecting the returned
+/// `ModalCoreResult` would never see — a NaN angular frequency does not trip
+/// `is_rigid_body_mode` (NaN comparisons are always `false`), and the
+/// convergence diagnostic is unrelated, so without this the pathology would
+/// surface nowhere in the structured result (suggestion 1 / robustness).
+fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
+    Diagnostic::warning(format!(
+        "W_ModalNonFiniteFrequency: encountered a non-finite (NaN/±∞) \
+         frequency among the {n_modes} solved modes; the ascending-frequency \
+         resort was skipped and the eigensolver's raw ascending-|λ| order was \
+         preserved instead. This indicates a numerical pathology upstream of \
+         the eigensolve (e.g. an ill-conditioned or non-PSD stiffness/mass \
+         assembly) — treat this result's mode ordering as unverified."
+    ))
 }
 
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
@@ -1210,7 +1267,7 @@ pub fn solve_modal_analysis_trampoline(
 /// message so that users can locate the offending joint.
 #[derive(Debug, Clone, Copy)]
 enum StiffnessSkipKind {
-    /// `ROTATIONAL_STIFFNESS` (N·m/rad) — `k_θ / m` is dimensionally wrong;
+    /// `ROTATIONAL_STIFFNESS` (N·m/rad²) — `k_θ / m` is dimensionally wrong;
     /// the correct eigenvalue is `k_θ / I_body` (moment of inertia).
     Rotational,
     /// A finite scalar dimension that is neither `TRANSLATIONAL_STIFFNESS`
@@ -1228,7 +1285,7 @@ enum StiffnessSkipKind {
 /// accepted by the lumped model where `λ = k / m_body`.
 ///
 /// Returns `(None, Some(StiffnessSkipKind::Rotational))` when the dimension is
-/// `ROTATIONAL_STIFFNESS` (N·m/rad) — the caller should emit a warning because
+/// `ROTATIONAL_STIFFNESS` (N·m/rad²) — the caller should emit a warning because
 /// `k_θ / m` is dimensionally wrong; the correct eigenvalue is `k_θ / I_body`.
 ///
 /// Returns `(None, Some(StiffnessSkipKind::UnexpectedDimension))` for any other
@@ -1379,7 +1436,7 @@ fn assemble_mechanism_km(
                 Some(StiffnessSkipKind::Rotational) => {
                     diagnostics.push(Diagnostic::warning(format!(
                         "W_MechanismModalRotationalDOF: body {i}{body_id_tag} has a \
-                         spring_rate with RotationalStiffness dimension (N·m/rad). The \
+                         spring_rate with RotationalStiffness dimension (N·m/rad²). The \
                          lumped generalized-coordinate model computes λ = k / m_body \
                          (translational DOF). A revolute/notch flexure requires \
                          λ = k_θ / I_body — using k_θ / m gives a dimensionally wrong \
@@ -2781,6 +2838,14 @@ fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) ->
 /// Used to place the simply-supported anchors on the end-face neutral-axis nodes
 /// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
 /// numbering (mirroring the unit tests' coordinate-based face selection).
+///
+/// Fail-closed, never panics (PRD `compute-fea-hardening.md` Resolved design
+/// decision 5): normalizes a non-finite squared distance to `+INFINITY` so a
+/// non-finite node/target coordinate can never win an [`f64::total_cmp`]
+/// pick, and emits a WARN as telemetry. Assumes coordinates stay within a
+/// non-overflowing range — an extreme but finite coordinate that overflows
+/// `dist2` to `+INFINITY` trips the same guard/WARN. See the tests below for
+/// the NaN-sign-bit and infinite-coordinate edge cases this covers.
 fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     let dist2 = |p: &[f64; 3]| -> f64 {
         let dx = p[0] - target[0];
@@ -2788,16 +2853,43 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         let dz = p[2] - target[2];
         dx * dx + dy * dy + dz * dz
     };
-    nodes
+
+    // Latches on any non-finite dist2 (NaN, or +INFINITY from a non-finite
+    // or overflowing coordinate) for the WARN below, and normalizes NaN to
+    // +INFINITY so it can never win the total_cmp pick (see doc comment).
+    let saw_non_finite = std::cell::Cell::new(false);
+    let key = |p: &[f64; 3]| -> f64 {
+        let d = dist2(p);
+        if !d.is_finite() {
+            saw_non_finite.set(true);
+        }
+        if d.is_nan() { f64::INFINITY } else { d }
+    };
+
+    // Precompute each node's key once, rather than inside the `min_by`
+    // comparator (which would otherwise re-run it ~2(n-1) times over the
+    // node set for a single pick).
+    let nearest = nodes
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            dist2(a)
-                .partial_cmp(&dist2(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .map(|(i, p)| (i, key(p)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(i, _)| i)
-        .expect("beam mesh has at least one node")
+        .expect("beam mesh has at least one node");
+
+    if saw_non_finite.get() {
+        tracing::warn!(
+            target: "reify_eval::modal_ops",
+            reason = "non_finite_squared_distance",
+            n_nodes = nodes.len(),
+            "nearest_node: non-finite squared distance (non-finite or \
+             overflowing node/target coordinate); falling back to total_cmp \
+             for a deterministic nearest-node pick (a simply-supported BC \
+             anchor may be mis-placed)"
+        );
+    }
+
+    nearest
 }
 
 /// Collect the `target` face names from the options' `boundary_conditions` list
@@ -2874,7 +2966,7 @@ mod tests {
         build_dirichlet_bcs, degenerate_displacement_history, degenerate_modal_result,
         displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
+        mode_shape_value, nearest_node, placeholder_part, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
         simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
@@ -4149,6 +4241,123 @@ mod tests {
             .filter(|&n| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps)
             .count();
         assert_eq!(nz, n_end_nodes, "Z must be pinned on every end-face node");
+    }
+
+    /// step-1 (RED → GREEN in step-2): a NaN node coordinate must not win the
+    /// `min_by` pick. Node 0's distance² to `target` is NaN (poisoned by its
+    /// NaN x-coordinate); the true finite nearest is node 2 (dist² = 0.0 vs.
+    /// node 1's dist² = 16.0). Before the `total_cmp` swap,
+    /// `partial_cmp(...).unwrap_or(Ordering::Equal)` treats the NaN distance
+    /// as equal-to-everything and `min_by` returns the NaN node (index 0)
+    /// instead — this assertion is RED until step-2 lands. Also asserts
+    /// repeated calls are deterministic (not a silently-arbitrary pick).
+    #[test]
+    fn nearest_node_picks_true_finite_nearest_over_nan_deterministically() {
+        let nodes = [[f64::NAN, 0.0, 0.0], [5.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            nearest_node(&nodes, target),
+            2,
+            "true nearest node (dist² = 0.0) must win over the NaN-poisoned \
+             node 0, not be silently treated as equal-to-everything"
+        );
+
+        for _ in 0..3 {
+            assert_eq!(
+                nearest_node(&nodes, target),
+                2,
+                "repeated calls on the same NaN-containing input must yield \
+                 the identical index (deterministic, not arbitrary)"
+            );
+        }
+    }
+
+    /// step-1 (positive characterization): on all-finite node coordinates,
+    /// `nearest_node` still picks the true nearest node by Euclidean
+    /// distance — dist² = [3.61, 0.81, 0.01], so node 2 wins.
+    #[test]
+    fn nearest_node_picks_true_nearest_on_finite_nodes() {
+        let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let target = [1.9, 0.0, 0.0];
+
+        assert_eq!(nearest_node(&nodes, target), 2);
+    }
+
+    /// step-3 (RED → GREEN in step-4): a non-finite node/target coordinate
+    /// must emit a WARN (telemetry only — the pick itself is already
+    /// deterministic via `total_cmp` after step-2). Clean, all-finite input
+    /// must stay quiet (no spurious warn).
+    #[test]
+    fn nearest_node_warns_once_on_non_finite_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = super::nearest_node(&[[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0]], [1.0, 0.0, 0.0]);
+        });
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+            let _ = super::nearest_node(&nodes, [1.9, 0.0, 0.0]);
+        });
+        capture.assert_count(0);
+    }
+
+    /// Amendment (suggestion 1): a *negatively*-signed NaN node coordinate
+    /// (e.g. the x86_64 "real indefinite" QNaN bit pattern
+    /// `0xFFF8_0000_0000_0000`) must not win the pick either. `total_cmp`
+    /// alone ranks a negative-signed NaN below every finite value (and below
+    /// `-infinity`), so without the `key` helper's explicit NaN → `+INFINITY`
+    /// normalization, this exact case would select the poisoned node instead
+    /// of the true nearest — the fail-open the guard exists to prevent.
+    #[test]
+    fn nearest_node_picks_true_finite_nearest_over_negative_signed_nan() {
+        let neg_nan = f64::from_bits(0xFFF8_0000_0000_0000);
+        assert!(neg_nan.is_nan(), "fixture must actually be NaN");
+        assert!(
+            neg_nan.is_sign_negative(),
+            "fixture must be a negative-signed NaN"
+        );
+
+        let nodes = [[neg_nan, 0.0, 0.0], [5.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            nearest_node(&nodes, target),
+            2,
+            "true nearest node (dist² = 0.0) must win over a negative-signed \
+             NaN-poisoned node — total_cmp alone ranks negative NaN below \
+             every finite value, so an unguarded comparison would wrongly \
+             pick the poisoned node here"
+        );
+    }
+
+    /// Amendment (suggestion 2): non-finite `+infinity`/`-infinity` node
+    /// coordinates must not win the pick either, pinning the "non-finite
+    /// never wins" contract for the infinite case alongside the NaN cases
+    /// above.
+    #[test]
+    fn nearest_node_picks_true_finite_nearest_over_infinite_coordinates() {
+        let nodes = [
+            [f64::INFINITY, 0.0, 0.0],
+            [f64::NEG_INFINITY, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            nearest_node(&nodes, target),
+            2,
+            "true finite nearest node must win over both +infinity and \
+             -infinity node coordinates"
+        );
     }
 
     /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
@@ -5801,7 +6010,7 @@ mod tests {
     }
 
     /// Build a minimal rotational flexure joint `Value::Map` with a
-    /// `spring_rate` in `ROTATIONAL_STIFFNESS` (N·m/rad).
+    /// `spring_rate` in `ROTATIONAL_STIFFNESS` (N·m/rad²).
     ///
     /// Mirrors a notch/revolute flexure — `assemble_mechanism_km` should warn
     /// and skip this contribution (treating the joint as rigid) because the
@@ -6486,4 +6695,88 @@ mod tests {
         );
     }
 
+    /// step-1 (RED → GREEN in step-2): `frequency_ascending_order` returns the
+    /// permutation that sorts frequencies ascending — the same reorder the
+    /// :454-457 debug_assert exists to enforce after `eigensolve_modal` applies
+    /// it via `permute_by`.
+    #[test]
+    fn frequency_ascending_order_sorts_finite_frequencies_ascending() {
+        let freqs = [2.0, 1.0, 3.0];
+        let order = super::frequency_ascending_order(&freqs)
+            .expect("all-finite input must return Some(order)");
+        let sorted: Vec<f64> = order.iter().map(|&i| freqs[i]).collect();
+        assert_eq!(sorted, vec![1.0, 2.0, 3.0]);
+
+        // Already-ascending input must yield the identity order.
+        let ascending = [1.0, 2.0, 3.0];
+        let identity_order = super::frequency_ascending_order(&ascending)
+            .expect("all-finite input must return Some(order)");
+        assert_eq!(identity_order, vec![0, 1, 2]);
+
+        // Equal-frequency modes must retain their original relative order.
+        // The comment above eigensolve_modal's resort call relies on this
+        // stable-sort contract ("A stable sort by frequency is a no-op in
+        // the normal case") — an unstable sort could still produce an
+        // ascending-value permutation while swapping tied modes, which this
+        // assertion (checking the order itself, not just the sorted values)
+        // would catch and a value-only check would not.
+        let with_ties = [1.0, 1.0, 0.5];
+        let tie_order = super::frequency_ascending_order(&with_ties)
+            .expect("all-finite input must return Some(order)");
+        assert_eq!(
+            tie_order,
+            vec![2, 0, 1],
+            "equal-frequency entries (indices 0 and 1) must keep their \
+             original relative order after the ascending resort (stable sort)"
+        );
+    }
+
+    /// step-3 (RED → GREEN in step-4): a non-finite frequency must fail
+    /// closed — `frequency_ascending_order` skips the resort (returns
+    /// `None`, so the caller preserves the eigensolver's own ascending-|λ|
+    /// order instead of resorting around the NaN) and emits a WARN, rather
+    /// than letting `partial_cmp(...).unwrap_or(Ordering::Equal)` silently
+    /// treat NaN as equal-to-everything and scramble the ascending-
+    /// frequency order this resort exists to guarantee.
+    #[test]
+    fn frequency_ascending_order_skips_resort_and_warns_on_non_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let order = super::frequency_ascending_order(&[1.0, f64::NAN, 2.0]);
+            assert!(
+                order.is_none(),
+                "non-finite frequency must skip the resort (None), so the \
+                 caller preserves the eigensolver's own order rather than \
+                 scrambling it around the NaN"
+            );
+        });
+
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+    }
+
+    /// suggestion 1 (robustness, amendment pass): when
+    /// `frequency_ascending_order` fail-closes, `eigensolve_modal` must
+    /// surface the pathology structurally on `ModalCoreResult.diagnostics`
+    /// (not only via the transient WARN log tested above) so a caller
+    /// inspecting the result — rather than log output — can detect it.
+    #[test]
+    fn non_finite_frequency_diagnostic_flags_the_pathology_as_a_warning() {
+        let diag = super::non_finite_frequency_diagnostic(5);
+        assert!(
+            diag.severity == Severity::Warning
+                && diag.message.starts_with("W_ModalNonFiniteFrequency"),
+            "expected a W_ModalNonFiniteFrequency warning; got {diag:?}"
+        );
+        assert!(
+            diag.message.contains('5'),
+            "diagnostic should name the solved-mode count for context; got {diag:?}"
+        );
+    }
 }

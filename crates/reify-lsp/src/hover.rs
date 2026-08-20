@@ -399,8 +399,8 @@ mod tests {
     #[test]
     fn hover_on_structure_name_shows_summary() {
         let source = reify_test_support::bracket_source();
-        // 'Bracket' is on line 0: "structure Bracket {"
-        let position = Position::new(0, 12); // on 'Bracket'
+        // 'Bracket' is on line 0: "structure def Bracket {"
+        let position = Position::new(0, 16); // on 'Bracket'
         let md =
             hover_markdown(source, position).expect("hover should return info for structure name");
         assert!(
@@ -520,7 +520,7 @@ mod tests {
     #[test]
     fn hover_on_undocumented_structure_no_doc_section() {
         let source = reify_test_support::bracket_source();
-        let position = Position::new(0, 12); // on 'Bracket'
+        let position = Position::new(0, 16); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
             md.contains("Bracket"),

@@ -1,6 +1,8 @@
 # PRD: Data-Carrying Enums (Algebraic Data Types)
 
-Status: deferred (spec-gap batch `spec-gap-2026-05-27`, cluster `data-carrying-enums`). Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27.
+**Status:** **SHIPPED (v0.6)** — all decomposition leaves (3936/3938/3940/3942/3944/3946/3949/3951) **landed**; runnable end-to-end example `examples/m6_data_carrying_enum.ri`. Mirrors spec §18 roadmap row 6, "Realized (v0.6)". Originally filed as `deferred` in spec-gap batch `spec-gap-2026-05-27`, cluster `data-carrying-enums`. Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27; shipped-status recorded 2026-08-06.
+
+**The body below is the AS-AUTHORED design record.** The §4.x "grammar reality check" tables and the §8 decomposition metadata (including `grammar_confirmed=false`) are dated 2026-05-27 *pre-implementation* measurements, retained as provenance for why the decomposition was shaped the way it was — they are not current statements of fact about the language. §10 remains a live statement of what is still out of scope.
 
 Resolves spec §18.6 roadmap item 6 ("Data-carrying enums — algebraic data types with associated values"). Extends the existing `match` seam (spec §5.10 expr / §6.4 decl-level) for payload binding.
 
@@ -8,9 +10,11 @@ Resolves spec §18.6 roadmap item 6 ("Data-carrying enums — algebraic data typ
 
 ## §1 — Goal
 
-Today Reify enums are C-style bare variants only: `enum Directionality { In, Out, Bidi }` (spec §3.8, §4.5; grammar `enum_declaration` = identifiers; `EnumDef.variants: Vec<String>`; runtime `Value::Enum { type_name, variant }` with no payload slot). This PRD adds **associated data to variants** plus **pattern matching that binds the payloads**, turning enums into algebraic data types.
+**Before this PRD landed**, Reify enums were C-style bare variants only: `enum Directionality { In, Out, Bidi }` (spec §3.8, §4.5; grammar `enum_declaration` = identifiers; `EnumDef.variants: Vec<String>`; runtime `Value::Enum { type_name, variant }` with no payload slot). This PRD added **associated data to variants** plus **pattern matching that binds the payloads**, turning enums into algebraic data types.
 
-What a user can do when this lands (the observable surface):
+**As shipped (v0.6):** variants carry named-field payloads — `enum_declaration` accepts `Name { field: Type, ... }` (`tree-sitter-reify/grammar.js`), `EnumDef.variants: Vec<EnumVariantDef>` with `VariantPayload::{Unit, Named}` (`crates/reify-ir/src/traits.rs`), and the runtime value carries a payload slot, `Value::Enum { type_name, variant, payload: Vec<(String, Value)> }` (`crates/reify-ir/src/value.rs`), empty for bare variants.
+
+What a user can do today (the observable surface) — this is the shipped surface, mirrored by `examples/m6_data_carrying_enum.ri`:
 
 ```reify
 enum Shape {
@@ -207,9 +211,9 @@ pub enum CompiledPattern {
 | `E_UNKNOWN_VARIANT` | `Triangle { x: v } =>` — variant not in enum | compiler (existing, extended) |
 | (existing) non-exhaustive | missing tag with no `_` | compiler (unchanged, D4) |
 
-## §8 — Decomposition plan (DAG; not yet filed)
+## §8 — Decomposition plan (DAG; filed and completed)
 
-**B + H.** Grammar leaves first (G3 prereq), then IR widening, then the two seam sides, then the end-to-end consumer leaf (the integration gate carrying the user-observable signal), then companions. Greek labels; real IDs assigned at decompose.
+**B + H.** Grammar leaves first (G3 prereq), then IR widening, then the two seam sides, then the end-to-end consumer leaf (the integration gate carrying the user-observable signal), then companions. Greek labels below; the filed IDs are **3936 / 3938 / 3940 / 3942 / 3944 / 3946 / 3949 / 3951**, all `done` and merged on `main`.
 
 ### Phase 1 — Grammar (G3 prerequisite; `grammar_confirmed=false`)
 
@@ -287,7 +291,7 @@ No leaf asserts an accuracy bound, closed-form reproduction, or a capability own
 - **Payload-value guards / refutable nested patterns** beyond one level of field binding. `Circle { radius: r } where r > 5mm =>` or nested ADT destructuring (`Rect { width: Circle { ... } }`) — deferred. v1 binds one named-field level per variant.
 - **Partial / defaulted fields, field omission in patterns.** v1 requires construction to name **all** declared fields and patterns to name all fields (§4.2/§4.3). Partial-binding ergonomics (`Rect { width: w, .. }`) and field defaults are deferred.
 - **Pipe-alternation across payload-binding arms** (`Circle { radius: r } | Rect { ... } =>`) — incompatible binder sets; diagnose, deferred.
-- **Generic / type-parameterized variant payloads** (`enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }`). Recursive ADTs and type parameters on enums are a separate future PRD; v1 payloads are concrete types. (Spec §4.5 recursive-termination rule §note already anticipates "variant type base case" — that PRD builds on this one.)
+- **Generic / type-parameterized variant payloads** (`enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }`). Out of scope *here* — this PRD's v1 payloads are concrete types. Recursive ADTs and type parameters on enums were authored as the separate sibling PRD `docs/prds/v0_6/generic-data-carrying-enums.md`, which **shipped in v0.6** (runnable example `examples/m6_generic_enum.ri`, including the recursive `Tree<T>` named here) building on this one. (Spec §4.5 recursive-termination rule §note already anticipates "variant type base case".)
 - **Positional payloads.** Dropped (Leo, 2026-05-27) — `Rect(Length, Length)` is not legal. Named-field is the sole form.
 - **Tuples.** Not being added (Leo). Payloads are named-field only, never a tuple value/type.
 - **`Option<T>`'s `some(c)`/`none` patterns.** `Option` stays compiler-intrinsic (spec §3.8). Its payload is a single *anonymous* value, which does **not** fit this PRD's named-field-only pattern grammar — so the `some(IDENT)`/`none` parse gap is **no longer closed automatically** by this PRD. Closing it is a separate decision (see F4); deferred unless F4 says otherwise.

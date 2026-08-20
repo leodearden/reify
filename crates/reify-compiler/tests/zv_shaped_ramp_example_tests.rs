@@ -50,10 +50,8 @@ fn zv_shaped_ramp_example_compiles_under_stdlib_with_zero_errors() {
     // Use the prelude-aware parser so stdlib enum names (e.g. SplineKind) are
     // injected into the EnumAccess disambiguation set before parsing.
 
-    let parsed = reify_compiler::parse_with_stdlib(
-        &src,
-        reify_core::ModulePath::single("zv_shaped_ramp"),
-    );
+    let parsed =
+        reify_compiler::parse_with_stdlib(&src, reify_core::ModulePath::single("zv_shaped_ramp"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in examples/trajectory/zv_shaped_ramp.ri: {:#?}",

@@ -1,0 +1,10 @@
+// Fixture (stdlib-namespace decompose-phase premise, negative assertion — μ is
+// the in-batch grammar producer): qualified references via an import binding
+// (`pp.Pulley` in TYPE position) do NOT parse today. tree-sitter parse must
+// FAIL (exit 1 / ERROR nodes) — pre-state for PRD §8 μ.
+
+import parts as pp
+
+structure def QualifiedTypeProbe {
+    param p : pp.Pulley
+}

@@ -19,9 +19,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::*;
 use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -100,11 +100,7 @@ fn find_enum(name: &str) -> &'static EnumDef {
             panic!(
                 "expected `enum {}` in std/trajectory, got enum_defs: {:?}",
                 name,
-                module
-                    .enum_defs
-                    .iter()
-                    .map(|e| &e.name)
-                    .collect::<Vec<_>>()
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
             )
         })
 }
@@ -545,8 +541,14 @@ fn clamped_spline_refines_boundary_condition_with_velocity_tangents() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("start_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
-        ("end_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
+        (
+            "start_velocity",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
+        (
+            "end_velocity",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
     ];
 
     // Param declaration order is part of the contract — pin it explicitly
@@ -1073,7 +1075,10 @@ fn joint_limit_struct_has_correct_param_shape() {
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| {
-                panic!("JointLimit missing required param '{}'; got: {:?}", member, names)
+                panic!(
+                    "JointLimit missing required param '{}'; got: {:?}",
+                    member, names
+                )
             });
         assert_eq!(
             cell.cell_type, *expected_ty,
@@ -1115,7 +1120,7 @@ fn joint_limit_struct_has_correct_param_shape() {
 ///
 /// These constraint declarations feed the SIR-α generic constraint-firing
 /// pipeline, which is pinned end-to-end by
-/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// (constraint → `Satisfaction::Violated` diagnostic) and the
 /// `Value::StructureInstance` round-trip in
 /// `crates/reify-eval/tests/structure_instance_e2e.rs`. A JointLimit-specific
@@ -1144,10 +1149,7 @@ fn joint_limit_constrains_max_force_positive() {
     // Constraint must be BinOp::Gt.
     let (left, right, op) = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => (left.as_ref(), right.as_ref(), op),
-        other => panic!(
-            "JointLimit constraint should be a BinOp; got: {:?}",
-            other
-        ),
+        other => panic!("JointLimit constraint should be a BinOp; got: {:?}", other),
     };
     assert_eq!(
         *op,
@@ -1399,7 +1401,7 @@ fn tots_shaper_param_defaults_match_spec() {
 ///
 /// These declarations feed the SIR-α generic constraint-firing pipeline; the
 /// construction-time `Satisfaction::Violated` signal is pinned end-to-end by
-/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// and `crates/reify-eval/tests/structure_instance_e2e.rs` — no duplicate
 /// TOTSShaper-specific construction-time firing test is needed here.
 #[test]
@@ -1427,21 +1429,19 @@ fn tots_shaper_constrains_design_param_invariants() {
     // Dimension-pin: check that the coerced literal carries VELOCITY so a
     // wrong-dimension regression (e.g. accidentally adopting ACCELERATION)
     // is still caught here.
-    let velocity_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                *op == BinOp::Gt
-                    && collect_value_ref_members(left)
-                        .iter()
-                        .any(|m| m.as_str() == "velocity_limit")
-                    && matches!(
-                        &right.kind,
-                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                            if *si_value == 0.0 && *dimension == DimensionVector::VELOCITY
-                    )
-            }
-            _ => false,
+    let velocity_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            *op == BinOp::Gt
+                && collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "velocity_limit")
+                && matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::VELOCITY
+                )
         }
+        _ => false,
     });
     assert!(
         velocity_matched,
@@ -1457,21 +1457,19 @@ fn tots_shaper_constrains_design_param_invariants() {
 
     // acceleration_limit: same pattern as velocity_limit above.
     // task-4485/β coerces `> 0` to Literal(Scalar{0.0, ACCELERATION}).
-    let accel_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                *op == BinOp::Gt
-                    && collect_value_ref_members(left)
-                        .iter()
-                        .any(|m| m.as_str() == "acceleration_limit")
-                    && matches!(
-                        &right.kind,
-                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                            if *si_value == 0.0 && *dimension == DimensionVector::ACCELERATION
-                    )
-            }
-            _ => false,
+    let accel_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            *op == BinOp::Gt
+                && collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "acceleration_limit")
+                && matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::ACCELERATION
+                )
         }
+        _ => false,
     });
     assert!(
         accel_matched,
@@ -1488,22 +1486,22 @@ fn tots_shaper_constrains_design_param_invariants() {
     // vibration_tolerance, max_iters, tol: plain positivity constraints (> 0),
     // dimensionless params — plain `Literal(Int(0))` RHS.
     for required in &["vibration_tolerance", "max_iters", "tol"] {
-        let matched = template.constraints.iter().any(|c| {
-            match &c.expr.kind {
-                CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt
-                        || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required)
-                    {
-                        return false;
-                    }
-                    match &right.kind {
-                        CompiledExprKind::Literal(Value::Int(0)) => true,
-                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                        _ => false,
-                    }
+        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == *required)
+                {
+                    return false;
                 }
-                _ => false,
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
             }
+            _ => false,
         });
         assert!(
             matched,
@@ -1520,22 +1518,22 @@ fn tots_shaper_constrains_design_param_invariants() {
 
     // Upper-bound constraint: vibration_tolerance <= 1 (completing the (0,1]
     // interval per PRD §11 Phase 2 ε spec). Accept Int(1) or Real(1.0) RHS.
-    let le_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Le
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(1)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
-                    _ => false,
-                }
+    let le_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Le
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "vibration_tolerance")
+            {
+                return false;
             }
-            _ => false,
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(1)) => true,
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         le_matched,
@@ -1673,7 +1671,9 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
     let matched = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             if *op != BinOp::Gt
-                || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "target_frequency")
             {
                 false
             } else {
@@ -1807,7 +1807,9 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
     let matched = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             if *op != BinOp::Gt
-                || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "target_frequency")
             {
                 false
             } else {
@@ -1939,22 +1941,22 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     );
 
     // (g) target_frequency > 0Hz (dimensioned literal — esc-3115 rule).
-    let tf_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
-                {
-                    return false;
-                }
-                matches!(
-                    &right.kind,
-                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
-                )
+    let tf_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "target_frequency")
+            {
+                return false;
             }
-            _ => false,
+            matches!(
+                &right.kind,
+                CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                    if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+            )
         }
+        _ => false,
     });
     assert!(
         tf_matched,
@@ -1968,22 +1970,22 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     );
 
     // (h) vibration_tolerance > 0 (lower bound of (0,1] interval).
-    let vt_gt_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+    let vt_gt_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "vibration_tolerance")
+            {
+                return false;
             }
-            _ => false,
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(0)) => true,
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         vt_gt_matched,
@@ -1997,22 +1999,22 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     );
 
     // (i) vibration_tolerance <= 1 (upper bound of (0,1] interval).
-    let vt_le_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Le
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(1)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
-                    _ => false,
-                }
+    let vt_le_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Le
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "vibration_tolerance")
+            {
+                return false;
             }
-            _ => false,
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(1)) => true,
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         vt_le_matched,
@@ -2212,7 +2214,10 @@ fn end_effector_track_struct_has_correct_param_shape() {
 
     let expected: &[(&str, Type)] = &[
         ("mechanism", Type::dimensionless_scalar()),
-        ("modal_result", Type::StructureRef("ModalResult".to_string())),
+        (
+            "modal_result",
+            Type::StructureRef("ModalResult".to_string()),
+        ),
         (
             "t_samples",
             Type::List(Box::new(Type::Scalar {
@@ -2295,16 +2300,14 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
 /// — the structure_def is in the same module (same name-resolution path as
 /// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
-/// `location : LocationId` resolves to `Type::dimensionless_scalar()` (LocationId = Real;
-/// Selector routing deferred out of task 4577 — see trajectory.ri LocationId note + task 4122).
+/// `location : LocationId` resolves to `Type::Selector(reify_core::ty::SelectorKind::Face)`
+/// (LocationId = FaceSelector; resolved (#4655) from task 4122's Real placeholder
+/// — see trajectory.ri LocationId alias + task 4122 done/R3b).
 /// Return type `List<Pose3>` = `List<Transform3>` after task 4577 (Pose3 = Transform3).
 ///
 /// Param order is part of the contract — (track, location), not (location, track).
 /// `is_pub == true` because downstream tasks (θ/ι/ξ) call this fn from user .ri
 /// code.
-///
-/// Return-type assertion is RED until step-4 changes `pub type Pose3 = Real` to
-/// `pub type Pose3 = Transform3` in trajectory.ri.
 #[test]
 fn end_effector_track_fn_has_correct_signature() {
     let func = find_function("end_effector_track");
@@ -2331,9 +2334,13 @@ fn end_effector_track_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::dimensionless_scalar()),
-        "end_effector_track param[1] should be (\"location\", Real) \
-         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
+        (
+            "location".to_string(),
+            Type::Selector(reify_core::ty::SelectorKind::Face)
+        ),
+        "end_effector_track param[1] should be (\"location\", Selector(Face)) \
+         (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
+         got: {:?}",
         func.params[1]
     );
 
@@ -2341,7 +2348,7 @@ fn end_effector_track_fn_has_correct_signature() {
         func.return_type,
         Type::List(Box::new(Type::Transform(3))),
         "end_effector_track return type should be List<Transform3> (= List<Pose3>); \
-         RED until step-4 changes Pose3 = Real -> Pose3 = Transform3; got: {:?}",
+         got: {:?}",
         func.return_type
     );
 }
@@ -2355,7 +2362,7 @@ fn end_effector_track_fn_has_correct_signature() {
 /// Signature: `pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> List<Length>`
 ///
 /// Params are identical to `end_effector_track`: `(track: EndEffectorTrack,
-/// location: LocationId)` — same StructureRef + Real pair, same order.
+/// location: LocationId)` — same StructureRef + FaceSelector pair, same order.
 /// Return type `List<Length>` = `Type::List(Box::new(Type::Scalar {
 /// dimension: DimensionVector::LENGTH }))` — one Length scalar per time sample.
 #[test]
@@ -2384,9 +2391,13 @@ fn deviation_from_nominal_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::dimensionless_scalar()),
-        "deviation_from_nominal param[1] should be (\"location\", Real) \
-         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
+        (
+            "location".to_string(),
+            Type::Selector(reify_core::ty::SelectorKind::Face)
+        ),
+        "deviation_from_nominal param[1] should be (\"location\", Selector(Face)) \
+         (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
+         got: {:?}",
         func.params[1]
     );
 
@@ -2410,7 +2421,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
 /// Signature: `pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length`
 ///
 /// Params are identical to the other two η accessors: `(track:
-/// EndEffectorTrack, location: LocationId)` — same StructureRef + Real pair.
+/// EndEffectorTrack, location: LocationId)` — same StructureRef + FaceSelector pair.
 /// Return type `Length` = `Type::Scalar { dimension: DimensionVector::LENGTH }`
 /// — a scalar (NOT a list); this is the single peak value over all time
 /// samples (contrast with `deviation_from_nominal` which returns one value per
@@ -2441,9 +2452,13 @@ fn peak_deviation_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::dimensionless_scalar()),
-        "peak_deviation param[1] should be (\"location\", Real) \
-         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
+        (
+            "location".to_string(),
+            Type::Selector(reify_core::ty::SelectorKind::Face)
+        ),
+        "peak_deviation param[1] should be (\"location\", Selector(Face)) \
+         (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
+         got: {:?}",
         func.params[1]
     );
 
@@ -2823,5 +2838,69 @@ structure Pose3VsLocationIdSmoke {
         "needs_loc(a_pose) should produce at least one Error diagnostic — a Pose3 \
          (= Transform3) is NOT a LocationId; before task 4577 both were Real and \
          silently interchangeable. Got 0 errors."
+    );
+}
+
+// ─── task 4655: LocationId = FaceSelector compile gates ──────────────────────
+
+/// NEGATIVE gate: a raw `Real` literal passed as a `LocationId` must yield ≥1
+/// Error diagnostic.  Before task 4655 `LocationId = Real` (the 4577 Option-1
+/// deferral), so `peak_deviation(track, 0.0)` compiled silently.  After 4655
+/// `LocationId = FaceSelector` and a dimensionless-Real arg is a type-mismatch
+/// error.
+///
+/// RED until step-2 changes `pub type LocationId = FaceSelector` in
+/// trajectory.ri.
+#[test]
+fn peak_deviation_real_location_arg_yields_type_error() {
+    let source = r#"
+structure PeakDevRealRejects {
+    let track = EndEffectorTrack()
+    let bad   = peak_deviation(track, 0.0)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        !errs.is_empty(),
+        "peak_deviation(track, 0.0) should produce ≥1 Error diagnostic — \
+         LocationId = FaceSelector rejects a dimensionless-Real arg. \
+         RED until step-2 sets `pub type LocationId = FaceSelector` in trajectory.ri. \
+         Got 0 errors (LocationId is still Real)."
+    );
+}
+
+/// POSITIVE gate: a `FaceSelector` value from `faces_by_normal` passed as a
+/// `LocationId` must compile with ZERO Error diagnostics.
+///
+/// The idiom follows the pre-revert 4577 snapshot (commit 7924985d60) with
+/// let-bound direction and tolerance so inline `vec3`/`deg` constants fall
+/// through without triggering the None-dispatcher in `units.rs` (they resolve
+/// as let-cells, not inlined literal calls).
+///
+/// RED until step-2 changes `pub type LocationId = FaceSelector` in
+/// trajectory.ri (currently `Real != Selector(Face)` → type-mismatch error).
+#[test]
+fn peak_deviation_face_selector_location_arg_compiles_clean() {
+    let source = r#"
+structure PeakDevSelectorAccepts {
+    let track   = EndEffectorTrack()
+    let loc_box = box(10mm, 10mm, 10mm)
+    let loc_dir = vec3(1.0, 0.0, 0.0)
+    let loc_tol = 1deg
+    let loc     = faces_by_normal(loc_box, loc_dir, loc_tol)
+    let peak    = peak_deviation(track, loc)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "peak_deviation(track, loc) where loc is a FaceSelector should compile with \
+         zero Error diagnostics — FaceSelector matches LocationId = FaceSelector. \
+         RED until step-2 sets `pub type LocationId = FaceSelector` in trajectory.ri. \
+         Got {}: {:#?}",
+        errs.len(),
+        errs
     );
 }

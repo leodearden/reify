@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use reify_core::{ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type, ValueCellId};
+use reify_core::{
+    ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type,
+    ValueCellId,
+};
 use reify_ir::{CompiledExpr, ConstraintDomain, ObjectiveSet};
 
 pub use reify_ir::{CompiledFnBody, CompiledFunction};
@@ -48,14 +51,16 @@ impl CompiledTrait {
     /// so the `Type::TypeParam` member-access branch in `expr.rs` (task 4596)
     /// can resolve the member's declared type from the bound trait's contract.
     pub(crate) fn value_bearing_members(&self) -> impl Iterator<Item = (&str, &Type)> {
-        self.required_members.iter().filter_map(|req| match &req.kind {
-            RequirementKind::Param(ty) | RequirementKind::Let(ty) => {
-                Some((req.name.as_str(), ty))
-            }
-            RequirementKind::Sub(_)
-            | RequirementKind::Fn(_)
-            | RequirementKind::AssocType(_) => None,
-        })
+        self.required_members
+            .iter()
+            .filter_map(|req| match &req.kind {
+                RequirementKind::Param(ty) | RequirementKind::Let(ty) => {
+                    Some((req.name.as_str(), ty))
+                }
+                RequirementKind::Sub(_)
+                | RequirementKind::Fn(_)
+                | RequirementKind::AssocType(_) => None,
+            })
     }
 }
 
@@ -1251,13 +1256,6 @@ pub struct RealizationDecl {
     /// Downstream (reify-eval) reads this to set `MeshSurface.default_visible`.
     pub is_aux: bool,
     pub operations: Vec<CompiledGeometryOp>,
-    /// Feature tags parallel to `operations` — same length, same indexing.
-    ///
-    /// **Invariant**: `feature_tags.len() == operations.len()`.  Enforced
-    /// via `debug_assert!` at construction sites (all of which call
-    /// `derive_feature_tags`).  Tests in `feature_tag_tests.rs` lock this
-    /// invariant against future refactors.
-    pub feature_tags: Vec<reify_ir::FeatureTag>,
     pub span: SourceSpan,
 }
 
@@ -1320,6 +1318,16 @@ pub enum CompiledGeometryOp {
         kind: SurfaceKind,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Marching-cubes isosurface extraction from a voxel grid operand.
+    ///
+    /// Consumes a Voxel-repr `grid` operand and lowers to the runtime-IR
+    /// `GeometryOp::Surface` (coarse key `Operation::Surface`). `args` may
+    /// carry optional `iso`/`adaptive` named arguments; absence defers to
+    /// eval-lowering defaults (iso_level=0.0, adaptive=false).
+    Isosurface {
+        grid: GeomRef,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -1350,6 +1358,36 @@ pub enum PrimitiveKind {
     HalfSpace,
 }
 
+impl PrimitiveKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `PrimitiveKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 8] = [
+        Self::Box,
+        Self::Cylinder,
+        Self::Sphere,
+        Self::Tube,
+        Self::Cone,
+        Self::Wedge,
+        Self::Torus,
+        Self::HalfSpace,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_PRIMITIVE.len() == PrimitiveKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
+}
+
 impl std::fmt::Display for PrimitiveKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1371,6 +1409,29 @@ pub enum BooleanOp {
     Union,
     Difference,
     Intersection,
+}
+
+impl BooleanOp {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `BooleanOp` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 3] = [Self::Union, Self::Difference, Self::Intersection];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify-eval/tests/compile_geometry_op_characterization.rs` locks
+    /// `ALL_BOOLEAN.len() == BooleanOp::VARIANT_COUNT` at compile time.  Booleans have
+    /// no `*_COMPILERS` fn-table (they dispatch by inline match), so that characterization
+    /// table is the whole registry surface for this family.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for BooleanOp {
@@ -1465,6 +1526,40 @@ pub enum TransformKind {
     RotateAround,
     ApplyTransform,
     AffineApply,
+    /// Per-axis (non-rigid) scale: `scale(geometry, factors: Vector3<Real>)`.
+    /// Renders as "scale" (same surface name as uniform `Scale`) since the
+    /// two are distinguished by arg shape, not by name, at the compiler's
+    /// dispatch site.
+    ScaleNonUniform,
+}
+
+impl TransformKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `TransformKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 7] = [
+        Self::Translate,
+        Self::Rotate,
+        Self::Scale,
+        Self::RotateAround,
+        Self::ApplyTransform,
+        Self::AffineApply,
+        Self::ScaleNonUniform,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_TRANSFORM.len() == TransformKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1476,6 +1571,7 @@ impl std::fmt::Display for TransformKind {
             TransformKind::RotateAround => f.write_str("rotate_around"),
             TransformKind::ApplyTransform => f.write_str("apply_transform"),
             TransformKind::AffineApply => f.write_str("affine_apply"),
+            TransformKind::ScaleNonUniform => f.write_str("scale"),
         }
     }
 }
@@ -1488,6 +1584,33 @@ pub enum PatternKind {
     Mirror,
     Linear2D,
     Arbitrary,
+}
+
+impl PatternKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `PatternKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 5] = [
+        Self::Linear,
+        Self::Circular,
+        Self::Mirror,
+        Self::Linear2D,
+        Self::Arbitrary,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_PATTERN.len() == PatternKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for PatternKind {
@@ -1524,6 +1647,39 @@ pub enum SweepKind {
     Pipe,
 }
 
+impl SweepKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `SweepKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 9] = [
+        Self::Loft,
+        Self::Extrude,
+        Self::Revolve,
+        Self::Sweep,
+        Self::ExtrudeSymmetric,
+        Self::ExtrudeInfinite,
+        Self::SweepGuided,
+        Self::LoftGuided,
+        Self::Pipe,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_SWEEP.len() == SweepKind::VARIANT_COUNT` at compile time.  That lock
+    /// caught a real hole on its first application: `ALL_SWEEP` omitted `ExtrudeInfinite`
+    /// while `SWEEP_COMPILERS` registered it, so the loop below it never checked that row.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
+}
+
 impl std::fmt::Display for SweepKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1549,6 +1705,34 @@ pub enum CurveKind {
     InterpCurve,
     BezierCurve,
     NurbsCurve,
+}
+
+impl CurveKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `CurveKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 6] = [
+        Self::LineSegment,
+        Self::Arc,
+        Self::Helix,
+        Self::InterpCurve,
+        Self::BezierCurve,
+        Self::NurbsCurve,
+    ];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_CURVE.len() == CurveKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for CurveKind {
@@ -1582,6 +1766,27 @@ pub enum ProfileKind {
     Ellipse,
 }
 
+impl ProfileKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `ProfileKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 4] = [Self::Rectangle, Self::Circle, Self::Polygon, Self::Ellipse];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
+    /// locks `ALL_PROFILE.len() == ProfileKind::VARIANT_COUNT` at compile time.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
+}
+
 impl std::fmt::Display for ProfileKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1602,6 +1807,29 @@ impl std::fmt::Display for ProfileKind {
 pub enum SurfaceKind {
     /// NURBS surface: `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)`.
     Nurbs,
+}
+
+impl SurfaceKind {
+    /// Every variant of this enum, as a fixed-size const array.
+    ///
+    /// This is the **single source of truth** for the set of `SurfaceKind` variants.
+    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
+    /// from this list.
+    ///
+    /// **Maintenance contract**: to add a new variant, extend this array and bump its
+    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
+    /// length mismatch at compile time, so the size annotation is itself an additional
+    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
+    /// lock named on it fires at `cargo check`, forcing the matching registry row.
+    const ALL: [Self; 1] = [Self::Nurbs];
+
+    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    ///
+    /// Consumer: `reify-eval/tests/compile_geometry_op_characterization.rs` locks
+    /// `ALL_SURFACE.len() == SurfaceKind::VARIANT_COUNT` at compile time.  Surfaces have
+    /// no `*_COMPILERS` fn-table (they dispatch by inline match), so that characterization
+    /// table is the whole registry surface for this family.
+    pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
 impl std::fmt::Display for SurfaceKind {
@@ -1845,7 +2073,15 @@ mod kind_display_tests {
             (TransformKind::RotateAround, "rotate_around"),
             (TransformKind::ApplyTransform, "apply_transform"),
             (TransformKind::AffineApply, "affine_apply"),
+            (TransformKind::ScaleNonUniform, "scale"),
         ]);
+    }
+
+    #[test]
+    fn transform_kind_scale_non_uniform_display() {
+        // The per-axis (non-rigid) scale overload's TransformKind renders as
+        // "scale" — same surface name as uniform Scale (task 4167).
+        assert_eq!(TransformKind::ScaleNonUniform.to_string(), "scale");
     }
 
     #[test]
@@ -1896,7 +2132,7 @@ mod reflective_param_type_predicate_tests {
     //! boundary, independent of the parse/compile pipeline. They are the
     //! ground-truth complement to the integration tests in
     //! `purpose_compile_tests.rs` and `purpose_activation.rs`.
-    use super::{is_geometric_param_type, is_material_param_type, MATERIAL_TYPE_NAME};
+    use super::{MATERIAL_TYPE_NAME, is_geometric_param_type, is_material_param_type};
     use reify_core::{DimensionVector, Type};
 
     // ── is_geometric_param_type ───────────────────────────────────────────────
@@ -1905,14 +2141,24 @@ mod reflective_param_type_predicate_tests {
     /// powers of Length and/or Angle — they must be included.
     #[test]
     fn geometric_includes_pure_length_angle_area_volume() {
-        assert!(is_geometric_param_type(&Type::length()), "Length must be included");
-        assert!(is_geometric_param_type(&Type::angle()), "Angle must be included");
         assert!(
-            is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::AREA }),
+            is_geometric_param_type(&Type::length()),
+            "Length must be included"
+        );
+        assert!(
+            is_geometric_param_type(&Type::angle()),
+            "Angle must be included"
+        );
+        assert!(
+            is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::AREA
+            }),
             "Area (L²) must be included"
         );
         assert!(
-            is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::VOLUME }),
+            is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::VOLUME
+            }),
             "Volume (L³) must be included"
         );
     }
@@ -1923,15 +2169,21 @@ mod reflective_param_type_predicate_tests {
     #[test]
     fn geometric_excludes_compound_dimensional_types() {
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::FORCE }),
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::FORCE
+            }),
             "Force (L·M·T⁻²) must be excluded (nonzero Mass and Time slots)"
         );
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::PRESSURE }),
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::PRESSURE
+            }),
             "Pressure (L⁻¹·M·T⁻²) must be excluded (nonzero Mass and Time slots)"
         );
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::ANGULAR_VELOCITY }),
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::ANGULAR_VELOCITY
+            }),
             "Angular Velocity (A·T⁻¹) must be excluded (nonzero Time slot)"
         );
     }
@@ -1939,9 +2191,14 @@ mod reflective_param_type_predicate_tests {
     /// `Type::dimensionless_scalar()` and a dimensionless `Type::Scalar` must be excluded.
     #[test]
     fn geometric_excludes_dimensionless_and_real() {
-        assert!(!is_geometric_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }),
+            !is_geometric_param_type(&Type::dimensionless_scalar()),
+            "Type::dimensionless_scalar() must be excluded"
+        );
+        assert!(
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS
+            }),
             "Dimensionless Scalar must be excluded"
         );
     }
@@ -1987,7 +2244,10 @@ mod reflective_param_type_predicate_tests {
             !is_material_param_type(&Type::TraitObject("Rigid".to_string())),
             "TraitObject(\"Rigid\") must be excluded"
         );
-        assert!(!is_material_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
+        assert!(
+            !is_material_param_type(&Type::dimensionless_scalar()),
+            "Type::dimensionless_scalar() must be excluded"
+        );
         assert!(
             !is_material_param_type(&Type::length()),
             "Length must be excluded"

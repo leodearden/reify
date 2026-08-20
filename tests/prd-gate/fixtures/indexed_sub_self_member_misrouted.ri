@@ -1,0 +1,19 @@
+// Fixture (γ decompose-phase premise, indexed-sub-instantiation §7 ε baseline):
+// PRD probe #8 — the DEFECT ε fixes, observed as today-true. Identical to
+// indexed_sub_bare_member_resolves.ri except the let uses the self.-prefixed
+// path. Today `self.idlers[0].od` is MISROUTED into cross-sub-geometry access:
+// rejected with a diagnostic containing "has no projection" instead of either
+// evaluating like the bare path or emitting the .count-style redirect.
+module indexed_sub_self_member_misrouted
+
+structure def Pulley {
+    param od : Length = 36mm
+    let body = cylinder(od / 2, 8mm)
+}
+
+structure def Rig {
+    sub idlers : List<Pulley>
+    constraint idlers.count == 2
+
+    let d0 = self.idlers[0].od
+}

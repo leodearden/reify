@@ -1,0 +1,201 @@
+prd: docs/prds/v0_6/check-diagnostic-truthfulness.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5311
+  title: 'reify check: resolve deferred Error-severity ''no registered compute trampoline''
+    fallback diagnostic (INV-4 loud-over-silent, exit 0) — PRD-2 addendum applied'
+  capabilities:
+  - name: trampoline-emission-sites-wired
+    binding: 'capability→producer (substrate) — grep-confirmed 2026-07-28: engine_compute.rs:654,
+      engine_eval.rs:9113/10124, engine_admin.rs:1535 all emit the trampoline-fallback
+      line'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: no registered compute trampoline
+      paths:
+      - crates/reify-eval/src/engine_compute.rs
+      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-eval/src/engine_admin.rs
+      expect: present
+  - name: diagnosticcode-additive-variant-substrate
+    binding: 'capability→producer (substrate) — DiagnosticCode is #[non_exhaustive]
+      (diagnostics.rs:155-156), confirmed 2026-07-28'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: non_exhaustive
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: baseline-swallowed-trampoline-error-real
+    binding: 'signal premise (G6 branch 3) — probe-set evidence 2026-07-28: reify
+      check examples/fea_pressure_smoke.ri exits 0 while printing the error-severity
+      trampoline line on stderr'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline behaviour asserted by this session's committed probe-set run
+        (prd-capability-check.py --json, PASS); post-fix behaviour (Warning not Error
+        when compute_registry.fns.is_empty()) is alpha's own e2e
+- label: β
+  task_id: 5748
+  title: 'reify check: route lightweight sub-paths (a)/(c) through build() when module
+    has geometry; merge build() diagnostics into check() (D1+D2)'
+  capabilities:
+  - name: module_has_geometry-substrate
+    binding: capability→producer (substrate) — fn module_has_geometry defined main.rs:2432,
+      already consumed by cmd_eval at :1556
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn module_has_geometry
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: build-internally-calls-check-substrate
+    binding: capability→producer (substrate) — build_with_geometry_output calls self.check(module)
+      internally as its own first step (engine_build.rs:3949) — the structural fact
+      D2s merge design depends on
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: file:line-anchored structural fact, not a stable grep pattern; re-verify
+        the call site at implementation time per the drift warning
+  - name: diagnostic-fields-partialeq-substrate
+    binding: capability→producer (substrate) — Diagnostic{severity,message,code} fields
+      are individually PartialEq (Severity :94, DiagnosticCode :152/156); Diagnostic
+      itself derives only Debug+Clone — manual tuple comparison is buildable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct Diagnostic \{
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: baseline-flange-indeterminate-swallowed-real
+    binding: 'signal premise (G6 branch 3) — probe-set evidence 2026-07-28: reify
+      check examples/m5_geometry_flange.ri exits 0, prints INDETERMINATE BoltFlange#constraint[1],
+      discards centroid/moment_of_inertia resolution errors to stderr'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline behaviour asserted by this session's committed probe-set run;
+        post-fix flip (INDETERMINATE -> OK) is beta's own e2e regression test
+  - name: baseline-mirror-check-blind-real
+    binding: 'signal premise (G6 branch 3) — probe-set evidence 2026-07-28 (synthetic
+      fixture reproducing symmetry_mirror.ri:27s bare-0-origin shape): reify check
+      prints ONLY "All constraints satisfied.", exit 0 — the compile-geometry-op error
+      is entirely absent from checks stderr'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline behaviour asserted by this session's committed probe-set run;
+        post-fix appearance of the error line on check's stderr is beta's own e2e
+        (exit code unchanged until gamma)
+- label: γ
+  task_id: 5403
+  title: Gate reify check exit on Error severity; seed burn-down allowlist; ratchet
+    test; delete GD&T/DFM bolt-ons (INV-SF-2) — PRD-2 addendum applied, THE EXIT-GATE
+    LEAF
+  capabilities:
+  - name: beta-upstream-wired
+    binding: DAG-direction — add_dependency(5403, depends_on=5748) wired 2026-07-28;
+      the canonical mirror(...) bare-origin fixture only reaches its Error diagnostic
+      via betas routing fix
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency and checked by the
+        scheduler
+  - name: bolt-ons-subsumed-and-still-deletable
+    binding: capability→producer (this task, unchanged from original 2026-07-24 design)
+      — GdtIllegalModifier (~main.rs:672) and dfm_has_error_diagnostic (~:688/:2580)
+      both match Error-severity only, confirmed present 2026-07-28
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dfm_has_error_diagnostic
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: baseline-mirror-eval-rejection-mechanism-real
+    binding: 'signal premise (G6 branch 4, rejection-mechanism check) — probe-set
+      evidence 2026-07-28: reify eval on the mirror bare-origin fixture exits 1 with
+      "error: failed to compile geometry operation: missing or non-Length argument
+      ox for mirror" — the rejection mechanism already exists and fires at eval layer'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline behaviour asserted by this session's committed probe-set run
+        (probe_kind ir, PASS); post-fix check-layer exit code (0 -> 1) is gamma's
+        own e2e
+  - name: allowlist-design-delta-vs-prd-text-recorded
+    binding: 'policy delta (recorded, not a blocking finding) — PRD-2 D3/D4 describe
+      an allowlist-free unconditional gate with a hard dep onto alpha/5311; 5403s
+      KEPT allowlist design already avoids the same regression via its seeded entry
+      citing #5311, so no new edge onto 5311 was wired; end-state converges once #5404
+      lands (pre-existing edges unchanged)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: design-rationale record, not mechanically checkable; full reasoning
+        lives in 5403's PRD-2 addendum
+- label: δ
+  task_id: 5749
+  title: 'Docs-truth: getting-started.md check-exit-code contract note + symmetry_mirror.ri
+    comment update for the converged check gate'
+  capabilities:
+  - name: gamma-zeta-upstream-wired
+    binding: DAG-direction — add_dependency(5749, depends_on=5403) and add_dependency(5749,
+      depends_on=5404) both wired 2026-07-28, so docs describe the fully-converged
+      zero-exemption contract
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-graph property, wired via add_dependency and checked by the
+        scheduler
+  - name: getting-started-anchors-real
+    binding: capability→producer (substrate) — docs/getting-started.md :8 (sanity-check
+      block), :46-48 (bare-50 indeterminate example), :86-94 (Common issues section)
+      all confirmed present verbatim 2026-07-28, zero drift from the PRD
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify check
+      paths:
+      - docs/getting-started.md
+      expect: present
+  - name: symmetry_mirror-comment-anchor-real
+    binding: 'capability→producer (substrate) — examples/best_practices/symmetry_mirror.ri:27
+      ("WRONG — bare-0 origin") and :32 ("TRAP: that error does NOT appear under check")
+      both confirmed present verbatim 2026-07-28'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: WRONG — bare-0 origin
+      paths:
+      - examples/best_practices/symmetry_mirror.ri
+      expect: present
+  - name: cheatsheet-index-already-present
+    binding: capability→producer (substrate) — .claude/skills/reify-design/SKILL.md:72
+      already indexes symmetry_mirror.ri, confirmed 2026-07-28 — no new index line
+      needed
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: symmetry_mirror\.ri
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+  - name: bare-radius-teaching-example-unaffected-real
+    binding: 'signal premise (G6 branch 3, negative-regression claim) — probe-set
+      evidence 2026-07-28 (synthetic fixture matching the docs bare-radius shape):
+      stays INDETERMINATE with a Warning, exit 0, no Severity::Error — this PRDs gate
+      does not touch this teaching example'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline/negative-regression behaviour asserted by this session's committed
+        probe-set run; delta's own diff must not change this example's classification

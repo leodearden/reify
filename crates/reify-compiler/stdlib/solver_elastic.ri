@@ -19,7 +19,9 @@
 //      `Field<Point3<Length>, Tensor<2, 3, Pressure>>` for the
 //      `ElasticResult.displacement` and `ElasticResult.stress` outputs. Task
 //      3088 added the `Field<D, C>` arm to `resolve_parameterized_builtin_type`
-//      and its `_with_subst` mirror (`type_resolution.rs:1313` and `:1509`).
+//      and its `_with_subst` mirror
+//      (`resolve_parameterized_builtin_type_with_subst`, both in
+//      crates/reify-compiler/src/type_resolution.rs).
 //      Task 3117 confirmed the arm works in `param` positions (finding recorded
 //      in docs/notes/stdlib-real-placeholder-audit.md) and tightened
 //      `displacement` and `stress` to their precise Field types. Task 3641
@@ -419,8 +421,10 @@ structure def ElasticOptions {
 // well-formed, honestly-converged result without the loop having to set them.
 //
 // Resolution note (tasks 3117 + 3641): the TODO above was stale. Task 3088 added the
-// `Field<D, C>` arm to `resolve_parameterized_builtin_type` (type_resolution.rs:1313)
-// and its `_with_subst` mirror (:1509); both arms accept `Field<X, Y>` in `param`
+// `Field<D, C>` arm to `resolve_parameterized_builtin_type`
+// (crates/reify-compiler/src/type_resolution.rs) and its `_with_subst` mirror
+// `resolve_parameterized_builtin_type_with_subst`; both arms accept
+// `Field<X, Y>` in `param`
 // positions. Task 3117 confirmed this and tightened `displacement` and `stress` to
 // their proper Field types (finding recorded in docs/notes/stdlib-real-placeholder-audit.md).
 // Task 3641 then used the same resolver capability to tighten the four remaining
@@ -436,7 +440,8 @@ structure def ElasticOptions {
 //                     runtime solver) populates the Field-typed value through
 //                     the same Map-based path that `loads.rs` and `supports.rs`
 //                     use. Tightened from Real placeholder in task 3117 after
-//                     confirming the resolver arm at `type_resolution.rs:1313`
+//                     confirming the resolver arm in
+//                     `resolve_parameterized_builtin_type`
 //                     accepts `Field<X, Y>` in `param` positions.
 //   stress          — per-mesh-node Cauchy stress tensor (mid-surface / flat
 //                     stress for shells; the single stress field for tets). Same
@@ -650,8 +655,8 @@ structure def ShellStress {
 // NOTE: this struct is intentionally kept for solve_buckling compatibility.
 // solve_elastic_static accepts ConstitutiveLaw directly (task γ/4441 supertrait
 // + task δ/4442 shim retirement). Do NOT widen FEAMaterialInput.material to
-// ConstitutiveLaw — that would break buckling (solver_buckling_fns.ri:51,
-// param material:ElasticMaterial).
+// ConstitutiveLaw — that would break buckling (`solve_buckling` in
+// solver_buckling_fns.ri, param material:ElasticMaterial).
 pub structure def FEAMaterialInput {
     param material : ElasticMaterial
 }
@@ -662,7 +667,9 @@ pub structure def FEAMaterialInput {
 // docs/prds/v0_3/compute-node-contract.md.
 //
 // At eval time the @optimized("solver::elastic_static") annotation causes the
-// engine (engine_eval.rs:2793-2944) to allocate a ComputeNode with
+// engine (the @optimized dispatch sites in `evaluate_params_and_lets_unified`
+// and `evaluate_let_bindings`, crates/reify-eval/src/engine_eval.rs) to
+// allocate a ComputeNode with
 //   target == "solver::elastic_static"
 // and dispatch to the registered trampoline in
 //   crates/reify-eval/src/compute_targets/elastic_static.rs
@@ -718,7 +725,8 @@ pub structure def FEAMaterialInput {
 //     task-3895's same-module skeleton pre-pass (`phase_functions` in
 //     functions_phase.rs) builds `build_structure_def_skeleton` templates for
 //     all module `structure_refs` and threads them into the `neutral_scope`
-//     used to compile param defaults (functions.rs:107-110).  The esc-3851-32
+//     used to compile param defaults (`compile_function` in
+//     crates/reify-compiler/src/functions.rs).  The esc-3851-32
 //     phase-functions-before-phase-entities ordering blocker is therefore
 //     resolved at the def-site level.
 //     Callers may omit `options` to use the all-defaults instance, or pass a
@@ -772,6 +780,47 @@ pub fn solve_elastic_static(
     height    : Length,
     loads     : List<Load>,
     supports  : List<Support>
+) -> ElasticResult {
+    ElasticResult()
+}
+
+// Body-arg overload (task 4870): the FEA body-arg substrate.
+//
+// Replaces the three scalar dims (length/width/height) with a single
+// `body : Solid` geometry input. `body` is the geometry identity that forms the
+// mesh-realization cache key — the engine realizes it (OCCT → gmsh tet
+// VolumeMesh) and projects that mesh into the shared trampoline's
+// `realization_inputs`, so the solve runs on the realized non-prismatic tet
+// mesh instead of the synthetic nx×1×6 box the dims overloads build. `Solid`
+// lowers to `reify_core::Type::Geometry` (the "Solid" arm of
+// `type_resolution::resolve_type_name`), so the body
+// arg is EXCLUDED from the cache-key `value_inputs` list and instead drives the
+// module-static VolumeMesh demand pass (a `Type::Geometry` ValueRef), mirroring
+// `as_printed_material(body : Solid, ...)` (fdm_as_printed.ri) — the established
+// `@optimized` body-arg precedent.
+//
+// Shared trampoline: all three overloads carry `@optimized("solver::elastic_
+// static")` and share the single Rust-registered `solve_elastic_static_
+// trampoline`. It branches on the arg-1 Value shape: a `Value::GeometryHandle`
+// at `value_inputs[1]` (this overload) selects the body layout
+//   [material, body, loads, supports, options]
+// and the realized-mesh path (forced tet/solid route); a scalar `length` at
+// `value_inputs[1]` (the dims overloads) keeps the dims layout unchanged.
+//
+// Non-breaking: arity 5 keeps this overload disjoint from the arity-7
+// ConstitutiveLaw-dims and arity-6 Field-dims overloads under
+// `resolve_function_overload` (which filters by arity), so a 4/5-arg body call
+// resolves here unambiguously and existing 6/7-arg dims calls are untouched.
+//
+// Body discipline: same as the dims overloads — `{ ElasticResult() }` is the
+// inline fallback; the trampoline is always registered and the body never runs.
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    body      : Solid,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
 ) -> ElasticResult {
     ElasticResult()
 }

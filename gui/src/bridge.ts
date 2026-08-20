@@ -21,12 +21,18 @@ import type {
   DefInfo,
   PersistentViewState,
   MechanismDescriptor,
+  DimensionLadder,
   AutoResolveIteration,
   WarmPoolEvent,
   FeaCaseChanged,
   SolverProgress,
   ModeShapeFrame,
   FeaDiagnosticInfo,
+  FeaConvergenceInfo,
+  TensegrityWireData,
+  TensegritySurfaceData,
+  DisplayDirective,
+  AppearanceDirective,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -178,6 +184,11 @@ export async function getEntityTree(): Promise<EntityTreeNode[]> {
 /** Get mechanism descriptors from the backend (one per evaluated Mechanism cell). */
 export async function getMechanismDescriptors(): Promise<MechanismDescriptor[]> {
   return invoke<MechanismDescriptor[]>('get_mechanism_descriptors');
+}
+
+/** Get the per-dimension display-unit ladders for the Parameters panel's unit picker (task #5199). */
+export async function getUnitLadders(): Promise<DimensionLadder[]> {
+  return invoke<DimensionLadder[]>('get_unit_ladders');
 }
 
 /** Get the source location for an entity. */
@@ -526,6 +537,68 @@ export async function onFeaDiagnosticsChanged(
   callback: (data: FeaDiagnosticInfo[]) => void,
 ): Promise<UnlistenFn> {
   return listen<FeaDiagnosticInfo[]>('fea-diagnostics-changed', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to FEA convergence change events. Carries the full current value as a
+ * full-value snapshot (same semantics as fea-diagnostics-changed).
+ * Fires on every EngineSession commit including null (clears stale indicator).
+ * Producer: engine.rs EngineSession::emit_fea_convergence via main.rs TauriFeaConvergenceEmitter.
+ */
+export async function onFeaConvergenceChanged(
+  callback: (data: FeaConvergenceInfo | null) => void,
+): Promise<UnlistenFn> {
+  return listen<FeaConvergenceInfo | null>('fea-convergence-changed', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to tensegrity wires update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_tensegrity_wires channel).
+ */
+export async function onTensegrityWiresUpdate(
+  callback: (data: TensegrityWireData[]) => void,
+): Promise<UnlistenFn> {
+  return listen<TensegrityWireData[]>('tensegrity-wires-update', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to tensegrity surfaces update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_tensegrity_surfaces channel).
+ */
+export async function onTensegritySurfacesUpdate(
+  callback: (data: TensegritySurfaceData[]) => void,
+): Promise<UnlistenFn> {
+  return listen<TensegritySurfaceData[]>('tensegrity-surfaces-update', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to display panes update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_display_panes channel).
+ */
+export async function onDisplayPanesUpdate(
+  callback: (data: DisplayDirective[]) => void,
+): Promise<UnlistenFn> {
+  return listen<DisplayDirective[]>('display-panes-update', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to display appearance update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_display_appearance channel).
+ */
+export async function onDisplayAppearanceUpdate(
+  callback: (data: AppearanceDirective[]) => void,
+): Promise<UnlistenFn> {
+  return listen<AppearanceDirective[]>('display-appearance-update', (event) => {
     callback(event.payload);
   });
 }

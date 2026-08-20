@@ -23,6 +23,8 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -51,30 +53,17 @@ function fail(msg) {
   process.exit(1);
 }
 
-async function rpc(method, args = {}) {
-  const res = await fetch(DEBUG_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: method, arguments: args },
-    }),
-  });
-  const envelope = await res.json();
-  // The debug server returns: { result: { content: [{type:"text",text:"<json>"}] } }
-  if (envelope.error) throw new Error(`RPC error: ${JSON.stringify(envelope.error)}`);
-  const content = envelope?.result?.content;
-  if (!content || content.length === 0) return null;
-  const textBlock = content.find(c => c.type === 'text');
-  if (!textBlock) return null;
-  try {
-    return JSON.parse(textBlock.text);
-  } catch {
-    return textBlock.text;
-  }
-}
+// The tools/call request shape and the decode of the debug server's
+// `{ result: { content: [{type:"text",text:"<json>"}] } }` reply live in
+// rpcEnvelope.mjs (CI-covered by rpcEnvelope.test.ts) rather than inline here,
+// because this file can never run in CI. `rpc()` now reports BOTH failure
+// dialects as the ONE in-band shape `{error: "<msg>"}`: frontend-mediated tools
+// (open_file, find_uses, ... via query_frontend) already answer in-band that way,
+// and Rust-dispatched `isError: true` + plain-text `Error: <msg>` blocks are
+// folded into it. This driver's `Array.isArray(x) ? x : (x?.elements ?? [])`
+// unwraps read identically under both shapes. A top-level envelope error is a
+// TRANSPORT failure and still throws, so waitForServer keeps polling.
+const rpc = makeDebugRpc(DEBUG_URL);
 
 async function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -106,10 +95,13 @@ async function main() {
   await waitForServer(60_000);
   console.log('  OK: server ready');
 
-  // Step 2: open the find_uses_smoke fixture
-  log('Opening find_uses_smoke fixture via open_file…');
-  const openResult = await rpc('open_file', { path: FIXTURE_PATH });
-  console.log('  open_file result:', JSON.stringify(openResult));
+  // Step 2: open the find_uses_smoke fixture.
+  // The retry budget, the `.ok` verdict and the failure wording live in
+  // ./smokeDriverGuards.mjs, where vitest can cover them; this file needs a live
+  // GUI, so nothing inline here ever could be. `fail` is passed (not `log`) so an
+  // exhausted retry exits 1 naming the underlying RPC error.
+  log('Opening find_uses_smoke fixture via open_file (with retry for WebView init)…');
+  await openFileWithRetry(rpc, FIXTURE_PATH, { fail });
   await sleep(1000); // wait for engine eval
 
   // Step 3: confirm activeFile

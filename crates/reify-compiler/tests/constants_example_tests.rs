@@ -34,8 +34,10 @@ use reify_test_support::make_simple_engine;
 ///
 /// Mirrors the `compiled_ri` helper in `crates/reify-eval/tests/m8_3_stdlib_integration.rs`.
 fn load_constants_example() -> (String, CompiledModule) {
-    const EXAMPLE_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/stdlib/constants.ri");
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/stdlib/constants.ri"
+    );
 
     let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
         "failed to read examples/stdlib/constants.ri — \
@@ -82,7 +84,10 @@ fn constants_example_compiles_under_stdlib_with_zero_errors_and_pins_constant_re
     // ── Template presence ──────────────────────────────────────────────────────
 
     assert!(
-        module.templates.iter().any(|t| t.name == "PhysicalConstants"),
+        module
+            .templates
+            .iter()
+            .any(|t| t.name == "PhysicalConstants"),
         "expected a 'PhysicalConstants' structure template in compiled constants.ri; \
          found templates: {:?}",
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
@@ -221,17 +226,14 @@ fn constants_example_cross_checks_eval_within_tolerance() {
     // Extract the numeric payload from Real or Scalar; panic on other variants.
     let get_numeric = |field: &str| -> f64 {
         let id = ValueCellId::new("PhysicalConstants", field);
-        let val = result
-            .values
-            .get(&id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "PhysicalConstants.{} not found in eval result; \
+        let val = result.values.get(&id).unwrap_or_else(|| {
+            panic!(
+                "PhysicalConstants.{} not found in eval result; \
                      available keys: {:?}",
-                    field,
-                    result.values.iter().map(|(k, _v)| k).collect::<Vec<_>>()
-                )
-            });
+                field,
+                result.values.iter().map(|(k, _v)| k).collect::<Vec<_>>()
+            )
+        });
         match val {
             Value::Real(v) => *v,
             Value::Scalar { si_value, .. } => *si_value,
@@ -258,7 +260,8 @@ fn constants_example_cross_checks_eval_within_tolerance() {
                     dimension.is_dimensionless(),
                     "PhysicalConstants.{} must be dimensionless (ε₀μ₀c² = 1); \
                      got dimension {:?}",
-                    field, dimension
+                    field,
+                    dimension
                 );
             }
             other => panic!(

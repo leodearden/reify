@@ -7,7 +7,7 @@
 
 ## 1. Consumer & user-observable surface
 
-**Consumer:** `scripts/verify.sh`'s test-execution phase, which the dark-factory orchestrator already invokes (`test_command: ./scripts/verify.sh test …`, orchestrator.yaml:43) for every per-task verify, and which `hooks/pre-merge-commit` invokes (`verify.sh all --profile both --scope all`, pre-merge-commit:37) for every merge gate. The semaphore is not a new free-standing tool needing a future caller — its caller is the verify pipeline that runs on **every** task and merge today.
+**Consumer:** `scripts/verify.sh`'s test-execution phase, which the dark-factory orchestrator already invokes (`test_command: ./scripts/verify.sh test …`, dark-factory-orchestrator.yaml:43) for every per-task verify, and which `hooks/pre-merge-commit` invokes (`verify.sh all --profile both --scope all`, pre-merge-commit:37) for every merge gate. The semaphore is not a new free-standing tool needing a future caller — its caller is the verify pipeline that runs on **every** task and merge today.
 
 **User-observable surface** (operator / orchestrator):
 - Concurrent **task** test runs across worktrees serialize to a hard bound N (default 1), observable as wall-clock serialization in `tests/infra/` behavioral tests (the established pattern: `test_occt_flock_gate.sh` 23 timing/FD/exit tests; `scripts/test_psi_gate.sh`).
@@ -43,7 +43,7 @@ _**Reversal (task 4862, 2026-06-27):** The compile-outside-slot split is removed
 | Capability | Status | Evidence |
 |---|---|---|
 | `flock`, `timeout` on PATH | present | `cargo-test-occt-gated.sh:100-109` preflight already requires them |
-| `DF_VERIFY_ROLE=task\|merge` lane signal | present | verify.sh:288/302; orchestrator merge queue injects `=merge` (orchestrator.yaml:35) |
+| `DF_VERIFY_ROLE=task\|merge` lane signal | present | verify.sh:288/302; orchestrator merge queue injects `=merge` (dark-factory-orchestrator.yaml:35) |
 | exit-75 → orchestrator requeue | **PREMISE CORRECTED** | DF does NOT requeue verify exit-75 — `_classify_failure` falls it through to `unknown_test_failure` → debugfix loop → BLOCKED. Real fix: `@@REIFY_CLOCK_*@@` clock-stop markers (task 4837); dark_factory:1916 (task 4838) activates seam. |
 | `nextest --config 'test-groups.occt.max-threads=N'` override | present | accepted by cargo-nextest 0.9.136 (verified empirically 2026-06-10) |
 | `tests/infra/run_all.sh` auto-discovery of `test_*.sh` | present | run_all.sh:2 discovers all `test_*.sh`; verify.sh runs it as a plan line |
@@ -92,7 +92,7 @@ No new contested-ownership pair introduced; no reciprocal "the other owns it."
 - **α — held-slot test-run semaphore lib** (`scripts/lib_test_semaphore.sh`). Keystone mechanism; reuses `cargo-test-occt-gated.sh` held-FD/`9<&-`/deadline/exit-75 mechanics; merge-exempt on `DF_VERIFY_ROLE=merge`; knobs `REIFY_TEST_SEMAPHORE_{CONCURRENCY,LOCK,WAIT,DISABLE}`. **Signal:** new `tests/infra/test_test_run_semaphore.sh` (auto-run by run_all.sh) — held-slot serialization, merge-exempt, exit-75, FD-non-leak. deps: none.
 - **β — wire α into `verify.sh` test phase + uniform merge exemption.** PSI-wait → acquire → run-passes-held → release, around the test-execution passes only; propagate exit 75; `--print-plan` marks the gated region; set `DF_VERIFY_ROLE=merge` in `hooks/pre-merge-commit` (and `land.sh`). **Signal:** `verify.sh test --print-plan` shows the gate wrapping nextest passes and NOT compile/check/clippy; execute-mode: two concurrent `verify.sh test` serialize, `role=merge` exempt; pre-merge-commit run reports role=merge. deps: α.
 - **γ — raise occt cap 4→24, env-driven; refresh headroom basis.** `.config/nextest.toml` → 24; verify.sh `--config 'test-groups.occt.max-threads=${REIFY_OCCT_NEXTEST_MAX_THREADS:-24}'`; update headroom comment (125 GiB; 2×24×2=96 GiB) + `docs/notes/multi-process-occt-bench.md`. **Signal:** `.config/nextest.toml` shows 24; infra assertion that the override appears in `verify.sh test --print-plan`; bench doc updated. **deps: β** (coupling — cap raise safe only once the hard run-bound is live).
-- **δ — surface the contract** in `orchestrator.yaml` + `CLAUDE.md`. Document knobs, `DF_VERIFY_ROLE` exemption, exit-75 reuse (no dark-factory change); add a "Test concurrency" subsection near "Landing on main". **Signal:** orchestrator.yaml + CLAUDE.md updated with the contract + verify.sh:161/228 citations. deps: β.
+- **δ — surface the contract** in `dark-factory-orchestrator.yaml` + `CLAUDE.md`. Document knobs, `DF_VERIFY_ROLE` exemption, exit-75 reuse (no dark-factory change); add a "Test concurrency" subsection near "Landing on main". **Signal:** dark-factory-orchestrator.yaml + CLAUDE.md updated with the contract + verify.sh:161/228 citations. deps: β.
 - **ε — integration gate (critical leaf).** E2e infra test through real `verify.sh`: N concurrent `role=task` runs hold-serialize; `role=merge` exempt; exit-75 propagates; plan shows cap=24 and compile/check/clippy outside the gated region. (task 4862 reversal of 4839: all `cargo nextest run` passes are now INSIDE the `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@` region — no `--no-run` outside the slot.) **Signal:** the e2e test passes in `tests/infra/run_all.sh`. deps: β, γ, δ.
 
 DAG: α → β → {γ, δ} → ε.

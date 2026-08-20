@@ -1,8 +1,6 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { describe, it, expect } from 'vitest';
 import { SYSTEM_PROMPT, buildSystemPrompt } from '../system-prompt.js';
-import { discoverRegisteredTools } from './discover-mcp-tools.js';
+import { ALLOWED_TOOLS } from '../session.js';
 
 describe('SYSTEM_PROMPT', () => {
   it('is under 3000 tokens (estimated as chars/4 < 12000)', () => {
@@ -16,11 +14,11 @@ describe('SYSTEM_PROMPT', () => {
     }
   });
 
-  it('mentions MCP tools', () => {
-    const tools = ['reify_get_source', 'reify_get_diagnostics', 'reify_language_reference'];
-    for (const tool of tools) {
-      expect(SYSTEM_PROMPT).toContain(tool);
-    }
+  it('mentions the real, grantable tool surface', () => {
+    expect(SYSTEM_PROMPT).toContain('mcp__reify-debug__');
+    expect(SYSTEM_PROMPT).toContain('get_diagnostics');
+    expect(SYSTEM_PROMPT).toMatch(/\bWrite\b/);
+    expect(SYSTEM_PROMPT).toMatch(/\bEdit\b/);
   });
 
   it('mentions the Reify GUI context', () => {
@@ -42,51 +40,40 @@ describe('buildSystemPrompt', () => {
   });
 });
 
-describe('SYSTEM_PROMPT MCP tool registry alignment', () => {
-  // Discovers registered tool names from Rust source files at test runtime using
-  // discoverRegisteredTools(), which recursively scans "reify_*" string literals
-  // across all *.rs files (including subdirectories) in TOOLS_DIR.  This covers:
-  //   - inline call site:    registry.register("reify_get_source", ...)
-  //   - const indirection:   const NAME: &str = "reify_qux"; ... registry.register(NAME, ...)
-  //   - any casing:          "reify_GetSource" is captured by [A-Za-z0-9_]+
-  //
-  // Canonical Rust contract: crates/reify-mcp/tests/tools_tests.rs::EXPECTED_TOOLS
-  // That file pins the exact tool count and names via assert_eq!(tools.len(), 16).
-  // The surviving "every reify_* token resolves to a registered tool" test covers
-  // only the prompt→registry direction. TS-side discovery breakage that under-counts
-  // tools is caught by the Rust-side exact-count test (runs in a separate suite)
-  // and, when the missing tool is referenced in SYSTEM_PROMPT, by the alignment
-  // test itself. A redundant TS-side floor would duplicate that cross-suite coverage.
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const TOOLS_DIR = resolve(__dirname, '../../../../crates/reify-mcp/src/tools');
+describe('SYSTEM_PROMPT advertises only grantable tools', () => {
+  // ALLOWED_TOOLS (session.ts) is the sidecar's true grantable surface: invokeSdk
+  // wires only the reify-debug MCP server into --mcp-config and runs the Claude CLI
+  // child under --permission-mode bypassPermissions --allowed-tools ALLOWED_TOOLS, so
+  // a tool absent from ALLOWED_TOOLS can never actually be invoked regardless of what
+  // the prompt prose claims. Parsed into an exact base-tool set plus wildcard prefixes
+  // so this test tracks the real allowlist automatically if it ever changes.
+  const tokens = ALLOWED_TOOLS.split(/\s+/).filter(Boolean);
+  const exact = new Set(tokens.filter(t => !t.endsWith('*')));
+  const prefixes = tokens.filter(t => t.endsWith('*')).map(t => t.slice(0, -1));
 
-  let registeredTools: Set<string>;
+  function isGrantable(tool: string): boolean {
+    return exact.has(tool) || prefixes.some(p => tool.startsWith(p));
+  }
 
-  beforeAll(() => {
-    // Wrapped in beforeAll so that a missing/moved TOOLS_DIR surfaces as a focused
-    // test failure (with the resolved path in the message) rather than a collection
-    // crash that obscures which assertion actually failed.
-    try {
-      registeredTools = discoverRegisteredTools(TOOLS_DIR);
-    } catch (err) {
-      throw new Error(
-        `Failed to discover MCP tools at ${TOOLS_DIR}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  });
-
-  it('parses at least one registered tool from the Rust source', () => {
-    expect(registeredTools.size).toBeGreaterThan(0);
-  });
-
-  it('every reify_* token in SYSTEM_PROMPT resolves to a registered tool', () => {
-    // Widened to [A-Za-z0-9_]+ so uppercase tool references in the prompt are also detected.
-    const advertised = new Set([...SYSTEM_PROMPT.matchAll(/reify_[A-Za-z0-9_]+/g)].map(m => m[0]));
-    const missing = [...advertised].filter(name => !registeredTools.has(name));
+  it('every MCP/reify tool named in SYSTEM_PROMPT is grantable', () => {
+    // These two lexical shapes capture the drift class this test guards against:
+    // bare reify_* fictions and any non-reify-debug MCP reference. Base FS tools
+    // (Read/Write/Edit) are grantable by definition and lexically indistinguishable
+    // from prose verbs, so they are covered by ALLOWED_TOOLS membership, not extraction.
+    const named = new Set([
+      ...[...SYSTEM_PROMPT.matchAll(/mcp__[A-Za-z0-9_-]+/g)].map(m => m[0]),
+      ...[...SYSTEM_PROMPT.matchAll(/\breify_[A-Za-z0-9_]+/g)].map(m => m[0]),
+    ]);
+    const ungrantable = [...named].filter(t => !isGrantable(t));
     expect(
-      missing,
-      `SYSTEM_PROMPT advertises tools not in the MCP registry: ${missing.join(', ')}. Registered tools: ${[...registeredTools].sort().join(', ')}`,
+      ungrantable,
+      `SYSTEM_PROMPT advertises tools the sidecar can never grant: ${ungrantable.join(', ')}. Grantable: ${ALLOWED_TOOLS}`,
     ).toEqual([]);
   });
 
+  it('no reify_* fiction survives', () => {
+    expect(SYSTEM_PROMPT.match(/\breify_[A-Za-z0-9_]+/g)).toBeNull();
+    expect(SYSTEM_PROMPT).not.toContain('reify_set_parameter');
+    expect(SYSTEM_PROMPT).not.toContain('reify_update_source');
+  });
 });

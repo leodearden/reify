@@ -310,6 +310,7 @@
 //! let _ = Mesh2dError::EmptyBoundary;
 //! let _ = Mesh2dError::DegenerateBoundary;
 //! let _ = Mesh2dError::GmshUnavailable;
+//! let _ = Mesh2dError::ProfileUnresolvable("profile handle did not resolve".to_string());
 //! // Pin the four function items by their full signatures.
 //! let _: fn(&[[f64; 2]; 4]) -> f64 = compute_quad_skew;
 //! let _: fn(&[f32], &[u32], f64) -> bool = recombine_quality_ok;
@@ -579,6 +580,8 @@ pub use assembly::{
     // Task 3778: foundation β — field-aware assembly entry points.
     element_stiffness_hex_p1_with_field, element_stiffness_p1_with_field,
     element_stiffness_p2_with_field, element_stiffness_wedge_p1_with_field,
+    // Task 4986 (C-3): realized-VolumeMesh -> global stiffness dispatcher.
+    assemble_volume_mesh_stiffness,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
@@ -700,11 +703,14 @@ pub use warm_state::{CgWarmState, solve_cg_with_warm_state, solve_cg_with_warm_s
 pub use mesher::{
     Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
     auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
+    ring_signed_area_2d,
 };
 // Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
 // PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.
 // Downstream consumers:
-//   - PRD task #8 (volume-mesh integration wraps SweptMesh3d → VolumeMesh)
+//   - PRD task #8 (volume-mesh integration wraps SweptMesh3d → VolumeMesh):
+//     BUILT by task 4986 as `impl From<SweptMesh3d> for reify_ir::VolumeMesh`
+//     in `sweep.rs`, colocated with `SweptConnectivity`.
 //   - PRD task #9 (ElasticOptions wiring: derive_layer_count from mesh_size)
 pub use sweep::{
     SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,

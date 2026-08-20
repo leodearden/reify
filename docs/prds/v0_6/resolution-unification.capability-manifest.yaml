@@ -1,0 +1,364 @@
+prd: docs/prds/v0_6/resolution-unification.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5515
+  title: 'resolution-unification α: strip stale eval-time mirrors from stdlib examples'
+  capabilities:
+  - name: mirror-exists-and-shadows
+    binding: signal premise — ports_breadth.ri local ThreadSpec mirror (:44, no thread_form)
+      + EVAL-TIME RE-DECLARATION dead-semantics note (:16-24); auto-covered by examples_smoke.rs
+      directory walk (grep verified 2026-07-25)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: EVAL-TIME RE-DECLARATION
+      paths:
+      - examples/stdlib/ports_breadth.ri
+      expect: absent
+  - name: regime-b-live-mirror-strippable
+    binding: 'signal premise (probe, D3) — re-declaration hazard is dead: mirror-
+      stripped copy evaluates clean, stdlib ThreadSpec (incl. thread_form) resolves
+      via Regime-B prelude fallback; #18 achievable'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-α eval output (thread_form present) pinned by examples_smoke +
+        α's own signal; output text not grep-able in source
+- label: β
+  task_id: 5516
+  title: 'resolution-unification β: compile_program + CompiledProgram + DefEnv skeleton'
+  capabilities:
+  - name: bridge-exists-with-checker
+    binding: signal premise — compile_entry_with_stdlib_cfg_checked (module_dag.rs:911)
+      already threads resolver/cfg/checker; compile_program is a return-type extension
+      (grep verified 2026-07-25)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn compile_program
+      paths:
+      - crates/reify-compiler/src
+      expect: present
+  - name: merge-helper-shared-two-callers
+    binding: 'signal premise — merge_imported_pub_templates (module_dag.rs:806) has
+      exactly two callers: check bridge (:995) + GUI twin (gui/src-tauri/src/engine.rs:1029);
+      P1 net-deletes one caller, writes no new merge logic (D-2)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: caller-count property; enforced by ε's grep-empty signal for the GUI
+        twin
+  - name: import-units-lack-stdlib-prelude
+    binding: 'signal premise (probe + static; #19) — compile_with_prelude_refs builds
+      PreludeContext::new(prelude) from direct-import preludes ONLY, no stdlib seeding
+      (lib.rs:737-758, module_dag.rs:474-486; GUI twin engine.rs:946 skips std); probe:
+      imported `param w : Length = 10mm` checks "All constraints satisfied" exit 0
+      with no diagnostic attributed to the import (silent-accept). Fix substrate =
+      cached load_stdlib_context() (stdlib_loader.rs:503). Sanctioned interim, superseded
+      by stdlib-namespace N3 (recorded both PRDs)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'post-β behavior pinned by #19 fixture in β''s own tests; prelude seeding
+        site is implementer-shaped'
+  - name: import-unit-diagnostics-unread
+    binding: 'signal premise (probe, D3; I2 third shape) — only the Err path reaches
+      import_error_diags; satisfied-import Error diagnostics swallowed (imported `param
+      q : Frobnicate = zorp()` → "All constraints satisfied", exit 0 — 4575-class
+      silent-accept, observed pre-state). β aggregates with file attribution + DiagnosticCode
+      (INV-SF-6)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-β aggregation pinned by β's I2 test; diagnostic code name implementer-chosen
+- label: γ
+  task_id: 5517
+  title: 'resolution-unification γ: eval + build go multi-file, --cfg'
+  capabilities:
+  - name: single-file-pre-state-real
+    binding: 'signal premise (probe, D3) — eval/build use parse_and_compile (reify-cli/main.rs:173,
+      no import DAG): importing entry warns `import "parts" not resolved by this entry
+      point` + unknown-structure error'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compile_program
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: cfg-threading-substrate
+    binding: substrate — check's --cfg via build_cfg_set (conditional-compilation.md,
+      landed); D-4 reuses, semantics unchanged
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: per-command --cfg acceptance pinned by γ's own signal
+- label: δ
+  task_id: 5518
+  title: 'resolution-unification δ: test/report/explain/doc go multi-file, --cfg'
+  capabilities:
+  - name: single-file-pre-state-real
+    binding: signal premise (probe, D3) — same parse_and_compile root as γ; per-command
+      output difference on an importing entry is the signal
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: per-command wiring not pattern-distinguishable ex ante (γ's grep covers
+        the shared entry-point switch)
+- label: ε
+  task_id: 5519
+  title: 'resolution-unification ε: GUI — delete the twin, wire compile_program'
+  capabilities:
+  - name: twin-exists-and-requests-deletion
+    binding: signal premise — compile_entry_with_imports (gui/src-tauri/src/engine.rs:885),
+      doc comment requests replacement; dirty-buffer import-graph region engine.rs:2250-2260
+      preserved
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compile_entry_with_imports
+      paths:
+      - gui/src-tauri/src
+      expect: absent
+  - name: load-from-source-import-silence
+    binding: signal premise — buffer-only compiles silently ignore imports; D-10 adds
+      explicit Warning with DiagnosticCode (INV-SF-6); observed by GUI suite (scripts/gui-test.sh)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Warning text/code implementer-chosen; #5 pinned by GUI suite'
+- label: ζ
+  task_id: 5520
+  title: 'resolution-unification ζ: LSP diagnostics multi-file'
+  capabilities:
+  - name: lsp-single-file-pre-state
+    binding: signal premise — LSP diagnostics compile via compile_with_stdlib (reify-lsp/src/diagnostics.rs:132
+      region), no import DAG → false unknown structure on multi-file projects (grep
+      verified 2026-07-25)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compile_program
+      paths:
+      - crates/reify-lsp/src
+      expect: present
+- label: η
+  task_id: 5521
+  title: 'resolution-unification η: P1 cross-surface parity harness'
+  capabilities:
+  - name: parity-premises-producible-from-deps
+    binding: 'G6 branch 3 — #2/#3/#4 surfaces (check/eval/GUI/LSP) all delivered by
+      η''s dep set {γ, δ, ε, ζ} over β; no capability downstream of η (esc-3436-210
+      inversion absent)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-shape property, wired at decompose
+  - name: drift-guard-substrate-exists
+    binding: substrate — tests/infra/run-all-classification.manifest, tests/infra/test_no_new_wallclock_upper_bounds.sh,
+      docs/notes/verify-scope-throughput.md all present (2026-07-25); same-diff registrations
+      required in task text (esc-4914-162 cautionary case)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: registration is same-diff-relative; declared-vs-discovered drift caught
+        by tests/infra/test_run_all_classification.sh at η's own gate
+- label: θ
+  task_id: 5522
+  title: 'resolution-unification θ: DefEnv full resolution + Engine::load + collision
+    normalization'
+  capabilities:
+  - name: prelude-statics-and-policy-census-real
+    binding: signal premise — Engine.prelude &'static (reify-eval/src/lib.rs:453),
+      find_template_with_prelude (engine_eval.rs:59), four-policy table (prelude_context.rs:32-74)
+      — all grep verified 2026-07-25
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DefEnv resolve_* surface implementer-shaped; I6/I7 pinned by θ's own
+        tests
+  - name: units-flip-pins-invertible
+    binding: signal premise — prelude_module_unit_collision_emits_warning (unit_registry_tests.rs:1781)
+      + eval_is_idempotent_for_prelude_functions pins exist; D-6 breaking change pinned
+      via same-diff inversion
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: inverted pin names/text implementer-chosen
+  - name: units-flip-compile-side-same-diff
+    binding: 'amendment premise — phase_units (compile_builder/units_phase.rs:32)
+      carries last-wins + overwrite Warning; θ flips it same-diff. Scope fence: entities_phase.rs/enums_phase.rs
+      owned by stdlib-namespace α (5493) — disjoint sites'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: policy wording implementer-chosen; compile/eval agreement pinned by
+        θ's collision-matrix rows
+  - name: enum-fixup-premise-real
+    binding: 'signal premise (probe, D3; #5387 repro) — imported FitClass.Clearance
+      fails check `unresolved name: FitClass` (parses as MemberAccess); D-9 fixup
+      is resolution-phase, no grammar work (grammar_confirmed true)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'fixup pass location implementer-chosen; behavior pinned by λ #11'
+- label: ι
+  task_id: 5523
+  title: 'resolution-unification ι: flat-slice call-site migration'
+  capabilities:
+  - name: flat-slice-sites-real
+    binding: 'signal premise — &[TopologyTemplate] sites: unfold.rs (2), structural_query.rs
+      (5), engine_build.rs, engine_eval.rs; graph.rs:427 "skip unknown structures
+      silently"; conformance mirror crates/reify-compiler/src/conformance/mod.rs (grep
+      verified 2026-07-25)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: skip unknown structures silently
+      paths:
+      - crates/reify-eval/src/graph.rs
+      expect: absent
+  - name: silent-skip-retirement
+    binding: capability→producer (this leaf; negative-assertion direction) — pre-state
+      silence verified; ι builds the structured diagnostic (DiagnosticCode, INV-SF-6)
+      observed by its own test (#15)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'diagnostic code implementer-chosen; #15 pinned by ι''s test'
+- label: κ
+  task_id: 5524
+  title: 'resolution-unification κ: delete the interim — merge consumption + find_template_with_prelude
+    + Engine::prelude; templates purity'
+  capabilities:
+  - name: deletion-targets-exist
+    binding: 'signal premise — find_template_with_prelude (engine_eval.rs:59), Engine::prelude
+      statics (lib.rs:453), bridge merge call (module_dag.rs:995) all live on main
+      (D-2: everything deleted exists today); I5 deletion is this named task (INV-SF-5)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: find_template_with_prelude
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+  - name: templates-purity-observable
+    binding: 'signal premise — pre-state Regime A puts imported templates in entry.templates
+      (merge at module_dag.rs:995); #14 purity + #13 collision matrix pinned by κ''s
+      suite. Benign cross-check note: 5493''s sidecar expects find_template_with_prelude
+      present (pre-state census); 5493 lands long before κ dispatches'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: purity assertion lives in κ's suite; entry.templates content not grep-able
+- label: λ
+  task_id: 5525
+  title: 'resolution-unification λ: cross-kind end-to-end signals (fn/enum/unit/ alias/trait
+    crossing)'
+  capabilities:
+  - name: fn-undef-pre-state
+    binding: 'signal premise (probe, D3-corrected; #10) — cross-file pub fn resolves
+      at check; eval yields Entry.y = undef with the OpContractViolation cause-note
+      AND unresolved-import warning surfaced, exit 0 (NOT silent — PRD §0 phrasing
+      stale; λ pins stdout content 42, not silence). Producers θ, ι upstream (wired)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: e2e fixture output pinned by λ's own gate-resident tests
+  - name: enum-crossing-pre-state
+    binding: 'signal premise (probe, D3 syntax-corrected; #11 = #5387 acceptance)
+      — grammar has NO `enum def` form: fixtures must use `pub enum FitClass { ...
+      }` (#5387''s own repro text carries the parse- error form, masked pre-state
+      by co-occurring unresolved-name). Verified: correct form checks clean standalone;
+      imported FitClass.Clearance fails `unresolved name: FitClass`. λ subsumes #5387
+      (dep edge 5387→λ wired at decompose), keeps its acceptance tests; non-pub invisibility
+      rejection built by θ/ι visibility-filtered DefEnv, observed by λ'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: acceptance fixtures are λ's deliverable
+  - name: unit-alias-trait-crossing
+    binding: 'signal premise (probe; #12) — verified split: `pub unit fortnight :
+      Time = 1209600.0` crosses at CHECK but fails at EVAL (`unknown unit: fortnight`)
+      — the per-kind gap λ pins; env carries all kinds post-θ (producers θ, ι upstream,
+      wired)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: per-kind fixtures are λ's deliverable
+- label: μ
+  task_id: 5526
+  title: 'resolution-unification μ: pub import re-export'
+  capabilities:
+  - name: pub-import-parses-today
+    binding: 'grammar-fixture (anti-mismatch) — pub import X parses (tree-sitter 0
+      ERROR nodes, PRD §2 2026-07-24, re-probed at decompose via D3); is_pub recorded
+      (reify-ast/src/decl.rs:725), consumed nowhere in the compiler (module_dag.rs
+      grep empty) — grammar_confirmed true, mechanism absent, μ builds it. Cross-PRD
+      consumer: 5502 (std.prelude facade; edge 5502→μ wired at decompose)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_pub
+      paths:
+      - crates/reify-compiler/src/module_dag.rs
+      expect: present
+  - name: reexport-nonleak-rejection
+    binding: 'capability→producer (this leaf; negative-assertion #8) — plain chain
+      must NOT leak; observed by μ''s boundary fixture, not assumed'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: non-leak assertion lives in μ's boundary test
+- label: ν
+  task_id: 5527
+  title: 'resolution-unification ν: entity-import narrowing'
+  capabilities:
+  - name: importkind-carries-data
+    binding: signal premise — ImportKind Entity/EntityAliased/Destructured (reify-ast/src/decl.rs:704)
+      parse today, consumed only by LSP goto-def (goto_def.rs:132-173); compiler consumer
+      absent, ν builds the exposure filter (D-8)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ImportKind
+      paths:
+      - crates/reify-compiler/src
+      expect: present
+  - name: narrowing-rejection-fires
+    binding: 'capability→producer (this leaf; negative-assertion #9, D3 pre-state
+      probe) — post-state rejection observed by ν''s boundary test matching the Error
+      diagnostic TEXT (not bare exit-1)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'diagnostic text/code implementer-chosen; #9 pinned by ν''s test'
+- label: ξ
+  task_id: 5528
+  title: 'resolution-unification ξ: imported-file module-header mismatch surfacing'
+  capabilities:
+  - name: mechanism-landed-extension
+    binding: signal premise — attach_module_path_diag applied per non-std DAG module
+      (module_dag.rs:527-529, verified); Warning drowns pre-β because import-unit
+      diagnostics never reach entry.diagnostics (I2 third shape); ξ surfaces with
+      imported-file attribution over β's aggregation (module-and-visibility-hardening
+      extension; dep β wired); DiagnosticCode required (INV-SF-6)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'attribution format implementer-chosen; #16 pinned by ξ''s test'
+- label: ο
+  task_id: 5529
+  title: 'resolution-unification ο: GUI files panel from sources'
+  capabilities:
+  - name: substrate-present-panel-absent
+    binding: signal premise — source_map exists (gui/src-tauri/src/engine.rs:153);
+      no frontend files panel today (grep empty — producer is this leaf, not an orphaned
+      consumer); signal via debug-MCP store_state (established GUI-test vocabulary);
+      dep ε wired (panel reads CompiledProgram.sources via ε)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'panel component naming implementer-chosen; #17 pinned by store_state
+        assertion in ο''s test'

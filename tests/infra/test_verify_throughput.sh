@@ -27,6 +27,9 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/plan_capture_lib.sh"
 
+[ -f "$SCRIPT_DIR/copy_list_preflight_lib.sh" ] || { echo "ERROR: copy_list_preflight_lib.sh not found at $SCRIPT_DIR/copy_list_preflight_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
+
 _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
@@ -59,29 +62,15 @@ make_branch_fixture() {
     mkdir -p "$dir/.config"
     cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
-    # Preflight: fail loudly if verify.sh sources a lib that was not copied to the
-    # fixture.  Without this check a new 'source "$SCRIPT_DIR/foo.sh"' line in
-    # verify.sh would be silently swallowed by the 2>/dev/null on the --print-plan
-    # invocations, surfacing only as an opaque all-plan-non-empty sanity failure.
-    while IFS= read -r _lib; do
-        [ -f "$dir/scripts/$_lib" ] || {
-            echo "ERROR: make_branch_fixture: '$_lib' is source'd by verify.sh" \
-                 "but was not copied to the fixture." >&2
-            echo "       Fix: add cp \"\$REPO_ROOT/scripts/$_lib\" \"\$dir/scripts/$_lib\"" \
-                 "in make_branch_fixture." >&2
-            exit 1
-        }
-    # Anchor to start-of-line (optionally indented) so the grep matches real
-    # `source "$SCRIPT_DIR/lib.sh"` STATEMENTS only — not comment lines that
-    # merely mention the token (e.g. verify.sh's task-4523 selective-infra note
-    # "`source "$SCRIPT_DIR/' never appears here."). Defense in depth: the
-    # `sed -n …p` then prints ONLY lines whose capture actually matched, so a
-    # token-mentioning line that ever slips past the anchor still can't be
-    # emitted as a bogus lib path — the old plain `sed` left such a line
-    # untouched, and the whole comment was then treated as a missing lib path
-    # (a false preflight failure).
-    done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
-                 | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p' || true)
+    # Preflight: fail loudly if verify.sh's TRANSITIVE source closure has a lib
+    # that was not copied to the fixture. Without this check a new source line
+    # (direct or transitive-under-an-already-copied-lib) would be silently
+    # swallowed by the 2>/dev/null on the --print-plan invocations, surfacing
+    # only as an opaque all-plan-non-empty sanity failure. Shared helper
+    # (task #5154) — see tests/infra/copy_list_preflight_lib.sh for the parser
+    # grammar and the transitive-closure rationale (generalizes the direct-only
+    # grep this block used to run inline).
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || exit 1
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"

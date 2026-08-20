@@ -1,0 +1,18 @@
+// Canonical AffineMap fixture — mirrored into spec §3.3.1.
+// Parsed by crates/reify-syntax/tests/affine_map_spec_example_parses.rs.
+// Every form in this file must produce zero CST ERROR nodes.
+//
+// Mirrors the §3 core demonstration in docs/prds/v0_6/affine-map-type.md and
+// examples/affine_tapered_spacer.ri: a non-uniform Z-stretch (identity in X/Y,
+// 1.5x in Z) applied to a box via the non-rigid affine_apply kernel path.
+
+structure def AffineMapSpecExample {
+    // Non-uniform Z-stretch: identity in X/Y, 1.5x in Z.
+    let z_stretch = affine_scale(1.0, 1.0, 1.5)
+
+    // Apply the AffineMap to a box, producing a genuinely deformed solid.
+    let body = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
+
+    // det(diag(1, 1, 1.5)) = 1.5 -- the volume-scale factor of the Z-stretch.
+    let det_z = determinant(z_stretch)
+}

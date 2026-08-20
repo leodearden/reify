@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use reify_kernel_gmsh::repair::{RepairConfig, repair_surface_mesh};
+use reify_kernel_gmsh::repair::{RepairConfig, repair_surface_mesh, repair_surface_mesh_with_correspondence};
 use reify_ir::Mesh;
 
 /// Sliver triangles below the area threshold are collapsed. The output
@@ -300,5 +300,156 @@ fn chain_merge_collapses_via_intermediate_vertex() {
         sx,
         sy,
         sz
+    );
+}
+
+/// `repair_surface_mesh_with_correspondence` (task ξ / #5116) returns a `Mesh`
+/// IDENTICAL to today's `repair_surface_mesh` output, plus a correspondence
+/// map from each ORIGINAL vertex index to its COMPACTED output index (or
+/// `u32::MAX` if the vertex's survivor was compacted away).
+///
+/// Reuses the chain-merge fixture from `chain_merge_collapses_via_intermediate_vertex`
+/// above (see that test's doc for the merge-chain arithmetic): A, B, C all
+/// collapse to A's compacted slot 0 (B directly, C transitively via B); D
+/// survives at compacted slot 1; E survives at compacted slot 2. So
+/// `correspondence == [0, 0, 0, 1, 2]`.
+#[test]
+fn correspondence_chain_merge_matches_plain_repair_and_maps_abc_to_shared_slot() {
+    // A=(0,0,0), B=(1e-9,0,0), C=(2e-9,0,0): the three chain vertices.
+    // D=(10,0,0), E=(10,10,0): far vertices used to form non-degenerate triangles.
+    let mesh = Mesh {
+        vertices: vec![
+            0.0_f32, 0.0, 0.0, // v0 = A
+            1e-9_f32, 0.0, 0.0, // v1 = B
+            2e-9_f32, 0.0, 0.0, // v2 = C
+            10.0_f32, 0.0, 0.0, // v3 = D
+            10.0_f32, 10.0, 0.0, // v4 = E
+        ],
+        indices: vec![
+            0, 3, 4, // triangle (A, D, E)
+            1, 3, 4, // triangle (B, D, E)
+            2, 3, 4, // triangle (C, D, E)
+        ],
+        normals: None,
+    };
+    let cfg = RepairConfig {
+        sliver_area_threshold: 1e-12,
+        vertex_merge_epsilon: 1.5e-9,
+    };
+
+    let plain = repair_surface_mesh(&mesh, cfg);
+    let (repaired, correspondence) = repair_surface_mesh_with_correspondence(&mesh, cfg);
+
+    assert_eq!(
+        repaired.vertices, plain.vertices,
+        "repair_surface_mesh_with_correspondence's Mesh.vertices must match \
+         repair_surface_mesh's output bit-for-bit"
+    );
+    assert_eq!(
+        repaired.indices, plain.indices,
+        "repair_surface_mesh_with_correspondence's Mesh.indices must match \
+         repair_surface_mesh's output bit-for-bit"
+    );
+    assert_eq!(
+        repaired.vertices.len(),
+        9,
+        "only A, D, E should survive after chain-merge compaction; \
+         got {} floats = {} vertices",
+        repaired.vertices.len(),
+        repaired.vertices.len() / 3
+    );
+    assert_eq!(
+        repaired.indices.len(),
+        9,
+        "all 3 triangles should survive (none degenerate, none slivers); \
+         got {} indices = {} triangles",
+        repaired.indices.len(),
+        repaired.indices.len() / 3
+    );
+
+    assert_eq!(
+        correspondence,
+        vec![0u32, 0, 0, 1, 2],
+        "A, B, C all collapse to compacted slot 0 (B directly, C transitively \
+         via B); D survives at slot 1; E survives at slot 2"
+    );
+}
+
+/// A vertex whose only referencing triangle is a dropped sliver is compacted
+/// away entirely — no surviving output slot — so its correspondence entry
+/// must be the `u32::MAX` sentinel. Reuses the fixture from
+/// `sliver_triangles_below_area_threshold_are_collapsed` above: v0,v1,v2 form
+/// the surviving good triangle (compacted to slots 0,1,2); v3,v4,v5 form the
+/// only, dropped, sliver (all three compacted away).
+#[test]
+fn correspondence_sliver_drop_yields_max_sentinel_for_dropped_vertices() {
+    let mesh = Mesh {
+        vertices: vec![
+            // Triangle 0 corners (good)
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            0.5, 0.866, 0.0, // v2
+            // Triangle 1 corners (sliver)
+            5.0, 0.0, 0.0, // v3
+            6.0, 0.0, 0.0, // v4
+            5.5, 1e-8, 0.0, // v5 — sliver
+        ],
+        indices: vec![
+            0, 1, 2, // good triangle
+            3, 4, 5, // sliver
+        ],
+        normals: None,
+    };
+    let cfg = RepairConfig {
+        sliver_area_threshold: 1e-6,
+        vertex_merge_epsilon: 1e-9,
+    };
+
+    let (_repaired, correspondence) = repair_surface_mesh_with_correspondence(&mesh, cfg);
+
+    assert_eq!(
+        &correspondence[0..3],
+        &[0u32, 1, 2],
+        "the good triangle's vertices survive and compact to slots 0,1,2; \
+         got {:?}",
+        &correspondence[0..3]
+    );
+    assert_eq!(
+        &correspondence[3..6],
+        &[u32::MAX, u32::MAX, u32::MAX],
+        "the sliver triangle's vertices are dropped entirely — no surviving \
+         slot; got {:?}",
+        &correspondence[3..6]
+    );
+}
+
+/// A clean mesh (no merges, no drops) yields an IDENTITY correspondence —
+/// every original vertex index maps to itself. Reuses the fixture from
+/// `well_formed_mesh_passes_through_unchanged` above.
+#[test]
+fn correspondence_clean_mesh_is_identity() {
+    let mesh = Mesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, //
+            0.5, 0.866, 0.0, //
+            0.5, 0.289, 0.816, //
+        ],
+        indices: vec![0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3],
+        normals: None,
+    };
+    let cfg = RepairConfig {
+        sliver_area_threshold: 1e-9,
+        vertex_merge_epsilon: 1e-12,
+    };
+
+    let (_repaired, correspondence) = repair_surface_mesh_with_correspondence(&mesh, cfg);
+
+    let n = mesh.vertices.len() / 3;
+    assert_eq!(
+        correspondence,
+        (0..n as u32).collect::<Vec<_>>(),
+        "no merges or drops occurred: correspondence must be the identity map; \
+         got {correspondence:?}"
     );
 }

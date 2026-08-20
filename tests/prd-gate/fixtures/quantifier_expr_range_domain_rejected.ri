@@ -1,0 +1,19 @@
+// γ-verification ADVERSARY baseline fixture for indexed-sub-instantiation §7 δ.
+// Premise the prover missed: δ's deliverable covers the forall/exists QUANTIFIER
+// EXPRESSIONS ("`Int` element type"), not just the forall statement — and the
+// expression path has its OWN Range<Int> rejection site with DIFFERENT diagnostic
+// text: crates/reify-compiler/src/expr.rs:5216 emits
+// "cannot iterate over non-collection type 'Range<Int>' in forall/exists: expected List<_> or Set<_>"
+// (note "in forall/exists" vs the statement path's "in forall" from
+// forall_elaborate.rs:274). A δ acceptance test keyed only on the statement
+// diagnostic string would not cover this site. This fixture also exercises the
+// `exists` keyword, absent from both prover fixtures despite the leaf title.
+// Expected: `reify check` exits 1; stderr contains the "in forall/exists" text
+// (verified 2026-07-25 against target/debug/reify built same day: exit 1, the
+// diagnostic fires once per quantifier expression — twice for this fixture).
+// NOTE: after δ lands this fixture's expectation inverts (range domains become
+// accepted, binder typed Int); the δ task owns retiring/repurposing it.
+structure def Rig {
+    let all_ok = forall i in 0..4 : i >= 0
+    let any_ok = exists i in 0..4 : i >= 0
+}

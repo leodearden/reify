@@ -545,28 +545,14 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TRAIT_USER_ASSERTED`
     /// (see `docs/prds/geometry-traits.md` §"Scope" point 5).
     TraitUserAsserted,
-    /// Origin: `crates/reify-eval/src/topology_selectors.rs::resolve_unique_by_tag`.
-    /// Emitted as a `Warning` when a feature-tag selector matches zero or multiple
-    /// sub-shapes after a topology change (i.e. the unique-tag invariant is violated).
+    /// Emitted as a `Warning` by the `LeafQuery::Named` arm in
+    /// `crates/reify-eval/src/topology_selectors.rs`: persistent-naming-v2
+    /// name→handle resolution is not yet wired up, so a named topology
+    /// selector resolves to the empty selection rather than panicking.
     ///
     /// Canonical message form:
-    /// `"feature-tag selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`.
-    ///
-    /// Two labels accompany the warning: a primary label at the selector call site
-    /// (`"selector call"`) and a secondary label at the `FeatureTag::source_span`
-    /// of the target tag (`"feature originally produced here"`).
-    ///
-    /// The [`crate::FeatureTagTable`] that `resolve_unique_by_tag` reads from is
-    /// populated by the four `*_with_tags` filter selectors in
-    /// `crates/reify-eval/src/topology_selectors.rs`:
-    ///   - `edges_at_height_with_tags` (task 2323)
-    ///   - `edges_by_length_with_tags` (task 2329)
-    ///   - `faces_by_area_with_tags` (task 2329)
-    ///   - `edges_parallel_to_with_tags` (task 2329)
-    ///
-    /// Each populator records a tag for every extracted sub-shape before
-    /// applying its filter predicate, so `resolve_unique_by_tag` can look up
-    /// any extracted sub-shape, not just those that passed the predicate.
+    /// `"named topology selectors are not yet resolvable (persistent naming
+    /// v2); selector resolved to empty"`.
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
@@ -692,14 +678,25 @@ pub enum DiagnosticCode {
     /// reading of that prose requires a *prior-vs-current* comparison across two
     /// builds. The current emitter is a forward-looking *risk* detector:
     /// constructed at populator time, it fires when two `(feature_id, role)`-
-    /// peer entries have geometrically tied centroids within a kernel-epsilon
-    /// tolerance — meaning the kernel's enumeration order is the only thing
-    /// disambiguating their `local_index` assignment, and a future edit could
-    /// shuffle them. So the variant currently warns that resolution **may**
-    /// shuffle under a future edit, not that it **did** shuffle since a prior
-    /// build. Cross-build delta comparison is recorded as a deferred follow-up
-    /// (see task #2654 design decisions); this variant doc-comment will be
-    /// updated when that lands.
+    /// peer entries with DISTINCT `local_index` values have geometrically
+    /// tied centroids within a kernel-epsilon tolerance — meaning the
+    /// kernel's enumeration order is the only thing disambiguating which of
+    /// the two distinct indices ends up assigned to which physical face, and
+    /// a future edit could shuffle them. So the variant currently warns that
+    /// resolution **may** shuffle under a future edit, not that it **did**
+    /// shuffle since a prior build. Cross-build delta comparison is recorded
+    /// as a deferred follow-up (see task #2654 design decisions); this
+    /// variant doc-comment will be updated when that lands.
+    ///
+    /// **Equal-index peers are excluded (task #5196).** Peers that already
+    /// share the same `local_index` have an identity key
+    /// `(feature_id, role, local_index)` that already collides, so there is
+    /// no enumeration-order disambiguation happening for them in the first
+    /// place — `union_all` legitimately mass-produces equal indices since
+    /// they are per-primitive-relative (PRD line 81 scopes the
+    /// construction-order tiebreak to genuine geometric ties, not
+    /// group-unique indices). Only near-coincident DISTINCT-index pairs are
+    /// reported.
     ///
     /// Canonical message form (current construction-time emitter):
     ///   `"topology-attribute selector for (feature '<feature_id>', role '<role>') has geometrically tied local_index assignments at indices <i> and <j>; selector resolution may shuffle after edits"`
@@ -721,10 +718,12 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED`.
     TopologyAttributeLocalIndexReassigned,
     /// Origin: `crates/reify-eval/src/engine_build.rs::execute_realization_ops`
-    /// (via `diagnose_topology_correspondence_drops`).
+    /// (accumulated per-op and flushed per-realization via
+    /// `TopologyCorrespondenceDropTally`, task #5196 L4).
     ///
-    /// Emitted as `Severity::Warning` when a kernel history record reports a
-    /// non-zero topology-correspondence-loss counter after a boolean, sweep, or
+    /// Emitted as `Severity::Info` (task #5196; was `Severity::Warning` under
+    /// task #4545) when a kernel history record reports a non-zero
+    /// topology-correspondence-loss counter after a boolean, sweep, or
     /// local-feature operation. The following counters are covered:
     ///
     /// - `BooleanOpHistoryRecords::silent_drop_count` — a child subshape was
@@ -1148,12 +1147,21 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_SINGULARITY`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands — `reify-stdlib::snapshot` and the eval engine do not
-    /// yet call the wrapper. The variant is reserved now so downstream tooling
-    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from
-    /// the moment the diagnostic is first emitted, with no further enum churn
-    /// at integration time.
+    /// Surfaced (task 3580 — GR-039 / cluster C-37): `snapshot()` routes each
+    /// closed-chain loop's solve through `solve_loop_closure_with_diagnostics`
+    /// and bakes an `is_singular = Value::Bool(true)` key onto the Snapshot
+    /// Map whenever ≥1 loop's outcome is `Singular` (falling back to the
+    /// plain `solve_loop_closure` for the FK outcome when the wrapper's
+    /// over-constrained short-circuit fired, so low-DOF FK numerics are
+    /// preserved — see `reify-stdlib::snapshot`'s solver-choice comment).
+    /// Because `sweep()`/`sweep_grid()` delegate to `snapshot()` per grid
+    /// tuple, the signal is available on both APIs. The engine-side
+    /// `detect_kinematic_singularity` pass (`engine_eval.rs`) scans the
+    /// evaluated `ValueMap` — recursing into `List<Snapshot>` for swept
+    /// cells — and emits one `Severity::Warning` of this code per top-level
+    /// cell containing a singular snapshot. Wired into both `Engine::eval`
+    /// and `Engine::eval_cached`, outside the solver gate, so it surfaces on
+    /// kernel-less `reify check` and in the GUI diagnostics panel.
     KinematicSingularity,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
@@ -1172,9 +1180,18 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_KINEMATIC_OVERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands. Reserved now for typed-code matching at the moment
-    /// the diagnostic is first emitted.
+    /// Note (task 3580 — GR-039 / cluster C-37): remains reserved and is
+    /// intentionally NOT surfaced from the `snapshot()`/`sweep()` path.
+    /// `snapshot()` inspects `LoopClosureReport::diagnostics` only to detect
+    /// this code — the trigger for its FK fallback to the plain
+    /// `solve_loop_closure` (see `reify-stdlib::snapshot`'s solver-choice
+    /// comment) — and then discards it. The wrapper's `free_dof_count < 6`
+    /// pre-check is a false positive for sub-6 effective-DOF
+    /// translational/planar loops, exactly the well-posed low-DOF closed
+    /// chains the existing fixtures exercise, so surfacing this as an
+    /// `Error` would break their `eval_errors.is_empty()` expectations.
+    /// Principled surfacing pends the translational/rotational
+    /// residual-subspace decomposition this task defers.
     KinematicOverconstrained,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
@@ -1194,9 +1211,14 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_UNDERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands. Reserved now for typed-code matching at the moment
-    /// the diagnostic is first emitted.
+    /// Note (task 3580 — GR-039 / cluster C-37): remains reserved and is
+    /// intentionally NOT surfaced from the `snapshot()`/`sweep()` path, for
+    /// the same reason as `KinematicOverconstrained`: the wrapper's
+    /// `free_dof_count` vs. 6-component twist-count check is a false
+    /// positive for sub-6 effective-DOF translational/planar loops (the
+    /// well-posed low-DOF closed chains the existing fixtures exercise).
+    /// Principled surfacing pends the translational/rotational
+    /// residual-subspace decomposition this task defers.
     KinematicUnderconstrained,
     /// Origin: `crates/reify-eval/src/tolerance_promise.rs::imported_tolerance_promise_diagnostic`
     /// (task 2651 — PRD `docs/prds/v0_2/per-purpose-tolerance.md`
@@ -1476,6 +1498,25 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnUnknownTypeParam,
+    /// A generic enum's variant payload field type names an identifier that is
+    /// neither a declared type parameter of that enum nor a known type alias,
+    /// builtin, structure, trait, or in-scope enum.
+    ///
+    /// Origin site: `crates/reify-compiler/src/compile_builder/enums_phase.rs`
+    /// (variant payload-field type resolution failure arm, gated on
+    /// `!type_param_names.is_empty()`).
+    ///
+    /// Only emitted when the enclosing enum IS generic (`<T, …>`). Non-generic
+    /// enums with an unknown payload field type name continue to resolve
+    /// silently to `Type::Error` with no diagnostic (pre-existing behavior,
+    /// unchanged — see `enum_unknown_type_param_tests.rs` regression pins).
+    ///
+    /// Canonical message form:
+    /// `"type '<expr>' in variant '<variant>' of generic enum '<enum>' is not a declared type parameter or a known type"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ENUM_UNKNOWN_TYPE_PARAM`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    EnumUnknownTypeParam,
     /// A non-dimension-kinded type parameter is used in a dimension slot
     /// (`Scalar<T>`, `Vector3<T>`, or `Point3<T>` where `T` is not declared
     /// with a `Dimension` bound), OR a dimension-kinded type parameter is
@@ -2152,6 +2193,46 @@ pub enum DiagnosticCode {
     /// PRD mnemonic: `E_TYPE_ARG_BOUND`.
     /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
     TypeArgBound,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`resolve_type_expr_with_aliases_kinded`, the trait-with-args
+    /// intercept arm placed immediately after the 4603 structure-with-args
+    /// arm and before simple-name resolution).
+    ///
+    /// Emitted as a `Severity::Error` when a type annotation of the form
+    /// `name<args…>` names a **trait** (`name` ∈ `trait_names`) together with
+    /// one or more type arguments. Trait type-arguments are not yet
+    /// supported by the language; before this code existed, the resolver
+    /// fell through to the simple-name path and silently produced a bare
+    /// `Type::TraitObject(name)` with the arguments dropped and no
+    /// diagnostic. A single label is attached at the type-expression span,
+    /// and the resolver returns `Some(Type::Error)` (poison, anti-cascade —
+    /// the `BareScalarType` pattern) so exactly one clean diagnostic is seen
+    /// per occurrence.
+    ///
+    /// Canonical message form (the `E_TYPE_ARG_ON_TRAIT:` mnemonic is
+    /// embedded in the message text itself, since `DiagnosticCode` has no
+    /// code→mnemonic map and the CLI signal must be stderr-visible):
+    ///   `"E_TYPE_ARG_ON_TRAIT: trait '<name>' does not accept type
+    ///    arguments (given '<args-as-written>'); trait type-arguments are
+    ///    not yet supported"`
+    /// with the trait name and its type argument(s) rendered as written
+    /// (via `TypeExpr`'s `Display` impl).
+    ///
+    /// Empty `type_args` keeps `Type::TraitObject` resolution byte-identical
+    /// (this code is not emitted in that case). Structures keep the 4603
+    /// `Type::Applied` path checked by [`TypeArgArity`] / [`TypeArgBound`] —
+    /// the structure arm runs first, so a name that is both a structure and
+    /// a trait with args resolves via `Type::Applied`, not this rejection.
+    ///
+    /// Distinct from [`TypeArgArity`] / [`TypeArgBound`] (structure-only
+    /// `Type::Applied`-path arity/bound codes; this code instead fires on
+    /// the trait-name path, before any `Type::Applied` is ever constructed)
+    /// and from [`UnresolvedType`] (a name-resolution failure — here the
+    /// name resolves fine, its type arguments are the problem).
+    ///
+    /// PRD mnemonic: `E_TYPE_ARG_ON_TRAIT`.
+    /// See `docs/prds/v0_6/compiler-type-hygiene.md` §3 decision 1, §7.1.
+    TypeArgOnTrait,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
@@ -2322,6 +2403,42 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic is `E_OBJECTIVE_CONFLICT`
     /// (severity convention: `E_*` → Error).
     ObjectiveConflict,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (objective-build site,
+    /// task α #5018 — PRD
+    /// `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_MIXED_DIMENSION: ..."`, naming
+    /// both the first term's dimension and the offending differing dimension
+    /// (e.g. `"...objective terms have incoherent dimensions: 'Money' vs
+    /// 'Mass'..."`), with a primary label on the offending term's span and a
+    /// secondary label on the first term's span.
+    ///
+    /// Emitted as a `Severity::Error` when an entity's `ObjectiveSet` has
+    /// `combination == WeightedSum`, more than one term, and
+    /// `reify_ir::objective_terms_coherent(&obj.terms)` returns
+    /// `Err(DimensionIncoherence { .. })` — i.e. not every term's
+    /// `expr.result_type` shares the same `DimensionVector` (PRD D2/I-UNITS:
+    /// "all terms share ONE dimension", not "each term dimensionless"). This
+    /// is a STATIC check (no eval) so it fires at compile time, before any
+    /// solve — covering every authored multi-term objective.
+    ///
+    /// Correctly excluded cases (mirroring `ObjectiveConflict`'s exclusions):
+    /// - A single objective (no multi-term fold to be incoherent).
+    /// - Multi-term sets that are all the same dimension, including all-Money
+    ///   (the shipped single-aspect-cost pattern) and all-dimensionless.
+    ///
+    /// A dedicated code is minted rather than reusing `DimensionMismatch`
+    /// (Add/Sub operator-level mismatch) or `ObjectiveConflict` (opposite-sense
+    /// terms over the same unit) because the semantics differ: this code
+    /// covers same-sense or unrelated-sense multi-term `WeightedSum` folds
+    /// whose terms are not commensurable at all — summing them (each term
+    /// contributes its weight times `v = eval_expr(term.expr).as_f64()`, which
+    /// strips the dimension) produces a physically meaningless scalar with no
+    /// prior diagnostic.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_MIXED_DIMENSION`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveDimensionIncoherent,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_scope_coupling`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
@@ -2343,6 +2460,29 @@ pub enum DiagnosticCode {
     /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
     /// add resolution on top of this detection signal.
     ScopeCoupling,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` cluster-degrade emission,
+    /// reading `resolve_order`'s structural cluster set (M-WHOLE α, task #5013).
+    ///
+    /// Severity: Warning — advisory degrade notice; the merged solve is not
+    /// attempted, so bottom-up approximate resolution continues.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_COUPLING_APPROXIMATED`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// A *graduation* of [`Self::ScopeCoupling`] (PRD
+    /// `docs/prds/v0_6/whole-model-objective-coupling.md` §3.4/§5.1, BT2):
+    /// emitted once per over-cap (or, in β, un-mergeable) cluster — a group of
+    /// mutually-coupled scopes whose merged auto-dimension exceeds
+    /// `WHOLE_MODEL_CLUSTER_DIM_CAP`, so the whole-model merged solve is skipped
+    /// and the cluster falls back to bottom-up approximate resolution.  The
+    /// diagnostic names the member scopes, the merged auto-dimension, and the
+    /// cap.  For an over-cap SCC this replaces `W_SCOPE_COUPLING` (never both);
+    /// within-cap SCCs keep emitting the generic `W_SCOPE_COUPLING`.
+    ///
+    /// Never-silent (`feedback_silent_defaults_pattern`): a cluster silently
+    /// downgraded to approximate resolution is a user-surprise that must be
+    /// reported.
+    CouplingApproximated,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_ambiguous_inherited_objectives`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
@@ -2465,6 +2605,22 @@ pub enum DiagnosticCode {
     /// are stranded-downstream and do NOT emit this code. Kind-agnostic: detects
     /// value↔value, geom↔constraint, realization↔realization (GeomRef::Sub) and
     /// any other cross-kind cycle over the edges α's trace map encodes.
+    ///
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::build_dependent_cells`
+    /// stage (f) (task 5189 β; the JOINT-DRIVE SCC-admissibility guardrail, PRD
+    /// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.4).
+    ///
+    /// Canonical message form: `"circular value-cell dependency across the
+    /// coupled solve scopes: [<entity.member>, …] -- …"`, sorted for
+    /// determinism. Ids are rendered FULLY QUALIFIED because that detector is
+    /// cross-template, so the bare member name the other sites use would be
+    /// ambiguous.
+    ///
+    /// Emitted as a `Severity::Error` when the induced non-auto sub-DAG of the
+    /// coupled dependent-cell set fails to sort completely. That length check IS
+    /// the admissibility test: the node set excludes auto params by construction
+    /// and the only admissible back-edge (the solver feedback edge) runs THROUGH
+    /// an auto, so any Kahn drop is by construction an inadmissible data cycle.
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
     EvalCycle,
@@ -3014,6 +3170,63 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_LogicalRequiresBool`
     /// (severity convention: `E_*` → Error; see task 4490 type-hygiene α).
     LogicalOperandNotBool,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (`BinOp::Mul`/`BinOp::Div` compile
+    /// site). REUSED (not a new code) by the `BinOp::Add`/`BinOp::Sub` compile site
+    /// for the dimensioned-`Complex`-vs-bare-numeric guard (task
+    /// compiler-type-hygiene follow-up 5163) — see the dedicated Add/Sub paragraph
+    /// below.
+    ///
+    /// Emitted as a `Severity::Error` when `*` or `/` is applied to operand kinds
+    /// the runtime evaluator (`eval_mul`/`eval_div` in `reify-expr`) has no
+    /// intentional arm for — a **structural** `Value::Undef` (kind-level, true for
+    /// every value of that kind pairing), NOT a data-dependent one (e.g.
+    /// divide-by-zero is excluded from this code). The pinned supported/unsupported
+    /// partition this diagnostic enforces lives in
+    /// `crates/reify-expr/tests/mul_div_runtime_truth_table.rs` (task
+    /// compiler-type-hygiene β1/β2, `INV-COMP-3`).
+    ///
+    /// Rejected operand-kind combinations include: an aggregate paired with another
+    /// aggregate of the same or a mismatched kind (`Vector × Vector`, `Tensor ×
+    /// Tensor`, `Point × Point`); the degenerate `Tensor × Vector` scale shape
+    /// (nested tensor-of-vectors — PRD decision 5, not a deliberate design);
+    /// `Vector × Transform` (order-sensitive: `Transform × Vector` IS supported,
+    /// the reversed order is not); any `Matrix` operand, in either position (no
+    /// intentional eval arm exists for `Value::Matrix` — PRD §10 open question 2);
+    /// `List`/`String`/`Bool` operands; and, because `Div` is non-commutative,
+    /// `Scalar / Vector` / `Real / Vector` (no reverse-scale arm exists for
+    /// division, unlike `Mul`'s commutative aggregate-scale arms).
+    ///
+    /// **Add/Sub reuse** (task compiler-type-hygiene follow-up 5163): also
+    /// emitted for `+`/`-` pairing a DIMENSIONED `Complex` with a bare
+    /// dimensionless numeric, in either operand order. Implemented by
+    /// `type_compat::add_sub_dimensioned_complex_reject` — see that
+    /// predicate's doc for the full rationale. `Complex<Q1> ± Complex<Q2>`
+    /// dimension mismatches are a separate, still-unguarded gap outside this
+    /// task's scope.
+    ///
+    /// Canonical message form (naming the operator and BOTH operand types):
+    ///   `"operator \`*\` is undefined for operand kinds \`Vector3<Length>\` and \
+    ///    \`Vector3<Length>\`"`
+    /// with a label `"unsupported operand kinds"` on the expression span.
+    ///
+    /// Gradualism: operands typed `Type::Error` (poison) or `Type::TypeParam(_)`
+    /// (unresolved auto/generic) pass through without emitting this code
+    /// (anti-cascade; PRD decision 3) — mirrors the `Cmp`/logical guards' skip.
+    ///
+    /// The result type IS poisoned to `Type::Error` (via `make_poison_type`,
+    /// mirroring the `Pow`/`Mod` guards) — unlike [`CmpOperandKind`] and
+    /// [`LogicalOperandNotBool`], which keep their unconditional result type
+    /// (`Bool`). `Mul`/`Div` produce a value type, so poisoning the mistyped
+    /// expression stops follow-on cascades on that value.
+    ///
+    /// Distinct from [`CmpOperandKind`] (comparison-operator operand rejection;
+    /// result stays `Bool`) and from [`ModuloRequiresInt`] (the `%`-specific
+    /// Int-only guard).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ArithOperandKind`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/compiler-type-hygiene.md` §7.2/§8, task compiler-type-hygiene β2).
+    ArithOperandKind,
     /// Origin: `crates/reify-compiler/src/expr.rs` (the `COLLECTION_AGGREGATION_MEMBERS`
     /// wrong-receiver arms: `.sum` on a non-`List` receiver, or `.keys`/`.values` on a
     /// non-`Map` receiver; ds-sentinel L4, task #4649).
@@ -3365,6 +3578,30 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ROBUSTNESS_FLOOR_INFEASIBLE`
     /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.2 / §8.1).
     RobustnessFloorInfeasible,
+    /// Origin: `crates/reify-compiler/src/entity.rs` — special-form typing for
+    ///          `minimize cost_robustness_tradeoff(cost_expr, λ)` (task γ #4791).
+    /// Severity: `Error` (set at the construction site in the compiler).
+    ///
+    /// Emitted when the first argument of a `cost_robustness_tradeoff(cost_expr, λ)`
+    /// call does not type as `Type::Scalar { dimension: MONEY }`. Independent of
+    /// (co-emittable with) `CostTradeoffInvalidLambda` — a call can fail both checks
+    /// at once (e.g. `cost_robustness_tradeoff(<length-expr>, 2.0)`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_COST_TRADEOFF_NON_MONEY`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 / §8.1).
+    CostTradeoffNonMoneyArg,
+    /// Origin: `crates/reify-compiler/src/entity.rs` — special-form typing for
+    ///          `minimize cost_robustness_tradeoff(cost_expr, λ)` (task γ #4791).
+    /// Severity: `Error` (set at the construction site in the compiler).
+    ///
+    /// Emitted when the second argument (`λ`) of a `cost_robustness_tradeoff(cost_expr, λ)`
+    /// call is not a compile-time numeric literal in `[0, 1]` — v1 requires λ to be
+    /// compile-time-known for the two-anchor solve (PRD §9 Q4; runtime/auto λ is future
+    /// work). Independent of (co-emittable with) `CostTradeoffNonMoneyArg`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_COST_TRADEOFF_INVALID_LAMBDA`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 / §8.1).
+    CostTradeoffInvalidLambda,
     /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
     ///          enum-variant construction field-set check (task δ #3942).
     /// Severity: `Error` (set at the construction site in the variant checker).
@@ -3501,6 +3738,69 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error). Registered in task #3556
     /// (annotation-args ε, PRD §4 Phase 2 LEAF).
     AnnotationEvalFailed,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — generic-variant
+    ///          construction type-argument inference (task γ #4031).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when payload-driven type-argument inference for a generic enum's
+    /// variant construction binds the same type parameter to two different
+    /// concrete types across the supplied payload fields, e.g. for
+    /// `enum Pair<T> { Both { a: T, b: T } }`, constructing
+    /// `Both { a: 1mm, b: 1N }` binds `T` to `Length` (from `a`) and to `Force`
+    /// (from `b`) at a single construction site (PRD §5 D3 / INV-3). Detected by
+    /// the reused `type_compat::unify` call returning `Err(TypeArgConflict)` —
+    /// the same conservative single-pass machinery `FnTypeArgConflict` uses for
+    /// generic function call-site inference (task 4231). When this fires, value
+    /// assembly is suppressed (anti-cascade).
+    ///
+    /// The recursive form `Node { left: Leaf{value:1mm}, right: Leaf{value:1N} }`
+    /// cannot fire this code: under D1 type erasure a constructed `Leaf{..}` has
+    /// result type `Type::Enum("Tree")` with no type-arg slot, so unifying the
+    /// declared `Tree<T>` field against it binds nothing for `T` (PRD §7.3 note).
+    /// Canonical message form:
+    /// `"type parameter '<param>' bound to both <existing> and <incoming>"`.
+    ///
+    /// See also: `VariantPayloadType` (a supplied field whose value type
+    /// mismatches its declared — possibly type-parameter-substituted — type)
+    /// and `FnTypeArgConflict` (the analogous call-site check for generic
+    /// functions).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ENUM_TYPE_ARG_CONFLICT`
+    /// (see `docs/prds/v0_6/generic-data-carrying-enums.md` §5 D3 / §7.3 / §9 G6).
+    EnumTypeArgConflict,
+
+    /// Origin: `crates/reify-compiler/src/recursion_guard.rs` — the shared
+    /// depth cap enforced at both compiler expression-recursion entry points
+    /// (`compile_expr_guarded_with_expected` in `expr.rs` and
+    /// `compile_geometry_call` in `geometry.rs`, task #5337).
+    ///
+    /// Emitted as a `Severity::Error` when the live cross-function compile
+    /// recursion depth exceeds `MAX_COMPILE_RECURSION_DEPTH`, i.e. an
+    /// expression (typically deeply-nested boolean geometry such as
+    /// `difference(difference(…), …)`) nests past the cap. Rather than
+    /// recursing further — which would eventually overflow the compile
+    /// thread's stack and SIGSEGV the whole process (uncatchable by an
+    /// embedder's `catch_unwind`) — the compiler bails loudly: the expression
+    /// site is poisoned (`Type::Error`, anti-cascade) / the geometry call
+    /// returns `None`.
+    ///
+    /// Reporting cardinality: **at most one per outermost compile entry**.
+    /// A wide node at the cap boundary fails every over-deep child, but only
+    /// the first pushes this diagnostic — `recursion_guard` latches emission
+    /// and re-arms when the recursion depth returns to 0 — so the error panel
+    /// shows one error per over-deep top-level expression, not one per child.
+    ///
+    /// Canonical message form:
+    /// `"E_EXPR_NESTING_TOO_DEEP: expression nests too deeply (exceeded <N> levels); bind intermediate results with \`let\` to reduce nesting depth"`.
+    ///
+    /// PRD-prose mnemonic: `E_EXPR_NESTING_TOO_DEEP` (severity convention:
+    /// `E_*` → Error).
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no
+    /// exhaustive match-on-self and derives serde `Serialize`/`Deserialize`, so
+    /// adding one variant is non-breaking for downstream consumers and it
+    /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
+    /// too-deep precedent).
+    ExpressionNestingTooDeep,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4146,7 +4446,7 @@ mod tests {
     }
 
     // --- TopologyTagStale tests (task 2332 — W_TOPOLOGY_TAG_STALE) ---
-    // Pairs with the resolver `resolve_unique_by_tag` in
+    // Pairs with the `LeafQuery::Named` arm in
     // `crates/reify-eval/src/topology_selectors.rs`.
     // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
     // covered by `diagnostic_code_derives` above; only the variant-specific
@@ -4514,17 +4814,37 @@ mod tests {
     // variant-specific round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TopologyAttributeLocalIndexReassigned` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Diagnostic::warning(...).with_code(...)`, carrying both the expected
     /// `Severity::Warning` and `Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)`.
-    /// Pins the warning-severity contract and variant existence for the typed
-    /// disambiguation of the ordering-shuffle rebind outcome (no split, same
-    /// `(feature_id, role, user_label)`, different resolved `local_index`).
+    /// Pins builder mechanics and variant existence only — `.with_code()` never
+    /// touches severity, so this is NOT a claim about the production emit
+    /// site's severity. The production emitter
+    /// (`detect_local_index_reassignment_diagnostics`) uses `Diagnostic::info`
+    /// as of task #5196 (was `Diagnostic::warning` under task #2654); see the
+    /// sibling round-trip test below.
     #[test]
     fn diagnostic_code_topology_attribute_local_index_reassigned_with_code_round_trips() {
         use super::Severity;
         let d = Diagnostic::warning("x")
             .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned);
         assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+        );
+    }
+
+    /// Production emit-site contract (task #5196):
+    /// `detect_local_index_reassignment_diagnostics` constructs via
+    /// `Diagnostic::info(...).with_code(...)`, so the code must round-trip
+    /// under `Severity::Info` as well — `.with_code()` is independent of
+    /// which severity constructor built the `Diagnostic`.
+    #[test]
+    fn diagnostic_code_topology_attribute_local_index_reassigned_with_code_round_trips_at_info() {
+        use super::Severity;
+        let d = Diagnostic::info("x")
+            .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
@@ -5043,6 +5363,81 @@ mod tests {
         assert_eq!(s, "\"ObjectiveConflict\"");
     }
 
+    // --- ObjectiveDimensionIncoherent tests (task α #5018 — E_OBJECTIVE_MIXED_DIMENSION) ---
+    // Pairs with the units-coherence detector in
+    // `crates/reify-compiler/src/entity.rs::check_objective_dimension_coherence`
+    // (objective-build site), mirroring the ObjectiveConflict test pair above.
+
+    /// `DiagnosticCode::ObjectiveDimensionIncoherent` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, reports
+    /// `Some(DiagnosticCode::ObjectiveDimensionIncoherent)`, carries
+    /// `Severity::Error` (via `Diagnostic::error`), and Debug-prints the
+    /// variant name.
+    #[test]
+    fn diagnostic_code_objective_dimension_incoherent_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveDimensionIncoherent);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveDimensionIncoherent));
+        assert_eq!(d.severity, Severity::Error);
+        assert!(format!("{:?}", d.code).contains("ObjectiveDimensionIncoherent"));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ObjectiveDimensionIncoherent`
+    /// serializes as `"ObjectiveDimensionIncoherent"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_dimension_incoherent_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ObjectiveDimensionIncoherent).unwrap();
+        assert_eq!(s, "\"ObjectiveDimensionIncoherent\"");
+    }
+
+    // --- CostTradeoffNonMoneyArg / CostTradeoffInvalidLambda tests
+    // (task γ #4791 — E_COST_TRADEOFF_NON_MONEY / E_COST_TRADEOFF_INVALID_LAMBDA) ---
+    // Pairs with the special-form typing in
+    // `crates/reify-compiler/src/entity.rs` (cost_robustness_tradeoff recognition,
+    // MemberDecl::Minimize arm). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::CostTradeoffNonMoneyArg` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::CostTradeoffNonMoneyArg)`.
+    /// Shape mirrors `diagnostic_code_objective_conflict_with_code_round_trips`;
+    /// a future enum reorganisation that drops the variant is caught here.
+    #[test]
+    fn diagnostic_code_cost_tradeoff_non_money_arg_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CostTradeoffNonMoneyArg);
+        assert_eq!(d.code, Some(DiagnosticCode::CostTradeoffNonMoneyArg));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CostTradeoffNonMoneyArg` serializes
+    /// as `"CostTradeoffNonMoneyArg"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_cost_tradeoff_non_money_arg_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CostTradeoffNonMoneyArg).unwrap();
+        assert_eq!(s, "\"CostTradeoffNonMoneyArg\"");
+    }
+
+    /// `DiagnosticCode::CostTradeoffInvalidLambda` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::CostTradeoffInvalidLambda)`.
+    #[test]
+    fn diagnostic_code_cost_tradeoff_invalid_lambda_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CostTradeoffInvalidLambda);
+        assert_eq!(d.code, Some(DiagnosticCode::CostTradeoffInvalidLambda));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CostTradeoffInvalidLambda` serializes
+    /// as `"CostTradeoffInvalidLambda"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_cost_tradeoff_invalid_lambda_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CostTradeoffInvalidLambda).unwrap();
+        assert_eq!(s, "\"CostTradeoffInvalidLambda\"");
+    }
+
     // --- Flexure DiagnosticCode tests (task 3871) ---
 
     /// The five §5.3 / §1 / §4.2 flexure codes round-trip through
@@ -5484,25 +5879,78 @@ mod tests {
         assert_eq!(s, "\"TypeArgBound\"");
     }
 
+    // --- TypeArgOnTrait tests (task 5049 α — E_TYPE_ARG_ON_TRAIT) ---
+    // Pairs with the trait-with-args intercept arm in
+    // `crates/reify-compiler/src/type_resolution.rs`
+    // (`resolve_type_expr_with_aliases_kinded`, placed immediately after the 4603
+    // structure-with-args arm and before simple-name resolution).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TypeArgOnTrait` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn diagnostic_code_type_arg_on_trait_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("trait does not accept type arguments")
+            .with_code(DiagnosticCode::TypeArgOnTrait);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeArgOnTrait));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeArgOnTrait` serializes as
+    /// `"TypeArgOnTrait"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-2 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_arg_on_trait_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeArgOnTrait).unwrap();
+        assert_eq!(s, "\"TypeArgOnTrait\"");
+    }
+
     // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---
-    // Pairs with diagnose_topology_correspondence_drops in
+    // Pairs with TopologyCorrespondenceDropTally in
     // `crates/reify-eval/src/engine_build.rs` (wired in execute_realization_ops).
     // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
     // covered by `diagnostic_code_derives` above; only the variant-specific
     // round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TopologyCorrespondenceDropped` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Diagnostic::warning(...).with_code(...)`, carrying both the expected
     /// `Severity::Warning` and `Some(DiagnosticCode::TopologyCorrespondenceDropped)`.
-    /// Pins the warning-severity contract and variant existence for the
-    /// topology-correspondence-drop diagnostic (PRD-prose mnemonic
-    /// W_TOPOLOGY_CORRESPONDENCE_DROPPED).
+    /// Pins builder mechanics and variant existence only — `.with_code()`
+    /// never touches severity, so this is NOT a claim about the production
+    /// emit site's severity. The production emitter
+    /// (`TopologyCorrespondenceDropTally::flush`) uses `Diagnostic::info` as
+    /// of task #5196 (was `Diagnostic::warning` under task #4545); see the
+    /// sibling round-trip test below.
     #[test]
     fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips() {
         use super::Severity;
         let d = Diagnostic::warning("x")
             .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
         assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        );
+    }
+
+    /// Production emit-site contract (task #5196):
+    /// `TopologyCorrespondenceDropTally::flush` constructs via
+    /// `Diagnostic::info(...).with_code(...)`, so the code must round-trip
+    /// under `Severity::Info` as well — `.with_code()` is independent of
+    /// which severity constructor built the `Diagnostic`.
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips_at_info() {
+        use super::Severity;
+        let d = Diagnostic::info("x")
+            .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TopologyCorrespondenceDropped)
@@ -5943,6 +6391,36 @@ mod tests {
     fn diagnostic_code_underdetermined_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::Underdetermined).unwrap();
         assert_eq!(s, "\"Underdetermined\"");
+    }
+
+    // --- EnumTypeArgConflict tests (task γ #4031 — E_ENUM_TYPE_ARG_CONFLICT) ---
+    // Pairs with the payload-driven type-argument inference conflict pass in
+    // `crates/reify-compiler/src/variant_construct.rs::compile_variant_construct`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here (mirrors the
+    // `diagnostic_code_mechanism_nondriving_joint_*` pattern above).
+
+    /// `DiagnosticCode::EnumTypeArgConflict` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Shape mirrors `diagnostic_code_mechanism_nondriving_joint_with_code_round_trips`;
+    /// a future enum reorganisation that drops `EnumTypeArgConflict` is caught here.
+    #[test]
+    fn diagnostic_code_enum_type_arg_conflict_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::EnumTypeArgConflict);
+        assert_eq!(d.code, Some(DiagnosticCode::EnumTypeArgConflict));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::EnumTypeArgConflict`
+    /// serializes as `"EnumTypeArgConflict"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_enum_type_arg_conflict_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::EnumTypeArgConflict).unwrap();
+        assert_eq!(s, "\"EnumTypeArgConflict\"");
     }
 }
 

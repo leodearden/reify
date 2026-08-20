@@ -1,0 +1,82 @@
+// affine_tapered_spacer.ri — AffineMap stdlib integration example (task 3965,
+// PRD docs/prds/v0_6/affine-map-type.md task η, "C-as-integration-gate").
+//
+// Ties tasks α–ζ together into one user-observable, end-to-end signal: a box
+// deformed by a general AffineMap, built through the real OCCT kernel and
+// inspected through `reify eval`.
+//
+// §3 core demonstration — non-uniform Z-stretch:
+//   z_stretch = affine_scale(1.0, 1.0, height_scale)
+//   body      = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
+//
+// Extended demonstrations:
+//   - composed shear+scale (a second deformed solid):
+//       composed      = affine_compose(affine_scale(2.0, 1.0, 3.0), affine_shear_xy(0.5))
+//       body_composed = affine_apply(box(20mm, 20mm, 10mm), composed)
+//   - affine_from_transform-widened rigid compose (proves Transform ∘ AffineMap):
+//       widened            = affine_from_transform(transform3(orient_identity(), vec3(5mm, 0mm, 0mm)))
+//       rigid_then_stretch = affine_compose(widened, z_stretch)
+//
+// Analytic goldens (closed-form, no tuned thresholds):
+//   body:          AABB extents [0.02, 0.02, 0.015] m (box(20,20,10mm) · diag(1,1,1.5))
+//   det_z:         determinant(z_stretch)         = 1.5
+//   det_composed:  determinant(composed)           = 6   (det(scale)=6 · det(shear)=1)
+//   det_rigid:     determinant(rigid_then_stretch) = 1.5 (det(rotation)=1 · det(z_stretch)=1.5)
+//
+// One solid surfaces in the exported STEP (`body_composed`): per the T7
+// export rule (non_final_realization_indices, esc-3905-277), `reify build`
+// surfaces only each template's *final* geometry-producing realization, so of
+// the two sibling deformed solids (`body`, `body_composed`) only the
+// last-declared (`body_composed`) reaches the STEP. Every box() argument is
+// inlined directly inside its `affine_apply` call, so neither the raw box nor
+// any intermediate AffineMap/Real cell surfaces as extra geometry. The `body`
+// solid's analytic AABB (20×20×15mm) is verified through the
+// tessellate-realizations path in affine_tapered_spacer_gate.rs, which sees
+// every realization (no final-only pruning).
+//
+// No `module` declaration (mirrors the affine algebra CLI fixtures and other
+// examples such as sub_placement_assembly.ri): `reify eval` prints cells as
+// `TaperedSpacer.<cell> = <value>`. A benign missing-module Warning may
+// appear on stderr — examples_smoke.rs ignores warnings and `reify eval`
+// exits 0 regardless.
+//
+// Exercised end-to-end by:
+//   - crates/reify-eval/tests/affine_tapered_spacer_gate.rs (compile-clean,
+//     Mock-kernel surfacing, OCCT golden AABB)
+//   - crates/reify-cli/tests/cli_affine_tapered_spacer.rs (`reify eval`
+//     determinant cells, `reify build` STEP solid count)
+//   - gui/src-tauri/src/tests/engine_tests.rs (GUI viewport mesh backstop)
+//   - crates/reify-compiler/tests/examples_smoke.rs (zero-Error bulk gate)
+
+structure TaperedSpacer {
+    param height_scale : Real = 1.5
+
+    // Non-uniform Z-stretch: identity in X/Y, height_scale in Z.
+    let z_stretch = affine_scale(1.0, 1.0, height_scale)
+
+    // The box is inlined (not bound to a separate `let`) so only the
+    // deformed result surfaces as a solid.
+    let body = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
+
+    // det(diag(1, 1, 1.5)) = 1.5 — the volume-scale factor of the Z-stretch.
+    let det_z = determinant(z_stretch)
+
+    // Composed shear+scale: a second deformed solid, exercising
+    // affine_compose alongside affine_apply.
+    let composed = affine_compose(affine_scale(2.0, 1.0, 3.0), affine_shear_xy(0.5))
+    let body_composed = affine_apply(box(20mm, 20mm, 10mm), composed)
+
+    // det(scale) · det(shear) = 6 · 1 = 6 (shear preserves volume).
+    let det_composed = determinant(composed)
+
+    // affine_from_transform widens a rigid Transform (translation only,
+    // identity orientation) to a general AffineMap, then composes it with
+    // the Z-stretch — proving Transform ∘ AffineMap composition.
+    let widened = affine_from_transform(transform3(orient_identity(), vec3(5mm, 0mm, 0mm)))
+    let rigid_then_stretch = affine_compose(widened, z_stretch)
+
+    // det(rotation) · det(z_stretch) = 1 · 1.5 = 1.5 — the rigid widening
+    // contributes determinant 1 (rotation is orthonormal; translation does
+    // not affect the linear part).
+    let det_rigid = determinant(rigid_then_stretch)
+}

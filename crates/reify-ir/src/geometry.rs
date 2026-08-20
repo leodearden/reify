@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
 use crate::boundary_attachment::BoundaryAssociation;
 use crate::value::{SampledField, Value};
@@ -385,6 +384,13 @@ pub enum Operation {
     // ── Surface (free-form, non-planar producers) ────────────────────────────
     /// NURBS surface (free-form patch, non-planar, non-closed).
     SurfaceNurbs,
+    /// Isosurface extraction (marching cubes) from a voxel grid — the
+    /// Voxel→Mesh anchor op (task 4999, PRD
+    /// `docs/prds/v0_3/voxel-to-mesh-surfacing.md`). Classified Voxel-only-input
+    /// (see `classify_op_input_reprs` in `reify-eval/src/engine_build.rs`);
+    /// never a terminal `OcctKernel::execute()` target (C-1) — realized via a
+    /// Voxel→Mesh conversion edge feeding this Mesh-repr anchor.
+    Surface,
 
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
@@ -744,6 +750,24 @@ pub enum GeometryOp {
         linear: [[f64; 3]; 3],
         translation: [f64; 3],
     },
+    /// Apply a per-axis (non-rigid) scale to a target shape, producing a fresh
+    /// handle. Dispatches to `gp_GTrsf` / `BRepBuilderAPI_GTransform`
+    /// (`ffi::gtransform_shape`) with a diagonal linear part `diag(sx,sy,sz)`
+    /// and zero translation — the dedicated backing op for the documented
+    /// `scale(geometry, factors: Vector3<Real>)` overload (stdlib-reference
+    /// §3.7), distinct from the uniform `Scale { factor: f64 }` fast-path
+    /// (`gp_Trsf` via `ffi::scale_shape`) and from `AffineApply` (general
+    /// dense 3×3 linear map, e.g. shear).
+    ///
+    /// `sx`/`sy`/`sz` must each be finite and non-zero (zero or non-finite
+    /// components are rejected before reaching OCCT — negative components,
+    /// i.e. reflections, are valid).
+    ScaleNonUniform {
+        target: GeometryHandleId,
+        sx: f64,
+        sy: f64,
+        sz: f64,
+    },
     /// Create a linear pattern of copies along a direction.
     LinearPattern {
         target: GeometryHandleId,
@@ -775,10 +799,18 @@ pub enum GeometryOp {
         count2: usize,
         spacing2: Value,
     },
-    /// Create copies at user-specified translation offsets.
+    /// Create copies at user-specified per-instance rigid transforms.
+    ///
+    /// Each element is `(rotation, translation)`: `rotation` is a scalar-first
+    /// unit quaternion `[qw, qx, qy, qz]` and `translation` is `[dx, dy, dz]`
+    /// in SI metres — mirroring [`GeometryOp::ApplyTransform`]'s field
+    /// convention so the kernel builds each instance with the same rigid
+    /// transform machinery. Translation-only instances (the legacy
+    /// scalar-triple call form) carry the identity quaternion
+    /// `[1.0, 0.0, 0.0, 0.0]`.
     ArbitraryPattern {
         target: GeometryHandleId,
-        transforms: Vec<[f64; 3]>,
+        transforms: Vec<([f64; 4], [f64; 3])>,
     },
     /// Loft through a sequence of profiles.
     Loft { profiles: Vec<GeometryHandleId> },
@@ -801,29 +833,24 @@ pub enum GeometryOp {
     },
     /// Create a pipe along `path` with circular cross-section of `radius`.
     ///
-    /// Composed at the kernel layer as `make_pipe(make_circle_face(radius, 0.0),
-    /// path)`. The circle cross-section is a private kernel-internal detail.
+    /// Composed at the kernel layer by posing the circular cross-section on
+    /// the path's **start frame** — centred at the path wire's start point,
+    /// with the section plane's normal aligned to the path's start tangent —
+    /// then sweeping that face along `path`. The circular cross-section and
+    /// the way it is constructed remain private kernel-internal details.
     ///
-    /// # Orientation constraint
+    /// # Orientation
     ///
-    /// The circular cross-section is a face in the **XY plane at z=0**
-    /// (i.e. its normal is +Z). `BRepOffsetAPI_MakePipe` expects the
-    /// profile's plane to align with the path's start-tangent; only paths
-    /// whose start-tangent is approximately **+Z** (within 1e-6) are
-    /// accepted.
+    /// **Any** finite start-tangent orientation is accepted: there is no
+    /// preferred axis and no antiparallel singularity.
     ///
-    /// Paths whose start-tangent is not aligned with +Z are rejected at
-    /// `execute` with `GeometryError::OperationFailed`. Callers needing
-    /// arbitrary path orientations should use `Sweep { profile, path }`
-    /// directly, supplying an explicit profile wire already aligned to
-    /// the desired frame.
+    /// A path whose start tangent has a non-finite component is rejected at
+    /// `execute` with `GeometryError::OperationFailed`. That signals a
+    /// malformed path wire, *not* an unsupported orientation.
     ///
-    /// The `kernel_pipe_non_z_start_tangent_returns_error` test locks in
-    /// this contract over +X, +Y, and arc-in-XY-plane paths.
-    ///
-    /// **Future work:** General start-tangent reorientation (automatically
-    /// aligning the profile face to the path's local frame) is deferred;
-    /// see option (a) from the task-2095 review.
+    /// `Sweep { profile, path }` remains the right operation for a
+    /// **non-circular** cross-section, where the caller supplies the profile
+    /// wire and is responsible for posing it.
     Pipe {
         path: GeometryHandleId,
         radius: Value,
@@ -1029,6 +1056,24 @@ pub enum GeometryOp {
         u_degree: usize,
         v_degree: usize,
     },
+    /// Isosurface extraction (marching cubes) from a voxel grid.
+    ///
+    /// `grid` is the sole parent handle (`ParentRole::SingleTarget`) — the
+    /// voxel grid to surface. `iso_level` is the marching-cubes iso value in
+    /// SI metres (a `Length` decoded to `f64`; default 0.0). `adaptive`
+    /// selects adaptive vs. uniform marching cubes (default false). Both
+    /// fields are field-compatible with `MarchingCubesOptions`
+    /// (`reify-kernel-openvdb`) by design — `reify-ir` cannot name that type
+    /// (it lives in a crate that already depends on `reify-ir`, so the
+    /// reverse reference would be a cycle); task γ reconstructs
+    /// `MarchingCubesOptions { iso_level, adaptive }` at the (Voxel, Mesh)
+    /// conversion stage. This op is a Mesh-repr terminal anchor fed by that
+    /// conversion edge (C-1); it is never dispatched to `OcctKernel::execute()`.
+    Surface {
+        grid: GeometryHandleId,
+        iso_level: f64,
+        adaptive: bool,
+    },
 }
 
 impl GeometryOp {
@@ -1114,7 +1159,7 @@ pub struct OpDescriptor {
     pub names: &'static [&'static str],
 }
 
-/// Descriptor table for all 48 [`GeometryOp`] variants.
+/// Descriptor table for all 49 [`GeometryOp`] variants.
 ///
 /// Single source of truth for per-variant classification facts (Axis 1 of
 /// the geometry-op dispatch registry, PRD §3/§9).
@@ -1135,9 +1180,9 @@ pub struct OpDescriptor {
 /// The `operation` and `parent_role` columns are hand-transcribed from
 /// `geometry_op_to_operation` and `parent_handles_for_op` in
 /// `reify-eval/src/engine_build.rs`.  No cross-crate test currently validates
-/// that these columns agree with those authoritative functions — only 6 of 48
+/// that these columns agree with those authoritative functions — only 6 of 49
 /// rows are spot-checked in the completeness test.  If either source function
-/// changes, the remaining ~42 rows may silently diverge.
+/// changes, the remaining ~43 rows may silently diverge.
 ///
 /// This copy is intentional for L1 (PRD §9): the table is re-homed into
 /// `reify-ir` so downstream crates can read it without depending on
@@ -1334,6 +1379,17 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         kind_token: "AffineApply",
         names: &["affine_apply"],
     },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ScaleNonUniform,
+        operation: Some(Operation::TransformScale),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "ScaleNonUniform",
+        // No distinct surface fn name: the `scale` name is owned by the
+        // uniform Scale descriptor. ScaleNonUniform is reached via the
+        // compiler's arg-shape dispatch (Vector3 2nd arg), not a distinct
+        // function name — mirrors the Split.names=&[] precedent below.
+        names: &[],
+    },
     // ── Pattern ──────────────────────────────────────────────────────────────
     OpDescriptor {
         disc: GeometryOpDiscriminants::LinearPattern,
@@ -1525,6 +1581,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::None,
         kind_token: "NurbsSurface",
         names: &["nurbs_surface"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Surface,
+        operation: Some(Operation::Surface),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Surface",
+        names: &["isosurface"],
     },
 ];
 
@@ -2410,14 +2473,624 @@ pub enum ExportWarning {
 }
 
 /// Tessellated mesh for visualization.
+///
+/// **Units:** `vertices` are in SI METRES — reify model space. Every kernel
+/// tessellation produces metres, and every consumer that needs another unit
+/// converts at its own boundary: [`write_3mf`] scales vertices to millimetres
+/// to match the `unit="millimeter"` it declares, while the STL writers emit
+/// metres verbatim (see their contract comments). Leaving this unstated is the
+/// root ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it
+/// here rather than at each use site.
+///
+/// `normals` carry NO length unit: they are dimensionless unit direction
+/// vectors, invariant under the uniform positive metre→millimetre scale the
+/// export writers apply, so no writer converts them (and none must).
 #[derive(Debug, Clone)]
 pub struct Mesh {
-    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    /// Vertex positions in SI metres, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
     /// Triangle indices, flat [i0, i1, i2, i3, i4, i5, ...].
     pub indices: Vec<u32>,
     /// Optional vertex normals, flat like vertices.
     pub normals: Option<Vec<f32>>,
+}
+
+// ── MeshContract (INV-GEO-1) ─────────────────────────────────────────────────
+//
+// See `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract. This
+// is the seam between `reify-ir` (kernel-agnostic) and the kernel crates:
+// `Mesh::validate` checks the producer obligations every kernel emitting a
+// `Mesh` must satisfy; `Mesh::weldedness` reports the orthogonal
+// consumer-capability axis (raw index welding), which is NOT gated by
+// `validate` — OCCT's per-face-block tessellation output
+// (`occt_wrapper.cpp:5847`) is unwelded by design and still fully valid.
+
+/// A [`Mesh`] that has passed [`Mesh::validate`] — a proof-carrying newtype
+/// witnessing that the wrapped mesh satisfies every producer obligation of
+/// the mesh contract (finite, index-valid, non-degenerate, closed, and
+/// consistently wound on its position-welded quotient topology).
+///
+/// Minted only by [`Mesh::validate`]; there is no public constructor, so
+/// holding a `ValidatedMesh` is itself evidence the checks ran and passed.
+#[derive(Debug, Clone)]
+pub struct ValidatedMesh(Mesh);
+
+impl ValidatedMesh {
+    /// Borrow the validated mesh.
+    pub fn mesh(&self) -> &Mesh {
+        &self.0
+    }
+
+    /// Consume the wrapper and recover the plain [`Mesh`].
+    pub fn into_inner(self) -> Mesh {
+        self.0
+    }
+}
+
+/// Consumer-CAPABILITY report: whether a mesh's raw (unwelded) index buffer
+/// already references each distinct vertex position exactly once, as opposed
+/// to per-face vertex blocks (each corner duplicated per incident face).
+///
+/// Orthogonal to [`Mesh::validate`]'s producer obligations — an unwelded mesh
+/// can still be a fully valid mesh; this is reported, not gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeldednessReport {
+    /// `true` if the raw vertex buffer contained no duplicate positions
+    /// (equivalently, `weld_merged_verts == 0`).
+    pub raw_welded: bool,
+    /// Number of raw vertices collapsed away by position-welding
+    /// (`raw vertex count - welded vertex count`).
+    pub weld_merged_verts: usize,
+}
+
+/// A single producer obligation checked by [`Mesh::validate`]. See
+/// `docs/prds/kernel-seam-contracts.md` §2 for the full obligation ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshInvariant {
+    /// Every vertex coordinate and (if present) normal component is finite
+    /// (no NaN or ±Infinity).
+    Finite,
+    /// Buffer shapes are well-formed and self-consistent: `vertices.len()`
+    /// and `indices.len()` are each a multiple of 3, every index is in
+    /// bounds for `vertices`, and (if present) `normals.len() ==
+    /// vertices.len()`.
+    IndexValid,
+    /// No triangle has a repeated welded vertex index or (near-)zero area.
+    NonDegenerate,
+    /// On the position-welded quotient topology, every directed edge has its
+    /// reverse exactly once (no open boundary).
+    Closed,
+    /// On the position-welded quotient topology, no directed edge appears
+    /// twice in the same direction (consistent, orientable winding).
+    ConsistentWinding,
+}
+
+/// Per-category offender counts populated by [`Mesh::validate`]. Only the
+/// categories belonging to the obligation that actually failed are nonzero
+/// — except [`MeshInvariant::ConsistentWinding`] and [`MeshInvariant::Closed`]
+/// which share one directed-edge pass and so populate both
+/// `reversed_edges` and `open_edges` together regardless of which is
+/// reported as `invariant`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MeshViolationCounts {
+    /// Vertices (or normals) with a non-finite coordinate.
+    pub nan_verts: usize,
+    /// Triangle index entries referencing an out-of-bounds vertex; or, for
+    /// a buffer-shape defect (a non-multiple-of-3 `indices`/`vertices`
+    /// length, or a `normals` buffer whose length doesn't match
+    /// `vertices`), the one dangling/malformed buffer counted as a single
+    /// offender.
+    pub oob_indices: usize,
+    /// Triangles with a repeated welded index or (near-)zero area.
+    pub degenerate_tris: usize,
+    /// Directed edges (on the welded quotient) missing their reverse.
+    pub open_edges: usize,
+    /// Directed edges (on the welded quotient) that occur more than once in
+    /// the same direction.
+    pub reversed_edges: usize,
+}
+
+/// A single concrete offender pinpointing a [`MeshContractViolation`] — kept
+/// minimal (§13 Q3 of the PRD: start with one witness variant per failure
+/// shape, widen additively).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MeshWitness {
+    /// The first non-finite vertex found: its raw index and coordinate
+    /// (the coordinate carries the NaN/Inf value itself for diagnostics).
+    ///
+    /// Also reused by the `IndexValid` buffer-shape guard (a malformed
+    /// `vertices`/`normals` length) with a `[NaN; 3]` sentinel coordinate,
+    /// standing in for "no single vertex is at fault — the whole buffer's
+    /// shape is."
+    Vertex { index: u32, coord: [f32; 3] },
+    /// The first offending triangle: its 0-based triangle index (into
+    /// `indices.len() / 3`) and its raw (unwelded) vertex indices.
+    Triangle { tri: usize, indices: [u32; 3] },
+    /// The first offending directed edge, as welded (canonical) vertex
+    /// indices `(u, v)`.
+    Edge { u: u32, v: u32 },
+}
+
+/// Kernel-agnostic mesh-contract violation returned by [`Mesh::validate`].
+///
+/// Deliberately has no `kernel` field: `reify-ir` has no kernel dependencies
+/// and cannot know which kernel produced the mesh. The kernel-aware wiring
+/// site attaches the kernel name to obtain a
+/// `GeometryError::MeshContractViolation` (see that variant's bridge).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshContractViolation {
+    /// The first obligation that failed.
+    pub invariant: MeshInvariant,
+    /// Per-category offender counts (see [`MeshViolationCounts`] for which
+    /// categories are populated together).
+    pub counts: MeshViolationCounts,
+    /// One concrete offender illustrating `invariant`.
+    pub witness: MeshWitness,
+}
+
+impl MeshContractViolation {
+    /// Attach the producing kernel's name, bridging this kernel-agnostic
+    /// violation into a [`GeometryError::MeshContractViolation`] for the
+    /// kernel-aware wiring sites (e.g. the OCCT/Manifold ingest paths) that
+    /// know which kernel produced the offending mesh.
+    pub fn into_geometry_error(self, kernel: &'static str) -> GeometryError {
+        GeometryError::MeshContractViolation {
+            kernel,
+            invariant: self.invariant,
+            counts: self.counts,
+            witness: self.witness,
+        }
+    }
+}
+
+/// Enforcement posture for the mesh contract (INV-GEO-1) at the kernel
+/// seam wiring sites (task #5105 δ).
+///
+/// After the δ rollout flip, [`MeshContractMode::Enforce`] is the default:
+/// a mesh failing [`Mesh::validate`] aborts the operation with a structured
+/// `GeometryError::MeshContractViolation`. `REIFY_MESH_CONTRACT=warn` is the
+/// break-glass escape hatch that downgrades a violation to a diagnostic and
+/// lets the mesh through.
+///
+/// Lives in `reify-ir` — the only crate both wiring sites can share (site 1
+/// is in `reify-eval`, site 2 in `reify-kernel-manifold`, whose dependency on
+/// `reify-eval` is dev-only) — next to the rest of the mesh-contract
+/// mechanism. Reading an env var is not a kernel dependency, so the layering
+/// stays clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MeshContractMode {
+    /// Break-glass: report a violation (diagnostic / log) but let the mesh
+    /// through (`REIFY_MESH_CONTRACT=warn`).
+    Warn,
+    /// Fail closed: a violation aborts the operation with a structured
+    /// `GeometryError::MeshContractViolation`. The default.
+    #[default]
+    Enforce,
+}
+
+impl MeshContractMode {
+    /// Environment variable consulted by [`MeshContractMode::from_env`].
+    pub const ENV_VAR: &'static str = "REIFY_MESH_CONTRACT";
+
+    /// Pure parser: map an optional configuration string to a mode.
+    ///
+    /// Fails **CLOSED**. Only `Some("warn")` (case-insensitive, surrounding
+    /// whitespace tolerated) yields [`MeshContractMode::Warn`]; every other
+    /// value — `None`, empty, `"enforce"`, garbage, a typo like `"enfroce"`
+    /// — yields [`MeshContractMode::Enforce`]. Unlike the usual
+    /// "unparseable → benign default" convention, the safe fallback here is
+    /// the STRICT one: a typo must never silently disable INV-GEO-1.
+    pub fn from_env_value(value: Option<&str>) -> Self {
+        let normalized = value.map(|v| v.trim().to_ascii_lowercase());
+        match normalized.as_deref() {
+            Some("warn") => MeshContractMode::Warn,
+            _ => MeshContractMode::Enforce,
+        }
+    }
+
+    /// Production selection: read `REIFY_MESH_CONTRACT`.
+    ///
+    /// # Unit-test coverage
+    ///
+    /// This thin env-reading wrapper delegates to the pure
+    /// [`MeshContractMode::from_env_value`] parser, which carries the
+    /// exhaustive string→mode cases (`mesh_contract_mode_from_env_value_parsing`).
+    /// Mirroring the codebase convention, the wrapper is intentionally NOT
+    /// unit-tested with `std::env::set_var`/`remove_var` — both are `unsafe`
+    /// in Rust 2024 and race-prone across parallel tests. A same-process
+    /// "delegates to the parser" test is not written either: with `ENV_VAR`
+    /// unset (the normal suite environment) both sides of such an assertion
+    /// evaluate to `Enforce`, so it would pass equally against a `from_env`
+    /// that hard-codes `Enforce` and ignores the environment — no
+    /// discriminating power. Pinning it honestly would need a child process
+    /// with the var set. The one behavioral line here is instead covered
+    /// indirectly by the site-1/site-2 integration tests.
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var(Self::ENV_VAR).ok().as_deref())
+    }
+}
+
+impl Mesh {
+    /// Position-weld the raw vertex buffer: map every distinct `(x, y, z)`
+    /// triple to one canonical index, in first-seen order.
+    ///
+    /// Keying is bit-exact — `(c + 0.0f32).to_bits()`, which normalizes
+    /// `-0.0` to `+0.0` so origin-plane corners weld — pinned to Manifold's
+    /// `from_mesh_f64` default weld for cross-consumer consistency
+    /// (`docs/prds/kernel-seam-contracts.md` §13 Q2). This is the canonical
+    /// implementation shared by [`Mesh::validate`] and [`Mesh::weldedness`];
+    /// distance-tolerant welding is deferred (no current consumer needs it).
+    ///
+    /// Returns `(canonical_vertices, old_to_canonical)` where
+    /// `old_to_canonical[old_idx] == canonical_idx`.
+    pub fn weld_positions(&self) -> (Vec<[f32; 3]>, Vec<u32>) {
+        let n = self.vertices.len() / 3;
+        let mut key_to_canon: HashMap<(u32, u32, u32), u32> = HashMap::new();
+        let mut canon_verts: Vec<[f32; 3]> = Vec::new();
+        let mut remap = Vec::with_capacity(n);
+        for i in 0..n {
+            let x = self.vertices[i * 3];
+            let y = self.vertices[i * 3 + 1];
+            let z = self.vertices[i * 3 + 2];
+            let key = (
+                (x + 0.0_f32).to_bits(),
+                (y + 0.0_f32).to_bits(),
+                (z + 0.0_f32).to_bits(),
+            );
+            let next_idx = canon_verts.len() as u32;
+            let canon_idx = *key_to_canon.entry(key).or_insert_with(|| {
+                canon_verts.push([x, y, z]);
+                next_idx
+            });
+            remap.push(canon_idx);
+        }
+        (canon_verts, remap)
+    }
+
+    /// Report the CONSUMER-CAPABILITY axis: does the raw index buffer
+    /// already reference each distinct vertex position exactly once?
+    ///
+    /// Orthogonal to [`Mesh::validate`]'s obligations — OCCT's per-face-block
+    /// tessellation output (`occt_wrapper.cpp:5847`) is unwelded by design
+    /// and still a fully valid mesh.
+    ///
+    /// `tol` is accepted for forward API symmetry with [`Mesh::validate`] but
+    /// currently unused: welding is bit-exact (§13 Q2); distance-tolerant
+    /// welding is deferred.
+    pub fn weldedness(&self, _tol: f64) -> WeldednessReport {
+        let (canon_verts, _) = self.weld_positions();
+        let raw_len = self.vertices.len() / 3;
+        let weld_merged_verts = raw_len.saturating_sub(canon_verts.len());
+        WeldednessReport {
+            raw_welded: weld_merged_verts == 0,
+            weld_merged_verts,
+        }
+    }
+
+    /// Shared obligation-checking body for [`Self::validate`] (borrowing;
+    /// clones `self` into the witness on success) and
+    /// [`Self::into_validated`] (by-value; moves `self` instead, to avoid
+    /// the clone on hot paths) — see those methods' docs for the full mesh
+    /// contract.
+    fn check_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+        // Obligation 2, part A — IndexValid (buffer shape): `vertices.len()`
+        // must be a multiple of 3, and if `normals` is present its length
+        // must equal `vertices.len()`. Checked FIRST, before Obligation 1
+        // (Finite) below, because Finite's scan walks `vertices.len() / 3`
+        // vertices and only inspects a normal when `base + 3 <=
+        // normals.len()` — a shape defect here would otherwise let a
+        // non-finite value hide in a truncated `vertices` tail or an
+        // unmatched/out-of-sync `normals` region rather than being caught.
+        // Reported as `IndexValid` (reusing its `oob_indices` counter,
+        // parallel to the dangling index-tail case in part B below) rather
+        // than a new invariant, since it's the same "malformed buffer
+        // shape" category.
+        if !self.vertices.len().is_multiple_of(3)
+            || self
+                .normals
+                .as_ref()
+                .is_some_and(|normals| normals.len() != self.vertices.len())
+        {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::IndexValid,
+                counts: MeshViolationCounts {
+                    oob_indices: 1,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Vertex {
+                    index: (self.vertices.len() / 3) as u32,
+                    coord: [f32::NAN, f32::NAN, f32::NAN],
+                },
+            });
+        }
+
+        // Obligation 1 — Finite: every vertex coordinate and (if present)
+        // normal component must be finite (no NaN/±Infinity). Runs before
+        // every other check since a non-finite coordinate poisons all
+        // downstream geometric tests (bounds, area, winding).
+        let n = self.vertices.len() / 3;
+        let mut nan_verts = 0usize;
+        let mut first_witness: Option<(u32, [f32; 3])> = None;
+        for i in 0..n {
+            let pos = [
+                self.vertices[i * 3],
+                self.vertices[i * 3 + 1],
+                self.vertices[i * 3 + 2],
+            ];
+            let pos_finite = pos.iter().all(|c| c.is_finite());
+            let normal = self.normals.as_ref().and_then(|normals| {
+                let base = i * 3;
+                (base + 3 <= normals.len())
+                    .then(|| [normals[base], normals[base + 1], normals[base + 2]])
+            });
+            let normal_finite = normal.is_none_or(|nv| nv.iter().all(|c| c.is_finite()));
+            if !pos_finite || !normal_finite {
+                nan_verts += 1;
+                if first_witness.is_none() {
+                    // Report whichever of position/normal actually carries
+                    // the non-finite value, so the witness coordinate is
+                    // diagnostic rather than a finite decoy.
+                    let coord = if !pos_finite { pos } else { normal.unwrap() };
+                    first_witness = Some((i as u32, coord));
+                }
+            }
+        }
+        if let Some((index, coord)) = first_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::Finite,
+                counts: MeshViolationCounts {
+                    nan_verts,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Vertex { index, coord },
+            });
+        }
+
+        // Obligation 2, part B — IndexValid (index bounds): `indices.len()`
+        // must be a multiple of 3 and every index must reference an
+        // in-bounds vertex. Runs before welding (later obligations) so an
+        // out-of-bounds index cannot panic the weld remap.
+        let mut oob_indices = 0usize;
+        let mut index_witness: Option<(usize, [u32; 3])> = None;
+        let complete_tris = self.indices.len() / 3;
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_indices = [
+                self.indices[base],
+                self.indices[base + 1],
+                self.indices[base + 2],
+            ];
+            let oob_here = tri_indices
+                .iter()
+                .filter(|&&idx| mesh_vertex(&self.vertices, idx).is_none())
+                .count();
+            if oob_here > 0 {
+                oob_indices += oob_here;
+                if index_witness.is_none() {
+                    index_witness = Some((tri, tri_indices));
+                }
+            }
+        }
+        if !self.indices.len().is_multiple_of(3) {
+            // A dangling trailing group that doesn't form a full triangle —
+            // counted as the one offending group (not per leftover index).
+            oob_indices += 1;
+            if index_witness.is_none() {
+                let base = complete_tris * 3;
+                let mut tail = [u32::MAX; 3];
+                for (slot, &v) in tail.iter_mut().zip(&self.indices[base..]) {
+                    *slot = v;
+                }
+                index_witness = Some((complete_tris, tail));
+            }
+        }
+        if let Some((tri, tri_indices)) = index_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::IndexValid,
+                counts: MeshViolationCounts {
+                    oob_indices,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Triangle {
+                    tri,
+                    indices: tri_indices,
+                },
+            });
+        }
+
+        // Obligation 3 — NonDegenerate: no triangle may have (near-)zero
+        // area. This also catches a repeated raw index or two distinct
+        // indices at coincident positions: either collapses one edge to
+        // the zero vector, so the cross product is exactly zero regardless
+        // of the third corner — no separate index-repeat check is needed.
+        // Reuses the same `(b-a) × (c-a)` cross-product math as
+        // `compute_facet_normal`, but keeps the raw magnitude (twice the
+        // triangle's area) instead of a normalized direction, since that
+        // magnitude is what `tol` gates. Indices are already bounds-checked
+        // by the IndexValid obligation above, so `mesh_vertex` cannot fail
+        // here.
+        let mut degenerate_tris = 0usize;
+        let mut degenerate_witness: Option<(usize, [u32; 3])> = None;
+        let tol_area = tol * tol;
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_indices = [
+                self.indices[base],
+                self.indices[base + 1],
+                self.indices[base + 2],
+            ];
+            let [a, b, c] = tri_indices.map(|idx| {
+                mesh_vertex(&self.vertices, idx)
+                    .expect("index bounds already checked by the IndexValid obligation")
+            });
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let cross = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let twice_area =
+                (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() as f64;
+            if twice_area <= tol_area {
+                degenerate_tris += 1;
+                if degenerate_witness.is_none() {
+                    degenerate_witness = Some((tri, tri_indices));
+                }
+            }
+        }
+        if let Some((tri, tri_indices)) = degenerate_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::NonDegenerate,
+                counts: MeshViolationCounts {
+                    degenerate_tris,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Triangle {
+                    tri,
+                    indices: tri_indices,
+                },
+            });
+        }
+
+        // Obligations 4/5 — ConsistentWinding + Closed: on the
+        // position-welded quotient topology, every directed edge must have
+        // its reverse exactly once. Position-welding first is essential:
+        // OCCT's per-face tessellation output (`occt_wrapper.cpp:5847`)
+        // emits each corner once per incident face, so the RAW index buffer
+        // is (by design) never closed — only the welded quotient is. Lifted
+        // from the closed-orientable-manifold invariant in
+        // `tessellation_winding_integration.rs` (task 4336): a single
+        // directed-edge occurrence map serves both obligations —
+        // `reversed_edges` counts directed edges occurring more than once
+        // in the SAME direction (two triangles agreeing on a shared edge's
+        // direction, which is a winding inconsistency), `open_edges` counts
+        // directed edges whose reverse never occurs at all (a boundary
+        // hole). A same-direction duplicate always also leaves its true
+        // reverse absent, so both counts populate together for that input
+        // — but ConsistentWinding is reported first (PRD §11.1): it is the
+        // more specific diagnosis of the two.
+        let (_, welded_indices) = self.weld_positions();
+        let remapped: Vec<u32> = self
+            .indices
+            .iter()
+            .map(|&idx| welded_indices[idx as usize])
+            .collect();
+        let mut edge_count: HashMap<(u32, u32), usize> = HashMap::new();
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let a = remapped[base];
+            let b = remapped[base + 1];
+            let c = remapped[base + 2];
+            *edge_count.entry((a, b)).or_insert(0) += 1;
+            *edge_count.entry((b, c)).or_insert(0) += 1;
+            *edge_count.entry((c, a)).or_insert(0) += 1;
+        }
+        // Totals: a sum of a per-key predicate over the whole map, so the
+        // result doesn't depend on (nondeterministic) hash-map iteration
+        // order.
+        let mut reversed_edges = 0usize;
+        let mut open_edges = 0usize;
+        for (&(u, v), &count) in &edge_count {
+            if count >= 2 {
+                reversed_edges += 1;
+            }
+            if *edge_count.get(&(v, u)).unwrap_or(&0) == 0 {
+                open_edges += 1;
+            }
+        }
+        // Witnesses: a separate, deterministic pass in triangle-emission
+        // order so the reported offender doesn't depend on hash-map
+        // iteration order, even though the totals above don't need it.
+        let mut winding_witness: Option<(u32, u32)> = None;
+        let mut open_witness: Option<(u32, u32)> = None;
+        'witness_search: for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_edges = [
+                (remapped[base], remapped[base + 1]),
+                (remapped[base + 1], remapped[base + 2]),
+                (remapped[base + 2], remapped[base]),
+            ];
+            for (u, v) in tri_edges {
+                if winding_witness.is_none() && *edge_count.get(&(u, v)).unwrap_or(&0) >= 2 {
+                    winding_witness = Some((u, v));
+                }
+                if open_witness.is_none() && *edge_count.get(&(v, u)).unwrap_or(&0) == 0 {
+                    open_witness = Some((u, v));
+                }
+                if winding_witness.is_some() && open_witness.is_some() {
+                    break 'witness_search;
+                }
+            }
+        }
+        if reversed_edges > 0 {
+            let (u, v) =
+                winding_witness.expect("reversed_edges > 0 implies a winding witness was found");
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::ConsistentWinding,
+                counts: MeshViolationCounts {
+                    open_edges,
+                    reversed_edges,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Edge { u, v },
+            });
+        }
+        if open_edges > 0 {
+            let (u, v) = open_witness.expect("open_edges > 0 implies an open witness was found");
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::Closed,
+                counts: MeshViolationCounts {
+                    open_edges,
+                    reversed_edges,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Edge { u, v },
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Check every producer obligation of the mesh contract and, on success,
+    /// mint a [`ValidatedMesh`] witnessing it. See
+    /// `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract;
+    /// real rustdoc naming each obligation lives on
+    /// [`GeometryKernel::tessellate`] and [`GeometryKernel::ingest_mesh`].
+    ///
+    /// `tol` is the [`MeshInvariant::NonDegenerate`] twice-area epsilon (a
+    /// length-scale value; a triangle is degenerate when the magnitude of
+    /// its `(b-a) × (c-a)` cross product is `<= tol * tol`). It does NOT
+    /// affect [`Mesh::weld_positions`], which is always bit-exact.
+    ///
+    /// Clones `self` to mint the witness — this sits on the kernel
+    /// tessellation/ingest hot path, so if the caller doesn't need the
+    /// original `Mesh` back after a successful check, prefer
+    /// [`Self::into_validated`] to move it in instead and skip the clone.
+    pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
+        self.check_contract(tol)?;
+        Ok(ValidatedMesh(self.clone()))
+    }
+
+    /// By-value sibling of [`Self::validate`]: moves `self` into the minted
+    /// [`ValidatedMesh`] on success instead of cloning it, for callers
+    /// (e.g. kernel tessellation/ingest paths) that don't need to retain
+    /// the original `Mesh` once it's been validated.
+    ///
+    /// On failure, hands `self` back alongside the [`MeshContractViolation`]
+    /// so the mesh isn't lost; callers that must retain ownership on
+    /// failure too should use the borrowing [`Self::validate`] instead.
+    /// Boxed per `clippy::result_large_err` — the tuple carries a whole
+    /// [`Mesh`], so returning it unboxed would bloat every `Ok` path too.
+    pub fn into_validated(
+        self,
+        tol: f64,
+    ) -> Result<ValidatedMesh, Box<(Mesh, MeshContractViolation)>> {
+        match self.check_contract(tol) {
+            Ok(()) => Ok(ValidatedMesh(self)),
+            Err(violation) => Err(Box::new((self, violation))),
+        }
+    }
 }
 
 // ── STL serializers ──────────────────────────────────────────────────────────
@@ -2444,6 +3117,49 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
         [n[0] / len, n[1] / len, n[2] / len]
     }
 }
+
+/// Millimetres per metre — the single metre→millimetre conversion point for
+/// the 3MF writer.
+///
+/// **Export length regime.** Reify model space is SI METRES. Reify's
+/// declaration-carrying export formats emit MILLIMETRES, the CAD/3MF interop
+/// default, so that the unit a file DECLARES and the coordinates it CARRIES
+/// agree. [`write_3mf`] declares `unit="millimeter"`, so it applies this
+/// factor at the vertex-emit site; the STEP writer makes the same promise
+/// through OCCT's per-model length units (see `export_step` in
+/// `reify-kernel-occt`'s `occt_wrapper.cpp`).
+///
+/// The STL writers deliberately do NOT use this — see the contract comments on
+/// [`write_stl_binary`] / [`write_stl_ascii`].
+///
+/// **Why this is `f32` and not `f64`.** [`Mesh::vertices`] is `Vec<f32>`, and
+/// the scaling is deliberately done in the source precision. Promoting to f64
+/// first (`f64::from(v) * 1000.0`) is exact — a 24-bit significand times
+/// `1000 = 2^3·125` needs 31 bits — but exactness here is a MISFEATURE: it
+/// preserves, and then prints, all 17 digits of the f32 input's binary
+/// representation error. Multiplying in f32 instead re-rounds onto the f32
+/// grid at the millimetre magnitude, whose ulp (1.9e-6 at 30) is COARSER than
+/// the scaled input's deviation from the round decimal (6.7e-7 at 30), so the
+/// product lands back exactly on the decimal the author wrote. Measured, with
+/// `{}` (shortest round-trip) formatting:
+///
+/// | input (m) | `v * MM_PER_METRE_F32` | `f64::from(v) * 1000.0` |
+/// |---|---|---|
+/// | `0.030`  | `30`   | `29.999999329447746` |
+/// | `0.0335` | `33.5` | `33.50000083446503`  |
+/// | `0.1`    | `100`  | `100.00000149011612` |
+///
+/// The f32 route is therefore the one that emits round, diffable coordinates
+/// and keeps every value exactly f32-round-trippable (the mesh's own
+/// precision); the f64 route emits false precision, and in the measured cases
+/// above it grows each coordinate literal from 2 to 18 characters.
+///
+/// The accuracy given up is bounded by 2^-23 relative — the input's own
+/// ≤2^-24 plus one re-rounding of ≤2^-24 — so it is within a FACTOR OF TWO of
+/// the precision the `Vec<f32>` buffer already has, and cannot meaningfully
+/// degrade data that is f32 to begin with. Worst case on a 30 mm part is
+/// ~3.6e-6 mm, i.e. nanometres.
+const MM_PER_METRE_F32: f32 = 1000.0;
 
 /// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
 /// Returns `None` if `idx` is out of bounds.
@@ -2480,6 +3196,19 @@ fn triangle_verts(
 }
 
 /// Write a mesh to the STL binary format.
+///
+/// **Units — deliberately asymmetric with [`write_3mf`].** STL carries no unit
+/// field, so there is no declaration to keep honest and this writer emits the
+/// caller's coordinates VERBATIM — SI metres when fed straight from a reify
+/// kernel, since [`Mesh`] is metres. A consumer expecting the de-facto
+/// millimetre STL convention must scale at the call site, as
+/// `crates/reify-eval/src/compute_targets/fdm_slice.rs` already does (×1000)
+/// before handing a mesh to PrusaSlicer. Scaling here instead would silently
+/// make that existing caller 1,000,000×.
+///
+/// TODO(#6187): unify STL into the millimetre regime — scale here and strip the
+/// caller-side ×1000 in `fdm_slice.rs` in the same change, so the divergence
+/// stays deliberate rather than becoming accidental.
 ///
 /// **Format** (LITTLE-ENDIAN):
 /// - 80-byte header (fixed ASCII label, NOT starting with "solid")
@@ -2549,6 +3278,13 @@ pub fn write_stl_binary(
 }
 
 /// Write a mesh to the STL ASCII format.
+///
+/// **Units — deliberately asymmetric with [`write_3mf`].** As with
+/// [`write_stl_binary`]: STL carries no unit field, so there is no declaration
+/// to keep honest and this writer emits the caller's coordinates VERBATIM (SI
+/// metres from a reify kernel). Callers needing the de-facto millimetre STL
+/// convention scale at the call site. TODO(#6187): unify STL into the
+/// millimetre regime alongside `write_stl_binary`.
 ///
 /// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
@@ -2647,6 +3383,14 @@ impl ThreeMfWarning {
 
 /// Write `mesh` to the 3MF format (OPC ZIP package).
 ///
+/// **Units:** takes a `Mesh` whose vertices are SI METRES (reify model space)
+/// and emits a package declaring `unit="millimeter"`, converting the
+/// coordinates by [`MM_PER_METRE_F32`] as it writes them. The declaration and
+/// the payload therefore agree: a 0.030 m cube is written as 30 mm and reads
+/// back as 30 mm in any 3MF consumer. Scaling here — at the site that makes
+/// the `unit=` promise — rather than in the callers is what makes the promise
+/// un-bypassable: no caller can obtain a mislabelled package.
+///
 /// Produces a valid 3MF/OPC ZIP holding three parts:
 ///
 /// - `[Content_Types].xml` — OPC content-type declarations
@@ -2669,9 +3413,10 @@ impl ThreeMfWarning {
 /// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
 /// `include_colors` is set (geometry is still written).
 ///
-/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
-/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
-/// that require IEEE-finite coordinates will reject such packages.
+/// **NaN/Inf coordinates:** non-finite `f32` values stay non-finite through
+/// the metre→millimetre multiply and are written as-is via `{}` formatting
+/// (matching `write_stl_ascii` behavior).  3MF consumers that require
+/// IEEE-finite coordinates will reject such packages.
 pub fn write_3mf(
     mesh: &Mesh,
     opts: ThreeMfOptions,
@@ -2776,10 +3521,24 @@ pub fn write_3mf(
                 Error::new(ErrorKind::InvalidData, format!("vertex index {i} out of bounds"))
             })?;
             line_buf.clear();
+            // Metres → millimetres, so the emitted coordinates match the
+            // `unit="millimeter"` declared above. See `MM_PER_METRE_F32`.
+            //
+            // Multiply in f32, NOT via an `f64::from(v) * 1000.0` promotion:
+            // the f32 re-rounding is what lands `0.030 m` back on `30` instead
+            // of printing `29.999999329447746`. That is measured, and the
+            // reasoning is written out on `MM_PER_METRE_F32` — do not "fix" it
+            // to f64 without re-reading it.
+            //
             // Using std::fmt::Write on String is infallible.
             let _ = std::fmt::write(
                 &mut line_buf,
-                format_args!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]),
+                format_args!(
+                    "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+                    v[0] * MM_PER_METRE_F32,
+                    v[1] * MM_PER_METRE_F32,
+                    v[2] * MM_PER_METRE_F32
+                ),
             );
             zw.write_all(line_buf.as_bytes())?;
         }
@@ -2822,17 +3581,19 @@ pub fn write_3mf(
     Ok(warnings)
 }
 
-/// FEA element-order discriminator for a tet-based [`VolumeMesh`].
+/// FEA element-order discriminator for the tetrahedral
+/// [`VolumeConnectivity::Tet`] family.
 ///
 /// `P1` tetrahedra carry 4 corner nodes per element (linear shape functions,
-/// 4 indices in `tet_indices` per element). `P2` tetrahedra carry 10 nodes
-/// per element — 4 corners plus 6 edge midpoints in Gmsh's canonical local
-/// ordering (quadratic shape functions, 10 indices per element).
+/// 4 indices per element). `P2` tetrahedra carry 10 nodes per element — 4
+/// corners plus 6 edge midpoints in Gmsh's canonical local ordering
+/// (quadratic shape functions, 10 indices per element).
 ///
-/// Used both as an explicit field on [`VolumeMesh`] and as one of the inputs
-/// to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so changing
-/// element order between two otherwise-identical mesh requests produces a
-/// distinct cache entry.
+/// Used both as a field of [`VolumeConnectivity::Tet`] and as one of the
+/// inputs to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so
+/// changing element order between two otherwise-identical mesh requests
+/// produces a distinct cache entry. `Hex`/`Wedge` elements are P1-only in
+/// v0.3.x and carry no `ElementOrderTag` — see [`VolumeConnectivity`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ElementOrderTag {
     /// 4-node tetrahedral element (linear shape functions).
@@ -2842,30 +3603,70 @@ pub enum ElementOrderTag {
     P2,
 }
 
-/// Volumetric tetrahedral mesh produced by the v0.3 surface→volume meshing
-/// pipeline (e.g. Gmsh HXT).
+/// Element connectivity for a [`VolumeMesh`] — exactly one element family
+/// per mesh (no within-body mixing).
+///
+/// Modeled as a discriminated union rather than parallel optional fields on
+/// `VolumeMesh` so illegal states (e.g. a mesh carrying both tet and hex
+/// indices, or a hex mesh tagged with an `ElementOrderTag`) are
+/// unrepresentable. `Tet` carries an explicit [`ElementOrderTag`] (P1 or
+/// P2); `Hex` and `Wedge` are P1-only in v0.3.x (task 4986 — hex/wedge
+/// Phase-A activation) and so carry no order field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeConnectivity {
+    /// Tetrahedral connectivity: 4 indices per element for P1, 10 per
+    /// element for P2 (4 corner + 6 edge midpoints in Gmsh canonical order).
+    Tet {
+        /// Flat per-element index buffer (stride 4 for P1, 10 for P2).
+        indices: Vec<u32>,
+        /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
+        order: ElementOrderTag,
+    },
+    /// Hex8 connectivity (P1 only): 8 indices per element.
+    ///
+    /// Index ordering follows the canonical hex8 ordering documented in
+    /// `reify_solver_elastic::assembly::hex` / `sweep::SweptConnectivity::Hex`:
+    /// bottom face first (CCW), then top face in the same cyclic order.
+    Hex {
+        /// Flat per-element index buffer (stride 8).
+        indices: Vec<u32>,
+    },
+    /// Wedge (PRI6) connectivity (P1 only): 6 indices per element.
+    ///
+    /// Index ordering follows the canonical wedge/PRI6 ordering documented in
+    /// `reify_solver_elastic::assembly::wedge` / `sweep::SweptConnectivity::Wedge`:
+    /// bottom face first (CCW), then top face in the same cyclic order.
+    Wedge {
+        /// Flat per-element index buffer (stride 6).
+        indices: Vec<u32>,
+    },
+}
+
+/// Volumetric mesh produced by the v0.3 surface→volume meshing pipeline
+/// (e.g. Gmsh HXT tets) or the swept hex/wedge pipeline
+/// (`reify_solver_elastic::sweep::sweep_2d_mesh_to_3d`, task 4986).
 ///
 /// Mirrors [`Mesh`]'s field shape (`vertices: Vec<f32>` flat XYZ triples,
 /// optional flat `normals`) so existing helpers that walk vertex positions
-/// can share code. The structural difference is `tet_indices`: a flat array
-/// of **4 indices per element for P1** (one tet = 4 corner indices), or
-/// **10 indices per element for P2** (4 corner + 6 edge-midpoint indices in
-/// Gmsh's canonical local ordering). Distinct from `Mesh::indices` (3
+/// can share code. The structural difference is `connectivity`: a
+/// [`VolumeConnectivity`] discriminated union carrying exactly one element
+/// family's flat per-element index buffer, distinct from `Mesh::indices` (3
 /// indices per surface triangle).
 ///
-/// `element_order` tags the per-element arity so downstream consumers
-/// (`reify-solver-elastic` for FEA stiffness assembly, future GUI volume
-/// renderers) can read the index stride without round-tripping through a
-/// separate metadata channel.
+/// `connectivity` tags the per-element family and arity so downstream
+/// consumers (`reify-solver-elastic` for FEA stiffness assembly, future GUI
+/// volume renderers) can read the index stride without round-tripping
+/// through a separate metadata channel. Convenience accessors
+/// (`tet_indices`, `element_order`, `hex_indices`, `wedge_indices`,
+/// `nodes_per_element`) bound the churn of matching on `connectivity` at
+/// every read site.
 #[derive(Debug, Clone)]
 pub struct VolumeMesh {
     /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
-    /// Tet element indices: 4 per element for P1, 10 per element for P2
-    /// (4 corner + 6 edge midpoints in Gmsh canonical order).
-    pub tet_indices: Vec<u32>,
-    /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
-    pub element_order: ElementOrderTag,
+    /// Element connectivity — exactly one of Tet/Hex/Wedge (no within-body
+    /// mixing). See [`VolumeConnectivity`].
+    pub connectivity: VolumeConnectivity,
     /// Optional per-vertex normals (flat, same layout as `vertices`); seldom
     /// populated for volume meshes since interior nodes have no canonical
     /// surface-normal direction, but kept here as an `Option` so a future
@@ -2885,6 +3686,64 @@ pub struct VolumeMesh {
 }
 
 impl VolumeMesh {
+    /// Borrow this mesh's element connectivity.
+    pub fn connectivity(&self) -> &VolumeConnectivity {
+        &self.connectivity
+    }
+
+    /// Tet element indices (4/elem for P1, 10/elem for P2), or `None` if
+    /// this mesh's connectivity is `Hex` or `Wedge`.
+    pub fn tet_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Tet { indices, .. } => Some(indices),
+            VolumeConnectivity::Hex { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Element order discriminator (P1/P2), or `None` if this mesh's
+    /// connectivity is `Hex` or `Wedge` (both P1-only, no order field).
+    pub fn element_order(&self) -> Option<ElementOrderTag> {
+        match &self.connectivity {
+            VolumeConnectivity::Tet { order, .. } => Some(*order),
+            VolumeConnectivity::Hex { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Hex8 element indices (8/elem), or `None` if this mesh's connectivity
+    /// is `Tet` or `Wedge`.
+    pub fn hex_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Hex { indices } => Some(indices),
+            VolumeConnectivity::Tet { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Wedge/PRI6 element indices (6/elem), or `None` if this mesh's
+    /// connectivity is `Tet` or `Hex`.
+    pub fn wedge_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Wedge { indices } => Some(indices),
+            VolumeConnectivity::Tet { .. } | VolumeConnectivity::Hex { .. } => None,
+        }
+    }
+
+    /// Nodes per element for this mesh's connectivity family: 4 (P1 tet), 10
+    /// (P2 tet), 8 (hex), or 6 (wedge).
+    pub fn nodes_per_element(&self) -> usize {
+        match &self.connectivity {
+            VolumeConnectivity::Tet {
+                order: ElementOrderTag::P1,
+                ..
+            } => 4,
+            VolumeConnectivity::Tet {
+                order: ElementOrderTag::P2,
+                ..
+            } => 10,
+            VolumeConnectivity::Hex { .. } => 8,
+            VolumeConnectivity::Wedge { .. } => 6,
+        }
+    }
+
     /// Read the XYZ position of node `idx` from the flat `vertices` buffer
     /// (layout: `[x0, y0, z0, x1, y1, z1, …]`, stride 3).
     ///
@@ -2935,6 +3794,21 @@ pub enum GeometryError {
     OperationFailed(String),
     /// Kernel initialization error.
     InitFailed(String),
+    /// A kernel-emitted [`Mesh`] failed [`Mesh::validate`]'s producer
+    /// obligations (INV-GEO-1). Kernel-aware wiring sites obtain this from
+    /// the kernel-agnostic [`MeshContractViolation`] via
+    /// [`MeshContractViolation::into_geometry_error`].
+    MeshContractViolation {
+        /// Name of the kernel that produced the offending mesh (e.g.
+        /// `"occt"`, `"manifold"`).
+        kernel: &'static str,
+        /// The first obligation that failed.
+        invariant: MeshInvariant,
+        /// Per-category offender counts.
+        counts: MeshViolationCounts,
+        /// One concrete offender illustrating `invariant`.
+        witness: MeshWitness,
+    },
 }
 
 impl fmt::Display for GeometryError {
@@ -2948,6 +3822,18 @@ impl fmt::Display for GeometryError {
             }
             GeometryError::InitFailed(msg) => {
                 write!(f, "geometry kernel init failed: {}", msg)
+            }
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts,
+                witness,
+            } => {
+                write!(
+                    f,
+                    "kernel '{kernel}' emitted a mesh violating the mesh contract: \
+                     {invariant:?} ({counts:?}, witness: {witness:?})"
+                )
             }
         }
     }
@@ -3316,6 +4202,21 @@ pub trait GeometryKernel: Send + Sync {
     }
 
     /// Tessellate a handle into a mesh.
+    ///
+    /// # Mesh contract (INV-GEO-1)
+    ///
+    /// The returned [`Mesh`] must satisfy every producer obligation checked
+    /// by [`Mesh::validate`]: finite coordinates, in-bounds indices,
+    /// non-degenerate triangles, and — on the mesh's **position-welded
+    /// quotient topology** — closed and consistently wound. Closed and
+    /// consistently-wound are checked on the WELDED quotient, not the raw
+    /// index buffer, specifically so that per-face-block output (each
+    /// corner emitted once per incident face — e.g. OCCT's
+    /// `tessellate_shape`, `occt_wrapper.cpp:5847`) is legal: raw-index
+    /// welledness is a [`Mesh::weldedness`] ([`WeldednessReport`]) CONSUMER
+    /// CAPABILITY, reported but never gated — not one of `validate`'s
+    /// obligations. A [`ValidatedMesh`] is the proof-carrying witness that
+    /// these obligations held.
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
 
     /// Extract the unique edges of a shape, storing each as a new handle.
@@ -3460,6 +4361,25 @@ pub trait GeometryKernel: Send + Sync {
     /// orientable triangle meshes and stores them as `Manifold` values (see
     /// `crates/reify-kernel-manifold/src/kernel.rs`).
     ///
+    /// # Mesh contract (INV-GEO-1)
+    ///
+    /// An accepting override should require `_mesh` to satisfy every
+    /// producer obligation checked by [`Mesh::validate`]: finite
+    /// coordinates, in-bounds indices, non-degenerate triangles, and — on
+    /// the mesh's **position-welded quotient topology** — closed and
+    /// consistently wound. Closed and consistently-wound are checked on the
+    /// WELDED quotient, not the raw index buffer, so per-face-block input
+    /// (each corner emitted once per incident face — e.g. OCCT's
+    /// `tessellate_shape` output, `occt_wrapper.cpp:5847`) is legal and
+    /// unwelded-by-design. Raw-index welledness is a [`Mesh::weldedness`]
+    /// ([`WeldednessReport`]) CONSUMER CAPABILITY — reported, not gated — so
+    /// an override may reject an invalid mesh (bridging the
+    /// `Err(MeshContractViolation)` from `validate` into
+    /// `Err(GeometryError::MeshContractViolation)` via
+    /// [`MeshContractViolation::into_geometry_error`]) but must not reject
+    /// solely for being unwelded. A [`ValidatedMesh`] is the proof-carrying
+    /// witness that these obligations held.
+    ///
     /// # Object safety
     ///
     /// The trait remains object-safe — `Self` appears only in the `&mut self`
@@ -3483,6 +4403,32 @@ pub trait GeometryKernel: Send + Sync {
             "{} does not accept Mesh inputs",
             std::any::type_name::<Self>()
         )))
+    }
+
+    /// Register a [`Mesh`] directly as an honestly-Mesh-repr handle, WITHOUT
+    /// re-deriving or otherwise transforming it (task 5033, PRD
+    /// `voxel-to-mesh-surfacing.md` §10 OQ-1 option (a)).
+    ///
+    /// # Why this differs from `ingest_mesh`
+    ///
+    /// [`Self::ingest_mesh`]'s contract is kernel-specific and may legitimately
+    /// transform its input (e.g. `OpenVdbKernel::ingest_mesh` voxelizes: Mesh→
+    /// Voxel). That transformation is correct when `mesh` is a genuine INPUT
+    /// being adapted to the kernel's native representation. It is WRONG when
+    /// `mesh` is itself the exact output a Voxel→Mesh conversion stage just
+    /// produced FOR a `GeometryOp::Surface` terminal anchor on that SAME
+    /// kernel — voxelizing it back would be lossy and pointless. The
+    /// conversion executor (`reify-eval::engine_build`) calls this method
+    /// instead of `ingest_mesh` for exactly that one case.
+    ///
+    /// The **default** implementation delegates to [`Self::ingest_mesh`], so
+    /// every kernel whose `ingest_mesh` already stores a mesh without lossy
+    /// transformation (Manifold: genuine Mesh→Mesh) or correctly rejects mesh
+    /// input (the trait default: `Err(OperationFailed)`) needs no override.
+    /// `OpenVdbKernel` is the only current override — it stores `mesh`
+    /// verbatim in a side-table disjoint from its voxel-grid handles.
+    fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        self.ingest_mesh(mesh)
     }
 
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
@@ -3736,6 +4682,65 @@ pub trait GeometryKernel: Send + Sync {
             std::any::type_name::<Self>()
         )))
     }
+
+    /// Surface a registered Voxel handle into a triangle-soup [`Mesh`] via
+    /// marching cubes, threading the caller-supplied `iso_level` / `adaptive`
+    /// options through to the kernel's marching-cubes primitive (task γ /
+    /// 5001 — the `(Voxel, Mesh)` conversion-executor arm).
+    ///
+    /// # Why bare `(iso_level, adaptive)` args (not a shared options type)
+    ///
+    /// `reify-kernel-openvdb` depends on `reify-eval` (which depends on
+    /// `reify-ir`), so naming `MarchingCubesOptions` here would be a reverse
+    /// dependency (a cycle). Bare `f64`/`bool` args keep the options
+    /// crossing the trait without the type; the real `OpenVdbKernel`
+    /// override reconstructs `MarchingCubesOptions { iso_level, adaptive }`
+    /// internally and forwards to its inherent
+    /// `realize_mesh_from_voxel_with_options`.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(GeometryError::OperationFailed(_))`, so every
+    /// kernel that does not surface voxel grids (mocks, stubs, OCCT, Fidget,
+    /// Manifold, Gmsh) inherits it unchanged and the conversion executor
+    /// degrades honestly (a diagnostic, never a panic). The real
+    /// `OpenVdbKernel` is the only current override. Mirrors the established
+    /// [`Self::mesh_surface_to_volume`] / [`Self::store_volume_mesh`]
+    /// additive default-Err pattern. `&self` (mirrors [`Self::tessellate`]).
+    fn realize_mesh_from_voxel(
+        &self,
+        _handle: GeometryHandleId,
+        _iso_level: f64,
+        _adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not support voxel surfacing (marching cubes)",
+            std::any::type_name::<Self>()
+        )))
+    }
+
+    /// Content-hash the marching-cubes options `(iso_level, adaptive)` for
+    /// use as an intermediate `RealizationCache` key (task γ / 5001).
+    ///
+    /// # Single source of truth
+    ///
+    /// The real `OpenVdbKernel` override returns
+    /// `MarchingCubesOptions { iso_level, adaptive }.content_hash()` —
+    /// re-deriving the hash here (or in `reify-eval`) would duplicate the
+    /// ESC-3433-117 domain-tag wire format and risk silent drift from the
+    /// authoritative producer. See [`Self::realize_mesh_from_voxel`] for why
+    /// the options cross the trait as bare fields rather than a named type.
+    ///
+    /// # Default
+    ///
+    /// Returns `ContentHash(0)` — the `NO_OPTIONS` sentinel
+    /// (`reify-eval::realization_cache::NO_OPTIONS`) — for every kernel that
+    /// does not override [`Self::realize_mesh_from_voxel`], since a
+    /// non-surfacing kernel never produces a Voxel→Mesh cache entry that
+    /// needs a distinguishing options key.
+    fn surface_options_content_hash(&self, _iso_level: f64, _adaptive: bool) -> ContentHash {
+        ContentHash(0)
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
@@ -3758,118 +4763,11 @@ pub fn debug_assert_query_many_invariant<Q, R>(queries: &[Q], reply: &[R]) {
     );
 }
 
-// ─── Feature-tag IR (task 2323) ───────────────────────────────────────────────
-
-/// Coarse classification of the geometry operation kind that produced a shape.
-///
-/// Intentionally decoupled from `reify-compiler`'s fine-grained sub-kind enums
-/// (`PrimitiveKind`, `BooleanOp`, `ModifyKind`, …) so that `reify-types` does
-/// not gain a reverse dependency on `reify-compiler`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StepKind {
-    /// A primitive creation op (box, cylinder, sphere, tube).
-    Primitive,
-    /// A boolean op (union, difference, intersection).
-    Boolean,
-    /// A modify op (fillet, chamfer, shell, draft, thicken).
-    Modify,
-    /// A transform op (translate, rotate, scale, mirror, …).
-    Transform,
-    /// A pattern op (linear, circular, mirror pattern).
-    Pattern,
-    /// A sweep op (extrude, revolve, loft, pipe, …).
-    Sweep,
-    /// A curve construction op (line_segment, arc, helix, …).
-    Curve,
-    /// A 2-D face profile op (rectangle, circle).
-    Profile,
-    /// A free-form surface op (nurbs_surface).
-    Surface,
-}
-
-/// A feature tag attached to a compiler-generated geometry op.
-///
-/// `source_span` identifies the **enclosing realization** (the `let`-binding
-/// that produced this op stream); all ops within one realization share the same
-/// span.  The only distinguisher *within* a realization is `sub_index`, which
-/// is a zero-based position in the op sequence.
-///
-/// **Stability caveat:** `sub_index` is fragile under op insertion or
-/// reordering.  A follow-up task can improve stability by threading per-op
-/// source spans through `CompiledGeometryOp`; for now, consumers should treat
-/// `(source_span, sub_index)` as stable only when the program text is
-/// unchanged.
-///
-/// `source_span` stores the full `SourceSpan` rather than a line number so
-/// that consumers with access to the source text can derive a line/column via
-/// `byte_offset_to_line_col(source, span.start)` — the same pattern used
-/// everywhere else in the codebase (`Diagnostic::span`, `RealizationDecl::span`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FeatureTag {
-    /// Byte-offset span of the enclosing realization in source.
-    pub source_span: SourceSpan,
-    /// Coarse classification of the op.
-    pub step_kind: StepKind,
-    /// Zero-based index of this op within the realization's op stream.
-    pub sub_index: u32,
-}
-
-/// Runtime table mapping geometry handle ids to their originating feature tags.
-///
-/// Populated by `Engine::execute_realization_ops` as each op succeeds.
-/// Keyed by `GeometryHandleId` so topology selectors can record per-edge /
-/// per-face tags derived from a parent solid's tag.
-#[derive(Debug, Default)]
-pub struct FeatureTagTable {
-    entries: HashMap<GeometryHandleId, FeatureTag>,
-}
-
-impl FeatureTagTable {
-    /// Record that geometry handle `id` was produced by `tag`.
-    ///
-    /// Overwrites any prior entry for the same id (callers should avoid
-    /// duplicates, but this is not a hard error — the most recent tag wins).
-    pub fn record(&mut self, id: GeometryHandleId, tag: FeatureTag) {
-        self.entries.insert(id, tag);
-    }
-
-    /// Look up the tag for a given geometry handle, if any.
-    pub fn lookup(&self, id: GeometryHandleId) -> Option<&FeatureTag> {
-        self.entries.get(&id)
-    }
-
-    /// Remove the entry for `id`, returning it if present.
-    ///
-    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
-    /// to evict any cross-kernel colliding entry at `id` before pushing the
-    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
-    /// (the #3226 spec: a cache-served handle has no entries in the tag table
-    /// on the second build).
-    ///
-    /// Returns `None` silently when `id` is absent (no-op in the common
-    /// single-kernel case where the per-build reset already cleared the table).
-    pub fn remove(&mut self, id: GeometryHandleId) -> Option<FeatureTag> {
-        self.entries.remove(&id)
-    }
-
-    /// Number of entries currently in the table.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Returns `true` if the table has no entries.
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
 // ----------------------------------------------------------------------
 // v0.2 persistent-naming-v2 (task 2590)
 //
-// New attribute-based topology naming primitives. Coexist with the v0.1
-// `FeatureTag`/`FeatureTagTable` machinery above; the v0.1 path stays in
-// place until selector resolution swaps over (task 2 / #2570) and per-op
-// auto-population lands across tasks 5-8. See
+// Attribute-based topology naming primitives. Per-op auto-population lands
+// across tasks 5-8; task 2 (#2570) wires selector lookup. See
 // `docs/prds/v0_2/persistent-naming-v2.md` lines 46-87 for the design
 // reference.
 // ----------------------------------------------------------------------
@@ -4253,6 +5151,10 @@ pub enum Role {
     ///
     /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
     CapCornerVertex { face: CapKind },
+    /// A face generated by a local-feature op — fillet/chamfer blend
+    /// surface; distinct so provenance selectors can match
+    /// created_by/split_by per creating feature.
+    LocalFeatureFace,
 }
 
 impl Role {
@@ -4299,6 +5201,7 @@ impl Role {
             Role::MidSurfaceEdge => [8, 0, 0, 0],
             Role::CornerVertex { x, y, z } => [9, sign(*x), sign(*y), sign(*z)],
             Role::CapCornerVertex { face } => [10, cap(*face), 0, 0],
+            Role::LocalFeatureFace => [11, 0, 0, 0],
         }
     }
 }
@@ -4306,7 +5209,7 @@ impl Role {
 /// Per-topology-entity attribute record for v0.2 persistent naming.
 ///
 /// One of these is associated with each face/edge produced by a feature,
-/// keyed by `GeometryHandleId` in the runtime `TopologyAttributeTable`.
+/// keyed by `KernelHandle` in the runtime `TopologyAttributeTable`.
 ///
 /// Fields per PRD lines 52-61:
 ///   - `feature_id` — the feature that produced (or last touched) this entity.
@@ -4319,7 +5222,7 @@ impl Role {
 ///
 /// Note: deliberately not `Hash` — `Vec<ModEntry>` would force a Hash bound
 /// chain, and TopologyAttribute is never used as a HashMap key (the table
-/// is keyed by GeometryHandleId).
+/// is keyed by KernelHandle).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopologyAttribute {
     pub feature_id: FeatureId,
@@ -4352,36 +5255,78 @@ impl TopologyAttribute {
     }
 }
 
-/// Runtime table mapping geometry handle ids to `TopologyAttribute`s.
+/// Kernel-agnostic descriptor key for a single result-face attribute
+/// persisted by a cross-kernel `KernelAttributeHook::propagate_attributes`
+/// (e.g. `ManifoldKernel`'s facet-correlation walk).
 ///
-/// The v0.2 attribute-based replacement-in-progress for `FeatureTagTable`.
+/// Combines two independently-motivated axes:
+///   - `handle` — the whole-result `KernelHandle` (kernel + kernel-local
+///     result id), task #4351's cross-kernel collision fix.
+///   - `run_original_id` / `face_id` — the per-facet descriptor axis from
+///     task #4262's `FacetDescriptor` (Manifold provenance coordinates:
+///     which parent run a result triangle/face came from, plus its
+///     per-triangle face identity).
+///
+/// Declared with primitive fields here rather than reusing
+/// `reify_kernel_manifold::provenance::FacetDescriptor` because `reify-ir`
+/// cannot depend on `reify-kernel-manifold` (the dependency direction is the
+/// reverse) — kernel crates map their own descriptor types onto this one at
+/// the write site (task #4637, substrate for #4263).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResultFaceDescriptor {
+    /// The whole-result handle (kernel + kernel-local result id) this facet
+    /// was correlated from.
+    pub handle: KernelHandle,
+    /// The `run_original_id` of the parent run containing this facet
+    /// (matches `Manifold::original_id()` of one of the boolean's inputs).
+    pub run_original_id: u32,
+    /// Per-triangle/face identifier from the producing kernel (Manifold:
+    /// `MeshGL64::face_id()`).
+    pub face_id: u64,
+}
+
+/// Runtime table mapping kernel-scoped geometry handles to `TopologyAttribute`s.
+///
+/// Keyed by the full `KernelHandle` (kernel + kernel-local id) rather than a
+/// bare `GeometryHandleId` — `GeometryHandleId` is unique only WITHIN a
+/// kernel (each kernel mints ids from 1), so in any cross-kernel build two
+/// different kernels' handles can share the same numeric id. Keying by
+/// `KernelHandle` keeps those entries independently addressable instead of
+/// colliding onto one slot (task #4351).
+///
 /// Tasks 5-8 wire per-op auto-population; task 2 (#2570) wires
-/// selector lookup against this table. Mirrors the `FeatureTagTable`
-/// shape (HashMap keyed by `GeometryHandleId`, four-method API) so the
-/// existing call sites can adopt it incrementally.
+/// selector lookup against this table.
 // `Clone` (task 4744 β step-20): the morph-source side-table snapshots the
 // live attribute table into an owned `OwnedBRepSnapshot` BEFORE a rebuild wipes
 // it, so `morph_eligible` Stage-B can run against the OLD BRep on the next tick.
-// The single `HashMap<GeometryHandleId, TopologyAttribute>` field is `Clone`
-// (both key and value derive it), so this is a trivial additive derive.
+// The single `HashMap<KernelHandle, TopologyAttribute>` field is `Clone`
+// (both key and value derive it), so this is a trivial additive derive; the
+// `result_faces` field added by task #4637 is `Clone` for the same reason.
 #[derive(Debug, Default, Clone)]
 pub struct TopologyAttributeTable {
-    entries: HashMap<GeometryHandleId, TopologyAttribute>,
+    entries: HashMap<KernelHandle, TopologyAttribute>,
+    /// Descriptor-keyed store for per-result-face attributes persisted by
+    /// cross-kernel `propagate_attributes` (task #4637, substrate for
+    /// #4263). Deliberately SEPARATE from `entries`: `iter()` walks only
+    /// `entries`, so writes here stay invisible to the engine's
+    /// per-realization `entries`-only diagnostic scan
+    /// (`reify_eval::engine_build`) — see `record_result_face`.
+    result_faces: HashMap<ResultFaceDescriptor, TopologyAttribute>,
 }
 
 impl TopologyAttributeTable {
-    /// Record that geometry handle `id` carries `attr`.
+    /// Record that geometry handle `handle` carries `attr`.
     ///
-    /// Overwrites any prior entry for the same id (last-write-wins,
-    /// mirroring `FeatureTagTable::record`). Tasks 3 (#2571) and 4 (#2572)
-    /// will add diagnostics around accidental rebinds.
-    pub fn record(&mut self, id: GeometryHandleId, attr: TopologyAttribute) {
-        self.entries.insert(id, attr);
+    /// Overwrites any prior entry for the same handle (last-write-wins).
+    /// Tasks 3 (#2571) and 4 (#2572) will add diagnostics around accidental
+    /// rebinds.
+    pub fn record(&mut self, handle: KernelHandle, attr: TopologyAttribute) {
+        self.entries.insert(handle, attr);
     }
 
-    /// Look up the attribute for a given geometry handle, if any.
-    pub fn lookup(&self, id: GeometryHandleId) -> Option<&TopologyAttribute> {
-        self.entries.get(&id)
+    /// Look up the attribute for a given kernel-scoped geometry handle, if any.
+    pub fn lookup(&self, handle: KernelHandle) -> Option<&TopologyAttribute> {
+        self.entries.get(&handle)
     }
 
     /// Number of entries currently in the table.
@@ -4394,33 +5339,100 @@ impl TopologyAttributeTable {
         self.entries.is_empty()
     }
 
-    /// Remove the entry for `id`, returning it if present.
+    /// Remove the entry for `handle`, returning it if present.
     ///
-    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
-    /// to evict any cross-kernel colliding entry at `id` before pushing the
-    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
-    /// (the #3226 spec: a cache-served handle has no entries in the attribute
-    /// table on the second build).
+    /// Retained for collection-API symmetry with [`Self::record`] /
+    /// [`Self::lookup`], not because a production path calls it today: its
+    /// last production caller was the task-4349 defensive cache-hit
+    /// short-circuit eviction in `Engine::probe_realization_cache`, which
+    /// task θ (#5064) retired in favor of a fail-closed `debug_assert!` once
+    /// #4351's `KernelHandle` re-key made that eviction's target collision
+    /// impossible by construction (the #3226 spec — a cache-served handle
+    /// has no entries in the attribute table on the second build — is now
+    /// directly assertable instead of needing defensive removal). See PRD
+    /// `docs/prds/v0_6/engine-build-hardening.md` §4 D6 / §9 OQ-3 for the
+    /// keep-vs-delete decision (KEEP, for API symmetry). Exercised only by
+    /// its unit tests, `topology_attribute_table_remove_returns_some_and_empties_entry`
+    /// and `topology_attribute_table_remove_absent_returns_none`.
     ///
-    /// Returns `None` silently when `id` is absent (no-op in the common
-    /// single-kernel case where the per-build reset already cleared the table).
-    pub fn remove(&mut self, id: GeometryHandleId) -> Option<TopologyAttribute> {
-        self.entries.remove(&id)
+    /// Returns `None` silently when `handle` is absent.
+    pub fn remove(&mut self, handle: KernelHandle) -> Option<TopologyAttribute> {
+        self.entries.remove(&handle)
     }
 
-    /// Iterate over all `(GeometryHandleId, &TopologyAttribute)` pairs in the table.
+    /// Iterate over all `(KernelHandle, &TopologyAttribute)` pairs in the table.
     ///
     /// Iteration order is **unspecified** — the table is HashMap-backed, so
     /// callers needing a deterministic order must collect and sort
-    /// (e.g. by `GeometryHandleId` or `(feature_id, role, local_index)`).
+    /// (e.g. by `KernelHandle` or `(feature_id, role, local_index)`).
     ///
     /// Used by per-realization fragility detection in
     /// `reify_eval::engine_build` to filter the just-completed realization's
     /// attribute entries (`attr.feature_id == realization_feature_id`) for
     /// the `detect_local_index_reassignment_diagnostics` helper
     /// (PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72).
-    pub fn iter(&self) -> impl Iterator<Item = (GeometryHandleId, &TopologyAttribute)> {
+    pub fn iter(&self) -> impl Iterator<Item = (KernelHandle, &TopologyAttribute)> {
         self.entries.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// Record that result-face descriptor `desc` carries `attr`.
+    ///
+    /// Overwrites any prior entry for the same descriptor (last-write-wins,
+    /// mirroring `record`'s contract on `entries`). Writes here are stored
+    /// in the separate `result_faces` map — NOT `entries` — so they are
+    /// never observed by `lookup`/`record`/`remove`/`iter`, which keeps
+    /// them invisible to the engine's `entries`-only per-realization
+    /// diagnostic scan (task #4637, substrate for #4263).
+    ///
+    /// # Lifecycle (no dedicated eviction — by design)
+    ///
+    /// Unlike `entries`, `result_faces` has no `remove_result_face`/
+    /// `clear_result_faces` counterpart. This is safe today because
+    /// `reify_eval::engine_build` resets the WHOLE table via
+    /// `self.topology_attribute_table = TopologyAttributeTable::default()`
+    /// at each realization rebuild, which clears `result_faces` along with
+    /// `entries` — both are plain fields on the same `Default`-derived
+    /// struct. So entries recorded here accumulate only across the
+    /// `propagate_attributes` calls WITHIN a single realization, never
+    /// across realizations (review follow-up, task #4637 amendment). If a
+    /// future incremental/reuse path ever retains a `TopologyAttributeTable`
+    /// across realizations instead of resetting it, this no-eviction
+    /// assumption must be revisited — add scoped pruning or a
+    /// `clear_result_faces` at that point.
+    pub fn record_result_face(&mut self, desc: ResultFaceDescriptor, attr: TopologyAttribute) {
+        self.result_faces.insert(desc, attr);
+    }
+
+    /// Look up the attribute for a given result-face descriptor, if any.
+    ///
+    /// Currently exercised only by tests (this reify-ir module's
+    /// independent-key assertions) — the production caller is #4263's
+    /// `extract_faces`->descriptor bridge, which has not landed yet. Kept
+    /// alongside `record_result_face`/`iter_result_faces` rather than
+    /// deferred (review follow-up, task #4637 amendment) because #4263 is
+    /// this task's immediate next link in the decomposition and a point
+    /// lookup is the natural shape for that bridge to consume; revisit if
+    /// #4263 ends up needing a different read shape than a bare descriptor
+    /// lookup.
+    pub fn lookup_result_face(&self, desc: ResultFaceDescriptor) -> Option<&TopologyAttribute> {
+        self.result_faces.get(&desc)
+    }
+
+    /// Iterate over all `(ResultFaceDescriptor, &TopologyAttribute)` pairs
+    /// in the result-face store.
+    ///
+    /// Iteration order is **unspecified** (HashMap-backed), same caveat as
+    /// `iter()`. Callers are expected to be the #4263 resolver bridge
+    /// (correlating coalesced-face handles back to a descriptor) and tests.
+    pub fn iter_result_faces(
+        &self,
+    ) -> impl Iterator<Item = (ResultFaceDescriptor, &TopologyAttribute)> {
+        self.result_faces.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// Number of entries currently in the result-face store.
+    pub fn result_face_len(&self) -> usize {
+        self.result_faces.len()
     }
 }
 
@@ -5230,6 +6242,43 @@ mod tests {
             .expect("NurbsSurface must have a descriptor row");
         assert_eq!(desc.names, &["nurbs_surface"]);
         assert_eq!(desc.operation, Some(Operation::SurfaceNurbs));
+    }
+
+    /// RED step-1 (task 4999): `GeometryOp::Surface` variant exists, kind_name
+    /// returns "Surface", and descriptor_for returns a row with
+    /// names=["isosurface"], operation=Some(Operation::Surface), and
+    /// parent_role=ParentRole::SingleTarget (grid is the sole parent handle).
+    ///
+    /// Op-graph shape / classifier wiring proof ONLY — no realization (PRD
+    /// docs/prds/v0_3/voxel-to-mesh-surfacing.md task α).
+    #[test]
+    fn geometry_op_surface_variant_exists() {
+        let op = GeometryOp::Surface {
+            grid: GeometryHandleId(1),
+            iso_level: 0.0,
+            adaptive: false,
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("Surface"));
+        match &cloned {
+            GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => {
+                assert_eq!(*grid, GeometryHandleId(1));
+                assert_eq!(*iso_level, 0.0);
+                assert!(!*adaptive);
+            }
+            _ => panic!("expected Surface variant"),
+        }
+        assert_eq!(op.kind_name(), "Surface");
+        let desc = descriptor_for(GeometryOpDiscriminants::Surface)
+            .expect("Surface must have a descriptor row");
+        assert_eq!(desc.names, &["isosurface"]);
+        assert_eq!(desc.operation, Some(Operation::Surface));
+        assert_eq!(desc.parent_role, ParentRole::SingleTarget);
     }
 
     #[test]
@@ -6579,6 +7628,7 @@ mod tests {
             },
             Role::CapCornerVertex { face: CapKind::Top },
             Role::CapCornerVertex { face: CapKind::End },
+            Role::LocalFeatureFace,
         ];
 
         // (1) Deterministic: the encoding does not depend on call-site state.
@@ -7060,8 +8110,12 @@ mod tests {
     fn topology_attribute_table_record_then_lookup() {
         let mut table = TopologyAttributeTable::default();
         let attr = make_attr("F", 0);
-        table.record(GeometryHandleId(1), attr.clone());
-        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&attr));
+        let handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        table.record(handle, attr.clone());
+        assert_eq!(table.lookup(handle), Some(&attr));
         assert_eq!(table.len(), 1);
         assert!(!table.is_empty());
     }
@@ -7069,8 +8123,20 @@ mod tests {
     #[test]
     fn topology_attribute_table_lookup_unknown_returns_none() {
         let mut table = TopologyAttributeTable::default();
-        table.record(GeometryHandleId(1), make_attr("F", 0));
-        assert_eq!(table.lookup(GeometryHandleId(99)), None);
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+            make_attr("F", 0),
+        );
+        assert_eq!(
+            table.lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(99),
+            }),
+            None
+        );
     }
 
     #[test]
@@ -7078,9 +8144,13 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         let first = make_attr("F", 0);
         let second = make_attr("G", 7);
-        table.record(GeometryHandleId(1), first);
-        table.record(GeometryHandleId(1), second.clone());
-        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&second));
+        let handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        table.record(handle, first);
+        table.record(handle, second.clone());
+        assert_eq!(table.lookup(handle), Some(&second));
         assert_eq!(table.len(), 1);
     }
 
@@ -7090,21 +8160,62 @@ mod tests {
         let attr0 = make_attr("F", 0);
         let attr1 = make_attr("F", 1);
         let attr2 = make_attr("G", 0);
-        table.record(GeometryHandleId(1), attr0.clone());
-        table.record(GeometryHandleId(2), attr1.clone());
-        table.record(GeometryHandleId(3), attr2.clone());
+        let h1 = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        let h2 = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(2),
+        };
+        let h3 = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(3),
+        };
+        table.record(h1, attr0.clone());
+        table.record(h2, attr1.clone());
+        table.record(h3, attr2.clone());
 
         // iter() must yield exactly len() entries.
         assert_eq!(table.iter().count(), 3);
 
         // Collect into a HashMap so membership is order-agnostic
         // (TopologyAttributeTable iteration order is unspecified — HashMap-backed).
-        let collected: std::collections::HashMap<GeometryHandleId, &TopologyAttribute> =
+        let collected: std::collections::HashMap<KernelHandle, &TopologyAttribute> =
             table.iter().collect();
         assert_eq!(collected.len(), 3);
-        assert_eq!(collected.get(&GeometryHandleId(1)), Some(&&attr0));
-        assert_eq!(collected.get(&GeometryHandleId(2)), Some(&&attr1));
-        assert_eq!(collected.get(&GeometryHandleId(3)), Some(&&attr2));
+        assert_eq!(collected.get(&h1), Some(&&attr0));
+        assert_eq!(collected.get(&h2), Some(&&attr1));
+        assert_eq!(collected.get(&h3), Some(&&attr2));
+    }
+
+    /// The core behavioral RED for task #4351: `GeometryHandleId` is only
+    /// unique WITHIN a kernel, so the same numeric id minted by two
+    /// different kernels must resolve to two independent entries once the
+    /// table is keyed by the full `KernelHandle` — not collapse onto one
+    /// key the way a bare-`GeometryHandleId` key would.
+    #[test]
+    fn topology_attribute_table_distinguishes_same_id_across_kernels() {
+        let mut table = TopologyAttributeTable::default();
+        let attr_a = make_attr("F", 0);
+        let attr_b = make_attr("G", 1);
+        let occt_handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        let manifold_handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(1),
+        };
+        table.record(occt_handle, attr_a.clone());
+        table.record(manifold_handle, attr_b.clone());
+        assert_eq!(
+            table.len(),
+            2,
+            "same numeric id minted by different kernels must not collide"
+        );
+        assert_eq!(table.lookup(occt_handle), Some(&attr_a));
+        assert_eq!(table.lookup(manifold_handle), Some(&attr_b));
     }
 
     #[test]
@@ -7426,8 +8537,9 @@ mod tests {
             Operation::CurveInterpCurve,
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
-            // Surface (1)
+            // Surface (2)
             Operation::SurfaceNurbs,
+            Operation::Surface,
             // Convert (5 — one per ReprKind)
             Operation::Convert {
                 from: ReprKind::BRep,
@@ -7537,6 +8649,7 @@ mod tests {
             Operation::ProfilePolygon => {}
             Operation::ProfileEllipse => {}
             Operation::SurfaceNurbs => {}
+            Operation::Surface => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -7829,8 +8942,10 @@ mod tests {
                 0.0, 1.0, 0.0, // v2
                 0.0, 0.0, 1.0, // v3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -7956,8 +9071,10 @@ mod tests {
                         0.0, 1.0, 0.0, // v2
                         0.0, 0.0, 1.0, // v3
                     ],
-                    tet_indices: vec![0, 1, 2, 3],
-                    element_order: ElementOrderTag::P1,
+                    connectivity: VolumeConnectivity::Tet {
+                        indices: vec![0, 1, 2, 3],
+                        order: ElementOrderTag::P1,
+                    },
                     normals: None,
                     boundary: None,
                 })
@@ -7970,17 +9087,17 @@ mod tests {
             .volume_mesh(GeometryHandleId(7))
             .expect("override must return Ok(VolumeMesh)");
         assert_eq!(
-            vm.element_order,
-            ElementOrderTag::P1,
+            vm.element_order(),
+            Some(ElementOrderTag::P1),
             "element_order must round-trip through the trait-object call"
         );
         assert_eq!(
-            vm.tet_indices,
-            vec![0, 1, 2, 3],
+            vm.tet_indices(),
+            Some(&[0u32, 1, 2, 3][..]),
             "tet_indices must round-trip through the trait-object call"
         );
         assert_eq!(
-            vm.tet_indices.len() % 4,
+            vm.tet_indices().expect("tet mesh has tet_indices").len() % 4,
             0,
             "a P1 tet mesh has a multiple-of-4 index count"
         );
@@ -8005,8 +9122,10 @@ mod tests {
                 0.0, 1.0, 0.0, // v2
                 0.0, 0.0, 1.0, // v3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -8016,11 +9135,11 @@ mod tests {
             "P1 tet has 4 vertices × 3 floats = 12 flat coordinates"
         );
         assert_eq!(
-            p1_mesh.tet_indices.len(),
+            p1_mesh.tet_indices().expect("tet mesh has tet_indices").len(),
             4,
             "P1 tet has 4 corner indices (one tetrahedron)"
         );
-        assert_eq!(p1_mesh.element_order, ElementOrderTag::P1);
+        assert_eq!(p1_mesh.element_order(), Some(ElementOrderTag::P1));
 
         // P2 tetrahedron: 4 corner + 6 edge-midpoint vertices = 10 nodes per element.
         let p2_mesh = VolumeMesh {
@@ -8036,13 +9155,15 @@ mod tests {
                 0.5, 0.0, 0.5, // v8 (mid 1-3)
                 0.0, 0.5, 0.5, // v9 (mid 2-3)
             ],
-            tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            element_order: ElementOrderTag::P2,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                order: ElementOrderTag::P2,
+            },
             normals: None,
             boundary: None,
         };
         assert_eq!(
-            p2_mesh.tet_indices.len(),
+            p2_mesh.tet_indices().expect("tet mesh has tet_indices").len(),
             10,
             "P2 tet has 10 indices per element (4 corner + 6 edge midpoints, Gmsh canonical order)"
         );
@@ -8056,6 +9177,132 @@ mod tests {
         // be stored in caches and logged through tracing.
         let cloned = p1_mesh.clone();
         let _ = format!("{:?}", cloned);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // VolumeConnectivity — one-element-family-per-mesh discriminated union
+    // (task 4986, C-1). `Tet` carries an `ElementOrderTag` (P1/P2); `Hex`
+    // and `Wedge` are P1-only (no order field) — illegal states (e.g. a P2
+    // hex, or a mesh mixing tet + hex indices) are unrepresentable by
+    // construction.
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Construct one `VolumeMesh` per element family (P1 tet, P2 tet, hex,
+    /// wedge) via `connectivity: VolumeConnectivity::…` and verify the
+    /// convenience accessors (`tet_indices`, `element_order`, `hex_indices`,
+    /// `wedge_indices`) report `Some` only for their own variant's family
+    /// and `None` for every other family. Also pins that `vertex`/
+    /// `vertex_f64` keep reading the flat stride-3 `vertices` buffer
+    /// unchanged regardless of which connectivity family is stored.
+    #[test]
+    fn volume_mesh_connectivity_accessors_distinguish_tet_hex_wedge() {
+        let p1_tet = VolumeMesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(p1_tet.tet_indices(), Some(&[0u32, 1, 2, 3][..]));
+        assert_eq!(p1_tet.element_order(), Some(ElementOrderTag::P1));
+        assert_eq!(p1_tet.hex_indices(), None, "a tet mesh has no hex_indices");
+        assert_eq!(p1_tet.wedge_indices(), None, "a tet mesh has no wedge_indices");
+        // (f) vertex/vertex_f64 read the flat stride-3 buffer unchanged.
+        assert_eq!(p1_tet.vertex(1), Some([1.0, 0.0, 0.0]));
+        assert_eq!(p1_tet.vertex_f64(1), Some([1.0_f64, 0.0, 0.0]));
+
+        let p2_tet = VolumeMesh {
+            vertices: vec![0.0; 30],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                order: ElementOrderTag::P2,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(
+            p2_tet.tet_indices(),
+            Some(&[0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9][..])
+        );
+        assert_eq!(p2_tet.element_order(), Some(ElementOrderTag::P2));
+        assert_eq!(p2_tet.hex_indices(), None);
+        assert_eq!(p2_tet.wedge_indices(), None);
+
+        let hex = VolumeMesh {
+            vertices: vec![0.0; 24],
+            connectivity: VolumeConnectivity::Hex {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(hex.tet_indices(), None, "a hex mesh has no tet_indices");
+        assert_eq!(
+            hex.element_order(),
+            None,
+            "hex is P1-only — no order field to report"
+        );
+        assert_eq!(hex.hex_indices(), Some(&[0u32, 1, 2, 3, 4, 5, 6, 7][..]));
+        assert_eq!(hex.wedge_indices(), None);
+
+        let wedge = VolumeMesh {
+            vertices: vec![0.0; 18],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: vec![0, 1, 2, 3, 4, 5],
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(wedge.tet_indices(), None);
+        assert_eq!(
+            wedge.element_order(),
+            None,
+            "wedge is P1-only — no order field to report"
+        );
+        assert_eq!(wedge.hex_indices(), None);
+        assert_eq!(wedge.wedge_indices(), Some(&[0u32, 1, 2, 3, 4, 5][..]));
+    }
+
+    /// Verify the nodes-per-element stride helper reports the correct arity
+    /// for each element family: P1 tet = 4, P2 tet = 10, hex = 8, wedge = 6.
+    #[test]
+    fn volume_mesh_nodes_per_element_reports_correct_stride_per_family() {
+        let with_connectivity = |connectivity: VolumeConnectivity| VolumeMesh {
+            vertices: vec![],
+            connectivity,
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            })
+            .nodes_per_element(),
+            4,
+            "P1 tet: 4 corner nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P2,
+            })
+            .nodes_per_element(),
+            10,
+            "P2 tet: 4 corner + 6 edge-midpoint nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Hex { indices: vec![] }).nodes_per_element(),
+            8,
+            "hex8: 8 nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Wedge { indices: vec![] }).nodes_per_element(),
+            6,
+            "wedge/PRI6: 6 nodes/element"
+        );
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -8319,6 +9566,15 @@ mod tests {
                 },
             ),
             (
+                "ScaleNonUniform",
+                GeometryOp::ScaleNonUniform {
+                    target: GeometryHandleId(1),
+                    sx: 2.0,
+                    sy: 1.0,
+                    sz: 0.5,
+                },
+            ),
+            (
                 "LinearPattern",
                 GeometryOp::LinearPattern {
                     target: GeometryHandleId(1),
@@ -8361,7 +9617,7 @@ mod tests {
                 "ArbitraryPattern",
                 GeometryOp::ArbitraryPattern {
                     target: GeometryHandleId(1),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
             ),
             (
@@ -8570,6 +9826,14 @@ mod tests {
                 },
             ),
             (
+                "Surface",
+                GeometryOp::Surface {
+                    grid: GeometryHandleId(1),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+            ),
+            (
                 "Split",
                 GeometryOp::Split {
                     target: GeometryHandleId(1),
@@ -8594,6 +9858,56 @@ mod tests {
                 "kind_name() mismatch for GeometryOp::{expected}"
             );
         }
+    }
+
+    /// RED step-1 (task 4168): `GeometryOp::ArbitraryPattern.transforms` must widen
+    /// from `Vec<[f64; 3]>` (translation-only) to `Vec<([f64; 4], [f64; 3])>` — a
+    /// per-instance (scalar-first quaternion `[qw,qx,qy,qz]`, SI-metre translation)
+    /// pair — mirroring `ApplyTransform{rotation,translation}` so the kernel can
+    /// eventually apply a full rigid transform per pattern instance instead of a
+    /// translation-only offset. Translation-only instances carry the identity
+    /// quaternion `[1.0, 0.0, 0.0, 0.0]`.
+    ///
+    /// References the not-yet-widened field shape — compile-fails RED until
+    /// step-2 widens `ArbitraryPattern::transforms` to `Vec<([f64; 4], [f64; 3])>`
+    /// and migrates all constructors/matchers across crates (behavior-preserving,
+    /// identity quats only; rotation is not honored anywhere until step-4).
+    #[test]
+    fn arbitrary_pattern_transforms_field_is_per_instance_rotation_and_translation() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let op = GeometryOp::ArbitraryPattern {
+            target: GeometryHandleId(1),
+            transforms: vec![
+                // Translation-only instance: identity quaternion (back-compat shape).
+                ([1.0, 0.0, 0.0, 0.0], [0.02, 0.0, 0.0]),
+                // Rotated instance: Y-90 quaternion (scalar-first [qw,qx,qy,qz]).
+                ([s, 0.0, s, 0.0], [0.0, 0.0, 0.0]),
+            ],
+        };
+        match &op {
+            GeometryOp::ArbitraryPattern { transforms, .. } => {
+                assert_eq!(transforms.len(), 2);
+                // Instance 0: identity rotation, 20mm-in-SI-metres translation.
+                assert_eq!(transforms[0].0, [1.0, 0.0, 0.0, 0.0]);
+                assert_eq!(transforms[0].1, [0.02, 0.0, 0.0]);
+                // Instance 1: Y-90 rotation quat reads back (scalar-first: qw first).
+                assert!(
+                    (transforms[1].0[0] - s).abs() < 1e-6,
+                    "expected qw ~0.7071, got {}",
+                    transforms[1].0[0]
+                );
+                assert!(
+                    (transforms[1].0[2] - s).abs() < 1e-6,
+                    "expected qy ~0.7071, got {}",
+                    transforms[1].0[2]
+                );
+                assert_eq!(transforms[1].1, [0.0, 0.0, 0.0]);
+            }
+            other => panic!("expected ArbitraryPattern, got {other:?}"),
+        }
+
+        // Metadata token/discriminant is unchanged — still ONE pattern op.
+        assert_eq!(op.kind_name(), "ArbitraryPattern");
     }
 
     /// RED step-1 (task 4190): GeometryOp::Split.kind_name() must return "Split".
@@ -8909,8 +10223,10 @@ mod tests {
                 4.0, 5.0, 6.0, // v1
                 7.0, 8.0, 9.0, // v2
             ],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -8929,8 +10245,10 @@ mod tests {
         // (e) empty mesh — any index is out of range
         let empty = VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -8948,8 +10266,10 @@ mod tests {
     fn volume_mesh_vertex_f64_widens_f32_to_f64_and_passes_through_none() {
         let mesh = VolumeMesh {
             vertices: vec![1.0f32, 2.0, 3.0],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -9386,6 +10706,173 @@ mod tests {
         assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
     }
 
+    /// Write a 30 mm cube through [`write_3mf`] and read the package back:
+    /// returns the `3D/3dmodel.model` XML plus every `<vertex>`'s parsed
+    /// `[x, y, z]`.
+    ///
+    /// The mesh is the unit cube's `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — topology unchanged. Shared by
+    /// the two tests that pin the writer's length regime: one asserts the unit
+    /// DECLARATION and the coordinate MAGNITUDES agree, the other that the
+    /// metre→millimetre conversion adds no representation noise.
+    fn read_back_30mm_cube_3mf() -> (String, Vec<[f64; 3]>) {
+        use std::io::Cursor;
+
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // `write_3mf` stores entries with CompressionMethod::Stored, so the
+        // default-features-off `zip` dependency can read them back as-is.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+        drop(model_file);
+
+        fn attr(tail: &str, name: &str) -> f64 {
+            // Attributes appear in x, y, z order inside one element, and this
+            // element's three attributes all precede the next element's, so
+            // the FIRST match after the split point is the right one.
+            let key = format!("{name}=\"");
+            let start = tail.find(&key).expect("vertex must carry the attribute") + key.len();
+            let end = tail[start..].find('"').expect("attribute must be quoted") + start;
+            tail[start..end]
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("vertex {name} must be a parsable number"))
+        }
+
+        let coords = model_xml
+            .split("<vertex ")
+            .skip(1)
+            .map(|tail| [attr(tail, "x"), attr(tail, "y"), attr(tail, "z")])
+            .collect();
+        (model_xml, coords)
+    }
+
+    /// 3MF export must keep its unit DECLARATION and its vertex PAYLOAD in
+    /// agreement: reify model space is SI metres, the package declares
+    /// `unit="millimeter"`, so the vertices it carries must be millimetres.
+    ///
+    /// The two halves DISAGREE today, and that asymmetry IS the defect. The
+    /// declaration half already passes — `write_3mf` hardcodes
+    /// `unit="millimeter"` — while the payload half fails, because the vertex
+    /// buffer is emitted verbatim with no metre→millimetre conversion. A 30 mm
+    /// cube is written as 0.030 and read by any 3MF consumer as 30 µm — a
+    /// 1000× shrink, the same mislabel as the STEP half of this bug.
+    ///
+    /// The 1e-5 mm bound is derived, not guessed. `Mesh::vertices` is
+    /// `Vec<f32>` and the conversion is done in f32 (see `MM_PER_METRE_F32`),
+    /// so each emitted coordinate carries at most 2^-23 relative error — the
+    /// input's own representation error plus one re-rounding at the millimetre
+    /// magnitude. Across the two AABB endpoints that is 2·30·2^-23 ≈ 7.2e-6 mm
+    /// worst case, so 1e-5 is the tightest honest bound; 1e-6 (the f64 STEP
+    /// path's bound) is NOT derivable here. In practice the error is 0.0 — the
+    /// f32 re-rounding puts `0.030 m` exactly on `30` mm and `0.0` on `0.0` —
+    /// but that exactness is pinned by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// NOT here: this test stays about the unit regime alone, so a change to
+    /// how coordinates are formatted can never fail it as a unit regression.
+    /// 1e-5 sits ~6 orders below the 0.030-vs-30.0 gap it guards, so it cannot
+    /// pass while the bug lives.
+    #[test]
+    fn write_3mf_declares_millimetres_and_scales_metre_vertices() {
+        let (model_xml, coords) = read_back_30mm_cube_3mf();
+
+        // (1) DECLARATION half — passes today, and is otherwise unasserted
+        // anywhere in the tree.
+        assert!(
+            model_xml.contains("unit=\"millimeter\""),
+            "3MF model part should declare unit=\"millimeter\""
+        );
+
+        // (2) PAYLOAD half — every <vertex x=".." y=".." z=".."/> value,
+        // folded into a per-axis AABB.
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for c in &coords {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(c[axis]);
+                max[axis] = max[axis].max(c[axis]);
+            }
+        }
+
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 30.0).abs() < 1e-5,
+                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
+                 millimetre-declared 3MF package, but the vertex AABB extent is {extent} \
+                 (min {}, max {}) — declaration and payload disagree",
+                min[axis],
+                max[axis]
+            );
+        }
+    }
+
+    /// The metre→millimetre conversion must land EXACTLY on the millimetre
+    /// values the author wrote: the conversion arithmetic itself must add no
+    /// representation noise.
+    ///
+    /// This is what makes the f32-vs-f64 choice at the emit site a TESTED
+    /// behaviour rather than a comment. Doing the multiply as
+    /// `f64::from(v) * 1000.0` emits `29.999999329447746` for a `0.030 m`
+    /// coordinate — comfortably inside the sibling unit-regime test's 1e-5 mm
+    /// AABB tolerance, so that test stays green, while every emitted
+    /// coordinate grows from 2 to 18 characters of false precision. The
+    /// measured table and the full reasoning live on `MM_PER_METRE_F32`.
+    ///
+    /// Asserted on the PARSED values, not on the emitted decimal strings: the
+    /// property is exactness, and pinning the literal text would additionally
+    /// freeze the writer to f32 `{}` (shortest-round-trip) formatting, so a
+    /// legitimate formatting change — `{:.6}` for a picky consumer, a fixed
+    /// decimal count for byte-determinism — would fail here and read as a
+    /// precision regression when it is not.
+    ///
+    /// The `==` comparisons are exact ON PURPOSE. Both endpoints are exactly
+    /// representable in f32 and in f64, so exact equality is the correct
+    /// predicate here, and any epsilon loose enough to be worth writing would
+    /// also admit the `29.999999329447746` this test exists to reject.
+    #[test]
+    fn write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise() {
+        let (_model_xml, coords) = read_back_30mm_cube_3mf();
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+
+        // The cube's corners are [0, 0.030]^3 m, so in millimetres every
+        // emitted coordinate must be exactly 0 or exactly 30.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0 || v == 30.0,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-declared 3MF package; the metre→millimetre conversion is \
+                     introducing avoidable representation noise (see MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // ...and both values must actually OCCUR on every axis, so a collapsed
+        // or all-zero payload cannot satisfy the check above vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0),
+                "no vertex carries {name} = 30"
+            );
+        }
+    }
+
     #[test]
     fn write_3mf_malformed_mesh_returns_err() {
         // 4 indices — not a multiple of 3; must be rejected.
@@ -9530,33 +11017,6 @@ mod tests {
         assert_eq!(tri_count, 12, "unit cube must have 12 triangles; got {tri_count}");
     }
 
-    // ── FeatureTagTable::remove unit tests (task 4349) ────────────────────────
-
-    /// `remove` returns `Some(tag)` after a `record` and the entry is gone.
-    #[test]
-    fn feature_tag_table_remove_returns_some_and_empties_entry() {
-        let mut table = FeatureTagTable::default();
-        let id = GeometryHandleId(1);
-        let tag = FeatureTag {
-            source_span: reify_core::diagnostics::SourceSpan::new(0, 0),
-            step_kind: StepKind::Primitive,
-            sub_index: 0,
-        };
-        table.record(id, tag);
-        let removed = table.remove(id);
-        assert!(removed.is_some(), "remove must return Some after record");
-        assert!(table.lookup(id).is_none(), "entry must be gone after remove");
-        assert!(table.is_empty(), "table must be empty after removing the only entry");
-    }
-
-    /// `remove` returns `None` when the id was never recorded.
-    #[test]
-    fn feature_tag_table_remove_absent_returns_none() {
-        let mut table = FeatureTagTable::default();
-        let removed = table.remove(GeometryHandleId(99));
-        assert!(removed.is_none(), "remove of absent id must return None");
-    }
-
     // ── TopologyAttributeTable::remove unit tests (task 4349) ─────────────────
 
     fn make_topology_attribute() -> TopologyAttribute {
@@ -9573,7 +11033,10 @@ mod tests {
     #[test]
     fn topology_attribute_table_remove_returns_some_and_empties_entry() {
         let mut table = TopologyAttributeTable::default();
-        let id = GeometryHandleId(1);
+        let id = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
         table.record(id, make_topology_attribute());
         let removed = table.remove(id);
         assert!(removed.is_some(), "remove must return Some after record");
@@ -9585,8 +11048,111 @@ mod tests {
     #[test]
     fn topology_attribute_table_remove_absent_returns_none() {
         let mut table = TopologyAttributeTable::default();
-        let removed = table.remove(GeometryHandleId(99));
+        let removed = table.remove(KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(99),
+        });
         assert!(removed.is_none(), "remove of absent id must return None");
+    }
+
+    // ── TopologyAttributeTable::result_faces descriptor store (task 4637) ──
+
+    /// A second, distinct `TopologyAttribute` — pairs with
+    /// `make_topology_attribute`'s `Role::Side`/`local_index: 0` so tests can
+    /// tell the two apart.
+    fn make_topology_attribute_b() -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::realization("test_entity_b", 1),
+            role: Role::NewEdge,
+            local_index: 1,
+            user_label: None,
+            mod_history: Vec::new(),
+        }
+    }
+
+    /// `result_faces` is a separate descriptor-keyed store (task #4637,
+    /// substrate for #4263): independently keyed by `ResultFaceDescriptor`
+    /// (`KernelHandle` + `run_original_id` + `face_id`), last-write-wins on
+    /// `record_result_face`, and orthogonal to the existing `entries` map —
+    /// `record`/`lookup`/`iter` must never observe a `record_result_face`
+    /// write. That orthogonality is load-bearing: the engine's per-
+    /// realization diagnostic scan (`reify_eval::engine_build`) walks
+    /// `entries` via `iter()` only, so keeping result-face writes out of
+    /// `entries` keeps them invisible to that scan.
+    #[test]
+    fn topology_attribute_table_result_face_store_records_and_looks_up() {
+        let handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(7),
+        };
+        let d1 = ResultFaceDescriptor {
+            handle,
+            run_original_id: 10,
+            face_id: 100,
+        };
+        // d2 differs only in face_id.
+        let d2 = ResultFaceDescriptor { face_id: 200, ..d1 };
+        // d3 differs only in handle.
+        let d3 = ResultFaceDescriptor {
+            handle: KernelHandle {
+                kernel: KernelId::Manifold,
+                id: GeometryHandleId(8),
+            },
+            ..d1
+        };
+
+        let attr_a = make_topology_attribute();
+        let attr_b = make_topology_attribute_b();
+
+        let mut table = TopologyAttributeTable::default();
+        assert!(
+            table.lookup_result_face(d1).is_none(),
+            "result-face store must start empty"
+        );
+
+        table.record_result_face(d1, attr_a.clone());
+        assert_eq!(
+            table.lookup_result_face(d1),
+            Some(&attr_a),
+            "d1 must resolve to attr_a after record_result_face"
+        );
+        assert!(
+            table.lookup_result_face(d2).is_none(),
+            "d2 (distinct face_id) must remain independent of d1"
+        );
+
+        table.record_result_face(d2, attr_b.clone());
+        table.record_result_face(d3, attr_a.clone());
+        assert_eq!(
+            table.iter_result_faces().count(),
+            3,
+            "three independently-keyed descriptors must yield three entries"
+        );
+        assert_eq!(table.result_face_len(), 3);
+
+        // Last-write-wins on a repeat `record_result_face` for the same key.
+        table.record_result_face(d1, attr_b.clone());
+        assert_eq!(
+            table.lookup_result_face(d1),
+            Some(&attr_b),
+            "record_result_face must overwrite d1's prior entry (last-write-wins)"
+        );
+        assert_eq!(
+            table.result_face_len(),
+            3,
+            "overwriting d1 must not add a fourth entry"
+        );
+
+        // Orthogonal to `entries`: none of the above writes are visible there.
+        assert!(
+            table.lookup(handle).is_none(),
+            "result-face writes must not create an `entries` entry at the same KernelHandle"
+        );
+        assert_eq!(
+            table.iter().count(),
+            0,
+            "result-face writes must not be visible via the `entries`-only iter()"
+        );
     }
 
     /// `GeometryOp::Fillet` records a curated `edges` selection alongside
@@ -10019,5 +11585,462 @@ mod tests {
                 .any(|d| d == GeometryOpDiscriminants::EllipseProfile),
             "iter() must yield GeometryOpDiscriminants::EllipseProfile"
         );
+    }
+
+    // ── MeshContract (INV-GEO-1): validate() / weld_positions() / weldedness() ──
+
+    /// V0=(0,0,0) V1=(1,0,0) V2=(0,1,0) V3=(0,0,1) — a minimal outward-wound
+    /// closed tetrahedron shared by every `MeshContract` test below.
+    fn tetra_positions() -> [[f32; 3]; 4] {
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    }
+
+    /// The four outward-wound faces of [`tetra_positions`] (verified by
+    /// cross-product sign against the tetrahedron centroid).
+    fn tetra_faces() -> [[u32; 3]; 4] {
+        [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]
+    }
+
+    /// The tetrahedron with each corner referenced once — already
+    /// position-welded.
+    fn welded_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = tetra_faces().into_iter().flatten().collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    /// The same tetrahedron emitted as 12 per-face-block vertices (each
+    /// corner duplicated per incident face), mirroring OCCT's per-face
+    /// tessellation output (occt_wrapper.cpp:5847), which is unwelded by
+    /// design.
+    fn per_face_block_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let mut vertices = Vec::with_capacity(12 * 3);
+        for face in tetra_faces() {
+            for corner in face {
+                vertices.extend_from_slice(&positions[corner as usize]);
+            }
+        }
+        let indices: Vec<u32> = (0..12).collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_closed_welded_tetra() {
+        let mesh = welded_tetra_mesh();
+        let validated = mesh
+            .validate(0.0)
+            .expect("closed outward-wound welded tetra must satisfy the mesh contract");
+        assert_eq!(validated.mesh().vertices, mesh.vertices);
+        assert_eq!(validated.mesh().indices, mesh.indices);
+    }
+
+    #[test]
+    fn validate_accepts_unwelded_per_face_blocks() {
+        let mesh = per_face_block_tetra_mesh();
+        mesh.validate(0.0).expect(
+            "unwelded per-face-block tetra (OCCT-style) must be accepted; internal \
+             position-welding makes it closed and consistently wound",
+        );
+    }
+
+    #[test]
+    fn weldedness_reports_merges() {
+        let unwelded = per_face_block_tetra_mesh().weldedness(0.0);
+        assert!(!unwelded.raw_welded);
+        assert_eq!(unwelded.weld_merged_verts, 8);
+
+        let welded = welded_tetra_mesh().weldedness(0.0);
+        assert!(welded.raw_welded);
+        assert_eq!(welded.weld_merged_verts, 0);
+
+        // `tol` is documented as unused — welding is always bit-exact (§13
+        // Q2 of the PRD) — so wildly different `tol` values must produce an
+        // identical report; pins that documented behavior against drift.
+        assert_eq!(
+            per_face_block_tetra_mesh().weldedness(0.0),
+            per_face_block_tetra_mesh().weldedness(999.0)
+        );
+        assert_eq!(
+            welded_tetra_mesh().weldedness(0.0),
+            welded_tetra_mesh().weldedness(999.0)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_non_finite() {
+        // A NaN vertex coordinate on vertex 1 (x-component).
+        let mut nan_vertex_mesh = welded_tetra_mesh();
+        nan_vertex_mesh.vertices[3] = f32::NAN; // vertex 1, x-component (index * stride 3)
+        let err = nan_vertex_mesh
+            .validate(0.0)
+            .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        assert!(err.counts.nan_verts >= 1);
+        match err.witness {
+            MeshWitness::Vertex { index, .. } => {
+                assert_eq!(index, 1, "witness must name the offending vertex")
+            }
+            other => panic!("expected MeshWitness::Vertex naming the offender, got {other:?}"),
+        }
+
+        // A +Inf normal component (y-component of vertex 2's normal) — the
+        // vertex positions themselves stay all-finite.
+        let mut inf_normal_mesh = welded_tetra_mesh();
+        let normal_len = inf_normal_mesh.vertices.len();
+        inf_normal_mesh.normals = Some(vec![0.0_f32; normal_len]);
+        inf_normal_mesh.normals.as_mut().unwrap()[2 * 3 + 1] = f32::INFINITY;
+        let err = inf_normal_mesh
+            .validate(0.0)
+            .expect_err("a mesh with a +Inf normal component must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        assert!(err.counts.nan_verts >= 1);
+        match err.witness {
+            MeshWitness::Vertex { coord, .. } => assert!(
+                coord.iter().any(|c| !c.is_finite()),
+                "witness coord must carry the non-finite NORMAL value, not a finite \
+                 position decoy: {coord:?}"
+            ),
+            other => panic!("expected MeshWitness::Vertex naming the offender, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_out_of_bounds_index() {
+        // The last triangle's last index is bumped to 4, but the tetra only
+        // has 4 vertices (valid indices 0..=3).
+        let mut oob_mesh = welded_tetra_mesh();
+        let last = oob_mesh.indices.len() - 1;
+        oob_mesh.indices[last] = 4;
+        let err = oob_mesh
+            .validate(0.0)
+            .expect_err("a mesh with an out-of-bounds triangle index must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+        assert!(err.counts.oob_indices >= 1);
+        match err.witness {
+            MeshWitness::Triangle { .. } => {}
+            other => panic!("expected MeshWitness::Triangle naming the offender, got {other:?}"),
+        }
+
+        // A dangling trailing group (indices.len() % 3 != 0) is also
+        // reported as IndexValid.
+        let mut truncated_mesh = welded_tetra_mesh();
+        truncated_mesh.indices.pop();
+        assert_ne!(truncated_mesh.indices.len() % 3, 0);
+        let err = truncated_mesh.validate(0.0).expect_err(
+            "a mesh whose index buffer length is not a multiple of 3 must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+    }
+
+    #[test]
+    fn validate_rejects_malformed_vertex_buffer_length() {
+        // A `vertices` buffer whose length isn't a multiple of 3 (one
+        // dangling trailing float) must be a first-class IndexValid
+        // violation rather than silently truncated away by `len() / 3`,
+        // mirroring the analogous `indices` check above.
+        let mut mesh = welded_tetra_mesh();
+        mesh.vertices.push(0.0);
+        assert_ne!(mesh.vertices.len() % 3, 0);
+        let err = mesh.validate(0.0).expect_err(
+            "a vertices buffer whose length isn't a multiple of 3 must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+        assert!(err.counts.oob_indices >= 1);
+    }
+
+    #[test]
+    fn validate_rejects_mismatched_normals_length() {
+        // A `normals` buffer present but not the same length as `vertices`
+        // must be rejected rather than silently under/over-scanned by the
+        // Finite check's `base + 3 <= normals.len()` guard (which would
+        // otherwise let a non-finite value hide in the unmatched region).
+        let mut short_normals = welded_tetra_mesh();
+        let full_len = short_normals.vertices.len();
+        short_normals.normals = Some(vec![0.0_f32; full_len - 3]); // one vertex short
+        let err = short_normals
+            .validate(0.0)
+            .expect_err("a normals buffer shorter than vertices must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+
+        let mut long_normals = welded_tetra_mesh();
+        long_normals.normals = Some(vec![0.0_f32; full_len + 3]); // one vertex too many
+        let err = long_normals
+            .validate(0.0)
+            .expect_err("a normals buffer longer than vertices must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+    }
+
+    #[test]
+    fn validate_rejects_degenerate_triangle() {
+        // (a) A repeated raw index within a triangle collapses two corners
+        // onto the same position — zero area regardless of tol.
+        let repeated_index_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 1],
+            normals: None,
+        };
+        let err = repeated_index_mesh
+            .validate(0.0)
+            .expect_err("a triangle with a repeated index must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::NonDegenerate);
+        assert!(err.counts.degenerate_tris >= 1);
+        match err.witness {
+            MeshWitness::Triangle { .. } => {}
+            other => panic!("expected MeshWitness::Triangle naming the offender, got {other:?}"),
+        }
+
+        // (b) Three distinct raw indices, but two reference coincident
+        // vertex positions — also zero area at tol=0.0.
+        let coincident_position_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let err = coincident_position_mesh.validate(0.0).expect_err(
+            "a triangle with coincident vertex positions must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::NonDegenerate);
+        assert!(err.counts.degenerate_tris >= 1);
+
+        // A real (non-degenerate) tetra face must NOT be flagged at
+        // tol=0.0 — guards against false-rejecting valid geometry.
+        welded_tetra_mesh()
+            .validate(0.0)
+            .expect("a closed outward-wound tetra has no degenerate triangles");
+    }
+
+    #[test]
+    fn validate_rejects_open_boundary() {
+        // A single non-degenerate triangle has three directed edges, none
+        // of which has a reverse anywhere in the mesh — an open boundary.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let err = open_mesh
+            .validate(0.0)
+            .expect_err("a single open triangle must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Closed);
+        assert!(err.counts.open_edges > 0);
+        match err.witness {
+            MeshWitness::Edge { .. } => {}
+            other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_reversed_winding() {
+        // The valid welded tetra with exactly ONE face's winding reversed:
+        // face (0,2,1) becomes (0,1,2). This makes three directed edges
+        // occur twice in the same direction, while their true reverses
+        // never appear anywhere — tripping both ConsistentWinding
+        // (same-direction duplicate) and Closed (missing reverse). Winding
+        // must be reported with priority over closedness.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        let err = mesh
+            .validate(0.0)
+            .expect_err("a mesh with one face's winding reversed must fail the mesh contract");
+        assert_eq!(
+            err.invariant,
+            MeshInvariant::ConsistentWinding,
+            "winding must be reported with priority over closedness when both trip"
+        );
+        assert!(err.counts.reversed_edges > 0);
+        assert!(
+            err.counts.open_edges > 0,
+            "the doubled edge's true reverse is entirely absent, so open_edges must also be \
+             nonzero even though ConsistentWinding is the reported invariant"
+        );
+        match err.witness {
+            MeshWitness::Edge { .. } => {}
+            other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
+        }
+    }
+
+    // --- MeshContractMode env-knob parser (task #5105 δ, INV-GEO-1) ---
+
+    /// Exhaustive string→mode cases for the pure `from_env_value` parser.
+    ///
+    /// Mirrors `build_scheduler_from_env_value_parsing` (engine_fixpoint.rs).
+    /// The critical property is that the parser fails **CLOSED**: only an
+    /// exact (trimmed, case-insensitive) `warn` downgrades the contract to a
+    /// diagnostic; unset / empty / unrecognized values all resolve to
+    /// `Enforce` so a typo can never silently disable INV-GEO-1.
+    #[test]
+    fn mesh_contract_mode_from_env_value_parsing() {
+        // Unset: post-flip default is the strict mode.
+        assert_eq!(
+            MeshContractMode::from_env_value(None),
+            MeshContractMode::Enforce,
+            "an unset REIFY_MESH_CONTRACT must enforce (post-flip default)"
+        );
+        // Shell `VAR=` yields an empty string — treated as absent.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("")),
+            MeshContractMode::Enforce,
+            "an empty REIFY_MESH_CONTRACT must be treated as absent, i.e. enforce"
+        );
+
+        // The one break-glass string that flips the default off.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("warn")),
+            MeshContractMode::Warn
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("WARN")),
+            MeshContractMode::Warn,
+            "matching must be case-insensitive"
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("  warn  ")),
+            MeshContractMode::Warn,
+            "surrounding whitespace must be tolerated"
+        );
+
+        // Explicit strict spelling.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("enforce")),
+            MeshContractMode::Enforce
+        );
+
+        // Fail-closed: an unrecognized value must NEVER disable the contract.
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("bogus")),
+            MeshContractMode::Enforce,
+            "an unknown REIFY_MESH_CONTRACT value must fail CLOSED, never silently \
+             disable the mesh contract"
+        );
+        assert_eq!(
+            MeshContractMode::from_env_value(Some("enfroce")),
+            MeshContractMode::Enforce,
+            "a typo'd strict spelling must still enforce"
+        );
+    }
+
+    /// `Default` must agree with the unset-env parse: enforce.
+    #[test]
+    fn mesh_contract_mode_default_is_enforce() {
+        assert_eq!(MeshContractMode::default(), MeshContractMode::Enforce);
+        assert_eq!(
+            MeshContractMode::default(),
+            MeshContractMode::from_env_value(None)
+        );
+    }
+
+    #[test]
+    fn geometry_error_mesh_contract_violation_display_and_bridge() {
+        let counts = MeshViolationCounts {
+            reversed_edges: 3,
+            open_edges: 3,
+            ..Default::default()
+        };
+        let witness = MeshWitness::Edge { u: 0, v: 1 };
+        let violation = MeshContractViolation {
+            invariant: MeshInvariant::ConsistentWinding,
+            counts,
+            witness,
+        };
+
+        let occt_error = GeometryError::MeshContractViolation {
+            kernel: "occt",
+            invariant: violation.invariant,
+            counts: violation.counts,
+            witness: violation.witness,
+        };
+        let rendered = occt_error.to_string();
+        assert!(
+            rendered.contains("occt"),
+            "Display must name the kernel: {rendered}"
+        );
+        assert!(
+            rendered.contains("ConsistentWinding"),
+            "Display must name the invariant: {rendered}"
+        );
+        assert!(
+            rendered.contains('3'),
+            "Display must include the violation counts: {rendered}"
+        );
+
+        match violation.into_geometry_error("manifold") {
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts: bridged_counts,
+                witness: bridged_witness,
+            } => {
+                assert_eq!(kernel, "manifold");
+                assert_eq!(invariant, MeshInvariant::ConsistentWinding);
+                assert_eq!(bridged_counts, counts);
+                assert_eq!(bridged_witness, witness);
+            }
+            other => panic!("expected MeshContractViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_validated_moves_mesh_without_cloning_on_success() {
+        let mesh = welded_tetra_mesh();
+        let expected_vertices = mesh.vertices.clone();
+        let expected_indices = mesh.indices.clone();
+        let validated = mesh
+            .into_validated(0.0)
+            .expect("closed outward-wound welded tetra must satisfy the mesh contract");
+        assert_eq!(validated.mesh().vertices, expected_vertices);
+        assert_eq!(validated.mesh().indices, expected_indices);
+    }
+
+    #[test]
+    fn into_validated_returns_mesh_back_on_failure() {
+        let mut mesh = welded_tetra_mesh();
+        mesh.vertices[3] = f32::NAN;
+        let expected_vertices = mesh.vertices.clone();
+        let expected_indices = mesh.indices.clone();
+        let (returned_mesh, err) = *mesh
+            .into_validated(0.0)
+            .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        // Bit-pattern comparison, not `assert_eq!` on the `Vec<f32>` directly:
+        // `expected_vertices` carries the injected NaN (cloned from `mesh`
+        // after poisoning it above), and IEEE-754 NaN != NaN under `==`, so a
+        // plain float comparison would fail here even when the mesh really
+        // is byte-for-byte unchanged.
+        assert_eq!(
+            returned_mesh
+                .vertices
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>(),
+            expected_vertices
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>(),
+            "the mesh must be handed back unchanged on failure"
+        );
+        assert_eq!(returned_mesh.indices, expected_indices);
     }
 }

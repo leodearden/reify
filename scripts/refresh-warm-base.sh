@@ -47,6 +47,13 @@
 #      immutable commit — TOCTOU-free under concurrent refreshes (inv.8).
 #      Consumed by seed-warm-lane.sh as the authoritative delta-touch base (priority
 #      over the drift-prone legacy .warm-base-meta BASE_COMMIT, esc-3468-75).
+#   4b.Write per-gen build-worktree stamp: <base_dir>.gen.<N>.buildroot = realpath of
+#      the advancing worktree ROOT (dirname(advancing_target_dir), the same _prov_wt
+#      resolved by the inv.9 provenance guard).  Written alongside .basecommit (same
+#      timing/TOCTOU properties).  Consumed by seed-warm-lane.sh to detect when the
+#      base's test binaries baked a CARGO_MANIFEST_DIR (or other env!() path macro)
+#      pointing at a build worktree that differs from the consuming lane, so it can
+#      relink the affected test binaries (task 4983, esc-4906-57).
 #   5. Atomic whole-tree swap: ln -sfn <base_dir>.gen.<N> <base_dir>
 #      (ln -sfn is atomic on Linux: symlink + rename under the hood).
 #   6. Reader-refcount GC: sweep retired <base_dir>.gen.* dirs; rm each whose
@@ -55,7 +62,8 @@
 #      MUST hold flock -s <base_dir>.gen.<N>.lock for the duration of its cp -a
 #      walk of that gen — the flock defers the rm until the clone finishes.
 #      (Separates dir-entry refcount from XFS extent-refcount, which are orthogonal.)
-#      The .basecommit sibling is also removed when its gen is reaped (no orphans).
+#      The .basecommit and .buildroot siblings are also removed when their gen is
+#      reaped (no orphans).
 #   7. Write self-description stamps: <base_dir>.rustflags, <base_dir>.invocation
 #
 # In-flight clone independence (B6 + D10): the atomic symlink swap means readers
@@ -64,9 +72,11 @@
 # completes — an rm while a reader holds flock -s would ENOENT the clone mid-walk.
 #
 # Sidecar stamp convention: <base_dir>.rustflags, <base_dir>.invocation, and
-# per-gen <base_dir>.gen.<N>.basecommit are adjacent to the base dir (sibling files,
-# NOT inside the dir). warm-lane-preflight.sh reads .rustflags/.invocation;
-# seed-warm-lane.sh reads .basecommit (authoritative) and the legacy .warm-base-meta.
+# per-gen <base_dir>.gen.<N>.basecommit / <base_dir>.gen.<N>.buildroot are adjacent
+# to the base dir (sibling files, NOT inside the dir). warm-lane-preflight.sh reads
+# .rustflags/.invocation; seed-warm-lane.sh reads .basecommit (authoritative) and
+# the legacy .warm-base-meta for delta-touch provenance, and .buildroot to detect a
+# build-worktree mismatch for the env!()-baked-path test relink (task 4983).
 
 set -euo pipefail
 
@@ -246,7 +256,16 @@ if [ -n "$_prov_status" ]; then
     printf '%s\n' "$_prov_dirty_head" | while IFS= read -r _line; do
         err "    $_line"
     done
-    err "Refusing to promote a task lane with WIP. Commit or stash tracked changes first."
+    err "Refusing to promote a task lane with WIP. Commit or clean tracked changes first."
+    # This refusal fires INSIDE a warm lane, so the remedy it names is read by
+    # exactly the population that filled the shared WIP stack. Naming the reason
+    # here (not just the remedy) is the point: that stack is ONE ref in the one
+    # shared .git — it is not per-worktree — so parking WIP there hands it to
+    # every other lane on the host (esc-5785-6). Wording deliberately avoids the
+    # bare verb, which tests/infra/test_refresh_warm_base.sh Block I pins.
+    err "  Do NOT park it on the shared LIFO WIP ref either: that ref lives in the one"
+    err "  shared .git and is not per-worktree, so every lane on this host shares it."
+    err "  Rule and reach: CLAUDE.md, \"Warm lanes\"."
     exit 1
 fi
 if [ -z "$LANDED_COMMIT" ]; then
@@ -368,6 +387,18 @@ mv "$_new_gen_partial" "$_new_gen_dir"
 # See design decision in .task/plan.json and esc-3468-75.
 printf '%s' "$LANDED_COMMIT" > "${_new_gen_dir}.basecommit"
 
+# Step 4b (cont.): write the per-gen build-worktree stamp alongside .basecommit.
+# Value = realpath of _prov_wt (the advancing worktree ROOT, already resolved by
+# the inv.9 provenance guard above) — the worktree under which this gen's test
+# binaries were compiled, and thus the worktree path baked into any env!("CARGO_
+# MANIFEST_DIR") (and allied CARGO_* path macro) call in their sources.
+# Same per-gen / TOCTOU-free properties as .basecommit (written before the Step 5
+# symlink swap, reaped alongside its gen in the Step 6 GC).
+# Consumed by seed-warm-lane.sh to detect when the recorded build-worktree path
+# differs from the consuming lane, so it can relink the affected env!()-baked-path
+# test/bench binaries (task 4983, esc-4906-57).
+printf '%s' "$(realpath -m "$_prov_wt")" > "${_new_gen_dir}.buildroot"
+
 # Step 5: atomic whole-tree symlink swap.
 # ln -sfn is atomic on Linux: symlink(2) to temp + rename(2) replaces the link.
 # No compiled renameat2 helper needed — shell-only, FS-agnostic default.
@@ -410,6 +441,8 @@ for _gc_gen in "${BASE_DIR}.gen."*; do
         # file is only meaningful while its gen dir exists; removing it here keeps
         # the pool directory clean as gens roll forward.
         rm -f "${_gc_gen}.basecommit" 2>/dev/null || true
+        # Also reap the .buildroot sibling for the same reason (no orphans).
+        rm -f "${_gc_gen}.buildroot" 2>/dev/null || true
         info "GC: reaping retired gen (no active reader): $_gc_gen"
     else
         info "GC: skipping retired gen (reader in-flight): $_gc_gen"

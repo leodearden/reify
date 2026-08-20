@@ -10,10 +10,10 @@
 //! Mirrors `point_load_in_source_lowers_to_structure_instance` in
 //! `structure_instance_e2e.rs` (task 3540 step-19).
 
-use reify_core::ValueCellId;
+use reify_core::{Severity, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::{
-    collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+    compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
 
 // ─── step-51: MarlinDialect ───────────────────────────────────────────────────
@@ -196,13 +196,20 @@ structure def BadDialectHolder {
 }
 "#;
     let compiled = compile_source_with_stdlib(SOURCE);
-    let errors = collect_errors(&compiled.diagnostics);
+    // task 5302 α: ctor-site trait conformance (the `sub =` path) now emits at
+    // Severity::Warning under the CTOR_FIELD_CONFORMANCE_SEVERITY knob, not Error.
+    // Filter warnings (was collect_errors). Diagnostic code/message unchanged.
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
     assert!(
-        errors
+        warnings
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("GcodeDialect")),
         "passing a non-conforming `NotADialect()` to a GcodeDialect-typed param \
-         must produce a trait-conformance error; got: {errors:?}"
+         must produce a trait-conformance warning; got: {warnings:?}"
     );
 }

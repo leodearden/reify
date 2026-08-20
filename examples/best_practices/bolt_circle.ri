@@ -1,0 +1,73 @@
+module bolt_circle
+
+// bolt_circle.ri — IDIOM: cut a bolt circle with the 4-arg value form of
+// `circular_pattern`, then subtract the whole ring in one boolean.
+//
+//     let ring = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), n, 360deg)
+//     let body = difference(plate, ring)
+//
+// ANTI-PATTERN this replaces: placing each hole by hand at a computed angle,
+// or reaching for the older 9-arg scalar form (as `examples/m5_geometry_flange.ri`
+// still does) when the axis is available as a value.
+//
+// Verified contracts:
+//
+//   circular_pattern(target, axis, count, angle) — the ANGLE IS THE TOTAL
+//   SWEEP, not the per-instance step. This is the single most common
+//   bolt-circle mistake: `360deg` with 6 holes gives 6 holes 60 degrees apart,
+//   NOT 6 holes 360 degrees apart. Instance i is placed at
+//       angle_i = total_angle * i / count
+//   (occt_wrapper.cpp), so a full circle is always plain `360deg` regardless of
+//   count.
+//
+//   Note the divisor is `count`, not `count - 1`. That is exactly right for a
+//   closed 360-degree circle — it avoids a duplicate instance stacked on the
+//   first one — but it means a PARTIAL arc does not put its last instance on
+//   the end angle: `circular_pattern(h, ax, 4, 90deg)` yields 0, 22.5, 45 and
+//   67.5 degrees. For an arc that must reach its end angle, ask for the sweep
+//   that gets you there: total = desired * count / (count - 1).
+//
+//   axis_z(origin) / axis_y(origin) / axis_x(origin) take EXACTLY ONE argument
+//   and it must be a `point3`. A `vec3` is not a point: `make_axis` returns
+//   `Value::Undef` for any non-Point argument, silently, with no diagnostic
+//   from `reify check`. The resulting pattern then quietly produces nothing.
+//
+//   TRAP — never construct geometry inside a `generate` lambda (#5385). It
+//   yields a silent `undef` under a green `check`. Lambdas may compute
+//   `point3`/scalar values only; build the geometry outside and pattern it.
+
+structure def BoltCircle {
+    param plate_r       : Length = 60mm
+    param plate_t       : Length = 8mm
+    param hole_r        : Length = 3mm
+    param bolt_circle_r : Length = 45mm
+    param n_holes       : Int    = 6
+
+    let plate = cylinder_centered(plate_r, plate_t)
+
+    // One hole, positioned on the bolt circle at 0 degrees. Made deliberately
+    // over-long (2x plate thickness) so the cut is a clean through-hole rather
+    // than a coplanar-face boolean.
+    let hole = translate(
+        cylinder_centered(hole_r, plate_t * 2),
+        bolt_circle_r,
+        0mm,
+        0mm
+    )
+
+    // THE IDIOM: 4-arg value form. 360deg is the TOTAL sweep — the step is
+    // 360deg / n_holes = 60deg here.
+    let ring = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), n_holes, 360deg)
+
+    // Subtract the whole ring at once, not hole-by-hole.
+    let body = difference(plate, ring)
+
+    // Every param paired with the constraint that bounds it: the bolt circle
+    // must leave material both inside and outside, and a "bolt circle" of
+    // fewer than three holes does not locate a part.
+    constraint n_holes > 2
+    constraint hole_r > 0mm
+    constraint bolt_circle_r + hole_r < plate_r
+    constraint bolt_circle_r > hole_r
+    constraint plate_t > 0mm
+}

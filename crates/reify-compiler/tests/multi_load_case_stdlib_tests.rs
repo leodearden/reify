@@ -13,9 +13,9 @@
 //! Accessor argument contract (pinned in `multi_load_case_stdlib_smoke_e2e`):
 //!   `result_for(mcr, key)` — `mcr` is `args[0]`, `key` is `args[1]`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -138,9 +138,15 @@ fn loadcase_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         ("name", Type::String),
         // After task ζ/4444: loads is List<Load> (List<TraitObject("Load")>), not List<Real>.
-        ("loads", Type::List(Box::new(Type::TraitObject("Load".to_string())))),
+        (
+            "loads",
+            Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+        ),
         // After task ζ/4444: supports is List<Support> (List<TraitObject("Support")>), not List<Real>.
-        ("supports", Type::List(Box::new(Type::TraitObject("Support".to_string())))),
+        (
+            "supports",
+            Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+        ),
         (
             "options",
             Type::Option(Box::new(Type::StructureRef("ElasticOptions".to_string()))),
@@ -434,4 +440,286 @@ structure def PositiveConformanceFixture {
          TypeNotConformingToTrait; got: {:?}",
         conformance_errors
     );
+}
+
+// ─── Task 4870: `body : Solid` overload of solve_load_cases ───────────────────
+//
+// A NEW arity-4 overload
+//   solve_load_cases(material : ConstitutiveLaw, body : Solid,
+//                    cases : List<LoadCase>, options : ElasticOptions = ElasticOptions())
+// replaces the three scalar dims (length/width/height) of the pre-existing
+// arity-6 dims overload with a single `body : Solid` geometry input that becomes
+// the shared mesh-realization identity — all cases sharing `body` share ONE
+// realized tet VolumeMesh. `Solid` lowers to `reify_core::Type::Geometry`
+// (type_resolution.rs), so the body param flows to the shared
+// `solver::multi_case` trampoline via `realization_inputs` (a geometry
+// realization ValueRef) rather than the cache-key `value_inputs` list —
+// `compute_value_input_for_ref` excludes `Type::Geometry` refs from the cache
+// key. The compiler-observable evidence of "lowers to a solver::multi_case
+// ComputeNode whose body arg is a geometry realization ValueRef" is (a)
+// `optimized_target == Some("solver::multi_case")` and (b) the body param being
+// `Type::Geometry`; the eval-time shared-realization behavior is pinned by the
+// kernel-enabled e2e in reify-eval (step-11).
+
+/// Locate the `body : Solid` overload: the arity-4 `solve_load_cases` whose
+/// second parameter lowers to `Type::Geometry`. The pre-existing dims overload
+/// is arity 6 (`[material, length, width, height, cases, options]`), so "arity 4
+/// with `Type::Geometry` at param[1]" uniquely identifies the new body overload
+/// without depending on declaration order.
+///
+/// Panics if not found — the expected RED failure mode for step-7 (no body
+/// overload exists yet); step-8 adds the declaration.
+fn find_body_overload() -> &'static CompiledFunction {
+    let module = load_stdlib_module();
+    module
+        .functions
+        .iter()
+        .find(|f| {
+            f.name == "solve_load_cases"
+                && f.params.len() == 4
+                && matches!(f.params.get(1), Some((_, Type::Geometry)))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "body-arg overload solve_load_cases(material, body: Solid, cases, options) \
+                 not found in std/fea/multi_case; available solve_load_cases param arities: {:?}",
+                module
+                    .functions
+                    .iter()
+                    .filter(|f| f.name == "solve_load_cases")
+                    .map(|f| f.params.len())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Pin: the body overload's signature and `@optimized` target.
+///
+/// Asserts the exact param names/order [material, body, cases, options] and the
+/// three type-carrying params — `material : ConstitutiveLaw` (TraitObject),
+/// `body : Solid` (Type::Geometry), `cases : List<LoadCase>` (List of
+/// StructureRef) — plus `optimized_target == Some("solver::multi_case")` (the
+/// shared trampoline branches on `value_inputs[1] == GeometryHandle`).
+///
+/// RED before step-8 (`find_body_overload` panics: no arity-4 overload exists).
+#[test]
+fn solve_load_cases_body_overload_signature_and_optimized_target() {
+    let f = find_body_overload();
+
+    assert_eq!(
+        f.optimized_target,
+        Some("solver::multi_case".to_string()),
+        "body overload must be annotated @optimized(\"solver::multi_case\") so the body \
+         arg lowers to a solver::multi_case ComputeNode (shared trampoline)"
+    );
+
+    let names: Vec<&str> = f.params.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["material", "body", "cases", "options"],
+        "body overload param names/order must be [material, body, cases, options]"
+    );
+
+    assert_eq!(
+        f.params[0].1,
+        Type::TraitObject("ConstitutiveLaw".to_string()),
+        "material param must be TraitObject(\"ConstitutiveLaw\"), got {:?}",
+        f.params[0].1
+    );
+    // The body param is `Type::Geometry` — the discriminator that (a) excludes it
+    // from the cache-key value_inputs list and (b) makes it a realization ValueRef
+    // the trampoline reads from realization_inputs and forwards to every case.
+    assert_eq!(
+        f.params[1].1,
+        Type::Geometry,
+        "body param must lower to Type::Geometry (the `Solid` surface alias), got {:?}",
+        f.params[1].1
+    );
+    // cases : List<LoadCase> — LoadCase is a structure, so the element lowers to
+    // StructureRef (mirrors MultiCaseResult.cases' StructureRef(\"ElasticResult\")).
+    assert_eq!(
+        f.params[2].1,
+        Type::List(Box::new(Type::StructureRef("LoadCase".to_string()))),
+        "cases param must be List<StructureRef(\"LoadCase\")>, got {:?}",
+        f.params[2].1
+    );
+}
+
+/// Caller-compile positive: a design binding `let body = box(...)` and calling
+/// `solve_load_cases(material, body, [lc1, lc2], ElasticOptions())` must compile
+/// with ZERO Error diagnostics — the 4-arg call resolves unambiguously to the
+/// new arity-4 body overload (the arity-6 dims overload needs ≥5 positional
+/// args), and the geometry `body` let type-checks against `body : Solid`.
+///
+/// RED before step-8: no arity-4 overload exists, so overload resolution fails
+/// (arity mismatch / `body` geometry ≠ `length : Length`) and emits an Error.
+#[test]
+fn solve_load_cases_body_arg_resolves_and_compiles_clean() {
+    let source = r#"
+structure def FEABodyMultiCase {
+    let body = box(1000mm, 100mm, 100mm)
+    let result = solve_load_cases(
+        Steel_AISI_1045(),
+        body,
+        [
+            LoadCase(name: "operating", loads: [PointLoad(point: "tip", force: 1000.0)], supports: [FixedSupport(target: "root")]),
+            LoadCase(name: "overload", loads: [PointLoad(point: "tip", force: 2000.0)], supports: [FixedSupport(target: "root")])
+        ],
+        ElasticOptions()
+    )
+}
+"#;
+    let parsed = parse_with_stdlib(
+        source,
+        ModulePath::from_dotted("test.solve_load_cases_body").expect("valid dotted path"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "FEABodyMultiCase should parse without errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile_with_stdlib(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for the body-arg solve_load_cases call \
+         (must resolve to the arity-4 `body : Solid` overload); got {:?}",
+        errors
+    );
+}
+
+// ─── Task 5905: load direction fields are dimensionless 3-vectors ────────────
+
+/// Unwrap a numeric literal expression to its `f64` magnitude.
+///
+/// Mirrors the identically-named helper in `fdm_stdlib_compile.rs:502` — a
+/// `vec3(...)` default's components lower to `Literal(Int | Real | Scalar)`
+/// depending on how the source spelled them — and additionally unwraps a
+/// leading unary negation. There is no negative-literal token: `-1.0` lowers to
+/// `UnOp { op: Neg, operand: Literal(Real(1.0)) }`. The fdm.ri precedent never
+/// needed this because its default (`vec3(0, 0, 1)`) has no negative component;
+/// the −Z load defaults here do.
+fn extract_numeric_literal(expr: &CompiledExpr) -> f64 {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Int(n)) => *n as f64,
+        CompiledExprKind::Literal(Value::Real(r)) => *r,
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value,
+        CompiledExprKind::UnOp {
+            op: UnOp::Neg,
+            operand,
+        } => -extract_numeric_literal(operand),
+        other => panic!(
+            "extract_numeric_literal: expected Literal(Int|Real|Scalar) or a \
+             negated one, got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Assert that `<structure>.direction` is a dimensionless 3-vector declared
+/// LAST, defaulting to the `vec3(0, 0, -1)` unit −Z direction.
+fn assert_direction_is_dimensionless_neg_z_vec3(structure: &str) {
+    let template = find_structure(structure);
+
+    // (1) Declared type: a DIRECTION takes a dimensionless quantity slot
+    //     (trajectory.ri's direction-field rule, task 5848).
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "direction")
+        .unwrap_or_else(|| panic!("{} missing 'direction' param cell", structure));
+    assert_eq!(
+        cell.cell_type,
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS
+        }),
+        "{}.direction denotes a DIRECTION, so it should be \
+         Type::vec3(Dimensionless) (direction field, task 5848)",
+        structure
+    );
+
+    // (2) Positional-binding guard: structure-def ctors bind arguments by
+    //     DECLARATION ORDER, so `direction` must stay the LAST declared param.
+    //     Promoting it would silently mis-bind every existing caller that
+    //     passes the preceding params positionally.
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names.last().copied(),
+        Some("direction"),
+        "{}.direction must stay the LAST declared param (positional ctor \
+         binding); declared order is {:?}",
+        structure,
+        names
+    );
+
+    // (3) Default: `vec3(0.0, 0.0, -1.0)` — a FunctionCall, NOT a list literal
+    //     (a list literal cannot satisfy a Vector3 annotation at all).
+    //     Assertion shape mirrors fdm_stdlib_compile.rs:337-400.
+    let expr = require_default(template, "direction");
+    match &expr.kind {
+        CompiledExprKind::FunctionCall { function, args } => {
+            assert_eq!(
+                function.name, "vec3",
+                "{}.direction default should call 'vec3', got function.name: {}",
+                structure, function.name
+            );
+            assert_eq!(
+                args.len(),
+                3,
+                "vec3 call in {}.direction default should have 3 args, got {}",
+                structure,
+                args.len()
+            );
+            let tol = 1e-9_f64;
+            let x = extract_numeric_literal(&args[0]);
+            let y = extract_numeric_literal(&args[1]);
+            let z = extract_numeric_literal(&args[2]);
+            assert!(
+                (z + 1.0).abs() <= tol,
+                "{}.direction z-component (vec3 arg[2]) should be -1 (canonical \
+                 downward/bending direction), got {}",
+                structure,
+                z
+            );
+            assert!(
+                x.abs() <= tol,
+                "{}.direction x-component should be 0, got {}",
+                structure,
+                x
+            );
+            assert!(
+                y.abs() <= tol,
+                "{}.direction y-component should be 0, got {}",
+                structure,
+                y
+            );
+        }
+        other => panic!(
+            "{}.direction default should be FunctionCall {{ name: \"vec3\", .. }}, \
+             got: {:?}",
+            structure, other
+        ),
+    }
+}
+
+/// `PointLoad.direction` and `Gravity.direction` both denote a unit DIRECTION,
+/// so under trajectory.ri's direction-field ruling (task 5848) their quantity
+/// slot is DIMENSIONLESS, not `List<Real>` and not `Vector3<Length>`.
+///
+/// Three things are pinned per structure: the declared `Type::vec3(Dimensionless)`,
+/// the `vec3(0, 0, -1)` default (a list literal cannot satisfy a Vector3
+/// annotation, so the default has to move in lockstep with the type), and
+/// `direction` remaining the LAST declared param.
+///
+/// Assertion shape copied from `joint_direction_params_are_dimensionless_vec3`
+/// (kinematic_stdlib_compile.rs) so the two ruling-conformance pins read alike.
+#[test]
+fn load_direction_params_are_dimensionless_vec3() {
+    assert_direction_is_dimensionless_neg_z_vec3("PointLoad");
+    assert_direction_is_dimensionless_neg_z_vec3("Gravity");
 }

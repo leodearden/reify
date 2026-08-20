@@ -1,0 +1,159 @@
+# reify's per-project legibility config (PRD §7.4).
+#
+# Opts reify into dark_factory's nightly confusion-reduction trickle (ε)
+# and periodic census (η): see
+# /home/leo/src/dark-factory/plans/confusion-reduction-prd.md. Consumed by
+# the shared scripts/legibility/config.load_config (dark_factory checkout)
+# via scripts/legibility/sampling.py's CLI. Cross-repo seam: reify ships
+# this config as the primitive; dark_factory θ′ deploys the trickle timer
+# that reads it (see reify CLAUDE.md's "reify ships the primitive,
+# dark-factory wires the invocation" pattern).
+project_id: reify
+project_root: /home/leo/src/reify
+escalation_port: 8100
+# cwd_prefixes are matched via legibility.inventory.is_member, which uses
+# Path.is_relative_to PATH-COMPONENT semantics against each session's real
+# (decoded) cwd — never a raw string-prefix match on the lossy
+# ~/.claude/projects encoded dir name (encode_cwd: both '/' and '.' map to
+# '-', so a naive prefix match would wrongly include a sibling like
+# reify-cockpit). Prefixes below must therefore be real filesystem
+# ancestor paths, not encoded-name fragments.
+#
+# The 2026-07-14 enumeration recorded here previously ("275 reify-family
+# encoded dirs in three shapes") counted DIRECTORIES, not traffic. It is
+# still numerically exact and still useless as a picture of where reify's
+# sessions are written: re-verified 2026-07-30, the three shapes' newest
+# ~/.claude/projects transcripts are 2026-05-28 (.worktrees), 2026-07-02
+# (warm-lanes, .claude-worktrees) and 2026-06-20 (build-worktrees). All of
+# reify's ORCHESTRATED work moved out of ~/.claude/projects entirely:
+#   - Since dark_factory commit a07527cf180 (2026-05-12) a dispatched task
+#     agent's Claude config dir is colocated INSIDE its worktree
+#     (shared.config_dir.TaskConfigDir at <worktree>/.task/claude-config-<id>),
+#     so its transcript never lands in ~/.claude/projects at all. It is
+#     gzip-archived instead -- see agent_transcript_roots below.
+#   - dark_factory commit 7a07c40820 (2026-07-02) did the same for
+#     dry-run-unblock investigations, which is what the warm-lane and
+#     build-worktree encoded dirs above actually held (verified: 40/40
+#     sampled first turns are the dry_run_unblock prompt preamble).
+#   - The build-worktree pool was retired 2026-06-20 (#4665) in favour of
+#     warm lanes; its worktrees dir no longer exists on disk.
+# So ~/.claude/projects now holds ONLY reify's supervisory surface --
+# escalation-watcher rotations, /spawn fleet sessions, /unblock sessions,
+# and human interactive work, all under /home/leo/src/reify. The comment
+# this replaced predicted the exact opposite mix ("overwhelmingly
+# orchestrated-task plus a single-session interactive tail"); that premise
+# was backwards, and is why the trickle saw only 'interactive' sessions.
+#
+# The /media prefix was additionally a MIS-DECODE and matched nothing ever:
+# it naively reversed '-' back to '/', turning the real
+# /media/leo/data_lv_1/leo/reify-build/worktrees/<N> into
+# /media/leo/data/lv-1/leo/reify (which does not exist). Corrected below --
+# the pool is retired, but its frozen historical transcripts are now
+# reachable by a long-enough census lookback.
+cwd_prefixes:
+  - /home/leo/src/reify
+  - /home/leo/src/warm-lanes
+  - /media/leo/data_lv_1/leo/reify-build
+# Additional archive roots enumerated ALONGSIDE ~/.claude/projects: the
+# gzip fleet-transcript tree written by shared.transcript_archive
+# (dark_factory plans/agent-transcript-archival-prd.md, which names this
+# reify opt-in as planned follow-up). Relative to project_root, gitignored.
+# THIS IS WHERE REIFY'S ORCHESTRATED-TASK CORPUS ACTUALLY LIVES: verified
+# 2026-07-30, 325 task dirs / 2492 *.jsonl.gz, newest written the same day,
+# decoded cwds under /home/leo/src/warm-lanes/worktrees/_lane-<N> (which is
+# why that prefix must STAY above -- is_member runs on the decoded cwd, so
+# it is what admits these archived sessions).
+#
+# Measured effect of declaring this (2026-07-23..29): enumeration goes from
+# 149 sessions/week, 100% 'interactive', to 1964/week of which 1623 are
+# 'orchestrated-task'. The archive begins 2026-07-18 (when
+# shared.transcript_archive landed); lane transcripts from ~2026-05-12
+# through 2026-07-18 were destroyed by lane reseed before archival existed
+# and are unrecoverable.
+agent_transcript_roots:
+  - data/orchestrator/agent-transcripts
+budgets:
+  max_daily_digest_bytes: 300000
+sampling:
+  top_fraction: 0.12
+  per_stratum_min: 2
+census:
+  max_interval_days: 10
+  tasks_landed_threshold: 120
+  tasks_landed_min_days: 7
+  novelty_spike:
+    count: 4
+    window_hours: 72
+  floor_days: 5
+  saturation:
+    dup_rate: 0.9
+    consecutive_batches: 2
+models:
+  trickle: haiku
+  census_miner: sonnet
+  census_verify: sonnet
+  census_synthesis: fable
+# reify agent-class strata (PRD §13.4, tactical decision owned by this
+# task). dark_factory's classify_agent_class (scripts/legibility/
+# sampling.py) hardcodes STRATA and derives 'orchestrated-task' from an
+# encoded-dir substring match on
+# _WORKTREE_DIR_MARKERS = ('--worktrees-', '--claude-worktrees-'). Against
+# reify's actual encoded-dir shapes:
+#   - reify/.worktrees (31 sessions) and reify/.claude-worktrees (4
+#     sessions) DO contain the generic double-dash markers (the source
+#     path's "/." collapses to "--" under encode_cwd) -> classify as
+#     'orchestrated-task' correctly today.
+#   - the 191 build-worktrees (encoded ...-reify-build-worktrees-<N>) and
+#     48 warm-lanes (encoded ...-warm-lanes-worktrees-<N> /
+#     ...-warm-lanes-worktrees-_lane-<N>) have no leading-dot path
+#     component, so they contain only a SINGLE dash before "worktrees" and
+#     do NOT match either generic marker — they currently fall through to
+#     'interactive'. This is a fidelity gap (under-stratification), not a
+#     correctness bug: the sampler still runs, just without this
+#     refinement.
+#   - reify has effectively no native recon/curator-classifier/watcher
+#     sessions of its own (those harness agents run under dark_factory
+#     cwds). The claim that followed here -- that reify's mix is
+#     "overwhelmingly 'orchestrated-task' plus a single-session
+#     'interactive' tail" -- was WRONG for ~/.claude/projects and is
+#     corrected in the cwd_prefixes block above: that tree is now purely
+#     supervisory/interactive. The orchestrated-task stratum comes from
+#     agent_transcript_roots instead, where the encoded dirs DO carry
+#     '-warm-lanes-worktrees-' and classify correctly (measured 2026-07-30:
+#     1623 orchestrated-task vs 341 interactive over one week).
+# worktree_dir_markers below declares the additional markers reify's
+# worktree shapes need, as forward-compat config data (LegibilityConfig's
+# extra='allow' preserves unknown top-level keys) extending the generic
+# defaults. As of 2026-07-30 dark_factory's classify_agent_class already
+# hardcodes both of these markers in _WORKTREE_DIR_MARKERS (landed by
+# dark_factory task 2612), so this block is now descriptive rather than a
+# pending ask.
+#
+# CAUTION -- the "manually verified" derivation recorded here on 2026-07-14
+# was WRONG, and the error is worth keeping visible because it is a live
+# trap for any FUTURE marker. It claimed:
+#   encode_cwd('/home/leo/src/warm-lanes/worktrees/_lane-9')
+#     = '-home-leo-src-warm-lanes-worktrees-_lane-9'
+# The real on-disk dir is '-home-leo-src-warm-lanes-worktrees--lane-9':
+# Claude Code's own encoder also maps '_' -> '-', which dark_factory's
+# mirror (inventory.py encode_cwd, only '/' and '.') does not reproduce.
+# Both markers below happen to survive this because their underscore falls
+# AFTER the matched substring -- a marker containing '_' would silently
+# never match. Verified 2026-07-30 against a live archived transcript whose
+# decoded cwd is /home/leo/src/warm-lanes/worktrees/_lane-39, stored under
+# the encoded dir '-home-leo-src-warm-lanes-worktrees--lane-39'.
+#   '-home-leo-src-warm-lanes-worktrees--lane-9'
+#     -> contains '-warm-lanes-worktrees-'
+#   encode_cwd('/media/leo/data/lv-1/leo/reify/build-worktrees/12')
+#     = '-media-leo-data-lv-1-leo-reify-build-worktrees-12'
+#     -> contains '-reify-build-worktrees-'
+# and neither marker false-matches the reify/.worktrees, .claude-worktrees,
+# or bare main-checkout shapes (those already classify correctly via the
+# generic --worktrees-/--claude-worktrees- markers). No automated
+# regression check exists for this yet — that belongs alongside
+# TestCwdPrefixCoverage in scripts/test_legibility_reify_config.py, which
+# is outside this amendment's locked scope (docs/legibility/*.yaml only).
+strata:
+  worktree_dir_markers:
+    - '-warm-lanes-worktrees-'
+    - '-reify-build-worktrees-'

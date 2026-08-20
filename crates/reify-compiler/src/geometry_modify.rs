@@ -184,10 +184,8 @@ pub(crate) fn compile_modify_op(
             // curated-faces form — emit a labeled diagnostic mirroring fillet.
             got => {
                 diagnostics.push(
-                    Diagnostic::error(format!(
-                        "draft() expects 3 or 4 arguments, got {got}"
-                    ))
-                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                    Diagnostic::error(format!("draft() expects 3 or 4 arguments, got {got}"))
+                        .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
                 );
                 None
             }
@@ -461,13 +459,22 @@ mod tests {
     /// and lowered to named args `[target, edges, radius]` (curated edge selection).
     #[test]
     fn compile_modify_op_fillet_3arg_builds_curated_edge_args() {
-        let args: Vec<CompiledExpr> =
-            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+        ];
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);
-        let result =
-            compile_modify_op("fillet", args, target.clone(), span, &mut diagnostics, vec![]);
+        let result = compile_modify_op(
+            "fillet",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",
@@ -497,8 +504,14 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);
-        let result =
-            compile_modify_op("fillet", args, target.clone(), span, &mut diagnostics, vec![]);
+        let result = compile_modify_op(
+            "fillet",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",
@@ -529,8 +542,14 @@ mod tests {
         {
             let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)];
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let result =
-                compile_modify_op("fillet", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            let result = compile_modify_op(
+                "fillet",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
             assert!(result.is_none(), "expected None for 1-arg fillet");
             assert!(
                 !diagnostics.is_empty(),
@@ -546,8 +565,14 @@ mod tests {
                 scalar_literal(4.0),
             ];
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let result =
-                compile_modify_op("fillet", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            let result = compile_modify_op(
+                "fillet",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
             assert!(result.is_none(), "expected None for 4-arg fillet");
             assert!(
                 !diagnostics.is_empty(),
@@ -561,13 +586,22 @@ mod tests {
     /// selection), mirroring the 3-arg fillet form.
     #[test]
     fn compile_modify_op_chamfer_3arg_builds_curated_edge_args() {
-        let args: Vec<CompiledExpr> =
-            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+        ];
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);
-        let result =
-            compile_modify_op("chamfer", args, target.clone(), span, &mut diagnostics, vec![]);
+        let result = compile_modify_op(
+            "chamfer",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",
@@ -597,8 +631,14 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);
-        let result =
-            compile_modify_op("chamfer", args, target.clone(), span, &mut diagnostics, vec![]);
+        let result = compile_modify_op(
+            "chamfer",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",
@@ -728,8 +768,11 @@ mod tests {
         let span = SourceSpan::new(10, 20);
         // 3 args → None + ≥1 diagnostic
         {
-            let args: Vec<CompiledExpr> =
-                vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+            ];
             let mut diagnostics: Vec<Diagnostic> = vec![];
             let result = compile_modify_op(
                 "chamfer_asymmetric",
@@ -739,7 +782,10 @@ mod tests {
                 &mut diagnostics,
                 vec![],
             );
-            assert!(result.is_none(), "expected None for 3-arg chamfer_asymmetric");
+            assert!(
+                result.is_none(),
+                "expected None for 3-arg chamfer_asymmetric"
+            );
             assert!(
                 !diagnostics.is_empty(),
                 "expected at least one diagnostic for 3-arg chamfer_asymmetric"
@@ -763,7 +809,10 @@ mod tests {
                 &mut diagnostics,
                 vec![],
             );
-            assert!(result.is_none(), "expected None for 5-arg chamfer_asymmetric");
+            assert!(
+                result.is_none(),
+                "expected None for 5-arg chamfer_asymmetric"
+            );
             assert!(
                 !diagnostics.is_empty(),
                 "expected at least one diagnostic for 5-arg chamfer_asymmetric"
@@ -938,7 +987,11 @@ mod tests {
     {
         static CASES: &[(ModifyKind, &str, &[&str])] = &[
             (ModifyKind::Chamfer, "chamfer", &["distance"]),
-            (ModifyKind::ChamferAsymmetric, "chamfer_asymmetric", &["edges", "d1", "d2"]),
+            (
+                ModifyKind::ChamferAsymmetric,
+                "chamfer_asymmetric",
+                &["edges", "d1", "d2"],
+            ),
             (ModifyKind::Fillet, "fillet", &["radius"]),
             (ModifyKind::Thicken, "thicken", &["offset"]),
             (ModifyKind::Shell, "shell", &["thickness"]),
@@ -1141,8 +1194,14 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);
-        let result =
-            compile_modify_op("draft", args, target.clone(), span, &mut diagnostics, vec![]);
+        let result = compile_modify_op(
+            "draft",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",
@@ -1168,13 +1227,22 @@ mod tests {
     /// (back-compat): named args `[target, angle, plane]`, no `faces` slot.
     #[test]
     fn compile_modify_op_draft_3arg_back_compat() {
-        let args: Vec<CompiledExpr> =
-            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+        ];
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);
-        let result =
-            compile_modify_op("draft", args, target.clone(), span, &mut diagnostics, vec![]);
+        let result = compile_modify_op(
+            "draft",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",
@@ -1208,8 +1276,14 @@ mod tests {
         {
             let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let result =
-                compile_modify_op("draft", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            let result = compile_modify_op(
+                "draft",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
             assert!(result.is_none(), "expected None for 2-arg draft");
             assert!(
                 !diagnostics.is_empty(),
@@ -1231,8 +1305,14 @@ mod tests {
                 scalar_literal(5.0),
             ];
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let result =
-                compile_modify_op("draft", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            let result = compile_modify_op(
+                "draft",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
             assert!(result.is_none(), "expected None for 5-arg draft");
             assert!(
                 !diagnostics.is_empty(),
@@ -1254,8 +1334,11 @@ mod tests {
     /// RED until step-2 adds the "shell_open" arm to `compile_modify_op`.
     #[test]
     fn compile_modify_op_shell_open_3arg_builds_curated_face_args() {
-        let args: Vec<CompiledExpr> =
-            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+        ];
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);
@@ -1418,8 +1501,11 @@ mod tests {
     /// dispatch arm in `compile_modify_op`.
     #[test]
     fn compile_modify_op_offset_curve_3arg_builds_target_distance_third_args() {
-        let args: Vec<CompiledExpr> =
-            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+        ];
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let target = GeomRef::Step(7);
         let span = SourceSpan::new(0, 0);

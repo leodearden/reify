@@ -1,0 +1,5 @@
+structure def Test {
+    let path = helix(2.15mm, 0.8mm, 10mm)
+    let profile = circle(0.4mm)
+    let body = sweep(profile, path)
+}

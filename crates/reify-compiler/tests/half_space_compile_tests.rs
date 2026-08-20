@@ -5,8 +5,10 @@
 //! the lowering test fails because no `Primitive { kind: HalfSpace }` op is
 //! produced.
 
-use reify_compiler::{CompiledGeometryOp, PrimitiveKind, GEOMETRY_FUNCTION_NAMES};
-use reify_test_support::{compile_source_with_stdlib, compile_source_with_stdlib as compile, errors_only};
+use reify_compiler::{CompiledGeometryOp, GEOMETRY_FUNCTION_NAMES, PrimitiveKind};
+use reify_test_support::{
+    compile_source_with_stdlib, compile_source_with_stdlib as compile, errors_only,
+};
 
 /// `half_space` must appear in `GEOMETRY_FUNCTION_NAMES` (which backs
 /// `is_geometry_function`). Already wired in step-2; this test pins it.

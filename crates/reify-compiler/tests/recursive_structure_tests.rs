@@ -5,8 +5,8 @@
 //! diagnostic with the cycle path.
 
 use reify_compiler::find_template;
-use reify_test_support::parse_and_compile;
 use reify_core::Severity;
+use reify_test_support::parse_and_compile;
 
 // ─── step-1: direct self-reference ───
 

@@ -1,8 +1,6 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
@@ -112,42 +110,10 @@ pub struct ResolutionNodeData {
 
 /// Cooperative-cancellation handle for an in-flight ComputeNode dispatch.
 ///
-/// A thin wrapper around `Arc<AtomicBool>`. Cloning shares the same
-/// underlying flag, so cancelling via any clone propagates to all holders
-/// (including graph snapshots taken mid-dispatch). See
+/// Moved to the OCCT-free `reify-compute-contract` foundation crate (task A /
+/// #4934) so it can be shared with future non-OCCT evaluation engines. See
 /// `docs/prds/v0_3/compute-node-contract.md` §2 for the full contract.
-///
-/// Both `cancel()` and `is_cancelled()` use `Ordering::Relaxed`: the flag is
-/// a one-shot monotonic signal (false → true; never resets within a handle's
-/// lifetime). There is no other memory operation whose ordering needs to be
-/// enforced relative to this flag, so stronger orderings buy nothing.
-///
-/// Module-private (not re-exported from `lib.rs`) until task γ (3422) adds
-/// the dispatch-registry consumer and export.
-#[derive(Debug, Clone)]
-pub struct CancellationHandle {
-    inner: Arc<AtomicBool>,
-}
-
-#[allow(clippy::new_without_default)] // Default intentionally omitted: keeps API minimal and leaves room to swap inner to a non-Default-able primitive (e.g. tokio_util::sync::CancellationToken) — see compute-node-contract.md §2
-impl CancellationHandle {
-    /// Create a new, non-cancelled handle.
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Signal cancellation. All clones of this handle will observe the change.
-    pub fn cancel(&self) {
-        self.inner.store(true, Ordering::Relaxed);
-    }
-
-    /// Returns `true` if `cancel()` has been called on this handle or any clone.
-    pub fn is_cancelled(&self) -> bool {
-        self.inner.load(Ordering::Relaxed)
-    }
-}
+pub use reify_compute_contract::CancellationHandle;
 
 /// A compute node in the evaluation graph.
 /// Parallel to RealizationNodeData / ResolutionNodeData. See
@@ -1199,6 +1165,41 @@ mod tests {
         assert_eq!(
             bracket_r0.geometry_cell, None,
             "a realization with no Type::Geometry backing cell must have geometry_cell == None"
+        );
+    }
+
+    /// γ (task #4954) let-backed variant of the test above: a top-level
+    /// geometry LET must ALSO link its `Type::Geometry` value cell. The
+    /// geometry_cell name-match rule (this file, `post_process_geometry_
+    /// handle_cells`: `cell.id.member == realization.name && cell.cell_type
+    /// == Type::Geometry`) is kind-agnostic — it fires the same whether the
+    /// backing value cell came from a `param` or a `let` — so no production
+    /// change is needed here; this test verifies that generic rule already
+    /// covers the new let-backed cell.
+    ///
+    /// Boundary row 1 (graph half). Pre-γ this assertion could not even be
+    /// expressed: `loc_box` had a RealizationDecl but no value cell at all,
+    /// so `geometry_cell` was `None` for lack of a candidate cell to link —
+    /// not because the link rule itself failed.
+    #[test]
+    fn from_templates_populates_realization_geometry_cell_for_geometry_let() {
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param width : Length = 10mm
+    let loc_box = box(width, width, width)
+}"#,
+        );
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let s_r0 = graph
+            .realizations
+            .get(&RealizationNodeId::new("S", 0))
+            .expect("S realization #0 (loc_box) must exist");
+        assert_eq!(
+            s_r0.geometry_cell,
+            Some(ValueCellId::new("S", "loc_box")),
+            "a let-backed geometry realization must link its Type::Geometry value cell"
         );
     }
 

@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule};
 use reify_core::{
-    ConstraintNodeId, ContentHash, Diagnostic, RealizationNodeId, SnapshotId, Type, ValueCellId,
-    VersionId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId, Severity, Type,
+    ValueCellId, VersionId,
 };
 use reify_ir::{
     AutoParam, CompiledExpr, DeterminacyState, PersistentMap, ResolutionProblem,
@@ -40,6 +40,8 @@ use reify_ir::{
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
@@ -123,11 +125,14 @@ pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -
 /// given the already-computed guard value.
 ///
 /// - **Active branch** (`is_true` for `members`, `is_false` for `else_members`):
-///   each cell's `default_expr` is evaluated with
-///   `eval_ctx_with_meta(values, functions, meta_map)` and written into
-///   both `values` and `snapshot_values` with `DeterminacyState::Determined`.
-///   Cells without a `default_expr` (or absent from the graph) are left
-///   unchanged.
+///   each cell's `default_expr` is evaluated with `cell_eval_ctx(values,
+///   functions, meta_map, snapshot_values, runtime_sink, containment)` (task δ
+///   #5056 — reborrows the not-yet-updated `snapshot_values` as the
+///   determinacy source, threading it alongside `runtime_sink`/`containment`
+///   so a newly-activated member's expr sees the same capability set as cold
+///   `eval()`) and written into both `values` and `snapshot_values` with
+///   `DeterminacyState::Determined`. Cells without a `default_expr` (or
+///   absent from the graph) are left unchanged.
 /// - **Inactive branch**: each cell is passed to `deactivate_if_not_auto`,
 ///   which writes `Undef / Undetermined` for non-Auto cells and skips Auto
 ///   cells (whose lifecycle is owned by the constraint solver).
@@ -135,6 +140,7 @@ pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -
 /// The caller is responsible for computing and inserting the guard cell value
 /// itself — this helper takes `guard_val` as input and handles only the member
 /// propagation step.
+#[allow(clippy::too_many_arguments)]
 fn reelaborate_guarded_group(
     graph: &EvaluationGraph,
     group: &GuardedGroupInfo,
@@ -143,6 +149,8 @@ fn reelaborate_guarded_group(
     snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+    containment: &dyn reify_expr::ContainmentQuery,
 ) {
     let is_true = matches!(guard_val, Value::Bool(true));
     let is_false = matches!(guard_val, Value::Bool(false));
@@ -155,7 +163,14 @@ fn reelaborate_guarded_group(
                 {
                     let val = reify_expr::eval_expr(
                         expr,
-                        &eval_ctx_with_meta(values, functions, meta_map),
+                        &cell_eval_ctx(
+                            values,
+                            functions,
+                            meta_map,
+                            snapshot_values,
+                            runtime_sink,
+                            containment,
+                        ),
                     );
                     values.insert(mid.clone(), val.clone());
                     snapshot_values.insert(mid.clone(), (val, DeterminacyState::Determined));
@@ -692,6 +707,111 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
     }
 }
 
+/// Dedup key for [`dedup_diagnostics_preserve_order`]: the fields that
+/// jointly determine a [`Diagnostic`]'s rendered identity (see that
+/// function's doc comment for why `Diagnostic` itself can't derive
+/// `PartialEq`/`Hash`). Factored out of the function signature per
+/// `clippy::type_complexity`.
+type DiagnosticDedupKey = (
+    Severity,
+    Option<DiagnosticCode>,
+    String,
+    Vec<(u32, u32, String)>,
+    Vec<String>,
+);
+
+/// De-duplicate a diagnostics vec by rendered content, preserving the order
+/// of first occurrence (amend, task ε #4957 review round 2).
+///
+/// Both `edit_param` and `edit_source` (below) accumulate diagnostics from
+/// two independent sources that can both fire for the *same* consumer
+/// cell: a selector-mint pass over the value loop (`edit_param`'s in-walk
+/// `try_eval_symbolic_topology_selector` fallback, drained from
+/// `selector_mint_diagnostics`; `edit_source`'s whole-module
+/// `mint_symbolic_topology_selectors_into_values`, pushed straight into
+/// `diagnostics`) and a post-walk consumer re-eval pass
+/// (`re_eval_consumers_of_in_walk_mints_from_graph`, reached via
+/// `edit_param`'s direct call or `edit_source`'s
+/// `re_eval_post_walk_mints_from_graph` wrapper). A consumer cell that (a)
+/// reads an upstream cell minted by the first pass — so it qualifies for
+/// the post-walk re-eval pass — and (b) fails its *own* selector for a
+/// reason independent of that upstream, gets visited (and diagnosed) once
+/// by the first pass AND once more by the post-walk pass, since neither
+/// pass tracks which cells the other already diagnosed. Before
+/// `selector_mint_diagnostics` existed, `edit_param`'s main-loop copy was
+/// silently dropped, so no duplication was possible there; surfacing it
+/// (correctly, per the prior amendment) reopened this narrow
+/// duplicate-diagnostic edge case for both entry points.
+///
+/// [`Diagnostic`] has no `PartialEq`/`Hash` derive (it lives in
+/// `reify-core`, outside this task's locked module), so this keys on the
+/// fields that jointly determine a diagnostic's rendered identity —
+/// severity, code, message, label `(span, message)` pairs, and candidates —
+/// rather than requiring an upstream derive change.
+///
+/// # Caller scope (amend, task ε #4957 review rounds 4-5)
+///
+/// Both call sites invoke this ONLY on the specific two-source overlap
+/// described above — NEVER on the full `diagnostics` vec, and NEVER on a
+/// function-wide `runtime_sink` that also collects independent per-cell
+/// warnings (sampled-field OOB, RBF/Kriging fallbacks) from every other
+/// `eval_expr` call in the walk. Two genuinely distinct such warnings CAN
+/// render identically (e.g. two unrelated entity groups both hitting the
+/// solver's generic `NoProgress` reason string, or two unrelated cells
+/// both hitting the same OOB warning) — deduping across them would
+/// silently undercount real, independent occurrences. Concretely:
+///
+/// - `edit_param` runs its post-walk re-eval pass against a dedicated
+///   `post_walk_mint_reeval_sink` (NOT the function-wide `runtime_sink`)
+///   and dedups exactly `post_walk_mint_reeval_sink` +
+///   `selector_mint_diagnostics` (round 5, narrowing round 4's
+///   `runtime_sink`-suffix scoping, which was itself too broad — see the
+///   call site). `runtime_sink` itself, and the earlier-pushed
+///   constraint-solver / collection-count-resize diagnostics, are appended
+///   untouched.
+/// - `edit_source` already fully drains (and empties) its function-wide
+///   `runtime_sink` before its selector-mint/post-walk-reeval sequence
+///   runs, and nothing else writes to it in between, so its two-source
+///   overlap is safely isolated with a plain `split_off` from a
+///   pre-recorded length snapshot rather than needing a dedicated sink
+///   (round 5, `reviewer_comprehensive/design_coherence`; parity with
+///   `edit_param`'s fix).
+///
+/// Within each call site's own overlap, identical rendering IS treated as
+/// identity by design — that pair is the genuine two-source same-cell
+/// duplicate described above, and this is the same rendered-identity
+/// approximation this function already relies on in lieu of an upstream
+/// `PartialEq`/`Hash` derive.
+///
+/// Both call sites are on the interactive LSP edit hot path and the
+/// overwhelmingly common case is 0 or 1 diagnostics in the deduped slice,
+/// where a duplicate is impossible by construction — so that case returns
+/// `diags` unchanged before touching the `HashSet` or cloning any
+/// diagnostic field (amend, task ε #4957 review round 3).
+fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    if diags.len() < 2 {
+        return diags;
+    }
+    let mut seen: HashSet<DiagnosticDedupKey> = HashSet::new();
+    let mut out = Vec::with_capacity(diags.len());
+    for d in diags {
+        let key: DiagnosticDedupKey = (
+            d.severity,
+            d.code,
+            d.message.clone(),
+            d.labels
+                .iter()
+                .map(|l| (l.span.start, l.span.end, l.message.clone()))
+                .collect(),
+            d.candidates.clone(),
+        );
+        if seen.insert(key) {
+            out.push(d);
+        }
+    }
+    out
+}
+
 impl Engine {
     /// Set a parameter override and invalidate cache entries that depend on it.
     pub fn set_param_and_invalidate(&mut self, param: &ValueCellId, value: reify_ir::Value) {
@@ -730,8 +850,8 @@ impl Engine {
         // parameter values, so any cached `GeometryHandleId` entries point at
         // OLD geometry and would silently be served by a subsequent
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `feature_tag_table` / `topology_attribute_table` reset-at-hook-point
-        // pattern (engine_build.rs:531/406): the engine cannot prove which
+        // `topology_attribute_table` reset-at-hook-point pattern
+        // (engine_build.rs:531/406): the engine cannot prove which
         // cached entries survive a given edit without per-cell input-cone
         // analysis we do not currently maintain, so we conservatively flush
         // the entire cache on every edit. The next `build()` /
@@ -821,27 +941,32 @@ impl Engine {
         );
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
-        // θ2 (task 4531): order the value re-evaluation through the SAME unified
-        // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
-        // the dirty∩demand `eval_set`. Both `compute_eval_set`'s level order and the
-        // driver's global Kahn order are valid topological orders, so FINAL values /
-        // freshness are identical; only the iteration ORDER changes — making
-        // "warm output == cold output" structural on the edit surface. Bounded cost:
-        // the seeded planner restricts its node set to `eval_set` (O(eval_set), not
-        // O(graph)) so the P0 latency gate holds. Any eval_set node absent from the
-        // schedule (defensive: a cyclic/untraced cone member, not expected here) is
-        // appended in `eval_set` order so every demanded cell still evaluates.
-        let driver_schedule: Vec<NodeId> = {
-            let seed: std::collections::HashSet<NodeId> = eval_set.iter().cloned().collect();
-            let mut sched = crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
-            let scheduled: std::collections::HashSet<NodeId> = sched.iter().cloned().collect();
-            for node_id in &eval_set {
-                if !scheduled.contains(node_id) {
-                    sched.push(node_id.clone());
-                }
-            }
-            sched
-        };
+        // θ2 (task 4531) + ν (task 5045): the value re-evaluation below walks the
+        // SAME unified driver order as cold/build/concurrent — making "warm output
+        // == cold output" structural on the edit surface — and `eval_set` IS that
+        // order. `dirty::compute_eval_set` sorts through `dirty::topological_sort`,
+        // which delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
+        // scheduling core, INV-EVAL-5), so no second scheduling pass is run here.
+        //
+        // Re-seeding the core over `eval_set` (what this site did between #4531 and
+        // #5045) is provably a no-op, which is why it was collapsed rather than
+        // kept as a defensive residue-append:
+        //   • `eval_set` is that core's own output over `dirty ∩ demand`;
+        //   • the only members the core drops are cyclic ones (a node reaching
+        //     in-degree 0 is always scheduled — including a node with no trace
+        //     entry, or one whose producers all sit OUTSIDE the seed);
+        //   • nothing surviving can depend on a dropped node, or it would itself
+        //     never have reached in-degree 0.
+        // So the in-degrees over `eval_set` — and hence the emitted order — are
+        // identical on a re-run, and the `if !scheduled { push }` residue-append had
+        // nothing left to append: cyclic cone members are already absent from
+        // `eval_set` itself, so they are not recoverable at this site either way.
+        // (Note the delegated sort also drops REALIZATION-edge cycle members, which
+        // the retired reads-only level sort scheduled blindly — that drop now
+        // happens inside `compute_eval_set`, upstream of here.)
+        //
+        // Bounded cost (P0 latency gate): one seeded pass, O(|eval_set| + edges
+        // within it), NOT O(graph) — and now exactly one, not two.
 
         // Seed has_changed_parent from dependents of the changed param
         let mut has_changed_parent: std::collections::HashSet<NodeId> =
@@ -853,12 +978,11 @@ impl Engine {
         let _ = state;
 
         // Update snapshot ID, version, and provenance
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
-        new_snapshot.id = SnapshotId(snapshot_id);
-        new_snapshot.version = VersionId(version_id);
+        let (snap_id, ver_id) = self.allocate_snapshot_version();
+        // downstream consumers below still read the raw u64 version
+        let version_id = ver_id.0;
+        new_snapshot.id = snap_id;
+        new_snapshot.version = ver_id;
 
         new_snapshot.provenance = SnapshotProvenance::Edit {
             changed: changed_set.clone(),
@@ -900,6 +1024,17 @@ impl Engine {
         // the local `diagnostics` vec immediately before the return.
         let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
 
+        // Selector-mint diagnostics (amend, task ε #4957 review): accumulates
+        // `Diagnostic`s emitted by `try_eval_symbolic_topology_selector` during
+        // the in-walk mint retry below (e.g. a selector kind-closure violation
+        // that leaves a cell at `Undef`). `diagnostics` itself isn't declared
+        // until after this loop, so — like `runtime_sink` above — this collects
+        // across iterations and is drained into `diagnostics` immediately before
+        // the return, giving edit_param parity with edit_source's whole-module
+        // `mint_symbolic_topology_selectors_into_values` pass instead of
+        // silently dropping a real diagnostic.
+        let mut selector_mint_diagnostics: Vec<Diagnostic> = Vec::new();
+
         // Mark all nodes in the eval set as Pending before re-evaluation.
         // This transitions Final → Pending{last_substantive: hash}.
         self.cache.reset_pending_transition_count();
@@ -907,8 +1042,8 @@ impl Engine {
             self.cache.mark_pending(node_id);
         }
 
-        // Evaluate only Value nodes in the eval set, walked in the unified driver's
-        // schedule order (θ2 task 4531) rather than `compute_eval_set`'s order.
+        // Evaluate only Value nodes in the eval set, walked in `compute_eval_set`'s
+        // order — which IS the unified driver's schedule order (θ2 #4531, ν #5045).
         // Track nodes to skip due to early cutoff of upstream nodes.
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
@@ -919,7 +1054,7 @@ impl Engine {
         // cell Undef → non-Undef.
         let mut minted_in_walk: HashSet<ValueCellId> = HashSet::new();
 
-        for node_id in &driver_schedule {
+        for node_id in &eval_set {
             if skipped.contains(node_id) {
                 continue;
             }
@@ -941,18 +1076,21 @@ impl Engine {
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                 && let Some(ref expr) = node.default_expr
             {
-                let start = Instant::now();
-                self.journal.record(EvalEvent {
-                    timestamp: start,
-                    node_id: node_id.clone(),
-                    kind: EventKind::Started,
-                    version: VersionId(version_id),
-                    payload: None,
-                });
-
+                // μ (#5062): mark runtime_sink length before eval_expr so this
+                // re-evaluated cell's diagnostics delta can be stored after the
+                // commit below — keeps NodeCache.diagnostics fresh so a later
+                // warm eval_cached clean serve does not replay stale content.
+                let diag_mark = runtime_sink.borrow().len();
                 let val = reify_expr::eval_expr(
                     expr,
-                    &self.cell_eval_ctx(&values, &new_snapshot.values, &runtime_sink),
+                    &cell_eval_ctx(
+                        &values,
+                        &functions,
+                        &self.meta_map,
+                        &new_snapshot.values,
+                        &runtime_sink,
+                        self,
+                    ),
                 );
                 // R3d (#4900): if eval returned Undef, try the in-walk symbolic
                 // mint — geometry handle first (for solid params and lets with a
@@ -961,9 +1099,17 @@ impl Engine {
                 // at topo-order time rather than Undef.  Uses the graph's
                 // RealizationNodeData (same operations, same upstream_values_hash
                 // fold) because edit_param has no access to the CompiledModule.
-                // Note: `diagnostics` is declared later in this function; use a
-                // local sink here (selector-mint diagnostics are re-captured by
-                // the idempotent post-eval backstop mint passes).
+                // Note: `diagnostics` is declared later in this function; use
+                // `selector_mint_diagnostics` (declared above, alongside
+                // `runtime_sink`) here instead. This in-walk mint is the SOLE
+                // edit-path mint mechanism (γ, task 4954 — geometry-let cells
+                // ride the dirty cone and mint at their topo slot here);
+                // edit_param has no post-eval backstop mint pass. Diagnostics
+                // pushed by `try_eval_symbolic_topology_selector` (e.g. a
+                // selector kind-closure violation leaving the cell at `Undef`)
+                // are accumulated into `selector_mint_diagnostics` and drained
+                // into the function's `diagnostics` output below, matching
+                // edit_source's whole-module pass instead of dropping them.
                 let was_undef = matches!(val, Value::Undef);
                 let val = if was_undef {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
@@ -977,12 +1123,14 @@ impl Engine {
                         v
                     } else {
                         let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
-                        crate::geometry_ops::try_eval_symbolic_topology_selector(
+                        let selector_val = crate::geometry_ops::try_eval_symbolic_topology_selector(
                             expr,
                             &values,
                             &mut sel_diags,
                         )
-                        .unwrap_or(val)
+                        .unwrap_or(val);
+                        selector_mint_diagnostics.extend(sel_diags);
+                        selector_val
                     }
                 } else {
                     val
@@ -993,28 +1141,53 @@ impl Engine {
                 if was_undef && !matches!(val, Value::Undef) {
                     minted_in_walk.insert(vcid.clone());
                 }
-                values.insert(vcid.clone(), val.clone());
-                new_snapshot
-                    .values
-                    .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
-                // Record in cache and check for early cutoff
+                // Commit via the cell-commit primitive (task δ #5056): atomically
+                // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
+                // edit-reeval provenance slug on the journal's Started event. The
+                // primitive's own Instant::now() supersedes the Started timestamp
+                // this loop used to capture before eval_expr — the Started/
+                // Completed pair now brackets the commit itself rather than the
+                // whole eval+mint walk (telemetry-only shift, not a correctness
+                // signal; see cell_commit.rs's `commit_cell_result` doc).
+                //
+                // Verified (reviewer amend, round 2): a repo-wide grep for
+                // `EventPayload::Duration` / `EventKind::Completed` readers
+                // (crates/ and gui/) found no dashboard, analysis, or
+                // latency-attribution code that consumes a per-node Completed
+                // Duration as an eval-cost signal — only tests assert the
+                // payload's variant, never its magnitude — so this shift has
+                // no live consumer to break today. If a future consumer wants
+                // the pre-commit eval+mint span, it must NOT read this
+                // Duration for that purpose; it would need its own Custom
+                // payload recorded before the commit_cell_result call.
                 let trace = extract_dependency_trace(expr);
-                let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                let outcome = self.cache.record_evaluation(
-                    node_id.clone(),
-                    cached_result,
-                    VersionId(version_id),
+                let commit_outcome = commit_cell_result(
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut new_snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    vcid.clone(),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::EditReeval,
                     trace,
+                    VersionId(version_id),
+                    CacheLeg::Record,
                 );
+                let outcome = commit_outcome
+                    .cache_outcome()
+                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
 
-                self.journal.record(EvalEvent {
-                    timestamp: Instant::now(),
-                    node_id: node_id.clone(),
-                    kind: EventKind::Completed { outcome },
-                    version: VersionId(version_id),
-                    payload: Some(EventPayload::Duration(start.elapsed())),
-                });
+                // μ (#5062): store this re-evaluated cell's diagnostics delta
+                // for replay on future cache-hit serves (empty delta clears
+                // stale content — e.g. an edit that moved a sample back in
+                // bounds must drop the prior W_FIELD_OUT_OF_BOUNDS). Covers the
+                // dominant EditReeval Record path; reads runtime_sink only, so
+                // post-pass detector diagnostics stay disjoint.
+                self.store_cell_replay_diagnostics(node_id, &runtime_sink, diag_mark);
 
                 // Early cutoff with mixed fan-in protection:
                 // - Changed: propagate has_changed_parent to dependents,
@@ -1060,13 +1233,27 @@ impl Engine {
         // see `reeval_cone_cell`'s doc: a solver phase later in this function
         // would otherwise leave this re-eval's cache entries at a stale
         // version.
+        //
+        // Dedicated sink, NOT the function-wide `runtime_sink` (amend, task
+        // ε #4957 review round 5, `reviewer_comprehensive/robustness`):
+        // `runtime_sink` accumulates independent per-cell warnings from
+        // every OTHER `eval_expr` call in this walk (sampled-field OOB,
+        // RBF/Kriging fallbacks), where two genuinely distinct occurrences
+        // CAN render identically — the same risk the constraint-solver /
+        // collection-count-resize diagnostics near the return are already
+        // excluded from. Keeping this pass's output separate lets the
+        // dedup near the return see only the true two-source same-cell
+        // overlap (`selector_mint_diagnostics` vs. this pass), never
+        // `runtime_sink`'s unrelated warnings — see
+        // `dedup_diagnostics_preserve_order`'s doc.
+        let post_walk_mint_reeval_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
         self.re_eval_consumers_of_in_walk_mints_from_graph(
             &new_snapshot.graph,
             &mut values,
             &mut new_snapshot.values,
             minted_in_walk,
             &functions,
-            &runtime_sink,
+            &post_walk_mint_reeval_sink,
             new_snapshot.version.0,
         );
 
@@ -1124,32 +1311,35 @@ impl Engine {
                 &self.meta_map,
                 Some(&runtime_sink),
             );
-            values.insert(field_cell.clone(), new_field_value.clone());
-            new_snapshot.values.insert(
+            // Commit via the cell-commit primitive (task δ #5056): atomically
+            // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
+            // edit-reeval provenance slug on the journal's Started event (see
+            // T2's commit above for the full rationale). Records the static
+            // dependency trace (matching the cold-start contract) rather than
+            // `DependencyTrace::default()` — without this,
+            // `CacheStore::invalidate_dependents` (cache.rs) would see an
+            // empty `reads` set on the rebuilt entry and silently skip
+            // propagation when one of the field's actual deps later changes.
+            // Per-cell journal-write cost: this composed-field commit
+            // previously recorded zero journal events (pre-δ, only T2
+            // journaled) and is bounded by the dirty cone of composed
+            // fields, not collection/grow size — see the perf-tradeoff
+            // note at the U1 site above for the shared accepted-tradeoff
+            // rationale (reviewer amend, round 3).
+            commit_cell_result(
+                CommitLegs {
+                    values: &mut values,
+                    snapshot_values: &mut new_snapshot.values,
+                    cache: &mut self.cache,
+                    journal: &mut self.journal,
+                },
                 field_cell,
-                (new_field_value.clone(), DeterminacyState::Determined),
-            );
-            // Refresh the cache entry so a subsequent demand-driven fetch
-            // picks up the rebuilt lambda rather than the stale one. We
-            // record_evaluation rather than mark_pending — the field is
-            // freshly computed at this point and downstream consumers can
-            // treat it as Final.
-            //
-            // Record the static dependency trace (matching the cold-start
-            // contract) rather than `DependencyTrace::default()`. Without
-            // this, `CacheStore::invalidate_dependents` (cache.rs) would
-            // see an empty `reads` set on the rebuilt entry and silently
-            // skip propagation when one of the field's actual deps later
-            // changes — leaving the cache invariant 'entries carry the
-            // static trace of their reads' broken on this code path. The
-            // reverse-index drives invalidation via `compute_dirty_cone`
-            // today, but the cache trace is the durable per-entry record
-            // and must stay consistent with the cold-start path.
-            self.cache.record_evaluation(
-                field_node,
-                CachedResult::Value(new_field_value, DeterminacyState::Determined),
-                VersionId(version_id),
+                new_field_value,
+                DeterminacyRule::UnconditionalDetermined,
+                TraceSource::EditReeval,
                 extract_dependency_trace(expr),
+                VersionId(version_id),
+                CacheLeg::Record,
             );
         }
 
@@ -1175,9 +1365,14 @@ impl Engine {
                         if let Some(ref expr) = node.default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&new_snapshot.values)
-                                    .with_runtime_diagnostics(&runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &functions,
+                                    &self.meta_map,
+                                    &new_snapshot.values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             )
                         } else {
                             Value::Undef
@@ -1223,6 +1418,8 @@ impl Engine {
                         &mut new_snapshot.values,
                         &functions,
                         &self.meta_map,
+                        &runtime_sink,
+                        self,
                     );
                     // Record guard_cell so the post-wave2 reseed knows which
                     // groups Phase 1 already processed (Case A). The map enables
@@ -1321,6 +1518,7 @@ impl Engine {
 
                 // Build ResolutionProblem and solve
                 let problem = ResolutionProblem {
+                    dependent_cells: Vec::new(),
                     auto_params: auto_param_list.clone(),
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
@@ -1336,29 +1534,33 @@ impl Engine {
                         unique,
                     } => {
                         for (id, val) in &solver_values {
-                            values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
-
-                            // Update snapshot values
-                            new_snapshot
-                                .values
-                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update param_overrides so subsequent edits
                             // use the resolved value
                             self.param_overrides.insert(id.clone(), val.clone());
 
-                            // Update cache
-                            let node_id = NodeId::Value(id.clone());
-                            let trace = DependencyTrace::default();
-                            let cached_result =
-                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            self.cache.record_evaluation(
-                                node_id,
-                                cached_result,
+                            // Commit via the cell-commit primitive (task δ
+                            // #5056): atomically writes values/snapshot/cache/
+                            // journal (INV-EVAL-1). DependencyTrace::default()
+                            // matches the pre-migration cache entry — a
+                            // solver-resolved auto has no static expr
+                            // dependency trace.
+                            commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut new_snapshot.values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                id.clone(),
+                                val.clone(),
+                                DeterminacyRule::UnconditionalDetermined,
+                                TraceSource::EditReeval,
+                                DependencyTrace::default(),
                                 VersionId(version_id),
-                                trace,
+                                CacheLeg::Record,
                             );
                         }
                         if !unique {
@@ -1421,25 +1623,14 @@ impl Engine {
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
 
-                // Driver order: seed = the dirty∩demand `wave2_eval`, ordered via
-                // `run_unified_pass_seeded` (O(seed), restricted to the cone — the
-                // P0 latency gate holds). Any seed node absent from the schedule
-                // (defensive: cyclic/untraced cone member) is appended in
-                // `wave2_eval` order so every demanded cell still re-propagates.
-                let wave2_schedule: Vec<NodeId> = {
-                    let seed: std::collections::HashSet<NodeId> =
-                        wave2_eval.iter().cloned().collect();
-                    let mut sched =
-                        crate::engine_fixpoint::run_unified_pass_seeded(&es.trace_map, &seed);
-                    let scheduled: std::collections::HashSet<NodeId> =
-                        sched.iter().cloned().collect();
-                    for node_id in &wave2_eval {
-                        if !scheduled.contains(node_id) {
-                            sched.push(node_id.clone());
-                        }
-                    }
-                    sched
-                };
+                // Driver order: `wave2_eval` already IS it. Since ν (#5045)
+                // `compute_eval_set` sorts through `dirty::topological_sort`, which
+                // delegates to `run_unified_pass_seeded` (O(seed), restricted to the
+                // cone — the P0 latency gate holds), so re-seeding the core over
+                // `wave2_eval` here would reproduce the identical vector and the
+                // `if !scheduled { push }` residue-append would have nothing to
+                // append (cyclic cone members are already absent from `wave2_eval`).
+                // Same argument as `edit_param`'s main eval walk above.
 
                 // Field-level borrow split: `graph` (shared) is read while the
                 // disjoint `new_snapshot.values` field is mutated in the loop body
@@ -1468,7 +1659,7 @@ impl Engine {
                     }
                 }
 
-                for node_id in &wave2_schedule {
+                for node_id in &wave2_eval {
                     let NodeId::Value(vcid) = node_id else {
                         continue;
                     };
@@ -1482,22 +1673,33 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                .with_runtime_diagnostics(&runtime_sink),
+                            &cell_eval_ctx(
+                                &values,
+                                &functions,
+                                &self.meta_map,
+                                &new_snapshot.values,
+                                &runtime_sink,
+                                self,
+                            ),
                         );
-                        values.insert(vcid.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
-                        // Update cache for re-evaluated node
-                        let trace = extract_dependency_trace(expr);
-                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            cached_result,
+                        // Commit via the cell-commit primitive (task δ #5056):
+                        // atomically writes values/snapshot/cache/journal
+                        // (INV-EVAL-1).
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut new_snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            vcid.clone(),
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::EditReeval,
+                            extract_dependency_trace(expr),
                             VersionId(version_id),
-                            trace,
+                            CacheLeg::Record,
                         );
                     }
                 }
@@ -1630,12 +1832,64 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &cell_eval_ctx(
+                                        &values,
+                                        &functions,
+                                        &self.meta_map,
+                                        &new_snapshot.values,
+                                        &runtime_sink,
+                                        self,
+                                    ),
                                 );
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
+                                // Commit via the cell-commit primitive (task δ
+                                // #5056): atomically writes values/snapshot/
+                                // journal while deliberately SKIPPING the
+                                // cache leg (U1 in the task's site inventory)
+                                // — preserves the pre-δ behaviour of never
+                                // caching a post-wave2 active-member reseed.
+                                //
+                                // Perf tradeoff (reviewer amend, round 2): U1-U4
+                                // now each pay a Started+Completed journal pair
+                                // (2x Instant::now + 2x EventJournal::record,
+                                // i.e. a BTreeMap<Instant,_> insert plus a
+                                // NodeId clone into a HashMap<NodeId,_>) per
+                                // committed cell, where before there was a bare
+                                // insert at zero journal cost. U2/U4 scale with
+                                // collection/grow size; U1 here is bounded by
+                                // the same demanded dirty cone as the rest of
+                                // edit_param. This stays within the O(cone)/
+                                // O(seed)-not-O(graph), zero-kernel-call class
+                                // `edit_param_p0_latency_gate_bracket_width`
+                                // (unified_dag_edit_path.rs) already polices —
+                                // a larger constant factor per cell, not a new
+                                // complexity class. Suppressing the journal leg
+                                // on Skip was considered and rejected: it would
+                                // reopen the silent-provenance gap INV-EVAL-1 /
+                                // commit_cell_result exists to close, and the
+                                // `cache-skip=<reason>` marker it produces is
+                                // itself a tested, already-landed done-criterion
+                                // of this task (step-5/6's
+                                // `edit_param_unrecorded_sites_skip_cache_via_
+                                // primitive`). A genuine wall-clock regression
+                                // on bulk structural rebuilds would need a
+                                // dedicated edit_param benchmark — none exists
+                                // in-tree today — flagged as a possible
+                                // follow-up, not this migration's scope.
+                                commit_cell_result(
+                                    CommitLegs {
+                                        values: &mut values,
+                                        snapshot_values: &mut new_snapshot.values,
+                                        cache: &mut self.cache,
+                                        journal: &mut self.journal,
+                                    },
+                                    mid.clone(),
+                                    val,
+                                    DeterminacyRule::UnconditionalDetermined,
+                                    TraceSource::EditReeval,
+                                    DependencyTrace::default(),
+                                    VersionId(version_id),
+                                    CacheLeg::Skip("post-wave2 guard-member reseed"),
+                                );
                             }
                         }
                         Some(false) => {
@@ -1847,16 +2101,45 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_runtime_diagnostics(&runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &functions,
+                                    &self.meta_map,
+                                    &new_snapshot.values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             )
                         } else {
                             Value::Undef
                         };
-                        values.insert(scoped_id.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(scoped_id, (val, DeterminacyState::Determined));
+                        // Commit via the cell-commit primitive (task δ
+                        // #5056): atomically writes values/snapshot/journal
+                        // while deliberately SKIPPING the cache leg (U2) — a
+                        // structural resize always removes+recreates every
+                        // instance (the removal loop above already calls
+                        // `self.cache.invalidate` on the old cells), so
+                        // caching here would just go stale on the NEXT
+                        // resize; this site has never cached these cells.
+                        // Per-cell journal-write cost: this loop is the
+                        // dominant O(instances × members) driver of the
+                        // perf tradeoff discussed at the U1 site above
+                        // (post-wave2 active-member reseed block).
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut new_snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            scoped_id,
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::EditReeval,
+                            DependencyTrace::default(),
+                            VersionId(version_id),
+                            CacheLeg::Skip("collection-resize child re-recorded by structural rebuild"),
+                        );
                     }
                 }
 
@@ -1873,10 +2156,29 @@ impl Engine {
                         &col_sub.parent_entity,
                         format!("__list_{}__{}", col_sub.sub_name, member),
                     );
-                    values.insert(member_list_id.clone(), member_list_val.clone());
-                    new_snapshot.values.insert(
+                    // Commit via the cell-commit primitive (task δ #5056):
+                    // atomically writes values/snapshot/journal while
+                    // deliberately SKIPPING the cache leg (U3) — the
+                    // synthetic aggregate is fully re-derived from the
+                    // (already-committed) child cells on every structural
+                    // resize, so it has never been an independently cached
+                    // node. Per-cell journal-write cost: bounded by O(distinct
+                    // member names), not O(instances) — see the perf-tradeoff
+                    // note at the U1 site above for the shared rationale.
+                    commit_cell_result(
+                        CommitLegs {
+                            values: &mut values,
+                            snapshot_values: &mut new_snapshot.values,
+                            cache: &mut self.cache,
+                            journal: &mut self.journal,
+                        },
                         member_list_id,
-                        (member_list_val, DeterminacyState::Determined),
+                        member_list_val,
+                        DeterminacyRule::UnconditionalDetermined,
+                        TraceSource::EditReeval,
+                        DependencyTrace::default(),
+                        VersionId(version_id),
+                        CacheLeg::Skip("synthetic member-list aggregate"),
                     );
                 }
 
@@ -2237,13 +2539,45 @@ impl Engine {
                         {
                             let val = reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_runtime_diagnostics(&runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &functions,
+                                    &self.meta_map,
+                                    &new_snapshot.values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             );
-                            values.insert(vcid.clone(), val.clone());
-                            new_snapshot
-                                .values
-                                .insert(vcid.clone(), (val, DeterminacyState::Determined));
+                            // Commit via the cell-commit primitive (task δ
+                            // #5056): atomically writes values/snapshot/
+                            // journal while deliberately SKIPPING the cache
+                            // leg (U4) — a grown cell reseeded here is
+                            // brand-new to this snapshot generation (never
+                            // cached before), and mirrors U1/U2/U3 in never
+                            // caching a post-structural-grow reseed.
+                            // Per-cell journal-write cost: this loop scales
+                            // with grown_seed's size (O(grow) — see the
+                            // perf-tradeoff note at the U1 site above), and
+                            // for a demanded collection grow it re-processes
+                            // the SAME cells U2 just created (U4 runs after
+                            // and is the final writer), so its ctx capability
+                            // set (below) is exercised on every collection
+                            // grow, not just non-collection structural growth.
+                            commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut new_snapshot.values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                vcid.clone(),
+                                val,
+                                DeterminacyRule::UnconditionalDetermined,
+                                TraceSource::EditReeval,
+                                DependencyTrace::default(),
+                                VersionId(version_id),
+                                CacheLeg::Skip("grown-instance reseed after structural grow (θ2)"),
+                            );
                         }
                         self.last_eval_set.push(node_id.clone());
                     }
@@ -2272,8 +2606,36 @@ impl Engine {
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
         // above whenever sampled-field OOB queries or RBF/Kriging
-        // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        // fallbacks emitted warnings via `EvalContext::diagnostics` — one
+        // independent occurrence per cell/call site, so two entries that
+        // happen to render identically are still two genuine occurrences.
+        // Appended untouched, same treatment as the constraint-solver
+        // (`Infeasible`/`NoProgress`) and collection-count-resize
+        // diagnostics pushed earlier in this function: NOT part of the
+        // selector-mint/post-walk-reeval overlap the dedup below targets
+        // (amend, task ε #4957 review round 5,
+        // `reviewer_comprehensive/robustness`, narrowing round 4's
+        // `runtime_sink`-suffix scoping, which was itself too broad — see
+        // `post_walk_mint_reeval_sink`'s declaration above for why that
+        // pass no longer shares this sink).
         diagnostics.append(&mut runtime_sink.borrow_mut());
+        // De-duplicate (amend, task ε #4957 review round 2, narrowed round
+        // 5): a consumer cell that reads an upstream in-walk mint AND
+        // independently fails its own selector can be diagnosed both by the
+        // main loop above (into `selector_mint_diagnostics`) and by
+        // `re_eval_consumers_of_in_walk_mints_from_graph` a few lines above
+        // (into `post_walk_mint_reeval_sink`) — see
+        // `dedup_diagnostics_preserve_order`'s doc. No-op on the happy path
+        // (both sinks are typically empty). Scoped to exactly that pair —
+        // NEVER `runtime_sink` — since `runtime_sink` collects independent
+        // per-cell warnings from every OTHER `eval_expr` call in this walk,
+        // where two distinct occurrences CAN render identically; deduping
+        // it away would silently undercount them (the same hazard round 4
+        // already excluded the constraint-solver/collection-count prefix
+        // from).
+        let mut overlap = post_walk_mint_reeval_sink.into_inner();
+        overlap.append(&mut selector_mint_diagnostics);
+        diagnostics.extend(dedup_diagnostics_preserve_order(overlap));
 
         Ok(EvalResult {
             values,
@@ -2282,6 +2644,49 @@ impl Engine {
             objective_provenance: HashMap::new(),
             structured_detail: vec![],
         })
+    }
+
+    /// Thin wrapper (R3f, task #4946) around
+    /// [`Engine::re_eval_consumers_of_in_walk_mints_from_graph`] for
+    /// `edit_source`'s post-walk-mint hook below: guards the call on
+    /// `flipped` being non-empty and drains `runtime_sink` into
+    /// `diagnostics` afterward. `edit_source` has no per-template loop to
+    /// share with `Engine::re_eval_post_walk_mints_per_template`
+    /// (`engine_eval.rs`, used by `eval`/`eval_cached`) — the graph-based
+    /// `_from_graph` sibling already walks the whole `new_snapshot.graph` in
+    /// one call — so this exists purely to give all three R3f
+    /// post-walk-mint call sites (`eval`, `eval_cached`, `edit_source`) a
+    /// named helper instead of `edit_source` alone inlining the
+    /// guard+call+drain shape a third time (reviewer finding:
+    /// `reviewer_comprehensive/code_duplication`).
+    #[allow(clippy::too_many_arguments)]
+    fn re_eval_post_walk_mints_from_graph(
+        &mut self,
+        graph: &crate::graph::EvaluationGraph,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        flipped: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if flipped.is_empty() {
+            return;
+        }
+        self.re_eval_consumers_of_in_walk_mints_from_graph(
+            graph,
+            values,
+            snapshot_values,
+            flipped,
+            functions,
+            runtime_sink,
+            version_id,
+        );
+        // Drain any runtime diagnostics newly emitted by the re-eval pass
+        // above (parity with the caller's own drain, which only captured
+        // its main walk's diagnostics, predating this pass).
+        diagnostics.append(&mut runtime_sink.borrow_mut());
     }
 
     /// Incrementally re-evaluate after a structural source edit.
@@ -2336,8 +2741,8 @@ impl Engine {
         // geometry ops, parameter defaults, or template structure may have
         // changed) and would silently be served by a subsequent `build()` /
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `feature_tag_table` / `topology_attribute_table` reset-at-hook-point
-        // pattern (engine_build.rs:531/406) and the parallel reset in
+        // `topology_attribute_table` reset-at-hook-point pattern
+        // (engine_build.rs:531/406) and the parallel reset in
         // `edit_param`. Pinned by
         // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
@@ -2362,6 +2767,20 @@ impl Engine {
         // `clear_realization_cache_public_api_resets_cache_for_production_callers`
         // in `tests/tolerance_wiring_e2e.rs`.
         self.clear_realization_cache();
+        // Allocate the new snapshot/version pair before taking the
+        // `eval_state` borrow below: `allocate_snapshot_version` takes
+        // `&mut self` (the whole struct, via a method call), which cannot
+        // coexist with `eval_state`'s live immutable borrow of `self` (held
+        // through `diff_value_cells` further down) the way direct field
+        // arithmetic could — see the disjoint-field-borrow note on
+        // `eval_state` immediately below. Numbering is unaffected: this
+        // remains the function's only allocation site, called
+        // unconditionally exactly once past the `NotInitialized` guard
+        // above, same as the raw-arithmetic block it replaces, and no
+        // fallible code sits between the two positions.
+        let (snap_id, ver_id) = self.allocate_snapshot_version();
+        // downstream consumers below still read the raw u64 version
+        let version_id = ver_id.0;
         // Disjoint-field borrow: Rust's NLL tracks this borrow as touching only
         // the `eval_state` field (not all of `self`), so later mutable borrows
         // of sibling fields — `self.param_overrides.retain(...)` and
@@ -2378,16 +2797,12 @@ impl Engine {
         //     (Undef, Undetermined) or (Undef, Auto); the seeding loop
         //     below overwrites those with the preserved prior values for
         //     cells whose content_hash matches the old graph.
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
         let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
         // Invariant mirror of engine_eval.rs:248-249 — covers the edit-time recompile path.
         #[cfg(debug_assertions)]
         crate::engine_eval::assert_value_cell_types_representable(&new_snapshot.graph);
-        new_snapshot.id = SnapshotId(snapshot_id);
-        new_snapshot.version = VersionId(version_id);
+        new_snapshot.id = snap_id;
+        new_snapshot.version = ver_id;
 
         // (3) Rebuild dependency structures against the NEW graph plus the
         //     module's composed fields. Full rebuild is O(nodes · avg_trace_size),
@@ -2544,28 +2959,21 @@ impl Engine {
         // (7) Compute eval_set (topo-sorted) from dirty ∩ demand.
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
-        // θ2 (task 4713): order the value re-evaluation through the SAME unified
-        // driver as cold/build/concurrent (`run_unified_pass_seeded`), seeded from
-        // the dirty∩demand `eval_set`. Mirrors edit_param's driver schedule
-        // (engine_edit.rs:808-828 from task 4531 steps pre-1..9). Bounded cost:
-        // the seeded planner restricts its node set to `eval_set` (O(eval_set),
-        // not O(graph)) so the P0 latency gate holds. Uses `new_trace_map` (not
-        // the pre-edit eval_state.trace_map) so the driver operates over CURRENT
-        // edges after the dependency-structure rebuild at step (3) above. Any
-        // eval_set node absent from the driver schedule is appended in eval_set
-        // order so every demanded cell still evaluates.
-        let driver_schedule: Vec<NodeId> = {
-            let seed: HashSet<NodeId> = eval_set.iter().cloned().collect();
-            let mut sched =
-                crate::engine_fixpoint::run_unified_pass_seeded(&new_trace_map, &seed);
-            let scheduled: HashSet<NodeId> = sched.iter().cloned().collect();
-            for node_id in &eval_set {
-                if !scheduled.contains(node_id) {
-                    sched.push(node_id.clone());
-                }
-            }
-            sched
-        };
+        // θ2 (task 4713) + ν (task 5045): the value re-evaluation below walks the
+        // SAME unified driver order as cold/build/concurrent, and `eval_set` IS that
+        // order — `compute_eval_set` sorts through `dirty::topological_sort`, which
+        // delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
+        // scheduling core, INV-EVAL-5). Note the sort above already used
+        // `new_trace_map` (not the pre-edit `eval_state.trace_map`), so the order is
+        // over CURRENT edges after the dependency-structure rebuild at step (3).
+        //
+        // Re-seeding the core over `eval_set` (what this site did between #4713 and
+        // #5045) is provably a no-op — see the same argument at `edit_param`'s eval
+        // walk: `eval_set` is the core's own output, the only members it drops are
+        // cyclic, and nothing surviving can depend on a dropped node, so a re-run
+        // reproduces the identical order and the `if !scheduled { push }`
+        // residue-append had nothing left to append. Bounded cost (P0 latency gate):
+        // one seeded pass, O(|eval_set| + edges within it), NOT O(graph).
 
         // (8) Seed values by preserving unchanged-content_hash entries from
         //     the old snapshot, with `param_overrides` winning for Param cells
@@ -2838,11 +3246,12 @@ impl Engine {
         let mut skipped: HashSet<NodeId> = HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
 
-        // Walk the unified driver's Kahn schedule (θ2 task 4713) rather than the
-        // level-order `eval_set`. Both orderings are valid toposorts, so final
-        // values are identical; the driver order makes "warm output == cold output"
-        // structural on the edit_source surface (mirrors edit_param:895-900).
-        for node_id in &driver_schedule {
+        // Walk the unified driver's Kahn schedule (θ2 #4713) — since ν (#5045) that
+        // IS `eval_set`'s own order, because `compute_eval_set` delegates to the one
+        // core rather than running a separate level-batched pass. This is what makes
+        // "warm output == cold output" structural on the edit_source surface
+        // (mirrors edit_param's eval walk).
+        for node_id in &eval_set {
             if skipped.contains(node_id) {
                 continue;
             }
@@ -3257,6 +3666,7 @@ impl Engine {
 
                 // Build ResolutionProblem and solve
                 let problem = ResolutionProblem {
+                    dependent_cells: Vec::new(),
                     auto_params: auto_param_list.clone(),
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),
@@ -3649,6 +4059,17 @@ impl Engine {
         //       fires with a non-empty map and re-donates all surviving
         //       entries, making them recoverable on the next `edit_source`.
         pending_warm_seeds.drain_into_cache_or_repool(&mut self.cache);
+        // Explicit drop (R3f, task #4946): `pending_warm_seeds` borrows
+        // `&mut self.warm_pool`, and — because `PendingWarmSeedsGuard` has a
+        // `Drop` impl — NLL cannot end that borrow before the guard's actual
+        // drop point, even though `drain_into_cache_or_repool` just above is
+        // its last logical use. Left implicit, the borrow would extend to
+        // function-end and collide with the `&mut self` receiver of the new
+        // `re_eval_consumers_of_in_walk_mints_from_graph` call below (E0499).
+        // Safe per the guard's own contract (see its doc comment above): the
+        // `drain_into_cache_or_repool` call just above empties `self.map`,
+        // making this drop's `Drop` impl a documented no-op.
+        drop(pending_warm_seeds);
 
         // GHR-δ S10 (incremental path): mirror the cold-eval post-pass in
         // `eval()` — augment each geometry cell's CACHED trace with its backing
@@ -3673,16 +4094,6 @@ impl Engine {
                 .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
-        // (15) Install the new snapshot, dep structures, and demand; record
-        //      actual_eval_set (excludes early-cutoff-skipped nodes).
-        self.eval_state = Some(crate::EvaluationState {
-            snapshot: new_snapshot,
-            reverse_index: new_reverse_index,
-            trace_map: new_trace_map,
-        });
-        self.demand = new_demand;
-        self.last_eval_set = actual_eval_set;
-
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
         // above whenever sampled-field OOB queries or RBF/Kriging
@@ -3692,6 +4103,14 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() and eval_cached().
         // Runs AFTER the per-cell eval loop (scalar params resolved) and BEFORE the
         // EvalResult return so the incremental path also sees symbolic GeometryHandles.
+        // Relocated (R3f, task #4946) to run BEFORE step (15) installs `new_snapshot`
+        // into `self.eval_state` below, so the R3f post-walk re-eval hook that
+        // follows can still borrow `new_snapshot.graph`/`.values` directly instead
+        // of reaching through `self.eval_state` (which would conflict with the
+        // `&mut self` receiver of that hook's method call).
+        // Mirrors eval()/eval_cached() — this mint doesn't track/return a
+        // flipped-cell set at all (see the R3f comment below and the doc
+        // comment in engine_build.rs).
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
@@ -3699,14 +4118,91 @@ impl Engine {
             &self.meta_map,
         );
 
+        // Snapshot the length here (amend, task ε #4957 review round 5,
+        // `reviewer_comprehensive/design_coherence`): the whole-module
+        // selector-mint pass just below and the post-walk consumer re-eval
+        // pass further down are the same two-source same-cell-duplicate
+        // pair `edit_param` guards against — see
+        // `dedup_diagnostics_preserve_order`'s doc. `runtime_sink` was
+        // already fully drained just above, and nothing else writes to it
+        // before the post-walk-reeval call below, so — unlike `edit_param`,
+        // which needs a dedicated sink because its `runtime_sink` stays
+        // live for the rest of the function — a plain length snapshot here
+        // plus `split_off` after that call is enough to isolate exactly
+        // this overlap.
+        let pre_overlap_len = diagnostics.len();
+
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() and eval_cached() calls above so the edit/incremental path
         // also sees symbolic topology selectors.  Runs after handle-mint.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): post-walk mint consumer re-eval — the 3rd mandated
+        // call-site (see `re_eval_consumers_of_in_walk_mints`'s doc for the full
+        // rationale). A geometry-LET-backed selector target has no value cell of
+        // its own, so it resolves ONLY via the post-walk selector-mint just
+        // above — edit_source's per-cell loop has no R3d/R3e in-walk retry at all
+        // (unlike eval/eval_cached/edit_param), so such a target is
+        // unconditionally Undef until this hook runs. Uses the graph-based
+        // sibling (like the edit_param call-site at ~1063) since edit_source's
+        // per-cell loop walks `new_snapshot.graph`, not a `TopologyTemplate`.
+        // `new_snapshot.version.0` is the FINAL (post-solver) version for this
+        // edit — see `reeval_cone_cell`'s doc for why the final version is
+        // required.
+        //
+        // Deliberately excludes the handle-mint's flips (the handle-mint
+        // above doesn't compute or return a flipped set at all) — see the
+        // eval() call site's comment (engine_eval.rs) for the full
+        // rationale: a direct, non-selector
+        // consumer of a bare geometry LET's merely-symbolic handle must be
+        // left `Undef` here so it is still eligible for `build()`'s later
+        // real-kernel post-process passes, which only revisit cells still
+        // `Value::Undef`. Including it regressed `restrict_field_b5_integration`
+        // via the eval() call site; the same hazard applies here.
+        let post_walk_flipped = selector_mint_flipped;
+        // `re_eval_post_walk_mints_from_graph` (defined above, alongside
+        // `edit_param`) already guards on `flipped.is_empty()` and drains
+        // `runtime_sink` — see its doc for why `edit_source` gets its own
+        // thin wrapper instead of sharing eval()/eval_cached()'s
+        // per-template loop helper.
+        self.re_eval_post_walk_mints_from_graph(
+            &new_snapshot.graph,
             &mut values,
+            &mut new_snapshot.values,
+            post_walk_flipped,
+            &functions,
+            &runtime_sink,
+            new_snapshot.version.0,
             &mut diagnostics,
         );
+        // De-duplicate (amend, task ε #4957 review round 5, parity with
+        // `edit_param`): a consumer cell that reads an upstream cell minted
+        // by the whole-module selector-mint pass above AND independently
+        // fails its own selector can be diagnosed once by that pass (pushed
+        // directly into `diagnostics`) and once more by the post-walk
+        // re-eval call just above (drained from `runtime_sink` inside
+        // `re_eval_post_walk_mints_from_graph`). No-op on the happy path
+        // (typically 0 or 1 diagnostics in this suffix). Scoped to exactly
+        // the suffix pushed since `pre_overlap_len` above — see
+        // `dedup_diagnostics_preserve_order`'s doc for why that's safe here
+        // without a dedicated sink.
+        let overlap_suffix = diagnostics.split_off(pre_overlap_len);
+        diagnostics.extend(dedup_diagnostics_preserve_order(overlap_suffix));
+
+        // (15) Install the new snapshot, dep structures, and demand; record
+        //      actual_eval_set (excludes early-cutoff-skipped nodes).
+        self.eval_state = Some(crate::EvaluationState {
+            snapshot: new_snapshot,
+            reverse_index: new_reverse_index,
+            trace_map: new_trace_map,
+        });
+        self.demand = new_demand;
+        self.last_eval_set = actual_eval_set;
 
         Ok(EvalResult {
             values,
@@ -3726,12 +4222,42 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_ir::Value,
     ) -> Result<CheckResult, EngineError> {
-        let eval_result = self.edit_param(cell, new_value)?;
+        let mut eval_result = self.edit_param(cell, new_value)?;
         let (constraint_results, constraint_diagnostics) =
             self.check_constraints_with_values(&eval_result.values)?;
 
         let mut diagnostics = eval_result.diagnostics;
         diagnostics.extend(constraint_diagnostics);
+
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062, PRD §10 open-question 2 hand-off point) Run the SAME
+        // registry the eval / eval_cached paths run, so the EDIT serve mode
+        // surfaces MassProperties PSD diagnostics too — INV-EVAL-3, one owner
+        // across all paths (no post-pass detector ran on the edit path before
+        // μ). This is the correct hand-off point: `eval_result.values`, the
+        // freshly-installed `self.eval_state.snapshot.values`, and the local
+        // `diagnostics` are all live and mutably disjoint here. It is
+        // deliberately NOT edit_param's tail: edit_param has already moved the
+        // new snapshot into `self.eval_state`, so we mutate the INSTALLED
+        // snapshot in place (parity with eval(), whose PSD pass mutates
+        // `snapshot.values` before install). Freshly produced every serve —
+        // never replayed — so disjoint from the per-cell runtime-diagnostic
+        // replay class.
+        {
+            let snapshot_values = &mut self
+                .eval_state
+                .as_mut()
+                .expect("edit_check requires a prior eval()/check() baseline")
+                .snapshot
+                .values;
+            crate::detectors::DetectorRegistry::with_builtins().run_all(
+                &mut crate::detectors::PostPassState {
+                    values: &mut eval_result.values,
+                    snapshot_values,
+                    diagnostics: &mut diagnostics,
+                },
+            );
+        }
 
         Ok(CheckResult {
             values: eval_result.values,
@@ -3746,14 +4272,42 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use reify_compiler::ValueCellKind;
-    use reify_core::{ContentHash, Type, ValueCellId};
+    use reify_core::{
+        ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type,
+        ValueCellId,
+    };
+    use reify_expr::ContainmentQuery;
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
 
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, guard_value_unchanged, reelaborate_guarded_group};
+    /// Trivial `ContainmentQuery` impl for `reelaborate_guarded_group` tests
+    /// below (task δ #5056): none of them exercise `restrict`/`sample`
+    /// containment resolution, so a no-op stub suffices — mirrors
+    /// `cell_eval_ctx.rs`'s own `NoContainment` test double. That
+    /// duplication (reviewer amend, round 3) is a known, drift-prone wart:
+    /// hoisting one shared `NoContainment`/`AlwaysInside` pair into
+    /// `reify_test_support::mocks` would remove it, but doing so requires
+    /// editing `cell_eval_ctx.rs` and the `reify-test-support` crate, both
+    /// outside δ's locked scope (`engine_edit.rs` +
+    /// `edit_param_cell_commit_migration.rs` only) — left for a follow-up
+    /// task or whichever migration leaf (ε/ι) next needs to touch both
+    /// files.
+    struct NoContainment;
+
+    impl ContainmentQuery for NoContainment {
+        fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+            None
+        }
+    }
+
+    use super::{
+        deactivate_if_not_auto, dedup_diagnostics_preserve_order, guard_value_unchanged,
+        reelaborate_guarded_group,
+    };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -3791,6 +4345,8 @@ mod tests {
     ) {
         let mut values = ValueMap::default();
         let mut snapshot_values = PersistentMap::default();
+        let sink = RefCell::new(Vec::new());
+        let containment = NoContainment;
         reelaborate_guarded_group(
             &graph,
             &group,
@@ -3799,6 +4355,8 @@ mod tests {
             &mut snapshot_values,
             &[],
             &HashMap::new(),
+            &sink,
+            &containment,
         );
         (values, snapshot_values)
     }
@@ -4421,6 +4979,8 @@ mod tests {
             let mut values: ValueMap = ValueMap::default();
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
+            let sink = RefCell::new(Vec::new());
+            let containment = NoContainment;
 
             reelaborate_guarded_group(
                 &graph,
@@ -4430,6 +4990,8 @@ mod tests {
                 &mut snapshot_values,
                 &[],
                 &HashMap::new(),
+                &sink,
+                &containment,
             );
 
             // Active else_member: evaluated default_expr → Int(7), Determined.
@@ -4462,6 +5024,8 @@ mod tests {
             let mut values: ValueMap = ValueMap::default();
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
+            let sink = RefCell::new(Vec::new());
+            let containment = NoContainment;
 
             reelaborate_guarded_group(
                 &graph,
@@ -4471,6 +5035,8 @@ mod tests {
                 &mut snapshot_values,
                 &[],
                 &HashMap::new(),
+                &sink,
+                &containment,
             );
 
             // Both branches deactivated: non-Auto → Undef, Auto → absent.
@@ -5385,5 +5951,1068 @@ mod tests {
             "Resolution(R) must be filtered out when R is absent from the new graph — \
              symmetric with the Value/Constraint/Realization/Compute arms"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // `dedup_diagnostics_preserve_order` (amend, task ε #4957 review round
+    // 4, `reviewer_comprehensive/test_coverage`): the dedup branch itself
+    // (`seen.insert` returning `false`) and its order-of-first-occurrence
+    // guarantee had no direct coverage — both integration tests only ever
+    // produce 0 or 1 diagnostics, which short-circuits on the `len() < 2`
+    // fast path before the `HashSet` is ever touched.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_drops_exact_duplicate_keeping_first() {
+        let a = Diagnostic::warning("boom")
+            .with_label(DiagnosticLabel::new(SourceSpan::new(1, 2), "here"))
+            .with_candidates(["x"]);
+        let out = dedup_diagnostics_preserve_order(vec![a.clone(), a.clone()]);
+        assert_eq!(
+            out.len(),
+            1,
+            "two byte-identical diagnostics must collapse to the first occurrence"
+        );
+        assert_eq!(out[0].message, a.message);
+        assert_eq!(out[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_label_span() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base
+            .clone()
+            .with_label(DiagnosticLabel::new(SourceSpan::new(1, 2), "here"));
+        // Differs from `d1` only in the label's span *end* (2 vs 3).
+        let d2 = base.with_label(DiagnosticLabel::new(SourceSpan::new(1, 3), "here"));
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing label span end is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_candidates() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base.clone().with_candidates(["a"]);
+        // Differs from `d1` only in its candidate list.
+        let d2 = base.with_candidates(["b"]);
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing candidate list is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_code() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base.clone().with_code(DiagnosticCode::TraitNotImplemented);
+        // Differs from `d1` only in its attached `DiagnosticCode`.
+        let d2 = base.with_code(DiagnosticCode::UnresolvedTrait);
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing diagnostic code is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_preserves_order_with_interleaved_duplicate() {
+        let a = Diagnostic::warning("a");
+        let b = Diagnostic::warning("b");
+        let c = Diagnostic::warning("c");
+        // The second `a` is a duplicate of the first and must be dropped;
+        // `b` and `c` are distinct and must survive in their original
+        // relative order (order-of-first-occurrence guarantee).
+        let out = dedup_diagnostics_preserve_order(vec![a.clone(), b, a, c]);
+        let messages: Vec<&str> = out.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages, vec!["a", "b", "c"]);
+    }
+
+    /// Assert that `v` is a `Value::Scalar` whose SI value is within `tol`
+    /// of `si`. Dimension-agnostic (works for any scalar, not just lengths)
+    /// — shared by `edit_param_back_props_solved_auto` /
+    /// `edit_param_back_props_moved_auto` to collapse their repeated
+    /// Scalar-tolerance `matches!` assertions. Callers pass an explicit
+    /// tolerance rather than a hardcoded default: the exact-seed early-exit
+    /// case can assert tight (`1e-9`), while a case whose value is the
+    /// output of a real solver search should use a looser tolerance so the
+    /// test pins the shared property, not solver floating-point precision.
+    fn assert_scalar_si_approx_eq(v: &reify_ir::Value, si: f64, tol: f64, ctx: &str) {
+        assert!(
+            matches!(v, reify_ir::Value::Scalar { si_value, .. } if (*si_value - si).abs() < tol),
+            "{ctx}; got {v:?}",
+        );
+    }
+
+    /// [Re-homed from `concurrent.rs`'s
+    /// `resolve_concurrent_edit_back_props_solved_auto`, task ξ #5046 — the
+    /// dead concurrent stack is deleted by task ο.] Pins `edit_param`'s
+    /// `SolveResult::Solved` arm: it back-props a resolved auto param into
+    /// `resolved_params` / `values`, and the post-solve reseed re-evaluates
+    /// downstream `let` bindings.
+    ///
+    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`.
+    /// Seeding the edit at exactly the solution (10mm) drives the solver's
+    /// early-exit path (no Nelder-Mead search); the sibling
+    /// `edit_param_back_props_moved_auto` pins the off-target (MOVED) case.
+    /// `edit_param` accepts editing an auto cell directly (its only entry
+    /// validation is CellNotFound + type/dimension checks), which is what
+    /// lets this test control the solver's seed.
+    #[test]
+    fn edit_param_back_props_solved_auto() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmAutoConc {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("WarmAutoConc", "x");
+
+        // Edit x to 10mm (same value) — dirty cone still includes the
+        // constraint (which reads x), triggering the solver.  The solver's
+        // current_values[x] = 10mm → initially_feasible = true → early-exit
+        // Solved { x: 10mm } without NelderMead search.
+        let result = engine
+            .edit_param(x_id.clone(), Value::length(0.01))
+            .expect("edit_param must succeed");
+
+        // (1) x must be in resolved_params (the Solved arm fires and back-props).
+        let x_resolved = result
+            .resolved_params
+            .get(&x_id)
+            .expect("x must be in resolved_params after SolveResult::Solved back-prop");
+        assert_scalar_si_approx_eq(
+            x_resolved,
+            0.01,
+            1e-9,
+            "edit_param Solved arm: x must be resolved to 0.01 m (10mm)",
+        );
+
+        // (2) y must be re-evaluated to 15mm = 0.015 m (= x + 5mm) by the
+        //     post-solve reseed.
+        let y_id = ValueCellId::new("WarmAutoConc", "y");
+        let y_val = result
+            .values
+            .get(&y_id)
+            .expect("y must be in result.values after edit_param back-prop");
+        assert_scalar_si_approx_eq(
+            y_val,
+            0.015,
+            1e-9,
+            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)",
+        );
+
+        // (3) engine.snapshot() must record y as (0.015 m, Determined).
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_y, y_det) = snapshot
+            .values
+            .get(&y_id)
+            .expect("y must be in snapshot after back-prop");
+        assert_eq!(
+            *y_det,
+            DeterminacyState::Determined,
+            "y must be Determined in the snapshot after edit_param",
+        );
+        assert_scalar_si_approx_eq(
+            snap_y,
+            0.015,
+            1e-9,
+            "snapshot y must be 0.015 m after back-prop",
+        );
+    }
+
+    /// [Re-homed from `concurrent.rs`'s
+    /// `resolve_concurrent_edit_back_props_moved_auto`, task ξ #5046 — the
+    /// dead concurrent stack is deleted by task ο.] Regression guard for the
+    /// warm re-solve convergence fix in task #4700: `edit_param` back-props
+    /// an auto param even when the edit seeds the solver off-target (MOVED),
+    /// not just when the seed already satisfies the constraint.
+    ///
+    /// Pre-#4700, `DimensionalSolver` starting from 20mm returned
+    /// `Infeasible` (residual ~1e-8 > `FEASIBILITY_THRESHOLD` = 1e-12), so
+    /// the `Solved` back-prop arm never fired; post-fix the residual is
+    /// ~1e-16 and the arm fires. **Differs from
+    /// `edit_param_back_props_solved_auto`:** that test seeds x at the
+    /// solution (10mm, early-exit); this one seeds 20mm, forcing a real
+    /// Nelder-Mead search.
+    ///
+    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`.
+    /// Flow: eval() → edit_param(x, 20mm) → x re-derived to 10mm (Determined)
+    /// + y = 15mm, NOT the injected 20mm seed.
+    #[test]
+    fn edit_param_back_props_moved_auto() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmMoveConc {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("WarmMoveConc", "x");
+
+        // Inject the MOVED seed: 20mm (0.02 m) — off-target, NOT the solution.
+        // edit_param seeds the solver's current_values[x] = 0.02 m; Nelder-Mead
+        // must search to find x = 0.01 m where the constraint x == 10mm holds.
+        // Before task-4700 fix: solver returns Infeasible (residual ~1e-8 > 1e-12);
+        // back-prop arm never fires; x absent from resolved_params. RED.
+        // After fix: solver returns Solved (residual ~1e-16); arm fires. GREEN.
+        let result = engine
+            .edit_param(x_id.clone(), Value::length(0.02))
+            .expect("edit_param must succeed");
+
+        // This test's purpose is to prove the Solved arm fires and back-props
+        // on a MOVED (off-target) seed, not to pin the solver's convergence
+        // precision. Unlike the sibling `edit_param_back_props_solved_auto`
+        // (exact-seed early-exit, no search — asserted at 1e-9), the value
+        // here is the output of a real Nelder-Mead search; a future retune of
+        // NM_SD_TOLERANCE / termination criteria could shift the recovered
+        // residual without indicating a back-prop regression. 1e-6 m on a
+        // 10mm target is loose enough to absorb that drift while still
+        // failing on a genuine back-prop bug (e.g. the pre-4700 seed leaking
+        // through unresolved).
+        const MOVED_AUTO_TOL: f64 = 1e-6;
+
+        // (1) x must be in resolved_params — the Solved arm fires and back-props.
+        // The constraint overrides the edited value: x = 10mm, not 20mm.
+        let x_resolved = result.resolved_params.get(&x_id).expect(
+            "x must be in resolved_params after SolveResult::Solved back-prop; \
+             if absent, the solver returned Infeasible from the 20mm seed (pre-4700 bug)",
+        );
+        assert_scalar_si_approx_eq(
+            x_resolved,
+            0.01,
+            MOVED_AUTO_TOL,
+            "edit_param moved-auto: x must be resolved to 0.01 m (10mm), not the injected 20mm seed",
+        );
+
+        // (2) result.values[x] must be updated to 10mm (back-prop writes it).
+        let x_val = result
+            .values
+            .get(&x_id)
+            .expect("x must be in result.values after back-prop");
+        assert_scalar_si_approx_eq(
+            x_val,
+            0.01,
+            MOVED_AUTO_TOL,
+            "result.values[x] must be 0.01 m (10mm) after back-prop",
+        );
+
+        // (3) engine.snapshot() must record x as (10mm, Determined).
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_x, x_det) = snapshot
+            .values
+            .get(&x_id)
+            .expect("x must be in snapshot after back-prop");
+        assert_eq!(
+            *x_det,
+            DeterminacyState::Determined,
+            "x must be Determined in the snapshot after edit_param",
+        );
+        assert_scalar_si_approx_eq(
+            snap_x,
+            0.01,
+            MOVED_AUTO_TOL,
+            "snapshot x must be 0.01 m (10mm) after back-prop",
+        );
+
+        // (4) y must be re-evaluated to 15mm = 0.015 m by the post-solve reseed.
+        let y_id = ValueCellId::new("WarmMoveConc", "y");
+        let y_val = result
+            .values
+            .get(&y_id)
+            .expect("y must be in result.values after edit_param reseed");
+        assert_scalar_si_approx_eq(
+            y_val,
+            0.015,
+            MOVED_AUTO_TOL,
+            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)",
+        );
+    }
+
+    /// [Re-homed from `tests/concurrent.rs`'s
+    /// `resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty`,
+    /// task ξ #5046 — the dead concurrent stack is deleted by task ο.] Pins
+    /// the `constraints_dirty` short-circuit inside `edit_param`: editing a
+    /// param that does not dirty any constraint referencing an auto group
+    /// must not re-invoke the solver.
+    ///
+    /// Template: `auto x` (length), `constraint 0: x > 2mm` (literal, no
+    /// reference to `a`), `param a = mm(3.0)`, `let b = a * 2`. Editing `a`
+    /// dirties `b` but not constraint 0, so the solver must not run again.
+    /// Uses `MultiCallSpyConstraintSolver` seeded `[Solved{x: mm(5.0)},
+    /// Solved{x: mm(999.0)}]`: if the guard fails, the bogus second value
+    /// leaks into `resolved_params` and the spy's call count is 2, not 1.
+    #[test]
+    fn edit_param_skips_solve_when_no_auto_group_constraints_are_dirty() {
+        use std::collections::HashMap;
+
+        use reify_core::ModulePath;
+        use reify_ir::{BinOp, SolveResult};
+        use reify_test_support::mocks::{MockConstraintChecker, MultiCallSpyConstraintSolver};
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, mm, value_ref,
+        };
+
+        let x_id = ValueCellId::new("Q", "x");
+        let a_id = ValueCellId::new("Q", "a");
+
+        // Template: auto x, constraint x > 2mm (literal, no reference to a),
+        //           param a = mm(3.0), let b = a * 2.
+        let template = TopologyTemplateBuilder::new("Q")
+            .auto_param("Q", "x", Type::length())
+            // constraint references only x (not a) and a literal mm(2.0)
+            .constraint("Q", 0, None, gt(value_ref("Q", "x"), literal(mm(2.0))))
+            .param("Q", "a", Type::length(), Some(literal(mm(3.0))))
+            .let_binding(
+                "Q",
+                "b",
+                Type::length(),
+                binop(BinOp::Mul, value_ref("Q", "a"), literal(Value::Real(2.0))),
+            )
+            .build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        // Spy solver:
+        //   call 1 (cold eval)       → x = mm(5.0)
+        //   call 2 (erroneous solve) → x = mm(999.0)  ← bogus; leaks into result if guard fails
+        let mut cold_solved: HashMap<ValueCellId, Value> = HashMap::new();
+        cold_solved.insert(x_id.clone(), mm(5.0));
+
+        let mut bogus_solved: HashMap<ValueCellId, Value> = HashMap::new();
+        bogus_solved.insert(x_id.clone(), mm(999.0));
+
+        let spy = MultiCallSpyConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: cold_solved,
+                unique: true,
+            },
+            // If the solver is incorrectly called a second time, mm(999.0) would
+            // appear in result.resolved_params — any emptiness assertion would fail loudly.
+            SolveResult::Solved {
+                values: bogus_solved,
+                unique: true,
+            },
+        ]);
+
+        // Capture the shared call-counter handle BEFORE moving spy into the engine.
+        let captured = spy.captured_problems();
+
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(spy));
+
+        // Cold eval: solver call 1 → x = mm(5.0)
+        let _cold = engine.eval(&module);
+
+        // edit_param: change a → mm(5.0). Dirty cone from a: b (let binding) —
+        // constraint 0 does NOT reference a, so the `constraints_dirty` guard
+        // fires and the solver must NOT be re-invoked.
+        let result = engine
+            .edit_param(a_id.clone(), mm(5.0))
+            .expect("edit_param must succeed");
+
+        // (a) The solver must have been called exactly once (cold eval only).
+        //     If the constraints_dirty guard fails, a second call would push a second
+        //     entry into `captured` AND leak mm(999.0) into result.resolved_params.
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "solver should have been called exactly once (cold eval), but was called {} times \
+             — the constraints_dirty guard inside edit_param is not firing",
+            captured.lock().unwrap().len()
+        );
+
+        // (b) result.resolved_params is empty (no solver ran during the edit).
+        assert!(
+            result.resolved_params.is_empty(),
+            "resolved_params should be empty when no constraint is dirty (got {:?})",
+            result.resolved_params
+        );
+        // (c) result.diagnostics is empty.
+        assert!(
+            result.diagnostics.is_empty(),
+            "diagnostics should be empty when no constraint is dirty (got {:?})",
+            result.diagnostics
+        );
+    }
+
+    /// Task δ (#5056) step-1: pins that `edit_param`'s MAIN dependent re-eval
+    /// loop (the primary per-cell re-eval site, T2 in the task's site
+    /// inventory) is wired through the `commit_cell_result` primitive
+    /// (`cell_commit.rs`) rather than the hand-rolled
+    /// Started-event/values-insert/snapshot-insert/record_evaluation/
+    /// Completed-event copy.
+    ///
+    /// Module: `param p: Length = 1mm; let q = p + 1mm`. Editing `p` to 2mm
+    /// dirties `q` (dependent re-eval), landing `q = 3mm`.
+    ///
+    /// Asserts two things the hand-rolled copy cannot produce today:
+    /// (1) journal provenance — `q`'s journal gains a `Started` event whose
+    ///     payload carries `TraceSource::EditReeval.as_str()` ("edit-reeval"),
+    ///     paired with a `Completed{outcome}` — RED on base, where the
+    ///     Started event at engine_edit.rs:1060 always uses `payload: None`;
+    /// (2) three-leg agreement — `result.values[q]`, `engine.snapshot().values[q]`,
+    ///     and the cache entry for q all carry `(3mm, DeterminacyState::Determined)`,
+    ///     proving the primitive's atomic four-leg commit (minus the journal,
+    ///     checked separately above) actually ran.
+    ///
+    /// Checks the LAST two events for `q` (rather than assuming exactly two
+    /// total) since cold `eval()` may itself record journal events for `q`
+    /// before `edit_param` runs.
+    #[test]
+    fn edit_param_dependent_reeval_routes_through_commit_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::{CachedResult, NodeId};
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure S {
+    param p : Length = 1mm
+    let q = p + 1mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let p_id = ValueCellId::new("S", "p");
+        let q_id = ValueCellId::new("S", "q");
+        let q_node = NodeId::Value(q_id.clone());
+
+        let events_before_len = engine.journal().events_for_node(&q_node).len();
+
+        let result = engine
+            .edit_param(p_id, Value::length(0.002))
+            .expect("edit_param must succeed");
+
+        // Journal: the primitive's own Started/Completed pair, with the
+        // EditReeval provenance slug recorded on Started.
+        let events_after = engine.journal().events_for_node(&q_node);
+        assert!(
+            events_after.len() >= events_before_len + 2,
+            "edit_param must append at least a Started+Completed pair for q, \
+             had {events_before_len} events before, {} after",
+            events_after.len()
+        );
+        let started = events_after[events_after.len() - 2];
+        let completed = events_after[events_after.len() - 1];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug,
+                TraceSource::EditReeval.as_str(),
+                "Started payload must carry the edit-reeval provenance slug"
+            ),
+            other => panic!(
+                "expected Started payload Custom(\"{}\"), got {other:?}",
+                TraceSource::EditReeval.as_str()
+            ),
+        }
+        assert!(
+            matches!(completed.kind, EventKind::Completed { .. }),
+            "expected the last event to be Completed, got {:?}",
+            completed.kind
+        );
+
+        // Three-leg agreement: result.values, snapshot, and cache all carry
+        // (3mm, Determined) for q.
+        let q_result_val = result
+            .values
+            .get(&q_id)
+            .expect("q must be in result.values after edit_param");
+        assert_scalar_si_approx_eq(q_result_val, 0.003, 1e-9, "result.values[q] must be 3mm");
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_q, snap_det) = snapshot
+            .values
+            .get(&q_id)
+            .expect("q must be in snapshot.values after edit_param");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[q] must be Determined"
+        );
+        assert_scalar_si_approx_eq(snap_q, 0.003, 1e-9, "snapshot.values[q] must be 3mm");
+
+        let cache_entry = engine
+            .cache_store()
+            .get(&q_node)
+            .expect("q must have a cache entry after edit_param");
+        match &cache_entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Determined,
+                    "cache[q] determinacy must be Determined"
+                );
+                assert_scalar_si_approx_eq(v, 0.003, 1e-9, "cache[q] must be 3mm");
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+    }
+
+    /// Assert that `id`'s journal, snapshot, and cache all show the effects of
+    /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
+    /// commit: a `Started`/`Completed` journal pair with the edit-reeval
+    /// provenance slug, and `(expected_si, DeterminacyState::Determined)` in
+    /// both the snapshot and the cache. Shared by the recorded-site fixtures
+    /// below (task δ #5056 step-3) so each site's test is a thin setup +
+    /// one-line assertion, mirroring `assert_scalar_si_approx_eq` above.
+    fn assert_recorded_via_commit_primitive(
+        engine: &crate::Engine,
+        id: &reify_core::ValueCellId,
+        expected_si: f64,
+        label: &str,
+    ) {
+        use crate::cache::{CachedResult, NodeId};
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+        use reify_ir::DeterminacyState;
+
+        let node = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "{label}: expected at least a Started+Completed pair, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        let completed = events[events.len() - 1];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "{label}: expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug,
+                TraceSource::EditReeval.as_str(),
+                "{label}: Started payload must carry the edit-reeval provenance slug"
+            ),
+            other => panic!(
+                "{label}: expected Started payload Custom(\"{}\"), got {other:?}",
+                TraceSource::EditReeval.as_str()
+            ),
+        }
+        assert!(
+            matches!(completed.kind, EventKind::Completed { .. }),
+            "{label}: expected the last event to be Completed, got {:?}",
+            completed.kind
+        );
+
+        let snapshot = engine
+            .snapshot()
+            .unwrap_or_else(|| panic!("{label}: snapshot must exist"));
+        let (snap_v, snap_det) = snapshot
+            .values
+            .get(id)
+            .unwrap_or_else(|| panic!("{label}: {id} missing from snapshot.values"));
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "{label}: snapshot determinacy"
+        );
+        assert_scalar_si_approx_eq(snap_v, expected_si, 1e-9, &format!("{label}: snapshot value"));
+
+        let cache_entry = engine
+            .cache_store()
+            .get(&node)
+            .unwrap_or_else(|| panic!("{label}: {id} missing a cache entry"));
+        match &cache_entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Determined,
+                    "{label}: cache determinacy"
+                );
+                assert_scalar_si_approx_eq(v, expected_si, 1e-9, &format!("{label}: cache value"));
+            }
+            other => panic!("{label}: expected CachedResult::Value, got {other:?}"),
+        }
+    }
+
+    /// Task δ (#5056) step-3: pins that `edit_param`'s remaining RECORDED
+    /// transaction copies — T4 (solver-resolved autos) and T5 (wave2 reseed
+    /// re-eval) — route through `commit_cell_result` exactly like T2 (pinned
+    /// by `edit_param_dependent_reeval_routes_through_commit_primitive`
+    /// above).
+    ///
+    /// Reuses `edit_param_back_props_solved_auto`'s module and edit
+    /// (`param x: Length = auto; constraint x == 10mm; let y = x + 5mm`,
+    /// edited to the solved value 10mm): the SAME `edit_param` call drives
+    /// BOTH sites in one flow — x is resolved by the solver loop (T4, writes
+    /// x's cache entry inside the per-entity-group `SolveResult::Solved` arm)
+    /// and y is re-evaluated by the resolution reseed that follows it (T5,
+    /// the wave2-schedule re-eval loop) — so one fixture covers both without
+    /// needing two separate models.
+    ///
+    /// RED on base: neither site's `record_evaluation` call is paired with
+    /// any `self.journal.record(..)` call, so `events_for_node` gains zero
+    /// new events for x or y across the edit (unlike T2, T4/T5 write no
+    /// journal events today at all — the primitive would be the FIRST
+    /// journal write either site ever makes).
+    #[test]
+    fn edit_param_recorded_sites_route_through_commit_primitive() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmAutoConcCommit {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("WarmAutoConcCommit", "x");
+        let y_id = ValueCellId::new("WarmAutoConcCommit", "y");
+
+        // Solver early-exit seed (mirrors edit_param_back_props_solved_auto):
+        // x is edited to exactly the solution, so the Solved arm fires
+        // without a Nelder-Mead search.
+        engine
+            .edit_param(x_id.clone(), Value::length(0.01))
+            .expect("edit_param must succeed");
+
+        assert_recorded_via_commit_primitive(&engine, &x_id, 0.01, "T4 solver-resolved auto (x)");
+        assert_recorded_via_commit_primitive(&engine, &y_id, 0.015, "T5 wave2 reseed (y)");
+    }
+
+    /// Task δ (#5056) step-5: pins that `edit_param`'s UNRECORDED transaction
+    /// copies (U1-U4 in the task's site inventory — reseed/aggregate sites
+    /// that write values+snapshot but deliberately omit the cache leg) are,
+    /// once step-6 migrates them onto `commit_cell_result`, wired through
+    /// with `CacheLeg::Skip("<reason>")` rather than a bare values/snapshot
+    /// insert pair with no journal trace at all.
+    ///
+    /// Exercises U2 (collection-resize child re-eval, in the "Collection
+    /// count re-elaboration phase" block): growing `GrowColl.n` from 2 to 3
+    /// removes every existing `bolts[i].diameter` child cell (invalidating
+    /// its cache entry) and recreates ALL of `bolts[0..3)` fresh, so
+    /// `bolts[2].diameter` — a newly-created instance — is written to
+    /// values/snapshot but never gains a cache entry.
+    ///
+    /// Asserts, for `bolts[2].diameter` after the grow:
+    /// (a) `result.values` and `engine.snapshot().values` both carry
+    ///     `(5mm, DeterminacyState::Determined)`;
+    /// (b) `engine.cache_store().get(&node)` is `None` (no cache entry —
+    ///     the site is deliberately unrecorded);
+    /// (c) the journal's `Started` event for the node carries the
+    ///     `"edit-reeval|cache-skip=<reason>"` marker — the exact format
+    ///     `commit_cell_result` stamps on its `CacheLeg::Skip` arm
+    ///     (cell_commit.rs:268-271). Checked via `starts_with` (not an exact
+    ///     string) since the specific `<reason>` text is step-6's to choose.
+    ///
+    /// RED on base: (a) and (b) already hold today (the site already inserts
+    /// into values/snapshot without touching the cache), but the site emits
+    /// NO journal event at all — so (c) fails outright (`events_for_node`
+    /// returns empty, not even a bare Started/Completed pair).
+    #[test]
+    fn edit_param_unrecorded_sites_skip_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+structure GrowColl {
+    param n : Int = 2
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let n_id = ValueCellId::new("GrowColl", "n");
+        let result = engine
+            .edit_param(n_id, Value::Int(3))
+            .expect("edit_param(n, 3) must succeed after a cold eval");
+
+        // bolts[2] is a NEW instance (old_count was 2: indices 0,1) — it
+        // unambiguously never had a cache entry before this edit.
+        let child_id = ValueCellId::new("GrowColl.bolts[2]", "diameter");
+        let node = NodeId::Value(child_id.clone());
+
+        // (a) values + snapshot legs.
+        let result_val = result
+            .values
+            .get(&child_id)
+            .expect("bolts[2].diameter must be in result.values after the grow");
+        assert_scalar_si_approx_eq(result_val, 0.005, 1e-9, "result.values[bolts[2].diameter]");
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_v, snap_det) = snapshot
+            .values
+            .get(&child_id)
+            .expect("bolts[2].diameter must be in snapshot.values after the grow");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[bolts[2].diameter] must be Determined"
+        );
+        assert_scalar_si_approx_eq(snap_v, 0.005, 1e-9, "snapshot.values[bolts[2].diameter]");
+
+        // (b) NO cache entry — the "unrecorded" shape U2 deliberately keeps.
+        assert!(
+            engine.cache_store().get(&node).is_none(),
+            "bolts[2].diameter must have NO cache entry (unrecorded site)"
+        );
+
+        // (c) journal Started payload carries the cache-skip marker. RED on
+        // base: the site emits no journal event at all today, so this fails
+        // before ever reaching the payload-format check.
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "expected at least a Started+Completed pair for bolts[2].diameter, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert!(
+                slug.starts_with(&format!("{}|cache-skip=", TraceSource::EditReeval.as_str())),
+                "Started payload must carry the edit-reeval cache-skip marker, got {slug:?}"
+            ),
+            other => panic!(
+                "expected Started payload Custom(\"edit-reeval|cache-skip=<reason>\"), got {other:?}"
+            ),
+        }
+    }
+
+    /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
+    /// `test-coverage`): the fixture above pins ONLY U2 (collection-resize
+    /// child); U1/U3/U4 each carry a distinct `CacheLeg::Skip(reason)`
+    /// string, loop, and determinacy source, so a regression that swapped
+    /// ONE of them to `CacheLeg::Record`, picked the wrong
+    /// `DeterminacyRule`, or dropped the journal leg would not be caught by
+    /// any test in this diff. This fixture isolates U1 (post-wave2
+    /// active-member reseed): a guarded group with no field/collection
+    /// involvement, so U1 is the ONLY unrecorded site the edit can reach.
+    ///
+    /// Mirrors the integration fixture
+    /// `edit_path_reeval_surfaces_dropped_field_oob_warning`'s
+    /// `OOB_GUARD_SRC` shape (same "directly-edited bool guard activates a
+    /// member" pattern, minus the field sampling — that fixture proves the
+    /// runtime-sink leg; this one proves the cache-skip leg with U1's own
+    /// exact reason string, checked via equality rather than the shared
+    /// prefix `edit_param_unrecorded_sites_skip_cache_via_primitive` uses).
+    #[test]
+    fn edit_param_u1_guard_member_reseed_skips_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure GuardU1 {
+    param cond : Bool = false
+    where cond {
+        let m = 5mm
+    }
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let cond_id = ValueCellId::new("GuardU1", "cond");
+        let m_id = ValueCellId::new("GuardU1", "m");
+        let result = engine
+            .edit_param(cond_id, Value::Bool(true))
+            .expect("edit_param(cond, true) must succeed after a cold eval");
+
+        let node = NodeId::Value(m_id.clone());
+
+        // (a) values + snapshot legs.
+        let result_val = result
+            .values
+            .get(&m_id)
+            .expect("m must be in result.values after activation");
+        assert_scalar_si_approx_eq(result_val, 0.005, 1e-9, "result.values[m]");
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_v, snap_det) = snapshot
+            .values
+            .get(&m_id)
+            .expect("m must be in snapshot.values after activation");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[m] must be Determined"
+        );
+        assert_scalar_si_approx_eq(snap_v, 0.005, 1e-9, "snapshot.values[m]");
+
+        // (b) NO cache entry — U1 deliberately skips the cache leg.
+        assert!(
+            engine.cache_store().get(&node).is_none(),
+            "m must have NO cache entry (U1 is an unrecorded site)"
+        );
+
+        // (c) journal Started payload carries U1's OWN cache-skip reason,
+        // checked by exact equality (not just the shared prefix) so a
+        // regression that mixed up U1's reason with another site's is caught.
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "expected at least a Started+Completed pair for m, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        let expected_slug = format!(
+            "{}|cache-skip=post-wave2 guard-member reseed",
+            TraceSource::EditReeval.as_str()
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug, &expected_slug,
+                "Started payload must carry U1's exact cache-skip reason"
+            ),
+            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
+        }
+    }
+
+    /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
+    /// `test-coverage`): extends the U1 fixture above's coverage to U3
+    /// (synthetic per-member aggregate list `__list_<sub>__<member>`).  U3
+    /// fires from the SAME collection-resize block as U2 (whenever a
+    /// collection's count changes, once per distinct member name, after the
+    /// per-instance child-cell loop) but commits a DIFFERENT cell with its
+    /// OWN `CacheLeg::Skip("synthetic member-list aggregate")` reason —
+    /// distinct from U2's `"collection-resize child re-recorded by
+    /// structural rebuild"`. Reuses the `GrowColl` shape from the U2
+    /// fixture (n: 2 -> 3) but targets the aggregate cell instead of a
+    /// per-instance child cell.
+    #[test]
+    fn edit_param_u3_synthetic_member_list_skips_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+structure GrowColl {
+    param n : Int = 2
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let n_id = ValueCellId::new("GrowColl", "n");
+        let result = engine
+            .edit_param(n_id, Value::Int(3))
+            .expect("edit_param(n, 3) must succeed after a cold eval");
+
+        // The synthetic per-member aggregate — committed once per distinct
+        // member name (not once per instance) after the child-cell loop.
+        let list_id = ValueCellId::new("GrowColl", "__list_bolts__diameter");
+        let node = NodeId::Value(list_id.clone());
+
+        // (a) values + snapshot legs. A List value (not a scalar), so this
+        // fixture confirms presence + Determined rather than a numeric
+        // tolerance check — the per-element values are the U2 fixture's job.
+        assert!(
+            result.values.get(&list_id).is_some(),
+            "__list_bolts__diameter must be in result.values after the grow"
+        );
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (_, snap_det) = snapshot
+            .values
+            .get(&list_id)
+            .expect("__list_bolts__diameter must be in snapshot.values after the grow");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[__list_bolts__diameter] must be Determined"
+        );
+
+        // (b) NO cache entry — U3 deliberately skips the cache leg.
+        assert!(
+            engine.cache_store().get(&node).is_none(),
+            "__list_bolts__diameter must have NO cache entry (U3 is an unrecorded site)"
+        );
+
+        // (c) journal Started payload carries U3's OWN cache-skip reason,
+        // checked by exact equality (not just the shared prefix).
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "expected at least a Started+Completed pair for __list_bolts__diameter, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        let expected_slug = format!(
+            "{}|cache-skip=synthetic member-list aggregate",
+            TraceSource::EditReeval.as_str()
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug, &expected_slug,
+                "Started payload must carry U3's exact cache-skip reason"
+            ),
+            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
+        }
+    }
+
+    /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
+    /// `test-coverage`): extends the U1/U3 fixtures above's coverage to U4
+    /// (θ2 grown-instance reseed). Reuses the identical `GrowColl` shape
+    /// AND target cell (`bolts[2].diameter`) as the U2 fixture above:
+    /// `bolts[2]` is a genuinely NEW instance (absent from the pre-edit
+    /// graph, since old_count was 2), so per U4's own documented contract it
+    /// is committed TWICE within the same `edit_param` call — once by U2's
+    /// child-creation loop, then again by U4's grown-instance reseed, which
+    /// runs after and is the final writer (same U2-then-U4 relationship the
+    /// integration fixture
+    /// `warm_collection_grow_commits_identical_determinacy_to_cold_eval`
+    /// documents). This fixture checks the journal's LAST Started/Completed
+    /// pair for the node — the final, persisted commit — and pins it to
+    /// U4's OWN `CacheLeg::Skip("grown-instance reseed after structural
+    /// grow (θ2)")` reason specifically (exact equality, not the shared
+    /// prefix), so a regression isolated to U4's reason/rule/journal leg
+    /// (while leaving U2's untouched) is caught here even though it would
+    /// slip past the U2-only fixture above.
+    #[test]
+    fn edit_param_u4_grown_instance_reseed_skips_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+structure GrowColl {
+    param n : Int = 2
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let n_id = ValueCellId::new("GrowColl", "n");
+        engine
+            .edit_param(n_id, Value::Int(3))
+            .expect("edit_param(n, 3) must succeed after a cold eval");
+
+        let child_id = ValueCellId::new("GrowColl.bolts[2]", "diameter");
+        let node = NodeId::Value(child_id.clone());
+
+        // U2 (creation) AND U4 (grown-instance reseed) both commit this
+        // node in this call, so the journal must carry (at least) two
+        // Started+Completed pairs for it.
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 4,
+            "expected at least two Started+Completed pairs for bolts[2].diameter \
+             (U2 then U4), got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        let expected_slug = format!(
+            "{}|cache-skip=grown-instance reseed after structural grow (θ2)",
+            TraceSource::EditReeval.as_str()
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug, &expected_slug,
+                "the FINAL Started payload for bolts[2].diameter must carry U4's \
+                 exact cache-skip reason (U4 is the last writer)"
+            ),
+            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
+        }
     }
 }

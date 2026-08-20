@@ -48,7 +48,8 @@ compile_error!(
 use reify_core::{Diagnostic, SourceSpan};
 use reify_eval::{AttributeQuery, AttributeResolution, resolve_unique_by_attribute};
 use reify_ir::{
-    FeatureId, GeometryKernel, Role, TopologyAttribute, TopologyAttributeTable,
+    FeatureId, GeometryKernel, KernelHandle, KernelId, Role, TopologyAttribute,
+    TopologyAttributeTable,
 };
 use reify_kernel_manifold::{kernel::ManifoldKernel, test_fixtures::unit_cube_mesh};
 
@@ -107,9 +108,17 @@ fn extract_faces_6_stable_handles_resolve_uniquely_by_attribute() {
     // the candidate set — feature_id acts as a filter, not a discriminator here.
     let feature_id = FeatureId::realization("Box", 0);
     let mut table = TopologyAttributeTable::default();
+    // `KernelId::Manifold` (#4351 step-6): this is the sole real-ManifoldKernel
+    // resolver test, so seeding under the Manifold scope (matching the
+    // `scope_kernel` passed to `resolve_unique_by_attribute` below) makes this
+    // a genuine real-kernel validation of scope threading, not just an
+    // interim single-kernel placeholder.
     for (i, &face_id) in faces.iter().enumerate() {
         table.record(
-            face_id,
+            KernelHandle {
+                kernel: KernelId::Manifold,
+                id: face_id,
+            },
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role: Role::Side,
@@ -130,7 +139,14 @@ fn extract_faces_6_stable_handles_resolve_uniquely_by_attribute() {
             role_and_index: Some((Role::Side, i as u32)),
             feature_id: None,
         };
-        let result = resolve_unique_by_attribute(&table, &faces, &query, span, &mut diags);
+        let result = resolve_unique_by_attribute(
+            &table,
+            &faces,
+            &query,
+            span,
+            KernelId::Manifold,
+            &mut diags,
+        );
         assert_eq!(
             result,
             AttributeResolution::Resolved(expected_handle),

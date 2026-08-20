@@ -78,7 +78,7 @@ fn manifold_dispatches_for_mesh_boolean_when_only_kernel() {
     //    Asserting on the function's output prevents the call from being
     //    optimised away regardless of the optimisation level.
     //
-    // Compare: `crates/reify-eval/tests/kernel_registry_inventory.rs` reads
+    // Compare: `crates/reify-eval/tests/harness_kernel_realization/kernel_registry_inventory.rs` reads
     // `reify_kernel_occt::OCCT_AVAILABLE` as the equivalent observable anchor.
     let anchor_descriptor = reify_kernel_manifold::register::manifold_capability_descriptor();
     assert!(

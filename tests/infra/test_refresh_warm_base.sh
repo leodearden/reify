@@ -57,6 +57,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Arm the shared-trash litter guard (task 5612). Sited immediately after
+# `trap cleanup EXIT` because the helper registers its per-run root into
+# _TMPDIRS and so must follow this file's own `_TMPDIRS=()`.
+# Rationale, ordering contract, stem rules and honest scope: see the
+# CANONICAL WIRING CONTRACT comment in tests/infra/test_helpers.sh.
+init_isolated_lane_root test-refresh-warm-base
+
 STUB_DIR="$(mktemp -d /tmp/test-refresh-warm-base-stub-XXXXXX)"
 _TMPDIRS+=("$STUB_DIR")
 
@@ -677,5 +684,117 @@ assert "G5: live gen .basecommit present" test -f "${G5_GEN2}.basecommit"
 assert "G5: retired gen.1 dir GONE (reaped by GC)" test ! -d "$G5_GEN1"
 assert "G5: retired gen.1 .basecommit GONE (reaped with its gen — no orphan)" \
     test ! -f "${G5_GEN1}.basecommit"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — buildroot provenance: per-gen build-worktree stamp written at promote time
+# Mirrors Block G (.basecommit) for the new <base>.gen.<N>.buildroot sidecar
+# (task 4983): records realpath(dirname(advancing_target_dir)) — the advancing
+# worktree ROOT under which the base binaries were compiled — so seed-warm-lane.sh
+# can detect a build-worktree mismatch and relink env!()-baked-path test binaries.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: buildroot provenance ---"
+
+H_TMP="$(mktemp -d /tmp/test-refresh-warm-base-h-XXXXXX)"
+_TMPDIRS+=("$H_TMP")
+H_LANE="$(mk_git_advancing "$H_TMP")"
+H_ADV="$H_LANE/advancing"
+H_HEAD="$(git -C "$H_LANE" rev-parse HEAD)"
+echo "content" > "$H_ADV/file.txt"
+H_BASE="$H_TMP/base"
+
+# H1: after a successful refresh, the per-gen .buildroot stamp exists as a sibling
+# of the gen dir (mirrors G1's .basecommit existence check).
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$H_ADV" "$H_BASE" --landed-commit "$H_HEAD"
+assert "H1: refresh exits 0" test "$RC" -eq 0
+H1_GEN="$(readlink "$H_BASE")"
+assert "H1: per-gen .buildroot exists after refresh" test -f "${H1_GEN}.buildroot"
+
+# H2: stamp content == realpath of the advancing WORKTREE ROOT
+# (dirname(advancing_target_dir) = H_LANE, NOT the advancing/ subdir itself).
+assert "H2: .buildroot content == realpath(advancing worktree root)" \
+    bash -c '[ "$(cat "${1}.buildroot")" = "$2" ]' _ "$H1_GEN" "$(realpath "$H_LANE")"
+
+# H3: GC reaps retired gen + its .buildroot sibling (no orphan accumulation),
+# mirroring G5's .basecommit reap assertions.  After two refreshes with no
+# reader holding gen.1.lock, gen.1 and its .buildroot must both be gone while
+# the live gen still has its .buildroot.
+H3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-h3-XXXXXX)"
+_TMPDIRS+=("$H3_TMP")
+H3_LANE="$(mk_git_advancing "$H3_TMP")"
+H3_ADV="$H3_LANE/advancing"
+H3_HEAD="$(git -C "$H3_LANE" rev-parse HEAD)"
+echo "content" > "$H3_ADV/file.txt"
+H3_BASE="$H3_TMP/base"
+
+# First refresh: creates gen.N with .buildroot; capture gen path before next refresh
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$H3_ADV" "$H3_BASE" --landed-commit "$H3_HEAD"
+assert "H3: first refresh exits 0" test "$RC" -eq 0
+H3_GEN1="$(readlink "$H3_BASE")"
+assert "H3: gen.1 .buildroot exists" test -f "${H3_GEN1}.buildroot"
+
+# Second refresh: GC sweeps gen.1 (no reader holds gen.1.lock → exclusive flock succeeds)
+echo "content2" > "$H3_ADV/file2.txt"
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$H3_ADV" "$H3_BASE" --landed-commit "$H3_HEAD"
+assert "H3: second refresh exits 0" test "$RC" -eq 0
+H3_GEN2="$(readlink "$H3_BASE")"
+# Live gen retains its .buildroot
+assert "H3: live gen .buildroot present" test -f "${H3_GEN2}.buildroot"
+# Retired gen.1 is fully reaped — dir AND .buildroot sibling
+assert "H3: retired gen.1 dir GONE (reaped by GC)" test ! -d "$H3_GEN1"
+assert "H3: retired gen.1 .buildroot GONE (reaped with its gen — no orphan)" \
+    test ! -f "${H3_GEN1}.buildroot"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — the provenance WIP refusal message (task 5981)
+#
+# This refusal fires INSIDE a warm lane (the advancing dir is a lane's target/),
+# so whatever remedy it names is read by exactly the population that filled the
+# shared stash stack: refs/stash is ONE ref in the shared .git, not per-worktree,
+# so every lane on this host pushes onto one LIFO stack (esc-5785-6, nine entries
+# over ~1 month). The guard's REFUSAL PATH had no coverage at all before this
+# block — behavioural asserts on the script's real stderr, in the shape of
+# test_land_script.sh's "dirty tree -> error says 'dirty'".
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: WIP refusal advises committing, never stashing ---"
+
+I_TMP="$(mktemp -d /tmp/test-refresh-warm-base-i-XXXXXX)"
+_TMPDIRS+=("$I_TMP")
+I_LANE="$(mk_git_advancing "$I_TMP")"
+I_ADV="$I_LANE/advancing"
+I_HEAD="$(git -C "$I_LANE" rev-parse HEAD)"
+# Dirty a TRACKED file. The guard runs `git status --porcelain
+# --untracked-files=no`, so untracked content (the advancing subdir itself)
+# would NOT trip it — this must be the committed .placeholder.
+printf 'uncommitted WIP\n' >> "$I_LANE/.placeholder"
+
+reset_calls
+run_helper "$I_ADV" "$I_TMP/base" --landed-commit "$I_HEAD"
+assert "I1: advancing worktree with tracked WIP is refused (non-zero)" test "$RC" -ne 0
+assert "I2: refusal names the WIP condition" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "WIP"' _ "$ERR_OUT"
+assert "I3: refusal advises committing" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "commit"' _ "$ERR_OUT"
+# Bare-token check, same rationale as test_land_script.sh's: a reworded advisory
+# that reaches for the word again should fail here and be reconsidered.
+assert "I4: refusal does NOT advise stashing" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
+# kept as two independently-reported signals: TRASH2 can realistically only ever
+# report "clean", which is indistinguishable from a checker that stopped working
+# — TRASH1 is the hermetic control proving the instrument still fires.
+# Full rationale and honest scope: the CANONICAL WIRING CONTRACT comment in
+# tests/infra/test_helpers.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+assert "TRASH1: shared-trash litter detector is live (self-test fires on a synthetic bare-/tmp lane)" \
+    assert_shared_trash_litter_detector_live
+assert "TRASH2: no lane in this suite littered the machine-shared /tmp/.reseed-trash" \
+    assert_no_shared_trash_litter
 
 test_summary

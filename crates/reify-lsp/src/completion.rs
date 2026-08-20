@@ -350,6 +350,12 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
+        name: "rounded_box",
+        signature: "rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid",
+        doc: "Creates a rectangular box solid, centred at the origin on all 3 axes, with the 4 vertical (plan-view) edges rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`; this is checked at compile time only when width/depth/corner_r are all constant — a param-driven value that violates it fails at evaluation time with an opaque kernel error instead of a diagnostic.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
         name: "torus",
         signature: "torus(major_radius: Length, minor_radius: Length) -> Solid",
         doc: "Creates a torus solid.",
@@ -380,15 +386,45 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
+        name: "rounded_rect",
+        signature: "rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface",
+        doc: "Creates a planar rounded-rectangle 2D profile, centred at the origin in the XY plane (z=0), with the 4 corners rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`; this is checked at compile time only when width/depth/corner_r are all constant — a param-driven value that violates it fails at evaluation time with an opaque kernel error instead of a diagnostic.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
         name: "polygon",
-        signature: "polygon(vertices: List<Point2<Length>>) -> Surface",
-        doc: "Creates a polygonal 2D profile from a list of vertices.",
+        signature: "polygon(x1, y1, x2, y2, ...) -> Surface",
+        doc: "Creates a polygonal 2D profile from variadic flat coordinate pairs — at least 3 vertices (6 args), and an even number of args.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
         name: "ellipse",
         signature: "ellipse(semi_major: Length, semi_minor: Length) -> Surface",
         doc: "Creates an elliptical 2D profile.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "apply_transform",
+        signature: "apply_transform(geometry, transform: Transform) -> Geometry",
+        doc: "Applies a rigid-body `Transform` to `geometry`, returning the transformed value of the same kind.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "is_closed",
+        signature: "is_closed(g: Geometry) -> Bool",
+        doc: "True if the boundary has no free edges (the weaker half of watertight; `Closed` only).",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "is_connected",
+        signature: "is_connected(g: Geometry) -> Bool",
+        doc: "True if the shape is a single connected component (no disjoint sub-bodies).",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "is_bounded",
+        signature: "is_bounded(g: Geometry) -> Bool",
+        doc: "True if the shape has a finite bounding box (no infinite half-spaces).",
         sort_group: "01-geometry",
     },
     // --- 02-numeric: numeric / scalar math ---
@@ -733,11 +769,23 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         doc: "Constructs an orientation from an axis vector and a rotation angle.",
         sort_group: "07-orientation",
     },
+    BuiltinFunctionInfo {
+        name: "orient_look_at",
+        signature: "orient_look_at(forward: Vector, up: Vector) -> Orientation",
+        doc: "Constructs an orientation whose local Z axis points along `forward`, using `up` to resolve the remaining rotation about that axis.",
+        sort_group: "07-orientation",
+    },
     // --- 08-coordinate: coordinate frames, planes, axes ---
     BuiltinFunctionInfo {
         name: "frame_to_frame",
         signature: "frame_to_frame(from: Frame, to: Frame) -> Transform",
         doc: "Computes the transform that maps `from` frame to `to` frame.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "project",
+        signature: "project(point: Point, to: Frame) -> Point | project(vector: Vector, to: Frame) -> Vector",
+        doc: "Expresses a point or vector in the coordinate frame `to` (points have the frame origin subtracted before rotation; vectors are rotation-only).",
         sort_group: "08-coordinate",
     },
     BuiltinFunctionInfo {
@@ -992,6 +1040,35 @@ mod tests {
         assert!(func_labels.contains(&"abs"), "should include 'abs'");
         assert!(func_labels.contains(&"min"), "should include 'min'");
         assert!(func_labels.contains(&"max"), "should include 'max'");
+    }
+
+    #[test]
+    fn polygon_completion_advertises_compiling_flat_form() {
+        // Authoritative compiler arm: crates/reify-compiler/src/geometry.rs:1570
+        // (the `polygon` match arm in `compile_profile_op`) accepts ONLY
+        // variadic flat coordinate pairs (x1, y1, x2, y2, ...) — at least 6
+        // args (3 points), an even count — NOT a `List<Point2<Length>>`
+        // structured argument. The served completion signature must match
+        // what the compiler actually accepts, or autocomplete guides
+        // designers toward code that fails to compile.
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let polygon_item = items
+            .iter()
+            .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == "polygon")
+            .expect("should include 'polygon' builtin function completion");
+        let detail = polygon_item
+            .detail
+            .as_ref()
+            .expect("polygon completion should have a detail (signature)");
+        assert!(
+            !detail.contains("List<Point2"),
+            "polygon signature must not advertise the non-compiling structured-list form, got: {detail}"
+        );
+        assert!(
+            detail.contains("x1") && detail.contains("y1"),
+            "polygon signature must advertise the compiling variadic flat coordinate-pair form (x1, y1, ...), got: {detail}"
+        );
     }
 
     #[test]
@@ -1887,6 +1964,14 @@ mod tests {
             func_labels.contains(&"ellipse"),
             "should include 'ellipse'"
         );
+        assert!(
+            func_labels.contains(&"rounded_box"),
+            "should include 'rounded_box'"
+        );
+        assert!(
+            func_labels.contains(&"rounded_rect"),
+            "should include 'rounded_rect'"
+        );
     }
 
     // --- stdlib completions: orientation functions (step-4) ---
@@ -2153,6 +2238,42 @@ mod tests {
             trig_prefixes.iter().all(|p| p == first_prefix),
             "all trig functions should share the same sort_text prefix, got: {:?}",
             trig_prefixes
+        );
+    }
+
+    // --- stdlib completions: wired transform/query functions (task-4172) ---
+    #[test]
+    fn completions_include_wired_transform_query_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(
+            func_labels.contains(&"apply_transform"),
+            "should include 'apply_transform'"
+        );
+        assert!(
+            func_labels.contains(&"project"),
+            "should include 'project'"
+        );
+        assert!(
+            func_labels.contains(&"orient_look_at"),
+            "should include 'orient_look_at'"
+        );
+        assert!(
+            func_labels.contains(&"is_closed"),
+            "should include 'is_closed'"
+        );
+        assert!(
+            func_labels.contains(&"is_connected"),
+            "should include 'is_connected'"
+        );
+        assert!(
+            func_labels.contains(&"is_bounded"),
+            "should include 'is_bounded'"
         );
     }
 }

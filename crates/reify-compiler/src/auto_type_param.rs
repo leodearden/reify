@@ -121,7 +121,7 @@
 //! when the module declares no `auto:` type-args). End-to-end source-level
 //! resolution is therefore live. Functions in this module remain unit-tested
 //! against compiler-built registries in addition to the integration coverage
-//! in `crates/reify-compiler/tests/auto_type_arg_lowering_tests.rs`.
+//! in `crates/reify-compiler/tests/harness_auto_binding/auto_type_arg_lowering_tests.rs`.
 //!
 //! Phase D (topology trigger / re-resolution on registry change) is
 //! explicitly deferred to a follow-up task.
@@ -636,6 +636,19 @@ pub fn enumerate_candidates(
             bounds_str = joined_bounds,
             names = names_list,
         );
+        // NOTE: severity is intentionally NOT pinned by any
+        // `dfs_phase_a_overflow_on_*_param` test — neither
+        // `dfs_phase_a_overflow_on_first_param_halts_before_recursion` nor
+        // `dfs_phase_a_overflow_on_second_param_halts_against_second_param`
+        // asserts on `diagnostics[0].severity` (the contract lives here, in
+        // production code, not in test coverage). A future refactor that
+        // flips `Diagnostic::error` below to `Diagnostic::warning` would be
+        // caught by none of the overflow tests — review such a change with
+        // care. The sibling `dfs_phase_a_empty_pool_on_first_param_halts_before_recursion`
+        // test does pin `Severity::Error`, but only for the separate
+        // `AutoTypeParamNoCandidate` diagnostic built by
+        // `emit_no_candidate_zero_rejections` on the empty-pool path — it is
+        // not a canary for this overflow construction site.
         diagnostics.push(
             Diagnostic::error(message)
                 .with_code(DiagnosticCode::AutoTypeParamPoolOverflow)
@@ -1061,9 +1074,7 @@ pub(crate) enum CtorSynthesisResult {
 ///
 /// Used by `auto_type_param_phase.rs` in the monomorph-build pass to fill the
 /// `default_expr` of type-param cells in the monomorphized clone.
-pub(crate) fn check_candidate_constructible(
-    candidate: &TopologyTemplate,
-) -> CtorSynthesisResult {
+pub(crate) fn check_candidate_constructible(candidate: &TopologyTemplate) -> CtorSynthesisResult {
     use reify_core::Type;
     use reify_ir::{CompiledExpr, StructureTypeId};
 
@@ -1092,13 +1103,18 @@ pub(crate) fn check_candidate_constructible(
         })
         .collect();
 
-    // Collect lets: non-`__count_`-prefixed Let cells with a default_expr.
-    // Mirrors the canonical lowering at expr.rs:1654-1669.
+    // Collect lets: non-`__count_`-prefixed, non-geometry Let cells with a
+    // default_expr. Mirrors the canonical lowering at expr.rs:1654-1669,
+    // including the γ (task #4954) `cell_type != Type::Geometry` exclusion —
+    // geometry lets emit a value cell now, but eagerly materializing it here
+    // would shift ctor cache identity beyond γ's ratified shape change.
     let lets: Vec<(String, CompiledExpr)> = candidate
         .value_cells
         .iter()
         .filter(|cell| {
-            cell.kind == ValueCellKind::Let && !cell.id.member.starts_with("__count_")
+            cell.kind == ValueCellKind::Let
+                && !cell.id.member.starts_with("__count_")
+                && cell.cell_type != Type::Geometry
         })
         .filter_map(|cell| {
             cell.default_expr
@@ -1575,8 +1591,7 @@ fn emit_fallback_warning_and_delegate_to_bfs(
         let mut full_value_map = reify_ir::ValueMap::new();
         for (param_name, candidate_name) in &outcome.substitution {
             if let Some(param_member) = param_type_member(parameterized_template, param_name)
-                && let Some(&candidate_template) =
-                    template_registry.get(candidate_name.as_str())
+                && let Some(&candidate_template) = template_registry.get(candidate_name.as_str())
             {
                 let seed = seed_candidate_value_map(candidate_template, param_member);
                 for (k, v) in seed.iter() {
@@ -2517,8 +2532,12 @@ fn emit_unevaluated_constraint_warnings(
     // Sort for deterministic emission order (HashSet iteration is unordered).
     let mut sorted_pairs: Vec<_> = pairs.into_iter().collect();
     sorted_pairs.sort_by(|a, b| {
-        (&a.0.entity, a.0.index, &a.1.entity, &a.1.member)
-            .cmp(&(&b.0.entity, b.0.index, &b.1.entity, &b.1.member))
+        (&a.0.entity, a.0.index, &a.1.entity, &a.1.member).cmp(&(
+            &b.0.entity,
+            b.0.index,
+            &b.1.entity,
+            &b.1.member,
+        ))
     });
 
     for (constraint_id, cell_id) in sorted_pairs {
@@ -2983,9 +3002,9 @@ mod helper_tests {
         check_constraints_leaf, collect_unevaluated_constraint_cell_pairs, dfs_search,
     };
     use crate::TopologyTemplate;
-    use reify_test_support::MockConstraintChecker;
     use reify_core::{ConstraintNodeId, Type};
     use reify_ir::{CompiledFunction, Satisfaction, Value};
+    use reify_test_support::MockConstraintChecker;
 
     fn literal_expr() -> reify_ir::CompiledExpr {
         reify_ir::CompiledExpr::literal(Value::Bool(true), Type::Bool)
@@ -3540,10 +3559,7 @@ mod helper_tests {
         let clearance_default = reify_ir::CompiledExpr::binop(
             BinOp::Sub,
             reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length()),
-            reify_ir::CompiledExpr::literal(
-                reify_ir::Value::length(0.0005),
-                Type::length(),
-            ),
+            reify_ir::CompiledExpr::literal(reify_ir::Value::length(0.0005), Type::length()),
             Type::length(),
         );
         // bore_radius = 10mm: literal default
@@ -3552,13 +3568,11 @@ mod helper_tests {
 
         // c0: constraint referencing clearance (non-literal cell)
         let c0_id = ConstraintNodeId::new("Bearing", 0);
-        let expr_c0 =
-            reify_ir::CompiledExpr::value_ref(clearance_id.clone(), Type::length());
+        let expr_c0 = reify_ir::CompiledExpr::value_ref(clearance_id.clone(), Type::length());
 
         // c1: constraint referencing bore_radius (literal cell)
         let c1_id = ConstraintNodeId::new("Bearing", 1);
-        let expr_c1 =
-            reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length());
+        let expr_c1 = reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length());
 
         let template = make_topology_template(
             "Bearing",

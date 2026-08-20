@@ -174,16 +174,20 @@ pub(crate) fn is_selector_expr(
                 // explicitly here; without this, `let s = faces_perpendicular_to(b,..)`
                 // would route to the CSG geometry-let path and never mint a
                 // Value::Selector.
-                "faces_perpendicular_to" | "edges_perpendicular_to" | "faces_by_surface_kind"
-                | "edges_by_curve_kind" | "extremal_by_bbox" | "extremal_by_centroid" => true,
+                "faces_perpendicular_to"
+                | "edges_perpendicular_to"
+                | "faces_by_surface_kind"
+                | "edges_by_curve_kind"
+                | "extremal_by_bbox"
+                | "extremal_by_centroid" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
                 // "intersect" is not a geometry function (never reached CSG path), but
                 // we still validate that its operands look like selectors for clarity.
-                "union" | "intersect" | "difference" => {
-                    args.iter().any(|arg| is_selector_expr(arg, functions, known_selector_lets))
-                }
+                "union" | "intersect" | "difference" => args
+                    .iter()
+                    .any(|arg| is_selector_expr(arg, functions, known_selector_lets)),
                 _ => false,
             }
         }
@@ -229,7 +233,9 @@ pub(crate) fn is_geometry_let(
             // a silent Undef via the selector path.
             let is_selector_composition =
                 matches!(name.as_str(), "union" | "intersect" | "difference")
-                    && args.iter().any(|a| is_selector_expr(a, functions, known_selector_lets));
+                    && args
+                        .iter()
+                        .any(|a| is_selector_expr(a, functions, known_selector_lets));
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
                 && !is_kinematic_sweep
@@ -246,13 +252,27 @@ pub(crate) fn is_geometry_let(
             else_branch,
             ..
         } => {
-            is_geometry_let(then_branch, functions, known_geometry_lets, known_selector_lets)
-                || is_geometry_let(else_branch, functions, known_geometry_lets, known_selector_lets)
+            is_geometry_let(
+                then_branch,
+                functions,
+                known_geometry_lets,
+                known_selector_lets,
+            ) || is_geometry_let(
+                else_branch,
+                functions,
+                known_geometry_lets,
+                known_selector_lets,
+            )
         }
         // Match — see rustdoc above for rationale (task 3418).
-        reify_ast::ExprKind::Match { arms, .. } => arms
-            .iter()
-            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets, known_selector_lets)),
+        reify_ast::ExprKind::Match { arms, .. } => arms.iter().any(|arm| {
+            is_geometry_let(
+                &arm.body,
+                functions,
+                known_geometry_lets,
+                known_selector_lets,
+            )
+        }),
         // Future branching/wrapping ExprKinds (e.g. pipe expressions,
         // try/else-style fallbacks) extend here with the same
         // any-sub-yields-geometry pattern.  Note: ExprKind has no Block variant
@@ -269,10 +289,11 @@ pub(crate) fn is_geometry_let(
 fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply"
-        | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "extrude_infinite"
+        | "circular_pattern" | "linear_pattern" | "mirror" | "arbitrary_pattern"
+        | "linear_pattern_2d" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
         | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
-        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
+        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" | "isosurface" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -402,9 +423,7 @@ fn resolve_loft_like_args(
 /// AST shape.  Callers apply their own domain-specific filters on top (e.g. the
 /// `collection_sub_names` check in `try_resolve_cross_sub_geom_ref`, or the
 /// `try_emit_cross_sub_geometry` call in `geometry_boolean.rs`).
-pub(crate) fn match_self_sub_member(
-    expr: &reify_ast::Expr,
-) -> Option<(&str, &str)> {
+pub(crate) fn match_self_sub_member(expr: &reify_ast::Expr) -> Option<(&str, &str)> {
     if let reify_ast::ExprKind::MemberAccess { object, member } = &expr.kind
         && let reify_ast::ExprKind::MemberAccess {
             object: inner_obj,
@@ -518,9 +537,7 @@ fn are_scalar_equal(a: &reify_ast::Expr, b: &reify_ast::Expr) -> bool {
                 is_real: rb,
             },
         ) => va == vb && ra == rb,
-        (reify_ast::ExprKind::BoolLiteral(va), reify_ast::ExprKind::BoolLiteral(vb)) => {
-            va == vb
-        }
+        (reify_ast::ExprKind::BoolLiteral(va), reify_ast::ExprKind::BoolLiteral(vb)) => va == vb,
         (reify_ast::ExprKind::Ident(na), reify_ast::ExprKind::Ident(nb)) => na == nb,
         _ => false,
     }
@@ -595,32 +612,30 @@ fn merge_branches(
     // to a (potentially geometry-typed) expression so the outer match can
     // compare geometry constructors.
     let a_owned;
-    let a_eff: &reify_ast::Expr =
-        if let reify_ast::ExprKind::Conditional {
-            condition: c2,
-            then_branch: t2,
-            else_branch: e2,
-        } = &a.kind
-        {
-            a_owned = merge_branches(c2, t2, e2, functions, a.span);
-            &a_owned
-        } else {
-            a
-        };
+    let a_eff: &reify_ast::Expr = if let reify_ast::ExprKind::Conditional {
+        condition: c2,
+        then_branch: t2,
+        else_branch: e2,
+    } = &a.kind
+    {
+        a_owned = merge_branches(c2, t2, e2, functions, a.span);
+        &a_owned
+    } else {
+        a
+    };
 
     let b_owned;
-    let b_eff: &reify_ast::Expr =
-        if let reify_ast::ExprKind::Conditional {
-            condition: c2,
-            then_branch: t2,
-            else_branch: e2,
-        } = &b.kind
-        {
-            b_owned = merge_branches(c2, t2, e2, functions, b.span);
-            &b_owned
-        } else {
-            b
-        };
+    let b_eff: &reify_ast::Expr = if let reify_ast::ExprKind::Conditional {
+        condition: c2,
+        then_branch: t2,
+        else_branch: e2,
+    } = &b.kind
+    {
+        b_owned = merge_branches(c2, t2, e2, functions, b.span);
+        &b_owned
+    } else {
+        b
+    };
 
     if let (
         reify_ast::ExprKind::FunctionCall {
@@ -857,6 +872,215 @@ fn check_profile_preconditions(
     }
 }
 
+/// Fold a compiled scalar arg to its constant SI value when it is a literal
+/// dimensioned quantity — the `CompiledExprKind::Literal(Value::Scalar{si_value,..})`
+/// shape produced for source quantity literals like `40mm` (see `expr.rs`'s
+/// `QuantityLiteral` handling) — or simple constant arithmetic over such
+/// literals (`Add`/`Sub`/`Mul` where both operands themselves fold, e.g.
+/// `10mm + 15mm`), so an arithmetic-expressed but still statically-constant
+/// violation isn't silently waved through. Mirrors `expr.rs`'s
+/// `const_numeric_value` recursive-fold idiom, scoped down to the
+/// dimensioned-literal base case this call site needs. Returns `None` for
+/// any non-constant (e.g. param-driven `ValueRef`) sub-expression, which
+/// callers must skip rather than false-flag.
+fn const_length_m(expr: &CompiledExpr) -> Option<f64> {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => Some(*si_value),
+        CompiledExprKind::BinOp { op, left, right } => {
+            let l = const_length_m(left)?;
+            let r = const_length_m(right)?;
+            match op {
+                BinOp::Add => Some(l + r),
+                BinOp::Sub => Some(l - r),
+                BinOp::Mul => Some(l * r),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Best-effort compile-time constraint check shared by `rounded_box` and
+/// `rounded_rect`: `corner_r > 0` and `2*corner_r < min(width, depth)`. Only
+/// fires when width/depth/corner_r all fold to constant literals
+/// (`const_length_m`); param-driven args cannot be checked statically and are
+/// silently skipped rather than false-flagged. Pushes a designer-readable
+/// `Diagnostic::error` naming the concrete offending SI values (metres) on
+/// violation. Returns `false` iff a diagnostic was pushed — callers should
+/// abort the arm (`return None`) in that case.
+fn validate_rounded_corner_constraint(
+    name: &str,
+    width: &CompiledExpr,
+    depth: &CompiledExpr,
+    corner_r: &CompiledExpr,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let (Some(w), Some(d), Some(r)) = (
+        const_length_m(width),
+        const_length_m(depth),
+        const_length_m(corner_r),
+    ) else {
+        // At least one arg is param-driven (non-constant) — cannot check statically.
+        return true;
+    };
+
+    if r <= 0.0 {
+        diagnostics.push(
+            Diagnostic::error(format!("{name}: corner_r must be > 0, got {r}m"))
+                .with_label(DiagnosticLabel::new(span, "corner_r must be positive")),
+        );
+        return false;
+    }
+
+    let min_wd = w.min(d);
+    if 2.0 * r >= min_wd {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "{name}: 2*corner_r ({}m) must be < min(width, depth) ({}m)",
+                2.0 * r,
+                min_wd
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                "corner radius too large for width/depth",
+            )),
+        );
+        return false;
+    }
+
+    true
+}
+
+/// Derived corner-position expressions shared by the `rounded_box` /
+/// `rounded_rect` boolean-compose lowering: the two reduced-dimension
+/// lengths (`width - 2*corner_r`, `depth - 2*corner_r`) used for the two
+/// "body" solids/profiles, and the two corner-centre half-offsets
+/// (`width/2 - corner_r`, `depth/2 - corner_r`) used to translate each
+/// corner primitive into place. Built with the same
+/// `CompiledExpr::binop(.., dimensionless factor, ..)` idiom as
+/// `zone_annulus`/`cylinder_centered`.
+struct RoundedCornerDims {
+    width_minus_2r: CompiledExpr,
+    depth_minus_2r: CompiledExpr,
+    half_width_minus_r: CompiledExpr,
+    half_depth_minus_r: CompiledExpr,
+}
+
+fn rounded_corner_dims(
+    width: &CompiledExpr,
+    depth: &CompiledExpr,
+    corner_r: &CompiledExpr,
+) -> RoundedCornerDims {
+    let half = CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar());
+    let two = CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar());
+
+    // two_r = corner_r * 2
+    let two_r = CompiledExpr::binop(BinOp::Mul, corner_r.clone(), two, corner_r.result_type.clone());
+    // depth_minus_2r = depth - 2*corner_r ; width_minus_2r = width - 2*corner_r
+    let depth_minus_2r =
+        CompiledExpr::binop(BinOp::Sub, depth.clone(), two_r.clone(), depth.result_type.clone());
+    let width_minus_2r =
+        CompiledExpr::binop(BinOp::Sub, width.clone(), two_r, width.result_type.clone());
+
+    // half_width_minus_r = width/2 - corner_r ; half_depth_minus_r = depth/2 - corner_r
+    let half_width =
+        CompiledExpr::binop(BinOp::Mul, width.clone(), half.clone(), width.result_type.clone());
+    let half_depth =
+        CompiledExpr::binop(BinOp::Mul, depth.clone(), half.clone(), depth.result_type.clone());
+    let half_width_minus_r =
+        CompiledExpr::binop(BinOp::Sub, half_width, corner_r.clone(), width.result_type.clone());
+    let half_depth_minus_r =
+        CompiledExpr::binop(BinOp::Sub, half_depth, corner_r.clone(), depth.result_type.clone());
+
+    RoundedCornerDims {
+        width_minus_2r,
+        depth_minus_2r,
+        half_width_minus_r,
+        half_depth_minus_r,
+    }
+}
+
+/// Shared corner-op + left-folded `Boolean{Union}` emission for
+/// `rounded_box`/`rounded_rect`: pushes `body_a`, `body_b`, then for each of
+/// the 4 plan-view corner signs `(±,±)` pushes `corner_op()` immediately
+/// followed by a `Transform{Translate}` to
+/// `(±half_width_minus_r, ±half_depth_minus_r, dz)`, then left-folds a
+/// `Boolean{Union}` chain over all 6 ops — mirroring the
+/// `zone_annulus`/`zone_profile` multi-op compose + `step_offset +
+/// sub_ops.len()` index-tracking idiom. The final `Union` (the last element
+/// of the returned `Vec`) is the realization root. `dz` is cloned across all
+/// 4 corners by the caller, and is LENGTH-dimensioned from both: a
+/// `-(height/2)` product for `rounded_box`'s solid cylinders, a
+/// `Literal(Scalar{LENGTH, 0.0})` for `rounded_rect`'s planar circles.
+#[allow(clippy::too_many_arguments)]
+fn emit_rounded_union_compose(
+    mut sub_ops: Vec<CompiledGeometryOp>,
+    step_offset: usize,
+    dims: &RoundedCornerDims,
+    width_ty: &reify_core::Type,
+    depth_ty: &reify_core::Type,
+    body_a: CompiledGeometryOp,
+    body_b: CompiledGeometryOp,
+    corner_op: impl Fn() -> CompiledGeometryOp,
+    dz: &CompiledExpr,
+) -> Vec<CompiledGeometryOp> {
+    // signed(base, sign) = base * sign — reused for dx/dy on each corner.
+    let signed = |base: &CompiledExpr, sign: f64, ty: &reify_core::Type| {
+        CompiledExpr::binop(
+            BinOp::Mul,
+            base.clone(),
+            CompiledExpr::literal(Value::Real(sign), reify_core::Type::dimensionless_scalar()),
+            ty.clone(),
+        )
+    };
+
+    sub_ops.push(body_a);
+    let body_a_step = step_offset + sub_ops.len() - 1;
+
+    sub_ops.push(body_b);
+    let body_b_step = step_offset + sub_ops.len() - 1;
+
+    // 4 corner ops + translate: (+,+), (+,-), (-,+), (-,-)
+    let corner_signs = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)];
+    let mut translate_steps = Vec::with_capacity(4);
+    for (sx, sy) in corner_signs {
+        sub_ops.push(corner_op());
+        let corner_step = step_offset + sub_ops.len() - 1;
+
+        let dx = signed(&dims.half_width_minus_r, sx, width_ty);
+        let dy = signed(&dims.half_depth_minus_r, sy, depth_ty);
+        sub_ops.push(CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(corner_step),
+            args: vec![
+                ("dx".to_string(), dx),
+                ("dy".to_string(), dy),
+                ("dz".to_string(), dz.clone()),
+            ],
+        });
+        translate_steps.push(step_offset + sub_ops.len() - 1);
+    }
+
+    // Union chain: A ∪ B, then ∪ C1 .. ∪ C4 (left fold; last op is the root).
+    sub_ops.push(CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(body_a_step),
+        right: GeomRef::Step(body_b_step),
+    });
+    let mut acc_step = step_offset + sub_ops.len() - 1;
+    for t_step in translate_steps {
+        sub_ops.push(CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(acc_step),
+            right: GeomRef::Step(t_step),
+        });
+        acc_step = step_offset + sub_ops.len() - 1;
+    }
+
+    sub_ops
+}
+
 /// Compile a geometry function call expression into CompiledGeometryOps.
 ///
 /// Maps positional arguments to the named parameters expected by each primitive:
@@ -870,6 +1094,48 @@ fn check_profile_preconditions(
 /// index of the first op this call will emit in the flat step_handles array).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_geometry_call(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    step_offset: usize,
+    geometry_lets: &HashMap<&str, &reify_ast::Expr>,
+    visiting: &mut HashSet<String>,
+) -> Option<Vec<CompiledGeometryOp>> {
+    // Bound compiler expression-recursion depth (task #5337) — the SAME depth
+    // cap and on-demand stack growth used by compile_expr_guarded_with_expected,
+    // so the combined cross-function on-stack depth is bounded uniformly;
+    // rationale and tuning live in `crate::recursion_guard`. Past the cap this
+    // site returns None (the established geometry failure signal); the
+    // diagnostic is pushed by the guard.
+    crate::recursion_guard::with_recursion_guard(
+        expr.span,
+        diagnostics,
+        || None,
+        |diagnostics| {
+            compile_geometry_call_inner(
+                expr,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                step_offset,
+                geometry_lets,
+                visiting,
+            )
+        },
+    )
+}
+
+/// Inner body of [`compile_geometry_call`]. All recursion-depth bounding — the
+/// [`RecursionDepthGuard`](crate::recursion_guard::RecursionDepthGuard) cap and
+/// the `stacker::maybe_grow` on-demand stack growth — lives in that wrapper and
+/// is re-applied at every level because this body's recursive calls (directly,
+/// and via `compile_boolean_op`/`resolve_boolean_arg` and `compile_expr`) go
+/// back through the wrapper, never here.
+#[allow(clippy::too_many_arguments)]
+fn compile_geometry_call_inner(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_ir::EnumDef],
@@ -1230,10 +1496,25 @@ pub(crate) fn compile_geometry_call(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `height.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real`
+                // takes the Scalar×Real arm and preserves LENGTH. Retyping the factor
+                // to LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — numerically silent through `Value::as_f64()`, but
+                // rejected by the incoming eval-layer length gate. Pinned by
+                // crates/reify-compiler/tests/harness_geometry_solver/geometry_centered_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            // dx = dy = 0, LENGTH-dimensioned in anticipation of the eval-layer length
+            // gate (docs/prds/v0_6/units-length-gate-completion.md §8 α: "without it,
+            // cylinder_centered(5mm, 20mm) starts failing the moment translate dx/dy is
+            // gated"). That gate matches on the runtime Value's DimensionVector, so a
+            // bare Real(0.0) will not be accepted once it reaches these slots. TODAY
+            // Translate still reads dx/dy/dz via `Value::as_f64()`, which accepts Real
+            // and Scalar alike — so this is behaviour-preserving, not a behaviour change.
+            let zero = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
@@ -1334,9 +1615,10 @@ pub(crate) fn compile_geometry_call(
             }
             Some(vec![CompiledGeometryOp::Profile {
                 kind: ProfileKind::Circle,
-                args: vec![
-                    ("radius".to_string(), compiled_args.into_iter().next().unwrap()),
-                ],
+                args: vec![(
+                    "radius".to_string(),
+                    compiled_args.into_iter().next().unwrap(),
+                )],
             }])
         }
         // polygon(x1,y1, x2,y2, ...) → CompiledGeometryOp::Profile(Polygon)
@@ -1396,7 +1678,8 @@ pub(crate) fn compile_geometry_call(
         // Point on the boundary plane (px,py,pz) + outward normal (nx,ny,nz) toward
         // the retained material side. Unbounded (Bounded=false) — first Bounded=false producer.
         "half_space" => {
-            if !check_arg_count_exact("half_space", compiled_args.len(), 6, expr.span, diagnostics) {
+            if !check_arg_count_exact("half_space", compiled_args.len(), 6, expr.span, diagnostics)
+            {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -1484,7 +1767,9 @@ pub(crate) fn compile_geometry_call(
                 Some(sub_ops)
             } else {
                 push_labeled_arg_count_error(
-                    format!("circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"),
+                    format!(
+                        "circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"
+                    ),
                     expr.span,
                     diagnostics,
                 );
@@ -1547,9 +1832,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Pattern {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Linear2D,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("dx1".to_string(), it.next().unwrap()),
@@ -1563,30 +1849,50 @@ pub(crate) fn compile_geometry_call(
                     ("count2".to_string(), it.next().unwrap()),
                     ("spacing2".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
+        // arbitrary_pattern(target, transforms: List<Transform<3>>)  OR
         // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2, ...)
         "arbitrary_pattern" => {
-            if compiled_args.len() < 4 || !(compiled_args.len() - 1).is_multiple_of(3) {
+            let n = compiled_args.len();
+            if n == 2 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Arbitrary,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("transform_list".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else if n >= 4 && (n - 1).is_multiple_of(3) {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let mut args = vec![("target".to_string(), it.next().unwrap())];
+                let coords: Vec<_> = it.collect();
+                for (idx, chunk) in coords.chunks_exact(3).enumerate() {
+                    args.push((format!("t{}_dx", idx), chunk[0].clone()));
+                    args.push((format!("t{}_dy", idx), chunk[1].clone()));
+                    args.push((format!("t{}_dz", idx), chunk[2].clone()));
+                }
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Arbitrary,
+                    target,
+                    args,
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else {
                 diagnostics.push(Diagnostic::error(format!(
-                    "arbitrary_pattern() expects target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {}",
-                    compiled_args.len()
+                    "arbitrary_pattern() expects target + a List<Transform<3>> (2 args), or target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {n}"
                 )));
-                return None;
+                None
             }
-            let mut it = compiled_args.into_iter();
-            let mut args = vec![("target".to_string(), it.next().unwrap())];
-            let coords: Vec<_> = it.collect();
-            for (idx, chunk) in coords.chunks_exact(3).enumerate() {
-                args.push((format!("t{}_dx", idx), chunk[0].clone()));
-                args.push((format!("t{}_dy", idx), chunk[1].clone()));
-                args.push((format!("t{}_dz", idx), chunk[2].clone()));
-            }
-            Some(vec![CompiledGeometryOp::Pattern {
-                kind: PatternKind::Arbitrary,
-                target: GeomRef::Step(0),
-                args,
-            }])
         }
         // --- Sweeps ---
         // loft(profile1, profile2, ...)
@@ -1768,9 +2074,17 @@ pub(crate) fn compile_geometry_call(
             let ax = it.next().unwrap();
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
-            // Inject literal 2π for the angle
-            let tau_expr =
-                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::dimensionless_scalar());
+            // Inject literal 2π (radians) for the angle — ANGLE-dimensioned in
+            // anticipation of the eval-layer angle gate
+            // (docs/prds/v0_6/angle-units-surface-convergence.md, which owns all OTHER
+            // angle gating). TODAY `sweep_revolve` reads this slot via
+            // `Value::as_f64()`, which accepts Real and Scalar alike, so the retype is
+            // behaviour-preserving. `Value::angle` takes radians and the SI angle base
+            // unit IS the radian, so si_value == TAU exactly.
+            let tau_expr = CompiledExpr::literal(
+                Value::angle(std::f64::consts::TAU),
+                reify_core::Type::angle(),
+            );
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -1948,10 +2262,7 @@ pub(crate) fn compile_geometry_call(
             let radius = CompiledExpr::binop(
                 BinOp::Mul,
                 width.clone(),
-                CompiledExpr::literal(
-                    Value::Real(0.5),
-                    reify_core::Type::dimensionless_scalar(),
-                ),
+                CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar()),
                 width.result_type.clone(),
             );
             let op = CompiledGeometryOp::Sweep {
@@ -1995,9 +2306,9 @@ pub(crate) fn compile_geometry_call(
             );
             let mut iter = compiled_args.into_iter();
             let _axis = iter.next().unwrap(); // arg0: axis (geometry; path_ref handles geometry side)
-            let r = iter.next().unwrap();     // arg1: nominal_radius (Length)
-            let w = iter.next().unwrap();     // arg2: zone width (Length)
-            let _l = iter.next().unwrap();    // arg3: zone length (validated; axis wire supplies extent)
+            let r = iter.next().unwrap(); // arg1: nominal_radius (Length)
+            let w = iter.next().unwrap(); // arg2: zone width (Length)
+            let _l = iter.next().unwrap(); // arg3: zone length (validated; axis wire supplies extent)
 
             // half_w = w * 0.5  (same Length dimension)
             let half_w = CompiledExpr::binop(
@@ -2007,18 +2318,9 @@ pub(crate) fn compile_geometry_call(
                 w.result_type.clone(),
             );
             // outer_r = R + w/2, inner_r = R - w/2
-            let outer_r = CompiledExpr::binop(
-                BinOp::Add,
-                r.clone(),
-                half_w.clone(),
-                r.result_type.clone(),
-            );
-            let inner_r = CompiledExpr::binop(
-                BinOp::Sub,
-                r.clone(),
-                half_w,
-                r.result_type.clone(),
-            );
+            let outer_r =
+                CompiledExpr::binop(BinOp::Add, r.clone(), half_w.clone(), r.result_type.clone());
+            let inner_r = CompiledExpr::binop(BinOp::Sub, r.clone(), half_w, r.result_type.clone());
 
             // Track absolute step indices for the Boolean Difference.
             let outer_step = step_offset + sub_ops.len(); // step after axis wire
@@ -2062,7 +2364,7 @@ pub(crate) fn compile_geometry_call(
             }
             let mut iter = compiled_args.into_iter();
             let solid_expr = iter.next().unwrap(); // arg0: solid (geometry; also compiled as scalar)
-            let w = iter.next().unwrap();           // arg1: zone width (Length)
+            let w = iter.next().unwrap(); // arg1: zone width (Length)
 
             let solid_target = geom_ref(0); // the input solid
 
@@ -2074,9 +2376,21 @@ pub(crate) fn compile_geometry_call(
                 w.result_type.clone(),
             );
             // minus_offset = -w/2 = w * (-0.5)
+            // NOTE: the units-length PRD
+            // (docs/prds/v0_6/units-length-gate-completion.md §8 α / §4 M1 / §2 anchor
+            // table) attributes this `-0.5` to `rounded_box`'s corner dz. It is
+            // `zone_profile`'s `minus_offset`, and it must NOT be retyped — see the
+            // invariant below.
             let minus_offset = CompiledExpr::binop(
                 BinOp::Mul,
                 w.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `w.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real` takes
+                // the Scalar×Real arm and preserves LENGTH. Retyping the factor to
+                // LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — rejected by the incoming eval-layer length gate.
+                // Pinned by crates/reify-compiler/tests/rounded_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 w.result_type.clone(),
             );
@@ -2107,15 +2421,201 @@ pub(crate) fn compile_geometry_call(
             });
             Some(sub_ops)
         }
+        // rounded_box(width, depth, height, corner_r) — a rectangular prism
+        // with the 4 vertical (plan-view) edges rounded to radius corner_r.
+        // Origin-centred on all 3 axes (matches box_centered's anchor).
+        //
+        // No new FFI and no curated-fillet dependency: the 3-arg curated
+        // `fillet(target, edges, radius)` resolves its `edges` Selector
+        // against a NAMED geometry realization (see the task-4668 comment
+        // above on "one let = one realization"), but here the box is an
+        // anonymous `GeomRef::Step` sub-op with no named let — fillet-compose
+        // cannot be synthesised inside a single-expression lowering. Lowered
+        // instead as a boolean-union compose of 6 origin-centred solids via
+        // the shared `emit_rounded_union_compose` helper (see its doc for the
+        // op-emission order/shape), mirroring zone_annulus/zone_profile's
+        // multi-op compose + step-index tracking idiom:
+        //
+        //   Box A = box(width, depth-2r, height)  — x∈[-w/2,w/2],       y∈[-(d/2-r),d/2-r]
+        //   Box B = box(width-2r, depth, height)  — x∈[-(w/2-r),w/2-r], y∈[-d/2,d/2]
+        //   4x cylinder(corner_r, height), each Translated to a corner centre
+        //   (±(w/2-r), ±(d/2-r), dz=-(height/2)) — same dz shape as cylinder_centered.
+        "rounded_box" => {
+            if !check_arg_count_exact("rounded_box", compiled_args.len(), 4, expr.span, diagnostics)
+            {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let width = it.next().unwrap();
+            let depth = it.next().unwrap();
+            let height = it.next().unwrap();
+            let corner_r = it.next().unwrap();
+
+            if !validate_rounded_corner_constraint(
+                "rounded_box",
+                &width,
+                &depth,
+                &corner_r,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+
+            let dims = rounded_corner_dims(&width, &depth, &corner_r);
+
+            // dz (all 4 corner cylinders) = -(height / 2) — same shape as cylinder_centered.
+            let dz = CompiledExpr::binop(
+                BinOp::Mul,
+                height.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `height.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real`
+                // takes the Scalar×Real arm and preserves LENGTH. Retyping the factor
+                // to LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — rejected by the incoming eval-layer length gate.
+                // Pinned by crates/reify-compiler/tests/rounded_primitives_tests.rs.
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
+                height.result_type.clone(),
+            );
+
+            // Box A: box(width, depth-2r, height)
+            let body_a = CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), width.clone()),
+                    ("height".to_string(), dims.depth_minus_2r.clone()),
+                    ("depth".to_string(), height.clone()),
+                ],
+            };
+            // Box B: box(width-2r, depth, height)
+            let body_b = CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), dims.width_minus_2r.clone()),
+                    ("height".to_string(), depth.clone()),
+                    ("depth".to_string(), height.clone()),
+                ],
+            };
+            // Corner op: cylinder(corner_r, height), re-emitted once per corner.
+            let corner_radius = corner_r.clone();
+            let corner_height = height.clone();
+            let corner_op = move || CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Cylinder,
+                args: vec![
+                    ("radius".to_string(), corner_radius.clone()),
+                    ("height".to_string(), corner_height.clone()),
+                ],
+            };
+
+            sub_ops = emit_rounded_union_compose(
+                sub_ops,
+                step_offset,
+                &dims,
+                &width.result_type,
+                &depth.result_type,
+                body_a,
+                body_b,
+                corner_op,
+                &dz,
+            );
+
+            Some(sub_ops)
+        }
+        // rounded_rect(width, depth, corner_r) — the planar rounded-rectangle
+        // face (2D analogue of rounded_box, for extrude/sweep flows). Origin-
+        // centred in the XY plane at z=0 (matches rectangle's anchor).
+        //
+        // Same boolean-union compose as rounded_box (via the shared
+        // `emit_rounded_union_compose` helper), minus the height axis:
+        //
+        //   Rect A = rectangle(width, depth-2r)  — x∈[-w/2,w/2],       y∈[-(d/2-r),d/2-r]
+        //   Rect B = rectangle(width-2r, depth)  — x∈[-(w/2-r),w/2-r], y∈[-d/2,d/2]
+        //   4x circle(corner_r), each Translated to a corner centre
+        //   (±(w/2-r), ±(d/2-r), dz=0) — planar, no z-offset.
+        "rounded_rect" => {
+            if !check_arg_count_exact(
+                "rounded_rect",
+                compiled_args.len(),
+                3,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let width = it.next().unwrap();
+            let depth = it.next().unwrap();
+            let corner_r = it.next().unwrap();
+
+            if !validate_rounded_corner_constraint(
+                "rounded_rect",
+                &width,
+                &depth,
+                &corner_r,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+
+            let dims = rounded_corner_dims(&width, &depth, &corner_r);
+            // dz (all 4 corner circles) = 0 — planar, no z-offset. LENGTH-dimensioned
+            // even though it is zero, in anticipation of the eval-layer length gate
+            // (docs/prds/v0_6/units-length-gate-completion.md §8 α), which matches on
+            // the runtime Value's DimensionVector rather than on `result_type`. TODAY
+            // Translate reads dz via `Value::as_f64()`, which accepts Real and Scalar
+            // alike — so this is behaviour-preserving, not a behaviour change.
+            let dz = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
+
+            // Rect A: rectangle(width, depth-2r)
+            let body_a = CompiledGeometryOp::Profile {
+                kind: ProfileKind::Rectangle,
+                args: vec![
+                    ("width".to_string(), width.clone()),
+                    ("height".to_string(), dims.depth_minus_2r.clone()),
+                ],
+            };
+            // Rect B: rectangle(width-2r, depth)
+            let body_b = CompiledGeometryOp::Profile {
+                kind: ProfileKind::Rectangle,
+                args: vec![
+                    ("width".to_string(), dims.width_minus_2r.clone()),
+                    ("height".to_string(), depth.clone()),
+                ],
+            };
+            // Corner op: circle(corner_r), re-emitted once per corner.
+            let corner_radius = corner_r.clone();
+            let corner_op = move || CompiledGeometryOp::Profile {
+                kind: ProfileKind::Circle,
+                args: vec![("radius".to_string(), corner_radius.clone())],
+            };
+
+            sub_ops = emit_rounded_union_compose(
+                sub_ops,
+                step_offset,
+                &dims,
+                &width.result_type,
+                &depth.result_type,
+                body_a,
+                body_b,
+                corner_op,
+                &dz,
+            );
+
+            Some(sub_ops)
+        }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => compile_transform_op(
-            name,
-            compiled_args,
-            geom_ref(0),
-            expr.span,
-            diagnostics,
-            sub_ops,
-        ),
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => {
+            compile_transform_op(
+                name,
+                compiled_args,
+                geom_ref(0),
+                expr.span,
+                diagnostics,
+                sub_ops,
+            )
+        }
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
@@ -2137,7 +2637,13 @@ pub(crate) fn compile_geometry_call(
         // nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)
         // → CompiledGeometryOp::Surface { kind: SurfaceKind::Nurbs, args }
         "nurbs_surface" => {
-            if !check_arg_count_exact("nurbs_surface", compiled_args.len(), 6, expr.span, diagnostics) {
+            if !check_arg_count_exact(
+                "nurbs_surface",
+                compiled_args.len(),
+                6,
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -2151,6 +2657,49 @@ pub(crate) fn compile_geometry_call(
                     ("u_degree".to_string(), it.next().unwrap()),
                     ("v_degree".to_string(), it.next().unwrap()),
                 ],
+            }])
+        }
+        // isosurface(grid) | isosurface(grid, iso) | isosurface(grid, iso, adaptive)
+        // → CompiledGeometryOp::Isosurface { grid, args } — marching-cubes
+        // extraction from a Voxel-repr grid operand (registered in
+        // geometry_arg_indices() at index 0, same silent-fallback convention
+        // as thicken/fillet/shell). `iso`/`adaptive` are optional named args
+        // forwarded positionally into `args`; their absence defers to
+        // eval-lowering defaults (iso_level=0.0, adaptive=false) rather than
+        // being defaulted here.
+        "isosurface" => {
+            if !check_arg_count_at_least(
+                "isosurface",
+                compiled_args.len(),
+                1,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            if compiled_args.len() > 3 {
+                push_labeled_arg_count_error(
+                    format!(
+                        "isosurface() expects at most 3 arguments (grid, iso, adaptive), got {}",
+                        compiled_args.len()
+                    ),
+                    expr.span,
+                    diagnostics,
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            it.next(); // grid — resolved via geom_ref(0) below, not carried in `args`.
+            let mut iso_args = Vec::new();
+            if let Some(iso_expr) = it.next() {
+                iso_args.push(("iso".to_string(), iso_expr));
+            }
+            if let Some(adaptive_expr) = it.next() {
+                iso_args.push(("adaptive".to_string(), adaptive_expr));
+            }
+            Some(vec![CompiledGeometryOp::Isosurface {
+                grid: geom_ref(0),
+                args: iso_args,
             }])
         }
         _ => {
@@ -2221,50 +2770,6 @@ pub(crate) fn unsupported_geometry_fn_message(name: &str) -> String {
 // added to one of the lists below, ensuring `geometry_arg_indices` is kept in
 // sync and geometry-arg resolution is not silently broken.
 
-// ─── Feature-tag derivation (task 2323) ──────────────────────────────────────
-
-/// Derive a parallel `Vec<FeatureTag>` for the given op stream.
-///
-/// Each tag carries the enclosing realization's `span`, the coarse `StepKind`
-/// classification of the op, and a zero-based `sub_index`.
-///
-/// The `match` is exhaustive over all `CompiledGeometryOp` variants so that
-/// adding a new variant forces a compile error here, keeping the mapping
-/// up-to-date (single source of truth, similar to `ModifyKind::ALL`).
-pub fn derive_feature_tags(
-    ops: &[CompiledGeometryOp],
-    span: reify_core::SourceSpan,
-) -> Vec<reify_ir::FeatureTag> {
-    let tags: Vec<_> = ops
-        .iter()
-        .enumerate()
-        .map(|(i, op)| {
-            let step_kind = match op {
-                CompiledGeometryOp::Primitive { .. } => reify_ir::StepKind::Primitive,
-                CompiledGeometryOp::Boolean { .. } => reify_ir::StepKind::Boolean,
-                CompiledGeometryOp::Modify { .. } => reify_ir::StepKind::Modify,
-                CompiledGeometryOp::Transform { .. } => reify_ir::StepKind::Transform,
-                CompiledGeometryOp::Pattern { .. } => reify_ir::StepKind::Pattern,
-                CompiledGeometryOp::Sweep { .. } => reify_ir::StepKind::Sweep,
-                CompiledGeometryOp::Curve { .. } => reify_ir::StepKind::Curve,
-                CompiledGeometryOp::Profile { .. } => reify_ir::StepKind::Profile,
-                CompiledGeometryOp::Surface { .. } => reify_ir::StepKind::Surface,
-            };
-            reify_ir::FeatureTag {
-                source_span: span,
-                step_kind,
-                sub_index: i as u32,
-            }
-        })
-        .collect();
-    // No debug_assert needed: `tags` is constructed by `.map(...).collect()` over
-    // `ops.iter()`, so it is structurally impossible for the lengths to diverge.
-    // The meaningful invariant — that the caller passes a feature_tags slice of the
-    // same length as operations when invoking execute_realization_ops — is enforced
-    // at the call site in engine_build.rs.
-    tags
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2326,23 +2831,19 @@ mod tests {
         use reify_ir::geometry::ParentRole;
         for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
             match d.parent_role {
-                ParentRole::Pair
-                | ParentRole::VariadicProfiles
-                | ParentRole::TopologySelector => continue,
+                ParentRole::Pair | ParentRole::VariadicProfiles | ParentRole::TopologySelector => {
+                    continue;
+                }
                 _ => {}
             }
             for &name in d.names {
                 let expect = expects_geom_arg(name, d.parent_role);
                 let got_empty = geometry_arg_indices(name).is_empty();
                 assert_eq!(
-                    got_empty,
-                    !expect,
+                    got_empty, !expect,
                     "geometry_arg_indices({:?}) emptiness={} but expects_geom_arg={} \
                      (parent_role={:?}) — update geometry_arg_indices or expects_geom_arg",
-                    name,
-                    got_empty,
-                    expect,
-                    d.parent_role
+                    name, got_empty, expect, d.parent_role
                 );
             }
         }
@@ -2411,30 +2912,31 @@ mod tests {
         );
     }
 
-    /// The three `expects_geom_arg` override names are pinned here with their exact
-    /// `geometry_arg_indices` slices, independently of `expects_geom_arg`.
+    /// The sole remaining `expects_geom_arg` override name (`pipe`) is pinned
+    /// here with its exact `geometry_arg_indices` slice, independently of
+    /// `expects_geom_arg`.
     ///
     /// `geometry_arg_indices_consistent_with_descriptor_table` routes the overrides
     /// through `expects_geom_arg`, so a coordinated-but-wrong joint edit to both
     /// functions would pass that test.  Direct pinning here provides an orthogonal
     /// check: this test fails if either function drifts in isolation OR if both are
     /// jointly edited to agree on a wrong value.
+    ///
+    /// `arbitrary_pattern` was a second override until task 4168, and
+    /// `linear_pattern_2d` was a third override until task 5009: both had their
+    /// target arg never registered in `geometry_arg_indices` (unlike sibling
+    /// Pattern-family functions `circular_pattern`/`linear_pattern`/`mirror`,
+    /// fixed by task 1715), so a nested-geometry target (e.g.
+    /// `arbitrary_pattern(box(...), ...)` / `linear_pattern_2d(box(...), ...)`)
+    /// silently fell back to a hardcoded `GeomRef::Step(0)` that could never
+    /// resolve at eval time. Both are now registered at index 0 like their
+    /// Pattern-family siblings.
     #[test]
     fn geometry_arg_indices_override_names_exact() {
         assert_eq!(
             geometry_arg_indices("pipe"),
             &[0usize],
             "pipe: profile geometry-ref arg must be at index 0"
-        );
-        assert_eq!(
-            geometry_arg_indices("linear_pattern_2d"),
-            &[] as &[usize],
-            "linear_pattern_2d: no geometry-ref arg (despite SingleTarget role)"
-        );
-        assert_eq!(
-            geometry_arg_indices("arbitrary_pattern"),
-            &[] as &[usize],
-            "arbitrary_pattern: no geometry-ref arg (despite SingleTarget role)"
         );
     }
 
@@ -2449,9 +2951,9 @@ mod tests {
     #[test]
     fn geometry_arg_indices_single_arg_ops_use_index_zero() {
         use reify_ir::geometry::ParentRole;
-        // Three names whose parent_role diverges from geom-arg usage; covered by
-        // geometry_arg_indices_override_names_exact.
-        const OVERRIDES: &[&str] = &["pipe", "linear_pattern_2d", "arbitrary_pattern"];
+        // One name (pipe) whose parent_role diverges from geom-arg usage; covered
+        // by geometry_arg_indices_override_names_exact.
+        const OVERRIDES: &[&str] = &["pipe"];
         for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
             match d.parent_role {
                 ParentRole::SingleTarget | ParentRole::SingleProfile => {}
@@ -2579,23 +3081,28 @@ mod tests {
     /// is expected to pass a geometry-ref argument to `geometry_arg_indices`.
     ///
     /// Default rule: `SingleTarget` and `SingleProfile` roles take a geometry arg.
-    /// Override set (three exceptions where `parent_role` diverges from
+    /// Override set (one exception where `parent_role` diverges from
     /// compile-time geom-ref arg parsing):
     /// - `"pipe"` (role `None`) takes a geometry arg (profile at index 0)
-    /// - `"linear_pattern_2d"` (role `SingleTarget`) takes no geometry arg
-    /// - `"arbitrary_pattern"` (role `SingleTarget`) takes no geometry arg
     ///
-    /// **Hand-maintained mirror:** the three overridden names must track
+    /// `"arbitrary_pattern"` was a second override until task 4168, and
+    /// `"linear_pattern_2d"` was a third override until task 5009: both were
+    /// registered in `geometry_arg_indices` at index 0 like their Pattern-family
+    /// siblings — both now follow the default `SingleTarget` rule below.
+    ///
+    /// **Hand-maintained mirror:** the overridden name must track
     /// `geometry_arg_indices`. If `geometry_arg_indices` is updated to add, remove,
-    /// or change the behaviour for `pipe`, `linear_pattern_2d`, or `arbitrary_pattern`,
-    /// the corresponding override arm in this function must be updated to match —
-    /// and the `expects_geom_arg_rule_and_overrides` test must be adjusted accordingly.
+    /// or change the behaviour for `pipe`, the corresponding override arm in this
+    /// function must be updated to match — and the
+    /// `expects_geom_arg_rule_and_overrides` test must be adjusted accordingly.
     fn expects_geom_arg(name: &str, parent_role: reify_ir::geometry::ParentRole) -> bool {
         use reify_ir::geometry::ParentRole;
         match name {
             "pipe" => true,
-            "linear_pattern_2d" | "arbitrary_pattern" => false,
-            _ => matches!(parent_role, ParentRole::SingleTarget | ParentRole::SingleProfile),
+            _ => matches!(
+                parent_role,
+                ParentRole::SingleTarget | ParentRole::SingleProfile
+            ),
         }
     }
 
@@ -2611,10 +3118,16 @@ mod tests {
         assert!(!expects_geom_arg("box", ParentRole::None));
         // Override: pipe is ParentRole::None but takes a geom arg.
         assert!(expects_geom_arg("pipe", ParentRole::None));
-        // Overrides: linear_pattern_2d and arbitrary_pattern are SingleTarget but
-        // take no geom arg.
-        assert!(!expects_geom_arg("linear_pattern_2d", ParentRole::SingleTarget));
-        assert!(!expects_geom_arg("arbitrary_pattern", ParentRole::SingleTarget));
+        // arbitrary_pattern (task 4168) now follows the default SingleTarget rule.
+        assert!(expects_geom_arg(
+            "arbitrary_pattern",
+            ParentRole::SingleTarget
+        ));
+        // linear_pattern_2d (task 5009) now also follows the default SingleTarget rule.
+        assert!(expects_geom_arg(
+            "linear_pattern_2d",
+            ParentRole::SingleTarget
+        ));
     }
 
     // ─── first_duplicate primitive (step-3, task-4672) ──────────────────────
@@ -3039,8 +3552,7 @@ mod tests {
     param c: Length = 1mm
     let result = loft_guided(a, b, c)
 }"#;
-        let parsed =
-            reify_syntax::parse(source, reify_core::ModulePath::single("test_lg_nongeom"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_lg_nongeom"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         // An op should still be produced with fallback GeomRef::Step refs
@@ -3095,7 +3607,12 @@ mod tests {
         // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::dimensionless_scalar()))
+                .map(|i| {
+                    CompiledExpr::literal(
+                        Value::Real(i as f64),
+                        reify_core::Type::dimensionless_scalar(),
+                    )
+                })
                 .collect()
         }
 
@@ -3423,6 +3940,290 @@ mod tests {
             },
             span: reify_core::SourceSpan::new(0, 1),
         }
+    }
+
+    /// The geometry-call recursion cap fires at `MAX_COMPILE_RECURSION_DEPTH`:
+    /// pre-seeding the shared thread-local with that many live guards makes a
+    /// trivial `box(1,1,1)` return `None` + the `ExpressionNestingTooDeep`
+    /// diagnostic, while without the pre-seed it compiles to `Some(ops)`.
+    /// Exercises the cap without real deep recursion (parallels the cegwe cap
+    /// test in expr.rs; the two share the thread-local counter).
+    #[test]
+    fn compile_geometry_call_recursion_cap_fires_past_max_depth() {
+        use crate::recursion_guard::{MAX_COMPILE_RECURSION_DEPTH, RecursionDepthGuard};
+
+        let box_expr = make_call_with_arity("box", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        // Baseline: box(1,1,1) compiles to Some(ops) with no too-deep diagnostic
+        // (proves the cap only fires past MAX, not on ordinary input).
+        {
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_geometry_call(
+                &box_expr,
+                &scope,
+                &enum_defs,
+                &functions,
+                &mut diagnostics,
+                0,
+                &geometry_lets,
+                &mut HashSet::new(),
+            );
+            assert!(
+                result.is_some(),
+                "box(1,1,1) should compile without the cap engaged; diags: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.code
+                    == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+                "no too-deep diagnostic without pre-seeded depth, got: {:?}",
+                diagnostics
+            );
+        }
+
+        // Cap: pre-seed MAX live guards so the compile_geometry_call entry pushes
+        // the depth to MAX+1 and the cap fires — None + the too-deep diagnostic.
+        let guards: Vec<RecursionDepthGuard> = (0..MAX_COMPILE_RECURSION_DEPTH)
+            .map(|_| RecursionDepthGuard::enter())
+            .collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_geometry_call(
+            &box_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+        assert!(
+            result.is_none(),
+            "cap should make compile_geometry_call return None once depth exceeds MAX"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "expected the ExpressionNestingTooDeep diagnostic, got: {:?}",
+            diagnostics
+        );
+
+        // Releasing the pre-seeded guards must return the shared counter to 0
+        // (and re-arm the report latch), so the NEXT compile on this thread is
+        // not permanently poisoned by a leaked count.
+        drop(guards);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_geometry_call(
+            &box_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+        assert!(
+            result.is_some(),
+            "a later compile on the same thread must not inherit the cap; diags: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "the depth counter must return to 0 once the guards drop, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Regression for the reported SIGSEGV (task #5337): compiling a deeply-
+    /// nested boolean-geometry expression on a small-stack embedder thread (the
+    /// GUI's 2 MB tokio worker) must NOT overflow the stack and abort the
+    /// process — it must bottom out at the depth cap and return `None` + an
+    /// `ExpressionNestingTooDeep` diagnostic instead.
+    ///
+    /// The nested AST is built PROGRAMMATICALLY in a loop (`difference(prev,
+    /// box(1,1,1))` ~1500 deep) rather than parsed from a source string — a deep
+    /// source would overflow the recursive-descent parser first, which is a
+    /// separate concern. 1500 ≫ `MAX_COMPILE_RECURSION_DEPTH` (256) and is deep
+    /// enough that the fat `compile_geometry_call` debug frames overflow a 2 MB
+    /// stack well before the cap fires *without* on-demand stack growth.
+    ///
+    /// PRE-FIX (before `stacker::maybe_grow` in step-10) this SIGSEGVs on the
+    /// 2 MB thread and aborts the test binary (the reproduced bug). POST-FIX the
+    /// stack grows on demand so the descent reaches the cap, which converts the
+    /// overflow into the clean diagnostic and the thread joins with
+    /// `(true, true)`.
+    #[test]
+    fn deeply_nested_boolean_geometry_does_not_overflow_2mb_stack() {
+        use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
+
+        // Depth well past the cap AND deep enough to overflow a 2 MB stack
+        // pre-fix (each level consumes fat compile_geometry_call debug frames).
+        const NEST_DEPTH: usize = 1500;
+        // Both operands are `const`, so this is compile-time foldable and a
+        // runtime `assert!` would trip `clippy::assertions_on_constants`; the
+        // `const` block pins the relationship at compile time instead.
+        const {
+            assert!(
+                NEST_DEPTH > MAX_COMPILE_RECURSION_DEPTH,
+                "the nesting depth must overshoot the cap for this to exercise it"
+            )
+        };
+
+        let handle = std::thread::Builder::new()
+            // 2 MiB = tokio's default worker-thread stack size, which is what
+            // the GUI compiles on (the synchronous `open_file_engine` Tauri
+            // command) because nothing under `gui/src-tauri` overrides
+            // `stack_size`/`thread_stack_size`.
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                // Build difference(difference(… box(1,1,1) …), box(1,1,1)) nested
+                // NEST_DEPTH deep. Construction is ITERATIVE (a loop), so it does
+                // not itself recurse — only *compilation* of the result recurses.
+                let mut nested = make_call_with_arity("box", 3);
+                for _ in 0..NEST_DEPTH {
+                    nested = reify_ast::Expr {
+                        kind: reify_ast::ExprKind::FunctionCall {
+                            name: "difference".to_string(),
+                            arg_names: vec![None, None],
+                            args: vec![nested, make_call_with_arity("box", 3)],
+                        },
+                        span: reify_core::SourceSpan::new(0, 1),
+                    };
+                }
+
+                let scope = CompilationScope::new("test");
+                let mut diags: Vec<Diagnostic> = vec![];
+                let result = compile_geometry_call(
+                    &nested,
+                    &scope,
+                    &[],
+                    &[],
+                    &mut diags,
+                    0,
+                    &HashMap::new(),
+                    &mut HashSet::new(),
+                );
+                let outcome = (
+                    result.is_none(),
+                    diags.iter().any(|d| {
+                        d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)
+                    }),
+                );
+
+                // The nested AST's `Drop` recurses NEST_DEPTH deep through the
+                // `Vec<Expr>` chain; leak it so a drop-time overflow cannot
+                // contaminate the result on this small stack. The thread is about
+                // to exit and the process reclaims the memory regardless.
+                // Drop-time recursion is itself an unguarded surface, deferred to
+                // the follow-up filed from this task's amendment pass
+                // (fused-memory ticket `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`).
+                std::mem::forget(nested);
+                outcome
+            })
+            .expect("spawn 2 MB compile thread");
+
+        match handle.join() {
+            Ok(outcome) => assert_eq!(
+                outcome,
+                (true, true),
+                "deeply-nested geometry must return None + an \
+                 ExpressionNestingTooDeep diagnostic on a 2 MB stack (post-fix)"
+            ),
+            Err(_) => panic!(
+                "the 2 MB compile thread panicked instead of returning cleanly"
+            ),
+        }
+    }
+
+    /// END-TO-END regression for the reported crash: real `.ri` **source**,
+    /// compiled through the **public `compile()` entry point**, on a 2 MiB
+    /// stack. This is the shape of the bug that was reported (the GUI opening
+    /// `designs/litter_tray/bottom_deck_split.ri`), as opposed to the
+    /// programmatically-built-AST tests above which drive internals directly.
+    ///
+    /// 64 nested `difference(…)` levels is the *rescue* band: comfortably below
+    /// `MAX_COMPILE_RECURSION_DEPTH`, so the correct outcome is a CLEAN compile
+    /// — but ~64 × ~143 KiB ≈ 9 MiB of compiler frames, far more than the 2 MiB
+    /// stack holds, so without `stacker::maybe_grow` this SIGSEGVs the test
+    /// binary exactly as the GUI did.
+    ///
+    /// Why the cap is not exercised end-to-end here: an expression deeper than
+    /// 256 trips `compile_builder::dot_chain_lint` / `shadow_lint`, whose own
+    /// `MAX_EXPR_DEPTH = 256` fires a deliberate `debug_assert!(false, …)` in
+    /// debug/test builds (they pre-walk the parsed module in `lib.rs`, before
+    /// expression compilation). So the >256 path through `compile()` panics in
+    /// a *lint* before this task's cap can answer, and only the internal-entry
+    /// tests above can pin the cap's diagnostic. Parse-time recursion (a deep
+    /// source overflows the recursive-descent parser, which is why the parse
+    /// below runs on its own big stack) and drop-time AST recursion are the two
+    /// other unguarded surfaces on this input class. All three are deferred to
+    /// the follow-up filed from this task's amendment pass (fused-memory ticket
+    /// `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`, escalation id
+    /// `agent-followup-5337-recursion-surfaces`), not fixed here.
+    #[test]
+    fn deeply_nested_geometry_source_compiles_via_public_api_on_2mb_stack() {
+        use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
+
+        const NEST_DEPTH: usize = 64;
+        const {
+            assert!(
+                NEST_DEPTH < MAX_COMPILE_RECURSION_DEPTH,
+                "this test must stay in the rescue band (below the cap): the \
+                 expected outcome is a clean compile, not a diagnostic"
+            )
+        };
+
+        let mut geom = "box(w, w, w)".to_string();
+        for _ in 0..NEST_DEPTH {
+            geom = format!("difference({geom}, box(w, w, w))");
+        }
+        let source = format!("structure S {{\n    param w: Length = 1mm\n    let g = {geom}\n}}");
+
+        // Parse on a deliberately large stack: the recursive-descent parser is
+        // NOT covered by this task's fix, and a deep source overflows it first.
+        let parsed = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || reify_syntax::parse(&source, reify_core::ModulePath::single("test")))
+            .expect("spawn parse thread")
+            .join()
+            .expect("the parser must not crash on this depth with a big stack");
+        assert!(
+            parsed.errors.is_empty(),
+            "the nested source must parse cleanly, got: {:?}",
+            parsed.errors
+        );
+
+        // Compile on tokio's default 2 MiB worker stack — the GUI's condition.
+        let diagnostics = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || crate::compile(&parsed).diagnostics)
+            .expect("spawn 2 MiB compile thread")
+            .join()
+            .expect("compiling nested geometry on a 2 MiB stack must not crash");
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "depth {NEST_DEPTH} is below the cap, so it must compile rather than \
+             be refused, got: {diagnostics:?}"
+        );
+        let errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "nested-but-under-cap geometry must compile without errors, got: {errors:?}"
+        );
     }
 
     /// `is_geometry_let` must classify the 2-arg CSG `sweep(profile, path)` as
@@ -4174,10 +4975,7 @@ mod tests {
 
     /// Helper: build a `Match` Expr from a discriminant Expr and a slice of arm body Exprs.
     /// Each arm gets a single string pattern ("X", "Y", "Z", ...) assigned in order.
-    fn make_match(
-        discriminant: reify_ast::Expr,
-        bodies: Vec<reify_ast::Expr>,
-    ) -> reify_ast::Expr {
+    fn make_match(discriminant: reify_ast::Expr, bodies: Vec<reify_ast::Expr>) -> reify_ast::Expr {
         let pattern_names = ["X", "Y", "Z", "W", "V"];
         let arms = bodies
             .into_iter()
@@ -4556,7 +5354,10 @@ mod tests {
                     assert_eq!(name, "box", "sub-arg {} should be box", i);
                     args
                 }
-                other => panic!("sub-arg {}: expected FunctionCall{{box}}, got {:?}", i, other),
+                other => panic!(
+                    "sub-arg {}: expected FunctionCall{{box}}, got {:?}",
+                    i, other
+                ),
             };
             assert_eq!(sub_args.len(), 3);
             for sub_arg in sub_args {
@@ -4915,7 +5716,10 @@ mod tests {
             }
             other => panic!("expected Primitive(Cone), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "cone(_, _, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "cone(_, _, _) must emit no diagnostics"
+        );
     }
 
     /// `cone(10mm, 5mm)` (2 args) must emit an arity diagnostic and return `None`.
@@ -4996,7 +5800,10 @@ mod tests {
             }
             other => panic!("expected Primitive(Wedge), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "wedge(_, _, _, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "wedge(_, _, _, _) must emit no diagnostics"
+        );
     }
 
     /// `wedge(10mm, 5mm, 20mm)` (3 args) must emit an arity diagnostic and return `None`.
@@ -5078,7 +5885,10 @@ mod tests {
             }
             other => panic!("expected Profile(Rectangle), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "rectangle(_, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "rectangle(_, _) must emit no diagnostics"
+        );
     }
 
     /// `rectangle(10mm)` (1 arg) must emit an arity diagnostic and return `None`.
@@ -5238,7 +6048,10 @@ mod tests {
             }
             other => panic!("expected Profile(Polygon), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "polygon with 6 args must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "polygon with 6 args must emit no diagnostics"
+        );
     }
 
     /// `polygon(0mm,0mm, 10mm,0mm, 10mm)` (5 args — odd, not multiple of 2) must
@@ -5355,7 +6168,10 @@ mod tests {
             }
             other => panic!("expected Profile(Ellipse), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "ellipse(_, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "ellipse(_, _) must emit no diagnostics"
+        );
     }
 
     /// `ellipse(10mm)` (1 arg) must emit an arity diagnostic and return `None`.
@@ -5432,13 +6248,23 @@ mod tests {
                 let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
                 assert_eq!(
                     names,
-                    vec!["control_points", "weights", "u_knots", "v_knots", "u_degree", "v_degree"],
+                    vec![
+                        "control_points",
+                        "weights",
+                        "u_knots",
+                        "v_knots",
+                        "u_degree",
+                        "v_degree"
+                    ],
                     "nurbs_surface arg names must be control_points / weights / u_knots / v_knots / u_degree / v_degree"
                 );
             }
             other => panic!("expected Surface(Nurbs), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "nurbs_surface(6 args) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "nurbs_surface(6 args) must emit no diagnostics"
+        );
     }
 
     /// `nurbs_surface(cp, w, uk, vk, ud)` (5 args, wrong arity) must emit an
@@ -5472,6 +6298,147 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "nurbs_surface with 5 args must emit at least one diagnostic"
+        );
+    }
+
+    // --- isosurface() compiler dispatch (task #4999, step-3 RED) ---
+
+    /// `isosurface` registers its sole geometry operand (the voxel grid) at
+    /// index 0 — same shape as the other SingleTarget ops (thicken, fillet, …).
+    ///
+    /// RED until step-4 adds `"isosurface" => &[0]` to `geometry_arg_indices`.
+    #[test]
+    fn geometry_arg_indices_isosurface_grid_only() {
+        assert_eq!(
+            geometry_arg_indices("isosurface"),
+            &[0],
+            "isosurface's only geometry-ref arg is the voxel grid at index 0"
+        );
+    }
+
+    /// Bare `isosurface(g)` (1 arg) must compile to a single
+    /// `CompiledGeometryOp::Isosurface { grid, args }` whose `args` is empty —
+    /// `iso`/`adaptive` are absent, deferring their defaults to eval-lowering.
+    ///
+    /// RED until step-4 adds `CompiledGeometryOp::Isosurface` and the
+    /// "isosurface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_isosurface_bare_1arg_returns_isosurface_with_empty_args() {
+        let expr = make_call_with_arity("isosurface", 1);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("isosurface(g) should produce ops");
+        assert_eq!(ops.len(), 1, "isosurface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Isosurface { grid, args } => {
+                // The lone arg is a bare NumberLiteral (not a nested geometry
+                // call), so it falls back to the silent-fallback convention
+                // shared by every single-geom-arg op (geom_ref(0) == Step(step_offset)).
+                assert_eq!(*grid, GeomRef::Step(0), "grid must resolve via geom_ref(0)");
+                assert!(
+                    args.is_empty(),
+                    "bare isosurface(g) must carry no iso/adaptive args, got {:?}",
+                    args
+                );
+            }
+            other => panic!("expected Isosurface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "isosurface(g) must emit no diagnostics"
+        );
+    }
+
+    /// Named `isosurface(g, iso: 5mm, adaptive: true)` (3 args) must carry both
+    /// `iso` and `adaptive` entries in `args`, in that order.
+    ///
+    /// RED until step-4 adds `CompiledGeometryOp::Isosurface` and the
+    /// "isosurface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_isosurface_named_3arg_carries_iso_and_adaptive() {
+        let expr = make_call_with_arity("isosurface", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("isosurface(g, iso, adaptive) should produce ops");
+        assert_eq!(ops.len(), 1, "isosurface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Isosurface { args, .. } => {
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["iso", "adaptive"],
+                    "named isosurface(g, iso, adaptive) must carry [iso, adaptive] in args"
+                );
+            }
+            other => panic!("expected Isosurface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "isosurface(g, iso, adaptive) must emit no diagnostics"
+        );
+    }
+
+    /// `isosurface()` (0 args, missing the required grid operand) must emit an
+    /// error-severity diagnostic and return None.
+    ///
+    /// RED until step-4 adds the "isosurface" dispatch arm's arity validation.
+    #[test]
+    fn compile_geometry_call_isosurface_missing_grid_arg_emits_diagnostic() {
+        let expr = make_call_with_arity("isosurface", 0);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "isosurface() with 0 args must return None (missing required grid operand)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "isosurface() with 0 args must emit at least one diagnostic"
         );
     }
 }

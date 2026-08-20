@@ -1,0 +1,30 @@
+module dcr_dimension_rejection_channel_fires
+
+// D3 decompose-phase REJECTION-MECHANISM binding for PRD
+// `docs/prds/v0_6/dimension-checked-readers.md` (every leaf that asserts
+// "a wrong-dimension reader argument is REJECTED").
+//
+// The PRD's whole emission design (§4, contract I4/I6) rests on the claim that a
+// `reify-stdlib` builtin can surface a coded, Error-severity DIMENSION rejection
+// through the pure post-hoc classifier path
+//   stackup.rs:31 len_scalar -> StackupError::DimMismatch (:194)
+//     -> Diagnostic::error("E_StackupDimMismatch: ...").with_code(...)  (:246)
+//     -> reify-expr/src/lib.rs:1973 -> EvalContext::diagnostics
+//     -> cmd_eval's Severity::Error exit gate (reify-cli/src/main.rs:1545)
+//
+// This fixture EXERCISES that shipped path with a MASS where a LENGTH is
+// required. MEASURED at decompose (2026-07-28, main efba5a8036):
+//   `reify eval`  -> EXIT 1, stderr "error: E_StackupDimMismatch: contributor
+//                    field must be a finite LENGTH scalar"
+//   `reify check` -> prints the SAME error and EXITS 0  (the INV-SF-2 outlier
+//                    that PRD 2 `check-diagnostic-truthfulness` owns — which is
+//                    exactly why every PRD-5 leaf signal is `reify eval`-phrased)
+//
+// The rejection capability this PRD extends therefore EXISTS and FIRES today;
+// PRD 5 widens it to ~13 more readers, it does not invent a new channel.
+
+structure def DcrDimensionRejectionChannelFires {
+    let good = contributor(10mm, 0.1mm)
+    let bad  = contributor(5kg, 0.1mm)
+    let s    = stackup_worst_case([good, bad])
+}

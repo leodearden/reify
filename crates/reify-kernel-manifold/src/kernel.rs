@@ -37,7 +37,8 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
+use reify_ir::geometry::MeshContractMode;
+use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, KernelHandle, KernelId, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -46,6 +47,17 @@ use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureI
 const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
     boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
     are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
+
+/// [`MeshInvariant::NonDegenerate`](reify_ir::geometry::MeshInvariant::NonDegenerate)
+/// twice-area epsilon used by the pre-ingest [`Mesh::validate`] call in
+/// [`manifold_from_reify_mesh`].
+///
+/// `0.0` rejects only *exactly*-zero-area triangles. `Manifold::from_mesh_f64`
+/// — the check this validation front-runs — does not reject small-but-nonzero-area
+/// triangles either, so this tolerance introduces no rejections beyond
+/// `from_mesh_f64`'s existing set: every mesh that ingested successfully before
+/// this validation was added still ingests successfully after.
+const MANIFOLD_INGEST_TOL: f64 = 0.0;
 
 /// A sub-element (planar face or edge segment) extracted from a parent
 /// Manifold mesh by [`GeometryKernel::extract_faces`] /
@@ -116,6 +128,28 @@ pub struct ManifoldKernel {
     /// given parent handle's mesh is immutable for the kernel's lifetime, so
     /// its coalesced faces never change — caching once is always correct.
     extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Per-parent-handle memoization cache for `extract_edges` results.
+    ///
+    /// Mirrors [`Self::extracted_faces`] above (see its doc for the full
+    /// rationale) and `OcctKernel`'s `extracted_edges` field
+    /// (`crates/reify-kernel-occt/src/lib.rs:460-461` + the cache-first /
+    /// mint-then-insert pattern at `:677-710`).  Maps parent handle id →
+    /// the `Vec<GeometryHandleId>` returned by the first `extract_edges` call
+    /// for that parent; subsequent calls return `cached.clone()` so ids are
+    /// stable across calls (required for `resolve_unique_by_attribute` to
+    /// match seeded attributes to candidate handles).  Landing this field
+    /// fixes a dormant re-instance of the #4262 defect (task η): before this
+    /// cache existed, `extract_edges` minted fresh `store_sub_shape` ids on
+    /// every call.
+    ///
+    /// # No invalidation needed
+    ///
+    /// Unlike OCCT (which invalidates on `with_warm_state` when its shape table
+    /// is swapped), `ManifoldKernel` has no warm-state/reset path and mints
+    /// handle ids monotonically over an **append-only** `shapes` store.  A
+    /// given parent handle's mesh is immutable for the kernel's lifetime, so
+    /// its canonical edges never change — caching once is always correct.
+    extracted_edges: HashMap<u64, Vec<GeometryHandleId>>,
 }
 
 impl ManifoldKernel {
@@ -126,6 +160,7 @@ impl ManifoldKernel {
             sub_shapes: HashMap::new(),
             next_id: 1,
             extracted_faces: HashMap::new(),
+            extracted_edges: HashMap::new(),
         }
     }
 
@@ -222,10 +257,96 @@ impl Default for ManifoldKernel {
 /// `unit_cube_manifold` test fixture. Keeping the weld here ensures both
 /// callers benefit automatically.
 ///
-/// Returns `Err(String)` (the `Debug` repr of the underlying manifold3d error)
-/// if the mesh is not a valid closed orientable manifold after welding, or if
-/// any triangle index references a vertex beyond the vertex array.
-pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> {
+/// # Pre-ingest contract validation (INV-GEO-1)
+///
+/// Immediately before handing the welded buffers to `Manifold::from_mesh_f64`,
+/// the *original* `mesh` is checked against [`Mesh::validate`] (tolerance
+/// [`MANIFOLD_INGEST_TOL`]). `validate` internally re-runs the same bit-exact
+/// position weld (pinned to `from_mesh_f64`'s default weld — see
+/// `docs/prds/kernel-seam-contracts.md` §13 Q2), so it evaluates the
+/// closed/consistently-wound obligations on the same quotient topology this
+/// function welds above. Under [`MeshContractMode::Enforce`] a violation
+/// short-circuits with `Err(GeometryError::MeshContractViolation { kernel:
+/// "manifold", invariant, counts, witness })` — a structured diagnostic that
+/// surfaces the failing obligation, per-category offender counts, and a
+/// concrete witness *earlier* than (and instead of) `from_mesh_f64`'s generic
+/// `NotManifold` error.
+///
+/// ## Enforcement mode (`REIFY_MESH_CONTRACT`)
+///
+/// This is the mode-reading wrapper: it resolves
+/// [`MeshContractMode::from_env`] once per call and delegates to
+/// [`manifold_from_reify_mesh_with_mode`], which carries the actual logic and
+/// is the seam the unit tests drive directly (env mutation is unsafe in Rust
+/// 2024 and race-prone across parallel tests, so mode-governed behavior is
+/// pinned through the explicit-mode entry point, never by setting the var).
+///
+/// `Enforce` is the default and the shipped posture. `REIFY_MESH_CONTRACT=warn`
+/// is the break-glass downgrade: the gate is bypassed with a `tracing::warn!`
+/// and the mesh falls through to `from_mesh_f64`, whose own defensive weld and
+/// `NotManifold` rejection still apply — warn mode never makes an invalid mesh
+/// *succeed*, it only forfeits the structured diagnostic.
+///
+/// ## Known hot-path cost (accepted)
+///
+/// `Mesh::validate` welds `mesh` a *second* time internally (its private
+/// `check_contract` re-derives the position-welded quotient via
+/// `Mesh::weld_positions` to evaluate the closed/wound obligations — the same
+/// quotient this function's own weld above already computed) and, on
+/// success, clones the entire vertex+index buffer to mint the `ValidatedMesh`
+/// witness, which this call site immediately discards (only `map_err` below
+/// is used). So every successful ingest currently pays one redundant O(n)
+/// weld plus one full-mesh clone on top of the weld this function performs.
+///
+/// `reify_ir::geometry::Mesh` exposes no by-reference, non-cloning contract
+/// check: `check_contract` is private, `validate` clones on success, and
+/// `into_validated` moves `self` — calling it here would require cloning
+/// `mesh` *before* the check even runs, strictly worse than `validate`'s
+/// clone-only-on-success behavior. Removing the redundancy needs a new
+/// `reify-ir` API (a non-cloning check, and/or threading this function's
+/// already-computed weld into the contract check instead of recomputing it)
+/// — out of scope for this file-scoped change (this task holds a lock on
+/// `kernel.rs` only).
+///
+/// TODO(#5166): track the non-cloning by-reference `Mesh` contract-check API
+/// (and/or weld-threading) as a follow-up task, so this accepted cost has a
+/// live citation instead of living only in prose.
+///
+/// The cost is accepted for now: it buys the structured
+/// `MeshContractViolation` diagnostic this call site exists to deliver.
+///
+/// Returns `Err(GeometryError::OperationFailed(_))` if a triangle index is out
+/// of range for the vertex array (weld-time bounds check) or if
+/// `from_mesh_f64` itself rejects the welded mesh after contract validation
+/// passed (e.g. a defect `Mesh::validate` doesn't check for).
+pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, GeometryError> {
+    // Task #5105 δ: resolve `REIFY_MESH_CONTRACT` ONCE per process, not once
+    // per ingest. This is the per-input Manifold ingest path — called once per
+    // boolean operand per build, and repeatedly under GUI live re-eval — and
+    // `std::env::var` takes the process-wide environment lock and allocates a
+    // `String` on every call. Caching matches how every other env knob in the
+    // codebase is resolved (`BuildScheduler::from_env` once at Engine
+    // construction, `long_chain_threshold_from_env` once per eval-loop entry);
+    // the break-glass knob is a deployment-time posture, so re-reading it
+    // mid-process would be meaningless anyway. The explicit-mode
+    // `manifold_from_reify_mesh_with_mode` seam the tests drive bypasses this
+    // cache entirely, so pinning either posture stays deterministic.
+    static MODE: std::sync::OnceLock<MeshContractMode> = std::sync::OnceLock::new();
+    manifold_from_reify_mesh_with_mode(mesh, *MODE.get_or_init(MeshContractMode::from_env))
+}
+
+/// [`manifold_from_reify_mesh`] with the mesh-contract enforcement posture
+/// supplied explicitly instead of read from the environment.
+///
+/// See that function's rustdoc for the weld, the contract check, and the
+/// accepted hot-path cost — this is where all of it actually happens. The
+/// split exists purely so tests can pin both `Warn` and `Enforce` behavior
+/// without `std::env::set_var` (`unsafe` in Rust 2024, and race-prone across
+/// parallel test threads).
+fn manifold_from_reify_mesh_with_mode(
+    mesh: &Mesh,
+    mode: MeshContractMode,
+) -> Result<Manifold, GeometryError> {
     // --- bit-exact vertex weld ---
     // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
     let mut seen: HashMap<(u32, u32, u32), u64> = HashMap::new();
@@ -251,24 +372,55 @@ pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> 
 
     // Remap triangle indices through the weld map.
     // Use bounds-checked access so a malformed mesh with an out-of-range index
-    // returns Err instead of panicking — preserving the Result<_, String> contract
-    // that callers rely on (previously from_mesh_f64 would return Err for such
-    // inputs; the weld must not introduce a new panic path).
+    // returns Err instead of panicking — preserving the Result<_, GeometryError>
+    // contract that callers rely on (previously from_mesh_f64 would return Err
+    // for such inputs; the weld must not introduce a new panic path).
     let tri_indices_u64: Vec<u64> = mesh
         .indices
         .iter()
         .map(|&i| {
             old_to_new.get(i as usize).copied().ok_or_else(|| {
-                format!(
-                    "triangle index {i} out of range for {} vertices",
+                GeometryError::OperationFailed(format!(
+                    "manifold ingest: triangle index {i} out of range for {} vertices",
                     old_to_new.len()
-                )
+                ))
             })
         })
-        .collect::<Result<_, String>>()?;
+        .collect::<Result<_, GeometryError>>()?;
 
-    Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64)
-        .map_err(|e| format!("{e:?}"))
+    // --- pre-ingest mesh-contract validation (INV-GEO-1) ---
+    // Operates on the original &mesh (validate() internally position-welds,
+    // bit-exact and pinned to from_mesh_f64's default weld, so it sees the
+    // same closed/wound quotient as the weld above). Front-runs
+    // from_mesh_f64's generic NotManifold failure with a structured
+    // diagnostic; the ValidatedMesh witness itself isn't needed here, only
+    // the check — see this function's rustdoc "Known hot-path cost" section
+    // for the accepted redundant-weld/clone tradeoff this implies.
+    if let Err(violation) = mesh.validate(MANIFOLD_INGEST_TOL) {
+        match mode {
+            // Fail closed (the default): front-run from_mesh_f64's generic
+            // NotManifold with the structured contract diagnostic.
+            MeshContractMode::Enforce => return Err(violation.into_geometry_error("manifold")),
+            // Break-glass (`REIFY_MESH_CONTRACT=warn`): the gate is bypassed
+            // and the mesh falls through to from_mesh_f64 below, whose own
+            // defensive rejection still applies — warn forfeits the structured
+            // diagnostic, it does not admit an invalid mesh.
+            MeshContractMode::Warn => tracing::warn!(
+                kernel = "manifold",
+                invariant = ?violation.invariant,
+                counts = ?violation.counts,
+                witness = ?violation.witness,
+                "mesh contract violation ({}=warn — not enforced)",
+                MeshContractMode::ENV_VAR,
+            ),
+        }
+    }
+
+    Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64).map_err(|e| {
+        GeometryError::OperationFailed(format!(
+            "manifold ingest: from_mesh_f64 rejected mesh: {e:?}"
+        ))
+    })
 }
 
 impl GeometryKernel for ManifoldKernel {
@@ -808,11 +960,34 @@ impl GeometryKernel for ManifoldKernel {
     /// index space `SharedEdges` reports. The unit cube has 18 such edges
     /// (Euler `V - E + F = 2`: `8 - E + 12 = 2`), matching
     /// `Manifold::num_edge()`. Each edge's two xyz endpoints are stored as a
-    /// [`SubShape::Edge`]. An empty/degenerate mesh yields `Ok(empty vec)`.
+    /// [`SubShape::Edge`].
+    ///
+    /// # Per-parent memoization (idempotency contract)
+    ///
+    /// The first call for a given `handle` mints fresh ids for the canonical
+    /// edges and caches them in [`Self::extracted_edges`].  Subsequent calls
+    /// with the same `handle` return `cached.clone()` immediately — the ids
+    /// and their order are **identical** across calls (same contract as OCCT's
+    /// `extracted_edges` cache, `crates/reify-kernel-occt/src/lib.rs:677-710`,
+    /// and this kernel's own [`Self::extract_faces`]). This stability is
+    /// required for `resolve_unique_by_attribute` to match seeded attributes
+    /// (recorded against the first-call ids) to the candidate ids produced at
+    /// selector-eval time.
+    ///
+    /// No cache invalidation is needed: `ManifoldKernel` has no warm-state
+    /// swap and mints ids monotonically over an append-only `shapes` store, so
+    /// a parent handle's canonical edges never change.
+    ///
+    /// An empty or degenerate mesh yields `Ok(empty vec)`.
     fn extract_edges(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Cache-first: return the previously-minted ids if available.
+        if let Some(cached) = self.extracted_edges.get(&handle.0) {
+            return Ok(cached.clone());
+        }
+
         // Read the parent mesh, dropping the immutable borrow before the
         // mutable store_sub_shape calls below.
         let (verts, tris) = {
@@ -822,6 +997,10 @@ impl GeometryKernel for ManifoldKernel {
             crate::queries::mesh_geometry(m)
         };
         if verts.is_empty() || tris.is_empty() {
+            // Memoize the empty result so the cache-first branch covers
+            // this path too, keeping the contract uniform: every code path
+            // through extract_edges inserts into extracted_edges before returning.
+            self.extracted_edges.insert(handle.0, Vec::new());
             return Ok(Vec::new());
         }
         let (_index_pairs, endpoints) = crate::queries::canonical_edges(&verts, &tris);
@@ -829,6 +1008,8 @@ impl GeometryKernel for ManifoldKernel {
         for ep in endpoints {
             edges.push(self.store_sub_shape(SubShape::Edge(ep)));
         }
+        // Memoize: subsequent calls return the cached ids unchanged.
+        self.extracted_edges.insert(handle.0, edges.clone());
         Ok(edges)
     }
 
@@ -849,11 +1030,16 @@ impl GeometryKernel for ManifoldKernel {
     ///
     /// # Error surface
     ///
-    /// Returns `Err(GeometryError::OperationFailed(_))` if the input is not a
-    /// closed orientable manifold (e.g. a mesh with boundary edges, inverted
-    /// winding, or degenerate geometry). The underlying `manifold3d` error is
-    /// included in the `OperationFailed` payload so winding-order regressions
-    /// in fixture meshes are debuggable without source-diving.
+    /// Returns `Err(GeometryError::MeshContractViolation { kernel: "manifold",
+    /// .. })` if the input fails a [`Mesh::validate`] producer obligation
+    /// (INV-GEO-1) — e.g. a mesh with boundary edges, inconsistent winding,
+    /// non-finite coordinates, or degenerate triangles — with structured
+    /// per-category counts and a concrete witness identifying the offender.
+    /// Returns `Err(GeometryError::OperationFailed(_))` for defects outside
+    /// the mesh contract: an out-of-range triangle index, or (rarely) a mesh
+    /// that passes contract validation but `Manifold::from_mesh_f64` still
+    /// rejects; the underlying `manifold3d` error is included in that payload
+    /// so such regressions are debuggable without source-diving.
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
         if !mesh.vertices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
@@ -869,12 +1055,7 @@ impl GeometryKernel for ManifoldKernel {
                 mesh.indices.len()
             )));
         }
-        let manifold = manifold_from_reify_mesh(mesh).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "ingest_mesh: input Mesh must be a valid manifold; \
-                 manifold3d::from_mesh_f64 reported: {e}"
-            ))
-        })?;
+        let manifold = manifold_from_reify_mesh(mesh)?;
         // Tag each ingested mesh as an "original" so Manifold assigns it a stable,
         // non-negative originalID that survives through boolean operations and
         // appears in the result's `run_original_id` vector.  Without this call
@@ -918,14 +1099,60 @@ impl GeometryKernel for ManifoldKernel {
 /// `reify_kernel_manifold::kernel` target (operator visibility for the
 /// lossy-attribute diagnostic), and `Ok(Discarded)` is returned.
 ///
+/// # Where the parent map's entries come from (task #4636)
+///
+/// The `table.lookup(KernelHandle { kernel: KernelId::Manifold, id: handle
+/// })` calls above are keyed on the SOLID parent handle. Per-solid entries at
+/// that key are populated by the engine's OCCT->Manifold ingest-forwarding
+/// path (`reify_eval::engine_build`'s `'convert:` loop, via
+/// `forward_solid_attribute_on_ingest`), fed by
+/// `reify_eval::primitive_attribute_seed::record_solid_attribute` at the
+/// primitive seed site — not by anything in this module. Before task #4636,
+/// nothing recorded a solid-level entry at all, so this lookup always missed
+/// and every cross-kernel propagation took the degenerate path above,
+/// regardless of whether the source solid legitimately carried an attribute.
+///
 /// # Descriptor-keyed persistence
 ///
-/// The correlation (`Vec<FacetProvenance>`) is computed and validated but
-/// **not** persisted into the `GeometryHandleId`-keyed
-/// `TopologyAttributeTable` — there is no descriptor-keyed store until
-/// task 4262, and `&self` is immutable.  The engine (`engine_build.rs:4414`)
-/// intentionally swallows all three `Ok` variants, so returning `Propagated`
-/// without writing the table is safe for the current call graph.
+/// The correlation (`Vec<FacetProvenance>`) is walked below: every facet
+/// carrying a trackable `source` is persisted into the separate,
+/// descriptor-keyed `result_faces` store on `table` (task #4637), under key
+/// `ResultFaceDescriptor { handle: {Manifold, result_handle},
+/// run_original_id, face_id }`. This is deliberately NOT the
+/// `KernelHandle`-keyed `entries` map (re-keyed from a bare
+/// `GeometryHandleId` by task #4351): a coarse whole-result `entries` write
+/// would be picked up by the engine's `entries`-only per-realization
+/// diagnostic scan (`engine_build.rs`) and centroid-queried against the
+/// default kernel under a Manifold-only id, spuriously failing. Untracked
+/// facets (`source: None`) are intentionally skipped (lossy-but-valid — a
+/// boolean result may legitimately contain runs from an untracked parent).
+///
+/// Correlating the coalesced per-face handles `extract_faces` mints back to
+/// these descriptors — so a selector's `resolve_unique_by_attribute` call
+/// reads them end-to-end — remains task #4263's `.ri` e2e wiring:
+/// `propagate_attributes` takes `&self` and so cannot call `&mut
+/// extract_faces` to mint those handles itself. The engine
+/// (`engine_build.rs`'s kernel-attribute-hook dispatch site) intentionally
+/// swallows all three `Ok` variants, so returning `Propagated` here is safe
+/// for the current call graph regardless of #4263's bridge status.
+///
+/// # Coarse solid-level placeholder (review follow-up, task #4636 amendment)
+///
+/// Every `parent_map` value above is whatever `TopologyAttribute` is
+/// recorded at the parent's `KernelHandle` — in practice always the
+/// per-solid representative entry
+/// `reify_eval::primitive_attribute_seed::record_solid_attribute` writes
+/// (`Role::Side`, `local_index: 0`), exact for all-`Side` primitives but a
+/// coarse placeholder for Cylinder/Cone. `correlate_facets` clones that
+/// placeholder verbatim onto every `FacetProvenance::source` in the run
+/// (`provenance.rs`'s `source.clone()`), so it rides all the way to
+/// per-triangle granularity. This is harmless ONLY because this function
+/// never reads `role`/`local_index` back out of `facets` (above) and never
+/// persists them. If this function, `engine_build.rs`, or a future
+/// Manifold-side selector ever starts reading a `FacetProvenance::source`
+/// or a solid-level table entry's `role`/`local_index` as authoritative
+/// per-face data, that change must land together with (or after) #4263's
+/// per-face persistence — not against this placeholder.
 impl KernelAttributeHook for ManifoldKernel {
     fn propagate_attributes(
         &self,
@@ -943,9 +1170,13 @@ impl KernelAttributeHook for ManifoldKernel {
         for &handle in parent_handles {
             if let Some(m) = self.shapes.get(&handle.0) {
                 let oid = m.original_id();
-                if let (Some(id), Some(attr)) =
-                    (u32::try_from(oid).ok(), table.lookup(handle))
-                {
+                if let (Some(id), Some(attr)) = (
+                    u32::try_from(oid).ok(),
+                    table.lookup(KernelHandle {
+                        kernel: KernelId::Manifold,
+                        id: handle,
+                    }),
+                ) {
                     parent_map.insert(id, attr.clone());
                 }
             }
@@ -975,14 +1206,57 @@ impl KernelAttributeHook for ManifoldKernel {
         let mg = result_manifold.unwrap().to_meshgl64();
         match crate::provenance::correlate_facets(&mg, &parent_map) {
             Ok(facets) => {
-                let source_count =
-                    facets.iter().filter(|f| f.source.is_some()).count();
+                let total_facets = facets.len();
+                let result_kernel_handle = KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: result_handle,
+                };
+                // Persist every facet with a trackable source into the
+                // descriptor-keyed result_faces store (task #4637). Untracked
+                // facets (source: None) are intentionally skipped — moving
+                // `source` out of each owned `facet` avoids a clone;
+                // `descriptor` is `Copy` so it stays readable afterward.
+                let mut persisted_count = 0usize;
+                for facet in facets {
+                    if let Some(attr) = facet.source {
+                        let descriptor = reify_ir::ResultFaceDescriptor {
+                            handle: result_kernel_handle,
+                            run_original_id: facet.descriptor.run_original_id,
+                            face_id: facet.descriptor.face_id,
+                        };
+                        // `record_result_face` is last-write-wins, so a genuine
+                        // divergence between two facets sharing `descriptor`
+                        // would silently drop data. That can't happen here:
+                        // `correlate_from_vectors` (provenance.rs) computes
+                        // `source` exactly once per run and clones it onto
+                        // every triangle in that run, so any two facets with
+                        // equal `run_original_id` — the only field `source`
+                        // depends on — are structurally guaranteed identical
+                        // `source` values within a single `propagate_attributes`
+                        // call; `handle` is unique per call (tied to
+                        // `result_handle`), so cross-call collisions on the
+                        // same descriptor are impossible too (review
+                        // follow-up, task #4637 amendment). Tripwire kept in
+                        // case a future change to `correlate_facets` breaks
+                        // that per-run invariant.
+                        debug_assert!(
+                            table
+                                .lookup_result_face(descriptor)
+                                .is_none_or(|existing| *existing == attr),
+                            "descriptor {descriptor:?} already recorded with a different \
+                             TopologyAttribute — correlate_facets' per-run source invariant \
+                             (provenance.rs) has been violated"
+                        );
+                        table.record_result_face(descriptor, attr);
+                        persisted_count += 1;
+                    }
+                }
                 tracing::debug!(
                     target: "reify_kernel_manifold::kernel",
-                    facets = facets.len(),
-                    with_source = source_count,
-                    "Manifold attribute propagation completed — kernel-level walk done; \
-                     descriptor-keyed persistence deferred to task 4262"
+                    facets = total_facets,
+                    persisted = persisted_count,
+                    "Manifold attribute propagation completed — descriptor-keyed result-face \
+                     persistence landed (#4637); untracked facets (source: None) are skipped"
                 );
                 Ok(KernelAttributeOutcome::Propagated)
             }
@@ -1326,7 +1600,9 @@ mod tests {
     /// stored manifolds have a non-negative `original_id()`, or because no
     /// parent has a table entry.  This test exercises the first case (empty
     /// kernel), which is the cheapest fixture that hits the same branch.
-    /// Descriptor-keyed persistence is deferred to task 4262.
+    /// Descriptor-keyed persistence (task #4637) is never reached on this
+    /// path — the degenerate branch returns before any facet correlation
+    /// (and thus before any result-face write) runs.
     ///
     /// Reuses the `CountingSubscriberBuilder` pattern from
     /// `crates/reify-eval/src/kernel_registry.rs:329-353`. Synthetic op +
@@ -1485,28 +1761,18 @@ mod tests {
         }
     }
 
-    /// Pins that `GeometryKernel::ingest_mesh` returns
-    /// `Err(GeometryError::OperationFailed(_))` when given an invalid
-    /// (non-manifold) mesh.
+    /// A single open triangle — three vertices, one triangle face. Not a
+    /// closed manifold: three boundary edges, no closing surface, so
+    /// `Mesh::validate` rejects it under `MeshInvariant::Closed` with
+    /// `counts.open_edges == 3`.
     ///
-    /// A single open triangle is structurally not a closed orientable manifold
-    /// (it has three boundary edges with no closing surface), so
-    /// `Manifold::from_mesh_f64` must reject it. Match-on-variant rather than
-    /// equality because `GeometryError` does not derive `PartialEq` — mirrors
-    /// `execute_union_with_unknown_handle_returns_invalid_reference`.
-    ///
-    /// This test does not need `#[cfg(feature = "test-fixtures")]` because it
-    /// lives inside the unit `mod tests` block, which is compiled under
-    /// `cfg(test)` — the gating predicate `cfg(any(test, feature =
-    /// "test-fixtures"))` is satisfied by `cfg(test)` alone.
-    #[test]
-    fn ingest_mesh_with_invalid_mesh_returns_err_operation_failed() {
-        let mut kernel = ManifoldKernel::new();
-        // A single open triangle — three vertices, one triangle face.
-        // Not a closed manifold: three boundary edges, no closing surface.
-        // `Manifold::from_mesh_f64` requires closed orientable surfaces and
-        // must fail on this input.
-        let bad_mesh = Mesh {
+    /// THE single definition of this fixture in the module — the γ
+    /// contract-violation test, the mode-governed site-2 tests (task #5105 δ),
+    /// and (via struct-update, overriding only `indices`) the out-of-range
+    /// index test all source it from here, so a future correction cannot leave
+    /// one copy behind.
+    fn open_triangle_mesh() -> Mesh {
+        Mesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0, // v0
                 1.0, 0.0, 0.0, // v1
@@ -1514,20 +1780,251 @@ mod tests {
             ],
             indices: vec![0, 1, 2],
             normals: None,
+        }
+    }
+
+    /// Pins that `GeometryKernel::ingest_mesh` returns
+    /// `Err(GeometryError::MeshContractViolation { kernel: "manifold", .. })`
+    /// when given an invalid (non-closed) mesh — INV-GEO-1 kernel-seam γ.
+    ///
+    /// A single open triangle is structurally not a closed orientable manifold
+    /// (it has three boundary edges with no closing surface): `Mesh::validate`
+    /// rejects it under `MeshInvariant::Closed` — with `counts.open_edges == 3`
+    /// (each of the triangle's 3 directed edges lacks a reverse on the
+    /// position-welded quotient) — *before* `Manifold::from_mesh_f64` is ever
+    /// called, surfacing a structured diagnostic earlier than the generic
+    /// `NotManifold` string. Match-on-variant rather than equality because
+    /// `GeometryError` does not derive `PartialEq` — mirrors
+    /// `execute_union_with_unknown_handle_returns_invalid_reference`.
+    ///
+    /// This test does not need `#[cfg(feature = "test-fixtures")]` because it
+    /// lives inside the unit `mod tests` block, which is compiled under
+    /// `cfg(test)` — the gating predicate `cfg(any(test, feature =
+    /// "test-fixtures"))` is satisfied by `cfg(test)` alone.
+    #[test]
+    fn ingest_mesh_non_closed_mesh_returns_mesh_contract_violation() {
+        let mut kernel = ManifoldKernel::new();
+        let bad_mesh = open_triangle_mesh();
+
+        let result = kernel.ingest_mesh(&bad_mesh);
+
+        match result {
+            Err(GeometryError::MeshContractViolation {
+                kernel: kernel_name,
+                invariant,
+                counts,
+                ..
+            }) => {
+                assert_eq!(
+                    kernel_name, "manifold",
+                    "MeshContractViolation must carry the producing kernel's name",
+                );
+                assert!(
+                    matches!(invariant, reify_ir::geometry::MeshInvariant::Closed),
+                    "a single open triangle has boundary edges, so validate() must \
+                     report the Closed obligation; got {invariant:?}",
+                );
+                assert_eq!(
+                    counts.open_edges, 3,
+                    "a lone triangle's 3 directed edges each lack a reverse on the \
+                     welded quotient, so open_edges must be exactly 3; got {counts:?}",
+                );
+            }
+            other => panic!(
+                "ingest_mesh with a single-triangle (non-closed) mesh must return \
+                 Err(GeometryError::MeshContractViolation {{ kernel: \"manifold\", .. }}); \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    // --- mode-governed site-2 gate (task #5105 δ, INV-GEO-1) ---
+
+    /// `Enforce` (the default) front-runs `from_mesh_f64` with the structured
+    /// contract violation — the pre-δ hardcoded behavior, now the mode
+    /// default. Calls the inner `_with_mode` helper directly so no env
+    /// mutation is needed (`std::env::set_var` is unsafe in Rust 2024).
+    #[test]
+    fn manifold_from_reify_mesh_enforce_mode_returns_mesh_contract_violation() {
+        let mesh = open_triangle_mesh();
+
+        match manifold_from_reify_mesh_with_mode(&mesh, MeshContractMode::Enforce) {
+            Err(GeometryError::MeshContractViolation {
+                kernel: kernel_name,
+                invariant,
+                counts,
+                ..
+            }) => {
+                assert_eq!(kernel_name, "manifold");
+                assert!(
+                    matches!(invariant, reify_ir::geometry::MeshInvariant::Closed),
+                    "expected the Closed obligation; got {invariant:?}"
+                );
+                assert_eq!(counts.open_edges, 3, "got {counts:?}");
+            }
+            other => panic!(
+                "Enforce mode must front-run from_mesh_f64 with a structured \
+                 MeshContractViolation; got {other:?}"
+            ),
+        }
+    }
+
+    /// `Warn` is the break-glass downgrade: the contract gate is BYPASSED, so
+    /// the mesh falls through to `from_mesh_f64`. The open triangle is still
+    /// rejected there — but as the generic `OperationFailed`, NOT a
+    /// `MeshContractViolation`. That difference is exactly what pins "the
+    /// contract gate did not fire".
+    #[test]
+    fn manifold_from_reify_mesh_warn_mode_bypasses_contract_gate() {
+        let mesh = open_triangle_mesh();
+
+        match manifold_from_reify_mesh_with_mode(&mesh, MeshContractMode::Warn) {
+            Err(GeometryError::MeshContractViolation { .. }) => panic!(
+                "Warn mode must BYPASS the contract gate — a MeshContractViolation \
+                 means the gate still fired, so the break-glass downgrade is broken"
+            ),
+            Err(GeometryError::OperationFailed(_)) => {
+                // Expected: gate bypassed, from_mesh_f64's own defensive
+                // NotManifold rejection is what surfaces.
+            }
+            other => panic!(
+                "Warn mode must fall through to from_mesh_f64, which rejects the \
+                 open triangle with the generic OperationFailed; got {other:?}"
+            ),
+        }
+    }
+
+    /// Pins the equivalence-boundary half of the [`MANIFOLD_INGEST_TOL`]
+    /// claim: pre-ingest validation must not reject any triangle
+    /// `from_mesh_f64` would itself have accepted. The genuine risk is
+    /// `MeshInvariant::NonDegenerate`, whose `tol = 0.0` rejects only
+    /// *exactly*-zero-area triangles — this test exercises a triangle
+    /// deliberately close to that boundary (a sliver of twice-area `1e-4`,
+    /// vs. `0.5`-ish for a normal cube-face triangle) but strictly nonzero,
+    /// and asserts `ingest_mesh` still returns `Ok`, rather than leaving the
+    /// "no new rejections beyond `from_mesh_f64`'s set" claim doc-only
+    /// (reviewer suggestion on task 5104).
+    ///
+    /// Built by fan-subdividing the unit cube's `-Z` face triangle `0,2,1`
+    /// (`v0=(0,0,0)`, `v2=(1,1,0)`, `v1=(1,0,0)`) around a new 9th vertex
+    /// `D = (0.5, 1e-4, 0.0)` placed just off the `v1`-`v0` edge, interior to
+    /// the original triangle: sub-triangles `0,2,8` and `2,1,8` retain
+    /// healthy area (twice-area `~0.5` each) and `1,0,8` is the sliver
+    /// (twice-area `1e-4`). A fan from an interior point preserves the
+    /// parent triangle's winding for every sub-triangle, and each of the 3
+    /// original boundary directed edges (`0->2`, `2->1`, `1->0`) is emitted
+    /// unchanged — so they still pair with their pre-existing neighbors
+    /// (`2->0` in `0,3,2`; `1->2` in the `+X` face's `1,2,6`; `0->1` in the
+    /// `-Y` face's `0,1,5`) exactly as before the split. The 3 new internal
+    /// "spoke" edges touching `8` pair reverse with each other within the
+    /// fan itself (`2->8`/`8->2`, `1->8`/`8->1`, `0->8`/`8->0`). So `Closed`
+    /// and `ConsistentWinding` both still hold on the whole mesh unchanged;
+    /// only `NonDegenerate`'s zero-area boundary is actually exercised.
+    ///
+    /// Caveat: `result.is_ok()` also depends on the real
+    /// `manifold3d::from_mesh_f64` itself accepting a triangle of twice-area
+    /// `1e-4` (this test calls `ingest_mesh`, not `Mesh::validate` directly).
+    /// If a future `manifold3d` upgrade tightens its own near-degeneracy
+    /// tolerance, this test could start failing for a reason unrelated to
+    /// `MANIFOLD_INGEST_TOL` — an upstream tolerance change, not a
+    /// `Mesh::validate`-wiring regression. Isolating the `MANIFOLD_INGEST_TOL`
+    /// boundary claim from that upstream dependency would need a direct
+    /// `Mesh::validate(0.0)` unit assertion in `reify-ir`
+    /// (`crates/reify-ir/src/geometry.rs`) — outside this task's locked scope
+    /// (`kernel.rs` only), so noted here rather than added blind.
+    #[test]
+    fn ingest_mesh_accepts_valid_mesh_with_sliver_triangle_at_nondegenerate_boundary() {
+        let mesh = Mesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                0.0, 0.0, 0.0, // 0
+                1.0, 0.0, 0.0, // 1
+                1.0, 1.0, 0.0, // 2
+                0.0, 1.0, 0.0, // 3
+                0.0, 0.0, 1.0, // 4
+                1.0, 0.0, 1.0, // 5
+                1.0, 1.0, 1.0, // 6
+                0.0, 1.0, 1.0, // 7
+                0.5, 1.0e-4, 0.0, // 8 — sliver apex, just off the v1-v0 edge
+            ],
+            #[rustfmt::skip]
+            indices: vec![
+                // -Z bottom: `0,2,1` fan-subdivided around vertex 8 (the
+                // sliver is `1,0,8`); `0,3,2` unchanged.
+                0, 2, 8,  2, 1, 8,  1, 0, 8,  0, 3, 2,
+                // +Z top
+                4, 5, 6,  4, 6, 7,
+                // -Y front
+                0, 1, 5,  0, 5, 4,
+                // +Y back
+                3, 7, 6,  3, 6, 2,
+                // -X left
+                0, 4, 7,  0, 7, 3,
+                // +X right
+                1, 2, 6,  1, 6, 5,
+            ],
+            normals: None,
+        };
+
+        let result = ManifoldKernel::new().ingest_mesh(&mesh);
+
+        assert!(
+            result.is_ok(),
+            "a closed, consistently-wound mesh containing one nonzero-area \
+             sliver triangle must still ingest — MANIFOLD_INGEST_TOL = 0.0 \
+             must reject only exactly-zero-area triangles, matching \
+             from_mesh_f64's tolerance; got {result:?}",
+        );
+    }
+
+    /// Pins the weld-before-validate ordering that `manifold_from_reify_mesh`'s
+    /// rustdoc documents (and that `ingest_mesh`'s "Error surface" section
+    /// relies on): the weld-time triangle-index bounds check runs *before*
+    /// `Mesh::validate`, so an out-of-range triangle index is rejected as
+    /// `GeometryError::OperationFailed(_)` — a distinct error class from the
+    /// `MeshContractViolation` that `Mesh::validate`'s `IndexValid` obligation
+    /// would otherwise report for the same defect.
+    ///
+    /// Without this test, a future refactor that moved `mesh.validate(..)`
+    /// ahead of the weld's bounds check would silently flip this input's
+    /// error class from `OperationFailed` to `MeshContractViolation`,
+    /// changing the documented public error surface with nothing to catch
+    /// it (reviewer suggestion on task 5104).
+    ///
+    /// Fixture: a single triangle over 3 vertices (valid indices `0..=2`)
+    /// with one index (`3`) one-past-the-end. `indices.len() == 3` satisfies
+    /// `ingest_mesh`'s multiple-of-3 pre-check, so the input reaches
+    /// `manifold_from_reify_mesh` and specifically exercises the weld's
+    /// `old_to_new.get(3) == None` bounds-check branch — before
+    /// `mesh.validate(..)` is ever called.
+    #[test]
+    fn ingest_mesh_out_of_range_triangle_index_returns_operation_failed() {
+        let mut kernel = ManifoldKernel::new();
+        // Shares `open_triangle_mesh`'s 3 vertices and overrides ONLY the
+        // indices, so the single deliberate difference from the shared fixture
+        // is the thing under test: only 3 vertices exist (valid indices
+        // 0..=2), and index 3 is out of range for the weld's bounds check.
+        let bad_mesh = Mesh {
+            indices: vec![0, 1, 3],
+            ..open_triangle_mesh()
         };
 
         let result = kernel.ingest_mesh(&bad_mesh);
 
         match result {
-            Err(GeometryError::OperationFailed(msg)) => assert!(
-                !msg.is_empty(),
-                "OperationFailed payload must surface the manifold3d error — an empty message \
-                 would hide the root cause from fixture authors debugging winding-order \
-                 regressions (doc comment promises the underlying manifold3d error is surfaced)",
-            ),
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("out of range"),
+                    "OperationFailed payload should explain the out-of-range \
+                     triangle index for debuggability; got: {msg:?}",
+                );
+            }
             other => panic!(
-                "ingest_mesh with a single-triangle (non-manifold) mesh must return \
-                 Err(GeometryError::OperationFailed(_)); got {other:?}"
+                "ingest_mesh with an out-of-range triangle index must return \
+                 Err(GeometryError::OperationFailed(_)) — the weld-time bounds \
+                 check in manifold_from_reify_mesh runs BEFORE Mesh::validate, \
+                 so this is a distinct error class from MeshContractViolation; \
+                 got {other:?}"
             ),
         }
     }
@@ -2031,8 +2528,20 @@ mod tests {
             .expect("ingest_mesh must accept a valid unit cube");
 
         let mut table = TopologyAttributeTable::default();
-        table.record(handle_a.id, make_attr("A"));
-        table.record(handle_b.id, make_attr("B"));
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Manifold,
+                id: handle_a.id,
+            },
+            make_attr("A"),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Manifold,
+                id: handle_b.id,
+            },
+            make_attr("B"),
+        );
 
         let result_handle = kernel
             .execute(&GeometryOp::Union { left: handle_a.id, right: handle_b.id })
@@ -2056,20 +2565,60 @@ mod tests {
             ),
         }
 
-        // The table must be unchanged on the Propagated path.  Descriptor-keyed
-        // persistence is deferred to task 4262 (`propagate_attributes` takes `&self`;
-        // there is no descriptor store until 4262 lands).
+        // Descriptor-keyed persistence (task #4637): every surviving facet
+        // with a trackable source is now persisted into the separate
+        // `result_faces` store, keyed under the result's KernelHandle.
         assert!(
-            table.lookup(result_handle.id).is_none(),
-            "propagate_attributes must not write a result-handle entry on the Propagated path \
-             (descriptor-keyed persistence deferred to task 4262)"
+            table.result_face_len() > 0,
+            "propagate_attributes must persist at least one descriptor-keyed result-face entry \
+             on the Propagated path"
+        );
+        let result_kernel_handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: result_handle.id,
+        };
+        for (descriptor, attr) in table.iter_result_faces() {
+            assert_eq!(
+                descriptor.handle, result_kernel_handle,
+                "every persisted result-face descriptor must be keyed under the result's \
+                 KernelHandle"
+            );
+            assert!(
+                *attr == make_attr("A") || *attr == make_attr("B"),
+                "persisted result-face attribute must be exactly one parent's TopologyAttribute; \
+                 got {attr:?}"
+            );
+        }
+
+        // Non-pollution guard: result faces live ONLY in the descriptor-keyed
+        // `result_faces` store above, never as a coarse whole-result entry in
+        // `entries` — a coarse entry there would be picked up by the engine's
+        // per-realization `entries`-only diagnostic scan
+        // (`reify_eval::engine_build`) and centroid-queried against the
+        // default kernel under a Manifold-only id, which would spuriously
+        // fail (see the landed 4636 regression test
+        // `forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan`).
+        assert!(
+            table.lookup(result_kernel_handle).is_none(),
+            "propagate_attributes must not write a coarse result-handle entry into `entries` \
+             (result faces belong in the descriptor-keyed result_faces store only)"
         );
         assert!(
-            table.lookup(handle_a.id).is_some(),
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: handle_a.id,
+                })
+                .is_some(),
             "handle_a entry must be unchanged in the table after propagate_attributes"
         );
         assert!(
-            table.lookup(handle_b.id).is_some(),
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: handle_b.id,
+                })
+                .is_some(),
             "handle_b entry must be unchanged in the table after propagate_attributes"
         );
 
@@ -2229,5 +2778,132 @@ mod tests {
                 "color None must NOT produce displaycolor in bytes"
             );
         }
+    }
+
+    /// [step-2 / task μ2 #5113] Shared persist/clear/rebuild taxonomy for the
+    /// per-kernel state inventory (INV-GEO-3,
+    /// `docs/prds/kernel-seam-contracts.md` §6). Each per-handle side table
+    /// (or counter) of a `GeometryKernel` adapter is classified as one of:
+    /// - `Persist` — survives a warm-state swap verbatim;
+    /// - `Clear` — reset to empty on a warm-state swap;
+    /// - `Rebuild` — recomputed from the swapped-in state.
+    ///
+    /// `ManifoldKernel` has no warm-state/restore path (see the
+    /// `extracted_faces` field doc at kernel.rs:111-117), so every one of its
+    /// fields classifies as `Persist` below and `Clear`/`Rebuild` are unused
+    /// by manifold; they exist for shared vocabulary with the occt/gmsh
+    /// state-inventory leaves (`docs/prds/kernel-seam-contracts.md` §12,
+    /// leaves κ and μ3).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StateDisposition {
+        Persist,
+        Clear,
+        Rebuild,
+    }
+
+    /// Binds a field reference to its `(name, disposition)` classification.
+    ///
+    /// The `_field` argument is intentionally unread beyond being passed by
+    /// reference: its sole purpose is to force every field bound by
+    /// [`manifold_state_inventory`]'s exhaustive destructure to be
+    /// *consumed* (passed somewhere), so an unclassified new field trips
+    /// `unused_variables` under `-D warnings` rather than compiling silently.
+    fn entry<T>(
+        _field: &T,
+        name: &'static str,
+        disposition: StateDisposition,
+    ) -> (&'static str, StateDisposition) {
+        (name, disposition)
+    }
+
+    /// Per-kernel state inventory for `ManifoldKernel` (INV-GEO-3 leaf μ2).
+    ///
+    /// # Compile-time drift guard
+    ///
+    /// The destructure below is EXHAUSTIVE (no `..` spread): it binds every
+    /// field of `ManifoldKernel` by name. Adding a field to `ManifoldKernel`
+    /// without updating this function becomes a hard compile error:
+    /// - E0027 "pattern does not mention field `<new_field>`" on the `let`
+    ///   destructure below (forces adding the field to the pattern);
+    /// - `unused_variables` under the enforced `-D warnings`
+    ///   (`cargo clippy --workspace --all-targets -- -D warnings`) once the
+    ///   field IS added to the pattern but not yet passed to [`entry`]
+    ///   (forces an actual classification, not just acknowledgment);
+    /// - the fixed-size return type `[(&'static str, StateDisposition); 5]`
+    ///   must also grow to match the new element count.
+    ///
+    /// # Classification (all five fields → `Persist`)
+    ///
+    /// `ManifoldKernel` is append-only and has no warm-state/restore path
+    /// (see the `extracted_faces` field doc at kernel.rs:111-117: "No
+    /// invalidation needed" — a given parent handle's mesh is immutable for
+    /// the kernel's lifetime). Handle-id stability requires `shapes`,
+    /// `sub_shapes`, `extracted_faces`, and `extracted_edges` to survive
+    /// verbatim (rebuilding either `extracted_*` cache would mint fresh
+    /// child ids and break `resolve_unique_by_attribute`), and `next_id`
+    /// must survive to prevent id reuse/aliasing across the shared id space.
+    /// This deliberately diverges from `OcctKernel`, which clears its
+    /// `extracted_*` caches on warm restore.
+    fn manifold_state_inventory(k: &ManifoldKernel) -> [(&'static str, StateDisposition); 5] {
+        let ManifoldKernel { shapes, sub_shapes, next_id, extracted_faces, extracted_edges } = k;
+        [
+            entry(shapes, "shapes", StateDisposition::Persist),
+            entry(sub_shapes, "sub_shapes", StateDisposition::Persist),
+            entry(next_id, "next_id", StateDisposition::Persist),
+            entry(extracted_faces, "extracted_faces", StateDisposition::Persist),
+            entry(extracted_edges, "extracted_edges", StateDisposition::Persist),
+        ]
+    }
+
+    /// [RED step-1 / task μ2 #5113] Completeness test for the INV-GEO-3
+    /// per-kernel state-inventory drift guard
+    /// (`docs/prds/kernel-seam-contracts.md` §6 + §12 leaf μ2).
+    ///
+    /// `manifold_state_inventory` must classify EVERY field of
+    /// `ManifoldKernel` via an exhaustive, no-wildcard struct destructure, so
+    /// this test asserts:
+    /// (a) completeness — the returned names equal exactly
+    ///     `{"shapes", "sub_shapes", "next_id", "extracted_faces",
+    ///     "extracted_edges"}`, array length 5, no duplicates;
+    /// (b) every field's disposition is `StateDisposition::Persist` —
+    ///     `ManifoldKernel` is append-only with no invalidation path (see the
+    ///     `extracted_faces` field doc at kernel.rs:111-117), so nothing is
+    ///     ever cleared or rebuilt;
+    /// (c) the full persist/clear/rebuild taxonomy vocabulary is
+    ///     constructible (`Clear`/`Rebuild` are unused by manifold today but
+    ///     exist for parity with the occt/gmsh state-inventory leaves).
+    ///
+    /// Fails to compile until step-2 adds `StateDisposition` and
+    /// `manifold_state_inventory`.
+    #[test]
+    fn manifold_state_inventory_classifies_every_side_table() {
+        let kernel = ManifoldKernel::new();
+        let inventory = manifold_state_inventory(&kernel);
+
+        assert_eq!(inventory.len(), 5, "inventory must classify exactly 5 fields");
+
+        let mut names: Vec<&str> = inventory.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names,
+            vec!["extracted_edges", "extracted_faces", "next_id", "shapes", "sub_shapes"],
+            "inventory must cover exactly ManifoldKernel's 5 fields, with no duplicates"
+        );
+
+        for (name, disposition) in &inventory {
+            assert_eq!(
+                *disposition,
+                StateDisposition::Persist,
+                "field `{name}` must be classified Persist: ManifoldKernel is append-only \
+                 with no invalidation path (kernel.rs:111-117)"
+            );
+        }
+
+        // Pin the shared persist/clear/rebuild taxonomy vocabulary once, even
+        // though manifold classifies every field as `Persist`: `Clear` and
+        // `Rebuild` exist for parity with the occt/gmsh state-inventory leaves.
+        let _taxonomy =
+            [StateDisposition::Persist, StateDisposition::Clear, StateDisposition::Rebuild];
     }
 }

@@ -1,0 +1,40 @@
+module dcr_solver_load_dropped_dimensioned
+
+// D3 decompose-phase RED for PRD `docs/prds/v0_6/dimension-checked-readers.md`
+// leaf γ1 (boundary row B1) — the headline solver inversion, measured end to end.
+//
+// IDENTICAL to `dcr_solver_load_dropped_bare.ri` except that the tip load is
+// spelled the units-CORRECT way, `force: 1000N`.
+//
+// MEASURED at decompose (2026-07-28, main efba5a8036):
+//   bare `force: 1000.0`  ->  result.max_von_mises = 5139325.408614099 Pa, iterations = 719
+//   this file, `1000N`    ->  result.max_von_mises = 0 Pa,                 iterations = 0
+//   `reify eval` EXIT 0 in BOTH cases; the only trace is a ctor-conformance
+//   WARNING ("argument 'force' has type 'Scalar[m*kg*s^-2]' but param 'force'
+//   requires type 'Real'"), never an Error, and the FeaFailure::NoLoads warning
+//   (elastic_static.rs:613) does NOT fire because the load list is non-empty.
+//
+// So the units-CORRECT spelling contributes EXACTLY ZERO force to
+// solve_elastic_static while the SAME source text contributes 1000 N to
+// solve_buckling (buckling.rs:726/:730 accepts both shapes).
+//
+// γ1's signal: after the reader is widened, this file's `max_von_mises` equals
+// the bare control's 5139325.408614099 Pa. This asserts the force is APPLIED —
+// not merely that a diagnostic appeared (PRD §8 B1 negative-assertion mandate)
+// — and needs NO change to ElasticResult/BucklingResult, both of which are
+// deliberately frozen and store no applied load
+// (crates/reify-compiler/stdlib/solver_buckling_fns.ri:66-79).
+
+structure DcrSolverLoadDroppedDimensioned {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000N)
+    let mount    = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+}

@@ -3,9 +3,9 @@
 //! Tests that chained comparisons like `a < b < c` are desugared
 //! into And-chains of pairwise comparisons: `And(Lt(a,b), Lt(b,c))`.
 
-use reify_test_support::compile_first_template;
 use reify_core::Severity;
 use reify_ir::{BinOp, CompiledExprKind};
+use reify_test_support::compile_first_template;
 
 /// step-1: `constraint a < b < c` desugars to `And(Lt(a,b), Lt(b,c))`.
 #[test]

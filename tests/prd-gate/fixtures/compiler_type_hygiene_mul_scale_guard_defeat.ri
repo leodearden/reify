@@ -1,0 +1,18 @@
+// PRD probe fixture — docs/prds/v0_6/compiler-type-hygiene.md §2 / task β2 (G6 evidence, boundary row 5/6).
+// PRE (2026-07-06, main 4d696e63cb): `s = a * 2.0` statically types Scalar (dimensionless)
+// via the scalar-preserving arm (type_compat.rs:1580-1587) while the runtime returns
+// vec(2m, 4m, 6m) — so `constraint s > 0` compiles SILENTLY (defeating the 4490
+// CmpOperandKind guard) and is permanently indeterminate:
+//   "constraint P#constraint[0] indeterminate: operator undefined for these operand kinds: Vector".
+// POST-LANDED (task β2 / 5055, main c277691a7d): rejection now fires — `reify check` exits 1 with
+// "error: comparison `>` left operand must be a comparable kind, got `Vector3<Scalar[m]>`" (4490
+// CmpOperandKind); the runtime-legal scale itself stays legal. The probe matches on the substring
+// "must be a comparable kind" (task λ/5070).
+module compiler_type_hygiene_mul_scale_guard_defeat
+
+structure def P {
+    param a : Vector3<Length> = vec3(1.0m, 2.0m, 3.0m)
+    let s = a * 2.0
+    let t = s + a
+    constraint s > 0
+}

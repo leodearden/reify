@@ -11,9 +11,16 @@ import std.ports.mechanical
 // A generic shaft coupling that connects a driver port to a driven port.
 // D and N are type parameters constrained to RotaryPort; no concrete
 // RotaryPort conformer is instantiated here (a conformer would need
-// torque_capacity, max_speed, and direction literals — avoidable risk
+// max_torque, max_speed, and direction literals — avoidable risk
 // for this zero-Error signal per PRD §4 decision 4).
-structure def Coupling<D: RotaryPort, N: RotaryPort> {
+//
+// Named ShaftCoupling (not Coupling) to avoid colliding with the unrelated
+// stdlib `Coupling<P: DrivingJoint + HasMotion>` kinematic joint type
+// declared in crates/reify-compiler/stdlib/kinematic.ri — same name,
+// different semantics, different type params/bounds, and an unqualified
+// `Coupling` here would silently shadow the stdlib one in this module's
+// template list (task #5594).
+structure def ShaftCoupling<D: RotaryPort, N: RotaryPort> {
     port driver : D
     port driven : N
 }

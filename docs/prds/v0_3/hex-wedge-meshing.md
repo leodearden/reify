@@ -2,6 +2,7 @@
 
 Status: deferred — candidate v0.3.x. Partial answer to thin-body FEA before shells (`structural-analysis-shells.md`) ship in v0.4. Filed 2026-05-02 from FEA PRD spillover.
 Design resolved 2026-05-04 — see "Resolved design decisions" below.
+Addendum 2026-07-04 — Phase A activation under the v0.6 realization read-back architecture; see the final section "## Addendum (2026-07-04)". The original "Cache-key handling" / "swept_kind is light-touch metadata" decisions are partially superseded there.
 
 ## Goal
 
@@ -141,3 +142,112 @@ Thirteen tasks for the v0.3.x first cut (Phase A); one further task for the Phas
 - **Partial alternative to `structural-analysis-shells.md` (v0.4)** — addresses a subset of thin-body cases (those backed by swept geometry) with much smaller engineering scope. Shells still required for non-swept thin features (general sheet metal, casings, region-level mixed thin/blocky bodies). The shells PRD already lists hex/wedge as a "partial overlap" — the cross-reference resolves both ways.
 - **Carries a load-bearing assumption for `mesh-morphing.md`** — the morph PRD treats swept-mesh preservation as a primary motivator. That assumption is only valid if a small parameter change preserves the body's `swept_kind` classification and the 2D cross-section morphs in lockstep with the 3D sweep. Validation of that bi-directional claim lives in the morph PRD's task list, not here.
 - **Touches v0.2 multi-kernel** — extends the mesher capability descriptor (`multi-kernel.md`) with new `(operation, repr_kind)` tuples for hex/wedge volume meshing.
+
+## Addendum (2026-07-04): Phase A activation under the v0.6 realization read-back architecture
+
+**Approach: B + H** (contract + boundary-test sketch below). Trigger: touches two G5 load-bearing seams — FEA and realization-kind dispatch (`engine-integration-norm.md` §3.2).
+
+### Why this addendum
+
+Phase A's 13 tasks (1–13 above → tasks 2982–2994) all landed `done`. But **task 8** ("Volume-mesh integration", → task 2989) shipped only the `dispatch_volume_mesh` gate/truth-table (`engine_build.rs`) plus `sweep_2d_mesh_to_3d` (`reify-solver-elastic/src/sweep.rs`) — **with no live production caller**. It predates the **v0.6 realization-read-api** batch (tasks 4507/4508/4509/4743, all `done`), which is the architecture this PRD never saw:
+
+- v0.6 inserted a **typed content read-back layer** between mesh producer and FEA consumer — `RealizedContent` (`crates/reify-compute-contract/src/realization.rs`) + `reify_ir::VolumeMesh` (`crates/reify-ir/src/geometry.rs`), both delivered **tet-only**. `volume_mesh()` projection (`crates/reify-eval/src/realization_content.rs`) reads back tet only.
+- Task **4091** made the elastic solve consume the **realized** `VolumeMesh` (replacing the synthetic box). So a swept mesh must now flow **through** the read-back layer to reach the solver — it can no longer be produced-and-consumed transiently in one place.
+- Realization **demand** (`compute_demanded_reprs` / `realization_indices_where`, `engine_build.rs`) is computed at build time, **before** compute-node dispatch and before the runtime `ElasticOptions` value exists.
+
+Net: the leaf Phase A signal ("a pure-swept body under an elastic FEA solve realizes as a hex/wedge `VolumeMesh`") is **unreachable** on main. Two substrate capabilities — never specified by this PRD because they are consequences of v0.6, and owned by no task — are missing: (1) hex/wedge **storage + read-back**, and (2) **element-type selection** at the build-time production edge. Task **4743** (which gave `dispatch_volume_mesh` its live *tet-path* caller, 2026-06-24) had to hardcode `swept_kind=None, force_tet=true` with `unreachable!()` swept closures **precisely because** capability (1) does not exist (comment at `engine_build.rs` ~7631: "a swept hex/wedge mesh has no `volume_mesh()` tet read-back projection, so it is NOT stored"). Task **4746** was filed to "activate" Phase A but its RED premise is unreachable without this substrate — the architect correctly blocked it (esc-4746-43 / esc-4746-46; provenance esc-2995-194 NO-GO). This addendum closes the gap.
+
+### What of the original PRD stands / is superseded
+
+- **Stands:** "No new `ReprKind` variant; volume meshes remain `VolumeMesh`" (§ Cache-key handling). We extend `VolumeMesh` **in place**. Element-type is still determined by geometry hash + `force_tet`; no separate cache entries.
+- **Superseded:** "`swept_kind` is light-touch metadata, consumed locally by meshing." Under v0.6 the **mesh itself** must carry element connectivity through the read-back layer; the `swept_kind` tag remains but is no longer the transport for element type.
+
+### Resolved design decisions (2026-07-04)
+
+1. **Storage shape: a `VolumeConnectivity` enum inside `reify_ir::VolumeMesh`.** `RealizedContent` keeps its single `VolumeMesh` arm (honors "remain `VolumeMesh`"). One element family per mesh — no within-body mixing (matches § "Body-level only"). Illegal states unrepresentable; the solver gets a single match point. Cost accepted: existing tet readers migrate to `VolumeConnectivity::Tet`.
+2. **Element-type selection: a realization-demand attribute, read statically from the demanding FEA call.** Demand carries `{HexPreferred | TetForced | HexRequired}` per demanded `VolumeMesh`, derived by statically reading `force_tet`/`require_hex_wedge` off the demanding `elastic_*` call's `ElasticOptions` argument (reusing the existing consumer→producer static match in `realization_indices_where`). The production edge honors that preference together with a `swept_kind_table` lookup (already populated at `engine_build.rs` ~7216). This is the only way to honor `force_tet` at all: the solver reads a *realized* mesh and has no geometry to re-tet from, so the tet-vs-hex/wedge choice must be made at build time.
+3. **Data-dependent (non-literal) options degrade, they don't block.** When `force_tet`/`require_hex_wedge` are not compile-time constants (e.g. bound to a computed expression), demand cannot resolve them statically → default to `HexPreferred` + emit a one-shot info diagnostic ("`force_tet`/`require_hex_wedge` ignored for element selection: not a compile-time constant"). Full runtime honoring (a post-build realization redispatch) is **deferred** to a follow-up — see Out of scope. This covers the literal-option case, which is essentially all real usage.
+
+### Contract section (B + H)
+
+**C-1 — `VolumeConnectivity` on `reify_ir::VolumeMesh`** (owned by N1):
+
+```rust
+// crates/reify-ir/src/geometry.rs
+pub enum VolumeConnectivity {
+    Tet   { indices: Vec<u32>, order: ElementOrderTag }, // P1 (4/elem) or P2 (10/elem)
+    Hex   { indices: Vec<u32> },                         // P1 8-node (8/elem)
+    Wedge { indices: Vec<u32> },                         // P1 6-node prism (6/elem)
+}
+pub struct VolumeMesh {
+    vertices: Vec<f32>,
+    connectivity: VolumeConnectivity, // replaces flat tet_indices + element_order
+    normals: Option<Vec<f32>>,
+    boundary: Option<BoundaryAssociation>,
+}
+```
+Invariants: exactly one element family per mesh; `Hex`/`Wedge` are P1-only in v0.3.x (P2 hex/wedge remain out of scope); `vertices` layout unchanged. A `From<SweptMesh3d> for VolumeMesh` (or equivalent conversion fn) maps `SweptConnectivity::{Hex,Wedge}{indices}` → `VolumeConnectivity::{Hex,Wedge}{indices}` — this is the "`SweptMesh3d → VolumeMesh` wrap" flagged unbuilt at `reify-solver-elastic/src/lib.rs` ~706. A convenience accessor (e.g. `VolumeMesh::tet_indices() -> Option<&[u32]>`) bounds tet-reader churn.
+
+**C-2 — `volume_mesh()` projection carries connectivity** (owned by N1): `GeometryKernel::volume_mesh(handle)` / the `ReprKind::VolumeMesh` arm of `realization_content.rs` must be able to emit a `RealizedContent::VolumeMesh` whose `connectivity` is `Hex`/`Wedge`, not only `Tet`.
+
+**C-3 — FEA consumer dispatches on connectivity** (owned by N1): the elastic assembly path (`reify-solver-elastic`, the consumer wired by 4091) matches on `VolumeConnectivity` and routes to the P1 hex / P1 wedge stiffness assembly already built by Phase A tasks 2–5 — so a *realized* hex/wedge `VolumeMesh` assembles and solves.
+
+**C-4 — demand element-type preference** (owned by 4746): `volume_mesh_demanded_indices` returns `HashMap<usize, ElementTypePref>` (was `HashSet<usize>`), where `enum ElementTypePref { HexPreferred, TetForced, HexRequired }`. `TetForced`/`HexRequired` are mutually exclusive by the existing `!(force_tet && require_hex_wedge)` constraint (`solver_elastic.ri:385`).
+
+**C-5 — production-edge selection truth table** (owned by 4746; at the `dispatch_volume_mesh` call, `engine_build.rs` ~7598 — replaces the hardcoded `None`/`force_tet=true`/`unreachable!()`):
+
+| `swept_kind` | pref | outcome |
+|---|---|---|
+| `Some(_)` | `HexPreferred` | hex/wedge (swept path) |
+| `Some(_)` | `HexRequired` | hex/wedge |
+| `Some(_)` | `TetForced` | tet |
+| `None` | `HexPreferred` | tet (silent fall-back, info diagnostic) |
+| `None` | `TetForced` | tet |
+| `None` | `HexRequired` | **hard error** (`require_hex_wedge` on non-swept body) |
+
+Internal `dispatch_volume_mesh` fall-backs (2D-mesh-fail, sweep-fail) already degrade to tet unless `HexRequired` (→ error), per the truth table task 8 shipped. The success + per-cause fall-back diagnostics (task 2992, `diagnostics.rs` ~3246) and the P2→P1 substitution info diagnostic (`p2_substitution_diagnostic`) fire as already built.
+
+### Boundary-test sketch (B + H)
+
+| # | Scenario | Preconditions | Postconditions (asserts) | Faces |
+|---|---|---|---|---|
+| P1 | dispatch produces hex from a recombined swept quad section | `swept_kind=Some(Extrude)`, 2D quad mesh ok | `VolumeMeshOutcome::Swept(SweptConnectivity::Hex)` | producer (N1/existing) |
+| P2 | Swept outcome wraps into `VolumeMesh(Hex)` | a `SweptMesh3d` with `Hex` | `RealizedContent::VolumeMesh`, `connectivity == Hex`, vertex count preserved | producer (N1) |
+| C1 | solver assembles a realized hex `VolumeMesh` | `RealizedContent::VolumeMesh(Hex)` | assembly dispatches the hex path; solve completes | consumer (N1) |
+| C2 | solver assembles a realized wedge `VolumeMesh` | `...(Wedge)` | assembly dispatches the wedge path | consumer (N1) |
+| E1 | **leaf:** pure-swept extrude under FEA default options → hex/wedge | `.ri`: single `extrude` + `elastic_static(...)` default `ElasticOptions()` | realized `VolumeMesh` connectivity is `Hex`/`Wedge` (observed via debug MCP / `reify eval`); success info diagnostic fires | e2e (4746) |
+| E2 | **leaf (rejection):** `require_hex_wedge=true` on a non-swept body → hard error | `.ri`: non-swept body + `ElasticOptions(require_hex_wedge: true)` | realization hard-errors with the `require_hex_wedge` diagnostic (observed to fire) | e2e (4746) |
+| E3 | **leaf:** `force_tet=true` on a swept body → tet | `.ri`: `extrude` + `ElasticOptions(force_tet: true)` | realized `VolumeMesh` connectivity is `Tet` | e2e (4746) |
+
+Rows E1–E3 are 4746's `user_observable_signal` (G2 integration-gate); C1–C2 face N1's consumer side; P1–P2 the producer side. E2 is the G6-branch-4 rejection binding — the capability manifest must show the `require_hex_wedge` rejection **observed to fire**, not merely declared.
+
+### Decomposition (this addendum — completes task 8 under v0.6)
+
+Two tasks. N1 is a foundation/intermediate roped into 4746's leaf (C-as-integration-gate); 4746 is re-scoped from a bare wiring task to the activation leaf and **re-gated** onto N1.
+
+- **N1 — Hex/wedge storage + read-back substrate** (`reify-ir`, `reify-compute-contract`, `reify-eval`, `reify-solver-elastic`). Deliver C-1/C-2/C-3: `VolumeConnectivity` on `VolumeMesh` + `From<SweptMesh3d>`; `volume_mesh()`/`realization_content.rs` projection carries connectivity; elastic assembly dispatches on `VolumeConnectivity` so a realized hex/wedge `VolumeMesh` solves. **Signal:** intermediate — unlocks 4746; boundary rows P2/C1/C2 green. (No standalone user-observable signal; roped into 4746.)
+- **4746 (re-scoped) — Phase A production-edge activation** (`reify-eval/src/engine_build.rs`, `reify-audit/tests/engine_seam_orphans_g_allow.rs`, new e2e under `reify-eval/tests/`). Deliver C-4/C-5: demand carries `ElementTypePref` (static read of `force_tet`/`require_hex_wedge`, non-literal → `HexPreferred`+diagnostic); production edge consults `swept_kind_table` + pref and calls `dispatch_volume_mesh` with real args (drop the hardcoded `None`/`force_tet=true`/`unreachable!()`); **remove `dispatch_volume_mesh` AND `sweep_2d_mesh_to_3d` from the engine-seam orphan allow-list** (concrete done-signal). **Signal (leaf, G2):** boundary rows E1/E2/E3 — a pure-swept body realizes hex/wedge under default FEA options; `require_hex_wedge=true` on a non-swept body hard-errors; `force_tet=true` yields tet. **Depends on:** N1, and (existing) 4091/4509/4508.
+
+Downstream **task 2995** (Phase B, `pending`) stays dep-wired on 4746 — its flip condition ("a pure-swept body verifiably realizes as a hex/wedge `VolumeMesh`") is satisfied by 4746's leaf, so Phase B is not stranded.
+
+### Cross-PRD relationship (addendum seams)
+
+| Other PRD / task | Direction | Seam mechanism | Owner | Status |
+|---|---|---|---|---|
+| `structural-analysis-fea.md` (task 4091) | consumes | realized `VolumeMesh` → elastic assembly | this-prd (N1 extends the consumer) | queued (N1) |
+| `engine-integration-norm.md` §3.2 | plugs into | realization-kind dispatch (`dispatch_volume_mesh`) | this-prd (4746) | queued (4746) |
+| task 2995 (Phase B) | produces-for | Phase-A validated hex/wedge realization | this-prd (4746 leaf) | pending, dep-wired |
+| `mesh-morphing.md` | produces-for | `swept_kind` preservation across morph | mesh-morphing (validation lives there) | unchanged (flagged in original PRD) |
+
+No new contested-ownership seam is introduced.
+
+### Out of scope for this addendum (deferred follow-ups)
+
+- **Full runtime honoring of data-dependent `force_tet`/`require_hex_wedge`** (post-build realization redispatch so a non-literal option value drives element type). Deferred; the `HexPreferred`+diagnostic degrade (decision 3) covers literal options, which is all real usage. File as a follow-up if a data-dependent case surfaces.
+- **P2 hex/wedge**, within-body mixed elements, Phase B/C — all remain out of scope per the original PRD.
+
+### Open questions (tactical — decided at implementation time)
+
+1. **Exact compiled-expr traversal for the static `ElasticOptions`-arg read** (C-4). The demand walker already matches consumer→producer via compiled `UserFunctionCall` arg cells; reading a *nested* `ElasticOptions(force_tet: …)` ctor-literal sub-field depends on its real `CompiledExpr` shape. **First step for 4746's implementer:** author a fixture and probe the real shape via `reify eval` / inspection (overlay's eval-signature discipline) *before* freezing any assumption into the RED test. If the nested literal isn't cleanly readable, fall back to `HexPreferred`+diagnostic for that call (the decision-3 path) rather than guessing the shape.
+2. **Where the `SweptMesh3d → VolumeMesh` wrap attaches** — at the `execute_realization_ops` store edge vs inside the `realization_content.rs` projection. N1 provides the conversion; 4746 wires whichever edge actually stores/projects the realized content. Confirm the single storage point at impl time.
+3. **Diagnostic phrasing** for the non-literal-options degrade and the Phase-A→B fall-back (the latter already flagged in the original "Open design questions").

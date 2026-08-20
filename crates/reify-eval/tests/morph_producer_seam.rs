@@ -65,8 +65,10 @@ impl MorphProducer for MockProducer {
 fn empty_mesh() -> VolumeMesh {
     VolumeMesh {
         vertices: Vec::new(),
-        tet_indices: Vec::new(),
-        element_order: reify_ir::ElementOrderTag::P1,
+        connectivity: reify_ir::VolumeConnectivity::Tet {
+            indices: Vec::new(),
+            order: reify_ir::ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }

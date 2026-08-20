@@ -161,6 +161,24 @@
   color: var(--reify-text-muted, #6c7086);
 }
 
+/* Edit-in-different-unit hint (task #5199 amend, reviewer_comprehensive
+   robustness finding): flags a real footgun — typing a fresh value while
+   this is shown commits it in the canonical unit, not the one currently
+   picked for display — so it must read as more than an ordinary muted
+   badge. Reuses the existing warning color (already used for "constrained"
+   determinacy / "pending" freshness, i.e. "notable but not an error") with
+   bold weight and a solid border for extra visual weight over `.unitBadge`. */
+.unitEditHint {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 2px;
+  color: var(--reify-warning, #fab387);
+  background: rgba(250, 179, 135, 0.18);
+  border: 1px solid var(--reify-warning, #fab387);
+  white-space: nowrap;
+}
+
 .determinacyBadge {
   font-size: 10px;
   padding: 1px 4px;

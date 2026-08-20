@@ -386,20 +386,23 @@ fn e2e_vm_probe_reads_back_tet_volume_mesh_from_demanded_body() {
          execute (gmsh tet) → project → read path must deliver a VolumeMesh, not \
          a None-content (BRep-only) handle",
     );
+    let vol_tet_indices = vol
+        .tet_indices()
+        .expect("gmsh-produced volume mesh must be tet connectivity");
     assert_eq!(
-        vol.tet_indices.len() % 4,
+        vol_tet_indices.len() % 4,
         0,
         "tet_indices.len() must be divisible by 4 (P1 tet connectivity); got {}",
-        vol.tet_indices.len()
+        vol_tet_indices.len()
     );
     assert!(
-        vol.tet_indices.len() / 4 > 0,
+        vol_tet_indices.len() / 4 > 0,
         "the volume mesh must contain at least one tetrahedron; got {} indices",
-        vol.tet_indices.len()
+        vol_tet_indices.len()
     );
     assert_eq!(
-        vol.element_order,
-        ElementOrderTag::P1,
+        vol.element_order(),
+        Some(ElementOrderTag::P1),
         "the P1 element-order tag must round-trip production → storage → read-back"
     );
 }

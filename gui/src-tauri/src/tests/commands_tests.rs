@@ -23,12 +23,44 @@ fn make_loaded_session() -> EngineSession {
     session
 }
 
+/// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
+/// subs; each `Mid` composes two `Leaf` subs; each `Leaf` owns a self-contained
+/// box. This yields 4 independent leaf realizations at the composed dotted paths
+/// `Top.a.p` / `Top.a.q` / `Top.b.p` / `Top.b.q` — 3 nesting levels, matching the
+/// repro's `Printer.motion.head_block` depth.
+///
+/// Leaf geometry is self-contained (a plain `box`, no cross-sub `GeomRef`), so no
+/// realization references `self.inner.body`; that would trip the documented v0.1
+/// nested sub-of-sub override scope boundary (cross_sub_geometry_e2e.rs:1583-1672).
+const NESTED_COMPOSED_SRC: &str = r#"pub structure Leaf {
+    let g = box(10mm, 10mm, 10mm)
+}
+pub structure Mid {
+    sub p = Leaf()
+    sub q = Leaf()
+}
+pub structure Top {
+    sub a = Mid()
+    sub b = Mid()
+}"#;
+
+/// Build an `EngineSession` (MockGeometryKernel + SimpleConstraintChecker) with
+/// [`NESTED_COMPOSED_SRC`] loaded — the shared nested-composed fixture for the
+/// full-scene debug-read tests (task 5348).
+fn make_nested_composed_session() -> EngineSession {
+    let mut session = make_session();
+    session
+        .load_from_source(NESTED_COMPOSED_SRC, "nested_composed")
+        .expect("load_from_source of NESTED_COMPOSED_SRC should succeed");
+    session
+}
+
 #[test]
 fn app_state_constructible() {
     let session = make_loaded_session();
     let _state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -42,7 +74,7 @@ fn app_state_selection_is_accessible() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -62,7 +94,7 @@ fn app_state_selection_multi() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -94,7 +126,7 @@ fn save_and_open_file_roundtrip() {
     // Open
     let file_data = open_file_impl(path.to_str().unwrap()).expect("open should succeed");
     assert_eq!(file_data.path, path.to_str().unwrap());
-    assert!(file_data.content.contains("structure Bracket"));
+    assert!(file_data.content.contains("structure def Bracket"));
 }
 
 #[test]
@@ -307,7 +339,7 @@ fn get_containing_definition_impl_returns_ok_on_healthy_mutex() {
     let session = make_loaded_session();
     let engine = Mutex::new(session);
 
-    // bracket_source() starts with "structure Bracket {" on line 1.
+    // bracket_source() starts with "structure def Bracket {" on line 1.
     // Position (1, 1) is the first character of that declaration → inside Bracket.
     let result = get_containing_definition_impl(&engine, 1, 1);
     let def_info = result
@@ -892,6 +924,223 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_p
     );
 }
 
+/// step-3 (task 5348): the debug-MCP `engine_state` tool (via `engine_state_json`)
+/// must report the FULL realized scene, not the selective incremental delta, once
+/// the frontend has flipped production demand to selective.
+///
+/// On the nested-composed fixture, `engine_state_json` before any selective sync
+/// projects the complete cold full-scope scene (n meshes). After `sync_demand`
+/// hides one leaf branch (flipping production demand selective), `engine_state_json`
+/// must STILL report n meshes — it routes through `build_gui_state_full_scene`.
+///
+/// RED until step-4 switches `engine_state_json` to `build_gui_state_full_scene`:
+/// today it calls the selective `build_gui_state`, so the post-sync projection is
+/// the under-reporting delta (< n) — assertion-failure RED.
+#[test]
+fn engine_state_json_reports_full_scene_under_selective_demand() {
+    use crate::commands::engine_state_json;
+
+    let mut session = make_nested_composed_session();
+
+    // Cold full-scope projection = the complete scene.
+    let cold = engine_state_json(&mut session).expect("cold engine_state_json should succeed");
+    let cold_meshes = cold["meshes"].as_array().expect("meshes must be an array");
+    let n = cold_meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must project the 4 leaf bodies; got {n}"
+    );
+    let all_paths: Vec<String> = cold_meshes
+        .iter()
+        .map(|m| {
+            m["entity_path"]
+                .as_str()
+                .expect("each mesh must carry an entity_path string")
+                .to_string()
+        })
+        .collect();
+
+    // Hide one leaf branch → flip production demand SELECTIVE.
+    let hidden = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths.iter().filter(|p| **p != hidden).cloned().collect();
+    session.sync_demand(&visible);
+
+    // The engine_state tool must report the FULL scene, not the selective delta.
+    let after = engine_state_json(&mut session).expect("post-sync engine_state_json should succeed");
+    assert_eq!(
+        after["meshes"]
+            .as_array()
+            .expect("meshes must be an array")
+            .len(),
+        n,
+        "engine_state must report the full realized scene under selective demand, not the delta"
+    );
+}
+
+/// step-5 (task 5348): the PRIMARY acceptance regression test — the debug-MCP
+/// `mesh_stats` tool (via the extracted `commands::mesh_stats_json`) must report a
+/// mesh-stats entry per rendered body == the scene's body count, on a composed
+/// fixture with nested subs at 3+ levels, even under selective demand.
+///
+/// Mirrors step-3 but through `mesh_stats_json`, and additionally pins the
+/// per-entry shape parity with the current `handle_mesh_stats` output.
+///
+/// RED until step-6 extracts `commands::mesh_stats_json` (compile-error RED).
+#[test]
+fn mesh_stats_json_reports_full_scene_under_selective_demand() {
+    use crate::commands::mesh_stats_json;
+
+    let mut session = make_nested_composed_session();
+
+    // Cold full-scope projection = the complete scene.
+    let cold = mesh_stats_json(&mut session).expect("cold mesh_stats_json should succeed");
+    let cold_meshes = cold["meshes"].as_array().expect("meshes must be an array");
+    let n = cold_meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must project the 4 leaf bodies; got {n}"
+    );
+    let all_paths: Vec<String> = cold_meshes
+        .iter()
+        .map(|m| {
+            m["entity_path"]
+                .as_str()
+                .expect("each mesh must carry an entity_path string")
+                .to_string()
+        })
+        .collect();
+
+    // Hide one leaf branch → flip production demand SELECTIVE.
+    let hidden = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths.iter().filter(|p| **p != hidden).cloned().collect();
+    session.sync_demand(&visible);
+
+    // mesh_stats must report the FULL scene (n entries), not the selective delta.
+    let after = mesh_stats_json(&mut session).expect("post-sync mesh_stats_json should succeed");
+    let after_meshes = after["meshes"].as_array().expect("meshes must be an array");
+    assert_eq!(
+        after_meshes.len(),
+        n,
+        "mesh_stats entry count must equal the scene's rendered body count under selective demand"
+    );
+
+    // Per-entry shape parity with handle_mesh_stats.
+    for entry in after_meshes {
+        for key in [
+            "entity_path",
+            "vertex_count",
+            "face_count",
+            "bounding_box",
+            "element_kind_count",
+        ] {
+            assert!(
+                entry.get(key).is_some(),
+                "each mesh_stats entry must carry '{key}'; got {entry:?}"
+            );
+        }
+    }
+}
+
+/// step-6 amendment (task 5348, reviewer test-coverage): the full-scene
+/// regression test above only checks key *presence*, and its plain-box fixtures
+/// all carry `element_kind: None`, so their `element_kind_count` is always the
+/// empty object `{}`. That never exercises `mesh_stats_json`'s populated
+/// byte→string-key histogram projection — a regression that mis-serialized a
+/// non-empty histogram would slip through.
+///
+/// The FEA shell flexure fixture tessellates (under `MockGeometryKernel`) to a
+/// body mesh with an all-shell `element_kind` (`vec![1; face_count]`, see
+/// `build_gui_state_shell_flexure_populates_element_kind_and_von_mises_top` in
+/// engine_tests.rs), so `mesh_stats_json` must emit a NON-empty, string-keyed
+/// `element_kind_count` object — exactly `{"1": face_count}` — whose counts
+/// partition the mesh's faces. This pins the full byte→JSON-key mapping, not just
+/// the presence of the key.
+#[test]
+fn mesh_stats_json_emits_populated_element_kind_histogram() {
+    use crate::commands::mesh_stats_json;
+
+    let source = include_str!("../../../../examples/fea_shell_flexure.ri");
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(source, "FeaShellFlexure")
+        .expect("load_from_source must succeed for fea_shell_flexure.ri");
+
+    let stats = mesh_stats_json(&mut session).expect("mesh_stats_json should succeed");
+    let meshes = stats["meshes"].as_array().expect("meshes must be an array");
+
+    // The shell body's stats entry is the one whose histogram object is non-empty
+    // (the plain-box meshes all serialize `element_kind_count` as `{}`).
+    let shell_entry = meshes
+        .iter()
+        .find(|entry| {
+            entry["element_kind_count"]
+                .as_object()
+                .is_some_and(|hist| !hist.is_empty())
+        })
+        .expect(
+            "FEA shell flexure must yield a mesh_stats entry with a populated \
+             element_kind histogram (all-shell body)",
+        );
+
+    let hist = shell_entry["element_kind_count"]
+        .as_object()
+        .expect("element_kind_count must serialize as a JSON object");
+    let face_count = shell_entry["face_count"]
+        .as_u64()
+        .expect("face_count must be a JSON number");
+
+    // Byte→string-key mapping contract: keys are decimal-stringified `u8` bytes,
+    // values are positive counts. A mis-serialized populated histogram (wrong key
+    // type, dropped/duplicated counts) fails here — the full-scene test's
+    // key-presence check on box fixtures never reaches this branch.
+    for (key, value) in hist {
+        assert!(
+            key.parse::<u8>().is_ok(),
+            "element_kind_count keys must be stringified u8 bytes; got {key:?}"
+        );
+        assert!(
+            value.as_u64().is_some_and(|c| c > 0),
+            "each histogram count must be a positive JSON number; got {value:?} for {key:?}"
+        );
+    }
+
+    // The histogram partitions the faces: its counts sum to face_count, and since
+    // every face is a shell triangle (byte 1) it is exactly `{"1": face_count}`.
+    let hist_total: u64 = hist.values().filter_map(serde_json::Value::as_u64).sum();
+    assert_eq!(
+        hist_total, face_count,
+        "element_kind histogram counts must partition the mesh's faces (sum == face_count)"
+    );
+    assert_eq!(
+        hist.get("1").and_then(serde_json::Value::as_u64),
+        Some(face_count),
+        "an all-shell body must classify every face under the '1' (shell) key; got {hist:?}"
+    );
+
+    // The shell body has vertices, so its `bounding_box` is the non-null
+    // `{min, max}` branch (not the zero-vertex `null` branch) — assert its shape,
+    // which the full-scene test's `bounding_box` key-presence check (satisfied
+    // even by `null`) cannot distinguish.
+    let bbox = shell_entry["bounding_box"]
+        .as_object()
+        .expect("a mesh with vertices must carry a non-null {min,max} bounding_box");
+    for key in ["min", "max"] {
+        assert_eq!(
+            bbox[key].as_array().map(|a| a.len()),
+            Some(3),
+            "bounding_box.{key} must be a 3-element array"
+        );
+    }
+}
+
 /// Two-body, constraint-free, param-driven fixture (mirrors the engine-side
 /// `SELECTIVE_MULTIBODY_SRC` at engine_tests.rs:13210 and the δ
 /// `SELECTIVE_DEMAND_MULTIBODY_SRC`): `w → sa → box a (R0)` and
@@ -1470,6 +1719,169 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
     );
 }
 
+// ── Task 5357 step-5: run_on_large_stack composition guard ───────────────────
+
+/// Sorted key projection of a keyed `GuiState` collection.
+fn sorted_keys<T>(items: &[T], key: impl Fn(&T) -> &str) -> Vec<String> {
+    let mut keys: Vec<String> = items.iter().map(|i| key(i).to_owned()).collect();
+    keys.sort();
+    keys
+}
+
+/// Assert that two `GuiState`s agree on everything a large-stack relocation
+/// could plausibly change: the identity (and hence cardinality) of every keyed
+/// collection, plus both diagnostics streams.
+///
+/// Deliberately NOT a whole-`GuiState` `assert_eq!`. The two states here come
+/// from two independently constructed `EngineSession`s, so a full comparison
+/// would also assert run-to-run determinism of every float, every vertex buffer
+/// and every collection's ORDER — none of which is the property under test. If
+/// any `GuiState` field ever became ordering-dependent (e.g. built from a
+/// `HashMap`/`HashSet` walk) or gained a timing/counter field, a full comparison
+/// would go flaky for a reason with nothing to do with `large_stack`, and the
+/// failure would point at the wrong subsystem. These order-insensitive
+/// projections are what actually distinguish "ran on the large-stack thread"
+/// from "ran inline".
+fn assert_same_salient_state(
+    wrapped: &crate::types::GuiState,
+    direct: &crate::types::GuiState,
+    what: &str,
+) {
+    assert_eq!(
+        sorted_keys(&wrapped.files, |f| &f.path),
+        sorted_keys(&direct.files, |f| &f.path),
+        "{what}: the set of loaded file paths must not depend on which thread the compile ran on"
+    );
+    assert_eq!(
+        sorted_keys(&wrapped.meshes, |m| &m.entity_path),
+        sorted_keys(&direct.meshes, |m| &m.entity_path),
+        "{what}: the set of realized mesh entity_paths must be identical"
+    );
+    assert_eq!(
+        sorted_keys(&wrapped.values, |v| &v.cell_id),
+        sorted_keys(&direct.values, |v| &v.cell_id),
+        "{what}: the set of value cell_ids must be identical"
+    );
+    assert_eq!(
+        sorted_keys(&wrapped.constraints, |c| &c.node_id),
+        sorted_keys(&direct.constraints, |c| &c.node_id),
+        "{what}: the set of constraint node_ids must be identical"
+    );
+    assert_eq!(
+        wrapped.compile_diagnostics.len(),
+        direct.compile_diagnostics.len(),
+        "{what}: compile diagnostics count must be identical; wrapped={:?} direct={:?}",
+        wrapped.compile_diagnostics,
+        direct.compile_diagnostics
+    );
+    assert_eq!(
+        wrapped.tessellation_diagnostics.len(),
+        direct.tessellation_diagnostics.len(),
+        "{what}: tessellation diagnostics count must be identical; wrapped={:?} direct={:?}",
+        wrapped.tessellation_diagnostics,
+        direct.tessellation_diagnostics
+    );
+}
+
+/// `open_file_engine_impl` invoked THROUGH `run_on_large_stack` returns the same
+/// `Ok(GuiState)` as a direct (un-wrapped) call.
+///
+/// This proves the large-stack helper composes safely with the real engine /
+/// `with_engine_lock` / compile path when the compile runs on a plain `std`
+/// thread (no tokio-context `blocking_send` issue; identical result). It is the
+/// headless proxy for the un-headless-testable `open_file_engine` / `update_source`
+/// Tauri command wiring (step-6): those commands cannot be built headlessly, so
+/// this exercises the exact `run_on_large_stack(|| open_file_engine_impl(..))`
+/// composition they perform.
+#[test]
+fn open_file_engine_impl_runs_correctly_through_large_stack() {
+    use crate::commands::open_file_engine_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bracket.ri");
+    std::fs::write(&file, bracket_source()).unwrap();
+    // Absolute path → canonicalization needs no cwd change (unlike the relative
+    // sibling test above), so no `cwd_lock` is required.
+    let path = file.to_str().unwrap();
+
+    // Direct (un-wrapped) call on a fresh engine.
+    let engine_direct = Mutex::new(EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    ));
+    let direct = open_file_engine_impl(&engine_direct, path)
+        .expect("direct open_file_engine_impl should succeed");
+
+    // The same call routed through the large-stack helper on an identically
+    // initialized fresh engine. The scoped closure borrows `&engine_wrapped` /
+    // `path` directly — no `Arc` clone, no `'static` bound.
+    let engine_wrapped = Mutex::new(EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    ));
+    let wrapped =
+        crate::large_stack::run_on_large_stack(|| open_file_engine_impl(&engine_wrapped, path))
+            .expect("open_file_engine_impl through run_on_large_stack should succeed");
+
+    // Concrete expected shape (independent of the direct half).
+    assert!(
+        !wrapped.files.is_empty(),
+        "GuiState.files should be non-empty after loading a file on the large stack"
+    );
+    assert!(
+        !wrapped.meshes.is_empty(),
+        "GuiState.meshes should be non-empty after a clean compile on the large stack"
+    );
+    assert!(
+        wrapped.compile_diagnostics.is_empty(),
+        "a clean bracket_source compile on the large stack must emit no compile diagnostics; \
+         got: {:?}",
+        wrapped.compile_diagnostics
+    );
+
+    assert_same_salient_state(&wrapped, &direct, "open_file_engine_impl");
+}
+
+/// `reload_for_watch_impl` invoked THROUGH `run_on_large_stack` returns the same
+/// salient state as a direct (un-wrapped) call.
+///
+/// The sibling of the guard above, for the OTHER half of the step-6 wiring.
+/// TWO distinct call sites perform exactly this composition, and both are
+/// un-headless-testable (they take `tauri::AppHandle` / `tauri::State`):
+/// the frontend-invoked `main.rs::update_source` command, and
+/// `main.rs::create_watcher`'s `FileEvent::Changed` callback — the latter being
+/// the recompile reached on EVERY watch-triggered on-disk reload, i.e. the
+/// highest-frequency of the wrapped compile paths.
+#[test]
+fn reload_for_watch_impl_runs_correctly_through_large_stack() {
+    use crate::commands::reload_for_watch_impl;
+
+    // Direct (un-wrapped) call on a freshly loaded engine.
+    let engine_direct = make_test_engine_for_commands();
+    let direct = reload_for_watch_impl(&engine_direct, "bracket.ri", bracket_source())
+        .expect("direct reload_for_watch_impl should succeed");
+
+    // The same call routed through the large-stack helper on an identically
+    // initialized engine. The scoped closure borrows `&engine_wrapped` directly.
+    let engine_wrapped = make_test_engine_for_commands();
+    let wrapped = crate::large_stack::run_on_large_stack(|| {
+        reload_for_watch_impl(&engine_wrapped, "bracket.ri", bracket_source())
+    })
+    .expect("reload_for_watch_impl through run_on_large_stack should succeed");
+
+    assert!(
+        !wrapped.meshes.is_empty(),
+        "GuiState.meshes should be non-empty after a successful reload on the large stack"
+    );
+    assert!(
+        wrapped.compile_diagnostics.is_empty(),
+        "a successful reload on the large stack must emit no compile diagnostics; got: {:?}",
+        wrapped.compile_diagnostics
+    );
+
+    assert_same_salient_state(&wrapped, &direct, "reload_for_watch_impl");
+}
+
 // ── Task 3543 step-9: cancel_solve_impl command tests (GR-016 ζ) ─────────────
 
 /// `cancel_solve_impl` calls `.cancel()` on the published handle, clears the
@@ -1489,7 +1901,7 @@ fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
 
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -1514,7 +1926,7 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -1600,7 +2012,7 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),

@@ -5,7 +5,9 @@ members = [
     "crates/reify-expr",
     "crates/reify-syntax",
     "crates/reify-compiler",
+    "crates/reify-compute-contract",
     "crates/reify-eval",
+    "crates/reify-eval-fea-tests",
     "crates/reify-fdm",
     "crates/reify-gcode",
     "crates/reify-mesh-morph",
@@ -13,6 +15,7 @@ members = [
     "crates/reify-doc",
     "crates/reify-doc-build",
     "crates/reify-geometry",
+    "crates/reify-kernel-conformance",
     "crates/reify-kernel-fidget",
     "crates/reify-kernel-gmsh",
     "crates/reify-kernel-manifold",
@@ -45,6 +48,7 @@ reify-core = { path = "crates/reify-core" }
 reify-expr = { path = "crates/reify-expr" }
 reify-syntax = { path = "crates/reify-syntax" }
 reify-compiler = { path = "crates/reify-compiler" }
+reify-compute-contract = { path = "crates/reify-compute-contract" }
 reify-eval = { path = "crates/reify-eval" }
 reify-fdm = { path = "crates/reify-fdm" }
 reify-gcode = { path = "crates/reify-gcode" }
@@ -80,6 +84,12 @@ bytemuck = "1"
 im = "15"
 indexmap = "2"
 inventory = "0.3"
+
+# On-demand stack growth for bounded compiler expression recursion
+# (crates/reify-compiler/src/recursion_guard.rs). Pure-Rust (pulls psm/cfg-if/
+# libc — all standard); used to convert a would-be stack-overflow SIGSEGV on
+# deeply-nested geometry into a clean E_EXPR_NESTING_TOO_DEEP diagnostic.
+stacker = "0.1"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }

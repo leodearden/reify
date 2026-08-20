@@ -226,6 +226,27 @@ mod tests {
         );
     }
 
+    /// Insert a bare ValueCellNode with `cell_type: Type::Geometry` (no
+    /// default_expr) with the given content_hash. Mirrors `insert_value_cell`
+    /// but for the geometry-typed case exercised by the β
+    /// (eval-uniform-dependency-handling) cell_type-based exclusion.
+    fn insert_geometry_value_cell(
+        graph: &mut EvaluationGraph,
+        id: ValueCellId,
+        content_hash: ContentHash,
+    ) {
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id,
+                kind: ValueCellKind::Let,
+                cell_type: Type::Geometry,
+                default_expr: None,
+                content_hash,
+            },
+        );
+    }
+
     #[test]
     fn compute_cache_key_changes_when_value_input_cell_hash_changes() {
         let load_id = ValueCellId::new("Bracket", "load");
@@ -464,6 +485,76 @@ mod tests {
             key_one, key_two,
             "adding a realization input must change the cache key: [real_0] and \
              [real_0, real_1] must produce distinct keys"
+        );
+    }
+
+    #[test]
+    fn geometry_typed_value_ref_excluded_from_compute_value_bucket() {
+        // task β (eval-uniform-dependency-handling, PRD §6.2 clause 4): the
+        // #4726 value_inputs filter must exclude by declared `cell_type ==
+        // Type::Geometry`, not by graph-presence. `g` is deliberately PRESENT
+        // in `value_cells` (unlike a pre-γ geometry let, which has no cell at
+        // all) to prove the exclusion is type-based, not presence-based —
+        // this also happens to be the shape a future γ geometry-let cell will
+        // take once it gets a real value cell.
+        let g = ValueCellId::new("Bracket", "body");
+        let s = ValueCellId::new("Bracket", "scale");
+        let ghost = ValueCellId::new("Bracket", "ghost");
+
+        let mut graph = EvaluationGraph::default();
+        insert_geometry_value_cell(&mut graph, g.clone(), ContentHash::of_str("geom_h"));
+        insert_value_cell(&mut graph, s.clone(), ContentHash::of_str("scalar_h"));
+
+        // Per-ref classification via the extracted helper.
+        assert_eq!(
+            crate::engine_eval::compute_value_input_for_ref(&graph, &g),
+            None,
+            "a Type::Geometry cell must be excluded even though it is present in value_cells"
+        );
+        assert_eq!(
+            crate::engine_eval::compute_value_input_for_ref(&graph, &s),
+            Some(s.clone()),
+            "a non-geometry cell present in the graph must be included"
+        );
+        assert_eq!(
+            crate::engine_eval::compute_value_input_for_ref(&graph, &ghost),
+            None,
+            "a ValueCellId absent from the graph must be excluded"
+        );
+
+        // compute_cache_key value-bucket partition: filtering refs [g, s]
+        // must drop `g`, producing the SAME cache key as an explicit
+        // value_inputs=[s], and a DIFFERENT key from the double-counted
+        // value_inputs=[s, g] (the bug this flip prevents once a geometry
+        // cell can be graph-present).
+        let filtered: Vec<ValueCellId> = [g.clone(), s.clone()]
+            .iter()
+            .filter_map(|id| crate::engine_eval::compute_value_input_for_ref(&graph, id))
+            .collect();
+        assert_eq!(filtered, vec![s.clone()]);
+
+        let mut node_filtered = make_empty_node();
+        node_filtered.value_inputs = filtered;
+
+        let mut node_expected = make_empty_node();
+        node_expected.value_inputs = vec![s.clone()];
+
+        let mut node_double_counted = make_empty_node();
+        node_double_counted.value_inputs = vec![s.clone(), g.clone()];
+
+        let key_filtered = compute_cache_key(&node_filtered, &graph);
+        let key_expected = compute_cache_key(&node_expected, &graph);
+        let key_double_counted = compute_cache_key(&node_double_counted, &graph);
+
+        assert_eq!(
+            key_filtered, key_expected,
+            "filtering the geometry ref out of value_inputs must produce the same cache key \
+             as omitting it explicitly"
+        );
+        assert_ne!(
+            key_filtered, key_double_counted,
+            "retaining the geometry ref in value_inputs (double-counting it alongside \
+             realization_inputs) must produce a different cache key"
         );
     }
 }

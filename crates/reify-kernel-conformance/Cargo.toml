@@ -1,0 +1,44 @@
+[package]
+name = "reify-kernel-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Kernel-pair conformance matrix: producer×consumer tests over real tessellated fixtures through produce→validate→consume→re-validate (kernel-seam ε, INV-GEO-2)"
+build = "build.rs"
+
+[dependencies]
+
+[features]
+# Pure compile-gate (no optional dep, unlike reify-kernel-occt's namesake
+# feature). `cfg(feature = "mesh-morph")` in this crate's OWN test files
+# (`occt_gmsh_attributed_conformance.rs`) is never namespaced to a
+# dependency — it resolves against THIS crate's feature set. The
+# dev-dependency below on `reify-kernel-gmsh` already unconditionally
+# activates *gmsh's* same-named feature (so the real attributed producer
+# compiles in), but that does NOT turn this feature on for this crate's own
+# `#[cfg(...)]` gates; the self-dev-dep just below does. Mirrors
+# `reify-kernel-gmsh`'s own `mesh-morph = []` + self-dev-dep pattern
+# (`crates/reify-kernel-gmsh/Cargo.toml`).
+mesh-morph = []
+
+[dev-dependencies]
+reify-ir.workspace = true
+reify-kernel-occt.workspace = true
+# `mesh-morph` activates the gmsh attribution producer
+# (`mesh_surface_to_volume_attributed`) so the ξ arm (step-7/8) compiles
+# against the real attributed path — mirrors reify-eval/Cargo.toml's own
+# self-dev-dep feature activation.
+reify-kernel-gmsh = { workspace = true, features = ["mesh-morph"] }
+reify-kernel-manifold.workspace = true
+reify-eval.workspace = true
+# Self-dev-dep: activates THIS crate's own `mesh-morph` feature (declared
+# above) for its own test binaries, so `occt_gmsh_attributed_conformance.rs`'s
+# `#![cfg(all(has_occt, has_gmsh, feature = "mesh-morph"))]` file gate
+# actually evaluates true. Identical trick to `reify-kernel-gmsh`'s and
+# `reify-kernel-occt`'s own self-dev-deps (each activates its own
+# same-named feature for its in-crate integration tests).
+reify-kernel-conformance = { path = ".", features = ["mesh-morph"] }
+
+[build-dependencies]
+reify-build-utils.workspace = true

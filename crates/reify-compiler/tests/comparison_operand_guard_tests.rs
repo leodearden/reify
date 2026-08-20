@@ -41,9 +41,7 @@
 //! - `0kg < mass < 5kg` (same-dimension chained) → no error
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::{
-    assert_no_error_diagnostics, compile_source, compile_source_with_stdlib,
-};
+use reify_test_support::{assert_no_error_diagnostics, compile_source, compile_source_with_stdlib};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -68,11 +66,7 @@ fn errors(source: &str) -> Vec<reify_core::Diagnostic> {
 }
 
 /// Assert any error has the given code; return the matched diagnostics.
-fn assert_has_code(
-    errors: &[reify_core::Diagnostic],
-    code: DiagnosticCode,
-    context: &str,
-) {
+fn assert_has_code(errors: &[reify_core::Diagnostic], code: DiagnosticCode, context: &str) {
     let found = errors.iter().any(|d| d.code == Some(code));
     assert!(
         found,
@@ -101,9 +95,9 @@ structure def S {
     let errs = errors_stdlib(src);
     assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "Matrix > 0");
     // The fixit must name both canonical reductions.
-    let has_eigenvalues = errs
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::CmpOperandKind) && d.message.contains("eigenvalues"));
+    let has_eigenvalues = errs.iter().any(|d| {
+        d.code == Some(DiagnosticCode::CmpOperandKind) && d.message.contains("eigenvalues")
+    });
     assert!(
         has_eigenvalues,
         "CmpOperandKind for Matrix operand must mention 'eigenvalues'; got: {errs:?}"
@@ -132,9 +126,9 @@ structure def S {
 "#;
     let errs = errors_stdlib(src);
     assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "Tensor > 0");
-    let has_eigenvalues = errs
-        .iter()
-        .any(|d| d.code == Some(DiagnosticCode::CmpOperandKind) && d.message.contains("eigenvalues"));
+    let has_eigenvalues = errs.iter().any(|d| {
+        d.code == Some(DiagnosticCode::CmpOperandKind) && d.message.contains("eigenvalues")
+    });
     assert!(
         has_eigenvalues,
         "CmpOperandKind for Tensor operand must mention 'eigenvalues'; got: {errs:?}"
@@ -217,7 +211,11 @@ structure def S {
 }
 "#;
     let errs = errors(src);
-    assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "Enum < Enum (order op)");
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "Enum < Enum (order op)",
+    );
 }
 
 /// ORDER op on a String-typed param must produce `DiagnosticCode::CmpOperandKind`.
@@ -236,7 +234,11 @@ structure def S {
 }
 "#;
     let errs = errors(src);
-    assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "String < String (order op)");
+    assert_has_code(
+        &errs,
+        DiagnosticCode::CmpOperandKind,
+        "String < String (order op)",
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -299,10 +301,7 @@ structure def S {
 }
 "#;
     let module = compile_source(src);
-    assert_no_error_diagnostics(
-        &module.diagnostics,
-        "`flag == true` should compile cleanly",
-    );
+    assert_no_error_diagnostics(&module.diagnostics, "`flag == true` should compile cleanly");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

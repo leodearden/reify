@@ -10,19 +10,21 @@ use reify_compiler::{
     CompiledModule, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
 };
 use reify_core::{
-    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
     FIELD_ENTITY_PREFIX, SnapshotId, SourceSpan, ValueCellId, VersionId,
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
     AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, CompiledFunction,
-    DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveProvenance,
-    ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap, RankedSolveResult,
-    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
-    SolveResult, TermContribution, Value, ValueMap,
+    DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveCombination,
+    ObjectiveProvenance, ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap,
+    RankedSolveResult, ResolutionProblem, SampledField, SampledGridKind, SelectorKind,
+    SnapshotProvenance, SolveResult, TermContribution, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
@@ -55,16 +57,21 @@ use crate::{
 /// occurrence template through the SAME module-first/prelude-fallback rule the
 /// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
 /// live in the prelude, not `CompiledModule::templates`.
+/// This is a thin `&CompiledModule` adapter over
+/// [`crate::unfold::find_template_in_scope`], which is the single source of
+/// truth for the module-first/prelude-fallback rule. `unfold.rs` cannot call
+/// this overload — its recursion carries `&[TopologyTemplate]`, not the owning
+/// `CompiledModule` — so the rule lives there and this delegates. Keep it that
+/// way: the two sites diverging is exactly the defect esc-5360-9 reported (the
+/// instance-scope nesting recursion resolved module-only, so a prelude-typed
+/// nested sub was silently skipped AND then falsely reported "not found in this
+/// module").
 pub(crate) fn find_template_with_prelude<'a>(
     module: &'a CompiledModule,
     prelude: &'a [CompiledModule],
     name: &str,
 ) -> Option<&'a TopologyTemplate> {
-    find_template(&module.templates, name).or_else(|| {
-        prelude
-            .iter()
-            .find_map(|pm| find_template(&pm.templates, name))
-    })
+    crate::unfold::find_template_in_scope(&module.templates, prelude, name)
 }
 
 /// Sentinel substring included in every panic raised by
@@ -233,6 +240,81 @@ pub(crate) fn build_demand_for_graph(graph: &crate::graph::EvaluationGraph) -> D
     }
     demand.rebuild_cone(graph);
     demand
+}
+
+/// task #4726 / β (eval-uniform-dependency-handling, PRD §6.2 clause 4):
+/// classify a call-arg `ValueRef` target cell as a compute `value_input`.
+///
+/// Returns `Some(target_cell.clone())` iff `target_cell` is present in
+/// `graph.value_cells` AND its declared `cell_type` is not `Type::Geometry`.
+/// Returns `None` in BOTH exclusion cases:
+///
+/// - **Absent from the graph** — the referenced cell has not been hydrated
+///   yet (e.g. a not-yet-lowered producer). `compute_cache_key` asserts that
+///   every `value_input` is present in the graph, so an absent cell must
+///   never be included.
+/// - **Present but geometry-typed** — a geometry-typed cell is NEVER a
+///   compute `value_input`, regardless of graph presence: geometry flows
+///   through `realization_inputs` instead (populated by
+///   `build_compute_realization_inputs`). Including it here as well would
+///   double-count it across the value and realization cache-key buckets
+///   (see `compute_cache_key.rs`).
+///
+/// Shared by the two @optimized dispatch sites (primary and mirror) that
+/// build a `ComputeNodeData::value_inputs` list from call args.
+pub(crate) fn compute_value_input_for_ref(
+    graph: &crate::graph::EvaluationGraph,
+    target_cell: &reify_core::ValueCellId,
+) -> Option<reify_core::ValueCellId> {
+    match graph.value_cells.get(target_cell) {
+        Some(cell) if !matches!(cell.cell_type, reify_core::Type::Geometry) => {
+            Some(target_cell.clone())
+        }
+        _ => None,
+    }
+}
+
+/// task γ / #4954 regression guard: downgrade SYMBOLIC (not-yet-kernel-backed)
+/// `Value::GeometryHandle`s to `Value::Undef` before probing
+/// `build_compute_realization_inputs` at the two `@optimized` dispatch sites
+/// (primary and mirror).
+///
+/// Once γ gave top-level geometry lets a first-class value cell, the R3d
+/// in-walk mint (`Engine::mint_symbolic_geometry_handle_for_cell`, task
+/// #4900) now fires for them too: an `Undef` geometry-let cell evaluated
+/// earlier in the SAME topo walk gets flipped to
+/// `Value::GeometryHandle { kernel_handle: None, .. }` — a placeholder with
+/// no real kernel content yet (mirroring the established
+/// `mint_symbolic_geometry_handles_into_values` design note at
+/// engine_build.rs: a direct, non-selector consumer of such a placeholder
+/// must still be treated as Undef here so `build()`'s later real-kernel
+/// post-process passes get a chance to resolve it for real).
+///
+/// Without this downgrade, a direct `@optimized` consumer of a geometry let
+/// (e.g. `as_printed_material(body, ..)`) sees the symbolic handle at its
+/// FIRST dispatch, and `build_compute_realization_inputs` (which matches
+/// `Value::GeometryHandle{..}` regardless of `kernel_handle`) records a
+/// NON-EMPTY `realization_inputs` from a placeholder with no real content —
+/// which then defeats `Engine::redispatch_geometry_consuming_compute_nodes`'s
+/// (task #4726) candidate gate (`realization_inputs.is_empty()`), permanently
+/// stranding the node's degraded (`lambda=Undef`) first-dispatch result.
+///
+/// Only the probe fed to `build_compute_realization_inputs` is downgraded;
+/// the raw `arg_values` passed to `run_compute_dispatch`/`persistent_cache_key`
+/// is untouched, so the compute trampoline still sees the real arg shape
+/// (`body_aabb` etc. degrade gracefully via `.first()` on an empty handles
+/// slice — no panic).
+fn realization_probe_args(arg_values: &[Value]) -> Vec<Value> {
+    arg_values
+        .iter()
+        .map(|v| match v {
+            Value::GeometryHandle {
+                kernel_handle: None,
+                ..
+            } => Value::Undef,
+            other => other.clone(),
+        })
+        .collect()
 }
 
 /// Re-evaluate a guard-group cell list in the post-solver pass.
@@ -890,6 +972,83 @@ fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) ->
     )
 }
 
+/// Recursively determine whether `value` contains at least one singular
+/// Snapshot Map — a `Value::Map` with `kind = "snapshot"` and
+/// `is_singular = Value::Bool(true)`, baked by
+/// `reify-stdlib::snapshot::make_snapshot` (task 3580 — GR-039 / cluster
+/// C-37) when ≥1 closed-chain loop's solve outcome was
+/// `NewtonOutcome::Singular`.
+///
+/// Descends into `Value::List` elements — the `List<Snapshot>` shape
+/// `sweep`/`sweep_grid` produce (`build_snapshot_list` in `sweep.rs`) — and
+/// `Value::Map` values, so a singular snapshot nested inside a swept List
+/// or wrapped in another Map is detected the same as a bare `snapshot()`
+/// cell.
+fn value_contains_singular_snapshot(value: &Value) -> bool {
+    match value {
+        Value::Map(m) => {
+            let kind_key = Value::String("kind".to_string());
+            let is_snapshot =
+                matches!(m.get(&kind_key), Some(Value::String(k)) if k == "snapshot");
+            if is_snapshot {
+                let is_singular_key = Value::String("is_singular".to_string());
+                if matches!(m.get(&is_singular_key), Some(Value::Bool(true))) {
+                    return true;
+                }
+            }
+            m.values().any(value_contains_singular_snapshot)
+        }
+        Value::List(items) => items.iter().any(value_contains_singular_snapshot),
+        _ => false,
+    }
+}
+
+/// Scan the evaluated value-map for kinematic singularities baked onto
+/// Snapshot Maps by `snapshot()` (task 3580 — GR-039 / cluster C-37) and
+/// emit a typed `KinematicSingularity` warning for each top-level cell that
+/// contains one.
+///
+/// Called in both `eval` and `eval_cached` (eval/eval_cached diagnostic-
+/// parity discipline) OUTSIDE the solver gate — `snapshot()`/`sweep()` are
+/// pure value-eval builtins with no solver dependency, so the warning
+/// surfaces on kernel-less `reify check` and in the GUI diagnostics panel,
+/// mirroring [`detect_mechanism_errors`]/[`detect_nondriving_joint_errors`].
+///
+/// Recurses via [`value_contains_singular_snapshot`] into `Value::List`
+/// (the `List<Snapshot>` shape `sweep`/`sweep_grid` produce) and
+/// `Value::Map`, so a singular snapshot nested inside a swept List is
+/// detected too.
+///
+/// **One warning per cell, not per snapshot:** a large singular sweep
+/// would otherwise flood `EvalResult.diagnostics` with one warning per
+/// step; this reports the cell once regardless of how many of its nested
+/// snapshots are singular.
+///
+/// **No source span:** [`ValueCellId`] carries no source-span, so no
+/// [`DiagnosticLabel`] is attached — matching `detect_mechanism_errors`/
+/// `detect_nondriving_joint_errors`.
+///
+/// Only `KinematicSingularity` is surfaced here; `KinematicOverconstrained`/
+/// `KinematicUnderconstrained` are intentionally NOT surfaced from this
+/// path — `snapshot()` discards those diagnostics from the loop-closure
+/// report (see the solver-choice comment in `crate::snapshot`).
+fn detect_kinematic_singularity(values: &ValueMap) -> Vec<Diagnostic> {
+    let mut hits: Vec<(&ValueCellId, &Value)> = values
+        .iter()
+        .filter(|(_, v)| value_contains_singular_snapshot(v))
+        .collect();
+    // Sort by ValueCellId for deterministic ordering across hash-based ValueMap iteration.
+    hits.sort_by_key(|(a, _)| *a);
+    hits.into_iter()
+        .map(|_| {
+            Diagnostic::warning(
+                "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
+            )
+            .with_code(DiagnosticCode::KinematicSingularity)
+        })
+        .collect()
+}
+
 /// Scan the post-evaluation value map for `@face` / `@edge` ad-hoc selector
 /// cells that remain `Value::Undef`, and emit a `Diagnostic::warning` for each.
 ///
@@ -1242,6 +1401,623 @@ fn write_solved_pinned_connector_autos(
     }
 }
 
+/// Filters `constraints` to those whose dependency trace reads at least one
+/// id in `auto_ids`, pairing each surviving constraint's id with its
+/// expression — the shape `ResolutionProblem.constraints` expects.
+///
+/// Shared by `build_solver_problem` (single scope, `auto_ids` == that
+/// scope's own regular auto ids) and `build_merged_solver_problem` (called
+/// once per cluster member inside a loop, `auto_ids` == the CLUSTER-WIDE
+/// union so a member's constraint reading a co-solved sibling member's auto
+/// is still picked up) — factored out so a future fix to the filter
+/// semantics (e.g. the memoization noted on `build_merged_solver_problem`'s
+/// cost-note doc comment) is applied once instead of twice (amendment, task
+/// #5014).
+fn filter_constraints_reading_autos(
+    constraints: &[reify_compiler::CompiledConstraint],
+    auto_ids: &HashSet<&ValueCellId>,
+) -> Vec<(ConstraintNodeId, CompiledExpr)> {
+    constraints
+        .iter()
+        .filter(|c| {
+            let trace = extract_dependency_trace(&c.expr);
+            trace.reads.iter().any(|r| auto_ids.contains(r))
+        })
+        .map(|c| (c.id.clone(), c.expr.clone()))
+        .collect()
+}
+
+/// Builds the `AutoParam` list for `cells` — the shape
+/// `ResolutionProblem.auto_params` expects.
+///
+/// Shared by `build_solver_problem` and `build_merged_solver_problem`
+/// (amendment, task #5014); see `filter_constraints_reading_autos`'s doc
+/// comment for why these two builders share this per-scope tail instead of
+/// each inlining their own copy. Connector-pin partitioning (task #4710) —
+/// which cells make it into `cells` in the first place — stays each
+/// builder's own, site-specific step.
+fn build_auto_param_list(cells: &[&ValueCellDecl]) -> Vec<AutoParam> {
+    cells
+        .iter()
+        .map(|cell| AutoParam {
+            id: cell.id.clone(),
+            param_type: cell.cell_type.clone(),
+            bounds: None,
+            free: cell.kind.is_auto_free(),
+        })
+        .collect()
+}
+
+/// Run the SAME three structural-query passes as the Let-cell expansion loop
+/// (`expand_structural_query` → `apply_trait_filters` → `apply_cost_aggregation`)
+/// over an objective-term or constraint expression IN PLACE, against its OWNING
+/// `template`, before it enters a [`ResolutionProblem`] (task #5188 α, PRD
+/// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §4/§5).
+///
+/// Without this, `minimize cost(self.descendants)` /
+/// `constraint _ > cost(self.descendants)` reach the solver as a raw `cost`
+/// `FunctionCall` → `eval_objective_set` returns `None` →
+/// `UNDEF_OBJECTIVE_PENALTY` (a flat, zero-gradient objective). Mirrors the
+/// Let-cell loop's contract exactly (engine_eval.rs), INCLUDING the
+/// `contains_structural_query` fast-path that preserves empty-case identity: an
+/// expression with no `self.children`/`.members`/`.descendants` placeholder is
+/// left byte-identical, so a plain `minimize x` objective / non-structural
+/// constraint is untouched (`dependent_cells`-empty ⇒ legacy behaviour).
+///
+/// `pub(crate)` because cluster formation
+/// (`resolve_order::expanded_objective_reads`, JOINT-DRIVE δ task #5334) runs the
+/// identical sequence over THROWAWAY clones of the objective terms so it can see
+/// the derived reads an expanded `cost(self.descendants)` surfaces. Reusing this
+/// one function keeps the PRD-mandated three-pass order a single source of truth
+/// (PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md` §10 Phase 1.5).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn expand_solver_position_expr(
+    expr: &mut CompiledExpr,
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+    values: &ValueMap,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !crate::structural_query::contains_structural_query(expr) {
+        return;
+    }
+    let mut node_budget = max_unfold_nodes;
+    crate::structural_query::expand_structural_query(
+        expr,
+        template,
+        all_templates,
+        values,
+        max_unfold_depth,
+        &mut node_budget,
+        diagnostics,
+    );
+    // δ: rewrite filter(list_literal, TraitObject) nodes to filtered subsets.
+    crate::structural_query::apply_trait_filters(expr, all_templates, trait_registry);
+    // γ (task 5015): rewrite cost(list_literal) → [ValueRef(line_cost) ...].sum.
+    // MUST run after apply_trait_filters so self.descendants / any explicit
+    // filter(...) is already a list_literal of entity-refs.
+    crate::structural_query::apply_cost_aggregation(expr, all_templates, trait_registry);
+}
+
+/// True iff `expr` is an `@optimized` `UserFunctionCall` — it resolves via
+/// `find_matching_compiled_function` to a `CompiledFunction` whose
+/// `optimized_target` is `Some(_)`. The compute-dispatch-bypass predicate (same
+/// shape as the reeval-cone `@optimized` exclusion elsewhere in this file):
+/// such a cell's value comes from the compute-dispatch registry, so it must NOT
+/// be re-folded through plain `reify_expr::eval_expr` (which carries no registry)
+/// in the post-solve write-back or β's per-trial fold — doing so would clobber
+/// the dispatched result with the inline-fallback/Undef.
+pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[CompiledFunction]) -> bool {
+    matches!(
+        &expr.kind,
+        CompiledExprKind::UserFunctionCall { function_name, args }
+            if reify_expr::find_matching_compiled_function(functions, function_name, args)
+                .and_then(|f| f.optimized_target.as_ref())
+                .is_some()
+    )
+}
+
+/// Build the authoritative, topologically-ordered list of coupled non-auto
+/// value cells to re-materialize after a solve — the single cross-scope
+/// authority both the post-solve write-back (task #5188 step-8) and β's
+/// per-trial fold consume, so the two cannot diverge (PRD
+/// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.1/§6.3).
+///
+/// Reuses the primitives the engine already trusts for ordering
+/// (`extract_value_deps` for transitive-closure edges; `extract_dependency_trace`
+/// plus `topological_sort` for the induced sub-DAG) rather than extending
+/// `detect_let_cycle`, whose single-template contract must stay intact while the
+/// joint-drive order is inherently cross-template (PRD §12 open-Q1).
+///
+/// * `seed_exprs` — the ALREADY-EXPANDED objective term exprs + constraint exprs
+///   (so `cost(self.descendants)` is already `[ValueRef(line_cost) ...].sum`).
+/// * `all_templates` — supplies every non-auto cell's `default_expr`, cross-scope.
+/// * `auto_ids` — the problem's `auto_param` ids (this scope's regular autos for
+///   the single-scope builder; the cluster-wide union for the merged builder);
+///   the reachability target for membership rule (b).
+/// * `functions` — the problem's `CompiledFunction` table; used to resolve
+///   `@optimized` `UserFunctionCall` cells (via `is_optimized_userfn_cell`) so
+///   they can be excluded from the surviving set.
+///
+/// Membership: a cell survives iff it (a) transitively feeds the objective/
+/// constraints (is in the seed closure) AND (b) transitively reads ≥1 `auto_id`
+/// AND is non-auto AND carries a plain foldable `default_expr` AND is NOT an
+/// `@optimized` cell. ComputeNode-produced cells (no plain `default_expr`) are
+/// excluded by construction (the map only holds cells with a `default_expr`);
+/// `@optimized` `UserFunctionCall` cells are excluded by `is_optimized_userfn_cell`
+/// in step (e) — they must stay FROZEN (their value came from the compute-dispatch
+/// registry; re-folding them through plain `eval_expr` would clobber it). PRD
+/// design-decision 5's known limitation: an `@optimized` coupled cell is not
+/// joint-driven; it is re-materialized only by its own dispatch. Such cells
+/// REMAIN in the closure/reachability computation (so their transitive
+/// auto-reachability still propagates to genuine downstream coupled cells); only
+/// the FINAL surviving node set drops them.
+///
+/// ## SCC-admissibility guardrail (task #5189 step-8, PRD §6.4)
+///
+/// Stage (f) rejects any INADMISSIBLE data cycle by comparing
+/// `topological_sort`'s output length against the stage-(e) node set — the same
+/// Kahn-drop test `detect_let_cycle` (`:472`) and `build_combined_param_let_graph`
+/// (`:559`) already apply to their own graphs — and pushing a
+/// [`DiagnosticCode::EvalCycle`] error naming the dropped cells. A length check
+/// IS the admissibility test, not an approximation of one:
+///
+/// THE NODE SET EXCLUDES AUTO PARAMS BY CONSTRUCTION (stage (a) only retains
+/// non-auto cells carrying a plain `default_expr`), and the sole ADMISSIBLE
+/// back-edge — the solver feedback edge — runs THROUGH an auto. It therefore can
+/// never appear in this graph; the induced sub-DAG is acyclic for every
+/// admissible SCC; and any Kahn drop is, by construction, an INADMISSIBLE data
+/// cycle. That equivalence is exactly §6.4's INVARIANT ("admitted iff its only
+/// back-edge is a solver feedback edge"), which is why no fresh SCC analysis is
+/// needed here.
+///
+/// The guardrail is load-bearing precisely because this builder is CROSS-TEMPLATE
+/// (it walks `all_templates`): an `A.x ↔ B.y` value cycle is out of reach of all
+/// three per-template emitters (`detect_let_cycle`,
+/// `build_combined_param_let_graph`, `unfold.rs`'s let-cycle pass), and
+/// `topological_sort` is Kahn's — it returns a `Vec`, cannot error, and silently
+/// omits cycle members. Without the check such a cycle is swallowed with zero
+/// user-visible signal.
+///
+/// * `diagnostics` — sink for that error. Both call sites already carry one.
+///
+/// ## The two-namespace bridge (task #5189 step-10)
+///
+/// Cell ids arrive in TWO namespaces and this builder must speak both:
+///
+/// * TEMPLATE-KEYED (`Rivet.line_cost`) — what the compiler mints for a
+///   `value_cells` decl, hence what stage (a)'s `cell_map` and `auto_ids` hold.
+/// * INSTANCE-PATH (`RivetedPanel.rivets.line_cost`) — what
+///   `apply_cost_aggregation` mints for an expanded `cost(self.descendants)`
+///   term, and what the compiler mints for a `self.<sub>.<member>` read. These
+///   ids have NO `ValueCellDecl` at all; only sub-elaboration writes them, into
+///   the runtime `values` map.
+///
+/// Both directions of the bridge are needed, and δ (task #5334) already shipped
+/// the primitive for each:
+///
+/// * LOOKUP — every hop (seeds, closure, reverse-edge map, and the sort traces)
+///   runs its ids through [`crate::resolve_order::normalize_cell_id`], so an
+///   instance-path read finds its declaring template's `default_expr`. Without
+///   it the stage-(b) seed `RivetedPanel.rivets.line_cost` misses `cell_map`
+///   entirely, the closure terminates at the seed, and `dependent_cells` is
+///   empty for exactly the merged-cluster shape this seam exists to drive.
+/// * EMISSION — normalising the lookup alone is not enough: the objective's
+///   `ValueRef` still names the INSTANCE-PATH id, so the fold must WRITE that
+///   id too. Stage (g) therefore emits, for each surviving template-keyed cell,
+///   an instance-path ALIAS entry carrying the SAME `default_expr` (whose inner
+///   reads are template-keyed and so resolve against the solver's namespace),
+///   ordered immediately AFTER its template source.
+///
+/// v1 BOUNDARY on the alias: emitted only for a structure with EXACTLY ONE
+/// non-collection instance path (see [`build_single_instance_alias_paths`]).
+fn build_dependent_cells(
+    seed_exprs: &[&CompiledExpr],
+    all_templates: &[TopologyTemplate],
+    auto_ids: &HashSet<ValueCellId>,
+    functions: &[CompiledFunction],
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<(ValueCellId, CompiledExpr)> {
+    // (a) Cross-template map: every non-auto cell that carries a plain
+    //     default_expr, keyed by id. Autos have no default_expr and are skipped;
+    //     ComputeNode-produced cells without a foldable default_expr never enter.
+    let mut cell_map: HashMap<ValueCellId, &CompiledExpr> = HashMap::new();
+    for template in all_templates {
+        for cell in &template.value_cells {
+            if cell.kind.is_auto() {
+                continue;
+            }
+            if let Some(expr) = cell.default_expr.as_ref() {
+                cell_map.entry(cell.id.clone()).or_insert(expr);
+            }
+        }
+    }
+
+    // (a′) δ's INSTANCE-PATH → STRUCTURE-NAME map (task #5334), built ONCE and
+    //      consumed at every hop below. Same budgets δ's own call site uses, so
+    //      the two sides of the seam truncate identically. See the fn
+    //      doc-comment's "two-namespace bridge" section for why this is needed
+    //      at all, and `normalize_cell_id`'s doc for the two-sided root cause.
+    let path_map = crate::resolve_order::build_instance_path_structure_map(
+        all_templates,
+        max_unfold_depth,
+        max_unfold_nodes,
+    );
+    // Identity for an already-template-keyed id (`normalize_cell_id` returns
+    // `None` when `entity` is not a known instance path).
+    let normalize = |id: ValueCellId| -> ValueCellId {
+        crate::resolve_order::normalize_cell_id(&id, &path_map).unwrap_or(id)
+    };
+
+    // (b) Seed the closure with the DIRECT reads of every expanded objective
+    //     term / constraint expr, then (c) take the transitive closure by
+    //     following each in-map cell's default_expr reads. Both hops NORMALISE:
+    //     a seed read is instance-path-keyed whenever the objective went through
+    //     `apply_cost_aggregation`, and instance-path ids also surface MID-WALK
+    //     (a parent's own `default_expr` reading `self.<sub>.<member>`).
+    let mut closure: HashSet<ValueCellId> = HashSet::new();
+    let mut frontier: Vec<ValueCellId> = Vec::new();
+    for expr in seed_exprs {
+        for id in crate::deps::extract_value_deps(expr) {
+            let id = normalize(id);
+            if closure.insert(id.clone()) {
+                frontier.push(id);
+            }
+        }
+    }
+    while let Some(id) = frontier.pop() {
+        if let Some(expr) = cell_map.get(&id) {
+            for dep in crate::deps::extract_value_deps(expr) {
+                let dep = normalize(dep);
+                if closure.insert(dep.clone()) {
+                    frontier.push(dep);
+                }
+            }
+        }
+    }
+
+    // (d) Auto-reachability over the closure: reverse-propagate "transitively
+    //     reads an auto" from `auto_ids` up through reader edges.
+    //     `reverse[d]` = cells whose default_expr reads `d`. Reader ids come
+    //     from `closure` (already normalised); dep ids are normalised here, so
+    //     the reverse edges land in the same namespace as `auto_ids`.
+    let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+    for id in &closure {
+        if let Some(expr) = cell_map.get(id) {
+            for dep in crate::deps::extract_value_deps(expr) {
+                reverse.entry(normalize(dep)).or_default().push(id.clone());
+            }
+        }
+    }
+    let mut reaches_auto: HashSet<ValueCellId> = HashSet::new();
+    let mut ra_frontier: Vec<ValueCellId> = Vec::new();
+    for id in &closure {
+        if auto_ids.contains(id) && reaches_auto.insert(id.clone()) {
+            ra_frontier.push(id.clone());
+        }
+    }
+    while let Some(id) = ra_frontier.pop() {
+        if let Some(readers) = reverse.get(&id) {
+            for reader in readers {
+                if reaches_auto.insert(reader.clone()) {
+                    ra_frontier.push(reader.clone());
+                }
+            }
+        }
+    }
+
+    // (e) Restrict to surviving cells (non-auto, in-map, transitively reads an
+    //     auto) and topologically sort the induced sub-DAG via the same
+    //     primitive `detect_let_cycle` uses (in-set edges only; deps precede
+    //     readers). Any cell Kahn's algorithm drops here is an INADMISSIBLE data
+    //     cycle (see the SCC-admissibility argument in the fn doc-comment: an
+    //     admissible back-edge runs through an auto, and autos are absent from
+    //     this node set by construction), so stage (f) reports it rather than
+    //     letting it vanish — this builder is cross-template, so no per-template
+    //     emitter can see such a cycle.
+    let mut nodes: HashSet<NodeId> = HashSet::new();
+    let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+    for id in &closure {
+        if auto_ids.contains(id) || !reaches_auto.contains(id) {
+            continue;
+        }
+        if let Some(expr) = cell_map.get(id) {
+            // @optimized exclusion (task #5188 step-6): drop a cell whose
+            // default_expr is an @optimized UserFunctionCall from the SURVIVING
+            // set. It stayed in `cell_map`/closure/`reaches_auto` above so its
+            // transitive auto-reachability still propagates to genuine downstream
+            // coupled cells, but it must NOT itself be re-folded in the write-back
+            // / β's per-trial fold — its value comes from the compute-dispatch
+            // registry (PRD design-decision 5's known limitation).
+            if is_optimized_userfn_cell(expr, functions) {
+                continue;
+            }
+            let node = NodeId::Value(id.clone());
+            // Trace reads are NORMALISED for the same reason the closure hops
+            // are: `topological_sort` counts in-set edges only, and `nodes` is
+            // template-keyed. A parent cell reading `self.<sub>.<member>` would
+            // otherwise contribute an unmatchable instance-path edge and could
+            // sort BEFORE the child cell it reads.
+            let mut trace = extract_dependency_trace(expr);
+            for read in &mut trace.reads {
+                if let Some(normalized) = crate::resolve_order::normalize_cell_id(read, &path_map) {
+                    *read = normalized;
+                }
+            }
+            traces.insert(node.clone(), trace);
+            nodes.insert(node);
+        }
+    }
+
+    // (f) Topologically sort, then pair each surviving id with a clone of its
+    //     default_expr, in topo order.
+    //
+    //     SCC-ADMISSIBILITY GUARDRAIL (task #5189, PRD §6.4): Kahn's algorithm
+    //     silently omits cycle members, so a short output means an INADMISSIBLE
+    //     data cycle (the admissible solver feedback edge runs through an auto,
+    //     and autos cannot be in `nodes`). Report it with the EXISTING
+    //     `DiagnosticCode::EvalCycle` — §6.4 requires "every other cycle still
+    //     errors with the existing diagnostic", not a new code. Ids are rendered
+    //     FULLY QUALIFIED (`entity.member`, via `ValueCellId`'s Display), not by
+    //     the bare member name `detect_let_cycle` uses: this detector is
+    //     cross-template, so a bare member is ambiguous.
+    let sorted = topological_sort(&nodes, &traces);
+    if sorted.len() < nodes.len() {
+        let sorted_set: HashSet<&NodeId> = sorted.iter().collect();
+        let mut cyclic: Vec<String> = nodes
+            .iter()
+            .filter(|nid| !sorted_set.contains(nid))
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.to_string()),
+                _ => None,
+            })
+            .collect();
+        // Sorted for determinism, mirroring `detect_let_cycle`'s
+        // `cyclic_members.sort()`.
+        cyclic.sort();
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "circular value-cell dependency across the coupled solve scopes: \
+                 [{}] -- these cells depend on each other WITHOUT passing through \
+                 a solver auto, so no evaluation order exists for them. Break the \
+                 cycle by making one of them read a solver-resolved auto instead \
+                 of its cyclic peer.",
+                cyclic.join(", "),
+            ))
+            .with_code(DiagnosticCode::EvalCycle),
+        );
+    }
+
+    // (g) Pair each surviving id with a clone of its default_expr, in topo
+    //     order, and emit the INSTANCE-PATH ALIAS entries alongside.
+    //
+    //     Dropped cycle members are DELIBERATELY excluded (this walks `sorted`,
+    //     not `nodes`): the diagnostic above is the user-visible signal, and
+    //     neither β's per-trial fold nor α's post-solve write-back may ever see
+    //     a cycle member.
+    //
+    //     ALIAS RATIONALE (task #5189 step-10, corrected in step-14/15): the
+    //     objective term reads the INSTANCE-PATH id
+    //     (`RivetedPanel.rivets.line_cost`) while the only declaration — and
+    //     hence the only foldable `default_expr` — is TEMPLATE-keyed
+    //     (`Rivet.line_cost`). Normalising the LOOKUP alone therefore yields a
+    //     `dependent_cells` list that writes an id nothing reads, leaving the
+    //     objective Undef. Emitting an alias entry closes the loop.
+    //
+    //     The alias expr is RESCOPED, not a verbatim clone. Cloning verbatim
+    //     keeps the inner reads template-keyed, which is harmless only while
+    //     every sub is a bare `Rivet()`; the moment a sub carries an argument
+    //     override (`sub rivets = Rivet(unit_cost: 0.90USD)` — a shape the DSL
+    //     supports, cf. `examples/auto_binding_sites.ri`) the alias folds the
+    //     TEMPLATE DEFAULT, so the solver minimises the wrong objective at every
+    //     trial point and `materialize_dependent_cells` then clobbers the
+    //     correctly-elaborated per-instance value with it. Same
+    //     template→instance-path bridge, same `map_value_refs` remedy, as
+    //     `Engine::post_process_cross_sub_value_cells` (engine_build.rs).
+    //
+    //     TWO GUARDS, and BOTH are load-bearing:
+    //       * `vid.entity == id.entity` — only the alias'd template's OWN
+    //         members move; a cross-template read is already correctly keyed.
+    //       * `!auto_ids.contains(&vid)` — the SOLVER keeps autos TEMPLATE-keyed
+    //         (that is the namespace `build_trial_values` inserts trial scalars
+    //         into), so an auto read must STAY template-keyed. Getting this
+    //         backwards makes the alias fold against an id that holds nothing
+    //         and silently reintroduces the step-10 Undef-objective failure.
+    //
+    //     NOT MIRRORED from the precedent: `post_process_cross_sub_value_cells`
+    //     declines to overwrite an already-folded (non-`Undef`) scoped cell.
+    //     That guard is deliberately absent here, and its absence is not an
+    //     oversight — this builder runs at solver-problem BUILD time and emits a
+    //     list consumed once PER TRIAL POINT. The trial point moves every
+    //     Nelder-Mead iteration, so a pre-solve elaborated value must never win:
+    //     pinning the cell to it would make the objective constant in the auto,
+    //     which is exactly the coupling failure BT-1 exists to reject. (It is
+    //     also unavailable — `build_dependent_cells` takes no `ValueMap`.)
+    //
+    //     The alias is pushed AFTER its source so a downstream cell reading
+    //     either spelling sees a fresh value first.
+    let alias_paths =
+        build_single_instance_alias_paths(all_templates, max_unfold_depth, max_unfold_nodes);
+    let mut out: Vec<(ValueCellId, CompiledExpr)> = Vec::with_capacity(sorted.len());
+    for node in sorted {
+        let NodeId::Value(id) = node else {
+            continue;
+        };
+        let Some(expr) = cell_map.get(&id) else {
+            continue;
+        };
+        let aliased = alias_paths
+            .get(id.entity.as_str())
+            .map(|path| ValueCellId::new(path.as_str(), id.member.as_str()))
+            // An instance-path SUB-OVERRIDE auto (a decl with `kind: Auto` and
+            // no `default_expr`) can occupy the alias id. Never shadow an auto —
+            // the same INVARIANT β's `build_trial_values` enforces defensively.
+            .filter(|alias| !auto_ids.contains(alias))
+            .map(|alias| {
+                let instance_path = alias.entity.clone();
+                let source_entity = id.entity.clone();
+                let rescoped = (*expr).clone().map_value_refs(&mut |vid| {
+                    if vid.entity == source_entity && !auto_ids.contains(&vid) {
+                        ValueCellId::new(instance_path.as_str(), vid.member)
+                    } else {
+                        vid
+                    }
+                });
+                (alias, rescoped)
+            });
+        out.push((id, (*expr).clone()));
+        if let Some(entry) = aliased {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Structure name → its SINGLE non-collection instance path, for the
+/// instance-path alias entries stage (g) of [`build_dependent_cells`] emits
+/// (task #5189 step-10, PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
+/// §12).
+///
+/// Shape and budgeting mirror δ's [`crate::resolve_order::build_instance_path_structure_map`]
+/// (one shared `max_nodes` budget across all roots, `max_depth` pruned at entry);
+/// this is the ALIAS direction of the same walk, so it is deliberately NARROWER
+/// on both axes:
+///
+/// * COLLECTION subs are skipped outright — `N` runtime instance paths collapse
+///   onto ONE template `default_expr` whose inner reads are template-keyed, so
+///   every element would fold to the identical value, silently clobbering
+///   genuinely per-element values. Same boundary, same reason, as
+///   `Engine::post_process_cross_sub_value_cells`'s `if sub.is_collection`
+///   (engine_build.rs).
+/// * A structure reachable by ≥2 distinct instance paths (two plain subs of the
+///   same type, or a recursive containment the depth budget unrolls) is dropped
+///   for the identical reason: one expr, many paths, one value.
+///
+/// Dropping is SAFE in the conservative direction — no alias means the
+/// pre-#5189 behaviour for that cell (its template-keyed entry still folds).
+/// This is the fixture's documented depth-1 / single-instance v1 boundary.
+fn build_single_instance_alias_paths(
+    all_templates: &[TopologyTemplate],
+    max_depth: usize,
+    max_nodes: usize,
+) -> HashMap<String, String> {
+    fn walk(
+        template: &TopologyTemplate,
+        templates: &[TopologyTemplate],
+        prefix: &str,
+        depth: usize,
+        max_depth: usize,
+        node_budget: &mut usize,
+        out: &mut HashMap<String, Vec<String>>,
+    ) {
+        if depth >= max_depth {
+            return;
+        }
+        for sub in &template.sub_components {
+            if sub.is_collection {
+                continue;
+            }
+            if *node_budget == 0 {
+                return;
+            }
+            *node_budget -= 1;
+            let node_path = format!("{}.{}", prefix, sub.name);
+            out.entry(sub.structure_name.clone())
+                .or_default()
+                .push(node_path.clone());
+            let Some(child) = templates.iter().find(|t| t.name == sub.structure_name) else {
+                continue;
+            };
+            walk(
+                child,
+                templates,
+                &node_path,
+                depth + 1,
+                max_depth,
+                node_budget,
+                out,
+            );
+        }
+    }
+
+    let mut collected: HashMap<String, Vec<String>> = HashMap::new();
+    let mut node_budget = max_nodes;
+    for template in all_templates {
+        walk(
+            template,
+            all_templates,
+            &template.name,
+            0,
+            max_depth,
+            &mut node_budget,
+            &mut collected,
+        );
+    }
+    collected
+        .into_iter()
+        .filter_map(|(structure, mut paths)| {
+            paths.sort();
+            paths.dedup();
+            match paths.len() {
+                1 => Some((structure, paths.remove(0))),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Post-solve write-back of the coupled non-auto value-cells in the SINGLE
+/// authoritative cross-scope order `problem.dependent_cells` carries (task #5188
+/// step-8, PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.3 PRIMARY
+/// INVARIANT). Folds `dependent_cells` IN STORED ORDER, evaluating each cell's
+/// `default_expr` against the running `values` and recording the result as
+/// `Determined` in both `values` and `snapshot_values`.
+///
+/// `dependent_cells` is the one list `build_dependent_cells` produced — the same
+/// authority β's per-trial fold consumes — so materializing the coupled cells
+/// here (rather than re-deriving a per-member order) makes the write-back and
+/// β's fold structurally incapable of diverging. A cross-scope Let coupling
+/// (`A.total = A.line_cost + B.total`) resolves correctly because the
+/// topological order places every producer before its reader ACROSS scopes,
+/// which the per-member `evaluate_let_bindings` loop (`detect_let_cycle`,
+/// single-template) cannot honour when it visits the reader's scope first.
+///
+/// Membership already excludes auto params and `@optimized` cells
+/// (`build_dependent_cells`), so this never overwrites a solver-resolved auto
+/// nor re-folds a compute-dispatched cell through plain `eval_expr`. An empty
+/// `dependent_cells` makes this a no-op ⇒ byte-identical to the pre-joint-drive
+/// write-back. Mirrors `reeval_cone_cell`'s eval-context shape
+/// (`eval_ctx_with_meta` + `with_determinacy` + `with_runtime_diagnostics`).
+fn materialize_dependent_cells(
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+) {
+    for (id, expr) in dependent_cells {
+        // The context is rebuilt per cell so each fold step reads the values
+        // (and determinacy) the PRIOR steps just wrote — the running fold that
+        // makes producer-before-reader ordering meaningful. The immutable
+        // borrows of `values`/`snapshot_values` end at the `;` (the temporary
+        // ctx is dropped), so the inserts below are unconflicted.
+        let value = reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, functions, meta_map)
+                .with_determinacy(snapshot_values)
+                .with_runtime_diagnostics(runtime_sink),
+        );
+        values.insert(id.clone(), value.clone());
+        snapshot_values.insert(id.clone(), (value, DeterminacyState::Determined));
+    }
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -1250,6 +2026,7 @@ fn write_solved_pinned_connector_autos(
 /// child template (task #4710): these are excluded from `auto_params` (and hence
 /// from strict-uniqueness verification) and must be written as `Determined` by the
 /// caller alongside the solver-resolved autos.
+#[allow(clippy::too_many_arguments)]
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     objective: Option<&ObjectiveSet>,
@@ -1257,6 +2034,10 @@ fn build_solver_problem(
     functions: Arc<[CompiledFunction]>,
     all_templates: &[reify_compiler::TopologyTemplate],
     snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<(ResolutionProblem, Vec<(ValueCellId, Value)>)> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
@@ -1318,28 +2099,76 @@ fn build_solver_problem(
     }
 
     // Build auto_ids from non-pinned cells only; filter constraints accordingly.
+    // (Shared per-scope tail with `build_merged_solver_problem` via
+    // `filter_constraints_reading_autos`/`build_auto_param_list` — amendment,
+    // task #5014; the connector-pin partitioning above remains this
+    // function's own, site-specific step.)
     let auto_ids: HashSet<&ValueCellId> =
         regular_auto_cells.iter().map(|cell| &cell.id).collect();
 
-    let filtered_constraints: Vec<_> = template
-        .constraints
-        .iter()
-        .filter(|c| {
-            let trace = extract_dependency_trace(&c.expr);
-            trace.reads.iter().any(|r| auto_ids.contains(r))
-        })
-        .map(|c| (c.id.clone(), c.expr.clone()))
-        .collect();
+    let mut filtered_constraints =
+        filter_constraints_reading_autos(&template.constraints, &auto_ids);
+    let auto_param_list = build_auto_param_list(&regular_auto_cells);
 
-    let auto_param_list: Vec<AutoParam> = regular_auto_cells
-        .iter()
-        .map(|cell| AutoParam {
-            id: cell.id.clone(),
-            param_type: cell.cell_type.clone(),
-            bounds: None,
-            free: cell.kind.is_auto_free(),
-        })
-        .collect();
+    // α (task #5188): expand objective/constraint-position structural queries
+    // (`cost(self.descendants)`, `self.members`, …) against the OWNING
+    // `template` BEFORE the exprs enter the ResolutionProblem, so the solver
+    // sees `[ValueRef(line_cost) ...].sum` instead of a raw `cost` FunctionCall
+    // (which `eval_objective_set` can't read → UNDEF_OBJECTIVE_PENALTY, a flat
+    // zero-gradient objective). The ε constraint pass rewrites
+    // `snapshot.graph.constraints`, NOT `template.constraints`, so the exprs
+    // filtered here are still unexpanded. The `contains_structural_query`
+    // fast-path inside the helper keeps structural-query-free exprs
+    // byte-identical (empty-case identity).
+    for (_id, cexpr) in &mut filtered_constraints {
+        expand_solver_position_expr(
+            cexpr,
+            template,
+            all_templates,
+            values,
+            max_unfold_depth,
+            max_unfold_nodes,
+            trait_registry,
+            diagnostics,
+        );
+    }
+    let objective = objective.cloned().map(|mut obj| {
+        for term in &mut obj.terms {
+            expand_solver_position_expr(
+                &mut term.expr,
+                template,
+                all_templates,
+                values,
+                max_unfold_depth,
+                max_unfold_nodes,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        obj
+    });
+
+    // α (task #5188 step-4): build the authoritative dependent-cell order from
+    // the EXPANDED objective/constraint exprs (seeds), over this scope's regular
+    // autos. Inert until the step-8 write-back consumes it; empty ⇒ legacy.
+    let dependent_cells = {
+        let mut seed_exprs: Vec<&CompiledExpr> =
+            filtered_constraints.iter().map(|(_, e)| e).collect();
+        if let Some(obj) = objective.as_ref() {
+            seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
+        }
+        let dep_auto_ids: HashSet<ValueCellId> =
+            regular_auto_cells.iter().map(|c| c.id.clone()).collect();
+        build_dependent_cells(
+            &seed_exprs,
+            all_templates,
+            &dep_auto_ids,
+            &functions,
+            max_unfold_depth,
+            max_unfold_nodes,
+            diagnostics,
+        )
+    };
 
     // Pre-populate current_values with pinned connector values so any remaining
     // constraint that transitively reads a pinned cell sees the correct value.
@@ -1350,16 +2179,412 @@ fn build_solver_problem(
 
     Some((
         ResolutionProblem {
+            dependent_cells,
             auto_params: auto_param_list,
             constraints: filtered_constraints,
             current_values,
-            objective: objective.cloned(),
+            objective,
             // Moved in by value — callers pass Arc::clone, so this is O(1).
             // The merged table is shared with Engine.functions (tasks #1997, #2286).
             functions,
         },
         pinned_connector_autos,
     ))
+}
+
+/// Builds the merged `ResolutionProblem` for a within-cap `MergedSolve`
+/// cluster (M-WHOLE β, task #5014, PRD
+/// `docs/prds/v0_6/whole-model-objective-coupling.md` §5.2): unions ALL
+/// member scopes' regular auto cells, dependency-filtered constraints, and
+/// governing objectives into ONE problem, so the cold `eval()` driver solves
+/// the whole cluster once instead of per-member (the per-template
+/// freeze-as-you-go cascade F-inherit INV-5 refused).
+///
+/// # Contract
+///
+/// * **Determinism (BT5):** `auto_params`/`constraints` order is a pure
+///   function of `cluster.scopes` (already sorted ascending by source
+///   index, see [`crate::resolve_order::Cluster::scopes`]) × each member's
+///   `value_cells`/`constraints` declaration order — no HashMap/HashSet
+///   iteration contributes to ordering; the `HashSet` below is
+///   membership-only (constraint-filter reads).
+/// * **`auto_params` may come back empty** (e.g. every contributed auto was
+///   excluded as a strict connector, below) — the caller
+///   (`dispatch_merged_cluster_solve`) must treat that as "skip the
+///   solver", mirroring `build_solver_problem`'s `None`-means-skip
+///   contract.
+/// * **Strict connector-instance autos are excluded and error.** Unlike
+///   `build_solver_problem` (which pins a Determined child's connector auto,
+///   or silently skips an undetermined one), this excludes every strict
+///   (`!free`) connector-instance auto uniformly and pushes a hard
+///   `Diagnostic::error` — a real guard (not `debug_assert!`), since release
+///   builds must not silently mis-solve the pin. Free connector-instance
+///   autos are unaffected (solved as ordinary autos in both builders).
+///   Connector-pinning *inside* a whole-model cluster is unsupported today;
+///   extend this function to reuse `connector_pin_if_determined` if that
+///   combination is needed.
+/// * **Objective fold is opaque and deduped by owner (§6.1 INV-4).** Each
+///   member's governing `ObjectiveTerm`s (from [`governing_objective`]) are
+///   cloned WHOLE into one `ObjectiveSet` — `weight` is never read or
+///   re-folded as an f64 here (the solver's `eval_objective_set` owns that
+///   fold, keeping this representation-agnostic w.r.t. a future
+///   `weight: f64 -> Value::Scalar` flip). A container objective inherited
+///   by several members must contribute its terms EXACTLY ONCE: the fold is
+///   keyed by owner identity (the `inherited_from` container name, else the
+///   member's own template name — a `debug_assert` pins that `cluster.scopes`
+///   template names are pairwise unique, the same compile-time-enforced
+///   invariant every `ValueCellId` in this eval graph already relies on), so
+///   a container and its inheriting children collapse to one contribution.
+///   `combination` — a mandatory field on every contributing member's
+///   `ObjectiveSet` — locks onto the first *distinct contributing member*
+///   unconditionally rather than being hardcoded: a single-objective-owner
+///   cluster (the common case) keeps that owner's own `combination`
+///   (`WeightedSum` or `Lexicographic`) verbatim; a later, differing value
+///   from another distinct contributing member pushes a warning diagnostic
+///   and is dropped (first-*member*-found wins). `cost_robustness_lambda` is
+///   optional per member, so it follows a related but distinct rule: a
+///   distinct contributing member whose own lambda is `None` does NOT lock
+///   the slot — the fold carries through the first *non-None* value seen in
+///   `cluster.scopes` order ("carry through when present"), and only a
+///   later, differing `Some` value pushes the same kind of divergence
+///   warning `combination` does (first-*non-None*-found wins, not simply
+///   first-member-found).
+///   `objective` is `None` only when no member has a governing objective.
+///
+/// Cost (cold-path only): like `build_solver_problem`, the constraint filter
+/// re-runs `extract_dependency_trace` per member constraint on every call —
+/// no memoization. This mirrors the existing per-template cost, and cluster
+/// size is capped at `WHOLE_MODEL_CLUSTER_DIM_CAP` (12), so the constant
+/// factor stays small; memoize the trace if profiling ever shows otherwise.
+#[allow(clippy::too_many_arguments)]
+fn build_merged_solver_problem(
+    cluster: &crate::resolve_order::Cluster,
+    templates: &[TopologyTemplate],
+    governance: &[GoverningObjective],
+    values: &ValueMap,
+    functions: Arc<[CompiledFunction]>,
+    diagnostics: &mut Vec<Diagnostic>,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+) -> ResolutionProblem {
+    // Union each member's auto cells, in cluster.scopes (ascending source
+    // index) × value_cells declaration order — a pure function of stable Vec
+    // iteration; no HashMap/HashSet contributes to this ordering (§5.2 BT5).
+    let mut auto_cells: Vec<&ValueCellDecl> = Vec::new();
+    for &idx in &cluster.scopes {
+        // Computed once per member (task #4899 S5 idiom), mirroring
+        // `build_solver_problem`'s `connector_prefix`.
+        let connector_prefix = format!("{}.", templates[idx].name);
+        for cell in &templates[idx].value_cells {
+            if !cell.kind.is_auto() {
+                continue;
+            }
+            if is_strict_connector_instance_auto(cell, &connector_prefix) {
+                // Real (non-debug_assert) guard, amendment task #5014 — see
+                // the doc comment above. Exclude the cell (mirrors
+                // `build_solver_problem`'s "Skipped" case: it stays
+                // `Undetermined`) instead of handing it to the solver as an
+                // unconstrained free variable, and fail LOUD in every build
+                // profile via a diagnostic rather than silently mis-solving it.
+                diagnostics.push(Diagnostic::error(format!(
+                    "Cluster member `{}` contributes strict connector-instance \
+                     auto cell `{}` to a MergedSolve cluster -- connector-pinned \
+                     autos inside a whole-model cluster are not yet supported \
+                     (task #5014); the cell is excluded from the merged solve \
+                     and remains undetermined. Note: this same cell would be \
+                     silently left undetermined with no diagnostic at all if its \
+                     scope were not coupled into a MergedSolve cluster -- this \
+                     error is intentionally topology-dependent (a whole-model \
+                     solve fails loud here rather than risk silently mis-solving \
+                     the pin); see task #5014.",
+                    templates[idx].name, cell.id.member,
+                )));
+                continue;
+            }
+            auto_cells.push(cell);
+        }
+    }
+
+    // Membership set for O(1) constraint-filter reads; never iterated for
+    // ordering (that stays on the Vec built above).
+    let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
+
+    // Shared per-scope tail with `build_solver_problem` (amendment, task
+    // #5014): filtered once per member so each member's OWN constraints are
+    // checked, but against the CLUSTER-WIDE `auto_ids` union so a member's
+    // constraint reading a co-solved sibling member's auto is still picked up.
+    let mut filtered_constraints = Vec::new();
+    for &idx in &cluster.scopes {
+        let mut member_constraints =
+            filter_constraints_reading_autos(&templates[idx].constraints, &auto_ids);
+        // α (task #5188): expand each member's constraint-position structural
+        // queries against its OWN template (`self.descendants`/`.members` is
+        // relative to the member's own scope), BEFORE they enter the merged
+        // problem — mirrors `build_solver_problem`. The fast-path keeps
+        // structural-query-free constraints byte-identical.
+        for (_id, cexpr) in &mut member_constraints {
+            expand_solver_position_expr(
+                cexpr,
+                &templates[idx],
+                templates,
+                values,
+                max_unfold_depth,
+                max_unfold_nodes,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        filtered_constraints.extend(member_constraints);
+    }
+
+    let auto_param_list = build_auto_param_list(&auto_cells);
+
+    // Spanning objective: concatenate every DISTINCT governing objective's
+    // ObjectiveTerms opaquely, in cluster.scopes order (same determinism rule as
+    // above).
+    //
+    // A container objective inherited (§6.1 INV-4) by several cluster members
+    // must contribute its terms EXACTLY ONCE. `governing_objective` hands back
+    // the SAME `ContainerObjective::Inherited` set to every child of a governing
+    // container, so when a container P and its inheriting children C1/C2 all land
+    // in one MergedSolve cluster, P's terms appear in governance[P] (own), and
+    // again in governance[C1]/governance[C2] (inherited). Concatenating blindly
+    // would fold P's terms 2–3×, inflating its weight in the merged fold and
+    // shifting the argmin. Dedup by governing-scope identity: the container name
+    // for inherited governance, else the member's own template name (own
+    // objectives are unique per template, and a container that governs a child
+    // shares its own name key so P-own and C-inherited collapse to one entry).
+    //
+    // Keying by `TopologyTemplate.name` (a `String`) is safe: names are already
+    // a compile-time-enforced whole-module key (duplicate template names are a
+    // hard compile error -- `reify_compiler`'s `record_or_report_duplicate` plus
+    // a post-compile `scc.rs` re-check) that every `ValueCellId` in this eval
+    // graph already depends on for correctness -- a collision here would break
+    // far more than this fold. Pin that precondition locally (amendment, task
+    // #5014; mirrors the analogous runtime check in `gui/src-tauri/src/engine.rs`'s
+    // `get_entity_tree`) rather than just assume it.
+    debug_assert!(
+        {
+            let mut seen_names: HashSet<&str> = HashSet::new();
+            cluster
+                .scopes
+                .iter()
+                .all(|&idx| seen_names.insert(templates[idx].name.as_str()))
+        },
+        "cluster.scopes must have pairwise-unique template names -- the spanning \
+         objective's fold-once dedup key (governing-scope name) assumes this \
+         compile-time-enforced invariant; cluster.scopes={:?}",
+        cluster.scopes,
+    );
+    let mut spanning_terms = Vec::new();
+    let mut combination: Option<ObjectiveCombination> = None;
+    let mut cost_robustness_lambda: Option<f64> = None;
+    let mut seen_objective_sources: HashSet<String> = HashSet::new();
+    for &idx in &cluster.scopes {
+        if let Some(obj) = governance[idx].objective.as_ref() {
+            let source_key = governance[idx]
+                .inherited_from
+                .clone()
+                .unwrap_or_else(|| templates[idx].name.clone());
+            if !seen_objective_sources.insert(source_key) {
+                // Already folded in via the governing container itself or an
+                // earlier sibling that inherits the same objective.
+                continue;
+            }
+            // α (task #5188): expand each contributing term's structural query
+            // against its OWNING template BEFORE folding into `spanning_terms`.
+            // `self.descendants`/`.members` is relative to the objective's
+            // DECLARING scope, so owner = the member's own template, or the
+            // inherited container template when this objective was inherited
+            // (§6.1). The opaque per-owner fold below erases per-term ownership,
+            // so expansion MUST happen here while the owner is still in scope
+            // (else `self` would resolve against the wrong template).
+            let owner_template = match governance[idx].inherited_from.as_deref() {
+                Some(container_name) => templates
+                    .iter()
+                    .find(|t| t.name == container_name)
+                    .unwrap_or(&templates[idx]),
+                None => &templates[idx],
+            };
+            for mut term in obj.terms.iter().cloned() {
+                expand_solver_position_expr(
+                    &mut term.expr,
+                    owner_template,
+                    templates,
+                    values,
+                    max_unfold_depth,
+                    max_unfold_nodes,
+                    trait_registry,
+                    diagnostics,
+                );
+                spanning_terms.push(term);
+            }
+            // `combination` carries through from the first distinct
+            // contributing member (amendment, task #5014) instead of being
+            // hardcoded to `WeightedSum`: the common single-objective-owner
+            // cluster then keeps that owner's own combination verbatim -- the
+            // same opaque pass-through `weight` already gets, so a
+            // `Lexicographic` objective is never silently reinterpreted as a
+            // weighted trade-off (a topology-dependent change to the optimum
+            // that a bare `WeightedSum` hardcode would otherwise cause with no
+            // diagnostic). A LATER, differing combination from another
+            // distinct contributing member has no well-defined merged reading
+            // today -- folding terms governed by different combinations into
+            // one `ObjectiveSet` is unsupported (real `Lexicographic` staged
+            // solving is task ε, PRD §6.3) -- so keep the first-found
+            // combination and warn rather than silently overwrite it.
+            match (combination, obj.combination) {
+                (None, candidate) => combination = Some(candidate),
+                (Some(existing), candidate) if candidate != existing => {
+                    let member_name = &templates[idx].name;
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "Cluster member `{member_name}` declares a \
+                         `{candidate:?}`-combination objective which differs from \
+                         the already-governing `{existing:?}` combination taken \
+                         from an earlier cluster member; the merged spanning \
+                         objective keeps the first-found combination and folds \
+                         ALL contributing terms under it (task #5014 §5.2) -- a \
+                         term governed by a different combination may not solve \
+                         to its standalone optimum; reconcile the two objectives \
+                         if this divergence is unintentional."
+                    )));
+                }
+                _ => {}
+            }
+            // `cost_robustness_lambda` is optional per member (unlike
+            // `combination` above, which is mandatory), so its fold uses a
+            // related but distinct rule: `(None, candidate)` fires again for
+            // every distinct contributing member until one supplies `Some`,
+            // so a member with no preference does NOT lock out a later
+            // member's explicit lambda -- this carries through the first
+            // *non-None* value in `cluster.scopes` order, not simply the
+            // first member's value (mirrors "carry through when present",
+            // amendment task #5014 §5.2; see the doc comment above).
+            //
+            // exact compare intended: lambdas are user-declared literals
+            // (parsed, not computed), so bitwise equality is the correct
+            // divergence test here, not an approximate/epsilon compare.
+            #[allow(clippy::float_cmp)]
+            match (cost_robustness_lambda, obj.cost_robustness_lambda) {
+                (None, candidate) => cost_robustness_lambda = candidate,
+                (Some(existing), Some(candidate)) if candidate != existing => {
+                    let member_name = &templates[idx].name;
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "Cluster member `{member_name}` sets \
+                         cost_robustness_lambda={candidate} which differs from the \
+                         already-governing lambda={existing} taken from an earlier \
+                         cluster member; the merged solve keeps the first-found value \
+                         (task #5014 §5.2) -- reconcile the two objectives if this \
+                         divergence is unintentional."
+                    )));
+                }
+                _ => {}
+            }
+        }
+    }
+    let objective = if spanning_terms.is_empty() {
+        None
+    } else {
+        Some(ObjectiveSet {
+            terms: spanning_terms,
+            combination: combination.unwrap_or(ObjectiveCombination::WeightedSum),
+            cost_robustness_lambda,
+        })
+    };
+
+    // α (task #5188 step-4): authoritative CROSS-SCOPE dependent-cell order from
+    // the EXPANDED spanning objective + merged constraint exprs (seeds), over the
+    // cluster-wide auto union. Inert until the step-8 write-back; empty ⇒ legacy.
+    let dependent_cells = {
+        let mut seed_exprs: Vec<&CompiledExpr> =
+            filtered_constraints.iter().map(|(_, e)| e).collect();
+        if let Some(obj) = objective.as_ref() {
+            seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
+        }
+        let dep_auto_ids: HashSet<ValueCellId> =
+            auto_cells.iter().map(|c| c.id.clone()).collect();
+        build_dependent_cells(
+            &seed_exprs,
+            templates,
+            &dep_auto_ids,
+            &functions,
+            max_unfold_depth,
+            max_unfold_nodes,
+            diagnostics,
+        )
+    };
+
+    ResolutionProblem {
+        dependent_cells,
+        auto_params: auto_param_list,
+        constraints: filtered_constraints,
+        current_values: values.clone(),
+        objective,
+        functions,
+    }
+}
+
+/// Diagnostic pushed by `dispatch_merged_cluster_solve`/`_cached`'s
+/// empty-`auto_params` early return: every auto cell the cluster
+/// (`cluster_scope_names`, in `cluster.scopes` order) contributed was
+/// excluded by the strict connector-instance guard (each already diagnosed
+/// individually via the per-cell `Diagnostic::error` pushed above by
+/// `build_merged_solver_problem`), so no merged solve was attempted and the
+/// WHOLE cluster -- not only the member(s) that contributed an excluded
+/// cell -- is left unresolved.
+///
+/// Shared by cold `eval()`'s `dispatch_merged_cluster_solve` and warm
+/// `eval_cached()`'s `dispatch_merged_cluster_solve_cached` so the two call
+/// sites' collateral-warning text cannot drift apart by hand
+/// (reviewer_comprehensive, task #5118 amendment) -- see
+/// `dispatch_merged_cluster_solve`'s doc comment for the full "collateral
+/// observability" rationale this message exists to satisfy.
+fn merged_cluster_left_unresolved_warning(cluster_scope_names: &[&str]) -> Diagnostic {
+    Diagnostic::warning(format!(
+        "MergedSolve cluster [{}] was left entirely unresolved: at \
+         least one member contributed an unsupported connector-\
+         pinned auto cell (see the error diagnostic above naming \
+         the specific cell), so no merged solve was attempted -- \
+         EVERY member of this cluster, not only the one that \
+         contributed the excluded cell, remains undetermined.",
+        cluster_scope_names.join(", "),
+    ))
+}
+
+/// Cluster-wide non-uniqueness warning for a merged `MergedSolve` solve,
+/// pushed once per free `auto_params` entry in `problem` when `unique` is
+/// `false`. `unique` is a single flag over the WHOLE merged solve, so this
+/// warns on every free auto param across ALL of `problem`'s `auto_params` --
+/// not scoped to whichever member(s) actually caused the non-uniqueness,
+/// unlike the per-template arms (which report per single-scope `problem`). A
+/// merged cluster's autos are jointly solved as one system, so a free auto on
+/// any member can be a contributing degree of freedom for the whole
+/// cluster's solution, not just its own scope's. No-ops when `unique` is
+/// `true`.
+///
+/// Shared by cold `dispatch_merged_cluster_solve` and warm
+/// `dispatch_merged_cluster_solve_cached` (reviewer_comprehensive, task #5118
+/// amendment) so the warning text and the `ap.free` predicate cannot drift
+/// apart by hand between the two dispatchers -- the same extraction already
+/// done for `merged_cluster_left_unresolved_warning` above.
+fn push_merged_cluster_nonunique_warnings(
+    diagnostics: &mut Vec<Diagnostic>,
+    problem: &ResolutionProblem,
+    unique: bool,
+) {
+    if unique {
+        return;
+    }
+    for ap in &problem.auto_params {
+        if ap.free {
+            diagnostics.push(Diagnostic::warning(format!(
+                "Parameter `{}` resolved via auto(free) \
+                 -- result is not uniquely determined.",
+                ap.id.member
+            )));
+        }
+    }
 }
 
 /// Effective objective governance for a single template scope, computed once per
@@ -1537,18 +2762,25 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// Gate:
 ///   1. The template's objective is Money-dimensioned (`objective_is_money`).
 ///   2. At least one constraint contains an inequality slack (`has_inequality_slack`).
+///   3. The objective is NOT a `cost_robustness_tradeoff` form (task γ #4791,
+///      PRD §2.4/§8.1: `cost_robustness_lambda.is_none()`) — the tradeoff's own
+///      two-anchor blend REPLACES the floor rather than composing with it, so a
+///      tradeoff-marked objective must never qualify here even though it is
+///      Money-dimensioned.
 ///
-/// Both conditions are necessary: (1) activates the solver-side floor; (2) ensures
-/// there is at least one slack term to floor.
+/// All three conditions are necessary: (1) activates the solver-side floor; (2)
+/// ensures there is at least one slack term to floor; (3) excludes the tradeoff
+/// override.
 ///
 /// **Intentional duplication**: this predicate mirrors the solver-side gate in
-/// `solver.rs::collect_floor_terms` / `solver.rs::objective_is_money`.  The
-/// eval-side cannot call the solver gate directly because reify-eval src does NOT
-/// depend on reify-constraints (only a dev-dep).  This follows the same
-/// intentional-duplication convention as `has_inequality_slack` ↔
-/// `collect_slack_terms` and `scope_qualifies_for_centrality` ↔
-/// `build_centrality_objective`.  If you change either gate, apply the change to
-/// both sides.
+/// `solver.rs::collect_floor_terms` / `solver.rs::objective_is_money` (and, for
+/// (3), the `cost_robustness_lambda` gate in `solver.rs::solve_with_meta`'s
+/// dispatch).  The eval-side cannot call the solver gate directly because
+/// reify-eval src does NOT depend on reify-constraints (only a dev-dep).  This
+/// follows the same intentional-duplication convention as `has_inequality_slack`
+/// ↔ `collect_slack_terms` and `scope_qualifies_for_centrality` ↔
+/// `build_centrality_objective`.  If you change any of these gates, apply the
+/// change to all sides.
 ///
 /// **Known limitation (bounds)**: same as `scope_qualifies_for_centrality` — this
 /// predicate cannot inspect numeric bounds (not carried by `TopologyTemplate`), so
@@ -1556,12 +2788,13 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// even if the solver returns `None`.  This is a benign inaccuracy (rare and
 /// accepted; matches the accepted limitation in `scope_qualifies_for_centrality`).
 ///
-/// Cross-reference: `solver.rs::objective_is_money`, `solver.rs::collect_floor_terms`.
+/// Cross-reference: `solver.rs::objective_is_money`, `solver.rs::collect_floor_terms`,
+/// `solver.rs::solve_with_meta` (`cost_robustness_lambda` dispatch).
 fn scope_qualifies_for_robustness_floor(template: &TopologyTemplate) -> bool {
     template
         .objective
         .as_ref()
-        .is_some_and(objective_is_money)
+        .is_some_and(|obj| objective_is_money(obj) && obj.cost_robustness_lambda.is_none())
         && template
             .constraints
             .iter()
@@ -1667,14 +2900,28 @@ fn emit_param_override_rejection_warning(
 /// one place — the triple-copy divergence that produced the guarded-group
 /// override bug (task 2154) cannot recur.
 ///
-/// **Cache / journal**: every value-write path in this helper records a
-/// `Started` event before resolution and a `Completed { outcome }` event after
-/// calling `cache.record_evaluation`, mirroring the top-level Param branch in
-/// `Engine::eval`'s first pass — the symmetric S4 arm is tagged
-/// `REJECTED-OVERRIDE-NO-DEFAULT`, and both sites funnel through the shared
-/// `record_eval_completed` helper. Task-2195 added journal+cache recording
-/// here to make guarded-group Param evals fully visible to tooling that joins
-/// journal events against cache state.
+/// **Cache / journal**: every value-write path in this helper funnels through
+/// [`commit_cell_result`] (task γ #5053), which writes the values/snapshot/
+/// cache/journal legs atomically and tags the `Started` event with the
+/// `guarded-group` [`TraceSource`] slug. Task-2195 first added journal+cache
+/// recording here — mirroring the top-level Param branch in `Engine::eval`'s
+/// first pass, including the symmetric `REJECTED-OVERRIDE-NO-DEFAULT` arm — to
+/// make guarded-group Param evals visible to tooling that joins journal events
+/// against cache state; the γ migration preserves that visibility (identical
+/// values/snapshot/cache writes) while making the provenance slug explicit.
+///
+/// **Journal-timing delta (γ #5053, non-load-bearing).** The pre-migration
+/// contract emitted the `Started` event *before* resolution and computed the
+/// paired `Completed`'s `Duration` payload as `start.elapsed()`, so on the
+/// default-eval path (below) that `Duration` spanned the `default_expr`
+/// evaluation. `commit_cell_result` captures its own `start = Instant::now()`
+/// at the *top of the commit* — i.e. *after* that eval — so the `Started`
+/// timestamp is now post-eval and the `Completed` `Duration` measures only the
+/// four-leg commit, not the eval. This ordering/duration shift is an accepted
+/// consequence of routing through the α primitive: no journal-latency
+/// assertion consumes this `Duration`'s magnitude (every consumer matches
+/// `Duration(_)` for presence only), so it is observationally inert for
+/// current tooling.
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
@@ -1684,16 +2931,6 @@ fn eval_guarded_group_param_cell(
     diagnostics: &mut Vec<Diagnostic>,
     ctx: &mut GuardedParamCtx<'_>,
 ) {
-    let node_id = NodeId::Value(cell.id.clone());
-    let start = Instant::now();
-    ctx.journal.record(EvalEvent {
-        timestamp: start,
-        node_id: node_id.clone(),
-        kind: EventKind::Started,
-        version: ctx.version,
-        payload: None,
-    });
-
     let override_val = match param_overrides.get(&cell.id) {
         None => {
             // No override stored AND no default_expr: write (Undef, Undetermined)
@@ -1706,18 +2943,20 @@ fn eval_guarded_group_param_cell(
             // behaviour change). Guarded-group cells always write Undef so all
             // cells appear in EvalResult.values regardless of override presence.
             if cell.default_expr.is_none() {
-                values.insert(cell.id.clone(), Value::Undef);
-                snapshot.values.insert(
+                commit_cell_result(
+                    CommitLegs {
+                        values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: ctx.cache,
+                        journal: ctx.journal,
+                    },
                     cell.id.clone(),
-                    (Value::Undef, DeterminacyState::Undetermined),
-                );
-                record_eval_completed(
-                    ctx.journal,
-                    ctx.cache,
-                    node_id,
-                    CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+                    Value::Undef,
+                    DeterminacyRule::Undetermined,
+                    TraceSource::GuardedGroup,
+                    DependencyTrace::default(),
                     ctx.version,
-                    start,
+                    CacheLeg::Record,
                 );
                 return;
             }
@@ -1753,34 +2992,39 @@ fn eval_guarded_group_param_cell(
         // Write (Undef, Undetermined) into both maps so external readers of
         // EvalResult.values see a well-defined Undef instead of a missing key.
         // Record in cache + journal — mirrors the top-level S4 arm (task-2195).
-        values.insert(cell.id.clone(), Value::Undef);
-        snapshot.values.insert(
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values: &mut snapshot.values,
+                cache: ctx.cache,
+                journal: ctx.journal,
+            },
             cell.id.clone(),
-            (Value::Undef, DeterminacyState::Undetermined),
-        );
-        record_eval_completed(
-            ctx.journal,
-            ctx.cache,
-            node_id,
-            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+            Value::Undef,
+            DeterminacyRule::Undetermined,
+            TraceSource::GuardedGroup,
+            DependencyTrace::default(),
             ctx.version,
-            start,
+            CacheLeg::Record,
         );
         return;
     };
 
     // Override-accepted or default-eval path: write determined value.
-    values.insert(cell.id.clone(), val.clone());
-    snapshot
-        .values
-        .insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
-    record_eval_completed(
-        ctx.journal,
-        ctx.cache,
-        node_id,
-        CachedResult::Value(val, DeterminacyState::Determined),
+    commit_cell_result(
+        CommitLegs {
+            values,
+            snapshot_values: &mut snapshot.values,
+            cache: ctx.cache,
+            journal: ctx.journal,
+        },
+        cell.id.clone(),
+        val,
+        DeterminacyRule::UnconditionalDetermined,
+        TraceSource::GuardedGroup,
+        DependencyTrace::default(),
         ctx.version,
-        start,
+        CacheLeg::Record,
     );
 }
 
@@ -2668,11 +3912,28 @@ impl Engine {
     /// `eval_objective_set`) and `reify-constraints/src/registry.rs`.  Those are
     /// across a crate boundary that `reify-eval` does not import for this path.
     /// If PRD §6.2 invariant I3 changes, update all three call sites.
+    ///
+    /// **Also triplicated — I-UNITS coherence assert (PRD D2/I-UNITS, task α
+    /// #5018):** each of the three fold sites above carries an identical
+    /// non-diagnosing `debug_assert!(reify_ir::objective_terms_coherent(...).is_ok())`
+    /// backstop guarding the same units-coherence invariant that the compile-time
+    /// gate (`E_OBJECTIVE_MIXED_DIMENSION`, `check_objective_dimension_coherence` in
+    /// reify-compiler/src/entity.rs) enforces as the sole user-facing diagnostic.
+    /// If that assert's wording or the `objective_terms_coherent` contract changes,
+    /// update all three fold sites' debug_assert too.
     fn objective_term_contributions(
         &self,
         objective: &ObjectiveSet,
         values: &ValueMap,
     ) -> Vec<TermContribution> {
+        debug_assert!(
+            reify_ir::objective_terms_coherent(&objective.terms).is_ok(),
+            "objective_term_contributions: I-UNITS violated (task α #5018) — \
+             objective_terms_coherent() reported Err for a set that reached the fold; \
+             the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, \
+             reify-compiler/src/entity.rs) should have rejected this ObjectiveSet \
+             before it ever reached objective_term_contributions"
+        );
         let ctx = eval_ctx_with_meta(values, &self.functions, &self.meta_map);
         objective
             .terms
@@ -2799,16 +4060,15 @@ impl Engine {
         self.last_undef_causes.clear();
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
-        let version = VersionId(version_id);
+        let (snap_id, ver_id) = self.allocate_snapshot_version();
+        // downstream consumers below still take the raw u64 version and the VersionId
+        let version_id = ver_id.0;
+        let version = ver_id;
 
         let mut snapshot = Snapshot::from_compiled_module(module);
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
-        snapshot.id = SnapshotId(snapshot_id);
+        snapshot.id = snap_id;
         snapshot.version = version;
         snapshot.provenance = SnapshotProvenance::Initial;
 
@@ -3146,6 +4406,8 @@ impl Engine {
                                 &sub.args,
                                 &self.meta_map,
                                 &mut diagnostics,
+                                &module.templates,
+                                self.prelude,
                             );
                         }
 
@@ -3202,6 +4464,8 @@ impl Engine {
                             overrides,
                             &self.meta_map,
                             &mut diagnostics,
+                            &module.templates,
+                            self.prelude,
                         );
 
                         // Per-key SIR-α StructureInstance at
@@ -3264,6 +4528,7 @@ impl Engine {
                         &self.meta_map,
                         &mut diagnostics,
                         &module.templates,
+                        self.prelude,
                         &mut unfold_budget,
                     );
                     continue;
@@ -3284,6 +4549,8 @@ impl Engine {
                     &sub.args,
                     &self.meta_map,
                     &mut diagnostics,
+                    &module.templates,
+                    self.prelude,
                 );
 
                 // task 3540 (SIR-α), handler esc-3540-182 (A): expose the
@@ -3412,15 +4679,40 @@ impl Engine {
                     &module.templates,
                     &sq_trait_registry,
                 );
+                // task 5015 (M-WHOLE γ): rewrite cost(list_literal) nodes to
+                // [ValueRef(line_cost) ...].sum. MUST run after apply_trait_filters
+                // so self.descendants/any explicit filter(...) is already a
+                // list_literal of entity-refs.
+                crate::structural_query::apply_cost_aggregation(
+                    &mut expanded,
+                    &module.templates,
+                    &sq_trait_registry,
+                );
                 let val = reify_expr::eval_expr(
                     &expanded,
                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
-                values.insert(cell.id.clone(), val.clone());
-                snapshot.values.insert(
+                // Commit-only migration (task γ #5053, impl-4): the overlay
+                // eval ctx above is left as-is (no sink/containment — adopting
+                // cell_eval_ctx here would be a B1/4356-class behaviour
+                // change, out of γ's scope). CacheLeg::Skip makes the
+                // pre-existing no-cache decision explicit + auditable instead
+                // of silently omitting the cache leg.
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
                     cell.id.clone(),
-                    (val, DeterminacyState::Determined),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("structural-query post-pass overwrite"),
                 );
             }
         }
@@ -3507,10 +4799,24 @@ impl Engine {
                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
-                values.insert(cell.id.clone(), val.clone());
-                snapshot.values.insert(
+                // Commit-only migration (task γ #5053, impl-5): the
+                // determinacy-only eval ctx above is left as-is. CacheLeg::Skip
+                // makes the pre-existing no-cache decision explicit + auditable
+                // instead of silently omitting the cache leg.
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
                     cell.id.clone(),
-                    (val, DeterminacyState::Determined),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("self-datum projection overwrite"),
                 );
             }
         }
@@ -3537,7 +4843,38 @@ impl Engine {
         // β #4822: compute dependency-ordered resolve order BEFORE the solver
         // gate so `ro` is in scope at the detect_scope_coupling site below.
         // Pure structural analysis — requires no solved values.
-        let mut ro = crate::resolve_order::resolve_order(&module.templates);
+        //
+        // JOINT-DRIVE δ (#5334, Gap C): cluster formation is expansion-aware,
+        // so it receives a `ClusterFormationCtx`. `order` and
+        // `coupling_diagnostics` are unaffected by it — only `clusters` widens,
+        // to include derived-cost couplings (a parent objective reaching a child
+        // auto through a `line_cost` Let cell, possibly only after
+        // `cost(self.descendants)` is expanded).
+        //
+        // PRECONDITION — `values` is fully populated here: the field, Param+Let,
+        // Auto-preseed, sub-component, structural-query and self-datum phases
+        // have all run above, so the `__count_*` collection cells cluster-time
+        // `enumerate_descendants` needs are live (the same precondition the
+        // Let-cell structural-query pass above documents). Autos are still
+        // `Undef`, which is exactly what this pass wants — it is structural
+        // analysis, not evaluation.
+        //
+        // BORROW SHAPE: the ctx is confined to this block so its shared borrows
+        // of `values` and `functions` end at the call, leaving both free for the
+        // `&mut values` / `Arc::clone(&functions)` dispatch loop below.
+        let mut ro = {
+            let cluster_ctx = crate::resolve_order::ClusterFormationCtx {
+                values: &values,
+                functions: &functions,
+                // Reuses the registry built for the Let-cell structural-query
+                // pass above; it borrows only &'static prelude + &module (never
+                // self), so there is no &mut self clash.
+                trait_registry: &sq_trait_registry,
+                max_unfold_depth: self.max_unfold_depth,
+                max_unfold_nodes: self.max_unfold_nodes,
+            };
+            crate::resolve_order::resolve_order(&module.templates, Some(&cluster_ctx))
+        };
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
@@ -3574,7 +4911,79 @@ impl Engine {
                         .insert(template.name.clone());
                 }
             }
+
+            // M-WHOLE β (#5014): precompute which templates belong to a
+            // within-cap `MergedSolve` cluster, and track which clusters have
+            // already been dispatched as we walk `ro.order`. `cluster_of_scope`
+            // maps a MergedSolve member's template index to its cluster's
+            // position in `ro.clusters`; `ApproximatedFallback` clusters and
+            // uncoupled scopes are absent from this map, so they fall through
+            // to the unchanged per-template branch below (§5.2 "scopes outside
+            // the cluster remain frozen constants exactly as today").
+            //
+            // Scope note (task #5118): this is the COLD `eval()` driver's
+            // dispatch, via `dispatch_merged_cluster_solve`. The WARM
+            // `eval_cached` driver mirrors this exact precompute + dispatch
+            // shape via its own `dispatch_merged_cluster_solve_cached` (see
+            // that call site, in the warm solver sub-pass below), closing the
+            // cold/warm fidelity divergence recorded at esc-5014-10 for
+            // constraint-only clusters — the two sites dispatch identically
+            // but write back in their respective cold/warm leg shapes (see
+            // `dispatch_merged_cluster_solve_cached`'s doc for how the warm
+            // shape differs, and for the documented, permitted
+            // solve()/solve_ranked divergence objective-bearing clusters
+            // retain, design decision #4).
+            //
+            // Scope decision — W_SCOPE_COUPLING left as-is: the generic cycle
+            // warning extended into `diagnostics` below (from
+            // `ro.coupling_diagnostics`, computed in resolve_order.rs) still
+            // fires unconditionally for a within-cap SCC even though this loop
+            // now genuinely merges and solves it for real. β does not touch
+            // resolve_order.rs's emission — graduating that warning to reflect
+            // the merged-solve reality is a diagnostic-accuracy refinement,
+            // cleanest once δ's real solver + ε exercise this path end-to-end.
+            // β's module scope is the driver loop, not the diagnostic pass; the
+            // warning ("may be approximate") is at worst mildly stale, never
+            // wrong, and this keeps scope_coupling.rs/coupling_approximated.rs
+            // green.
+            let cluster_of_scope: HashMap<usize, usize> = ro
+                .clusters
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.disposition == crate::resolve_order::ClusterDisposition::MergedSolve
+                })
+                .flat_map(|(ci, c)| c.scopes.iter().map(move |&s| (s, ci)))
+                .collect();
+            let mut cluster_dispatched = vec![false; ro.clusters.len()];
+
             for &idx in &ro.order {
+                if let Some(&cluster_idx) = cluster_of_scope.get(&idx) {
+                    if cluster_dispatched[cluster_idx] {
+                        // Already co-solved and written back when we reached
+                        // this cluster's first member in ro.order — nothing
+                        // left to do for this member.
+                        continue;
+                    }
+                    cluster_dispatched[cluster_idx] = true;
+                    self.dispatch_merged_cluster_solve(
+                        &ro.clusters[cluster_idx],
+                        idx,
+                        module,
+                        &governance,
+                        &mut values,
+                        &mut snapshot,
+                        &mut resolved_params,
+                        &mut solve_failed_autos,
+                        &mut objective_provenance,
+                        Arc::clone(&functions),
+                        &mut diagnostics,
+                        &mut structured_detail,
+                        &runtime_sink,
+                    );
+                    continue;
+                }
+
                 let template = &module.templates[idx];
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` Arc::clones `functions` — O(1) refcount bump,
@@ -3601,6 +5010,14 @@ impl Engine {
                     Arc::clone(&functions),
                     &module.templates,
                     &snapshot.values,
+                    // α (task #5188): objective/constraint-position expansion
+                    // context. `sq_trait_registry` (built above for the Let-cell
+                    // pass) borrows only &'static prelude + &module — never self
+                    // — so reusing it here is free of a &mut self borrow clash.
+                    self.max_unfold_depth,
+                    self.max_unfold_nodes,
+                    &sq_trait_registry,
+                    &mut diagnostics,
                 ) else {
                     continue;
                 };
@@ -3680,10 +5097,9 @@ impl Engine {
                         // entries so all resolution-phase entries share the same
                         // basis_version as the snapshot. This preserves the invariant
                         // that try_fast_path relies on for incremental evaluation.
-                        let res_snapshot_id = self.next_snapshot_id;
-                        self.next_snapshot_id += 1;
-                        let res_version_id = self.next_version_id;
-                        self.next_version_id += 1;
+                        let (snap_id, ver_id) = self.allocate_snapshot_version();
+                        let res_snapshot_id = snap_id.0;
+                        let res_version_id = ver_id.0;
 
                         // Write pinned connector-instance autos (task #4710): excluded from
                         // auto_params by build_solver_problem, written here as Determined
@@ -3817,6 +5233,20 @@ impl Engine {
                             &meta_map,
                             &mut diagnostics,
                             &mut structured_detail,
+                            &runtime_sink,
+                        );
+
+                        // α (task #5188 step-8): materialize the coupled cells in
+                        // the SINGLE authoritative cross-scope order
+                        // `problem.dependent_cells` carries (PRD §6.3), after the
+                        // per-template Let re-eval. Empty ⇒ no-op ⇒ byte-identical
+                        // to the pre-joint-drive write-back.
+                        materialize_dependent_cells(
+                            &problem.dependent_cells,
+                            &mut values,
+                            &mut snapshot.values,
+                            &problem.functions,
+                            &meta_map,
                             &runtime_sink,
                         );
                     }
@@ -4119,266 +5549,45 @@ impl Engine {
                 .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
-        // ── RBD-α (task 3822): MassProperties PSD inertia validation ─────────────
-        // Post-eval pass: for every cell whose value is a StructureInstance with
-        // type_name == "MassProperties", extract the `inertia` field, compute the
-        // symmetric-3×3 eigenvalues analytically, and replace the cell with
-        // Value::Undef (Determined) when the matrix is non-PSD or malformed.
-        //
-        // Design rationale: `reify-expr::eval_structure_instance_ctor` is
-        // intentionally registry-free and diagnostic-free (SIR-α design decision
-        // 2), so the diagnostic-emitting + value-replacing hook belongs here in
-        // reify-eval, where the diagnostics sink and value maps are both accessible.
-        //
-        // The immutable `values` borrow is released before any mutable insert by
-        // collecting target pairs first.
-        //
-        // Performance: the scan is guarded by a fast any() check so designs that
-        // never instantiate MassProperties skip the extraction pass entirely.
-        {
-            // Fast early-out: skip the O(n) extraction pass when no MassProperties
-            // cell exists (the common case when std.dynamics is unused).
-            let has_mass_props = values.iter().any(|(_, v)| {
-                matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
-            });
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062) Replaces the former inline RBD-α (task 3822) PSD block
+        // with λ's registry so eval / eval_cached / edit_check run the SAME
+        // detector — INV-EVAL-3, one owner across all serve paths.
+        // `MassPropertiesPsdDetector` is a verbatim port of the deleted inline
+        // block (same classification rules, wording, and Undef-replacement), so
+        // this is behavior-preserving on the cold path. It mutates only the
+        // output `values` / `snapshot.values` / `diagnostics` (never the cache),
+        // so it is always FRESHLY produced on every serve mode — disjoint from
+        // the per-cell runtime-diagnostic replay class (the INV-EVAL-3
+        // double-emission guard). Registration order is run order; the
+        // annotation-args post-pass below still runs AFTER this (the
+        // PSD-then-annotation ordering the scattered "must run before" comments
+        // encoded is now owned by the registry + this call ordering).
+        crate::detectors::DetectorRegistry::with_builtins().run_all(
+            &mut crate::detectors::PostPassState {
+                values: &mut values,
+                snapshot_values: &mut snapshot.values,
+                diagnostics: &mut diagnostics,
+            },
+        );
 
-            if has_mass_props {
-                // Classify each MassProperties cell's inertia field.
-                enum InertiaResult {
-                    /// Field is absent or already Undef — leave untouched (no false positives).
-                    Skip,
-                    /// Field is present but could not be parsed as a 3×3 numeric matrix.
-                    Malformed,
-                    /// Field parsed successfully — run PSD check.
-                    Valid([[f64; 3]; 3]),
-                }
-
-                let mass_props_cells: Vec<(ValueCellId, InertiaResult)> = values
-                    .iter()
-                    .filter_map(|(id, val)| {
-                        if let Value::StructureInstance(data) = val
-                            && data.type_name == "MassProperties"
-                        {
-                            let result = match data.fields.get("inertia") {
-                                None | Some(Value::Undef) => InertiaResult::Skip,
-                                Some(v) => match crate::dynamics_psd::inertia_3x3_from_value(v) {
-                                    Some(m) => InertiaResult::Valid(m),
-                                    None => InertiaResult::Malformed,
-                                },
-                            };
-                            // Only collect cells that need attention.
-                            match result {
-                                InertiaResult::Skip => None,
-                                other => Some((id.clone(), other)),
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                for (id, result) in mass_props_cells {
-                    match result {
-                        InertiaResult::Skip => unreachable!("Skip filtered above"),
-                        InertiaResult::Malformed => {
-                            // A present-but-unparseable inertia field (wrong shape, non-numeric
-                            // cell) is surfaced as E_DynamicsInertiaNotPSD so malformed tensors
-                            // never silently flow to dynamics consumers.
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "MassProperties '{}': inertia field cannot be parsed as \
-                                     a 3×3 numeric matrix",
-                                    id,
-                                ))
-                                .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
-                            );
-                            values.insert(id.clone(), Value::Undef);
-                            snapshot
-                                .values
-                                .insert(id.clone(), (Value::Undef, DeterminacyState::Determined));
-                        }
-                        InertiaResult::Valid(m) => {
-                            let tol = crate::dynamics_psd::psd_tol(&m);
-                            if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
-                                let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "MassProperties '{}': inertia tensor is not positive \
-                                         semi-definite (min eigenvalue ≈ {:.3e})",
-                                        id, min_eig,
-                                    ))
-                                    .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
-                                );
-                                values.insert(id.clone(), Value::Undef);
-                                snapshot.values.insert(
-                                    id.clone(),
-                                    (Value::Undef, DeterminacyState::Determined),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── annotation-args ε (#3556): materialization-time eval driver ──────────────
-        // Post-eval pass: for every `Value::StructureInstance` cell whose template
-        // declares `AtMaterialization` annotation args, evaluate each compiled
-        // expression and attach the result as a per-instance materialized-annotation
-        // overlay under `MATERIALIZED_ANNOTATIONS_KEY`.
-        //
-        // Design mirrors the RBD-α MassProperties PSD pass above:
-        // - reify-expr's StructureInstance constructor is intentionally
-        //   registry/diagnostic-free (SIR-α design decision 2), so the hook
-        //   lives here where the diagnostics sink, value maps, template registry,
-        //   and functions are all accessible.
-        // - Immutable `values` borrows are released before any mutable insert
-        //   by collecting targets first, then evaluating + inserting per-target.
-        // - Failure handling (emit AnnotationEvalFailed + replace with Undef)
-        //   is added in step-8.
-        //
-        // Note: `eval_cached()` is a parallel implementation that does not
-        // delegate to `eval()` and therefore does NOT run this pass. Materialized-
-        // annotation overlays are intentionally absent on the `eval_cached()` path,
-        // matching the existing MassProperties PSD precedent (also eval-only).
-        // Consumers that rely on the overlay must use `eval()` directly. If
-        // `eval_cached()` consumers ever need the overlay, factor this pass into a
-        // shared helper called from both code paths.
-        {
-            let has_struct_instance = values
-                .iter()
-                .any(|(_, v)| matches!(v, Value::StructureInstance(_)));
-            if has_struct_instance {
-                /// Match a `Value` against a `MaterializationArgType` expectation.
-                ///
-                /// Returns `false` for `Value::Undef` (eval-failure sentinel) and for
-                /// any value whose kind doesn't match the expected type.
-                /// `Any` accepts any non-Undef value.
-                fn value_kind_matches(
-                    val: &Value,
-                    expected: reify_compiler::MaterializationArgType,
-                ) -> bool {
-                    use reify_compiler::MaterializationArgType as MAT;
-                    match expected {
-                        MAT::Any => !matches!(val, Value::Undef),
-                        MAT::String => matches!(val, Value::String(_)),
-                        MAT::Int => matches!(val, Value::Int(_)),
-                        MAT::Real => matches!(val, Value::Real(_)),
-                        MAT::Bool => matches!(val, Value::Bool(_)),
-                        MAT::Length => matches!(val, Value::Scalar { .. }),
-                    }
-                }
-
-                // Memoize compile_materialization_annotation_args per template
-                // type_name: a design with N instances of the same template
-                // compiles its annotation Exprs only once (O(T) compilations,
-                // T = distinct template types), not O(N). Each instance still
-                // receives its own evaluated Value (eval is per-instance).
-                let mut margs_by_type: std::collections::HashMap<
-                    String,
-                    Vec<reify_compiler::MaterializationAnnotationArg>,
-                > = std::collections::HashMap::new();
-
-                // Collect instances that carry AtMaterialization args.
-                // Releasing the immutable borrow on `values` before any mutable
-                // insert (collect into Vec<_> drops the iterator).
-                let targets: Vec<_> = values
-                    .iter()
-                    .filter_map(|(id, val)| {
-                        let Value::StructureInstance(data) = val else {
-                            return None;
-                        };
-                        // Look up cached margs, or compile once for this type.
-                        let margs = margs_by_type
-                            .entry(data.type_name.clone())
-                            .or_insert_with(|| {
-                                find_template_with_prelude(
-                                    module,
-                                    self.prelude,
-                                    &data.type_name,
-                                )
-                                .map(|t| {
-                                    reify_compiler::compile_materialization_annotation_args(
-                                        t,
-                                        &module.enum_defs,
-                                        &functions,
-                                    )
-                                })
-                                .unwrap_or_default()
-                            });
-                        if margs.is_empty() {
-                            return None;
-                        }
-                        Some((id.clone(), data.clone(), margs.clone()))
-                    })
-                    .collect();
-
-                for (id, mut data, margs) in targets {
-                    let mut failure_diags: Vec<Diagnostic> = Vec::new();
-                    let mut collected: Vec<(String, String, Value)> = Vec::new();
-
-                    {
-                        // Build a per-instance EvalContext using the global values.
-                        // (Per-instance param-binding scope deferred to task ι; ε's
-                        //  signals are constant exprs or unresolved idents that don't
-                        //  need param binding.)
-                        let ctx =
-                            eval_ctx_with_meta(&values, &functions, &self.meta_map);
-                        for marg in &margs {
-                            let val = reify_expr::eval_expr(&marg.expr, &ctx);
-                            if !matches!(val, Value::Undef)
-                                && value_kind_matches(&val, marg.expected)
-                            {
-                                collected.push((
-                                    marg.annotation.clone(),
-                                    marg.arg_name.clone(),
-                                    val,
-                                ));
-                            } else {
-                                // Distinguish the two failure modes for the message.
-                                let reason = if matches!(val, Value::Undef) {
-                                    "eval returned Undef"
-                                } else {
-                                    "type mismatch"
-                                };
-                                failure_diags.push(
-                                    Diagnostic::error(format!(
-                                        "annotation @{} arg '{}' on '{}': \
-                                         materialization-time evaluation failed ({reason})",
-                                        marg.annotation, marg.arg_name, id,
-                                    ))
-                                    .with_code(DiagnosticCode::AnnotationEvalFailed),
-                                );
-                            }
-                        }
-                        // ctx dropped here — immutable borrow on `values` released.
-                    }
-
-                    if failure_diags.is_empty() {
-                        // All args evaluated and type-checked successfully.
-                        // Attach the overlay to the cloned instance data in a single
-                        // batch call (O(K) clones of the overlay BTreeMap) rather
-                        // than K separate per-arg calls (which would be O(K²)).
-                        data.set_materialized_annotations_batch(&collected);
-                        let rebuilt = Value::StructureInstance(data);
-                        values.insert(id.clone(), rebuilt.clone());
-                        snapshot
-                            .values
-                            .insert(id, (rebuilt, DeterminacyState::Determined));
-                    } else {
-                        // Any arg failure → emit all per-arg diagnostics and replace
-                        // the instance cell with Undef so downstream consumers never
-                        // observe a partially-materialized annotation. Mirrors the
-                        // MassProperties PSD hook's replace-on-failure pattern.
-                        diagnostics.extend(failure_diags);
-                        values.insert(id.clone(), Value::Undef);
-                        snapshot
-                            .values
-                            .insert(id, (Value::Undef, DeterminacyState::Determined));
-                    }
-                }
-            }
-        }
+        // ── annotation-args ε (#3556): materialization-time eval driver ──────
+        // (task μ #5062) Extracted into the shared
+        // `run_materialization_annotation_post_pass` helper (defined just after
+        // this fn) so BOTH eval() and eval_cached() run it — dissolving the
+        // former eval-only asymmetry the deleted "eval_cached does NOT run this
+        // pass" note described (PRD
+        // `docs/prds/v0_6/eval-cell-commit-substrate.md` §10 Q2). Runs AFTER the
+        // MassProperties PSD registry pass above, preserving the former inline
+        // PSD-then-annotation ordering.
+        self.run_materialization_annotation_post_pass(
+            module,
+            &functions,
+            &mut values,
+            &mut snapshot.values,
+            version,
+            &mut diagnostics,
+        );
 
         // undef-self-describing α (task 4321): post-eval UndefCause classification pass.
         //
@@ -4484,7 +5693,10 @@ impl Engine {
         // in `module`, mint `Value::GeometryHandle { kernel_handle: None }` into
         // `values` when the cell is not yet realized.  Runs AFTER the scalar
         // value-cell pass (so params like `width` are resolved in `values` for
-        // the upstream_values_hash fold) and BEFORE diagnostic passes.
+        // the upstream_values_hash fold) and BEFORE diagnostic passes. This
+        // mint doesn't track/return a flipped-cell set at all (see its doc
+        // comment in engine_build.rs) — no call site has ever wanted one; see
+        // the R3f comment below for why.
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
@@ -4498,11 +5710,78 @@ impl Engine {
         // recognised kernel-free leaf constructor over a symbolic target.
         // Runs immediately AFTER the handle-mint (above) so the symbolic
         // body handle is already present in `values`.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
-            &mut values,
-            &mut diagnostics,
-        );
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): a same-pass consumer that read a selector cell
+        // BEFORE the POST-WALK selector-mint above resolved it — e.g. `loc =
+        // faces_by_normal(loc_box, ...)` where `loc_box` is a geometry LET
+        // with no value cell of its own, so `loc`'s handle can only be
+        // minted here, never via the R3d in-walk retry — is otherwise never
+        // re-checked: R3e's post-mint re-eval (inside
+        // `evaluate_params_and_lets_unified`) triggers only off the IN-WALK
+        // `minted_in_walk` set, which a geometry-LET target never enters.
+        // Reuse the exact R3e machinery, once per template, keyed on the
+        // SELECTOR mint's own flipped (Undef→non-Undef) set.
+        //
+        // Deliberately excludes the handle-mint's flips (the handle-mint
+        // above doesn't compute or return a flipped set at all): a selector
+        // resolution is final (a resolved `Value::Selector`/handle list is
+        // not later superseded),
+        // but the handle-mint only ever produces a PLACEHOLDER
+        // `GeometryHandle { kernel_handle: None, .. }` for a bare geometry
+        // LET/realization. Feeding that flip into a DIRECT (non-selector)
+        // consumer's reeval here would permanently pin the consumer to a
+        // symbolic-only result: `build()`'s later per-realization kernel
+        // pass (`post_process_derived_lets` / `post_process_containment_samples`
+        // in engine_build.rs) re-resolves such consumers with the REAL
+        // `kernel_handle`, but only for cells still `Value::Undef` at that
+        // point — and `check()`/`build()` call this `eval()` BEFORE any
+        // kernel realization runs. Regression witness:
+        // `restrict_field_b5_integration` (`v_in = sample(restrict(field,
+        // region), pt)`, `region` a bare geometry LET) — re-eval'ing
+        // `restricted` here against the unrealized `region` handle wrote a
+        // non-Undef `Value::Field` that `post_process_derived_lets` then
+        // skipped (its Undef-only filter), and `v_in` stayed at
+        // `Undef` instead of `build()`'s real kernel-backed `Real(42.0)`.
+        let post_walk_flipped = selector_mint_flipped;
+        if !post_walk_flipped.is_empty() {
+            // `snapshot` was moved into `self.eval_state` above ("Store
+            // internal state for incremental evaluation"), so it can no
+            // longer be named directly. `re_eval_consumers_of_in_walk_mints`
+            // takes `&mut self`, and Rust cannot borrow `self` as both the
+            // method receiver and the source of a `&mut self.eval_state...`
+            // field argument in the same call — reclaim the snapshot via
+            // `take()` into an owned local (disjoint from `self`) for the
+            // duration of the loop, then reinstall it. This take/reinstall
+            // dance is specific to this call site (eval_cached's
+            // `snapshot_values` is already a directly-owned local, no
+            // dance needed), so it stays here rather than in the shared
+            // per-template loop helper below.
+            let mut eval_state = self
+                .eval_state
+                .take()
+                .expect("eval_state installed immediately above");
+            let version_id = eval_state.snapshot.version.0;
+            // Shared with eval_cached()'s identical post-walk loop —
+            // see `re_eval_post_walk_mints_per_template`'s doc.
+            self.re_eval_post_walk_mints_per_template(
+                &module.templates,
+                &mut values,
+                &mut eval_state.snapshot.values,
+                post_walk_flipped,
+                &functions,
+                &runtime_sink,
+                version_id,
+                true,
+                &mut diagnostics,
+            );
+            self.eval_state = Some(eval_state);
+        }
 
         // β #4822: W_SCOPE_COUPLING diagnostics now come from resolve_order's
         // cycle-only coupling_diagnostics (irreducible SCC crossings only).
@@ -4511,6 +5790,40 @@ impl Engine {
         // on `reify check` (which attaches no solver) — same placement as before.
         // `ro` was bound before the gate above so it is in scope here.
         diagnostics.extend(std::mem::take(&mut ro.coupling_diagnostics));
+
+        // M-WHOLE α (#5013): W_COUPLING_APPROXIMATED — a graduation of
+        // W_SCOPE_COUPLING (PRD whole-model-objective-coupling.md §3.4/§5.1,
+        // BT2). For each over-cap / un-mergeable cluster (ApproximatedFallback),
+        // emit ONE named warning by reading `ro.clusters` (populated by
+        // resolve_order's structural clustering pass). Placed at the same site +
+        // gate as the coupling_diagnostics extend above, so it surfaces on
+        // `reify check` (no solver) and `reify eval` alike. This is the non-test
+        // consumer of ro.clusters, so the field is not dead code — β consumes
+        // the identical field to drive the merged solve. eval_cached deliberately
+        // does NOT emit (mirrors its existing no-W_SCOPE_COUPLING policy — eval
+        // owns diagnostic emission, avoiding double warnings across cold/warm).
+        for cluster in &ro.clusters {
+            if cluster.disposition
+                == crate::resolve_order::ClusterDisposition::ApproximatedFallback
+            {
+                let scope_names: Vec<&str> = cluster
+                    .scopes
+                    .iter()
+                    .map(|&idx| module.templates[idx].name.as_str())
+                    .collect();
+                let cap = crate::resolve_order::WHOLE_MODEL_CLUSTER_DIM_CAP;
+                let msg = format!(
+                    "W_COUPLING_APPROXIMATED: cluster {{{}}} has merged auto-dimension {} \
+                     (exceeds cap {}); the whole-model merged solve is skipped — these scopes \
+                     fall back to bottom-up approximate resolution",
+                    scope_names.join(", "),
+                    cluster.dim,
+                    cap,
+                );
+                diagnostics
+                    .push(Diagnostic::warning(msg).with_code(DiagnosticCode::CouplingApproximated));
+            }
+        }
 
         // Static underdetermination detection (task κ #4019 — W_UNDERDETERMINED, PRD §3.6/§10.2).
         // Placed OUTSIDE the `has_active_solver` gate (same rationale as detect_scope_coupling).
@@ -4544,6 +5857,11 @@ impl Engine {
         // Passes `module` so the compile-span suppression predicate (task 4364)
         // can skip cells already flagged by the compiler at the same source span.
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Kinematic singularity diagnostics (task 3580 — W_KINEMATIC_SINGULARITY,
+        // GR-039 / cluster C-37). Same gate placement and rationale as
+        // detect_mechanism_errors above: snapshot()/sweep() are solver-independent
+        // value-eval builtins, so the warning surfaces on kernel-less `reify check`.
+        diagnostics.extend(detect_kinematic_singularity(&values));
         // Ad-hoc selector Undef diagnostics (task 250).  @face/@edge cells left at
         // Value::Undef by the geometry-free eval path surface a warning here so the
         // eval/check path is behaviorally consistent with the build() path (which
@@ -4571,6 +5889,205 @@ impl Engine {
             resolved_params,
             objective_provenance,
             structured_detail,
+        }
+    }
+
+    /// Annotation-args materialization post-pass (task μ #5062).
+    ///
+    /// Extracted verbatim from the former `eval()`-inline block (annotation-args
+    /// ε #3556) so BOTH `eval()` and `eval_cached()` run it — dissolving the
+    /// eval-only asymmetry the old "eval_cached does NOT run this pass" note
+    /// described (PRD `docs/prds/v0_6/eval-cell-commit-substrate.md` §10 Q2).
+    ///
+    /// For every `Value::StructureInstance` cell whose template declares
+    /// `AtMaterialization` annotation args, evaluate each compiled expression and
+    /// attach the result as a per-instance materialized-annotation overlay under
+    /// `MATERIALIZED_ANNOTATIONS_KEY`; on any arg eval/type failure, emit
+    /// `AnnotationEvalFailed` and replace the instance cell with `Value::Undef`
+    /// so downstream consumers never observe a partially-materialized annotation.
+    ///
+    /// Kept a shared HELPER rather than a λ `PostPassDetector` because its state
+    /// shape — `module` / `self.prelude` / `functions` / `self.meta_map` (via a
+    /// constructed `EvalContext`) plus `self.cache` / `self.journal` for the
+    /// `commit_cell_result` overlay — deliberately exceeds `PostPassState` (which
+    /// carries only `values` / `snapshot_values` / `diagnostics`). Do NOT bloat
+    /// `PostPassState` to absorb it (λ module doc; PRD §10 Q2).
+    ///
+    /// Like the MassProperties PSD registry pass it runs after, this is always
+    /// FRESHLY produced on every serve mode: it mutates only the OUTPUT `values`
+    /// / `snapshot_values` / `diagnostics`, and its `commit_cell_result` calls use
+    /// `CacheLeg::Skip` (the overlay is never cached), so on a warm `eval_cached()`
+    /// serve the instance cell is served from cache with its ORIGINAL value and
+    /// this pass re-detects + re-emits idempotently — never overlapping the
+    /// per-cell runtime-diagnostic replay class (INV-EVAL-3).
+    fn run_materialization_annotation_post_pass(
+        &mut self,
+        module: &CompiledModule,
+        functions: &[CompiledFunction],
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        version: VersionId,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let has_struct_instance = values
+            .iter()
+            .any(|(_, v)| matches!(v, Value::StructureInstance(_)));
+        if !has_struct_instance {
+            return;
+        }
+
+        /// Match a `Value` against a `MaterializationArgType` expectation.
+        ///
+        /// Returns `false` for `Value::Undef` (eval-failure sentinel) and for
+        /// any value whose kind doesn't match the expected type.
+        /// `Any` accepts any non-Undef value.
+        fn value_kind_matches(
+            val: &Value,
+            expected: reify_compiler::MaterializationArgType,
+        ) -> bool {
+            use reify_compiler::MaterializationArgType as MAT;
+            match expected {
+                MAT::Any => !matches!(val, Value::Undef),
+                MAT::String => matches!(val, Value::String(_)),
+                MAT::Int => matches!(val, Value::Int(_)),
+                MAT::Real => matches!(val, Value::Real(_)),
+                MAT::Bool => matches!(val, Value::Bool(_)),
+                MAT::Length => matches!(val, Value::Scalar { .. }),
+            }
+        }
+
+        // Memoize compile_materialization_annotation_args per template
+        // type_name: a design with N instances of the same template
+        // compiles its annotation Exprs only once (O(T) compilations,
+        // T = distinct template types), not O(N). Each instance still
+        // receives its own evaluated Value (eval is per-instance).
+        let mut margs_by_type: std::collections::HashMap<
+            String,
+            Vec<reify_compiler::MaterializationAnnotationArg>,
+        > = std::collections::HashMap::new();
+
+        // Collect instances that carry AtMaterialization args.
+        // Releasing the immutable borrow on `values` before any mutable
+        // insert (collect into Vec<_> drops the iterator).
+        let targets: Vec<_> = values
+            .iter()
+            .filter_map(|(id, val)| {
+                let Value::StructureInstance(data) = val else {
+                    return None;
+                };
+                // Look up cached margs, or compile once for this type.
+                let margs = margs_by_type
+                    .entry(data.type_name.clone())
+                    .or_insert_with(|| {
+                        find_template_with_prelude(
+                            module,
+                            self.prelude,
+                            &data.type_name,
+                        )
+                        .map(|t| {
+                            reify_compiler::compile_materialization_annotation_args(
+                                t,
+                                &module.enum_defs,
+                                functions,
+                            )
+                        })
+                        .unwrap_or_default()
+                    });
+                if margs.is_empty() {
+                    return None;
+                }
+                Some((id.clone(), data.clone(), margs.clone()))
+            })
+            .collect();
+
+        for (id, mut data, margs) in targets {
+            let mut failure_diags: Vec<Diagnostic> = Vec::new();
+            let mut collected: Vec<(String, String, Value)> = Vec::new();
+
+            {
+                // Build a per-instance EvalContext using the global values.
+                // (Per-instance param-binding scope deferred to task ι; ε's
+                //  signals are constant exprs or unresolved idents that don't
+                //  need param binding.)
+                let ctx = eval_ctx_with_meta(&*values, functions, &self.meta_map);
+                for marg in &margs {
+                    let val = reify_expr::eval_expr(&marg.expr, &ctx);
+                    if !matches!(val, Value::Undef)
+                        && value_kind_matches(&val, marg.expected)
+                    {
+                        collected.push((
+                            marg.annotation.clone(),
+                            marg.arg_name.clone(),
+                            val,
+                        ));
+                    } else {
+                        // Distinguish the two failure modes for the message.
+                        let reason = if matches!(val, Value::Undef) {
+                            "eval returned Undef"
+                        } else {
+                            "type mismatch"
+                        };
+                        failure_diags.push(
+                            Diagnostic::error(format!(
+                                "annotation @{} arg '{}' on '{}': \
+                                 materialization-time evaluation failed ({reason})",
+                                marg.annotation, marg.arg_name, id,
+                            ))
+                            .with_code(DiagnosticCode::AnnotationEvalFailed),
+                        );
+                    }
+                }
+                // ctx dropped here — immutable borrow on `values` released.
+            }
+
+            // Commit-only migration (task γ #5053, impl-6): both arms below
+            // keep their existing pre-commit logic unchanged. CacheLeg::Skip
+            // makes the pre-existing no-cache decision explicit + auditable
+            // instead of silently omitting the cache leg.
+            if failure_diags.is_empty() {
+                // All args evaluated and type-checked successfully.
+                // Attach the overlay to the cloned instance data in a single
+                // batch call (O(K) clones of the overlay BTreeMap) rather
+                // than K separate per-arg calls (which would be O(K²)).
+                data.set_materialized_annotations_batch(&collected);
+                let rebuilt = Value::StructureInstance(data);
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut *values,
+                        snapshot_values: &mut *snapshot_values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    id,
+                    rebuilt,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("annotation-args materialization overlay"),
+                );
+            } else {
+                // Any arg failure → emit all per-arg diagnostics and replace
+                // the instance cell with Undef so downstream consumers never
+                // observe a partially-materialized annotation. Mirrors the
+                // MassProperties PSD hook's replace-on-failure pattern.
+                diagnostics.extend(failure_diags);
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut *values,
+                        snapshot_values: &mut *snapshot_values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    id,
+                    Value::Undef,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("annotation-args materialization overlay"),
+                );
+            }
         }
     }
 
@@ -4607,6 +6124,10 @@ impl Engine {
     ///
     /// Declared `pub(crate)` so `engine_edit.rs` and `concurrent.rs` (which live
     /// in separate modules in the same crate) can call it.
+    // Retained for the INV-EVAL-2 parity cross-check (cell_eval_ctx.rs) per the
+    // duplication + deferred-hoist decision recorded in 313bbe3f8c; the last
+    // production caller was removed in eb6e7f8c57, so the lib target sees it as dead.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn cell_eval_ctx<'a>(
         &'a self,
         values: &'a ValueMap,
@@ -4654,6 +6175,24 @@ impl Engine {
     /// correct annotation.  A future reader should NOT change this to match the
     /// main-pass unconditional `Determined` rule.
     ///
+    /// # Journal events (task γ #5053)
+    ///
+    /// Since the `commit_cell_result` migration, every invocation now emits a
+    /// `Started`/`Completed` journal pair (`TraceSource::ConeReeval`) in
+    /// addition to the pre-existing cache write — previously this function
+    /// recorded ONLY to `self.cache` and emitted no journal event at all.
+    /// Because both call sites (the cold downstream-cone pass here and the
+    /// θ2 Option-B relaxed reseed in `engine_edit.rs`) may invoke this per
+    /// cell more than once per re-eval, this is an additive increase in
+    /// per-cell journal volume. Confirmed (task γ amendment pass) that no
+    /// journal-consuming code or test in this crate asserts on the prior
+    /// no-journal behaviour for cone / in-walk-mint cells — event-journal
+    /// tests either check totals unrelated to cone re-eval (`tests/journal.rs`,
+    /// `tests/concurrent.rs`) or inspect specific non-cone nodes; the full
+    /// branch-scope suite (`scripts/verify.sh test --scope branch
+    /// --include-infra`) is green with these events present. The new events
+    /// are intended, additive observability, not a regression.
+    ///
     /// # `version_id` — MUST be the owning snapshot's FINAL (post-solver) version
     ///
     /// Callers **must** pass `snapshot.version.0` (or `new_snapshot.version.0` in
@@ -4675,7 +6214,14 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reeval_cone_cell(
         &mut self,
-        node: &NodeId,
+        // Superseded by commit_cell_result's own NodeId::Value(vcid.clone())
+        // construction below — every call site passes node == &NodeId::Value(
+        // vcid.clone()) (the cold-eval cone driver and both in-walk-mint
+        // re-eval drivers all derive node/vcid from the same schedule entry),
+        // so threading it through separately is now redundant. Kept in the
+        // signature rather than touching call sites, per this migration's
+        // characterization-only scope.
+        _node: &NodeId,
         vcid: &ValueCellId,
         expr: &CompiledExpr,
         values: &mut ValueMap,
@@ -4683,25 +6229,492 @@ impl Engine {
         runtime_sink: &RefCell<Vec<Diagnostic>>,
         version_id: u64,
     ) {
+        // Ctx reverted to the pre-migration hand-built chain (task γ #5053
+        // amendment — review finding on containment scope-creep). impl-2
+        // originally switched this site onto the free `cell_eval_ctx`
+        // constructor; being a required-args builder, that necessarily also
+        // wires `.with_containment(self)`. Unlike the eval_cached Let-miss /
+        // wave-2 sites below (which already routed through the
+        // containment-wired `Engine::cell_eval_ctx` METHOD pre-migration, so
+        // adopting the free fn there is a like-for-like swap), this cell-eval
+        // site never carried containment before — so that was a genuine new
+        // capability, not a typing-only change: a cone cell whose expr uses a
+        // containment-dependent field op (`sample(restrict(field, region),
+        // pt)`) would newly resolve via the kernel instead of degrading to
+        // `Value::Undef`, silently flipping its recorded determinacy under
+        // `DeriveFromValue`. That is exactly the class of change
+        // (B1/4356-class) this task deliberately withholds at the
+        // guarded-group and post-pass COMMIT-ONLY sites (see their own
+        // "left as-is" comments) — withheld here too, to keep this site
+        // behaviour-preserving. Only the `commit_cell_result` migration
+        // (INV-EVAL-1) below applies; the ctx capability set (INV-EVAL-2) is
+        // unchanged from pre-migration.
         let val = reify_expr::eval_expr(
             expr,
             &eval_ctx_with_meta(values, &self.functions, &self.meta_map)
                 .with_determinacy(snapshot_values)
                 .with_runtime_diagnostics(runtime_sink),
         );
-        let det = match &val {
-            Value::Undef => DeterminacyState::Undetermined,
-            _ => DeterminacyState::Determined,
-        };
-        values.insert(vcid.clone(), val.clone());
-        snapshot_values.insert(vcid.clone(), (val.clone(), det));
         let trace = extract_dependency_trace(expr);
-        self.cache.record_evaluation(
-            node.clone(),
-            CachedResult::Value(val, det),
-            VersionId(version_id),
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values,
+                cache: &mut self.cache,
+                journal: &mut self.journal,
+            },
+            vcid.clone(),
+            val,
+            DeterminacyRule::DeriveFromValue,
+            TraceSource::ConeReeval,
             trace,
+            VersionId(version_id),
+            CacheLeg::Record,
         );
+    }
+
+    /// Dispatches ONE merged solver call for a within-cap `MergedSolve`
+    /// cluster (M-WHOLE β, task #5014, PRD
+    /// `docs/prds/v0_6/whole-model-objective-coupling.md` §5.2), reached at
+    /// `idx` — the first-in-order member of `cluster` per `ro.order` — by
+    /// the cold `eval()` driver loop above. Builds the merged
+    /// `ResolutionProblem` via [`build_merged_solver_problem`], solves it
+    /// once, and applies the existing single-scope
+    /// Solved/Infeasible/NoProgress write-back pattern (mirrors the
+    /// per-template arm just above this impl block) to the WHOLE cluster in
+    /// one pass. The caller marks the entire cluster dispatched up-front and
+    /// skips every other member in `ro.order`, so this is the ONLY
+    /// write-back this cluster gets.
+    ///
+    /// # Contract
+    ///
+    /// * **Full N-scope write-back:** every `(id, val)` in the merged
+    ///   `solver_values` is written to `values`/`resolved_params`/the
+    ///   snapshot/the cache/`objective_provenance`, regardless of which
+    ///   cluster member owns it — each `ValueCellId` already encodes its
+    ///   owning scope (`id.entity`), so one un-filtered pass routes every
+    ///   member's cells.
+    /// * **`objective_provenance` is per-cell, not per-`idx`:** `objective`,
+    ///   `combination`, and `term_contributions` are computed ONCE per
+    ///   merged solve and shared via `Arc` across every resolved cell. Each
+    ///   entry's `scope` is that id's OWN owning entity, and
+    ///   `inherited_from` is looked up against the OWNING member's
+    ///   `governance` entry — different cluster members may have different
+    ///   own-vs-inherited governance (§6.1).
+    /// * **Let cones re-evaluate for EVERY member:** `cluster.scopes`
+    ///   (stable ascending-by-source-index) is walked in full, calling
+    ///   `evaluate_let_bindings` once per member against the SAME merged
+    ///   snapshot/version, so a member's `let` cell reading a co-solved auto
+    ///   owned by a DIFFERENT member (BT3) sees the merged value.
+    /// * **Objective-aware routing:** when the merged problem carries a
+    ///   spanning objective, the solve is dispatched via `solve_ranked`
+    ///   (identically to the per-template objective branch above), so
+    ///   `W_SOLVER_OPTIMALITY_UNPROVEN` fires under the same condition.
+    ///   Objective-less clusters keep the plain `.solve()` call.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_merged_cluster_solve(
+        &mut self,
+        cluster: &crate::resolve_order::Cluster,
+        idx: usize,
+        module: &CompiledModule,
+        governance: &[GoverningObjective],
+        values: &mut ValueMap,
+        snapshot: &mut Snapshot,
+        resolved_params: &mut HashMap<ValueCellId, Value>,
+        solve_failed_autos: &mut HashMap<ValueCellId, String>,
+        objective_provenance: &mut HashMap<ValueCellId, ObjectiveProvenance>,
+        functions: Arc<[CompiledFunction]>,
+        diagnostics: &mut Vec<Diagnostic>,
+        structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+    ) {
+        // α (task #5188): trait registry for objective/constraint-position
+        // structural-query expansion inside build_merged_solver_problem.
+        // `self.prelude` is &'static and `module` is a param, so this borrows
+        // neither self nor conflicts with the &mut self write-back below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(
+            self.prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
+                .chain(module.trait_defs.iter()),
+        );
+        let problem = build_merged_solver_problem(
+            cluster,
+            &module.templates,
+            governance,
+            values,
+            Arc::clone(&functions),
+            diagnostics,
+            self.max_unfold_depth,
+            self.max_unfold_nodes,
+            &expansion_trait_registry,
+        );
+
+        // Amendment, task #5014: mirror `build_solver_problem`'s `None`-means-
+        // skip contract. `build_merged_solver_problem` always returns a
+        // `ResolutionProblem` (unlike `build_solver_problem`'s `Option`), but
+        // if every auto cell the cluster contributed was excluded by the
+        // strict connector-instance guard (see that function's doc comment),
+        // `auto_params` comes back empty and there is nothing for a solver to
+        // resolve. Calling `solve()`/`solve_ranked()` on a zero-auto-param
+        // problem would be a spurious solve with a misleading `Solved`
+        // write-back over nothing. `build_merged_solver_problem` has already
+        // pushed an error `Diagnostic` per excluded cell into `diagnostics`
+        // above, so the caller still learns why. No write-back, no
+        // let-cone re-eval here — consistent with the per-template
+        // `build_solver_problem` == `None` arm, which likewise `continue`s
+        // without invoking `evaluate_let_bindings`.
+        //
+        // Blast radius (amendment, task #5014): this early return is scoped
+        // to the WHOLE cluster, not just the member(s) that contributed an
+        // excluded cell. EVERY member in `cluster.scopes` is left unresolved
+        // by this `return` — including a member whose own cells contained no
+        // excluded auto and would have solved fine standalone. This is an
+        // accepted, documented tradeoff, not an oversight: a member only
+        // reaches this dispatch because α's `compute_clusters` already
+        // coupled it into the same `MergedSolve` SCC/objective span as the
+        // excluded cell's scope, so silently falling back to solving it
+        // alone would ignore that real coupling and could produce a value
+        // inconsistent with the (unsolved) rest of the cluster. Falling back
+        // to per-template solving for the non-excluded members is a possible
+        // follow-up, not implemented here.
+        //
+        // Collateral observability (amendment, task #5014): the per-cell
+        // error(s) above name the SPECIFIC excluded connector-instance auto
+        // cell(s), but say nothing about the collateral members -- a user
+        // staring at an undetermined value on a sibling scope that
+        // contributed no excluded cell had no signal that it went unresolved
+        // because a DIFFERENT member's cell was unsupported. Push one more
+        // diagnostic naming the WHOLE cluster so that collateral is an
+        // observable signal, not silence.
+        if problem.auto_params.is_empty() {
+            let cluster_scope_names: Vec<&str> = cluster
+                .scopes
+                .iter()
+                .map(|&member_idx| module.templates[member_idx].name.as_str())
+                .collect();
+            diagnostics.push(merged_cluster_left_unresolved_warning(&cluster_scope_names));
+            return;
+        }
+
+        let solver = self
+            .lookup_solver_for_module(module)
+            .expect("has_active_solver is true => solver lookup returns Some");
+        // γ (task #4804) pattern, generalized to the merged problem: when a
+        // spanning objective is present, call `solve_ranked` for the
+        // OptimalityStatus side-channel and surface
+        // `W_SOLVER_OPTIMALITY_UNPROVEN` on an iteration-limited solve.
+        // Objective-less solves keep `.solve()` unchanged (mirrors
+        // engine_eval.rs's per-template branch above, B5).
+        let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
+            if problem.objective.is_some() {
+                match solver.solve_ranked(&problem) {
+                    RankedSolveResult::Ranked {
+                        mut candidates,
+                        optimality,
+                    } => {
+                        assert!(
+                            !candidates.is_empty(),
+                            "RankedSolveResult::Ranked must carry >=1 candidate (I2) (engine seam)"
+                        );
+                        let candidate = candidates.swap_remove(0);
+                        (
+                            SolveResult::Solved {
+                                values: candidate.values,
+                                unique: candidate.unique,
+                            },
+                            Some(optimality),
+                        )
+                    }
+                    RankedSolveResult::Infeasible { diagnostics: d } => {
+                        (SolveResult::Infeasible { diagnostics: d }, None)
+                    }
+                    RankedSolveResult::NoProgress { reason: r } => {
+                        (SolveResult::NoProgress { reason: r }, None)
+                    }
+                }
+            } else {
+                (solver.solve(&problem), None)
+            };
+
+        debug_assert!(
+            cluster.scopes.contains(&idx),
+            "dispatch_merged_cluster_solve: idx (template `{}`) must be a \
+             member of cluster.scopes ({:?})",
+            module.templates[idx].name,
+            cluster.scopes,
+        );
+
+        match solve_result {
+            SolveResult::Solved {
+                values: solver_values,
+                unique,
+            } => {
+                let (snap_id, ver_id) = self.allocate_snapshot_version();
+                let res_snapshot_id = snap_id.0;
+                let res_version_id = ver_id.0;
+                let parent_snap_id = snapshot.id;
+
+                // step-04: write back EVERY cluster member's cells in one
+                // pass — each ValueCellId already encodes its owning scope
+                // (id.entity), so no per-member filtering is needed here.
+                //
+                // Defensive auto_params filter (amendment, task #5014):
+                // `SolveResult::Solved.values` is documented as "resolved
+                // values for auto parameters" — i.e. keyed by
+                // `problem.auto_params` — but nothing enforces that contract
+                // structurally. `problem.current_values` (the frozen snapshot
+                // passed to the solver, including every OTHER cluster's
+                // constants) was also visible to it; if a misbehaving
+                // `ConstraintSolver` impl ever echoed one of those keys back
+                // in `solver_values`, an unfiltered pass would wrongly stamp
+                // a cell OUTSIDE this cluster's auto set as `Determined` —
+                // and because one merged solve spans N scopes, the blast
+                // radius is wider here than the identically-shaped
+                // single-template loop this mirrors. Restricting to
+                // `problem.auto_params` ids makes the existing contract
+                // explicit rather than merely assumed.
+                let auto_param_ids: HashSet<&ValueCellId> =
+                    problem.auto_params.iter().map(|ap| &ap.id).collect();
+                let mut resolved_ids = HashSet::new();
+                for (id, val) in solver_values
+                    .iter()
+                    .filter(|(id, _)| auto_param_ids.contains(id))
+                {
+                    let node_id = NodeId::Value(id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(res_version_id),
+                        payload: None,
+                    });
+
+                    values.insert(id.clone(), val.clone());
+                    resolved_params.insert(id.clone(), val.clone());
+                    resolved_ids.insert(id.clone());
+
+                    snapshot
+                        .values
+                        .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
+
+                    let trace = DependencyTrace::default();
+                    let cached_result =
+                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        VersionId(res_version_id),
+                        trace,
+                    );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(res_version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+                }
+
+                // Non-uniqueness is reported cluster-wide by design (amendment,
+                // task #5014) via the shared `push_merged_cluster_nonunique_warnings`
+                // helper (reviewer_comprehensive, task #5118 amendment) -- see
+                // that function's doc comment for the full "single flag over
+                // the WHOLE merged solve" rationale. Shared with warm
+                // `dispatch_merged_cluster_solve_cached` so the warning text
+                // and the `ap.free` predicate cannot drift apart by hand.
+                push_merged_cluster_nonunique_warnings(diagnostics, &problem, unique);
+
+                // θ (task 4015), generalized to the merged spanning objective
+                // (amendment, task #5014): record REAL ObjectiveProvenance for
+                // each resolved cell from the objective the solver actually
+                // used, keyed by the CELL'S OWN owning scope (id.entity) since
+                // one merged solve spans every cluster member -- not `idx`'s
+                // template, unlike the per-template arm above.
+                //
+                // Performance: `objective`/`term_contributions` are computed
+                // ONCE per merged solve (not per cell) and shared via Arc,
+                // mirroring the per-template arm's O(1)-refcount-bump contract.
+                let objective_arc: Option<Arc<ObjectiveSet>> =
+                    problem.objective.as_ref().map(|o| Arc::new(o.clone()));
+                let combination = objective_arc.as_ref().map(|o| o.combination);
+                let term_contributions: Arc<Vec<TermContribution>> = match objective_arc.as_ref()
+                {
+                    Some(obj) => Arc::new(self.objective_term_contributions(obj, values)),
+                    None => Arc::new(Vec::new()),
+                };
+                // Map each cluster member's owning entity name to its
+                // `governance` index once, so the per-cell loop below can look
+                // up the OWNING member's `inherited_from` in O(1) -- a merged
+                // solve spans N scopes with potentially different own-vs-
+                // inherited governance (§6.1), unlike the single-scope
+                // per-template arm which uses one `governance[idx]` for every
+                // cell.
+                // Amendment, task #5014: mirrors `build_merged_solver_problem`'s
+                // identical pairwise-unique-names debug_assert. This
+                // `member_by_name` map is keyed by the same
+                // `templates[member_idx].name`, so a collision would
+                // silently keep only the LAST same-named member, mis-routing
+                // `inherited_from` provenance in the loop below. Pin the
+                // precondition at this second construction site too instead
+                // of relying on it only being checked where the merged
+                // problem is built.
+                debug_assert!(
+                    {
+                        let mut seen_names: HashSet<&str> = HashSet::new();
+                        cluster.scopes.iter().all(|&member_idx| {
+                            seen_names.insert(module.templates[member_idx].name.as_str())
+                        })
+                    },
+                    "cluster.scopes must have pairwise-unique template names -- \
+                     member_by_name's dedup key (template name) assumes this \
+                     compile-time-enforced invariant; cluster.scopes={:?}",
+                    cluster.scopes,
+                );
+                let member_by_name: HashMap<&str, usize> = cluster
+                    .scopes
+                    .iter()
+                    .map(|&member_idx| (module.templates[member_idx].name.as_str(), member_idx))
+                    .collect();
+                for id in &resolved_ids {
+                    let is_synth = self
+                        .centrality_synthesized_scopes
+                        .contains(id.entity.as_str());
+                    // Amendment, task #5014: `member_by_name` is keyed by
+                    // `templates[member_idx].name`, so this lookup silently
+                    // degrades `inherited_from` to `None` if `id.entity`
+                    // ever diverges from its owning member's bare template
+                    // name (e.g. an instanced/synthesized scope whose
+                    // entity string isn't the plain template name) -- a
+                    // divergence the per-template arm above can't hit (it
+                    // always reads `governance[idx]` directly, keyed by the
+                    // driver's own `idx`, never a name lookup). Trip this
+                    // in tests/debug builds rather than silently drop
+                    // provenance in release.
+                    debug_assert!(
+                        member_by_name.contains_key(id.entity.as_str()) || is_synth,
+                        "merged solve resolved cell `{:?}` whose owning entity \
+                         `{}` is neither a cluster member's template name \
+                         (member_by_name, built from cluster.scopes) nor a \
+                         recognized centrality-synthesized scope -- \
+                         inherited_from provenance would silently be dropped \
+                         to None; entity/template-name divergence?",
+                        id,
+                        id.entity,
+                    );
+                    let inherited_from = member_by_name
+                        .get(id.entity.as_str())
+                        .and_then(|&member_idx| governance[member_idx].inherited_from.clone());
+                    objective_provenance.insert(
+                        id.clone(),
+                        ObjectiveProvenance {
+                            scope: id.entity.clone(),
+                            objective: objective_arc.clone(),
+                            combination,
+                            term_contributions: Arc::clone(&term_contributions),
+                            synthetic_centrality: is_synth,
+                            inherited_from,
+                        },
+                    );
+                }
+
+                snapshot.id = SnapshotId(res_snapshot_id);
+                snapshot.version = VersionId(res_version_id);
+                // `scope` records EVERY cluster member's name (cluster.scopes
+                // order — same determinism rule as auto_params/constraints in
+                // `build_merged_solver_problem`), not just `idx`'s (the
+                // first-in-order member that triggered this dispatch): a
+                // merged solve spans all of `resolved` below, so a single
+                // anchor name would be arbitrary and could mislead a
+                // consumer keying provenance display off
+                // `SnapshotProvenance::Resolution.scope` (amendment, task
+                // #5014; `scope` stays a plain `String` — no reify-ir shape
+                // change).
+                let merged_scope_label = cluster
+                    .scopes
+                    .iter()
+                    .map(|&member_idx| module.templates[member_idx].name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                snapshot.provenance = SnapshotProvenance::Resolution {
+                    scope: merged_scope_label,
+                    resolved: resolved_ids,
+                    parent: parent_snap_id,
+                };
+
+                // step-06: re-evaluate EVERY cluster member's let cone
+                // against the merged solution -- not just idx's (`template`
+                // above is superseded by this loop, which includes idx since
+                // idx is itself a member of cluster.scopes).
+                let meta_map = Arc::clone(&self.meta_map);
+                for &member_idx in &cluster.scopes {
+                    let member_template = &module.templates[member_idx];
+                    self.evaluate_let_bindings(
+                        member_template,
+                        values,
+                        snapshot,
+                        res_version_id,
+                        &functions,
+                        &meta_map,
+                        diagnostics,
+                        structured_detail,
+                        runtime_sink,
+                    );
+                }
+
+                // α (task #5188 step-8): after the per-member Let re-eval,
+                // materialize the coupled cells in the SINGLE authoritative
+                // CROSS-SCOPE order `problem.dependent_cells` carries (PRD §6.3),
+                // so a cross-scope Let coupling (e.g. `A.total` reading `B.total`)
+                // resolves producer-before-reader regardless of `cluster.scopes`
+                // iteration order — the per-member `detect_let_cycle` loop above
+                // orders only WITHIN a template. Empty ⇒ no-op ⇒ byte-identical.
+                materialize_dependent_cells(
+                    &problem.dependent_cells,
+                    values,
+                    &mut snapshot.values,
+                    &problem.functions,
+                    &meta_map,
+                    runtime_sink,
+                );
+            }
+            SolveResult::Infeasible {
+                diagnostics: solver_diags,
+            } => {
+                diagnostics.extend(solver_diags);
+                if self.capture_undef_causes {
+                    record_failed_autos(solve_failed_autos, &problem.auto_params, "infeasible");
+                }
+            }
+            SolveResult::NoProgress { reason } => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Constraint solver made no progress: {}",
+                    reason
+                )));
+                if self.capture_undef_causes {
+                    let detail = format!("no progress: {reason}");
+                    record_failed_autos(solve_failed_autos, &problem.auto_params, &detail);
+                }
+            }
+        }
+
+        // γ (task #4804), generalized to the merged problem: surface
+        // W_SOLVER_OPTIMALITY_UNPROVEN when the spanning-objective solve hit
+        // the iteration limit. Mirrors the per-template gate above verbatim.
+        if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
+            && matches!(reason, BestFoundReason::IterationLimit)
+        {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
+                     optimality ({})",
+                    reason.describe()
+                ))
+                .with_code(DiagnosticCode::SolverOptimalityUnproven),
+            );
+        }
     }
 
     /// Evaluate a compiled module with caching and early cutoff.
@@ -4763,13 +6776,6 @@ impl Engine {
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
 
-        // β #4822: compute dependency-ordered resolve order so the solver sub-pass
-        // (post-loop below) runs in read-DAG order — a later-declared scope that reads
-        // an earlier scope's auto cell will see the SOLVED value.  Pure structural
-        // analysis, requires no solved values.  eval_cached does NOT emit
-        // W_SCOPE_COUPLING (unchanged).
-        let ro = crate::resolve_order::resolve_order(&module.templates);
-
         for template in &module.templates {
             // Pre-seed Auto cells (unchanged; processed separately before the
             // unified Param+Let pass so Auto leaves are visible to topo-ordered
@@ -4782,6 +6788,9 @@ impl Engine {
                     if let Some(CachedResult::Value(val, det)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        // μ (#5062): replay this clean-served cell's stored
+                        // per-cell diagnostics (else swallowed on the fast path).
+                        self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -4798,6 +6807,17 @@ impl Engine {
                     // Check cache reuse (not dirty, no override)
                     // Preserve existing freshness (Failed/Pending) — see the
                     // analogous let-cell block comment for rationale (arch §7.1/§9.2).
+                    //
+                    // task γ (#5053) deferral note: this commit (and its Param/Let
+                    // siblings below, at ~@6183/@6355) calls
+                    // `record_evaluation_with_freshness` directly rather than
+                    // `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
+                    // always writes `Freshness::Final` and has no path to a preserved
+                    // (carried-over) freshness value — see cell_commit.rs's module doc,
+                    // "Known scope gaps" — so a genuinely preserve-freshness commit like
+                    // this one cannot be represented by `commit_cell_result` as currently
+                    // shaped. Left unmigrated pending a preserve/propagating `CacheLeg`
+                    // variant (PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
@@ -4809,6 +6829,10 @@ impl Engine {
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
+                        // μ (#5062): replay this clean-served cell's stored
+                        // per-cell diagnostics (last use of `entry` before the
+                        // &mut record below).
+                        diagnostics.extend(entry.diagnostics.iter().cloned());
                         self.cache.record_evaluation_with_freshness(
                             node_id.clone(),
                             result,
@@ -4985,6 +7009,9 @@ impl Engine {
                             if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (else swallowed).
+                                self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -5000,6 +7027,11 @@ impl Engine {
 
                             // Cache-reuse: not dirty + entry exists (no override).
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
+                            //
+                            // task γ (#5053) deferral note: unmigrated preserve-freshness
+                            // commit — see the Auto-cell pre-seed block's comment above
+                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
+                            // gaps" + PRD §2.4); identical reasoning applies here.
                             if !self.param_overrides.contains_key(&cell.id)
                                 && !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
@@ -5011,6 +7043,10 @@ impl Engine {
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (last use of
+                                // `entry` before the &mut record below).
+                                diagnostics.extend(entry.diagnostics.iter().cloned());
                                 self.cache.record_evaluation_with_freshness(
                                     node_id.clone(),
                                     result,
@@ -5065,6 +7101,10 @@ impl Engine {
                                         (reify_ir::Value::Undef, no_default_state)
                                     }
                                 };
+                            // μ (#5062): mark runtime_sink length before the
+                            // default-expr eval so this cell's diagnostics delta
+                            // can be stored after the record below.
+                            let diag_mark = runtime_sink.borrow().len();
                             let (val, det) = match override_entry {
                                 Some((override_val, Ok(()))) => {
                                     (override_val.clone(), DeterminacyState::Determined)
@@ -5130,6 +7170,11 @@ impl Engine {
                                 trace,
                             );
 
+                            // μ (#5062): store this freshly-evaluated cell's
+                            // diagnostics delta for replay on future cache-hit
+                            // serves (empty delta clears stale content).
+                            self.store_cell_replay_diagnostics(&node_id, &runtime_sink, diag_mark);
+
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
@@ -5157,6 +7202,9 @@ impl Engine {
                             if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (else swallowed).
+                                self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -5173,6 +7221,11 @@ impl Engine {
                             // Cache-reuse: not dirty + entry exists.
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
                             // See the detailed rationale in the old second-pass let-cell block.
+                            //
+                            // task γ (#5053) deferral note: unmigrated preserve-freshness
+                            // commit — see the Auto-cell pre-seed block's comment above
+                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
+                            // gaps" + PRD §2.4); identical reasoning applies here.
                             if !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
@@ -5183,6 +7236,10 @@ impl Engine {
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (last use of
+                                // `entry` before the &mut record below).
+                                diagnostics.extend(entry.diagnostics.iter().cloned());
                                 self.cache.record_evaluation_with_freshness(
                                     node_id.clone(),
                                     result,
@@ -5205,20 +7262,22 @@ impl Engine {
                             stats.cache_misses += 1;
                             self.cache.clear_dirty(&node_id);
 
-                            let start = Instant::now();
-                            self.journal.record(EvalEvent {
-                                timestamp: start,
-                                node_id: node_id.clone(),
-                                kind: EventKind::Started,
-                                version,
-                                payload: None,
-                            });
+                            // μ (#5062): mark runtime_sink length before eval_expr
+                            // so this cell's diagnostics delta can be stored below.
+                            let diag_mark = runtime_sink.borrow().len();
 
                             // Use cell_eval_ctx so DeterminacyPredicate cells (e.g.
                             // `let r = determined(x)`) see the determinacy map (task 4356).
                             let val = reify_expr::eval_expr(
                                 expr,
-                                &self.cell_eval_ctx(&values, &snapshot_values, &runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &self.functions,
+                                    &self.meta_map,
+                                    &snapshot_values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             );
 
                             // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
@@ -5261,33 +7320,53 @@ impl Engine {
                                 .cloned()
                                 .expect("sorted_combined ⊆ combined_traces.keys() by construction");
 
-                            let cached_result =
-                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            let outcome = self.cache.record_evaluation(
-                                node_id.clone(),
-                                cached_result,
-                                version,
+                            // Journal-timing delta (γ #5053, non-load-bearing): pre-migration
+                            // this miss arm emitted its `Started` event (payload `None`) BEFORE
+                            // the `eval_expr` above and set the paired `Completed`'s `Duration`
+                            // to `start.elapsed()`, spanning the eval. `commit_cell_result`
+                            // captures its own `start` at the top of the commit — after the eval
+                            // — so `Started` is now post-eval and the `Completed` `Duration`
+                            // covers only the four-leg commit. The added `cached-serve` slug is
+                            // additive; the `Duration` magnitude is unconsumed (all journal
+                            // consumers match `Duration(_)` for presence only).
+                            let commit_outcome = commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut snapshot_values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                cell.id.clone(),
+                                val,
+                                DeterminacyRule::UnconditionalDetermined,
+                                // `CachedServe` denotes eval_cached-PASS provenance, not a cache
+                                // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
+                                // a cold eval within the cached-serve pass. The genuine cache-hit
+                                // reuse arm (~@6399) does NOT route through commit_cell_result
+                                // (it is the deferred preserve-freshness path), so this slug has a
+                                // single emitter and never collides; a §2.6 divergence audit that
+                                // keys on it reads "produced by the eval_cached pass". Kept as
+                                // CachedServe (not ColdEval) per the frozen γ plan — the test that
+                                // pins the "cached-serve" slug lives in the sibling test module,
+                                // outside this amendment's edit scope.
+                                TraceSource::CachedServe,
                                 trace,
-                            );
-
-                            self.journal.record(EvalEvent {
-                                timestamp: Instant::now(),
-                                node_id,
-                                kind: EventKind::Completed { outcome },
                                 version,
-                                payload: Some(EventPayload::Duration(start.elapsed())),
-                            });
+                                CacheLeg::Record,
+                            );
+                            let outcome = commit_outcome
+                                .cache_outcome()
+                                .expect("CacheLeg::Record always yields Some(outcome)");
+
+                            // μ (#5062): store this freshly-evaluated cell's
+                            // diagnostics delta for replay on future cache-hit
+                            // serves (empty delta clears stale content).
+                            self.store_cell_replay_diagnostics(&node_id, &runtime_sink, diag_mark);
 
                             if outcome == EvalOutcome::Unchanged {
                                 stats.early_cutoffs += 1;
                                 self.cache.clear_dependents_dirty(&cell.id);
                             }
-
-                            snapshot_values.insert(
-                                cell.id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
-                            values.insert(cell.id.clone(), val);
                         }
 
                         _ => {}
@@ -5363,8 +7442,135 @@ impl Engine {
             let containment =
                 crate::scope_containment::ContainmentIndex::new(&module.templates);
             let governance = governing_objective(&module.templates, &containment);
+            // α (task #5188): objective/constraint-position structural-query
+            // expansion registry — built identically to eval()'s
+            // `sq_trait_registry` (prelude first so module traits shadow) so
+            // both paths hand the solver byte-identical expanded exprs. Borrows
+            // only &'static prelude + &module, never self, so it lives across
+            // the &mut self resolution loop below without a borrow clash.
+            let expansion_trait_registry = crate::structural_query::build_trait_registry(
+                self.prelude
+                    .iter()
+                    .flat_map(|m| m.trait_defs.iter())
+                    .chain(module.trait_defs.iter()),
+            );
+
+            // β #4822: compute dependency-ordered resolve order so the solver sub-pass
+            // (below) runs in read-DAG order — a later-declared scope that reads
+            // an earlier scope's auto cell will see the SOLVED value.  Pure structural
+            // analysis, requires no solved values.  eval_cached does NOT emit
+            // W_SCOPE_COUPLING (unchanged).
+            //
+            // M-WHOLE (#5118): warm now ALSO computes the M-WHOLE α pre-solve
+            // `clusters` set via `resolve_order_ordering_and_clusters`, so the
+            // solver sub-pass below can co-solve within-cap `MergedSolve` clusters
+            // via `dispatch_merged_cluster_solve_cached` — exactly as the cold
+            // `eval()` driver does via `dispatch_merged_cluster_solve` — closing
+            // the cold/warm fidelity divergence recorded at esc-5014-10 for
+            // constraint-only clusters (objective-bearing clusters retain a
+            // documented, permitted solve()/solve_ranked divergence — see
+            // `dispatch_merged_cluster_solve_cached`'s doc, design decision #4).
+            // `resolve_order_ordering_and_clusters` clears `coupling_diagnostics`
+            // unconditionally, so this still never emits W_SCOPE_COUPLING /
+            // W_COUPLING_APPROXIMATED (eval() alone owns that emission).
+            //
+            // JOINT-DRIVE δ (#5334, Gap C): cluster formation is expansion-aware
+            // here too, receiving the same `ClusterFormationCtx` shape the cold
+            // `eval()` site passes. Cold and warm MUST agree on the cluster set —
+            // warm computes its own through this entry point, so wiring only cold
+            // would silently re-open the very divergence #5118 closed (pinned by
+            // `resolve_order.rs`'s `cold_and_warm_entry_points_agree_on_delta_cluster_set`).
+            //
+            // SITE (#5334): this call was SUNK from before the per-template loop
+            // into this block, because expansion-aware clustering reads `values` —
+            // and `values` is only fully populated (including the `__count_*`
+            // collection cells `enumerate_descendants` needs) once that loop has
+            // run. Safe: `ro` had no reader between its old site and here, and
+            // `resolve_order_ordering_and_clusters` is side-effect-free, so the
+            // no-solver path merely skips work it never consumed.
+            //
+            // BORROW SHAPE: the ctx and its `Arc::clone`d function table are
+            // confined to this block (the clone mirrors `eval()`'s local), so no
+            // borrow of `self` or `values` survives into the `&mut self` /
+            // `&mut values` dispatch loop below.
+            //
+            // Cost (reviewer_comprehensive, task #5118 amendment): this reinstates
+            // the per-call `compute_clusters` pass on the warm/keystroke path that
+            // `resolve_order_ordering_only` (#5013) was introduced to skip.
+            // `compute_clusters` is a near-linear union-find over template count
+            // (see its doc), reusing the `sccs_topo`/`objective_reads` that the
+            // unconditional SCC/topo-sort above already computes every warm call
+            // regardless — it adds no new asymptotic cost tier, just extends
+            // existing O(templates + read-edges) work already paid per keystroke.
+            // Negligible for the single-digit-template modules this path targets
+            // today. δ adds one objective-expression clone + expansion per
+            // objective-bearing template, and `expand_solver_position_expr`'s
+            // `contains_structural_query` fast path makes that ~free for plain
+            // objectives.
+            // TODO(#5224): if module sizes large enough to matter come into
+            // scope, cache the cluster set across cached evaluations keyed by
+            // structural module identity instead of recomputing it every warm
+            // call (tracked alongside that task's reverse-dependency-index
+            // follow-up — both are "warm state recomputed/reset every call
+            // instead of persisted" regressions from this task).
+            let ro = {
+                let functions = Arc::clone(&self.functions);
+                let cluster_ctx = crate::resolve_order::ClusterFormationCtx {
+                    values: &values,
+                    functions: &functions,
+                    trait_registry: &expansion_trait_registry,
+                    max_unfold_depth: self.max_unfold_depth,
+                    max_unfold_nodes: self.max_unfold_nodes,
+                };
+                crate::resolve_order::resolve_order_ordering_and_clusters(
+                    &module.templates,
+                    Some(&cluster_ctx),
+                )
+            };
+
+            // M-WHOLE (#5118): precompute which templates belong to a within-cap
+            // `MergedSolve` cluster, and track which clusters have already been
+            // dispatched as we walk `ro.order` — mirrors the cold `eval()`
+            // driver's identical precompute (see the comment atop that dispatch
+            // loop, above `dispatch_merged_cluster_solve`). `cluster_of_scope`
+            // maps a MergedSolve member's template index to its cluster's
+            // position in `ro.clusters`; `ApproximatedFallback` clusters and
+            // uncoupled scopes are absent from this map, so they fall through
+            // to the unchanged per-template branch below.
+            let cluster_of_scope: HashMap<usize, usize> = ro
+                .clusters
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.disposition == crate::resolve_order::ClusterDisposition::MergedSolve
+                })
+                .flat_map(|(ci, c)| c.scopes.iter().map(move |&s| (s, ci)))
+                .collect();
+            let mut cluster_dispatched = vec![false; ro.clusters.len()];
 
             for &idx in &ro.order {
+                if let Some(&cluster_idx) = cluster_of_scope.get(&idx) {
+                    if cluster_dispatched[cluster_idx] {
+                        // Already co-solved and written back when we reached
+                        // this cluster's first member in ro.order — nothing
+                        // left to do for this member.
+                        continue;
+                    }
+                    cluster_dispatched[cluster_idx] = true;
+                    self.dispatch_merged_cluster_solve_cached(
+                        &ro.clusters[cluster_idx],
+                        idx,
+                        module,
+                        &governance,
+                        &mut values,
+                        &mut snapshot_values,
+                        &mut diagnostics,
+                        version,
+                        &runtime_sink,
+                    );
+                    continue;
+                }
+
                 let template = &module.templates[idx];
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` centralises construction so both eval() and
@@ -5382,6 +7588,10 @@ impl Engine {
                     Arc::clone(&self.functions),
                     &module.templates,
                     &snapshot_values,
+                    self.max_unfold_depth,
+                    self.max_unfold_nodes,
+                    &expansion_trait_registry,
+                    &mut diagnostics,
                 ) {
                     // Per-iteration cost of `lookup_solver_for_module`: one
                     // `solver_pragma.as_ref()` match plus at most one
@@ -5404,6 +7614,10 @@ impl Engine {
                             // let cells, mirroring cold eval() (:2728) and edit_param
                             // (engine_edit.rs:1360). The four warm-resolution sites
                             // (eval_cached, eval, edit_param, concurrent) must stay in sync.
+                            // (task #5118: `dispatch_merged_cluster_solve_cached`,
+                            // dispatched once per within-cap MergedSolve cluster
+                            // ABOVE this per-template loop, mirrors this exact
+                            // values/snapshot_values/cache write-back shape.)
                             //
                             // The pinned-connector-auto write below (task #4710) is one such
                             // site: see `write_solved_pinned_connector_autos`'s doc (task
@@ -5532,27 +7746,33 @@ impl Engine {
                                 for (node_id, expr) in nodes_to_reeval {
                                     let val = reify_expr::eval_expr(
                                         &expr,
-                                        &self.cell_eval_ctx(
+                                        &cell_eval_ctx(
                                             &values,
+                                            &self.functions,
+                                            &self.meta_map,
                                             &snapshot_values,
                                             &runtime_sink,
+                                            self,
                                         ),
                                     );
-                                    if let NodeId::Value(vcid) = &node_id {
-                                        values.insert(vcid.clone(), val.clone());
-                                        snapshot_values.insert(
-                                            vcid.clone(),
-                                            (val.clone(), DeterminacyState::Determined),
-                                        );
-                                    }
+                                    let NodeId::Value(vcid) = &node_id else {
+                                        continue;
+                                    };
                                     let trace = extract_dependency_trace(&expr);
-                                    let cached_result =
-                                        CachedResult::Value(val, DeterminacyState::Determined);
-                                    self.cache.record_evaluation(
-                                        node_id,
-                                        cached_result,
-                                        version,
+                                    commit_cell_result(
+                                        CommitLegs {
+                                            values: &mut values,
+                                            snapshot_values: &mut snapshot_values,
+                                            cache: &mut self.cache,
+                                            journal: &mut self.journal,
+                                        },
+                                        vcid.clone(),
+                                        val,
+                                        DeterminacyRule::UnconditionalDetermined,
+                                        TraceSource::ConeReeval,
                                         trace,
+                                        version,
+                                        CacheLeg::Record,
                                     );
                                 }
                             }
@@ -5598,6 +7818,9 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() call above.
         // Runs AFTER scalar template evaluation and BEFORE diagnostic passes so
         // the LSP/GUI incremental path also sees symbolic GeometryHandles.
+        // Mirrors eval() — this mint doesn't track/return a flipped-cell set
+        // at all (see the R3f comment below and the doc comment in
+        // engine_build.rs).
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
@@ -5608,11 +7831,52 @@ impl Engine {
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() call above so the LSP/GUI incremental path also sees
         // symbolic topology selectors.  Runs immediately after handle-mint.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
-            &mut values,
-            &mut diagnostics,
-        );
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): mirrors the post-walk re-eval hook added to
+        // eval() above — see that call site's comment for the full
+        // rationale, including WHY the handle-mint's flips are deliberately
+        // excluded (the handle-mint above doesn't compute or return a
+        // flipped set at all): a direct, non-selector consumer of a bare
+        // geometry LET's symbolic handle must
+        // be left for `build()`'s later real-kernel post-process passes,
+        // which only revisit still-`Undef` cells.
+        // `partial_map_skip=false` matches this walk's own
+        // `build_combined_param_let_graph` call at the in-walk call site
+        // above (~5345) — eval_cached's "always writes a result" contract.
+        // `version.0` is the only version eval_cached ever uses at this call
+        // site (no post-solver version bump here). Unlike eval(),
+        // `snapshot_values` is still a directly-owned local at this point —
+        // eval_cached doesn't build/install its own `snapshot` (and move it
+        // into `self.eval_state`) until further below — so no
+        // take()/reinstall dance is needed.
+        let post_walk_flipped = selector_mint_flipped;
+        // This `is_empty()` check is an optimization, not a correctness
+        // requirement — `re_eval_post_walk_mints_per_template` (and, inside
+        // it, `re_eval_consumers_of_in_walk_mints`) already short-circuits
+        // on an empty set. Skipping the call entirely when empty just
+        // avoids the `Arc::clone` below.
+        if !post_walk_flipped.is_empty() {
+            let functions_for_reeval = Arc::clone(&self.functions);
+            // Shared with eval()'s identical post-walk loop — see
+            // `re_eval_post_walk_mints_per_template`'s doc.
+            self.re_eval_post_walk_mints_per_template(
+                &module.templates,
+                &mut values,
+                &mut snapshot_values,
+                post_walk_flipped,
+                &functions_for_reeval,
+                &runtime_sink,
+                version.0,
+                false,
+                &mut diagnostics,
+            );
+        }
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
@@ -5623,6 +7887,10 @@ impl Engine {
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
         // Passes `module` for compile-span suppression parity with eval() (task 4364).
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Kinematic singularity diagnostics (task 3580 — W_KINEMATIC_SINGULARITY,
+        // GR-039 / cluster C-37). Mirrors eval() call site; eval_cached is the
+        // LSP/GUI incremental path and must surface the same warning.
+        diagnostics.extend(detect_kinematic_singularity(&values));
         // Ad-hoc selector Undef diagnostics (task 250).  Mirrors eval() call site so
         // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
         // warning as the cold-eval path.
@@ -5641,6 +7909,46 @@ impl Engine {
             self.default_query_kernel().is_none(),
         ));
 
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062) Mirrors the eval() registry call so the warm /
+        // incremental serve runs the SAME MassProperties PSD inertia check —
+        // INV-EVAL-3, one owner across all serve paths (the cold-only asymmetry
+        // this fixes). The detector re-detects+re-emits idempotently off each
+        // cell's ORIGINAL (cache-served) value, mutating only the OUTPUT
+        // `values` / `snapshot_values` / `diagnostics` — never the cache — so it
+        // is always FRESHLY produced here, never replayed, keeping it disjoint
+        // from the per-cell runtime-diagnostic replay class. `snapshot_values`
+        // is still an owned local here (the snapshot is built + installed just
+        // below), the eval_cached analogue of eval()'s `snapshot.values`.
+        crate::detectors::DetectorRegistry::with_builtins().run_all(
+            &mut crate::detectors::PostPassState {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                diagnostics: &mut diagnostics,
+            },
+        );
+
+        // ── annotation-args ε (#3556) materialization post-pass ──────────────
+        // (task μ #5062) Mirror of the eval() call: the shared helper now runs on
+        // the warm / incremental serve too (PRD §10 Q2), so a materialization
+        // failure surfaces (AnnotationEvalFailed + Undef-replacement) on
+        // eval_cached() rather than only cold eval(). Ordered AFTER the PSD
+        // registry pass above, matching eval()'s PSD-then-annotation ordering.
+        // `functions` is cloned into a local first because the helper takes
+        // `&mut self` (can't hold an immutable borrow of `self.functions` across
+        // the call). The overlay commits use CacheLeg::Skip, so this never writes
+        // the cache — always freshly produced on each serve, disjoint from the
+        // per-cell runtime-diagnostic replay class (INV-EVAL-3).
+        let functions_for_annotation = Arc::clone(&self.functions);
+        self.run_materialization_annotation_post_pass(
+            module,
+            &functions_for_annotation,
+            &mut values,
+            &mut snapshot_values,
+            version,
+            &mut diagnostics,
+        );
+
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
         // task 4317 step-6).
@@ -5653,8 +7961,8 @@ impl Engine {
         // yet) keep the (Undef, Undetermined/Auto) initialised by
         // Snapshot::from_compiled_module.
         {
-            let snapshot_id = self.next_snapshot_id;
-            self.next_snapshot_id += 1;
+            let snapshot_id = self.next_snapshot_id; // version-id-gate: allow — snapshot-only re-stamp in eval_cached, reuses the caller-supplied `version`
+            self.next_snapshot_id += 1; // version-id-gate: allow — snapshot-only re-stamp in eval_cached; routing through allocate_snapshot_version would spuriously bump next_version_id too
             let mut snapshot = Snapshot::from_compiled_module(module);
             snapshot.id = SnapshotId(snapshot_id);
             snapshot.version = version;
@@ -5712,6 +8020,24 @@ impl Engine {
             }
         }
 
+        // Task 4152. Read the live realization counter into a local BEFORE the
+        // `&mut self` accumulator writes below, so the two borrows don't overlap.
+        //
+        // `eval_cached` never dispatches compute nodes (see this function's doc
+        // above), so it cannot itself realize geometry — this only ever reports
+        // what a prior `build()` left behind. Surfacing it here keeps the
+        // per-call stats block coherent with `Engine::cache_stats()`.
+        let realized = self.realization_cache.realization_entries();
+        stats.realization_entries = realized;
+
+        // Fold this call's eval-cache counters into the engine-level totals that
+        // `cache_stats()` reports. `realization_entries` is deliberately NOT
+        // accumulated: it is already a lifetime count owned by the
+        // RealizationCache, so adding it here would double-count.
+        self.cumulative_eval_cache_totals.hits += stats.cache_hits;
+        self.cumulative_eval_cache_totals.misses += stats.cache_misses;
+        self.cumulative_eval_cache_totals.early_cutoffs += stats.early_cutoffs;
+
         CachedEvalResult {
             eval_result: EvalResult {
                 values,
@@ -5721,6 +8047,317 @@ impl Engine {
                 structured_detail,
             },
             stats,
+        }
+    }
+
+    /// Warm counterpart to `dispatch_merged_cluster_solve` (see that
+    /// function's doc comment, above, for the full cold write-back this
+    /// mirrors structurally). Dispatched once per within-cap `MergedSolve`
+    /// cluster from the `eval_cached` solver sub-pass, at the cluster's
+    /// first `ro.order` member — mirrors the cold dispatch's
+    /// cluster-precompute contract exactly (task #5118, closing the
+    /// cold/warm fidelity divergence recorded at esc-5014-10 for
+    /// constraint-only clusters — see the solve-call comment below for the
+    /// documented, permitted solve()/solve_ranked divergence an
+    /// objective-bearing cluster retains).
+    ///
+    /// Write-back shape matches the WARM per-template arm above (not
+    /// cold's): entries are recorded under the CALLER-supplied `version`
+    /// (not a freshly-allocated internal one) with `DependencyTrace::default()`
+    /// — routed through `commit_cell_result` (task #5118 step 10, once #5053 γ
+    /// landed), so the merged N-scope commit writes the `self.journal` leg
+    /// (INV-EVAL-1/2) like its migrated per-template sibling, but still emits
+    /// no `resolved_params` and no `objective_provenance` (see the
+    /// VERSION / TRACE NOTE at that arm's site for why warm stays in
+    /// caller-version space) — and this dispatch calls plain `.solve()`
+    /// unconditionally, never `solve_ranked`, matching that arm's shape.
+    /// `build_merged_solver_problem` already excludes strict
+    /// connector-instance autos internally (and diagnoses them), so — unlike
+    /// the warm per-template arm — this dispatch needs no
+    /// write_solved/unsolved_pinned_connector_autos handling.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_merged_cluster_solve_cached(
+        &mut self,
+        cluster: &crate::resolve_order::Cluster,
+        idx: usize,
+        module: &CompiledModule,
+        governance: &[GoverningObjective],
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        diagnostics: &mut Vec<Diagnostic>,
+        version: VersionId,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+    ) {
+        // Same shared, free-fn `build_merged_solver_problem` that cold
+        // `dispatch_merged_cluster_solve` calls, with IDENTICAL arguments
+        // (cluster, templates, governance, values, functions, diagnostics,
+        // plus the task #5188 expansion trio max_unfold_depth /
+        // max_unfold_nodes / trait_registry) -- so warm and cold feed the
+        // solver byte-identical `ResolutionProblem`s (including the objective,
+        // via `governance`) for a within-cap `MergedSolve` cluster. This is
+        // what keeps
+        // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning`
+        // (tests/eval_cached_diagnostics.rs) and the capstone
+        // `eval_vs_eval_cached_merged_cluster_values_equal`
+        // (tests/merged_cluster_solve.rs, task #5118 step 7) green.
+        //
+        // α (task #5188): trait registry for objective/constraint-position
+        // structural-query expansion inside `build_merged_solver_problem`,
+        // built EXACTLY as cold `dispatch_merged_cluster_solve` builds it.
+        // `self.prelude` is `&'a [CompiledModule]` and `module` is a param, so
+        // this borrows neither `self` nor conflicts with the `&mut self`
+        // write-back below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(
+            self.prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
+                .chain(module.trait_defs.iter()),
+        );
+        let problem = build_merged_solver_problem(
+            cluster,
+            &module.templates,
+            governance,
+            values,
+            Arc::clone(&self.functions),
+            diagnostics,
+            self.max_unfold_depth,
+            self.max_unfold_nodes,
+            &expansion_trait_registry,
+        );
+
+        // Mirrors cold `dispatch_merged_cluster_solve`'s empty-auto_params
+        // early return (see that function's doc for the full rationale):
+        // every member of `cluster.scopes` is collateral-warned and left
+        // entirely unresolved when the merged builder excluded every auto
+        // cell the cluster contributed.
+        if problem.auto_params.is_empty() {
+            let cluster_scope_names: Vec<&str> = cluster
+                .scopes
+                .iter()
+                .map(|&member_idx| module.templates[member_idx].name.as_str())
+                .collect();
+            diagnostics.push(merged_cluster_left_unresolved_warning(&cluster_scope_names));
+            return;
+        }
+
+        debug_assert!(
+            cluster.scopes.contains(&idx),
+            "dispatch_merged_cluster_solve_cached: idx (template `{}`) must be \
+             a member of cluster.scopes ({:?})",
+            module.templates[idx].name,
+            cluster.scopes,
+        );
+
+        // WARM shape (unlike cold): plain `.solve()` unconditionally, even
+        // for an objective-bearing problem — matches the warm per-template
+        // arm above, which never calls `solve_ranked`/populates
+        // `objective_provenance` (design decision, task #5118 plan.json).
+        //
+        // Documented, PERMITTED cold/warm divergence (reviewer_comprehensive,
+        // task #5118 amendment): cold `dispatch_merged_cluster_solve` calls
+        // `solve_ranked` for an objective-bearing problem and keeps its
+        // top-ranked candidate; this warm dispatch never does. This is not
+        // merely a hypothetical mock-solver quirk — the production
+        // `SolverRegistry`/`DimensionalSolver` pair's `solve_ranked` performs
+        // best-of-K deterministic multistart for dim>=2 objective problems,
+        // and its winning candidate "is not guaranteed byte-identical" to
+        // `solve()`'s single-start result (see `SolverRegistry::solve_ranked`'s
+        // doc, reify-constraints/src/registry.rs, and
+        // `solve_ranked_multistart_dominates_single_start_solve`,
+        // reify-constraints/tests/solver_integration.rs). A within-cap merged
+        // cluster is exactly the dim>=2 multi-auto shape that gate targets, so
+        // a multi-basin objective-bearing cluster CAN legitimately converge to
+        // a different optimum warm vs. cold. `W_SOLVER_OPTIMALITY_UNPROVEN` is
+        // correspondingly cold-only: it is pushed only from the `solve_ranked`
+        // arm (cold `dispatch_merged_cluster_solve`, above), so warm never
+        // surfaces it even when the underlying solve was iteration-limited.
+        // This mirrors a pre-existing characteristic of the warm per-template
+        // arm this dispatch was built to match structurally (not a new gap
+        // #5118 introduces), accepted per design decision #4 (task #5118
+        // plan.json). #5053 has since LANDED, and step 10 routed this
+        // dispatch's Solved-arm write-back + wave-2 onto `commit_cell_result`
+        // (above/below), keeping the merged N-scope commit uniform with the
+        // migrated per-template sibling. See
+        // `eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_entrypoint`
+        // (tests/merged_cluster_solve.rs) for a test pinning this divergence
+        // explicitly with a solver whose two entry points disagree.
+        let solve_result = self
+            .lookup_solver_for_module(module)
+            .expect("has_active_solver is true => solver lookup returns Some")
+            .solve(&problem);
+
+        match solve_result {
+            SolveResult::Solved {
+                values: solver_values,
+                unique,
+            } => {
+                // Defensive auto_params filter (mirrors cold): restrict the
+                // write-back to cells the merged problem actually asked the
+                // solver to resolve, not the wider frozen `current_values`
+                // snapshot the solver also saw.
+                let auto_param_ids: HashSet<&ValueCellId> =
+                    problem.auto_params.iter().map(|ap| &ap.id).collect();
+                // Accumulated across EVERY cluster member in this one merged
+                // solve (task #5118, step 6) — `solver_values` already spans
+                // the whole cluster (it is not split per-member), so the
+                // single pass below both writes back every member's cells
+                // and gathers the union set the wave-2 dirty-cone re-eval
+                // below needs.
+                let mut resolved_ids: HashSet<ValueCellId> = HashSet::new();
+
+                for (id, val) in solver_values
+                    .iter()
+                    .filter(|(id, _)| auto_param_ids.contains(id))
+                {
+                    resolved_ids.insert(id.clone());
+                    // INV-EVAL-1/2 (task #5118, step 10): route the merged
+                    // N-scope solver write-back through `commit_cell_result`
+                    // -- the same primitive #5053 (γ, now LANDED) migrated
+                    // `eval_cached`'s sibling arms onto -- so every co-solved
+                    // cluster-member auto writes all four legs atomically:
+                    // values / snapshot / cache PLUS the `self.journal` leg's
+                    // `Started`/`Completed` pair. This supersedes the earlier
+                    // hand-rolled `self.cache.record_evaluation` (cache leg
+                    // only, no journal `Started`). The WARM shape is otherwise
+                    // preserved -- caller-supplied `version`,
+                    // `DependencyTrace::default()`, `CacheLeg::Record` -- and
+                    // `TraceSource::CachedServe` records the warm-serve
+                    // provenance slug (any `EventPayload::Custom` slug proves
+                    // the routing to the §2.6 divergence audit).
+                    commit_cell_result(
+                        CommitLegs {
+                            values: &mut *values,
+                            snapshot_values: &mut *snapshot_values,
+                            cache: &mut self.cache,
+                            journal: &mut self.journal,
+                        },
+                        id.clone(),
+                        val.clone(),
+                        DeterminacyRule::UnconditionalDetermined,
+                        TraceSource::CachedServe,
+                        DependencyTrace::default(),
+                        version,
+                        CacheLeg::Record,
+                    );
+                }
+
+                // Cluster-wide non-uniqueness warning, shared with cold via
+                // `push_merged_cluster_nonunique_warnings` (reviewer_comprehensive,
+                // task #5118 amendment) -- see that function's doc comment,
+                // and cold `dispatch_merged_cluster_solve`'s call site, for
+                // the full "single flag over the WHOLE merged solve" rationale.
+                push_merged_cluster_nonunique_warnings(diagnostics, &problem, unique);
+
+                // Wave-2 (task #5118, step 6): re-evaluate downstream let
+                // cells that read any of THIS cluster's co-solved autos. The
+                // reverse index is scope-agnostic (keyed by `ValueCellId`),
+                // so one pass re-evals cross-member let cones (BT3) exactly
+                // as cold's per-member `evaluate_let_bindings` loop does.
+                //
+                // Structurally identical to the warm per-template arm's
+                // wave-2 (above): collect the (node, expr) cone while holding
+                // the immutable `eval_state` borrow, then re-eval + commit
+                // each cell through `commit_cell_result`
+                // (`TraceSource::ConeReeval`). Task #5118 step 10 inlined this
+                // in place of the former private `reeval_downstream_let_cones`
+                // helper, which hand-rolled `record_evaluation` (cache leg
+                // only); #5053's migration made the per-template sibling
+                // inline this exact commit-backed shape, and this dispatch now
+                // matches it. `UnconditionalDetermined` preserves the helper's
+                // prior always-`Determined` write-back semantics while adding
+                // the `self.journal` leg (INV-EVAL-1/2).
+                //
+                // Known first-warm-call limitation (esc-5118-2, task #5224):
+                // an un-seeded `eval_state` yields an empty cone (the `else
+                // { Vec::new() }` arm), so the sole G1 consumer (the LSP)
+                // routes an uninitialized engine to cold `eval()` by
+                // construction (reify-lsp/src/diagnostics.rs).
+                if !resolved_ids.is_empty() {
+                    let nodes_to_reeval: Vec<(NodeId, CompiledExpr)> =
+                        if let Some(es) = self.eval_state.as_ref() {
+                            let wave2_dirty = crate::dirty::compute_dirty_cone(
+                                &resolved_ids,
+                                &es.reverse_index,
+                                &es.snapshot.graph,
+                            );
+                            let wave2_eval = crate::dirty::compute_eval_set(
+                                &wave2_dirty,
+                                &self.demand,
+                                &es.trace_map,
+                            );
+                            wave2_eval
+                                .into_iter()
+                                .filter_map(|node_id| {
+                                    if let NodeId::Value(vcid) = &node_id
+                                        && let Some(node) =
+                                            es.snapshot.graph.value_cells.get(vcid)
+                                        && let Some(ref expr) = node.default_expr
+                                    {
+                                        return Some((node_id, expr.clone()));
+                                    }
+                                    None
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                    for (node_id, expr) in nodes_to_reeval {
+                        let val = reify_expr::eval_expr(
+                            &expr,
+                            // Free-fn `cell_eval_ctx` (not the `Engine::cell_eval_ctx`
+                            // METHOD) so the method stays genuinely dead in the lib
+                            // target and #5362's `expect(dead_code)` shim on it stays
+                            // fulfilled (task #5118 step 12). Byte-identical capability
+                            // set to the method per the cell_eval_ctx.rs
+                            // `via_method`==`via_free_fn` parity cross-check, and the
+                            // exact shape the #5053-migrated per-template sibling wave-2
+                            // uses above. `values`/`snapshot_values` are `&mut` params
+                            // here, so reborrow immutably (`&*`) for the ctx; both mut
+                            // reborrows resume in the `commit_cell_result` call below,
+                            // after this temporary ctx is dropped.
+                            &cell_eval_ctx(
+                                &*values,
+                                &self.functions,
+                                &self.meta_map,
+                                &*snapshot_values,
+                                runtime_sink,
+                                self,
+                            ),
+                        );
+                        let NodeId::Value(vcid) = &node_id else {
+                            continue;
+                        };
+                        let trace = extract_dependency_trace(&expr);
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut *values,
+                                snapshot_values: &mut *snapshot_values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            vcid.clone(),
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::ConeReeval,
+                            trace,
+                            version,
+                            CacheLeg::Record,
+                        );
+                    }
+                }
+            }
+            SolveResult::Infeasible {
+                diagnostics: solver_diags,
+            } => {
+                diagnostics.extend(solver_diags);
+            }
+            SolveResult::NoProgress { reason } => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Constraint solver made no progress: {}",
+                    reason
+                )));
+            }
         }
     }
 
@@ -5955,6 +8592,20 @@ impl Engine {
     ///
     /// The subsequent passes (guarded groups, sub-component elaboration,
     /// post-solver evaluate_let_bindings) are UNCHANGED.
+    ///
+    /// task γ (#5053) deferral note: the Let arm's three
+    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
+    /// Failed, panic-recovery, and the main success path) are NOT migrated
+    /// onto `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
+    /// always writes `Freshness::Final` and has no path to the derived,
+    /// input-propagated freshness this function computes per arch §7.2 — see
+    /// cell_commit.rs's module doc, "Known scope gaps". Left unmigrated
+    /// pending a propagating `CacheLeg` variant (PRD
+    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4). The Param arm
+    /// above is unaffected (it uses plain `record_evaluation`, Final-only,
+    /// already representable — though still unmigrated in this
+    /// characterization-only task, whose declared scope is the named site
+    /// inventory, not every Final-representable call site).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_params_and_lets_unified(
         &mut self,
@@ -6322,26 +8973,21 @@ impl Engine {
                                     .map(|m| m + 1)
                                     .unwrap_or(0);
 
-                                // task #4726: filter out geometry-typed ValueRefs
-                                // (e.g. `body` from a geometry let like
-                                // `let body = box(...)`).  Geometry lets create NO
-                                // value cell in the compiler (entity.rs:1664-1665), so
-                                // they are absent from `snapshot.graph.value_cells`.
-                                // `compute_cache_key` asserts that every `value_input`
-                                // is present in the graph — including a geometry-typed
-                                // cell would panic there.  Geometry inputs flow through
-                                // `realization_inputs` instead (via
-                                // `build_compute_realization_inputs`).
+                                // task #4726 / β (eval-uniform-dependency-handling,
+                                // PRD §6.2 clause 4): classify each call-arg
+                                // ValueRef via `compute_value_input_for_ref` — see
+                                // its doc comment for the type-based exclusion
+                                // contract (excludes graph-absent refs AND
+                                // geometry-typed cells, which flow through
+                                // `realization_inputs` instead).
                                 let mut value_inputs: Vec<reify_core::ValueCellId> = args
                                     .iter()
                                     .filter_map(|arg| match &arg.kind {
                                         reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                            // Exclude geometry-let refs: not in the graph.
-                                            if snapshot.graph.value_cells.contains_key(target_cell) {
-                                                Some(target_cell.clone())
-                                            } else {
-                                                None
-                                            }
+                                            compute_value_input_for_ref(
+                                                &snapshot.graph,
+                                                target_cell,
+                                            )
                                         }
                                         _ => None,
                                     })
@@ -6365,7 +9011,7 @@ impl Engine {
 
                                 let (realization_inputs, realization_read_handles, proj_diags) =
                                     self.build_compute_realization_inputs(
-                                        &arg_values,
+                                        &realization_probe_args(&arg_values),
                                         &snapshot.graph,
                                     );
                                 diagnostics.extend(proj_diags);
@@ -6512,6 +9158,9 @@ impl Engine {
                         }
                     }
 
+                    // μ (#5062): snapshot runtime_sink length before eval_expr
+                    // (per-cell diagnostics capture — see store_cell_replay_diagnostics).
+                    let diag_mark = runtime_sink.borrow().len();
                     // Normal eval: panic boundary (arch §9.1 / evaluate_let_bindings:4056).
                     let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                         .with_determinacy(&snapshot.values)
@@ -6606,6 +9255,9 @@ impl Engine {
                         trace,
                         false,
                     );
+                    // μ (#5062): store this cell's eval-time diagnostics delta
+                    // for replay on future cache-hit clean serves (empty clears).
+                    self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id,
@@ -6846,12 +9498,137 @@ impl Engine {
         }
     }
 
+    /// Shared post-walk-mint → consumer re-eval driver (R3f, task #4946) for
+    /// [`Self::eval`] and [`Self::eval_cached`]: the two call sites whose
+    /// post-walk hook loops `templates` and calls
+    /// [`Self::re_eval_consumers_of_in_walk_mints`] once per template —
+    /// previously duplicated near-verbatim at both call sites (reviewer
+    /// finding: `reviewer_comprehensive/code_duplication`).
+    ///
+    /// `edit_source`'s own post-walk hook is NOT a caller here: it walks
+    /// `new_snapshot.graph` via the `_from_graph` sibling in one shot rather
+    /// than looping per-`TopologyTemplate`, so it has no per-template loop to
+    /// share — see `Engine::re_eval_post_walk_mints_from_graph` in
+    /// `engine_edit.rs` for its (much thinner) counterpart.
+    ///
+    /// A no-op (including no `diagnostics` drain) when `flipped` is empty —
+    /// callers may still choose to guard the call themselves (e.g. `eval()`
+    /// gates its `eval_state` take/reinstall dance on the same check, which
+    /// is call-site-specific and out of scope for this shared loop), but it
+    /// is not required for correctness.
+    ///
+    /// Each template needs its own independently-mutable owned copy of
+    /// `flipped` (the callee grows its copy in place as newly-resolved cells
+    /// fold into the trigger set — see that function's doc), so this can't
+    /// take `flipped` by shared reference without moving the same per-call
+    /// clone cost into the callee instead: clones only for templates that
+    /// still have a sibling coming after them, and moves (`mem::take`) the
+    /// original into the last template instead of cloning-then-dropping it.
+    #[allow(clippy::too_many_arguments)]
+    fn re_eval_post_walk_mints_per_template(
+        &mut self,
+        templates: &[TopologyTemplate],
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        mut flipped: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+        partial_map_skip: bool,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if flipped.is_empty() {
+            return;
+        }
+        let mut templates_iter = templates.iter().peekable();
+        while let Some(template) = templates_iter.next() {
+            let flipped_for_template = if templates_iter.peek().is_some() {
+                flipped.clone()
+            } else {
+                std::mem::take(&mut flipped)
+            };
+            self.re_eval_consumers_of_in_walk_mints(
+                template,
+                values,
+                snapshot_values,
+                flipped_for_template,
+                functions,
+                runtime_sink,
+                version_id,
+                partial_map_skip,
+            );
+        }
+        // Drain any runtime diagnostics newly emitted by the per-template
+        // re-eval loop above (parity with each caller's own drain, which
+        // only captured its main walk's diagnostics, predating this pass).
+        diagnostics.append(&mut runtime_sink.borrow_mut());
+    }
+
+    /// μ (#5062): capture the per-cell runtime diagnostics a cell's
+    /// `eval_expr` just pushed — the `runtime_sink` slice `[mark..]` — into
+    /// `NodeCache.diagnostics` (κ #5042), so a later cache-hit clean serve can
+    /// REPLAY them via [`Engine::replay_cell_diagnostics`]. Without this a
+    /// per-cell-branch warning (`W_FIELD_OUT_OF_BOUNDS`,
+    /// `W_FIELD_SAMPLED_INVALID_CONFIG`) is silently dropped on a warm serve
+    /// (the 2259/2267 "fast-path-swallow" class, PRD §2.7 / INV-EVAL-3).
+    ///
+    /// `mark` is `runtime_sink.borrow().len()` captured IMMEDIATELY before the
+    /// cell's `eval_expr`. The store ALWAYS overwrites (via
+    /// [`CacheStore::set_node_diagnostics`]) — an empty delta clears stale
+    /// replay content left by a prior eval that has since stopped warning.
+    ///
+    /// Load-bearing invariant (keeps the two diagnostic classes disjoint):
+    /// this reads ONLY `runtime_sink` (the `eval_expr` output channel). Post-
+    /// pass detector diagnostics (MassProperties PSD, annotation-args) push to
+    /// the OUTPUT `diagnostics` vec, never `runtime_sink`, so they are never
+    /// captured here — they stay always-fresh, never per-cell-stored.
+    ///
+    /// `pub(crate)` so the edit path (`engine_edit::edit_param`) can call it too.
+    pub(crate) fn store_cell_replay_diagnostics(
+        &mut self,
+        node_id: &NodeId,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        mark: usize,
+    ) {
+        let delta = runtime_sink.borrow()[mark..].to_vec();
+        self.cache.set_node_diagnostics(node_id, delta);
+    }
+
+    /// μ (#5062): replay a clean-served cell's stored per-cell diagnostics
+    /// (`NodeCache.diagnostics`, κ #5042) into the output `diagnostics` vec.
+    ///
+    /// Called from `eval_cached`'s clean-serve arms (try_fast_path /
+    /// cache-reuse) where the cell is served from cache WITHOUT re-running
+    /// `eval_expr`, so its eval-time diagnostics never re-fire and would
+    /// otherwise be swallowed. This is the "replayed" leg of the replayed-XOR-
+    /// fresh owner rule (INV-EVAL-3): a cell is either re-evaluated (fresh, via
+    /// the flat `runtime_sink` drain) or clean-served (replayed) — never both
+    /// in one serve. No-op when the entry is absent or carries no diagnostics.
+    fn replay_cell_diagnostics(&self, node_id: &NodeId, diagnostics: &mut Vec<Diagnostic>) {
+        if let Some(entry) = self.cache.get(node_id)
+            && !entry.diagnostics.is_empty()
+        {
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+        }
+    }
+
     /// Evaluate let bindings from a template in topological order.
     ///
     /// Collects let cells with expressions, builds dependency traces,
     /// topologically sorts, and evaluates each in order — recording
     /// journal events and cache entries. Used by both the initial eval()
     /// pass and the post-resolution re-evaluation pass.
+    ///
+    /// task γ (#5053) deferral note: this function's three
+    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
+    /// Failed, panic-recovery, and the main success path) are NOT migrated
+    /// onto `commit_cell_result` (task α, cell_commit.rs) — same reasoning as
+    /// `evaluate_params_and_lets_unified`'s Let arm: `CacheLeg::Record` always
+    /// writes `Freshness::Final` and cannot represent the derived,
+    /// input-propagated freshness this function computes per arch §7.2 (see
+    /// cell_commit.rs's module doc, "Known scope gaps"). Left unmigrated
+    /// pending a propagating `CacheLeg` variant (PRD
+    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_let_bindings(
         &mut self,
@@ -7117,18 +9894,14 @@ impl Engine {
                         // this list — that would be a graph self-loop.
                         // Contract pinned by:
                         //   tests/compute_dispatch_registry.rs::e2e_optimized_non_valueref_arg_yields_empty_value_inputs
-                        // task #4726: mirror of the primary dispatch site — exclude
-                        // geometry-let ValueRefs from value_inputs (no value cell,
-                        // not in the graph; see the primary site comment for details).
+                        // task #4726 / β: mirror of the primary dispatch site —
+                        // see `compute_value_input_for_ref`'s doc comment for the
+                        // type-based exclusion contract.
                         let mut value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
                                 reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                    if snapshot.graph.value_cells.contains_key(target_cell) {
-                                        Some(target_cell.clone())
-                                    } else {
-                                        None
-                                    }
+                                    compute_value_input_for_ref(&snapshot.graph, target_cell)
                                 }
                                 _ => None,
                             })
@@ -7182,8 +9955,11 @@ impl Engine {
                         }
                         let cancel = crate::graph::CancellationHandle::new();
 
-                        let (realization_inputs, realization_read_handles, proj_diags) =
-                            self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
+                        let (realization_inputs, realization_read_handles, proj_diags) = self
+                            .build_compute_realization_inputs(
+                                &realization_probe_args(&arg_values),
+                                &snapshot.graph,
+                            );
                         diagnostics.extend(proj_diags);
 
                         // task #3428 step-2: populate cache_key via
@@ -7406,6 +10182,11 @@ impl Engine {
             // `if force_panic { panic!(…) }` branch are both
             // `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
             // are absent in production builds.
+            //
+            // μ (#5062): snapshot the runtime_sink length before eval_expr so
+            // this cell's diagnostics delta can be captured + stored for replay
+            // on future cache-hit serves (see store_cell_replay_diagnostics).
+            let diag_mark = runtime_sink.borrow().len();
             let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                 .with_determinacy(&snapshot.values)
                 .with_runtime_diagnostics(runtime_sink);
@@ -7476,6 +10257,12 @@ impl Engine {
                 trace,
                 false,
             );
+
+            // μ (#5062): store this cell's eval-time diagnostics delta for
+            // replay on future cache-hit clean serves (empty delta clears any
+            // stale replay content). Read from runtime_sink only — post-pass
+            // detector diagnostics never land here, keeping the classes disjoint.
+            self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
 
             self.journal.record(EvalEvent {
                 timestamp: Instant::now(),
@@ -8095,6 +10882,634 @@ mod nondriving_joint_suppression_tests {
             result[0].code,
             Some(DiagnosticCode::MechanismNonDrivingJoint),
             "the surviving diagnostic must carry MechanismNonDrivingJoint"
+        );
+    }
+}
+
+/// γ (task #4954) boundary row 2: `build_combined_param_let_graph` must count
+/// the consumer→geometry-let edge that was previously silently dropped.
+///
+/// Uses the R3F fixture shape (`tests/value_eval_consumes_minted_selector.rs`
+/// `R3F_SRC`) trimmed to just the geometry let `loc_box` and the selector let
+/// `loc` that consumes it — `track`/`peak`/`@optimized` are irrelevant to
+/// this graph-building unit test.
+///
+/// Pre-γ, `loc_box` had no value cell at all, so it was absent from
+/// `combined_nodes`/`combined_traces` entirely — the edge `loc`'s trace
+/// carries to `loc_box` pointed at a node that didn't exist in the graph, so
+/// Kahn's in-degree counting couldn't count it and `sorted_combined` had no
+/// ordering constraint between them. Since γ, `loc_box` is a `Type::Geometry`
+/// Let value cell like any other, so the existing kind-agnostic Let-node path
+/// (this file, `build_combined_param_let_graph`'s `ValueCellKind::Let` arm)
+/// already covers it — this test verifies that generic path, not a new one.
+#[cfg(test)]
+mod combined_param_let_graph_geometry_let_tests {
+    use std::collections::HashMap;
+
+    use reify_core::ValueCellId;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    use super::{NodeId, build_combined_param_let_graph};
+
+    #[test]
+    fn geometry_let_producer_edge_is_counted_and_ordered_first() {
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def R3fWidget {
+    param width  : Length = 10mm
+    param height : Length = 20mm
+    param depth  : Length = 30mm
+    let loc_box = box(width, height, depth)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let loc = faces_by_normal(loc_box, dir, tol)
+}"#,
+        );
+        let template = &module.templates[0];
+
+        let loc_box_id = ValueCellId::new("R3fWidget", "loc_box");
+        let loc_id = ValueCellId::new("R3fWidget", "loc");
+
+        let mut diagnostics = Vec::new();
+        let (combined_nodes, combined_traces, sorted_combined) =
+            build_combined_param_let_graph(template, &HashMap::new(), true, &mut diagnostics);
+
+        assert!(
+            combined_nodes.contains(&NodeId::Value(loc_box_id.clone())),
+            "combined_nodes must contain the geometry-let node loc_box; got: {:?}",
+            combined_nodes
+        );
+
+        let loc_trace = combined_traces
+            .get(&NodeId::Value(loc_id.clone()))
+            .expect("combined_traces must have an entry for loc");
+        assert!(
+            loc_trace.reads.contains(&loc_box_id),
+            "loc's dependency trace must read loc_box (the previously-dropped \
+             consumer→geometry-let edge); got reads: {:?}",
+            loc_trace.reads
+        );
+
+        let loc_box_pos = sorted_combined
+            .iter()
+            .position(|n| *n == NodeId::Value(loc_box_id.clone()))
+            .expect("sorted_combined must contain loc_box");
+        let loc_pos = sorted_combined
+            .iter()
+            .position(|n| *n == NodeId::Value(loc_id.clone()))
+            .expect("sorted_combined must contain loc");
+        assert!(
+            loc_box_pos < loc_pos,
+            "sorted_combined must order loc_box before loc (producer before \
+             consumer); got loc_box at {} and loc at {} in {:?}",
+            loc_box_pos,
+            loc_pos,
+            sorted_combined
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "expected no cycle diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+}
+
+/// RED: `reeval_cone_cell` provenance + `DeriveFromValue` determinacy (task γ
+/// #5053, test-2).
+///
+/// Direct unit-level exercise of `reeval_cone_cell` per its own plan-sanctioned
+/// escape hatch: the cold-eval cone driver (~@4609) only fires downstream of a
+/// guarded-group's multi-phase re-elaboration (Phase 1/wave2/Phase 3), whose
+/// exact timing is not practically reproducible from a targeted black-box
+/// `.ri` fixture. `reeval_cone_cell` is `pub(crate)`, so an in-crate test can
+/// call it directly with crafted `values`/`snapshot_values`/`runtime_sink`,
+/// exactly as the impl-2 plan step's fallback describes.
+///
+/// RED today: `reeval_cone_cell` records ONLY to `self.cache` (@~5346),
+/// emitting NO journal event, so `started_payload` is `None` in both cases
+/// below. GREEN after impl-2 migrates the commit onto `commit_cell_result`
+/// with `TraceSource::ConeReeval`.
+///
+/// Also pins `DeriveFromValue` determinacy (characterization guard, must stay
+/// green across the migration boundary): a re-eval'd cell whose expression
+/// evaluates to `Value::Undef` records `Undetermined`; a non-`Undef` value
+/// records `Determined` — `reeval_cone_cell`'s own doc states a future reader
+/// must NOT collapse this into the main-pass unconditional `Determined` rule.
+#[cfg(test)]
+mod reeval_cone_cell_provenance_and_determinacy_tests {
+    use std::cell::RefCell;
+
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
+
+    use crate::Engine;
+    use crate::cache::NodeId;
+    use crate::journal::{EventKind, EventPayload};
+    use reify_test_support::mocks::MockConstraintChecker;
+
+    /// Mirrors the integration test file's `started_payload` helper: the
+    /// first `Started` event's `EventPayload::Custom` slug for `id`, or
+    /// `None` if there is no such event or its payload isn't `Custom`.
+    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+        let node_id = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node_id);
+        let started = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Started))?;
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn reeval_cone_cell_undef_records_undetermined_with_cone_reeval_provenance() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let vcid = ValueCellId::new("S", "cone_cell");
+        let node_id = NodeId::Value(vcid.clone());
+        let expr = CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar());
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.reeval_cone_cell(
+            &node_id,
+            &vcid,
+            &expr,
+            &mut values,
+            &mut snapshot_values,
+            &runtime_sink,
+            1,
+        );
+
+        assert_eq!(
+            started_payload(&engine, &vcid),
+            Some("cone-reeval".to_string()),
+            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+        assert_eq!(
+            snapshot_values.get(&vcid),
+            Some(&(Value::Undef, DeterminacyState::Undetermined)),
+            "a cone-reeval'd cell whose value is Value::Undef must record \
+             Undetermined (DeriveFromValue rule) — must NOT collapse to the \
+             main-pass UnconditionalDetermined rule"
+        );
+    }
+
+    #[test]
+    fn reeval_cone_cell_non_undef_records_determined_with_cone_reeval_provenance() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let vcid = ValueCellId::new("S", "cone_cell");
+        let node_id = NodeId::Value(vcid.clone());
+        let expr = CompiledExpr::literal(Value::Real(2.5), Type::dimensionless_scalar());
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.reeval_cone_cell(
+            &node_id,
+            &vcid,
+            &expr,
+            &mut values,
+            &mut snapshot_values,
+            &runtime_sink,
+            1,
+        );
+
+        assert_eq!(
+            started_payload(&engine, &vcid),
+            Some("cone-reeval".to_string()),
+            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+        assert_eq!(
+            snapshot_values.get(&vcid),
+            Some(&(Value::Real(2.5), DeterminacyState::Determined)),
+            "a cone-reeval'd cell whose value is non-Undef must record \
+             Determined (DeriveFromValue rule)"
+        );
+    }
+}
+
+/// [JOINT-DRIVE β] (task #5189 step-7) — the SCC-ADMISSIBILITY guardrail on
+/// `build_dependent_cells` (PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
+/// §6.4).
+///
+/// ## Why a length check IS the admissibility test
+///
+/// `build_dependent_cells`'s stage-(e) node set EXCLUDES auto params BY
+/// CONSTRUCTION (stage (a) only keeps non-auto cells carrying a plain
+/// `default_expr`). The one ADMISSIBLE back-edge in a joint-drive SCC — the
+/// solver feedback edge — runs THROUGH an auto, so it can never appear in this
+/// induced graph. Therefore the induced sub-DAG is acyclic for every admissible
+/// SCC, and any node Kahn's algorithm drops is, by construction, an
+/// INADMISSIBLE data cycle. That equivalence is exactly §6.4's INVARIANT
+/// ("admitted iff its only back-edge is a solver feedback edge").
+///
+/// ## Why this cycle is invisible to every existing emitter
+///
+/// `build_dependent_cells` is CROSS-TEMPLATE by construction (it walks
+/// `all_templates`), so an `A.x ↔ B.y` value cycle is out of reach of all three
+/// per-template cycle detectors (`detect_let_cycle`,
+/// `build_combined_param_let_graph`, `unfold.rs`'s let-cycle pass) — and
+/// `topological_sort` (Kahn's) returns a `Vec`, cannot error, and silently omits
+/// cycle members. Without the guardrail the cycle is swallowed with ZERO
+/// user-visible signal.
+#[cfg(test)]
+mod dependent_cells_admissibility_tests {
+    use std::collections::HashSet;
+
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, CompiledFunction};
+    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, value_ref};
+
+    use super::build_dependent_cells;
+
+    /// Expansion budgets for the instance-path bridge. Matching δ's own
+    /// `build_instance_path_structure_map` fixtures (`resolve_order.rs`), these
+    /// are far above anything these hand-built two-template graphs need — the
+    /// budgets are not what is under test here.
+    const TEST_MAX_UNFOLD_DEPTH: usize = 64;
+    const TEST_MAX_UNFOLD_NODES: usize = 10_000;
+
+    /// Money-dimensioned scalar, mirroring the stdlib `Costed` `line_cost` shape
+    /// (same helper δ's cluster-formation fixtures use).
+    fn money_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        }
+    }
+
+    /// The ids in `dependent_cells`, in stored (topological) order.
+    fn ids(cells: &[(ValueCellId, CompiledExpr)]) -> Vec<ValueCellId> {
+        cells.iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    /// The `Severity::Error` diagnostics carrying `DiagnosticCode::EvalCycle`.
+    fn cycle_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::EvalCycle))
+            .collect()
+    }
+
+    /// (a)+(b) A CROSS-TEMPLATE value cycle inside the stage-(e) node set must
+    /// raise a `DiagnosticCode::EvalCycle` ERROR naming the cyclic cells by their
+    /// FULLY-QUALIFIED ids, and the returned list must hold only the acyclic
+    /// remainder — the dropped cells are never resurrected into β's per-trial
+    /// fold or α's post-solve write-back.
+    ///
+    /// Fixture (both cycle members survive stages (b)–(d), so they genuinely
+    /// enter the node set):
+    ///
+    /// ```text
+    /// Alpha.q    : auto (the cluster auto)
+    /// Alpha.x    = Beta.y + Alpha.q      ─┐ transitively reads the auto AND
+    /// Beta.y     = Alpha.x + 1           ─┘ feeds the seed ⇒ both in node set
+    /// Alpha.z    = Alpha.q * 2             the ACYCLIC remainder
+    /// seed       = Alpha.x + Alpha.z
+    /// ```
+    ///
+    /// RED today: `build_dependent_cells` takes no `&mut Vec<Diagnostic>` at all
+    /// and never compares `topological_sort`'s output length against its node
+    /// set — unlike EVERY other caller of that primitive in this file.
+    #[test]
+    fn cross_template_value_cycle_errors_and_is_dropped_from_dependent_cells() {
+        let alpha_q = ValueCellId::new("Alpha", "q");
+        let alpha_x = ValueCellId::new("Alpha", "x");
+        let alpha_z = ValueCellId::new("Alpha", "z");
+        let beta_y = ValueCellId::new("Beta", "y");
+
+        // Alpha owns the auto `q`, the cycle head `x`, and the acyclic `z`.
+        let alpha = TopologyTemplateBuilder::new("Alpha")
+            .auto_param_free("Alpha", "q", Type::dimensionless_scalar())
+            .let_binding(
+                "Alpha",
+                "x",
+                money_ty(),
+                binop(
+                    BinOp::Add,
+                    value_ref("Beta", "y"),
+                    value_ref("Alpha", "q"),
+                ),
+            )
+            .let_binding(
+                "Alpha",
+                "z",
+                money_ty(),
+                binop(BinOp::Mul, value_ref("Alpha", "q"), literal(mm(2.0))),
+            )
+            .build();
+
+        // Beta closes the cycle back onto Alpha.x — a CROSS-TEMPLATE back-edge
+        // that does NOT run through an auto, hence inadmissible.
+        let beta = TopologyTemplateBuilder::new("Beta")
+            .let_binding(
+                "Beta",
+                "y",
+                money_ty(),
+                binop(BinOp::Add, value_ref("Alpha", "x"), literal(mm(1.0))),
+            )
+            .build();
+
+        let templates = vec![alpha, beta];
+        let seed = binop(
+            BinOp::Add,
+            value_ref("Alpha", "x"),
+            value_ref("Alpha", "z"),
+        );
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [alpha_q.clone()].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
+            &mut diagnostics,
+        );
+        let got = ids(&cells);
+
+        // (a) ERROR diagnostic, coded EvalCycle, naming BOTH cyclic cells by
+        //     their fully-qualified `ValueCellId` (bare member names would be
+        //     ambiguous for a cross-template cycle: `Alpha.x` vs `Beta.x`).
+        let errors = cycle_errors(&diagnostics);
+        assert_eq!(
+            errors.len(),
+            1,
+            "the cross-template value cycle must raise EXACTLY ONE \
+             Severity::Error diagnostic coded DiagnosticCode::EvalCycle; \
+             got {diagnostics:?}",
+        );
+        let msg = &errors[0].message;
+        assert!(
+            msg.contains("Alpha.x"),
+            "the cycle diagnostic must name the cyclic cell by its \
+             FULLY-QUALIFIED id `Alpha.x` (this detector is cross-template, so \
+             the bare member name `detect_let_cycle` uses is ambiguous here); \
+             got {msg:?}",
+        );
+        assert!(
+            msg.contains("Beta.y"),
+            "the cycle diagnostic must name the cyclic cell by its \
+             FULLY-QUALIFIED id `Beta.y`; got {msg:?}",
+        );
+
+        // (b) Only the acyclic remainder survives — the dropped cycle members
+        //     must never reach the fold.
+        assert!(
+            !got.contains(&alpha_x),
+            "the cycle member `Alpha.x` must be ABSENT from dependent_cells \
+             (dropped by Kahn's algorithm, never resurrected); got {got:?}",
+        );
+        assert!(
+            !got.contains(&beta_y),
+            "the cycle member `Beta.y` must be ABSENT from dependent_cells; \
+             got {got:?}",
+        );
+        assert_eq!(
+            got,
+            vec![alpha_z],
+            "dependent_cells must be EXACTLY the acyclic remainder \
+             [`Alpha.z`]; got {got:?}",
+        );
+    }
+
+    /// NEGATIVE CONTROL — the LEGAL joint-drive shape (child auto → `line_cost`
+    /// → parent aggregate → objective, whose sole back-edge runs THROUGH the
+    /// solver) must produce ZERO diagnostics and a COMPLETE topological order.
+    ///
+    /// This is the assertion that pins §6.4's "admissible iff its only back-edge
+    /// is a solver feedback edge": the guardrail must not fire on the very shape
+    /// the whole seam exists to admit.
+    ///
+    /// ```text
+    /// Child.q         : auto            Parent.total = Child.line_cost
+    /// Child.line_cost = unit_cost * q   seed         = Parent.total
+    /// ```
+    #[test]
+    fn legal_joint_drive_shape_yields_no_diagnostic_and_a_complete_order() {
+        let line_cost = ValueCellId::new("Child", "line_cost");
+        let total = ValueCellId::new("Parent", "total");
+
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .let_binding(
+                "Parent",
+                "total",
+                money_ty(),
+                value_ref("Child", "line_cost"),
+            )
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Child")
+            .trait_bound("Costed")
+            .auto_param_free("Child", "q", Type::dimensionless_scalar())
+            .param("Child", "unit_cost", money_ty(), Some(literal(mm(5.0))))
+            .let_binding(
+                "Child",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Child", "unit_cost"),
+                    value_ref("Child", "q"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+        let seed = value_ref("Parent", "total");
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [ValueCellId::new("Child", "q")].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
+            &mut diagnostics,
+        );
+        let got = ids(&cells);
+
+        assert!(
+            diagnostics.is_empty(),
+            "the LEGAL joint-drive shape must raise NO diagnostics — its only \
+             back-edge is the solver feedback edge through the auto `Child.q`, \
+             which by construction cannot appear in this graph; got \
+             {diagnostics:?}",
+        );
+        assert_eq!(
+            got,
+            vec![line_cost, total],
+            "the admissible sub-DAG must sort COMPLETELY, `Child.line_cost` \
+             before `Parent.total` (which reads it); got {got:?}",
+        );
+    }
+
+    /// BT-11(a) (task #5189 step-14) — the INSTANCE-PATH ALIAS entry stage (g)
+    /// emits must be RESCOPED, not a verbatim clone of the template-keyed
+    /// `default_expr`.
+    ///
+    /// The DSL supports per-sub parameter overrides (`sub rivets =
+    /// Rivet(unit_cost: 0.90USD)`, cf. `examples/auto_binding_sites.ri`,
+    /// `examples/bom_lifecycle.ri`). A verbatim alias clone keeps the inner
+    /// reads TEMPLATE-keyed, so `RivetedPanel.rivets.line_cost` folds to
+    /// `Rivet.unit_cost × q` — the TEMPLATE DEFAULT — and the override is
+    /// silently ignored, at every trial point and again in the post-solve
+    /// write-back.
+    ///
+    /// The established idiom for this same template→instance-path bridge,
+    /// `Engine::post_process_cross_sub_value_cells` (engine_build.rs), already
+    /// rescopes the child's `default_expr` via `map_value_refs` for exactly this
+    /// reason. The alias must do the same.
+    ///
+    /// TWO GUARDS, and the test pins BOTH — getting either backwards is silent:
+    ///
+    /// * a NON-AUTO read of the alias'd template's own member MOVES to the
+    ///   instance path (`Rivet.unit_cost` → `RivetedPanel.rivets.unit_cost`), so
+    ///   the per-sub override is honoured;
+    /// * an AUTO read STAYS template-keyed (`Rivet.q`), because that is the
+    ///   namespace the solver inserts trial scalars into (`build_trial_values`
+    ///   keys off `problem.auto_params`). Moving it would make the alias fold
+    ///   against an id holding nothing and send the objective `Undef`.
+    ///
+    /// Asserted on the expr's READ SET (`extract_value_deps`), i.e. on shape,
+    /// never on a rendered string.
+    #[test]
+    fn instance_path_alias_expr_is_rescoped_but_keeps_auto_reads_template_keyed() {
+        let rivet_q = ValueCellId::new("Rivet", "quantity_produced");
+        let rivet_unit_cost = ValueCellId::new("Rivet", "unit_cost");
+        let rivet_line_cost = ValueCellId::new("Rivet", "line_cost");
+        let scoped_unit_cost = ValueCellId::new("RivetedPanel.rivets", "unit_cost");
+        let scoped_line_cost = ValueCellId::new("RivetedPanel.rivets", "line_cost");
+
+        // The parent declares the sub WITH a parameter override — the case the
+        // shipped `examples/whole_model_joint_drive.ri` (a bare `Rivet()`) does
+        // not exercise, which is how this survived to review.
+        let parent = TopologyTemplateBuilder::new("RivetedPanel")
+            .sub_component(
+                "rivets",
+                "Rivet",
+                vec![("unit_cost".to_string(), literal(mm(0.90)))],
+            )
+            .let_binding(
+                "RivetedPanel",
+                "total_cost",
+                money_ty(),
+                value_ref("RivetedPanel.rivets", "line_cost"),
+            )
+            .build();
+
+        let child = TopologyTemplateBuilder::new("Rivet")
+            .trait_bound("Costed")
+            .auto_param_free("Rivet", "quantity_produced", Type::dimensionless_scalar())
+            .param("Rivet", "unit_cost", money_ty(), Some(literal(mm(0.50))))
+            .let_binding(
+                "Rivet",
+                "line_cost",
+                money_ty(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Rivet", "unit_cost"),
+                    value_ref("Rivet", "quantity_produced"),
+                ),
+            )
+            .build();
+
+        let templates = vec![parent, child];
+        // The objective reads the INSTANCE PATH, exactly as `apply_cost_aggregation`
+        // expands `cost(self.descendants)`.
+        let seed = value_ref("RivetedPanel.rivets", "line_cost");
+        let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
+        let auto_ids: HashSet<ValueCellId> = [rivet_q.clone()].into_iter().collect();
+        let no_fns: [CompiledFunction; 0] = [];
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let cells = build_dependent_cells(
+            &seed_exprs,
+            &templates,
+            &auto_ids,
+            &no_fns,
+            TEST_MAX_UNFOLD_DEPTH,
+            TEST_MAX_UNFOLD_NODES,
+            &mut diagnostics,
+        );
+
+        // Fixture integrity: the alias must actually be emitted, or every
+        // assertion below would pass vacuously.
+        let (_, alias_expr) = cells
+            .iter()
+            .find(|(id, _)| id == &scoped_line_cost)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture integrity: stage (g) must emit the instance-path \
+                     alias `RivetedPanel.rivets.line_cost` (single non-collection \
+                     instance path); got {:?}",
+                    ids(&cells),
+                )
+            });
+        let alias_reads: HashSet<ValueCellId> =
+            crate::deps::extract_value_deps(alias_expr).into_iter().collect();
+
+        // GUARD 1 — the non-auto read MOVED to the instance path, so the per-sub
+        // override is the value that folds.
+        assert!(
+            alias_reads.contains(&scoped_unit_cost),
+            "the alias expr must read the INSTANCE-PATH \
+             `RivetedPanel.rivets.unit_cost`, so a per-sub override \
+             (`sub rivets = Rivet(unit_cost: 0.90USD)`) is honoured; got reads \
+             {alias_reads:?}",
+        );
+        assert!(
+            !alias_reads.contains(&rivet_unit_cost),
+            "the alias expr must NOT still read the TEMPLATE-keyed \
+             `Rivet.unit_cost` — that is the template DEFAULT, and folding it \
+             silently overwrites the correctly-elaborated per-instance value at \
+             every trial point and again in the write-back; got reads \
+             {alias_reads:?}",
+        );
+
+        // GUARD 2 — the AUTO read STAYED template-keyed. The solver owns that
+        // namespace; moving it would fold against an empty id ⇒ Undef objective.
+        assert!(
+            alias_reads.contains(&rivet_q),
+            "the alias expr must keep the AUTO read TEMPLATE-keyed \
+             (`Rivet.quantity_produced`) — that is the namespace \
+             `build_trial_values` inserts trial scalars into. Rescoping it would \
+             make the alias fold against an id that holds nothing and send the \
+             objective Undef; got reads {alias_reads:?}",
+        );
+
+        // The TEMPLATE-keyed source entry is untouched: it is the template
+        // default's own cell and must keep folding in its own namespace.
+        let (_, source_expr) = cells
+            .iter()
+            .find(|(id, _)| id == &rivet_line_cost)
+            .expect("the template-keyed source entry must still be emitted");
+        let source_reads: HashSet<ValueCellId> =
+            crate::deps::extract_value_deps(source_expr).into_iter().collect();
+        assert!(
+            source_reads.contains(&rivet_unit_cost) && source_reads.contains(&rivet_q),
+            "the TEMPLATE-keyed `Rivet.line_cost` entry must be unchanged \
+             (reads `Rivet.unit_cost` and `Rivet.quantity_produced`); got \
+             {source_reads:?}",
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "this shape is admissible — no cycle, one instance path; got \
+             {diagnostics:?}",
         );
     }
 }

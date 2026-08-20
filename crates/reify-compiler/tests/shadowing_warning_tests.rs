@@ -4,8 +4,8 @@
 //! [`DiagnosticCode::Shadowing`] when a child-scope declaration uses the same
 //! name as a name visible from an enclosing parent scope.
 
-use reify_test_support::{compile_source, compile_source_with_stdlib, warnings_only};
 use reify_core::{DiagnosticCode, Severity};
+use reify_test_support::{compile_source, compile_source_with_stdlib, warnings_only};
 
 /// Basic lambda-shadows-entity-param case: a lambda parameter `x` declared
 /// inside a structure that already declares `param x` MUST emit exactly one
@@ -641,7 +641,7 @@ trait T {
 /// The OUTER `|p|` is the field's domain binder; the INNER `|p|` shadows
 /// it. (Lambdas are right-associative — see the existing
 /// `parse_composed_field` test, `|f, g| |p| f(g(p))`, in
-/// `crates/reify-syntax/tests/field_tests.rs:81`.) The shadow is detected
+/// `crates/reify-syntax/tests/harness_syntax/field_tests.rs:81`.) The shadow is detected
 /// naturally by `walk_expr`'s Lambda handling (the outer Lambda pushes a
 /// frame `{p}`; the inner Lambda's `p` lookup in that frame finds it).
 /// Exactly ONE Shadowing warning is expected.
@@ -1324,7 +1324,7 @@ purpose mfg(subject : Structure) {
 /// port-internal `let` sees port-internal binders as a parent scope.
 ///
 /// Source (port syntax: `port <name> : <Type> { <members> }`, see
-/// `crates/reify-syntax/tests/member_span_tests.rs:115`):
+/// `crates/reify-syntax/tests/harness_syntax/member_span_tests.rs:115`):
 ///
 /// ```text
 /// structure S {
@@ -1439,11 +1439,9 @@ structure S {
     // so the assertion is robust to any whitespace between `forall` and `x`.
     let off = source.find("x in").unwrap();
     assert_eq!(
-        l0.span.start,
-        off as u32,
+        l0.span.start, off as u32,
         "child-site label must start at the narrow binder `x` (byte {}), got {:?}",
-        off,
-        l0.span
+        off, l0.span
     );
     assert_eq!(
         l0.span.end,

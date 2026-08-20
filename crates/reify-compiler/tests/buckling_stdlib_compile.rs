@@ -1,5 +1,6 @@
 //! Tests for `crates/reify-compiler/stdlib/solver_buckling.ri` —
-//! `std.solver.buckling` module: `BucklingOptions`, `Mode`, `BucklingResult`,
+//! `std.solver.buckling` module: `BucklingOptions`, `BucklingMode`,
+//! `BucklingResult`,
 //! and `MultiCaseBucklingResult` structure definitions for the v0.5
 //! linear-buckling eigensolver kernel surface.
 //!
@@ -19,9 +20,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::*;
 use reify_test_support::collect_value_ref_members;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ fn load_stdlib_module() -> &'static CompiledModule {
 
 /// Look up a structure template by name within the `std/solver/buckling` module.
 ///
-/// `BucklingOptions`, `Mode`, `BucklingResult`, and `MultiCaseBucklingResult`
+/// `BucklingOptions`, `BucklingMode`, `BucklingResult`, and `MultiCaseBucklingResult`
 /// are top-level structures, so we go through `module.templates` and filter on
 /// `EntityKind::Structure` to keep the assertion stable against future
 /// non-structure additions to the module.
@@ -284,7 +285,9 @@ fn buckling_options_param_defaults_match_spec() {
     // and solver_elastic_tests.rs:281-296.
     let element_order_default = require_default(template, "element_order");
     match &element_order_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(
                 type_name, "ElementOrder",
                 "element_order default type_name should be \"ElementOrder\", got: {:?}",
@@ -367,7 +370,11 @@ fn buckling_options_constrains_positivity_invariants() {
             // future-proofing rationale).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left)
+                            .iter()
+                            .any(|m| m.as_str() == *required)
+                    {
                         return false;
                     }
                     match &right.kind {
@@ -392,13 +399,20 @@ fn buckling_options_constrains_positivity_invariants() {
     }
 }
 
-// ─── step-9: Mode param shape ────────────────────────────────────────────────
+// ─── step-9: BucklingMode param shape ────────────────────────────────────────
 
-/// `Mode` is a single buckling eigenpair. It must declare exactly the two
+/// `BucklingMode` is a single buckling eigenpair. It must declare exactly the two
 /// PRD §4 params with the canonical types:
 ///
-///   - `eigenvalue : Real`                                       (load multiplier)
-///   - `mode_shape : Field<Point3<Length>, Vector3<Length>>`     (displacement field)
+///   - `eigenvalue : Real`                                          (load multiplier)
+///   - `mode_shape : Field<Point3<Length>, Vector3<Dimensionless>>` (mode-shape field)
+///
+/// The codomain is DIMENSIONLESS (task 5905): a buckling eigenvector is defined
+/// only up to scalar multiplication, so it denotes a direction rather than a
+/// physical displacement. The domain keeps Length — it indexes sample positions,
+/// and a position is not a direction (trajectory.ri's rule, task 5848).
+/// In-repo precedent for a dimensionless Field codomain:
+/// `curl : Field<Point3<Length>, Vector3<Dimensionless>>` in solver_elastic.ri.
 ///
 /// The PRD's "Real placeholder for mode_shape per #3117 workaround" footnote
 /// is stale — task #3117 landed and the `Field<D, C>` resolver arm at
@@ -407,17 +421,17 @@ fn buckling_options_constrains_positivity_invariants() {
 /// `ElasticResult.frame` already using their proper Field types. See plan.json
 /// design-decision-1 for the full rationale.
 ///
-/// Mode is a solver-populated output container — no defaults are meaningful.
+/// BucklingMode is a solver-populated output container — no defaults are meaningful.
 #[test]
-fn mode_struct_has_eigenvalue_and_mode_shape_params() {
-    let template = find_structure("Mode");
+fn buckling_mode_struct_has_eigenvalue_and_mode_shape_params() {
+    let template = find_structure("BucklingMode");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
 
     assert_eq!(
         params.len(),
         2,
-        "Mode should have exactly 2 param cells (eigenvalue, mode_shape), got: {:?}",
+        "BucklingMode should have exactly 2 param cells (eigenvalue, mode_shape), got: {:?}",
         names
     );
 
@@ -429,8 +443,12 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
                 domain: Box::new(Type::point3(Type::Scalar {
                     dimension: DimensionVector::LENGTH,
                 })),
+                // Dimensionless codomain (task 5905): a buckling eigenvector is
+                // defined only up to scalar multiplication, so it denotes a
+                // DIRECTION, not a displacement. The `domain` stays Length — a
+                // position is not a direction (trajectory.ri's rule, task 5848).
                 codomain: Box::new(Type::vec3(Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
+                    dimension: DimensionVector::DIMENSIONLESS,
                 })),
             },
         ),
@@ -441,17 +459,20 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| {
-                panic!("Mode missing required param '{}'; got: {:?}", member, names)
+                panic!(
+                    "BucklingMode missing required param '{}'; got: {:?}",
+                    member, names
+                )
             });
         assert_eq!(
             cell.cell_type, *expected_ty,
-            "Mode.{} should be {:?}, got {:?}",
+            "BucklingMode.{} should be {:?}, got {:?}",
             member, expected_ty, cell.cell_type
         );
     }
 }
 
-/// `Mode` is a solver-populated output container — every field is determined
+/// `BucklingMode` is a solver-populated output container — every field is determined
 /// by the buckling solve, so caller-supplied defaults are meaningless and no
 /// per-field scalar invariant is expressible (`eigenvalue` is any real, the
 /// FEA-normalization convention on `mode_shape` is collection-shaped, not
@@ -460,14 +481,14 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
 /// the discipline applied to `MultiCaseBucklingResult` further down (no
 /// defaults, no constraints).
 #[test]
-fn mode_struct_has_no_constraints_or_defaults() {
-    let template = find_structure("Mode");
+fn buckling_mode_struct_has_no_constraints_or_defaults() {
+    let template = find_structure("BucklingMode");
 
-    // No defaults: every Mode instance must be solver-populated.
+    // No defaults: every BucklingMode instance must be solver-populated.
     for cell in param_cells(template) {
         assert!(
             cell.default_expr.is_none(),
-            "Mode.{} should have no default_expr (solver-only-produced), \
+            "BucklingMode.{} should have no default_expr (solver-only-produced), \
              but got: {:?}",
             cell.id.member,
             cell.default_expr
@@ -478,7 +499,7 @@ fn mode_struct_has_no_constraints_or_defaults() {
     // invariant is a collection invariant and is producer-enforced.
     assert!(
         template.constraints.is_empty(),
-        "Mode should declare no constraints (solver-only-produced output \
+        "BucklingMode should declare no constraints (solver-only-produced output \
          container, no scalar predicate is expressible per-field); got: {:?}",
         template
             .constraints
@@ -493,7 +514,7 @@ fn mode_struct_has_no_constraints_or_defaults() {
 /// `BucklingResult` is the single-load-case buckling-solver output container.
 /// It must declare exactly the four PRD §4 params with the canonical types:
 ///
-///   - `modes      : List<Mode>`        (computed eigenpairs)
+///   - `modes      : List<BucklingMode>`   (computed eigenpairs)
 ///   - `converged  : Bool`              (all n_modes met the tolerance)
 ///   - `iterations : Int`               (total Lanczos iteration count)
 ///   - `pre_stress : ElasticResult`     (linear-static solve feeding K_g)
@@ -519,7 +540,7 @@ fn buckling_result_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         (
             "modes",
-            Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
+            Type::List(Box::new(Type::StructureRef("BucklingMode".to_string()))),
         ),
         ("converged", Type::Bool),
         ("iterations", Type::Int),
@@ -592,7 +613,11 @@ fn buckling_result_constrains_iterations_nonneg() {
         // negative value but the name + op check still passes.
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "iterations") {
+                if *op != BinOp::Ge
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "iterations")
+                {
                     return false;
                 }
                 match &right.kind {
@@ -680,5 +705,220 @@ fn multi_case_buckling_result_struct_has_cases_field() {
             .iter()
             .map(|c| &c.expr.kind)
             .collect::<Vec<_>>()
+    );
+}
+
+// ─── task 5496 (stdlib-namespace β): BucklingMode rename, boundary #1 + #4 ───
+
+/// Load the fixture that pins modal `Mode` and buckling `BucklingMode`
+/// coexisting in one user file. Path is resolved from `CARGO_MANIFEST_DIR`
+/// (idiom: `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`) so the
+/// committed fixture is the single source of truth for both this test and the
+/// PRD §7 boundary it stands for — no inline copy to drift out of sync.
+fn coexist_fixture_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e))
+}
+
+/// Look up a structure template by name in an arbitrary stdlib module. The
+/// file-level [`find_structure`] is deliberately scoped to
+/// `std/solver/buckling`; this sibling exists only so the coexistence test can
+/// reach modal's `Mode` in `std/modal/analysis` and prove the two structures
+/// are genuinely distinct templates in distinct modules.
+fn find_structure_in(module_path: &str, name: &str) -> &'static TopologyTemplate {
+    let module = stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == module_path)
+        .unwrap_or_else(|| panic!("stdlib should contain the {} module", module_path));
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == name && t.entity_kind == EntityKind::Structure)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `structure def {}` in {}, got templates: {:?}",
+                name,
+                module_path,
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// PRD §7 boundary #1, compile side. After the rename the buckling eigenpair is
+/// `BucklingMode` and modal's eigenpair keeps the bare name `Mode`; the two are
+/// distinct templates in distinct modules with disjoint member sets, and
+/// `BucklingResult.modes` refers to the RENAMED element type.
+///
+/// The member-set assertion is what makes this a coexistence test rather than a
+/// spelling test: pre-rename both names resolved to a single winner, so
+/// exactly one of the two member sets was unreachable (see
+/// tests/prd-gate/fixtures/stdlib_ns_mode_member.ri).
+#[test]
+fn buckling_mode_renamed_and_modal_mode_coexist_at_compile() {
+    let buckling_mode = find_structure("BucklingMode");
+    let names: Vec<&str> = param_cells(buckling_mode)
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["eigenvalue", "mode_shape"],
+        "BucklingMode should declare exactly (eigenvalue, mode_shape)"
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("eigenvalue", Type::dimensionless_scalar()),
+        (
+            "mode_shape",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                // Dimensionless codomain (task 5905): a buckling eigenvector is
+                // defined only up to scalar multiplication, so it denotes a
+                // DIRECTION, not a displacement. The `domain` stays Length — a
+                // position is not a direction (trajectory.ri's rule, task 5848).
+                codomain: Box::new(Type::vec3(Type::Scalar {
+                    dimension: DimensionVector::DIMENSIONLESS,
+                })),
+            },
+        ),
+    ];
+    for (member, expected_ty) in expected {
+        let cell = param_cells(buckling_mode)
+            .into_iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| panic!("BucklingMode missing param '{}'", member));
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "BucklingMode.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // `BucklingResult.modes` must follow the rename, not dangle on the old name.
+    let result = find_structure("BucklingResult");
+    let modes = param_cells(result)
+        .into_iter()
+        .find(|vc| vc.id.member == "modes")
+        .expect("BucklingResult should declare a `modes` param");
+    assert_eq!(
+        modes.cell_type,
+        Type::List(Box::new(Type::StructureRef("BucklingMode".to_string()))),
+        "BucklingResult.modes should be List<BucklingMode> after the rename, got {:?}",
+        modes.cell_type
+    );
+
+    // Coexistence: modal's eigenpair keeps the bare `Mode` name, with its own
+    // disjoint member set, in its own module.
+    let modal_mode = find_structure_in("std/modal/analysis", "Mode");
+    let modal_names: Vec<&str> = param_cells(modal_mode)
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+    assert!(
+        modal_names.contains(&"frequency"),
+        "std/modal/analysis `Mode` should still declare `frequency`; got {:?}",
+        modal_names
+    );
+    assert!(
+        !modal_names.contains(&"eigenvalue"),
+        "modal `Mode` and buckling `BucklingMode` must stay disjoint; modal Mode \
+         unexpectedly declares `eigenvalue`: {:?}",
+        modal_names
+    );
+    assert!(
+        !names.contains(&"frequency"),
+        "buckling `BucklingMode` must not absorb modal Mode's members: {:?}",
+        names
+    );
+}
+
+/// PRD §7 boundary #1 + #4, end to end. The committed coexistence fixture must
+/// compile against the real stdlib with zero Error diagnostics AND evaluate to
+/// the concrete values the fixture was written to produce.
+///
+/// Both halves matter. Compile-clean alone would pass vacuously if member
+/// resolution silently produced `Undef` (exactly what the pre-rename collision
+/// did: compile-side template lookup was last-wins while the eval-side
+/// instantiation registry was first-wins, so `Mode(frequency: …).frequency`
+/// type-checked yet evaluated to Undef). Asserting the VALUES is what pins that
+/// both phases now agree on which struct each name denotes.
+///
+/// `reify_test_support::eval_source` is not usable here: it compiles WITHOUT the
+/// stdlib. This mirrors its body with the stdlib-aware compile instead.
+#[test]
+fn coexist_fixture_checks_clean_and_evaluates() {
+    let source = coexist_fixture_source();
+
+    let check = reify_test_support::check_source_with_stdlib(&source);
+    let errors: Vec<_> = check
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "coexistence fixture should check clean against the real stdlib, got: {:?}",
+        errors
+    );
+
+    let compiled = reify_test_support::compile_source_with_stdlib(&source);
+    let mut engine = reify_test_support::make_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "coexistence fixture should evaluate cleanly, got: {:?}",
+        eval_errors
+    );
+
+    let cell = |member: &str| -> Value {
+        reify_test_support::cell_value(&result, "StdlibNsModeCoexist", member)
+    };
+
+    // Boundary #1: modal Mode's `frequency` is reachable AND carries the value
+    // the fixture supplied — the assertion the pre-rename first-wins/last-wins
+    // split made impossible (it evaluated to Undef).
+    assert_eq!(
+        cell("f"),
+        Value::Scalar {
+            si_value: 10.0,
+            dimension: DimensionVector::FREQUENCY,
+        },
+        "modal Mode.frequency should evaluate to 10 Hz"
+    );
+
+    // Boundary #1: buckling BucklingMode's `eigenvalue` is reachable from user
+    // code, which it was not before the rename.
+    assert_eq!(
+        cell("e"),
+        Value::Real(2.5),
+        "BucklingMode.eigenvalue should evaluate to 2.5"
+    );
+
+    // Boundary #4: the stdlib-internal accessor still reaches through
+    // `modes[0]` after the element-type rename — 2.5 × 100 N == 250 N.
+    assert_eq!(
+        cell("pcr"),
+        Value::Scalar {
+            si_value: 250.0,
+            dimension: DimensionVector::FORCE,
+        },
+        "critical_load(r, 100 N) should evaluate to 250 N"
+    );
+
+    // Boundary #4: `mode_shape` must RESOLVE; its value is Undef by the
+    // tet-result convention, so presence of the cell is the whole assertion.
+    assert_eq!(
+        cell("ms"),
+        Value::Undef,
+        "mode_shape(r, 0) should resolve to Undef per the tet-result convention"
     );
 }

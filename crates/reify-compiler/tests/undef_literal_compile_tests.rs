@@ -105,15 +105,9 @@ structure S {
     // silently into a different form (e.g. a poison ValueRef).
     let expr = get_let_expr(&module, "a");
     let CompiledExprKind::BinOp { op, right, .. } = &expr.kind else {
-        panic!(
-            "expected BinOp for `5 * undef`, got {:?}",
-            expr.kind
-        );
+        panic!("expected BinOp for `5 * undef`, got {:?}", expr.kind);
     };
-    assert_eq!(
-        *op, BinOp::Mul,
-        "expected BinOp::Mul for `5 * undef`",
-    );
+    assert_eq!(*op, BinOp::Mul, "expected BinOp::Mul for `5 * undef`",);
     assert!(
         matches!(&right.kind, CompiledExprKind::Literal(Value::Undef)),
         "expected right operand Literal(Value::Undef) for `5 * undef`, got {:?}",

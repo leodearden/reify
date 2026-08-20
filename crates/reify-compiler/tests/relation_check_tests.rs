@@ -35,9 +35,8 @@ fn compile_structure(members: &str) -> reify_compiler::CompiledModule {
 /// fallback and `r` types as `Axis`.
 #[test]
 fn concentric_axes_types_as_relation() {
-    let module = compile_structure(
-        "    param a : Axis\n    param b : Axis\n    let r = concentric(a, b)\n",
-    );
+    let module =
+        compile_structure("    param a : Axis\n    param b : Axis\n    let r = concentric(a, b)\n");
     assert_eq!(
         get_let_expr(&module, "r").result_type,
         Type::Relation,
@@ -81,9 +80,8 @@ fn offset_planes_with_length_types_as_relation() {
 /// `angle` types as a geometry-query `Angle` with no arg check).
 #[test]
 fn angle_with_length_metric_emits_arg_type_mismatch() {
-    let module = compile_structure(
-        "    param a : Axis\n    param b : Axis\n    let r = angle(a, b, 5mm)\n",
-    );
+    let module =
+        compile_structure("    param a : Axis\n    param b : Axis\n    let r = angle(a, b, 5mm)\n");
     let mismatches: Vec<_> = module
         .diagnostics
         .iter()

@@ -1,0 +1,48 @@
+// Test fixture for task 4870 (FEA body-arg substrate capstone e2e, step-9/10).
+//
+// A cantilever beam solved through the arity-5 `body : Solid` overload of
+// `solve_elastic_static` — the geometry `body` (a box) is the mesh-realization
+// identity, REPLACING the three scalar length/width/height dims of the classic
+// prismatic overload.
+//
+// Under an OCCT+Gmsh engine with `solver::elastic_static` registered
+// VolumeMesh-demanding, the module-static demand pass overrides `body`'s
+// realization to a tet VolumeMesh; the realization edge tessellates the OCCT box
+// and routes it through gmsh (`mesh_surface_to_volume`), and the post-hydration
+// redispatch projects the realized VolumeMesh into the solver node's
+// `realization_inputs`. So the solve runs on the REALIZED tet mesh, NOT the
+// synthetic `nx×1×6` box the scalar-dims path builds.
+//
+// Physical size matches examples/fea_cantilever_smoke.ri (1 m × 100 mm × 100 mm)
+// so the two paths are directly comparable: the scalar-dims path yields the
+// 854-node synthetic grid (ny hardcoded to 1); the realized path yields the
+// AABB-heuristic §7a grid whose ny follows the 100 mm width (ny=6, so the
+// per-axis node count differs and the total ≠ 854).
+
+structure FeaBodyCantilever {
+    // Material: AISI 1045 hot-rolled medium-carbon steel — same material the
+    // scalar-dims smoke fixture uses, so any grid-count difference is attributable
+    // solely to the realized-vs-synthetic mesh, not the constitutive law.
+    let material = Steel_AISI_1045()
+
+    // Geometry: 1 m beam with a 100 mm × 100 mm square cross-section. This
+    // `body : Solid` is the sole geometry input — the arity-5 overload carries no
+    // scalar dims. `box(x, y, z)` ⇒ x = beam length, y = width, z = height, so the
+    // realized AABB is [0,1]×[0,0.1]×[0,0.1] m.
+    let body = box(1000mm, 100mm, 100mm)
+
+    // Loads: 1000 N point load at the beam tip. Supports: fully clamped root.
+    // (String `point`/`target` placeholders — face-selector BC attribution is
+    // task 4092, out of scope; the realized path clamps x_min / loads x_max by
+    // coordinate.)
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    // Body-arg FEA solve: the @optimized dispatcher routes this to the
+    // `solver::elastic_static` trampoline, which detects the body overload
+    // (value_inputs[1] is a Value::GeometryHandle) and takes `provided_mesh` from
+    // the realized VolumeMesh in realization_inputs. `body` rides via
+    // realization_inputs (Type::Geometry → excluded from cache-key value_inputs),
+    // not as a scalar value_input.
+    let result = solve_elastic_static(material, body, [tip_load], [mount], ElasticOptions())
+}

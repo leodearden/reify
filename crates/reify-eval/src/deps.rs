@@ -557,7 +557,8 @@ pub fn extract_realization_dependencies(
             | reify_compiler::CompiledGeometryOp::Sweep { args, .. }
             | reify_compiler::CompiledGeometryOp::Curve { args, .. }
             | reify_compiler::CompiledGeometryOp::Profile { args, .. }
-            | reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
+            | reify_compiler::CompiledGeometryOp::Surface { args, .. }
+            | reify_compiler::CompiledGeometryOp::Isosurface { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => continue,
         };
         for (_, expr) in args {
@@ -726,6 +727,14 @@ fn extract_realization_edges(
                     }
                     // GeomRef::Step → skip (intra-node, no cross-realization edge)
                 }
+            }
+            reify_compiler::CompiledGeometryOp::Isosurface { grid, .. } => {
+                if let reify_compiler::GeomRef::Sub(ref name) = *grid
+                    && let Some(rid) = resolve_geom_sub_edge(name, consuming_entity, member_index)
+                {
+                    result.push(rid);
+                }
+                // GeomRef::Step → skip (intra-node, no cross-realization edge)
             }
             // Primitive/Curve/Profile carry no GeomRef targets → no edges.
             _ => {}

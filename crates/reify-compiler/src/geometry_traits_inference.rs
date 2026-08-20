@@ -33,7 +33,7 @@
 //! - [`try_infer_traits_for_function_call`] — returns `Some(InferredTraits)`
 //!   for every explicitly-dispatched function name, or `None` for the
 //!   unknown-name fallback. Consumed by the coverage test in
-//!   `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+//!   `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 //! - [`infer_traits_for_expr`] — walks a `CompiledExpr` tree by FunctionCall
 //!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
@@ -62,7 +62,7 @@
 //! [`infer_primitive`] and `"half_space" => Some(unbounded_convex())` in
 //! [`try_infer_traits_for_function_call_in_env`]. The end-to-end negative
 //! conformance test is in
-//! `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+//! `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 //!
 //! When a new Unbounded source lands, double-check that every routing path
 //! the conformance walker uses is updated. In particular, both the **direct**
@@ -72,7 +72,9 @@
 //! Bounded — adding a new Unbounded primitive without an explicit arm
 //! defeats the Bounded check.
 
-use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind};
+use crate::types::{
+    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind,
+};
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -295,6 +297,29 @@ impl InferredTraits {
             connected: true,
             convex: false,
             dimension: GeomDim::Surface,
+            planar: false,
+            closed: false,
+        }
+    }
+
+    /// A solid produced by marching-cubes isosurface extraction from a voxel
+    /// grid (`isosurface` / `GeometryOp::Surface`).
+    ///
+    /// `dimension == GeomDim::Solid`: the zero level-set of a filled voxel
+    /// grid is a watertight, bounded, single-component body — `bounded` and
+    /// `connected` are `true`. `convex == false` — an isosurface can trace
+    /// arbitrarily concave geometry (e.g. a lattice or organic voxel field),
+    /// so convexity is never guaranteed from the IR shape alone (same flags
+    /// as [`bounded_connected`](Self::bounded_connected), named separately
+    /// here because the isosurface producer is conceptually distinct from a
+    /// Modify result). `planar`/`closed` are `false` (not a Surface-dimension
+    /// producer).
+    pub const fn solid() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: false,
+            dimension: GeomDim::Solid,
             planar: false,
             closed: false,
         }
@@ -650,6 +675,13 @@ fn infer_op(
         CompiledGeometryOp::Surface { kind, .. } => match kind {
             SurfaceKind::Nurbs => InferredTraits::surface_freeform(),
         },
+
+        // Marching-cubes isosurface extraction from a voxel grid → a
+        // watertight bounded/connected Solid body (GeomDim::Solid), but NOT
+        // provably convex. The `grid` operand is Voxel-repr, not chased via
+        // `infer_geom_ref` (which resolves BRep-shaped `GeomRef::Step`
+        // producers) — see `CompiledGeometryOp::Isosurface`'s doc-comment.
+        CompiledGeometryOp::Isosurface { .. } => InferredTraits::solid(),
     }
 }
 
@@ -710,7 +742,7 @@ fn infer_geom_ref(
 ///
 /// This function is consumed by the coverage test
 /// `every_geometry_function_name_has_explicit_dispatch_arm` in
-/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+/// `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 /// That test iterates `crate::GEOMETRY_FUNCTION_NAMES` and asserts `Some(_)`
 /// for each name. Adding a name to `GEOMETRY_FUNCTION_NAMES` without a
 /// corresponding arm here causes the test to fail loudly.
@@ -741,7 +773,8 @@ pub fn try_infer_traits_for_function_call_in_env(
 ) -> Option<InferredTraits> {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
-        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone" | "wedge" => Some(InferredTraits::all()),
+        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone"
+        | "wedge" | "rounded_box" => Some(InferredTraits::all()),
 
         // ─── Torus → bounded + connected, NON-convex ────────────────────
         // The first non-convex primitive: a ring has a hole, so it cannot
@@ -842,7 +875,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         "offset_curve" => Some(InferredTraits::curve()),
 
         // ─── Profile face constructors → surface() (2-D faces) ──────────
-        "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
+        "rectangle" | "circle" | "ellipse" | "rounded_rect" => Some(InferredTraits::surface()),
         "polygon" => Some(InferredTraits::surface_nonconvex()),
 
         // ─── Free-form surface constructors → surface_freeform() ────────
@@ -850,6 +883,15 @@ pub fn try_infer_traits_for_function_call_in_env(
         // Intentionally DISTINCT from surface() — closed=false/planar=false
         // makes it fail the Surface∧Closed∧Planar profile precondition.
         "nurbs_surface" => Some(InferredTraits::surface_freeform()),
+
+        // ─── Isosurface extraction → solid() (Voxel→Mesh anchor) ────────
+        // isosurface (task 4999 / 5033): marching-cubes extraction from a
+        // Voxel-repr grid produces a watertight bounded/connected Solid,
+        // not provably convex. Mirrors the already-correct op-array arm
+        // `CompiledGeometryOp::Isosurface { .. } => InferredTraits::solid()`
+        // above — the name-based and op-array inference entry-points must
+        // agree so a typed slot doesn't misclassify the result.
+        "isosurface" => Some(InferredTraits::solid()),
 
         // Unknown function name → None. The private wrapper maps this to
         // `InferredTraits::all()` (default-Bounded). This is the single
@@ -983,8 +1025,7 @@ mod tests {
              (combine_transform identity passthrough, defensive default)"
         );
         assert_eq!(
-            apply,
-            translate,
+            apply, translate,
             "apply_transform dispatch result must equal translate dispatch result \
              (both are combine_transform passthroughs in the same match arm)"
         );

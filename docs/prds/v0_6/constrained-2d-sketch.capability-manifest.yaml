@@ -1,0 +1,192 @@
+prd: docs/prds/v0_6/constrained-2d-sketch.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5506
+  title: 'constrained-2d-sketch α: grammar + AST — sketch block, auto(seed), lowering'
+  capabilities:
+  - name: target-surface-grammar-producer
+    binding: signal premise — committed fixtures tests/prd-gate/fixtures/sketch_block_target.ri
+      + sketch_auto_seed_target.ri FAIL today (tree-sitter exit 1; reify check exit
+      1 "Parse error", D3 run wf_51d57861 rejection probes observed); α IS the grammar
+      producer (grammar_confirmed=false); adversary confound-isolation confirmed auto(seed)
+      rejected independently of the sketch block
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sketch
+      paths:
+      - tree-sitter-reify/grammar.js
+      expect: present
+- label: β
+  task_id: 5507
+  title: 'constrained-2d-sketch β: solver substrate — direct-build API, builders,
+    attribution, DOF surfacing'
+  capabilities:
+  - name: libslvs-ffi-substrate
+    binding: substrate — Slvs_Solve exercised by CI-run crates/reify-constraints/tests/solvespace_tests.rs;
+      full slvs vocabulary declared (slvs_sys.rs:44-132), 12 target constraints +
+      4 entity builders currently declared-only; dof + faileds captured then discarded
+      (solvespace.rs:825,828-835) — β consumes them (Rust-level premise, manual G3
+      per d3-verify-ri-only)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: add_sketch
+      paths:
+      - crates/reify-constraints/src
+      expect: present
+- label: γ
+  task_id: 5508
+  title: 'constrained-2d-sketch γ: compile lowering — SketchTemplate, typed rejections,
+    builtin signatures'
+  capabilities:
+  - name: sketch-compile-rejections
+    binding: G6 branch 4, producer-self — E_SKETCH_UNKNOWN_ENTITY / E_SKETCH_INVALID_MEMBER
+      / E_SKETCH_CONSTRAINT_KIND are γ deliverables; γ fixtures observe each fire
+      at reify check with nonzero exit (INV-SF-2/-6); typed enums + newtype ids, PTYPE
+      zero-baseline (INV-SF-5)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SketchTemplate
+      paths:
+      - crates/reify-compiler
+      expect: present
+- label: δ
+  task_id: 5509
+  title: 'constrained-2d-sketch δ: solve pass — DOF accounting, diagnostics, ledger,
+    UndefCause'
+  capabilities:
+  - name: sketch-solve-diagnostics
+    binding: G6 branch 4, producer-self — E_SKETCH_UNDERCONSTRAINED / E_SKETCH_OVERCONSTRAINED
+      / E_SKETCH_SOLVE_DIVERGED are δ deliverables observed by δ fixtures at kernel-less
+      reify check; one diagnostic per sketch (consumption-accounting decision 7);
+      UndefCause::SketchSolveFailed additive (INV-SF-1); sketches ledger row derived
+      from outcome entries (decision 6)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_SKETCH_UNDERCONSTRAINED
+      paths:
+      - crates
+      expect: present
+- label: ε
+  task_id: 5510
+  title: 'constrained-2d-sketch ε: profile assembly — SketchProfile IR op, kernel
+    face-with-holes, traits'
+  capabilities:
+  - name: profile-slot-member-acceptance
+    binding: substrate — tests/prd-gate/fixtures/sketch_member_extrude_premise.ri
+      resolves today (reify check exit 0, D3 ζ premise 2); PROFILE_SLOT Surface∧Closed∧Planar
+      precondition machinery crates/reify-compiler/src/geometry.rs:727,748
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SketchProfile
+      paths:
+      - crates/reify-ir
+      expect: present
+  - name: sketch-profile-ir-gap
+    binding: signal premise — no wire/region profile op exists today (ProfileKind
+      4 variants, PolygonProfile literal f64 pairs only, reify-ir/src/geometry.rs:1019-1045);
+      ε is the producer
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: IR-shape gap; ε tests assert loop assembly, open-profile/crossing-loop
+        rejection, and face-with-holes realization
+- label: ζ
+  task_id: 5511
+  title: 'constrained-2d-sketch ζ: 2020 extrusion exemplar (integration-gate leaf)'
+  capabilities:
+  - name: sketch-block-grammar
+    binding: 'producer:task-5506 upstream (D3 ζ premise 1: sketch_block_target.ri
+      rejected today, exit 1 Parse error — the RED target of α)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sketch
+      paths:
+      - examples/best_practices
+      expect: present
+  - name: aux-construction-geometry
+    binding: substrate — tests/prd-gate/fixtures/sketch_aux_let_premise.ri resolves
+      today (D3 ζ premise 3); is_aux marking + body-set exclusion landed with placement-relations-belt
+      §4
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: substrate premise verified pre-state; ζ exemplar exercises aux centerlines
+        via symmetric()
+  - name: exemplar-ci-gate
+    binding: substrate — examples/best_practices auto-compile gate crates/reify-compiler/tests/examples_smoke.rs
+      (corpus seeded by task "#5397")
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: extrusion_2020
+      paths:
+      - examples/best_practices
+      expect: present
+  - name: bbox-within-1um
+    binding: 'numeric floor — bound is driven-dimension reproduction (equality constraints),
+      not method accuracy; libslvs residual convergence ~1e-8 m on well-conditioned
+      2D systems; floor: 1e-6 m > 1e-8 m'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: floor stated and cleared; asserted in ζ eval test
+  - name: solve-and-profile-chain
+    binding: 'producer:task-5509 + producer:task-5510 upstream (DAG-direction verified:
+      5511 depends on 5510 depends on 5509)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: chain delivery gated by upstream tasks own delivered_checks
+- label: η
+  task_id: 5512
+  title: 'constrained-2d-sketch η: auto(seed) — coverage semantics, nearest-to-seed,
+    ledger'
+  capabilities:
+  - name: auto-seed-grammar
+    binding: 'producer:task-5506 upstream — sketch_auto_seed_target.ri rejected today
+      (D3 η premise + adversary confound isolation: auto(expr) in call position rejected
+      outside sketch blocks too)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: grammar delivery gated by α delivered_check; η twin-pair fixtures gate
+        behavior
+  - name: underconstrained-rejection-twin
+    binding: G6 branch 4 — twin fixture (auto removed) observes E_SKETCH_UNDERCONSTRAINED
+      fire; producer:task-5509 upstream
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: auto_resolved
+      paths:
+      - crates
+      expect: present
+- label: θ
+  task_id: 5513
+  title: 'constrained-2d-sketch θ: docs-truth — chunk + cheatsheet + discoverability'
+  capabilities:
+  - name: chunk-smoke-gate
+    binding: substrate — anti-phantom chunk gate crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs
+      exists on main (task 5364); θ adds sketch smoke fixtures; documented-surface
+      producers task-5510/task-5511 upstream (real dep edges)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sketch
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: discoverability
+    binding: docs-truth gate item 4 — intent-level findability via chunk topic naming
+      + INDEX.md line (ζ) + reify-design SKILL.md line (θ)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: acceptance judgment; not mechanically expressible

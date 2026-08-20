@@ -92,7 +92,7 @@ Anchored on cargo's **own** self-reported timings harvested from failed-merge jo
 | Release pass (post-#4390 subset) | release-subset compile/link + heavy release-only tests | deps only | ~8–15 min | *(derived)* |
 | GUI (`npm ci`+`tsc`+vitest) + sidecar + tree-sitter | install + typecheck + unit | npm cache | ~5–8 min | **measured** npm lines + `Finished dev` adjacency |
 
-**Raw sum ≈ 50–85 min**; on a box running 24 task lanes that share the 32-token jobserver, the merge verify gets ~half the box and wall stretches to the observed **80–110 min** (this contention *is* the livelock mechanism the `orchestrator.yaml` 48→24 comment describes).
+**Raw sum ≈ 50–85 min**; on a box running 24 task lanes that share the 32-token jobserver, the merge verify gets ~half the box and wall stretches to the observed **80–110 min** (this contention *is* the livelock mechanism the `dark-factory-orchestrator.yaml` 48→24 comment describes).
 
 **The three uncached cost centres, in priority order:**
 - **(A) Repeated cold workspace compile** (clippy-all-targets + debug-test + gui-check + release) — the biggest bucket. Attacked by **target warmth** (Phase 1).
@@ -179,7 +179,7 @@ The throughput win compounds: a 3–5× shorter serial lane *and* a large CPU-se
 ## 8. What NOT to do
 
 - **Do NOT narrow the merge-gate scope.** verify-scope-contract **C2** forbids it; `verify.sh:348` force-`--scope all` for `DF_VERIFY_ROLE=merge` is the guard, backed by drift test #4059. Narrowing the gate is precisely the ingress risk that caused the red-main incident. This design buys speed from **warmth**, never from **coverage**.
-- **Do NOT set `CARGO_INCREMENTAL=1` globally.** It is mutually exclusive with sccache; turning it on workspace-wide would break the cross-worktree rlib sharing that 24 task lanes + the merge lane depend on (the documented rationale in `CLAUDE.md` / `orchestrator.yaml`). Incremental is permissible **only** on the isolated, stable, serial persistent merge lane (Phase 5), measured.
+- **Do NOT set `CARGO_INCREMENTAL=1` globally.** It is mutually exclusive with sccache; turning it on workspace-wide would break the cross-worktree rlib sharing that 24 task lanes + the merge lane depend on (the documented rationale in `CLAUDE.md` / `dark-factory-orchestrator.yaml`). Incremental is permissible **only** on the isolated, stable, serial persistent merge lane (Phase 5), measured.
 - **Do NOT share one persistent `target/` across concurrent merges.** Safe only while `_MERGE_AHEAD_BOUND=1`. Raising the bound requires a pool or a revert.
 - **Do NOT reuse a *task* worktree's `target/` for merges.** Different flags/contention; the warm worktree must be dedicated to the merge lane.
 - **Do NOT "fix" throughput by skipping the gate / pinning SHAs.** That is #1687's separate, deliberately-bounded concern. Warm builds make the *real* gate cheap, so skipping it is unnecessary — keep the full gate, just warm.

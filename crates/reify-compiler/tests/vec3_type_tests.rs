@@ -2,7 +2,8 @@
 //! (crates/reify-compiler/stdlib/trajectory.ri, task #4575).
 //!
 //! These tests encode the TIGHTENED alias surface:
-//!   - joint axis params (Revolute/Prismatic/Cylindrical/Planar) → Vector3<Length>
+//!   - joint axis params (Revolute/Prismatic/Cylindrical/Planar) →
+//!     Vector3<Dimensionless> (they denote DIRECTIONS — task 5848)
 //!   - EndEffectorTrack.vibration_offset → List<List<Vector3<Length>>>
 //!   - std/trajectory, std/kinematic, std/fea/multi_case load with zero errors
 //!
@@ -71,10 +72,7 @@ fn load_trajectory() -> &'static CompiledModule {
         })
 }
 
-fn find_structure_in<'a>(
-    module: &'a CompiledModule,
-    name: &str,
-) -> &'a TopologyTemplate {
+fn find_structure_in<'a>(module: &'a CompiledModule, name: &str) -> &'a TopologyTemplate {
     module
         .templates
         .iter()
@@ -101,19 +99,28 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
         .collect()
 }
 
-/// The expected Vector3<Length> type (Vec3after tightening).
+/// The expected Vector3<Length> type (Vec3<Length>).
 fn vec3_length() -> Type {
     Type::vec3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
     })
 }
 
+/// The expected Vector3<Dimensionless> type — the quantity slot every DIRECTION
+/// field takes (task 5848). `Vec3<Dimensionless>` and `Vector3<Dimensionless>`
+/// both resolve here, so these assertions are spelling-independent.
+fn vec3_dimensionless() -> Type {
+    Type::vec3(Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    })
+}
+
 // ─── std/kinematic: axis param cell-type assertions ───────────────────────────
 
-/// Revolute.axis param cell type must be Vector3<Length> after alias tightening.
-/// FAILS against Vec3 = Real (resolves to dimensionless_scalar).
+/// Revolute.axis is a DIRECTION, so its param cell type must be
+/// Vector3<Dimensionless> (task 5848).
 #[test]
-fn revolute_axis_is_vec3_length() {
+fn revolute_axis_is_vec3_dimensionless() {
     let module = load_kinematic();
     let template = find_structure_in(module, "Revolute");
     let params = param_cells(template);
@@ -123,22 +130,22 @@ fn revolute_axis_is_vec3_length() {
         .expect("Revolute.axis param must exist");
     assert_eq!(
         axis.cell_type,
-        vec3_length(),
-        "Revolute.axis should be Vector3<Length> (Vec3 tightened by task #4575); \
+        vec3_dimensionless(),
+        "Revolute.axis should be Vector3<Dimensionless> (direction field, task 5848); \
          got: {:?}",
         axis.cell_type
     );
-    // Positive compatibility: a Vector3<Length> argument must be accepted.
+    // Positive compatibility: a Vector3<Dimensionless> argument must be accepted.
     assert!(
-        type_compatible(&axis.cell_type, &vec3_length()),
-        "type_compatible(Revolute.axis, Vector3<Length>) should be true after tightening"
+        type_compatible(&axis.cell_type, &vec3_dimensionless()),
+        "type_compatible(Revolute.axis, Vector3<Dimensionless>) should be true after the retype"
     );
 }
 
-/// Prismatic.axis param cell type must be Vector3<Length>.
-/// FAILS against Vec3 = Real.
+/// Prismatic.axis is a DIRECTION, so its param cell type must be
+/// Vector3<Dimensionless> (task 5848).
 #[test]
-fn prismatic_axis_is_vec3_length() {
+fn prismatic_axis_is_vec3_dimensionless() {
     let module = load_kinematic();
     let template = find_structure_in(module, "Prismatic");
     let params = param_cells(template);
@@ -148,21 +155,21 @@ fn prismatic_axis_is_vec3_length() {
         .expect("Prismatic.axis param must exist");
     assert_eq!(
         axis.cell_type,
-        vec3_length(),
-        "Prismatic.axis should be Vector3<Length> (Vec3 tightened by task #4575); \
+        vec3_dimensionless(),
+        "Prismatic.axis should be Vector3<Dimensionless> (direction field, task 5848); \
          got: {:?}",
         axis.cell_type
     );
     assert!(
-        type_compatible(&axis.cell_type, &vec3_length()),
-        "type_compatible(Prismatic.axis, Vector3<Length>) should be true after tightening"
+        type_compatible(&axis.cell_type, &vec3_dimensionless()),
+        "type_compatible(Prismatic.axis, Vector3<Dimensionless>) should be true after the retype"
     );
 }
 
-/// Cylindrical.axis param cell type must be Vector3<Length>.
-/// FAILS against Vec3 = Real.
+/// Cylindrical.axis is a DIRECTION, so its param cell type must be
+/// Vector3<Dimensionless> (task 5848).
 #[test]
-fn cylindrical_axis_is_vec3_length() {
+fn cylindrical_axis_is_vec3_dimensionless() {
     let module = load_kinematic();
     let template = find_structure_in(module, "Cylindrical");
     let params = param_cells(template);
@@ -172,21 +179,21 @@ fn cylindrical_axis_is_vec3_length() {
         .expect("Cylindrical.axis param must exist");
     assert_eq!(
         axis.cell_type,
-        vec3_length(),
-        "Cylindrical.axis should be Vector3<Length> (Vec3 tightened by task #4575); \
+        vec3_dimensionless(),
+        "Cylindrical.axis should be Vector3<Dimensionless> (direction field, task 5848); \
          got: {:?}",
         axis.cell_type
     );
     assert!(
-        type_compatible(&axis.cell_type, &vec3_length()),
-        "type_compatible(Cylindrical.axis, Vector3<Length>) should be true after tightening"
+        type_compatible(&axis.cell_type, &vec3_dimensionless()),
+        "type_compatible(Cylindrical.axis, Vector3<Dimensionless>) should be true after the retype"
     );
 }
 
-/// Planar.axis_x and Planar.axis_y param cell types must be Vector3<Length>.
-/// FAILS against Vec3 = Real.
+/// Planar.axis_x and Planar.axis_y span the constraint plane — both are
+/// DIRECTIONS, so both must be Vector3<Dimensionless> (task 5848).
 #[test]
-fn planar_axis_x_and_axis_y_are_vec3_length() {
+fn planar_axis_x_and_axis_y_are_vec3_dimensionless() {
     let module = load_kinematic();
     let template = find_structure_in(module, "Planar");
     let params = param_cells(template);
@@ -197,15 +204,15 @@ fn planar_axis_x_and_axis_y_are_vec3_length() {
             .unwrap_or_else(|| panic!("Planar.{} param must exist", expected_name));
         assert_eq!(
             p.cell_type,
-            vec3_length(),
-            "Planar.{} should be Vector3<Length> (Vec3 tightened by task #4575); \
+            vec3_dimensionless(),
+            "Planar.{} should be Vector3<Dimensionless> (direction field, task 5848); \
              got: {:?}",
             expected_name,
             p.cell_type
         );
         assert!(
-            type_compatible(&p.cell_type, &vec3_length()),
-            "type_compatible(Planar.{}, Vector3<Length>) should be true after tightening",
+            type_compatible(&p.cell_type, &vec3_dimensionless()),
+            "type_compatible(Planar.{}, Vector3<Dimensionless>) should be true after the retype",
             expected_name
         );
     }
@@ -228,8 +235,7 @@ fn end_effector_track_vibration_offset_is_list_list_vec3_length() {
 
     let expected = Type::List(Box::new(Type::List(Box::new(vec3_length()))));
     assert_eq!(
-        cell.cell_type,
-        expected,
+        cell.cell_type, expected,
         "EndEffectorTrack.vibration_offset should be List<List<Vector3<Length>>> \
          (Vec3 tightened by task #4575); got: {:?}",
         cell.cell_type
@@ -354,23 +360,26 @@ structure def NegRig {
     let h = AxisHolder(axis: 1.0)
 }"#;
     let compiled = parse_and_compile(source);
-    let errors: Vec<_> = compiled
+    // task 5302 α (Option-A uniform downgrade): Vector ctor conformance (task 4622)
+    // is emitted at CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error;
+    // code/count are unchanged, δ later flips the knob back to Error.
+    let warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
     assert_eq!(
-        errors.len(),
+        warnings.len(),
         1,
-        "scalar arg for Vector3<Length> param must produce exactly 1 Error; \
+        "scalar arg for Vector3<Length> param must produce exactly 1 Warning; \
          got {}: {:#?}",
-        errors.len(),
-        errors
+        warnings.len(),
+        warnings
     );
     assert_eq!(
-        errors[0].code,
+        warnings[0].code,
         Some(DiagnosticCode::TypeNotConformingToVector),
         "expected TypeNotConformingToVector, got {:?}",
-        errors[0].code,
+        warnings[0].code,
     );
 }

@@ -149,8 +149,17 @@ git -C "$REPO_E" config core.hooksPath /tmp/bogus
 # old=C2,new=C1 to the reference-transaction hook (not old=0000 as
 # `git update-ref NEW` without explicit old does with extensions.worktreeConfig).
 # Git resolves core.hooksPath → 'hooks' (from config.worktree) → $REPO_E/hooks/
-# → fires reference-transaction → logs the unsanctioned move.
-git -C "$REPO_E" reset --hard "$C1" >/dev/null 2>&1
+# → fires reference-transaction → logs the move.
+#
+# C1 is an ANCESTOR of C2, so C2→C1 is a NON-fast-forward move, which the
+# always-on history-rewrite guard now in reference-transaction REJECTS (it would
+# abort the reset). This probe only needs the hook to FIRE via the worktree
+# hooksPath (gate liveness), so it runs the reset under REIFY_MAIN_GATE_BYPASS=1
+# (break-glass): the hook still fires and logs a 'main move' — proving the
+# worktree-config hooksPath path is live — without the guard aborting the reset.
+# The guard's own reject/allow behaviour is covered separately by
+# tests/infra/test_reference_transaction_gate.sh scenarios (o)-(r).
+REIFY_MAIN_GATE_BYPASS=1 git -C "$REPO_E" reset --hard "$C1" >/dev/null 2>&1
 
 LOG_E="$REPO_E/.git/reify-main-gate.log"
 assert "(e) reference-transaction hook fired and logged 'main move'" \

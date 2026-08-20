@@ -58,10 +58,17 @@
 #   self-heals the release binary instead of refusing.
 # - verify.sh run_all.sh line: REBUILD-BUDGET-SAFE mode — when
 #   REIFY_AUDIT_NO_COLD_BUILD=1, returns 75 (EX_TEMPFAIL skip sentinel) instead
-#   of invoking `cargo build`.  The caller maps 75 → graceful SKIP (exit 0).
+#   of invoking `cargo build`.  This guard returns the SAME 75 whether the binary
+#   is present-but-stale or absent, so 75 alone does not tell a caller whether
+#   skipping is safe — how the caller must split those two cases is documented at
+#   the rebuild-budget-safe branch below (#5962, esc-5405-7).
 #   When REIFY_AUDIT_NO_COLD_BUILD is unset/0, falls through to the rebuild path.
 #   Exit 75 is the codebase's established transient/backpressure sentinel (psi_gate,
 #   test_semaphore_acquire) so the orchestrator already understands this signal.
+# - rc 125 is presence-ambiguous in the same way, and for the same reason: see
+#   the `return 125` site at the bottom of reify_audit_guard.  A caller that
+#   treats it as "no usable detector" without checking `-x $bin` will hard-fail
+#   on binaries that run perfectly well (#5962 review).
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_AUDIT_FRESHNESS_SH_SOURCED:-}" = "1" ]; then
@@ -153,7 +160,20 @@ reify_audit_guard() {
     if [ "$mode" = "rebuild-budget-safe" ]; then
         # Budget-safe variant of rebuild: when REIFY_AUDIT_NO_COLD_BUILD=1, skip
         # the cold build entirely and return 75 (EX_TEMPFAIL skip sentinel).
-        # The caller (test_reify_audit_ptodo.sh) maps 75 → graceful SKIP (exit 0).
+        #
+        # rc 75 does NOT mean "skipping is safe".  reify_audit_is_stale treats a
+        # missing binary as stale (see "Missing binary is always stale" above), so
+        # this same 75 covers both a present-but-stale AND an absent binary.  The
+        # caller must split those two cases; test_reify_audit_ptodo.sh does
+        # (#5962, esc-5405-7):
+        #   PRESENT-but-stale → graceful SKIP, exit 0.  Only the scenarios needing
+        #     a FRESH detector are skipped; the rest still run against the stale
+        #     binary, so the run does assert something.
+        #   ABSENT → exit 1.  Every scenario is guarded on `-x $REIFY_AUDIT_BIN`,
+        #     so NONE execute, and exiting 0 would let a hard gate report green
+        #     having asserted nothing.  Its no-silent-green floor refuses that.
+        # Do not collapse this back to an unconditional 75 → exit 0 mapping.
+        #
         # When REIFY_AUDIT_NO_COLD_BUILD is unset or 0, fall through to the normal
         # rebuild path by reassigning mode.
         if [ "${REIFY_AUDIT_NO_COLD_BUILD:-0}" = "1" ]; then
@@ -173,6 +193,15 @@ reify_audit_guard() {
         # Still stale after rebuild — fall through to the refuse message.
     fi
 
+    # rc 125 means "still judged stale", NOT "no usable binary" (#5962 review).
+    # Two very different worlds reach here: a failed `cargo build -p reify-audit`
+    # (nothing on disk to run), and a build that was a legitimate no-op — cargo's
+    # fingerprint says up-to-date — while the on-disk mtime still predates the
+    # last crates/reify-audit commit, e.g. a warm-lane seeded target/ with
+    # stamped mtimes, where $bin is fully executable.  Callers that refuse on 125
+    # must split on `[ -x "$bin" ]` first, exactly as they must for rc 75 above;
+    # tests/infra/test_reify_audit_ptodo.sh does (absent → exit 1, present →
+    # degrade to RATCHET_SKIP=1 and keep running the staleness-tolerant gates).
     echo "reify-audit binary '$bin' is stale (mtime $btime predates last crates/reify-audit commit $epoch); reinstall with: cargo install --path crates/reify-audit --root ~/.cargo --force" >&2
     return 125
 }

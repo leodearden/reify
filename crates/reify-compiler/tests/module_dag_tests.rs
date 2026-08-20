@@ -1870,7 +1870,11 @@ fn entry_source_diagnostics(entry_source: &str) -> Vec<reify_core::Diagnostic> {
         &resolver,
     );
     let modules = result.expect("compile_project_with_entry_source should succeed");
-    modules.into_iter().last().expect("should have at least the entry module").diagnostics
+    modules
+        .into_iter()
+        .last()
+        .expect("should have at least the entry module")
+        .diagnostics
 }
 
 #[test]
@@ -1950,7 +1954,10 @@ fn dag_dep_diagnostics(dep_source: &str) -> Vec<reify_core::Diagnostic> {
     let mut dag = ModuleDag::new();
     dag.compile_module("a", &resolver)
         .expect("compile_module should succeed for diagnostic check");
-    dag.modules.remove("dep").expect("dep should be compiled").diagnostics
+    dag.modules
+        .remove("dep")
+        .expect("dep should be compiled")
+        .diagnostics
 }
 
 #[test]

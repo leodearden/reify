@@ -42,9 +42,9 @@ than silently skipped. The live G6 risk is the one **numeric floor** in the new 
 
 | Check | Verdict | Evidence |
 |---|---|---|
-| **Substrate exists (G3)** | **PASS** | Gate roles already build the nextest `selector` per-role (`verify.sh` ~L861); negating it behind an env check is a local addition. Env-var read makes the knob settable from `orchestrator.yaml` with no code change (the flip-seam contract, PRD §6). |
+| **Substrate exists (G3)** | **PASS** | Gate roles already build the nextest `selector` per-role (`verify.sh` ~L861); negating it behind an env check is a local addition. Env-var read makes the knob settable from `dark-factory-orchestrator.yaml` with no code change (the flip-seam contract, PRD §6). |
 | **Additive-default (anti-regression)** | **PASS (by A6)** | Default `0` ⇒ gate plan unchanged; A6 asserts the knob-off plan is identical to today's + the smoke, and the knob-on plan is `not (heavy)`. The strictly-additive-on-landing invariant (§8) is observed, not assumed. |
-| **Anti-orphan / wired** | **PASS (cross-repo, tracked)** | Consumer of the `1` value is Part B's `flip-gate-exclude-heavy` (orchestrator.yaml), wired via a real cross-project `add_dependency` edge at decompose (PRD §6). This is the accepted cross-repo seam class (reify ships the seam + default; DF pulls it) — the seam has a **named owner** (dark-factory), so it is not an unclaimed orphan. |
+| **Anti-orphan / wired** | **PASS (cross-repo, tracked)** | Consumer of the `1` value is Part B's `flip-gate-exclude-heavy` (dark-factory-orchestrator.yaml), wired via a real cross-project `add_dependency` edge at decompose (PRD §6). This is the accepted cross-repo seam class (reify ships the seam + default; DF pulls it) — the seam has a **named owner** (dark-factory), so it is not an unclaimed orphan. |
 | **Negative-assertion (strict `1`)** | **PASS (by A6)** | A6 asserts any value other than exactly `1` (unset/empty/`0`/garbage) leaves the gate at the full set — a silent-accept of a malformed knob that *excluded* heavy would be a coverage hole. |
 
 ## A5 — `scripts/run-offline-deep.sh` one-shot runner

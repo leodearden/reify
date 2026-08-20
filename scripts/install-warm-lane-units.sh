@@ -68,6 +68,7 @@ UNIT_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane.service"
 DROPIN_SRC="$REPO_ROOT/deploy/systemd/orchestrator-reify.service.d/warm-lane.conf"
 GC_SERVICE_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane-gc.service"
 GC_TIMER_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane-gc.timer"
+HEALTH_SERVICE_SRC="$REPO_ROOT/deploy/systemd/reify-warm-base-health.service"
 
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 DROPIN_DIR="$UNIT_DIR/orchestrator-reify.service.d"
@@ -86,6 +87,12 @@ WARM_LANE_MOUNT="/home/leo/src/warm-lanes"
 # worktrees base path so the timer is immune to future default drift.
 GC_SWEEP_MOUNT="/home/leo/src/warm-lanes/worktrees"
 
+# Pinned --mount flag for the warm-base-health unit (task #4988). The tracked
+# unit has a bare ExecStart; the installer pins the same mount-point value
+# used by reify-warm-lane.service so ensure-warm-base.sh's default-mount
+# resolution is never relied upon in the deployed boot unit.
+HEALTH_MOUNT="/home/leo/src/warm-lanes"
+
 # ── pre-flight: source files must exist ──────────────────────────────────────
 if [ ! -f "$UNIT_SRC" ]; then
     echo "ERROR: unit source not found: $UNIT_SRC" >&2
@@ -101,6 +108,10 @@ if [ ! -f "$GC_SERVICE_SRC" ]; then
 fi
 if [ ! -f "$GC_TIMER_SRC" ]; then
     echo "ERROR: GC timer source not found: $GC_TIMER_SRC" >&2
+    exit 1
+fi
+if [ ! -f "$HEALTH_SERVICE_SRC" ]; then
+    echo "ERROR: warm-base-health service source not found: $HEALTH_SERVICE_SRC" >&2
     exit 1
 fi
 
@@ -162,6 +173,21 @@ grep -q -- '--mount ' "$UNIT_DIR/reify-warm-lane-gc.service" \
 _info "copying $GC_TIMER_SRC → $UNIT_DIR/"
 cp "$GC_TIMER_SRC" "$UNIT_DIR/"
 
+# ── copy warm-base-health unit (task #4988 boot self-heal ladder) ────────────
+_info "copying $HEALTH_SERVICE_SRC → $UNIT_DIR/"
+cp "$HEALTH_SERVICE_SRC" "$UNIT_DIR/"
+
+# Pin explicit --mount flag onto the INSTALLED warm-base-health unit ExecStart
+# (task #4988). The tracked unit has a bare ExecStart; we pin the same
+# mount-point value used by reify-warm-lane.service. Same sed-with-grep-
+# postcondition idiom as the provision (#4720) and GC (#4863) pins; the
+# trailing '.*' strips any pre-existing flag set, making this idempotent.
+sed -i -E "s|^(ExecStart=.*/ensure-warm-base\.sh).*|\1 --mount ${HEALTH_MOUNT}|" \
+    "$UNIT_DIR/reify-warm-base-health.service"
+# Post-condition: verify the pin was applied.
+grep -q -- '--mount ' "$UNIT_DIR/reify-warm-base-health.service" \
+    || { echo "ERROR: warm-base-health ExecStart --mount pin did not apply — tracked unit ExecStart format may have drifted (ensure-warm-base.sh path changed?)" >&2; exit 1; }
+
 # ── reload and enable ─────────────────────────────────────────────────────────
 _info "systemctl --user daemon-reload"
 systemctl --user daemon-reload
@@ -171,5 +197,8 @@ systemctl --user enable reify-warm-lane.service
 
 _info "systemctl --user enable --now reify-warm-lane-gc.timer (periodic GC backstop)"
 systemctl --user enable --now reify-warm-lane-gc.timer
+
+_info "systemctl --user enable reify-warm-base-health.service (boot self-heal ladder)"
+systemctl --user enable reify-warm-base-health.service
 
 _ok "warm-lane systemd units installed and enabled for boot-persistence"

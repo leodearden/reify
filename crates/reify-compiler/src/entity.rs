@@ -128,7 +128,11 @@ pub(crate) fn substitute_expr(
             op: op.clone(),
             operand: Box::new(substitute_expr(operand, bindings)),
         },
-        ExprKind::FunctionCall { name, args, arg_names } => ExprKind::FunctionCall {
+        ExprKind::FunctionCall {
+            name,
+            args,
+            arg_names,
+        } => ExprKind::FunctionCall {
             name: name.clone(),
             args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
             arg_names: arg_names.clone(),
@@ -386,8 +390,14 @@ fn emit_outside_match_collision(
 fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
     match &expr.kind {
         CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
-        CompiledExprKind::UnOp { op: UnOp::Neg, operand } => {
-            matches!(operand.kind, CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)))
+        CompiledExprKind::UnOp {
+            op: UnOp::Neg,
+            operand,
+        } => {
+            matches!(
+                operand.kind,
+                CompiledExprKind::Literal(Value::Int(_) | Value::Real(_))
+            )
         }
         _ => false,
     }
@@ -669,8 +679,14 @@ fn check_objective_conflict(
     // Fast-path early-out: if there is no Minimize or no Maximize term at all,
     // there can be no conflicting pair.  The subsequent pair search also catches
     // this, but skipping the O(n²) scan when one sense is absent is cheap.
-    let has_minimize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Minimize);
-    let has_maximize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Maximize);
+    let has_minimize = obj
+        .terms
+        .iter()
+        .any(|t| t.sense == ObjectiveSense::Minimize);
+    let has_maximize = obj
+        .terms
+        .iter()
+        .any(|t| t.sense == ObjectiveSense::Maximize);
     if !has_minimize || !has_maximize {
         return None;
     }
@@ -727,10 +743,128 @@ fn check_objective_conflict(
     if diag.labels.is_empty()
         && let Some(&span) = spans.first()
     {
-        diag = diag.with_label(DiagnosticLabel::new(span, "conflicting objective declared here"));
+        diag = diag.with_label(DiagnosticLabel::new(
+            span,
+            "conflicting objective declared here",
+        ));
     }
 
     Some(diag)
+}
+
+/// Checks that a multi-term `WeightedSum` objective's terms are units-coherent
+/// (PRD D2/I-UNITS, task α #5018,
+/// `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`): every term
+/// must share ONE dimension — NOT "each term dimensionless" (that would
+/// regress the shipped single-aspect Money objectives, e.g. `minimize cost`).
+/// Mirrors `check_objective_conflict`'s shape immediately above: a
+/// `WeightedSum` + `len() > 1` guarded `Option<Diagnostic>` that labels the
+/// `spans` array (parallel to `obj.terms`) with index/emptiness guards.
+///
+/// This is a STATIC check — `reify_ir::objective_terms_coherent` reads only
+/// `term.expr.result_type`, never evaluates the expression — so it fires at
+/// compile time, before any solve, covering every authored objective.
+///
+/// # Breadcrumb — deferred option 2b (M-SHADOW)
+///
+/// This guard implements PRD option 1 (expression-level normalisation;
+/// `ObjectiveTerm.weight` stays a plain `f64`). The PRD's option 2b — a
+/// dimensioned "shadow-price" weight (`weight: Money/aspect_dim`, which would
+/// break the IR to make `weight` a `Value` rather than `f64`), letting the
+/// objective itself be Money-valued and yield shadow-price sensitivity (e.g.
+/// "the shadow price of mass at the optimum is $4.20/kg") — is deferred, not
+/// rejected. It is documented as a future PRD (proposed slug
+/// `shadow-price-objectives.md`, "M-SHADOW"); this comment is that PRD's
+/// impl-site breadcrumb.
+fn check_objective_dimension_coherence(
+    obj: &ObjectiveSet,
+    spans: &[SourceSpan],
+    entity_name: &str,
+) -> Option<Diagnostic> {
+    // Guard: WeightedSum only — Lexicographic solves each term independently
+    // rather than folding them into one scalar, so it cannot be unit-incoherent
+    // by this predicate.
+    if obj.combination != ObjectiveCombination::WeightedSum {
+        return None;
+    }
+    // Guard: more than one term — a single term has nothing to be incoherent with.
+    if obj.terms.len() <= 1 {
+        return None;
+    }
+
+    let reify_ir::DimensionIncoherence {
+        first,
+        offending,
+        term_index,
+    } = reify_ir::objective_terms_coherent(&obj.terms).err()?;
+
+    let first_name = dimension_display_name(first);
+    let offending_name = dimension_display_name(offending);
+
+    let mut diag = Diagnostic::error(format!(
+        "E_OBJECTIVE_MIXED_DIMENSION: entity '{}' has objective terms with incoherent \
+         dimensions ('{}' vs '{}'). A multi-term objective must combine terms that share \
+         one dimension (e.g. all Money, or all normalised dimensionless) -- summing \
+         incommensurable dimensions produces a physically meaningless value. To resolve, \
+         either restrict this objective to terms of one dimension, or normalise each term \
+         to a dimensionless ratio (e.g. `term/1USD`) before minimize/maximize.",
+        entity_name, first_name, offending_name
+    ))
+    .with_code(DiagnosticCode::ObjectiveDimensionIncoherent);
+
+    // Attach labels: primary on the offending term, secondary on the first
+    // (reference-dimension) term. `spans` is parallel to `obj.terms`, mirroring
+    // `check_objective_conflict`'s index/emptiness guards.
+    if term_index < spans.len() && !spans[term_index].is_empty() {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[term_index],
+            format!("objective term dimension '{}' differs here", offending_name),
+        ));
+    }
+    if !spans.is_empty() && !spans[0].is_empty() {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[0],
+            format!("first objective term has dimension '{}'", first_name),
+        ));
+    }
+    // Ensure at least one label even if all spans are empty (defensive; should
+    // not happen for well-formed AST) -- mirrors check_objective_conflict.
+    if diag.labels.is_empty()
+        && let Some(&span) = spans.first()
+    {
+        diag = diag.with_label(DiagnosticLabel::new(
+            span,
+            "incoherent objective declared here",
+        ));
+    }
+
+    Some(diag)
+}
+
+/// Renders a `DimensionVector` for diagnostic messages: its registered
+/// canonical name (`"Money"`, `"Mass"`, ...) when one exists, else the
+/// `Display` rendering (composite dimensions, or `"dimensionless"`).
+fn dimension_display_name(dim: DimensionVector) -> String {
+    match dim.canonical_name() {
+        Some(name) => name.to_string(),
+        None => dim.to_string(),
+    }
+}
+
+/// Maps a param's `is_priv` flag to the compiled cell's `Visibility`:
+/// `priv param` → `Visibility::Private` (hidden from external dot-access,
+/// task #3978 δ); otherwise `Visibility::Public`. Shared by every
+/// `ValueCellDecl` construction site that lowers a param's visibility —
+/// top-level structure-param, port-member, guarded-block (`guards.rs`), and
+/// the structure-def skeleton pass — so the mapping can't drift between
+/// sites. `pub(crate)` so `guards.rs` can call it unqualified via the
+/// `pub(crate) use entity::*;` re-export in `lib.rs`.
+pub(crate) fn priv_flag_to_visibility(is_priv: bool) -> Visibility {
+    if is_priv {
+        Visibility::Private
+    } else {
+        Visibility::Public
+    }
 }
 
 /// # Shadowing
@@ -965,6 +1099,10 @@ pub(crate) fn compile_entity(
     let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective_terms: Vec<ObjectiveTerm> = Vec::new();
     let mut objective_spans: Vec<SourceSpan> = Vec::new();
+    // λ from a `minimize cost_robustness_tradeoff(<money-expr>, λ)` special form
+    // (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1, task γ #4791).
+    // Recognized in the `MemberDecl::Minimize` arm below, ahead of generic lowering.
+    let mut cost_robustness_lambda: Option<f64> = None;
     let mut first_meta_span: Option<SourceSpan> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
@@ -1177,117 +1315,118 @@ pub(crate) fn compile_entity(
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Param(param) => {
-                let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_expr_with_aliases(
-                        type_expr,
-                        &type_param_names,
-                        alias_registry,
-                        diagnostics,
-                        structure_names,
-                        trait_names,
-                    ) {
-                        Some(t) => t,
-                        None => {
-                            // Check if it's an enum type defined in the same module or prelude.
-                            // Generic enums (non-empty type_params) given args → Type::Applied;
-                            // non-generic enums given args → existing rejection diagnostic.
-                            if let reify_ast::TypeExprKind::Named { name, type_args } =
-                                &type_expr.kind
-                                && let Some(t) = resolve_enum_type_with_args(
-                                    name,
-                                    type_args,
-                                    enum_defs,
-                                    &type_param_names,
-                                    alias_registry,
-                                    diagnostics,
-                                    structure_names,
-                                    trait_names,
-                                    type_expr.span,
-                                )
-                            {
-                                t
-                            } else {
-                                // Assoc-type name fallback (task 3973 ιγ): for a
-                                // bare Named type that didn't resolve as a builtin /
-                                // alias / structure / trait, check the pre-built
-                                // assoc-type scope before emitting UnresolvedType.
-                                // QualifiedAssoc (`Beam::Material`) stays None here —
-                                // that is task ιₑ, not this gate.
+                let ty =
+                    if let Some(type_expr) = &param.type_expr {
+                        match resolve_type_expr_with_aliases(
+                            type_expr,
+                            &type_param_names,
+                            alias_registry,
+                            diagnostics,
+                            structure_names,
+                            trait_names,
+                        ) {
+                            Some(t) => t,
+                            None => {
+                                // Check if it's an enum type defined in the same module or prelude.
+                                // Generic enums (non-empty type_params) given args → Type::Applied;
+                                // non-generic enums given args → existing rejection diagnostic.
                                 if let reify_ast::TypeExprKind::Named { name, type_args } =
                                     &type_expr.kind
-                                    && type_args.is_empty()
-                                    && let Some(ty) = resolve_assoc_type_name(
+                                    && let Some(t) = resolve_enum_type_with_args(
                                         name,
-                                        &assoc_type_scope,
-                                        &declared_assoc_names,
+                                        type_args,
+                                        enum_defs,
+                                        &type_param_names,
+                                        alias_registry,
+                                        diagnostics,
+                                        structure_names,
+                                        trait_names,
+                                        type_expr.span,
                                     )
                                 {
-                                    ty
-                                } else if let reify_ast::TypeExprKind::QualifiedAssoc {
-                                    base,
-                                    trait_name,
-                                    member,
-                                } = &type_expr.kind
-                                {
-                                    // Qualified associated-type access (`Beam::Material` /
-                                    // `Beam::(Trait::Material)`), task 3974 ιₑ. The generic
-                                    // resolver lacks the cross-structure registries, so
-                                    // resolve here where `entity_template_registry` +
-                                    // `trait_registry` are in scope. The helper owns its own
-                                    // diagnostics (anti-cascade — no second UnresolvedType).
-                                    //
-                                    // Poison policy mirrors the bare-name fallback above:
-                                    // `Some(Type::Error)` is the declared-but-unbound poison
-                                    // sentinel (root cause already reported at the producer)
-                                    // and flows through `Some(t) => t` unchanged to suppress a
-                                    // type-mismatch cascade; `None` is a genuine error the
-                                    // helper already diagnosed, poisoned to `Type::Error` to
-                                    // engage the anti-cascade guards (task #4645).
-                                    //
-                                    // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
-                                    // into `param` type-annotation position ONLY. Other type-expr
-                                    // positions (field types, fn/return annotations, `let`
-                                    // bindings) still fall through to the generic resolver's
-                                    // `UnresolvedType`. Extending them is a trivial follow-up
-                                    // that reuses this same `resolve_qualified_assoc_type` helper
-                                    // (see plan.json "Scope": let/field/conformance-checker sites).
-                                    match resolve_qualified_assoc_type(
-                                        base,
-                                        trait_name.as_deref(),
-                                        member,
-                                        type_expr.span,
-                                        &entity_template_registry,
-                                        trait_registry,
-                                        &type_param_names,
-                                        diagnostics,
-                                    ) {
-                                        Some(t) => t,
-                                        None => Type::Error,
-                                    }
+                                    t
                                 } else {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "unresolved type: {}",
-                                            type_expr
-                                        ))
-                                        .with_code(DiagnosticCode::UnresolvedType)
-                                        .with_label(DiagnosticLabel::new(
+                                    // Assoc-type name fallback (task 3973 ιγ): for a
+                                    // bare Named type that didn't resolve as a builtin /
+                                    // alias / structure / trait, check the pre-built
+                                    // assoc-type scope before emitting UnresolvedType.
+                                    // QualifiedAssoc (`Beam::Material`) stays None here —
+                                    // that is task ιₑ, not this gate.
+                                    if let reify_ast::TypeExprKind::Named { name, type_args } =
+                                        &type_expr.kind
+                                        && type_args.is_empty()
+                                        && let Some(ty) = resolve_assoc_type_name(
+                                            name,
+                                            &assoc_type_scope,
+                                            &declared_assoc_names,
+                                        )
+                                    {
+                                        ty
+                                    } else if let reify_ast::TypeExprKind::QualifiedAssoc {
+                                        base,
+                                        trait_name,
+                                        member,
+                                    } = &type_expr.kind
+                                    {
+                                        // Qualified associated-type access (`Beam::Material` /
+                                        // `Beam::(Trait::Material)`), task 3974 ιₑ. The generic
+                                        // resolver lacks the cross-structure registries, so
+                                        // resolve here where `entity_template_registry` +
+                                        // `trait_registry` are in scope. The helper owns its own
+                                        // diagnostics (anti-cascade — no second UnresolvedType).
+                                        //
+                                        // Poison policy mirrors the bare-name fallback above:
+                                        // `Some(Type::Error)` is the declared-but-unbound poison
+                                        // sentinel (root cause already reported at the producer)
+                                        // and flows through `Some(t) => t` unchanged to suppress a
+                                        // type-mismatch cascade; `None` is a genuine error the
+                                        // helper already diagnosed, poisoned to `Type::Error` to
+                                        // engage the anti-cascade guards (task #4645).
+                                        //
+                                        // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
+                                        // into `param` type-annotation position ONLY. Other type-expr
+                                        // positions (field types, fn/return annotations, `let`
+                                        // bindings) still fall through to the generic resolver's
+                                        // `UnresolvedType`. Extending them is a trivial follow-up
+                                        // that reuses this same `resolve_qualified_assoc_type` helper
+                                        // (see plan.json "Scope": let/field/conformance-checker sites).
+                                        match resolve_qualified_assoc_type(
+                                            base,
+                                            trait_name.as_deref(),
+                                            member,
                                             type_expr.span,
-                                            "unknown type name",
-                                        )),
-                                    );
-                                    Type::Error // unknown name: poison sentinel (task #4645)
+                                            &entity_template_registry,
+                                            trait_registry,
+                                            &type_param_names,
+                                            diagnostics,
+                                        ) {
+                                            Some(t) => t,
+                                            None => Type::Error,
+                                        }
+                                    } else {
+                                        diagnostics.push(
+                                            Diagnostic::error(format!(
+                                                "unresolved type: {}",
+                                                type_expr
+                                            ))
+                                            .with_code(DiagnosticCode::UnresolvedType)
+                                            .with_label(DiagnosticLabel::new(
+                                                type_expr.span,
+                                                "unknown type name",
+                                            )),
+                                        );
+                                        Type::Error // unknown name: poison sentinel (task #4645)
+                                    }
                                 }
                             }
                         }
-                    }
-                } else {
-                    // Infer type from default expression if available.
-                    // ds-sentinel:allow: language default — this else-branch has no preceding
-                    // error push; the param has no explicit type annotation and is
-                    // inferred from its default expression, so dimensionless is correct.
-                    Type::dimensionless_scalar()
-                };
+                    } else {
+                        // Infer type from default expression if available.
+                        // ds-sentinel:allow: language default — this else-branch has no preceding
+                        // error push; the param has no explicit type annotation and is
+                        // inferred from its default expression, so dimensionless is correct.
+                        Type::dimensionless_scalar()
+                    };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
@@ -1297,7 +1436,14 @@ pub(crate) fn compile_entity(
                     && param
                         .default
                         .as_ref()
-                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
+                        .map(|e| {
+                            is_geometry_let(
+                                e,
+                                functions,
+                                &known_geometry_lets,
+                                &known_selector_lets,
+                            )
+                        })
                         .unwrap_or(false)
                 {
                     scope.has_geometry = true;
@@ -1324,7 +1470,12 @@ pub(crate) fn compile_entity(
                 // For lets, we need to infer the type from the expression.
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) {
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
@@ -1565,7 +1716,9 @@ pub(crate) fn compile_entity(
                         reify_ast::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
                             let id = ValueCellId::new(entity_name, &composite_name);
-                            scope.names.insert(composite_name, (id, Type::dimensionless_scalar(), None));
+                            scope
+                                .names
+                                .insert(composite_name, (id, Type::dimensionless_scalar(), None));
                         }
                         _ => {}
                     }
@@ -1611,9 +1764,10 @@ pub(crate) fn compile_entity(
                             diagnostics,
                         );
                     }
-                    scope
-                        .sub_structure_traits
-                        .insert(effective_structure_name.clone(), child_tmpl.trait_bounds.clone());
+                    scope.sub_structure_traits.insert(
+                        effective_structure_name.clone(),
+                        child_tmpl.trait_bounds.clone(),
+                    );
                     // Populate sub_assoc_fn_keys so the TraitMethodCall dispatch arm
                     // (task 3941 ζ) can verify this conformer actually provides the
                     // called instance assoc fn before lowering to its per-conformer
@@ -1923,53 +2077,59 @@ pub(crate) fn compile_entity(
                 // Lower and validate annotations on this param
                 let lowered_annotations = lower_annotations(&param.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "param", diagnostics);
+                crate::annotations::display::validate_display_dimension(
+                    &lowered_annotations,
+                    &cell_type,
+                    diagnostics,
+                );
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
-                let decl = if let Some(free) = auto_free {
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        // `priv param` → hidden from external dot-access (task #3978 δ).
-                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
-                        is_aux: false,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: param.span,
-                    }
-                } else {
-                    let default_expr = param.default.as_ref().map(|expr| {
-                        let mut compiled =
-                            compile_expr(expr, &scope, enum_defs, functions, diagnostics);
-                        fixup_option_none_for_param(&mut compiled, &cell_type);
-                        compiled
-                    });
+                let visibility = priv_flag_to_visibility(param.is_priv);
+                let decl = build_param_value_cell_decl(
+                    id,
+                    auto_free,
+                    cell_type,
+                    visibility,
+                    solver_hints,
+                    param.span,
+                    |ct| {
+                        // Thread the declared annotation as `expected_type` (task γ
+                        // #4031) ONLY when the param is explicitly typed — mirrors the
+                        // let seam's Some-gating (entity.rs let-init site below). This
+                        // is what lets a pinned generic-enum annotation (e.g.
+                        // `Result<Force, String>`) reach `compile_variant_construct`'s
+                        // positional pin-subst path. `cell_type` is already the
+                        // resolved annotation (see the adjacent check_param_default_type
+                        // call), so no re-resolution is needed.
+                        let default_expr = param.default.as_ref().map(|expr| {
+                            let mut compiled = compile_expr_with_expected(
+                                expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                param.type_expr.is_some().then_some(ct),
+                            );
+                            fixup_option_none_for_param(&mut compiled, ct);
+                            compiled
+                        });
 
-                    // Site 1: top-level structure-param declared-vs-initializer check.
-                    // Pass `param.type_expr.is_some()` to suppress the check for
-                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                    check_param_default_type(
-                        &param.name,
-                        &cell_type,
-                        param.type_expr.is_some(),
-                        default_expr.as_ref(),
-                        param.span,
-                        diagnostics,
-                    );
+                        // Site 1: top-level structure-param declared-vs-initializer check.
+                        // Pass `param.type_expr.is_some()` to suppress the check for
+                        // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                        check_param_default_type(
+                            &param.name,
+                            ct,
+                            param.type_expr.is_some(),
+                            default_expr.as_ref(),
+                            param.span,
+                            diagnostics,
+                        );
 
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Param,
-                        // `priv param` → hidden from external dot-access (task #3978 δ).
-                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
-                        is_aux: false,
-                        cell_type,
-                        default_expr,
-                        solver_hints,
-                        span: param.span,
-                    }
-                };
+                        default_expr
+                    },
+                );
 
                 if let Some(wc) = &param.where_clause {
                     compile_per_decl_guard(
@@ -1989,8 +2149,67 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Let(let_decl) => {
-                // Skip geometry-producing function calls (and ident aliases to them)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
+                // γ (task #4954): a top-level geometry-producing let ALSO emits a
+                // Type::Geometry value cell here, alongside the RealizationDecl the
+                // realization-emission loop below still produces — the exact
+                // pair-shape solid-typed geometry params already have (Param arm
+                // above + realization loop + graph.rs:386-392 geometry_cell
+                // name-match link). Without this node, build_combined_param_let_graph
+                // had nothing to hang a consumer→geometry-let edge on, and Kahn
+                // in-degree counting silently dropped it (root cause of the
+                // R3d/R3e/R3f compensation chain).
+                //
+                // cell_type is set EXPLICITLY to Type::Geometry rather than taken
+                // from the compiled expr's result_type: the general expression
+                // compiler's FunctionCall result-type ladder types geometry-function
+                // calls as a dimensionless scalar (that path exists for diagnostics/
+                // content-hash purposes only — the real geometry ops are compiled
+                // separately below by compile_geometry_call into the realization).
+                // Pass 1 already registered this name as Type::Geometry in scope
+                // (entity.rs:1331-1334) — do NOT re-register it here.
+                //
+                // Only TOP-LEVEL geometry lets reach this arm: a `let` nested in a
+                // `GuardedGroup` is a member of that group, not of `structure.members`,
+                // so it never enters this loop (guards.rs independently excludes
+                // geometry lets from its own guarded-member compilation, unchanged by
+                // this task — a guarded geometry let has no backing realization to
+                // mint against).
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) {
+                    let id = ValueCellId::new(entity_name, &let_decl.name);
+
+                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+                    validate_annotations(&lowered_annotations, "let", diagnostics);
+                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
+
+                    let compiled_expr = compile_expr_with_expected(
+                        &let_decl.value,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        Some(&Type::Geometry),
+                    );
+
+                    value_cells.push(ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Let,
+                        // Internal-only design (ratified 2026-07-02): geometry lets
+                        // are not externally addressable today, regardless of
+                        // `let_decl.is_pub`.
+                        visibility: Visibility::Private,
+                        is_aux: let_decl.is_aux,
+                        cell_type: Type::Geometry,
+                        default_expr: Some(compiled_expr),
+                        solver_hints,
+                        span: let_decl.span,
+                    });
+
                     continue;
                 }
 
@@ -2046,6 +2265,11 @@ pub(crate) fn compile_entity(
 
                     let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
                     validate_annotations(&lowered_annotations, "let", diagnostics);
+                    crate::annotations::display::validate_display_dimension(
+                        &lowered_annotations,
+                        &cell_type,
+                        diagnostics,
+                    );
                     let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                     validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
@@ -2144,6 +2368,11 @@ pub(crate) fn compile_entity(
                 // Lower and validate annotations on this let
                 let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "let", diagnostics);
+                crate::annotations::display::validate_display_dimension(
+                    &lowered_annotations,
+                    &cell_type,
+                    diagnostics,
+                );
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
@@ -2297,15 +2526,14 @@ pub(crate) fn compile_entity(
                     .iter()
                     .enumerate()
                     .map(|(position, ta)| match &ta.kind {
-                        reify_ast::TypeExprKind::Named { name, .. } => {
-                            resolve_type_name(name).unwrap_or_else(|| {
+                        reify_ast::TypeExprKind::Named { name, .. } => resolve_type_name(name)
+                            .unwrap_or_else(|| {
                                 if type_param_names.contains(name) {
                                     Type::TypeParam(name.clone())
                                 } else {
                                     Type::StructureRef(name.clone())
                                 }
-                            })
-                        }
+                            }),
                         reify_ast::TypeExprKind::Auto { free, bound } => {
                             auto_clauses.push(AutoClause {
                                 position,
@@ -2375,8 +2603,9 @@ pub(crate) fn compile_entity(
                 //
                 // Cost note (task 2280): `compiled_arg.clone()` below is O(literal-tree-size)
                 // per arg.  See the `PendingBoundCheck::TraitArgConformance` doc-comment below
-                // for the Rc/arena trade-off analysis, and `tests/trait_arg_conformance_bench.rs`
-                // for the timing bench (run with `-- --ignored --nocapture`).
+                // for the Rc/arena trade-off analysis, and
+                // `tests/harness_traits/trait_arg_conformance_bench.rs` for the timing bench
+                // (run with `--test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`).
                 for ((_, arg_expr), (arg_name, compiled_arg)) in
                     sub.args.iter().zip(compiled_args.iter())
                 {
@@ -2449,12 +2678,22 @@ pub(crate) fn compile_entity(
                                     (
                                         name.clone(),
                                         compile_expr(
-                                            value, &scope, enum_defs, functions, diagnostics,
+                                            value,
+                                            &scope,
+                                            enum_defs,
+                                            functions,
+                                            diagnostics,
                                         ),
                                     )
                                 })
                                 .collect();
-                            (None, Some(AutoPoseSpec { free: *free, params: compiled_params }))
+                            (
+                                None,
+                                Some(AutoPoseSpec {
+                                    free: *free,
+                                    params: compiled_params,
+                                }),
+                            )
                         }
                         Some((e, _)) => (
                             Some(compile_expr(e, &scope, enum_defs, functions, diagnostics)),
@@ -2686,10 +2925,12 @@ pub(crate) fn compile_entity(
                                         "sub `{}`: override for `{}` — no such param in `{}`",
                                         sub.name, override_name, sub.structure_name
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        override_expr.span,
-                                        "this member does not exist in the child structure",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(
+                                            override_expr.span,
+                                            "this member does not exist in the child structure",
+                                        ),
+                                    ),
                                 );
                             }
                         }
@@ -2700,7 +2941,11 @@ pub(crate) fn compile_entity(
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
                     // `priv sub` → hidden from external dot-access (task #3978 δ).
-                    visibility: if sub.is_priv { Visibility::Private } else { Visibility::Public },
+                    visibility: if sub.is_priv {
+                        Visibility::Private
+                    } else {
+                        Visibility::Public
+                    },
                     args: compiled_args,
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
@@ -2725,7 +2970,9 @@ pub(crate) fn compile_entity(
                 // push a scoped ValueCellDecl using the same three-case lookup as the
                 // body-form (spec_param_overrides) loop below.
                 for (arg_name, arg_expr) in &sub.args {
-                    let Some(free) = extract_auto_free(arg_expr) else { continue; };
+                    let Some(free) = extract_auto_free(arg_expr) else {
+                        continue;
+                    };
                     match scope.sub_member_types.get(&sub.name) {
                         None => {
                             // Case 1: forward-declared child — defer to post-pass.
@@ -2836,13 +3083,14 @@ pub(crate) fn compile_entity(
                                 span: override_expr.span,
                             });
                         }
-                        Some(member_map) => match member_map.get(override_name) {
-                            None => {
-                                // Case 2: child compiled but member genuinely absent.
-                                // First occurrence only — suppress duplicates from a body
-                                // like `{ nope = auto\n nope = auto }` (task 4123 amendment).
-                                if reported_absent.insert(override_name.as_str()) {
-                                    diagnostics.push(
+                        Some(member_map) => {
+                            match member_map.get(override_name) {
+                                None => {
+                                    // Case 2: child compiled but member genuinely absent.
+                                    // First occurrence only — suppress duplicates from a body
+                                    // like `{ nope = auto\n nope = auto }` (task 4123 amendment).
+                                    if reported_absent.insert(override_name.as_str()) {
+                                        diagnostics.push(
                                         Diagnostic::error(format!(
                                             "sub `{}`: override for `{}` — no such param in `{}`",
                                             sub.name, override_name, sub.structure_name
@@ -2852,22 +3100,22 @@ pub(crate) fn compile_entity(
                                             "this member does not exist in the child structure",
                                         )),
                                     );
+                                    }
                                 }
-                            }
-                            Some(ty) => {
-                                // Case 3: child compiled, member found — push inline.
-                                let scoped_entity = format!("{}.{}", entity_name, sub.name);
-                                let scoped_id =
-                                    ValueCellId::new(&scoped_entity, override_name.as_str());
-                                // Dedup guard (task 4123 S6 + amendment suggestion 1): Cases 1
-                                // and 3 are mutually exclusive by declaration order (Case 1
-                                // defers, Case 3 pushes inline), so a duplicate scoped id can
-                                // only arise when the specialization body contains two
-                                // param_assignment nodes for the same member (e.g.
-                                // `{ bore = auto\n    bore = auto }`).
-                                // First-assignment-wins; warn and skip if already present.
-                                if value_cells.iter().any(|c| c.id == scoped_id) {
-                                    diagnostics.push(
+                                Some(ty) => {
+                                    // Case 3: child compiled, member found — push inline.
+                                    let scoped_entity = format!("{}.{}", entity_name, sub.name);
+                                    let scoped_id =
+                                        ValueCellId::new(&scoped_entity, override_name.as_str());
+                                    // Dedup guard (task 4123 S6 + amendment suggestion 1): Cases 1
+                                    // and 3 are mutually exclusive by declaration order (Case 1
+                                    // defers, Case 3 pushes inline), so a duplicate scoped id can
+                                    // only arise when the specialization body contains two
+                                    // param_assignment nodes for the same member (e.g.
+                                    // `{ bore = auto\n    bore = auto }`).
+                                    // First-assignment-wins; warn and skip if already present.
+                                    if value_cells.iter().any(|c| c.id == scoped_id) {
+                                        diagnostics.push(
                                         Diagnostic::warning(format!(
                                             "sub `{}`: duplicate override for member `{}`; first assignment wins",
                                             sub.name, override_name,
@@ -2877,21 +3125,22 @@ pub(crate) fn compile_entity(
                                             "this override is a duplicate; it will be ignored",
                                         )),
                                     );
-                                } else {
-                                    value_cells.push(ValueCellDecl {
-                                        id: scoped_id,
-                                        kind: ValueCellKind::Auto { free },
-                                        visibility: Visibility::Public,
-                                        cell_type: ty.clone(),
-                                        default_expr: None,
-                                        solver_hints: vec![],
-                                        span: sub.span,
-                                        // Auto sub-override cells are never aux declarations.
-                                        is_aux: false,
-                                    });
+                                    } else {
+                                        value_cells.push(ValueCellDecl {
+                                            id: scoped_id,
+                                            kind: ValueCellKind::Auto { free },
+                                            visibility: Visibility::Public,
+                                            cell_type: ty.clone(),
+                                            default_expr: None,
+                                            solver_hints: vec![],
+                                            span: sub.span,
+                                            // Auto sub-override cells are never aux declarations.
+                                            is_aux: false,
+                                        });
+                                    }
                                 }
                             }
-                        },
+                        }
                     }
                 }
 
@@ -2930,10 +3179,121 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Minimize(min_decl) => {
-                let compiled_expr =
-                    compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
-                objective_spans.push(min_decl.span);
-                objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                // `minimize cost_robustness_tradeoff(<money-expr>, <λ:Real>)` special
+                // form (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1,
+                // task γ #4791): recognized BEFORE generic lowering so the single term
+                // holds the cost expr (not the whole call) and λ threads onto the
+                // ObjectiveSet.
+                let tradeoff_args = if let reify_ast::ExprKind::FunctionCall { name, args, .. } =
+                    &min_decl.expr.kind
+                    && name == "cost_robustness_tradeoff"
+                {
+                    Some(args)
+                } else {
+                    None
+                };
+
+                match tradeoff_args {
+                    Some(args) if args.len() == 2 => {
+                        let cost_expr =
+                            compile_expr(&args[0], &scope, enum_defs, functions, diagnostics);
+
+                        // Check 1 (independent, co-emittable): arg0 must type as Money.
+                        if !matches!(
+                            &cost_expr.result_type,
+                            Type::Scalar { dimension } if *dimension == DimensionVector::MONEY
+                        ) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "E_COST_TRADEOFF_NON_MONEY: `cost_robustness_tradeoff`'s \
+                                     first argument must be a Money-dimensioned expression, \
+                                     got `{}`",
+                                    cost_expr.result_type
+                                ))
+                                .with_code(DiagnosticCode::CostTradeoffNonMoneyArg)
+                                .with_label(DiagnosticLabel::new(
+                                    args[0].span,
+                                    "expected a Money expression",
+                                )),
+                            );
+                        }
+
+                        // Check 2 (independent, co-emittable): λ must be a compile-time
+                        // numeric literal in [0, 1] (v1 restriction, PRD §9 Q4). On failure,
+                        // still produce a best-effort λ (clamped) or fall back to None (which
+                        // degrades to an ordinary Money-minimize objective) so eval never panics.
+                        let lambda = match &args[1].kind {
+                            reify_ast::ExprKind::NumberLiteral { value, .. }
+                                if (0.0..=1.0).contains(value) =>
+                            {
+                                Some(*value)
+                            }
+                            reify_ast::ExprKind::NumberLiteral { value, .. } => {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "E_COST_TRADEOFF_INVALID_LAMBDA: \
+                                         `cost_robustness_tradeoff`'s λ argument must be a \
+                                         numeric literal in [0, 1], got {}",
+                                        value
+                                    ))
+                                    .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
+                                    .with_label(
+                                        DiagnosticLabel::new(args[1].span, "λ out of range [0, 1]"),
+                                    ),
+                                );
+                                Some(value.clamp(0.0, 1.0))
+                            }
+                            _ => {
+                                diagnostics.push(
+                                    Diagnostic::error(
+                                        "E_COST_TRADEOFF_INVALID_LAMBDA: \
+                                         `cost_robustness_tradeoff`'s λ argument must be a \
+                                         compile-time numeric literal in [0, 1]"
+                                            .to_string(),
+                                    )
+                                    .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
+                                    .with_label(
+                                        DiagnosticLabel::new(
+                                            args[1].span,
+                                            "λ must be a numeric literal",
+                                        ),
+                                    ),
+                                );
+                                None
+                            }
+                        };
+
+                        objective_spans.push(min_decl.span);
+                        objective_terms
+                            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, cost_expr));
+                        cost_robustness_lambda = lambda;
+                    }
+                    _ => {
+                        // Not the tradeoff form (name mismatch), or the tradeoff name matched
+                        // with the wrong argument count. The latter gets a clear named
+                        // diagnostic; both fall back to generic lowering of the whole
+                        // expression so eval always sees a well-formed (if degraded) term.
+                        if let Some(args) = tradeoff_args {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "E_COST_TRADEOFF_ARITY: `cost_robustness_tradeoff` takes \
+                                     exactly 2 arguments (a Money cost expression and a λ \
+                                     literal in [0, 1]), got {} argument(s)",
+                                    args.len()
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    min_decl.expr.span,
+                                    "wrong argument count",
+                                )),
+                            );
+                        }
+                        let compiled_expr =
+                            compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                        objective_spans.push(min_decl.span);
+                        objective_terms
+                            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                    }
+                }
             }
             reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
@@ -3036,53 +3396,49 @@ pub(crate) fn compile_entity(
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
-                            let decl = if let Some(free) = auto_free {
-                                ValueCellDecl {
-                                    id,
-                                    kind: ValueCellKind::Auto { free },
-                                    visibility: Visibility::Public,
-                                    is_aux: false,
-                                    cell_type,
-                                    default_expr: None,
-                                    solver_hints: Vec::new(),
-                                    span: param.span,
-                                }
-                            } else {
-                                let default_expr = param.default.as_ref().map(|expr| {
-                                    let mut compiled = compile_expr(
-                                        expr,
-                                        &scope,
-                                        enum_defs,
-                                        functions,
+                            // `priv` is grammatically legal on a port-member param too,
+                            // so thread `param.is_priv` through instead of hardcoding
+                            // Public — mirrors Site 1 (#5161).
+                            let visibility = priv_flag_to_visibility(param.is_priv);
+                            let decl = build_param_value_cell_decl(
+                                id,
+                                auto_free,
+                                cell_type,
+                                visibility,
+                                Vec::new(),
+                                param.span,
+                                |ct| {
+                                    // Thread the declared annotation as `expected_type`
+                                    // (task γ #4031) ONLY when the param is explicitly
+                                    // typed — mirrors Site 1 / the let seam's Some-gating.
+                                    let default_expr = param.default.as_ref().map(|expr| {
+                                        let mut compiled = compile_expr_with_expected(
+                                            expr,
+                                            &scope,
+                                            enum_defs,
+                                            functions,
+                                            diagnostics,
+                                            param.type_expr.is_some().then_some(ct),
+                                        );
+                                        fixup_option_none_for_param(&mut compiled, ct);
+                                        compiled
+                                    });
+
+                                    // Site 2: port-member param declared-vs-initializer check.
+                                    // Pass `param.type_expr.is_some()` to suppress the check for
+                                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                                    check_param_default_type(
+                                        &param.name,
+                                        ct,
+                                        param.type_expr.is_some(),
+                                        default_expr.as_ref(),
+                                        param.span,
                                         diagnostics,
                                     );
-                                    fixup_option_none_for_param(&mut compiled, &cell_type);
-                                    compiled
-                                });
 
-                                // Site 2: port-member param declared-vs-initializer check.
-                                // Pass `param.type_expr.is_some()` to suppress the check for
-                                // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                                check_param_default_type(
-                                    &param.name,
-                                    &cell_type,
-                                    param.type_expr.is_some(),
-                                    default_expr.as_ref(),
-                                    param.span,
-                                    diagnostics,
-                                );
-
-                                ValueCellDecl {
-                                    id,
-                                    kind: ValueCellKind::Param,
-                                    visibility: Visibility::Public,
-                                    is_aux: false,
-                                    cell_type,
-                                    default_expr,
-                                    solver_hints: Vec::new(),
-                                    span: param.span,
-                                }
-                            };
+                                    default_expr
+                                },
+                            );
                             port_members.push(decl);
                         }
                         reify_ast::MemberDecl::Let(let_decl) => {
@@ -3412,7 +3768,14 @@ pub(crate) fn compile_entity(
     // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_ast::Expr> = {
         let mut map = HashMap::new();
-        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &scope, &mut map);
+        collect_geometry_exprs(
+            structure.members,
+            &known_geometry_lets,
+            &known_selector_lets,
+            functions,
+            &scope,
+            &mut map,
+        );
         map
     };
 
@@ -3478,8 +3841,12 @@ pub(crate) fn compile_entity(
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets)
-                    || is_bare_cross_sub_geometry_alias(&let_decl.value, &scope) =>
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) || is_bare_cross_sub_geometry_alias(&let_decl.value, &scope) =>
             {
                 if let Some(ops) = compile_geometry_call(
                     &let_decl.value,
@@ -3491,12 +3858,10 @@ pub(crate) fn compile_entity(
                     &geometry_lets,
                     &mut HashSet::new(),
                 ) {
-                    let feature_tags = derive_feature_tags(&ops, let_decl.span);
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
                         is_aux: let_decl.is_aux,
-                        feature_tags,
                         operations: ops,
                         span: let_decl.span,
                     });
@@ -3520,13 +3885,11 @@ pub(crate) fn compile_entity(
                         &mut HashSet::new(),
                     )
                 {
-                    let feature_tags = derive_feature_tags(&ops, param.span);
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(param.name.clone()),
                         // Solid-typed params carry no `aux` modifier in the grammar.
                         is_aux: false,
-                        feature_tags,
                         operations: ops,
                         span: param.span,
                     });
@@ -3917,8 +4280,17 @@ pub(crate) fn compile_entity(
     let objective = if objective_terms.is_empty() {
         None
     } else {
-        let obj_set = ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum };
+        let obj_set = ObjectiveSet {
+            terms: objective_terms,
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda,
+        };
         if let Some(diag) = check_objective_conflict(&obj_set, &objective_spans, entity_name) {
+            diagnostics.push(diag);
+        }
+        if let Some(diag) =
+            check_objective_dimension_coherence(&obj_set, &objective_spans, entity_name)
+        {
             diagnostics.push(diag);
         }
         Some(obj_set)
@@ -4348,15 +4720,14 @@ fn compile_match_arm_decl_group(
                 .iter()
                 .enumerate()
                 .map(|(position, ta)| match &ta.kind {
-                    reify_ast::TypeExprKind::Named { name, .. } => {
-                        resolve_type_name(name).unwrap_or_else(|| {
+                    reify_ast::TypeExprKind::Named { name, .. } => resolve_type_name(name)
+                        .unwrap_or_else(|| {
                             if type_param_names.contains(name) {
                                 Type::TypeParam(name.clone())
                             } else {
                                 Type::StructureRef(name.clone())
                             }
-                        })
-                    }
+                        }),
                     reify_ast::TypeExprKind::Auto { free, bound } => {
                         auto_clauses.push(AutoClause {
                             position,
@@ -4364,10 +4735,7 @@ fn compile_match_arm_decl_group(
                             bound: bound.clone(),
                             span: ta.span,
                         });
-                        Type::TypeParam(format!(
-                            "{}{}",
-                            AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX, bound
-                        ))
+                        Type::TypeParam(format!("{}{}", AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX, bound))
                     }
                     _ => {
                         diagnostics.push(
@@ -4454,7 +4822,11 @@ fn compile_match_arm_decl_group(
                 name: sub.name.clone(),
                 structure_name: sub.structure_name.clone(),
                 // `priv sub` → hidden from external dot-access (task #3978 δ).
-                visibility: if sub.is_priv { Visibility::Private } else { Visibility::Public },
+                visibility: if sub.is_priv {
+                    Visibility::Private
+                } else {
+                    Visibility::Public
+                },
                 args: compiled_args,
                 type_args: resolved_type_args,
                 is_collection: false,
@@ -4758,8 +5130,8 @@ pub(crate) enum PendingBoundCheck {
     /// crates) or introduce a `CompilationCtx`-owned arena (see
     /// `compile_builder/ctx.rs`).  Both are out of scope for this observational
     /// task.  Timing bench:
-    ///   `crates/reify-compiler/tests/trait_arg_conformance_bench.rs`
-    ///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
+    ///   `crates/reify-compiler/tests/harness_traits/trait_arg_conformance_bench.rs`
+    ///   `cargo test -p reify-compiler --test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`
     TraitArgConformance {
         target_name: String,
         arg_name: String,
@@ -4890,8 +5262,22 @@ fn collect_geometry_exprs<'a>(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, scope, out);
-                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, scope, out);
+                collect_geometry_exprs(
+                    &g.members,
+                    known,
+                    known_selector_lets,
+                    functions,
+                    scope,
+                    out,
+                );
+                collect_geometry_exprs(
+                    &g.else_members,
+                    known,
+                    known_selector_lets,
+                    functions,
+                    scope,
+                    out,
+                );
             }
             _ => {}
         }
@@ -4951,13 +5337,11 @@ fn emit_guarded_geometry_realizations(
                         &mut HashSet::new(),
                     )
                 {
-                    let feature_tags = derive_feature_tags(&ops, param.span);
                     sink.realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(deps.entity_name, *sink.realization_index),
                         name: Some(param.name.clone()),
                         // Guarded Solid-typed params carry no `aux` modifier.
                         is_aux: false,
-                        feature_tags,
                         operations: ops,
                         span: param.span,
                     });
@@ -5163,6 +5547,76 @@ pub(crate) fn fixup_option_none_for_let(
         && matches!(&resolved, Type::Option(_))
     {
         *compiled_expr = CompiledExpr::option_none(resolved);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Param value-cell decl construction (shared auto_free/param decl-building
+// block, task ζ #5058, PRD compiler-type-hygiene.md §2 dup (e) / §3 decision
+// 10). Single home for the `ValueCellDecl` construction previously
+// copy-pasted at three sites: top-level structure params (entity.rs),
+// port-member params (entity.rs), and guarded-member params (guards.rs,
+// reached via `pub(crate) use entity::*`).
+// ---------------------------------------------------------------------------
+
+/// Build the `ValueCellDecl` for a `param` member, shared by all three
+/// param-decl sites (top-level structure params, port-member params, and
+/// guarded-member params).
+///
+/// Fixes the fields identical across all three sites (`is_aux: false`, the
+/// `Auto`-vs-`Param` branch shape keyed on `auto_free`) and parameterizes the
+/// three axes that differ (`visibility`, `solver_hints`, and default-value
+/// compilation via `compile_default`).
+///
+/// On the auto branch (`auto_free = Some(free)`) `compile_default` is NOT
+/// invoked — `default_expr` is unconditionally `None` — matching the
+/// original duplicated code at all three sites, none of which ever compiled
+/// a default expression for an auto param. On the non-auto branch
+/// (`auto_free = None`), `compile_default` is invoked exactly once with a
+/// `&Type` view of `cell_type` (passed by reference so the caller's
+/// compile/fixup/type-check logic can use it before `cell_type` is moved
+/// into the returned decl) and its return value becomes `default_expr`
+/// verbatim.
+///
+/// `compile_default` encapsulates each call site's own compile-expr variant
+/// (`compile_expr_with_expected` at the two entity.rs sites vs.
+/// `compile_expr_guarded` at the guards.rs site), the `fixup_option_none_for_param`
+/// call, and — at the two entity.rs sites only — the `check_param_default_type`
+/// cross-check. `guards.rs`'s guarded param never calls `check_param_default_type`
+/// today, so keeping that check inside the closure (rather than hoisting it into
+/// this helper) preserves each site's exact diagnostic surface.
+pub(crate) fn build_param_value_cell_decl(
+    id: ValueCellId,
+    auto_free: Option<bool>,
+    cell_type: Type,
+    visibility: Visibility,
+    solver_hints: Vec<SolverHint>,
+    span: SourceSpan,
+    compile_default: impl FnOnce(&Type) -> Option<CompiledExpr>,
+) -> ValueCellDecl {
+    if let Some(free) = auto_free {
+        ValueCellDecl {
+            id,
+            kind: ValueCellKind::Auto { free },
+            visibility,
+            is_aux: false,
+            cell_type,
+            default_expr: None,
+            solver_hints,
+            span,
+        }
+    } else {
+        let default_expr = compile_default(&cell_type);
+        ValueCellDecl {
+            id,
+            kind: ValueCellKind::Param,
+            visibility,
+            is_aux: false,
+            cell_type,
+            default_expr,
+            solver_hints,
+            span,
+        }
     }
 }
 
@@ -5380,26 +5834,17 @@ pub(crate) fn expand_constraint_inst(
                 continue;
             };
             if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
-                let arg_span = arg_spans
-                    .get(arg_name.as_str())
-                    .copied()
-                    .unwrap_or(ci.span);
+                let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "type mismatch: argument '{}' for constraint '{}' \
                          has type {} but parameter expects {}",
-                        arg_name,
-                        ci.name,
-                        compiled_arg.result_type,
-                        param_ty,
+                        arg_name, ci.name, compiled_arg.result_type, param_ty,
                     ))
                     .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
                     .with_label(DiagnosticLabel::new(
                         arg_span,
-                        format!(
-                            "expected {}, got {}",
-                            param_ty, compiled_arg.result_type
-                        ),
+                        format!("expected {}, got {}", param_ty, compiled_arg.result_type),
                     )),
                 );
             }
@@ -5628,7 +6073,9 @@ pub(crate) fn build_structure_def_skeleton(
                 && param
                     .default
                     .as_ref()
-                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
+                    .map(|e| {
+                        is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets)
+                    })
                     .unwrap_or(false)
             {
                 known_geometry_lets.insert(param.name.as_str());
@@ -5638,12 +6085,15 @@ pub(crate) fn build_structure_def_skeleton(
             value_cells.push(ValueCellDecl {
                 id,
                 kind: ValueCellKind::Param,
-                // `priv param` → hidden from external dot-access (task #3978 δ). The
-                // skeleton template is the one consulted during function-body member
-                // access (functions_phase merged_registry), so this site MUST mirror
-                // the authoritative compile_entity param sites or a `priv` member
-                // leaks through a function body.
-                visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
+                // The skeleton template is the one consulted during function-body
+                // member access (functions_phase merged_registry), so this
+                // TOP-LEVEL param site MUST mirror the authoritative compile_entity
+                // param site (via priv_flag_to_visibility) or a `priv` member leaks
+                // through a function body. Port-members and guarded-block members
+                // are a separate case: the skeleton omits them entirely rather than
+                // lowering them Public — see the `ports`/`guarded_groups` fields
+                // below, where that omission is confirmed harmless.
+                visibility: priv_flag_to_visibility(param.is_priv),
                 is_aux: false,
                 cell_type,
                 default_expr,
@@ -5685,7 +6135,12 @@ pub(crate) fn build_structure_def_skeleton(
     //     identical metadata on both paths.
     for member in &structure.members {
         if let reify_ast::MemberDecl::Let(let_decl) = member {
-            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
+            if is_geometry_let(
+                &let_decl.value,
+                functions,
+                &known_geometry_lets,
+                &known_selector_lets,
+            ) {
                 // Accumulate this geometry let's name so subsequent lets that
                 // alias it (Ident/branch references) are also classified as
                 // geometry — matching the authoritative path (entity.rs:853-856).
@@ -5721,8 +6176,13 @@ pub(crate) fn build_structure_def_skeleton(
             if let_decl.where_clause.is_some() {
                 continue;
             }
-            let mut compiled_expr =
-                compile_expr(&let_decl.value, &scope, enum_defs, functions, &mut throwaway_diags);
+            let mut compiled_expr = compile_expr(
+                &let_decl.value,
+                &scope,
+                enum_defs,
+                functions,
+                &mut throwaway_diags,
+            );
             // Mirror the authoritative path's fixup so `Option<T>` typed lets get the
             // correct none type, not the parser's `Option<Real>` fallback.
             fixup_option_none_for_let(
@@ -5771,6 +6231,25 @@ pub(crate) fn build_structure_def_skeleton(
         realizations: vec![],
         sub_components: vec![],
         relations: vec![],
+        // Unconditionally empty — the member loop above only lowers top-level
+        // `MemberDecl::Param`/`Let`; it has no arm for `MemberDecl::Port` or
+        // `MemberDecl::GuardedGroup`, so port-members and guarded-block members
+        // never reach this skeleton, priv or not (task #5161 review:
+        // architecture_coherence). Confirmed harmless, not just assumed: an
+        // empty `ports`/`guarded_groups` means the port (or guarded member)
+        // itself is unresolved during function-body member access, so lookup
+        // fails closed with E_STRUCTURE_MEMBER_NOT_FOUND before any visibility
+        // check runs — it does not fall open to a Public-like default. See
+        // `function_body_priv_port_member_access_not_yet_priv_gated` /
+        // `function_body_priv_guarded_member_access_not_yet_priv_gated` in
+        // priv_member_visibility_tests.rs (Part D coda, function-body variant),
+        // which pin this empirically. Same gap and same root cause as the
+        // external-access enforcement seam that task #5171 closed for
+        // `obj.member` access (both port-member and guarded-block priv
+        // params) — but this skeleton is untouched by that fix, since
+        // function bodies never reach a real per-structure template at all.
+        // Extending the skeleton to carry these members (so function-body
+        // access can be priv-gated too) is tracked by follow-up #5222.
         ports: vec![],
         connections: vec![],
         guarded_groups: vec![],
@@ -6102,6 +6581,226 @@ structure def Manifold {
             diagnostics[0].message.contains("unsupported member kind"),
             "expected the wildcard-arm diagnostic, got: {:?}",
             diagnostics[0].message,
+        );
+    }
+
+    // ── build_param_value_cell_decl tests (task ζ #5058) ──
+    // Exercise the helper's contracts directly (see its doc comment above its
+    // definition for the full invariants). Full-pipeline diagnostic coverage
+    // (that check_param_default_type still fires at Sites 1/2 after routing
+    // through the helper) lives in param_default_type_mismatch_tests.rs.
+
+    /// Shared assertions for the fields that pass straight through
+    /// `build_param_value_cell_decl` from its inputs to the returned decl on
+    /// both branches (`id`, `span`, `visibility`, `is_aux`, `cell_type`,
+    /// `solver_hints`) — factored out so each test below only spells out the
+    /// contract unique to it (auto-vs-param `kind`/`default_expr` behavior,
+    /// `compile_default` invocation, or cell_type identity).
+    fn assert_param_decl_passthrough_fields(
+        decl: &ValueCellDecl,
+        id: &ValueCellId,
+        span: SourceSpan,
+        visibility: Visibility,
+        cell_type: &Type,
+        solver_hints: &[SolverHint],
+    ) {
+        assert_eq!(&decl.id, id);
+        assert_eq!(decl.span, span);
+        assert_eq!(decl.visibility, visibility);
+        assert!(!decl.is_aux);
+        assert_eq!(&decl.cell_type, cell_type);
+        assert_eq!(decl.solver_hints, solver_hints);
+    }
+
+    /// Auto branch (`auto_free = Some(free)`): `compile_default` must not be
+    /// invoked, and the decl must carry `Auto { free }`, `default_expr: None`,
+    /// and every other field verbatim from the inputs.
+    #[test]
+    fn build_param_value_cell_decl_auto_branch_skips_compile_default() {
+        for free in [true, false] {
+            let id = ValueCellId::new("TestEntity", "x");
+            let cell_type = Type::dimensionless_scalar();
+            let span = SourceSpan::new(3, 7);
+            let solver_hints = vec![SolverHint {
+                kind: SolverHintKind::PreferStock,
+                collection: "stock_lengths".to_string(),
+                span,
+            }];
+            let invoked = std::cell::Cell::new(false);
+
+            let decl = build_param_value_cell_decl(
+                id.clone(),
+                Some(free),
+                cell_type.clone(),
+                Visibility::Private,
+                solver_hints.clone(),
+                span,
+                |_ct: &Type| {
+                    invoked.set(true);
+                    None
+                },
+            );
+
+            assert!(
+                !invoked.get(),
+                "compile_default must not be invoked on the auto branch (free={free})"
+            );
+            assert_eq!(decl.kind, ValueCellKind::Auto { free });
+            assert!(decl.default_expr.is_none());
+            assert_param_decl_passthrough_fields(
+                &decl,
+                &id,
+                span,
+                Visibility::Private,
+                &cell_type,
+                &solver_hints,
+            );
+        }
+    }
+
+    /// Non-auto branch (`auto_free = None`): `compile_default` is invoked once
+    /// with `&cell_type`, and `default_expr` equals its return value;
+    /// `cell_type` and `solver_hints` flow through unchanged. `CompiledExpr`
+    /// has no `PartialEq`, so equality here is pinned via `content_hash`.
+    #[test]
+    fn build_param_value_cell_decl_param_branch_returns_compile_default_result() {
+        for yields_default in [true, false] {
+            let id = ValueCellId::new("TestEntity", "y");
+            // Non-dimensionless, so cell_type equality below isn't trivially
+            // satisfied by every dimensionless scalar comparing equal.
+            let cell_type = Type::length();
+            let span = SourceSpan::new(11, 19);
+            let solver_hints = vec![SolverHint {
+                kind: SolverHintKind::DiscreteSet,
+                collection: "y_values".to_string(),
+                span,
+            }];
+            let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
+            let expected_hash = synthetic.content_hash;
+
+            let decl = build_param_value_cell_decl(
+                id.clone(),
+                None,
+                cell_type.clone(),
+                Visibility::Public,
+                solver_hints.clone(),
+                span,
+                |ct: &Type| {
+                    assert_eq!(
+                        ct, &cell_type,
+                        "compile_default must receive cell_type by reference"
+                    );
+                    if yields_default {
+                        Some(synthetic)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+            assert_eq!(decl.kind, ValueCellKind::Param);
+            assert_eq!(
+                &decl.cell_type, &cell_type,
+                "cell_type must flow through the helper unchanged"
+            );
+            assert_eq!(
+                decl.solver_hints, solver_hints,
+                "solver_hints must flow through the helper unchanged on the non-auto branch \
+                 (not otherwise pinned end-to-end — every @solver_hint fixture decorates auto)"
+            );
+            assert_eq!(
+                decl.default_expr.map(|e| e.content_hash),
+                if yields_default {
+                    Some(expected_hash)
+                } else {
+                    None
+                },
+                "default_expr must equal whatever compile_default returned (yields_default={yields_default})"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Port-member priv-visibility characterization (task ζ #5058 amendment
+// review; updated by task #5161). Site 2 (port-member `MemberDecl::Param`,
+// above) used to hardcode `Visibility::Public` regardless of `param.is_priv`.
+// Task #5161 threaded `param.is_priv` through via `priv_flag_to_visibility`
+// at that call site, so this now pins the CORRECTED behaviour end-to-end,
+// symmetric to `compile_priv_auto_free_param_is_private_and_auto` in
+// boundary2_producer.rs, which pins the analogous priv/auto intersection at
+// Site 1. Kept (rather than deleted) as a regression guard so a future change
+// can't silently reintroduce the old Public hardcode with no test forcing a
+// conscious update.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod port_param_priv_visibility_tests {
+    use super::*;
+
+    /// Parse + compile `source` using this crate's own (in-build) `compile`,
+    /// never `reify_test_support::compile_source`: that helper links against
+    /// reify-compiler through `reify-test-support`'s own dependency edge, a
+    /// *different* compilation of this crate than the one this test runs
+    /// inside of, so comparing a `ValueCellKind`/`Visibility` from that build
+    /// against this build's would be an E0308 type mismatch (see
+    /// `guards.rs`'s `guarded_param_default_tests::compile` for the same
+    /// rationale spelled out in full). Parsing and compiling in-crate keeps
+    /// every type on one instantiation.
+    fn compile(source: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        super::compile(&parsed)
+    }
+
+    /// `priv param` on a port member now compiles to `Visibility::Private`,
+    /// matching the priv-aware top-level structure-param site (Site 1, pinned
+    /// by `compile_priv_auto_free_param_is_private_and_auto` in
+    /// boundary2_producer.rs). Fixed by task #5161, which threads
+    /// `param.is_priv` through the port-member `ValueCellDecl` construction
+    /// instead of hardcoding `Visibility::Public`. Kept as a regression guard
+    /// so a future change can't silently reintroduce the old Public hardcode.
+    #[test]
+    fn priv_param_on_port_member_compiles_to_private() {
+        let source = r#"
+trait MyPort {
+    param foo : Length
+}
+
+structure def S {
+    port mount : MyPort {
+        priv param foo : Length = 5mm
+    }
+}
+"#;
+        let module = compile(source);
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name.as_str().contains('S'))
+            .expect("expected template S");
+        assert_eq!(template.ports.len(), 1, "expected 1 port");
+        let port = &template.ports[0];
+        assert_eq!(port.members.len(), 1, "expected 1 port member");
+
+        let foo = &port.members[0];
+        assert_eq!(
+            foo.visibility,
+            Visibility::Private,
+            "priv param on a port member must compile to Visibility::Private \
+             (task #5161 fixed the hardcoded Visibility::Public); got {:?}",
+            foo.visibility
         );
     }
 }

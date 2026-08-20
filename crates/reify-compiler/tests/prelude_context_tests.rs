@@ -10,9 +10,9 @@ use reify_compiler::{
     CompiledModule, CompiledTypeAlias, PreludeContext, compile_with_prelude,
     compile_with_prelude_context, compile_with_stdlib, stdlib_loader,
 };
-use reify_test_support::CompiledModuleBuilder;
 use reify_core::{ContentHash, DimensionVector, ModulePath, SourceSpan, Type};
 use reify_ir::EnumDef;
+use reify_test_support::CompiledModuleBuilder;
 
 // ─── step-3: PreludeContext::from_slice ergonomics ─────────────────────────
 

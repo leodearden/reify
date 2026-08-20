@@ -50,8 +50,8 @@
 //! their reify-core round-trip/severity/serde coverage in
 //! `crates/reify-core/src/diagnostics.rs` — not here.
 
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 use reify_core::DiagnosticCode;
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 
 // ── Smoke test ────────────────────────────────────────────────────────────────
 

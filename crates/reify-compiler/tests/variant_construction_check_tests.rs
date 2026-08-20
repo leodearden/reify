@@ -53,7 +53,9 @@ fn has_error_code(source: &str, code: DiagnosticCode) -> bool {
 /// Build a `structure def` source whose single param `outline : Shape` defaults
 /// to the given construction expression, prepended with [`SHAPE_ENUM`].
 fn shape_param_source(construction: &str) -> String {
-    format!("{SHAPE_ENUM}\nstructure def Widget {{\n    param outline : Shape = {construction}\n}}\n")
+    format!(
+        "{SHAPE_ENUM}\nstructure def Widget {{\n    param outline : Shape = {construction}\n}}\n"
+    )
 }
 
 /// Field names (in declaration order) of a `Named` payload.
@@ -292,7 +294,10 @@ fn valid_circle_construction_builds_enum_value() {
             let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
             assert_eq!(names, ["radius"], "Circle payload field");
         }
-        other => panic!("expected Literal(Value::Enum {{ Circle }}), got {:?}", other),
+        other => panic!(
+            "expected Literal(Value::Enum {{ Circle }}), got {:?}",
+            other
+        ),
     }
 }
 

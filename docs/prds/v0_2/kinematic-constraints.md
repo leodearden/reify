@@ -4,6 +4,17 @@ Status: deferred to v0.2 per 2026-04-28 decision (sibling to
 `docs/prds/kinematic-constraints.md`).
 Design resolved 2026-04-28 — see "Resolved design decisions" below.
 
+## Completion status
+
+`docs/prds/v0_3/kinematic-constraints-completion.md` is the completion
+contract that owns this PRD's residual mechanisms (singularity diagnostics
+not plumbed through `snapshot()`/`sweep()`; multi-DOF joints excluded from
+closed-chain participation; analytic Jacobians stubbed). This v0.2 PRD is
+completed by that PRD's decomposition landing: tasks 3580, 3843, 3844, 3845,
+and 3846 are all **DONE**. This file remains the design source-of-truth for
+closed-chain and solver semantics (per completion-PRD §10); the completion
+PRD's §4–§8 supply the missing contract specificity.
+
 ## Goal
 
 Lift the v0.1 restrictions on kinematic-mechanism modelling. v0.1 ships

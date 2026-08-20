@@ -1,4 +1,5 @@
 use super::*;
+use reify_ir::EnumDef;
 
 /// Returns `true` if `ty` is a scalar-like leaf type eligible as the `Q`
 /// (quantity) side of Rules 2a/2b/2c.
@@ -279,6 +280,82 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     false
 }
 
+/// Enum-base compatibility for a (already type-arg-substituted) generic-enum
+/// payload field type against a supplied, D1/F-Mono-erased enum value type
+/// (task γ #4031, PRD §5 D3 conservative-skip / recursive-field tolerance).
+///
+/// Under erasure (§7.1: "resolved args live only in the per-site substitution
+/// map, never on the persisted `Type` or `Value`"), a constructed
+/// enum-variant value's `result_type` is ALWAYS the bare `Type::Enum(name)` —
+/// it never carries type args, even when the enum is generic. So a
+/// recursive/applied payload field — e.g. `left: Tree<T>`, declared
+/// `Type::Applied { name: "Tree", args: [TypeParam("T")] }` and substituted to
+/// a CONCRETE `Type::Applied { "Tree", [Length] }` by a pinned annotation —
+/// supplied a constructed `Leaf { .. }` child (`result_type = Type::Enum("Tree")`)
+/// would spuriously fail raw [`type_compatible`], which has no Applied-vs-Enum
+/// rule.
+///
+/// Returns `true` when `declared` is enum-shaped (`Type::Enum(n)` or
+/// `Type::Applied { name: n, .. }` where `n` names a declared enum in
+/// `enum_defs`) and `supplied` is `Type::Enum(n)` of the SAME base name `n`.
+/// A differing base name (a genuine cross-enum mismatch) returns `false`,
+/// unchanged from today. Type-ARG agreement for enum-typed payload fields is
+/// the job of the inference/pin passes in `compile_variant_construct`, not
+/// this predicate — it only tolerates the erasure gap, it does not re-check
+/// args.
+///
+/// Bare `Type::Enum(n)` vs `Type::Enum(n)` (a non-generic recursive enum) is
+/// already handled by `type_compatible`'s identity short-circuit; this helper
+/// only changes behavior for the `Type::Applied` case, which `type_compatible`
+/// cannot otherwise satisfy.
+///
+/// **Why the `enum_defs` membership check.** `Type::Applied { name, .. }` is
+/// not enum-exclusive — a generic user-defined structure reference (e.g.
+/// `Coupling<T>`) is represented the same way (see
+/// `type_arg_applied_resolution_tests.rs`). Without confirming `name` is
+/// actually a declared enum, a substituted generic-STRUCT-typed payload field
+/// sharing a base name with an unrelated enum (a narrow name-collision edge
+/// case) would be spuriously accepted against a supplied `Type::Enum` value
+/// of that name. Gating on `enum_defs` membership closes that gap; a struct
+/// value's own `result_type` is a `StructureRef`/`Applied`, never
+/// `Type::Enum`, so this only ever matters for the declared (LHS) side.
+pub(crate) fn enum_payload_compatible(
+    declared: &Type,
+    supplied: &Type,
+    enum_defs: &[EnumDef],
+) -> bool {
+    match (base_enum_name(declared, enum_defs), supplied) {
+        (Some(dn), Type::Enum(sn)) => dn == sn,
+        _ => false,
+    }
+}
+
+/// The base enum name `ty` denotes, if it denotes one at all: `Some(n)` for a
+/// bare `Type::Enum(n)` and for a `Type::Applied { name: n, .. }` whose `n`
+/// names a declared enum in `enum_defs`; `None` otherwise.
+///
+/// This is the SINGLE oracle for "which enum is this type, ignoring the
+/// D1/F-Mono erasure gap between the bare and applied spellings". Both
+/// [`enum_payload_compatible`] (the payload-field / declared-side guard) and the
+/// ctor-conformance walker's enum accept in `conformance/mod.rs` route through
+/// it, so the two cannot disagree about what counts as an applied enum.
+///
+/// **Why the `enum_defs` membership check.** `Type::Applied { name, .. }` is not
+/// enum-exclusive — a generic user-defined structure reference (e.g.
+/// `Coupling<T>`) is spelled the same way (see
+/// `type_arg_applied_resolution_tests.rs`). Returning a name for those would let
+/// a generic-STRUCT type be treated as an enum whenever it shares a base name
+/// with an unrelated enum.
+pub(crate) fn base_enum_name<'t>(ty: &'t Type, enum_defs: &[EnumDef]) -> Option<&'t str> {
+    match ty {
+        Type::Enum(name) => Some(name.as_str()),
+        Type::Applied { name, .. } if enum_defs.iter().any(|e| e.name == *name) => {
+            Some(name.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// Check that a function-param default expression's type is compatible with the
 /// declared parameter type.
 ///
@@ -448,6 +525,108 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
     }
 }
 
+/// Returns `true` when `t` (or any type nested within it) is a
+/// `Type::TypeParam` whose name is a member of `conflicted`.
+///
+/// Sibling of [`type_carries_type_param`] — walks the identical
+/// inner-Type-bearing constructor set (List/Set/Keyed/Option/Complex/Range;
+/// Point/Vector/Tensor/Matrix quantity slot; Map; Field; Function
+/// params+return; Union; Applied args; Projection base) but tests membership
+/// in a caller-supplied name set rather than "carries any type param at all".
+///
+/// **Why this exists (task γ #4031 amendment).** `compile_variant_construct`'s
+/// anti-cascade skip must not re-check a declared field type against an
+/// already-conflicted type parameter: once a param has conflicted,
+/// `subst`'s binding for it is an arbitrary first-writer-wins artifact (see
+/// `unify`), so substituting it into a declared type and comparing would
+/// emit a second, misleading diagnostic for the same root cause already
+/// reported as `EnumTypeArgConflict`. A BARE `Type::TypeParam(p)` declared
+/// field is easy to detect with a direct pattern match, but a COMPOUND
+/// declared type that merely *mentions* a conflicted param somewhere inside
+/// it (e.g. `c: List<T>` when sibling fields `a: T` / `b: T` already
+/// conflicted on `T`) needs the identical skip — this predicate answers that
+/// in one call regardless of nesting depth or constructor.
+///
+/// The match is intentionally exhaustive (no `_` wildcard), in lock-step with
+/// `type_carries_type_param`, `unify`, and `substitute_type_params`, so a
+/// future `Type` variant forces a compile-time decision here too.
+pub(crate) fn type_mentions_conflicted_param(t: &Type, conflicted: &HashSet<String>) -> bool {
+    match t {
+        // The type-parameter leaf itself.
+        Type::TypeParam(p) => conflicted.contains(p),
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_mentions_conflicted_param(inner, conflicted),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_mentions_conflicted_param(quantity, conflicted),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => {
+            type_mentions_conflicted_param(key, conflicted)
+                || type_mentions_conflicted_param(val, conflicted)
+        }
+        Type::Field { domain, codomain } => {
+            type_mentions_conflicted_param(domain, conflicted)
+                || type_mentions_conflicted_param(codomain, conflicted)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|p| type_mentions_conflicted_param(p, conflicted))
+                || type_mentions_conflicted_param(return_type, conflicted)
+        }
+
+        // Union: any arm.
+        Type::Union(arms) => arms
+            .iter()
+            .any(|arm| type_mentions_conflicted_param(arm, conflicted)),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args
+            .iter()
+            .any(|arg| type_mentions_conflicted_param(arg, conflicted)),
+        Type::Projection { base, .. } => type_mentions_conflicted_param(base, conflicted),
+
+        // All remaining leaves carry no inner `Type`.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Feature
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
 /// Whether `t` (or any type nested within it) carries a dimension-kinded
 /// parameter (`Type::ScalarParam`).
 ///
@@ -578,13 +757,51 @@ pub(crate) fn unify(
 ) -> Result<(), TypeArgConflict> {
     match (declared, arg) {
         // Type-parameter leaf: bind if absent; re-bind to the same type is Ok;
-        // re-bind to a different type is the sole error case.
+        // re-bind to a different type conflicts — EXCEPT when exactly one side
+        // is itself a bare `TypeParam` (an ERASED/unknown type). An erased
+        // binding is provisional: a bare `TypeParam` arg carries no concrete
+        // information (it arises inside generic fn bodies, or leaks out of
+        // composing generics over a headless-`Enum` builtin — the
+        // `or_else(parse_length_r(x), parse_length_r(y))` chain in task #4038 δ,
+        // whose erased-arg result is `Applied{"Result", [T, E]}`). Binding a
+        // param to such an erased arg must not later HARD-conflict with the
+        // real concrete arg for the same param: concrete information wins, the
+        // erased side yields. Two differing CONCRETE bindings (a genuine
+        // type-arg conflict) and two differing ERASED bindings (e.g. `pair(a:A,
+        // b:B)` with distinct generic params) still conflict as before.
+        //
+        // Design precedent: this mirrors the existing generic-body-permissive
+        // posture (task 4232 γ D4, `fn_generic_body_permissive_tests.rs`) of
+        // treating a bare `TypeParam` as a resolution wildcard rather than a
+        // concrete value. The relaxation is deliberately scoped to that ONE
+        // leaf shape — a bare `TypeParam` on the rebind side — and does NOT
+        // extend to a HEADED type that merely carries a nested type-param
+        // (e.g. the leaky `Applied{"Result", [T, E]}` itself, which is not a
+        // `Type::TypeParam` at its own head): two differing CONCRETE bindings
+        // still hard-conflict even when one of them is such a headed type.
+        // `unify_concrete_vs_headed_concrete_still_conflicts` below pins that
+        // boundary with a negative-path proof.
         (Type::TypeParam(p), _) => match subst.get(p) {
             None => {
                 subst.insert(p.clone(), arg.clone());
                 Ok(())
             }
             Some(existing) if existing == arg => Ok(()),
+            // Erased existing yields to concrete incoming: upgrade the binding.
+            Some(existing)
+                if matches!(existing, Type::TypeParam(_))
+                    && !matches!(arg, Type::TypeParam(_)) =>
+            {
+                subst.insert(p.clone(), arg.clone());
+                Ok(())
+            }
+            // Concrete existing absorbs an erased incoming: keep the concrete.
+            Some(existing)
+                if !matches!(existing, Type::TypeParam(_))
+                    && matches!(arg, Type::TypeParam(_)) =>
+            {
+                Ok(())
+            }
             Some(existing) => Err(TypeArgConflict {
                 param: p.clone(),
                 existing: existing.clone(),
@@ -773,6 +990,156 @@ pub(crate) fn unify(
     }
 }
 
+/// Strict constructor-head compatibility check — the middle tie-break tier
+/// in [`resolve_function_overload`] (D-head-exact, result-fallback Layer-B
+/// task, B2).
+///
+/// Mirrors [`unify`]'s arm structure (the same constructor pairs recurse on
+/// the same shape), but is a STRICT match gate rather than a permissive one:
+/// `unify` treats a constructor-head mismatch as its conservative
+/// `Ok(())` fallthrough (binds nothing, never errors), which is exactly why
+/// it cannot discriminate `Option<T>` from `Applied{"Result", [T, E]}` — both
+/// "unify" against any subject without erroring. `heads_unifiable` instead
+/// returns `false` on a head mismatch, so it can serve as a genuine
+/// disambiguator between two generic overloads whose type-param-carrying
+/// params would otherwise both wildcard-match the same subject.
+///
+/// Differences from `unify`, both deliberate:
+/// - A bare `Type::TypeParam` / `Type::ScalarParam` (matched against a
+///   concrete `Scalar`) leaf is a wildcard slot (`true`) — the slot itself
+///   carries no constructor head to disagree on.
+/// - `Applied{name, ..}` vs `Enum(name)` (same name) is a head match:
+///   variant construction (`Ok { .. }` / `Err { .. }`) type-erases its
+///   result to `Type::Enum(name)` (`variant_construct.rs`), so a declared
+///   `Applied{"Result", ..}` param must still recognise an erased `Result`
+///   subject.
+/// - The catch-all is `param == arg` (plain equality) rather than `unify`'s
+///   permissive `Ok(())` — a head mismatch (or two leaves) must agree
+///   exactly to count as "unifiable" here.
+fn heads_unifiable(param: &Type, arg: &Type) -> bool {
+    match (param, arg) {
+        // Type-param / dim-param leaves: wildcard slots, always compatible.
+        (Type::TypeParam(_), _) => true,
+        (Type::ScalarParam(_), Type::Scalar { .. }) => true,
+
+        // Single-inner-Type constructors: same head → recurse on the child.
+        (Type::List(d), Type::List(a))
+        | (Type::Set(d), Type::Set(a))
+        | (Type::Keyed(d), Type::Keyed(a))
+        | (Type::Option(d), Type::Option(a))
+        | (Type::Complex(d), Type::Complex(a))
+        | (Type::Range(d), Type::Range(a)) => heads_unifiable(d, a),
+
+        // Two-inner-Type constructors.
+        (Type::Map(dk, dv), Type::Map(ak, av)) => {
+            heads_unifiable(dk, ak) && heads_unifiable(dv, av)
+        }
+        (
+            Type::Field {
+                domain: dd,
+                codomain: dc,
+            },
+            Type::Field {
+                domain: ad,
+                codomain: ac,
+            },
+        ) => heads_unifiable(dd, ad) && heads_unifiable(dc, ac),
+
+        // Function: equal arity → recurse on each param + the return type.
+        (
+            Type::Function {
+                params: dp,
+                return_type: dr,
+            },
+            Type::Function {
+                params: ap,
+                return_type: ar,
+            },
+        ) if dp.len() == ap.len() => {
+            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a)) && heads_unifiable(dr, ar)
+        }
+
+        // Quantity-bearing aggregates: same shape → recurse on the quantity slot.
+        (
+            Type::Point {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Point {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Vector {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Vector {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Tensor {
+                rank: drk,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Tensor {
+                rank: ark,
+                n: an,
+                quantity: aq,
+            },
+        ) if drk == ark && dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Matrix {
+                m: dm,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Matrix {
+                m: am,
+                n: an,
+                quantity: aq,
+            },
+        ) if dm == am && dn == an => heads_unifiable(dq, aq),
+
+        // Union: equal length → recurse arm-by-arm.
+        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Applied: same name + same arity → recurse element-wise on args.
+        (Type::Applied { name: dn, args: da }, Type::Applied { name: an, args: aa })
+            if dn == an && da.len() == aa.len() =>
+        {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Erased-subject rule: a declared `Applied{name}` param head-matches
+        // an erased `Enum(name)` arg (same name) — see the doc comment above.
+        (Type::Applied { name: dn, .. }, Type::Enum(en)) if dn == en => true,
+
+        // Projection: same member → recurse on the bases.
+        (
+            Type::Projection {
+                base: db,
+                member: dm,
+            },
+            Type::Projection {
+                base: ab,
+                member: am,
+            },
+        ) if dm == am => heads_unifiable(db, ab),
+
+        // Catch-all: leaves and mismatched/differently-shaped constructors
+        // must agree by plain equality — unlike `unify`'s permissive
+        // `Ok(())` fallthrough, a head mismatch here is `false`.
+        _ => param == arg,
+    }
+}
+
 /// Resolve a function call against the list of compiled user functions.
 ///
 /// Uses **exact** type matching for concrete params; trait-object-carrying params
@@ -855,10 +1222,81 @@ pub(crate) fn resolve_function_overload<'a>(
         })
         .collect();
 
-    let resolved = if exact_matches.is_empty() {
-        matches
-    } else {
+    // Second tie-break tier (D-head-exact, result-fallback Layer-B task B2):
+    // when no exact match exists, prefer candidates whose type-param-carrying
+    // params are STRUCTURALLY compatible with their arg (`heads_unifiable`)
+    // over the full wildcard relaxation used by `matches`. This disambiguates
+    // two GENERIC overloads with different container heads — e.g. a
+    // user `unwrap_or<T,E>(r: Result<T,E>, ..)` vs the stdlib
+    // `unwrap_or<T>(o: Option<T>, ..)` — which would otherwise both
+    // wildcard-match any subject via `type_carries_type_param` and force a
+    // spurious `Ambiguous`.
+    //
+    // `head_matches` FILTERS `matches` (⊆ matches by construction), so it can
+    // only NARROW a would-be ambiguity, never introduce a spurious match:
+    // single-candidate resolution and the deliberate select-then-conflict
+    // behavior (a constructor-headed generic param over-selecting a
+    // mismatched-head arg so the call site can emit `E_FN_TYPE_ARG_CONFLICT`)
+    // are preserved because an empty `head_matches` falls through to
+    // `matches` below. Only the `type_carries_type_param(param_ty)` disjunct
+    // is replaced by `heads_unifiable`; `type_carries_dim_param(param_ty)`
+    // stays a full wildcard — dimension-param overload resolution is
+    // orthogonal to enum-head disambiguation.
+    let head_matches: Vec<&CompiledFunction> = matches
+        .iter()
+        .copied()
+        .filter(|f| {
+            let is_generic = !f.type_params.is_empty();
+            f.params
+                .iter()
+                .zip(arg_types.iter())
+                .all(|((_, param_ty), arg_ty)| {
+                    type_carries_trait_object(param_ty)
+                        || (is_generic
+                            && (heads_unifiable(param_ty, arg_ty)
+                                || type_carries_dim_param(param_ty)))
+                        // D4 (task-4232 γ) in the head-exact tier: a type-param
+                        // arg is a wildcard ONLY when it is a BARE `TypeParam`
+                        // (a generic fn body passing a `T`-typed value) — that
+                        // slot carries no constructor head to disagree on, so
+                        // `heads_unifiable` (above) can't discriminate it. A
+                        // HEADED arg carrying a NESTED type-param (e.g. an
+                        // `Applied{"Result", [T, E]}` produced by composing two
+                        // generic stdlib fns over a headless-`Enum` builtin —
+                        // task #4038 δ) must NOT wildcard-match every candidate:
+                        // it has a real head, so `heads_unifiable` discriminates
+                        // it (`Result` matches the `Result<T,E>` overload, not
+                        // the `Option<T>` one), turning a spurious `Ambiguous`
+                        // into a clean `Resolved`. This narrows head_matches
+                        // (⊆ matches) only; a resulting empty set still falls
+                        // through to `matches`, so bare-`TypeParam`-arg
+                        // resolution is bit-for-bit unchanged.
+                        //
+                        // NOTE (reviewer_comprehensive #2): this narrowing also
+                        // means a NON-generic candidate (`is_generic == false`)
+                        // is never eligible for head_matches against a headed
+                        // nested-type-param arg — it fails `is_generic`, the
+                        // bare-`TypeParam` wildcard, and plain equality. The
+                        // head-exact tier therefore deliberately assumes headed
+                        // nested-type-param args only ever need to disambiguate
+                        // GENERIC container overloads (e.g. Option<T> vs
+                        // Result<T,E>); a same-name non-generic candidate in the
+                        // same overload set is excluded from head_matches
+                        // rather than causing a spurious `Ambiguous`. See
+                        // `overload_leaky_headed_arg_excludes_non_generic_candidate`
+                        // for the precedent lock.
+                        || matches!(arg_ty, Type::TypeParam(_))
+                        || param_ty == arg_ty
+                })
+        })
+        .collect();
+
+    let resolved = if !exact_matches.is_empty() {
         exact_matches
+    } else if !head_matches.is_empty() {
+        head_matches
+    } else {
+        matches
     };
 
     match resolved.len() {
@@ -1194,6 +1632,360 @@ pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
 
 // --- Type inference for binary operations ---
 
+/// Scalar-like operand for `*`/`/` static typing: `Int` or `Scalar{..}`.
+///
+/// `Real` is NOT a distinct `Type` variant — a `Real` literal types as
+/// `Scalar{dimension: DIMENSIONLESS}` — so this predicate covers it for free.
+fn is_mul_div_scalar_like(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Scalar { .. })
+}
+
+/// Bare dimensionless number for `+`/`-` Complex widening: `Int` or
+/// `Scalar{DIMENSIONLESS}` (a `Real` literal — see `is_mul_div_scalar_like`).
+/// Narrower than `is_mul_div_scalar_like` on purpose: a DIMENSIONED `Scalar`
+/// (e.g. `Scalar<Length>`) must NOT widen against a dimensionless `Complex`
+/// (the runtime has no arm for it — `eval_add`/`eval_sub` in reify-expr only
+/// promote `Value::Real`/`Value::Int`, never `Value::Scalar`, against
+/// `Value::Complex`; see `is_dimensionless_complex`'s doc).
+fn is_dimensionless_numeric(ty: &Type) -> bool {
+    matches!(ty, Type::Int)
+        || matches!(ty, Type::Scalar { dimension } if dimension.is_dimensionless())
+}
+
+/// Dimensionless `Complex` for `+`/`-` widening (see `is_dimensionless_numeric`).
+///
+/// A DIMENSIONED `Complex` (e.g. `Complex<Resistance>`) deliberately does NOT
+/// match — the runtime's `guard_dimensionless_complex` (reify-expr) returns
+/// `Value::Undef` for `Complex<Q> ± Real/Int` when `Q` is not dimensionless
+/// (D3 policy), so the static side must not claim a result type there either.
+fn is_dimensionless_complex(ty: &Type) -> bool {
+    matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if dimension.is_dimensionless()))
+}
+
+/// The dimensioned counterpart of `is_dimensionless_complex`: true only for a
+/// `Complex` wrapping a non-dimensionless `Scalar` (e.g. `Complex<Length>`,
+/// `Complex<Resistance>`). NOT a logical complement — a non-`Complex` type
+/// (e.g. `Type::Int`, `Type::length()`, `Type::Error`) matches neither this
+/// predicate nor `is_dimensionless_complex`.
+fn is_dimensioned_complex(ty: &Type) -> bool {
+    matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if !dimension.is_dimensionless()))
+}
+
+/// A DIMENSIONED bare `Scalar` (e.g. `Scalar<Length>`), sibling of
+/// `is_dimensioned_complex`. Direct counterpart of `is_dimensionless_numeric`
+/// restricted to the `Scalar` variant (excludes `Int`) — used by
+/// `add_sub_dimensioned_complex_reject`'s row-B clause (task 5219), where the
+/// runtime `eval_add`/`eval_sub` (reify-expr) have NO `(Complex, Scalar)` arm
+/// at all, so the dimension of the `Scalar` side is irrelevant to the reject.
+fn is_dimensioned_scalar(ty: &Type) -> bool {
+    matches!(ty, Type::Scalar { dimension } if !dimension.is_dimensionless())
+}
+
+/// True only when BOTH operands are `Complex` wrapping a concrete `Scalar`
+/// quantity with DIFFERENT dimensions (e.g. `Complex<Length>` vs
+/// `Complex<Mass>`) — used by `add_sub_dimensioned_complex_reject`'s row-C
+/// clause (task 5219), where the runtime `eval_add`/`eval_sub` (reify-expr)
+/// `(Complex, Complex)` arm returns `Value::Undef` when the two dimensions
+/// differ. SAME-dimension `Complex<Q> ± Complex<Q>` is legitimate arithmetic
+/// and must return `false` here. A `Complex` wrapping a non-`Scalar` inner
+/// quantity (e.g. an unresolved `TypeParam`) also returns `false` —
+/// gradualism: an unresolved inner quantity cannot be adjudicated a mismatch.
+fn complex_complex_dimension_mismatch(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Complex(lq), Type::Complex(rq)) => matches!(
+            (lq.as_ref(), rq.as_ref()),
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) if ld != rd
+        ),
+        _ => false,
+    }
+}
+
+/// Canonical rationale for the `+`/`-` dimensioned-Complex operand-kind
+/// reject (tasks 5163, 5219) — `expr.rs`'s operand-kind guard and
+/// `DiagnosticCode::ArithOperandKind`'s doc cross-reference here rather
+/// than restate it.
+///
+/// `true` for any of THREE pairings, all of which the runtime
+/// `eval_add`/`eval_sub` (reify-expr) evaluate to `Value::Undef` (D3 policy):
+///
+/// - **Row A** — a DIMENSIONED `Complex` and a bare dimensionless numeric
+///   (`Int`/`Scalar{DIMENSIONLESS}`), in EITHER order: the runtime
+///   `guard_dimensionless_complex` only promotes `Value::Real`/`Value::Int`
+///   against a DIMENSIONLESS `Complex` (see `is_dimensionless_complex`'s doc
+///   above).
+/// - **Row B** — a DIMENSIONED `Complex` and ANY dimensioned `Scalar`, in
+///   EITHER order: the runtime has NO `(Complex, Scalar)` arm at all, so the
+///   `Scalar`'s dimension is irrelevant to the reject.
+/// - **Row C** — two `Complex` operands wrapping concrete `Scalar`
+///   quantities with DIFFERENT dimensions: the runtime `(Complex, Complex)`
+///   arm returns `Value::Undef` when the dimensions differ. SAME-dimension
+///   `Complex<Q> ± Complex<Q>` is legitimate arithmetic and stays `false`.
+///
+/// `Type::Error`/`Type::TypeParam` operands, and a `Complex` wrapping a
+/// non-`Scalar` (unresolved) quantity, match none of the three rows above,
+/// so gradualism holds structurally with no separate skip-set (contrast the
+/// broader Mul/Div `is_mul_div_gradualism_skip`).
+///
+/// Pure and unit-tested below (see the
+/// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests);
+/// poisoning `result_type` and emitting the diagnostic happen at the
+/// `expr.rs` call site.
+pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> bool {
+    (is_dimensioned_complex(left) && is_dimensionless_numeric(right))
+        || (is_dimensionless_numeric(left) && is_dimensioned_complex(right))
+        || (is_dimensioned_complex(left) && is_dimensioned_scalar(right))
+        || (is_dimensioned_scalar(left) && is_dimensioned_complex(right))
+        || complex_complex_dimension_mismatch(left, right)
+}
+
+/// Single source of truth for BOTH the correct static result type of `*`/`/`
+/// AND the runtime-supported/unsupported partition (task compiler-type-hygiene
+/// β2, INV-COMP-3).
+///
+/// `Some(ty)` — the operand-kind pair is one the runtime evaluator
+/// (`eval_mul`/`eval_div` in `reify-expr`) has an INTENTIONAL arm for; `ty` is
+/// the exact static result type for that arm. `None` — no intentional arm
+/// exists (a **structural**, kind-level `Value::Undef`, not a data-dependent
+/// one like divide-by-zero); the caller (the `expr.rs` operand-kind guard)
+/// poisons to `Type::Error` and emits `DiagnosticCode::ArithOperandKind`.
+///
+/// Pinned row-for-row against the frozen runtime characterization suite:
+/// `crates/reify-expr/tests/mul_div_runtime_truth_table.rs` (β1, task 5052).
+/// Only that file's `INTENTIONAL` rows become `Some`; `STRUCTURAL-Undef`,
+/// `degenerate-NOT-intentional`, and `Matrix-diagnostic` rows all become
+/// `None`. `DATA-DRIVEN-Undef` rows (divide-by-zero) are excluded — they are
+/// a runtime VALUE question, not a static TYPE question.
+///
+/// Callers: `infer_binop_type`'s `Mul`/`Div` arm (below) delegates here
+/// directly via `mul_div_result_or_placeholder`. `expr.rs`'s `compile_binop`
+/// calls this function directly, exactly ONCE per `*`/`/` expression, and
+/// threads the resulting `Option` through both `mul_div_result_or_placeholder`
+/// (for the static result type) and the operand-kind guard's poison decision
+/// (task compiler-type-hygiene β2 amendment round 3 — previously the guard
+/// called this function a second, independent time). Keeping both concerns
+/// sourced from ONE evaluation makes the static table structurally unable to
+/// disagree with itself (mirrors the `modulo_operands_are_int` /
+/// `is_orderable_scalar` predicate-here / emission-in-`expr.rs` split).
+///
+/// Aggregate "scale" arms (`Vector`/`Point`/`Tensor` ⊗ scalar-like) recurse
+/// this same function over the aggregate's quantity slot, mirroring the
+/// runtime's `scale_components(.., eval_mul/eval_div, ..)`, which itself maps
+/// `eval_mul`/`eval_div` over each component against the same "scalar"
+/// operand — so a dimensioned "scalar" (e.g. `Scalar<Time>`) combines
+/// dimensions with the quantity exactly as `Scalar ⊗ Scalar` would.
+pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Option<Type> {
+    debug_assert!(
+        matches!(op, BinOp::Mul | BinOp::Div),
+        "infer_mul_div_result only handles BinOp::Mul/BinOp::Div, got {op:?}"
+    );
+    match (left, right) {
+        // ── Numeric + Scalar core ────────────────────────────────────────────
+        (Type::Int, Type::Int) => Some(Type::Int),
+
+        (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Some(Type::Scalar {
+            dimension: match op {
+                BinOp::Mul => ld.mul(rd),
+                BinOp::Div => ld.div(rd),
+                _ => unreachable!(),
+            },
+        }),
+
+        // Scalar ⊗ Int: Int carries no dimension, so both Mul and Div preserve
+        // the Scalar's dimension unchanged.
+        (Type::Scalar { dimension }, Type::Int) => Some(Type::Scalar {
+            dimension: *dimension,
+        }),
+        // Int ⊗ Scalar: Mul is commutative with the above (preserve); Div is
+        // the non-commutative reciprocal-dimension arm (`Int / Scalar<Time>`).
+        (Type::Int, Type::Scalar { dimension }) => Some(Type::Scalar {
+            dimension: match op {
+                BinOp::Mul => *dimension,
+                BinOp::Div => DimensionVector::DIMENSIONLESS.div(dimension),
+                _ => unreachable!(),
+            },
+        }),
+
+        // ── ScalarParam(Q) — dimension-kinded generic fn params ──────────────
+        // `Type::ScalarParam(name)` (`Scalar<Q>` inside a `fn f<Q: Dimension>`
+        // body, before call-site substitution binds Q) is a genuine,
+        // well-formed scalar whose dimension is merely unresolved — the same
+        // treatment `emit_comparison_operand_diagnostics` (expr.rs) already
+        // gives it for Cmp ops: accepted directly by the predicate, NOT
+        // skipped via the `Type::Error`/`Type::TypeParam` gradualism early-
+        // return. Mirrors the `Scalar ⊗ Int` / `Scalar ⊗ Scalar` arms above
+        // for the two cases whose result IS representable without inventing
+        // compound dimension-expression algebra:
+        //
+        // - `ScalarParam(Q) ⊗ Int`: Int carries no dimension → preserve Q
+        //   (both ops; Int⊗Scalar precedent above).
+        // - `ScalarParam(Q) ⊗ Scalar{DIMENSIONLESS}` (i.e. `Scalar<Q> * Real`,
+        //   the `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> {
+        //   x * k }` pattern pinned by
+        //   `fn_generic_call_inference_tests::dim_param_scale_q_resolves_at_two_dimensions`
+        //   and `examples/generics/dim_param.ri`): DIMENSIONLESS is the
+        //   multiplicative identity for dimension algebra → preserve Q.
+        //
+        // `ScalarParam ⊗ ScalarParam` and `ScalarParam ⊗` a NON-dimensionless
+        // concrete `Scalar` are deliberately left unhandled (fall through to
+        // `None` below): the combined dimension (e.g. "Q²" or "Q*Length")
+        // is not representable by `ScalarParam`'s bare-name form. Extending
+        // `ScalarParam` to carry a compound dimension expression is out of
+        // scope for this fix.
+        //
+        // Unlike this function's OTHER `None` pairings (genuine runtime-
+        // unsupported operand kinds), this is a static REPRESENTATIONAL gap
+        // only: the combination is always runtime-legal once `Q` is
+        // substituted with a concrete dimension (e.g.
+        // `fn area<Q: Dimension>(x: Scalar<Q>) { x * x }` computes a valid
+        // `Q²`-dimensioned value at every call site). So the `expr.rs`
+        // operand-kind guard's gradualism skip DOES bypass a bare
+        // `Type::ScalarParam` operand for exactly this reason (task
+        // compiler-type-hygiene β2 amendment round 3) — mirrors its
+        // `TypeParam`/`Projection` skips; see the guard's doc comment for the
+        // full rationale. `infer_binop_type`'s `Mul`/`Div` arm correspondingly
+        // propagates the `ScalarParam` itself (not `Type::Int`) for this
+        // `None` case via `mul_div_result_or_placeholder` below, mirroring its
+        // `Type::Projection` propagation, so the unresolved dimension
+        // survives follow-on arithmetic instead of leaking as a spuriously-
+        // concrete `Int`.
+        (Type::ScalarParam(name), Type::Int) => Some(Type::ScalarParam(name.clone())),
+        (Type::Int, Type::ScalarParam(name)) if op == BinOp::Mul => {
+            Some(Type::ScalarParam(name.clone()))
+        }
+        (Type::ScalarParam(name), Type::Scalar { dimension }) if dimension.is_dimensionless() => {
+            Some(Type::ScalarParam(name.clone()))
+        }
+        (Type::Scalar { dimension }, Type::ScalarParam(name))
+            if op == BinOp::Mul && dimension.is_dimensionless() =>
+        {
+            Some(Type::ScalarParam(name.clone()))
+        }
+
+        // ── Aggregate scale: Vector/Point/Tensor ⊗ scalar-like ───────────────
+        // `Aggregate / scalar-like` and `Aggregate * scalar-like` share one arm
+        // (valid for both ops with the aggregate on the LEFT). The reverse
+        // order (`scalar-like * Aggregate`) is Mul-only — Div has no
+        // reverse-scale arm (non-commutative).
+        (Type::Vector { n, quantity }, other) if is_mul_div_scalar_like(other) => {
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Vector {
+                n: *n,
+                quantity: Box::new(q),
+            })
+        }
+        (other, Type::Vector { n, quantity })
+            if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
+        {
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Vector {
+                n: *n,
+                quantity: Box::new(q),
+            })
+        }
+        (Type::Point { n, quantity }, other) if is_mul_div_scalar_like(other) => {
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Point {
+                n: *n,
+                quantity: Box::new(q),
+            })
+        }
+        (other, Type::Point { n, quantity })
+            if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
+        {
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Point {
+                n: *n,
+                quantity: Box::new(q),
+            })
+        }
+        (Type::Tensor { rank, n, quantity }, other) if is_mul_div_scalar_like(other) => {
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Tensor {
+                rank: *rank,
+                n: *n,
+                quantity: Box::new(q),
+            })
+        }
+        (other, Type::Tensor { rank, n, quantity })
+            if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
+        {
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Tensor {
+                rank: *rank,
+                n: *n,
+                quantity: Box::new(q),
+            })
+        }
+
+        // ── Complex(q) ────────────────────────────────────────────────────────
+        // Complex×Complex and Complex×Scalar COMBINE dimensions (mul/div,
+        // matching the Scalar⊗Scalar core); Complex×Int PRESERVES the
+        // Complex's dimension (Int carries none to combine). Div requires
+        // Complex on the LEFT (numerator) — no reverse arm, same
+        // non-commutativity as the aggregate-scale Div arms above.
+        (Type::Complex(lq), Type::Complex(rq)) => match (lq.as_ref(), rq.as_ref()) {
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
+                Some(Type::complex(Type::Scalar {
+                    dimension: match op {
+                        BinOp::Mul => ld.mul(rd),
+                        BinOp::Div => ld.div(rd),
+                        _ => unreachable!(),
+                    },
+                }))
+            }
+            _ => None,
+        },
+        (Type::Complex(cq), Type::Scalar { dimension: sd }) => match cq.as_ref() {
+            Type::Scalar { dimension: cd } => Some(Type::complex(Type::Scalar {
+                dimension: match op {
+                    BinOp::Mul => cd.mul(sd),
+                    BinOp::Div => cd.div(sd),
+                    _ => unreachable!(),
+                },
+            })),
+            _ => None,
+        },
+        (Type::Scalar { dimension: sd }, Type::Complex(cq)) if op == BinOp::Mul => {
+            match cq.as_ref() {
+                Type::Scalar { dimension: cd } => Some(Type::complex(Type::Scalar {
+                    dimension: cd.mul(sd),
+                })),
+                _ => None,
+            }
+        }
+        (Type::Complex(cq), Type::Int) => Some(Type::complex(cq.as_ref().clone())),
+        (Type::Int, Type::Complex(cq)) if op == BinOp::Mul => {
+            Some(Type::complex(cq.as_ref().clone()))
+        }
+
+        // ── Transform(n) — Mul only, matching n required ────────────────────
+        // `Transform × Vector -> Vector`, `Transform × Point -> Point`,
+        // `Transform × Transform -> Transform` (row-9 pin). Order-sensitive:
+        // there is no reverse (`Vector/Point/Transform × Transform`) arm —
+        // Div is entirely unsupported for Transform (no runtime arm at all).
+        (Type::Transform(n1), Type::Vector { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
+            Some(Type::Vector {
+                n: *n2,
+                quantity: quantity.clone(),
+            })
+        }
+        (Type::Transform(n1), Type::Point { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
+            Some(Type::Point {
+                n: *n2,
+                quantity: quantity.clone(),
+            })
+        }
+        (Type::Transform(n1), Type::Transform(n2)) if op == BinOp::Mul && n1 == n2 => {
+            Some(Type::Transform(*n1))
+        }
+
+        // Every other operand-kind pairing (aggregate×aggregate; degenerate
+        // Tensor×Vector; order-reversed Vector/Point×Transform; Matrix in
+        // either position; List/String/Bool; non-commutative Div reversals;
+        // and `Type::Applied`/`Type::StructureRef`/`Type::Union` nominal
+        // struct/union types) has no runtime-intentional arm and is
+        // INTENTIONALLY `None`: none of these are in the
+        // `is_mul_div_gradualism_skip` deferred set below, so they correctly
+        // poison + emit `E_ArithOperandKind` rather than silently mistyping to
+        // `Int`.
+        _ => None,
+    }
+}
+
 /// Infer the result type of a binary operation given operand types.
 pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     // Anti-cascade guard (task-448): if either operand is already poisoned,
@@ -1232,31 +2024,136 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         | BinOp::And
         | BinOp::Or
         | BinOp::Implies => Type::Bool,
-        BinOp::Add | BinOp::Sub => left.clone(), // same dimension required
-        BinOp::Mul => match (left, right) {
-            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Type::Scalar {
-                dimension: ld.mul(rd),
-            },
-            (Type::Scalar { .. }, _) | (_, Type::Scalar { .. }) => {
-                // Scalar * non-scalar preserves the scalar type
-                if let Type::Scalar { .. } = left {
-                    left.clone()
-                } else {
-                    right.clone()
-                }
+        // Same dimension required, EXCEPT: a bare dimensionless number
+        // (`Int`/`Real`) widens against a dimensionless `Complex` (mirrors the
+        // runtime's `guard_dimensionless_complex` in reify-expr's
+        // eval_add/eval_sub). Needed for imaginary-literal sugar `n + mj`,
+        // which desugars to `n + complex(0, m)` (reify-syntax
+        // `lower_imaginary_literal`) — without this arm `w = 3 + 4j` statically
+        // typed `Int` (bare `left.clone()`), silently discarding the whole
+        // expression's Complex-ness (only surfaced once the β2 Mul/Div guard
+        // started rejecting the resulting `Int / Complex` as
+        // `E_ArithOperandKind` on e.g. `w / complex(1.0, 2.0)`). A DIMENSIONED
+        // Complex operand does not widen — falls through to the unchanged
+        // `left.clone()` fallback, same as before this arm existed.
+        //
+        // CLOSED (task compiler-type-hygiene follow-up 5163): this arm's
+        // placeholder for a DIMENSIONED `Complex` + Int/Real is intentionally
+        // UNCHANGED, mirroring the β2 Mul/Div arm's own `Int` placeholder —
+        // the `expr.rs` `compile_binop` operand-kind guard overrides
+        // `result_type` downstream instead. See
+        // `add_sub_dimensioned_complex_reject`'s doc for the full rationale.
+        //
+        // SCOPE (code-review confirmation, task 5061 amendment pass): the
+        // dimensionless-Complex widening arm above is intentionally folded
+        // into β2 rather than split into a separate change — it is a direct
+        // prerequisite for β2's own Mul/Div guard, needed to avoid a spurious
+        // `E_ArithOperandKind` on the imaginary-literal-sugar path described
+        // above (`w = 3 + 4j` followed by e.g. `w / complex(1.0, 2.0)`), so
+        // it cannot be bisected away from the Mul/Div guard without
+        // reintroducing that false positive.
+        BinOp::Add | BinOp::Sub => {
+            if is_dimensionless_complex(left) && is_dimensionless_numeric(right) {
+                left.clone()
+            } else if is_dimensionless_numeric(left) && is_dimensionless_complex(right) {
+                right.clone()
+            } else {
+                left.clone()
             }
-            _ => Type::Int,
-        },
-        BinOp::Div => match (left, right) {
-            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
-                Type::Scalar { dimension: ld.div(rd) }
-            }
-            (Type::Scalar { .. }, _) => left.clone(),
-            _ => Type::Int,
-        },
+        }
+        // Delegates to the single source of truth for both the correct static
+        // result type and the runtime-supported/unsupported partition (β2,
+        // INV-COMP-3) — see `infer_mul_div_result`'s doc. `None` collapses via
+        // `mul_div_result_or_placeholder`, which propagates an
+        // `is_mul_div_gradualism_skip` operand (`Error`/`TypeParam`/
+        // `Projection`/`ScalarParam`) unchanged — so an unresolved or poisoned
+        // operand survives arithmetic instead of leaking downstream as a
+        // spuriously-concrete `Int` a later guard could misjudge — and
+        // otherwise falls back to `Type::Int`, a placeholder the `expr.rs`
+        // guard poisons + diagnoses (mirrors the Mod/Pow precedent).
+        BinOp::Mul | BinOp::Div => {
+            mul_div_result_or_placeholder(infer_mul_div_result(op, left, right), left, right)
+        }
         BinOp::Mod => left.clone(),
         BinOp::Pow => left.clone(), // simplified for M1
     }
+}
+
+/// The Mul/Div "gradualism" skip-set: operand kinds that must be deferred
+/// rather than adjudicated as runtime-unsupported. Single source of truth for
+/// two decisions that previously lived in two independently-maintained copies
+/// — the `expr.rs` operand-kind guard's skip check, and this file's
+/// `mul_div_result_or_placeholder` `None`-collapse cascade below — kept in
+/// lockstep only by convention until amendment round 4 factored both out to
+/// this one predicate.
+///
+/// Matches four variants, each deferred for a different reason:
+/// - `Type::Error` — already-poisoned (anti-cascade); takes priority over the
+///   other three when an operand pair mixes kinds (see
+///   `mul_div_result_or_placeholder`'s explicit `is_error` priority check,
+///   which mirrors `infer_binop_type`'s own pre-match early-return).
+/// - `Type::TypeParam(_)` — unresolved auto/generic type (task #4629 W5).
+/// - `Type::Projection { .. }` — an unresolved trait-associated-type
+///   reference (e.g. `P::MotionValue` inside a generic `structure def` that
+///   declares `P`, before a concrete arg substitutes it). Matched broadly
+///   (any `base`) because per `resolve_qualified_assoc_type`'s doc
+///   (type_resolution.rs) that is the only shape reachable here — every
+///   other base either normalizes to a concrete type or poisons to
+///   `Type::Error` first.
+/// - `Type::ScalarParam(_)` — a dimension-kinded generic param (`Scalar<Q>`
+///   before `Q` substitutes). Unlike the other three this is a STATIC
+///   REPRESENTATIONAL gap, not a runtime-unsupported one: `ScalarParam ⊗
+///   ScalarParam` is always runtime-legal once substituted, `ScalarParam`
+///   just can't represent the combined dimension yet (see
+///   `infer_mul_div_result`'s `ScalarParam` arms for the full rationale).
+///
+/// `Type::Applied`/`Type::StructureRef`/`Type::Union` are deliberately NOT in
+/// this set: they are concrete nominal/structural types the runtime has no
+/// `eval_mul`/`eval_div` arm for regardless of substitution, so hard-erroring
+/// on them (rather than silently mistyping to `Int`, the pre-β2 behavior) is
+/// this task's purpose.
+pub(crate) fn is_mul_div_gradualism_skip(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Error | Type::TypeParam(_) | Type::Projection { .. } | Type::ScalarParam(_)
+    )
+}
+
+/// Resolves `infer_mul_div_result`'s `Option<Type>` to the concrete static
+/// `Type` used both as `infer_binop_type`'s `Mul`/`Div` result (above) and,
+/// via `expr.rs::compile_binop` calling this function directly, as the input
+/// to the operand-kind guard's poison decision.
+///
+/// `Some(ty)` passes through unchanged. `None` collapses to the pre-β2
+/// `Type::Int` placeholder (which the `expr.rs` guard then poisons to
+/// `Type::Error`), EXCEPT when an operand matches `is_mul_div_gradualism_skip`
+/// above — then that operand's own type propagates unchanged instead, so an
+/// unresolved/poisoned operand survives arithmetic rather than leaking
+/// downstream as a spuriously-concrete `Int` a later guard could misjudge.
+/// `Type::Error` takes priority when operands mix skip kinds, matching
+/// `infer_binop_type`'s own pre-match early-return.
+///
+/// Regression pins: `mul_div_result_or_placeholder_error_propagates_not_int`,
+/// `_int_times_error_propagates_not_int`, `_type_param_propagates_not_int`,
+/// `_int_times_type_param_propagates_not_int` below, plus the `Projection`/
+/// `ScalarParam` pins nearby. Integration-level symptom of the gap this
+/// closes: `undef_literal_compile_tests::binary_with_undef_emits_no_unresolved_name_diagnostic`.
+pub(crate) fn mul_div_result_or_placeholder(
+    inferred: Option<Type>,
+    left: &Type,
+    right: &Type,
+) -> Type {
+    inferred.unwrap_or_else(|| {
+        if left.is_error() || right.is_error() {
+            Type::Error
+        } else if is_mul_div_gradualism_skip(left) {
+            left.clone()
+        } else if is_mul_div_gradualism_skip(right) {
+            right.clone()
+        } else {
+            Type::Int
+        }
+    })
 }
 
 /// Attempt to satisfy a `NoMatch` call via default-padding.
@@ -1344,8 +2241,7 @@ pub(crate) fn try_default_padding<'a>(
             .all(|((_, param_ty), arg_ty)| {
                 type_carries_trait_object(param_ty)
                     || (is_generic
-                        && (type_carries_type_param(param_ty)
-                            || type_carries_dim_param(param_ty)))
+                        && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
                     || type_carries_type_param(arg_ty)
                     || param_ty == arg_ty
             });
@@ -1353,10 +2249,8 @@ pub(crate) fn try_default_padding<'a>(
             continue;
         }
         // All trailing params must carry Some compiled default.
-        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
-            .iter()
-            .cloned()
-            .collect();
+        let defaults: Option<Vec<CompiledExpr>> =
+            cand.param_defaults[provided..].iter().cloned().collect();
         if let Some(defaults) = defaults {
             satisfiable.push((cand, defaults));
         }
@@ -1461,7 +2355,10 @@ mod tests {
     /// RED until step-2: current exact-match makes this NoMatch.
     #[test]
     fn overload_trait_param_matches_any_structure_ref_arg() {
-        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let fns = vec![make_fn(
+            "f",
+            vec![("j", Type::TraitObject("DrivingJoint".to_string()))],
+        )];
         let result = resolve_function_overload("f", &[Type::StructureRef("X".to_string())], &fns);
         assert!(
             matches!(result, OverloadResolution::Resolved(_)),
@@ -1473,7 +2370,10 @@ mod tests {
     /// RED until step-2.
     #[test]
     fn overload_trait_param_matches_any_trait_object_arg() {
-        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let fns = vec![make_fn(
+            "f",
+            vec![("j", Type::TraitObject("DrivingJoint".to_string()))],
+        )];
         let result =
             resolve_function_overload("f", &[Type::TraitObject("Other".to_string())], &fns);
         assert!(
@@ -1496,11 +2396,8 @@ mod tests {
             ],
         )];
         // arg k is Int, not Real → no match
-        let result = resolve_function_overload(
-            "g",
-            &[Type::StructureRef("X".to_string()), Type::Int],
-            &fns,
-        );
+        let result =
+            resolve_function_overload("g", &[Type::StructureRef("X".to_string()), Type::Int], &fns);
         assert!(
             matches!(result, OverloadResolution::NoMatch(_)),
             "concrete Real param must not accept Int; expected NoMatch"
@@ -1641,20 +2538,32 @@ mod tests {
     #[test]
     fn fmt_dim_mismatch_non_scalar_does_not_panic() {
         // Left non-Scalar, right Scalar
-        let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &force_ty(), test_span());
+        let d = format_dimension_mismatch_diagnostic(
+            "addition",
+            &Type::dimensionless_scalar(),
+            &force_ty(),
+            test_span(),
+        );
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Left Scalar, right non-Scalar
-        let d =
-            format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::dimensionless_scalar(), test_span());
+        let d = format_dimension_mismatch_diagnostic(
+            "addition",
+            &money_ty(),
+            &Type::dimensionless_scalar(),
+            test_span(),
+        );
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Both non-Scalar
-        let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &Type::dimensionless_scalar(), test_span());
+        let d = format_dimension_mismatch_diagnostic(
+            "addition",
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
+            test_span(),
+        );
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
     }
@@ -1665,6 +2574,262 @@ mod tests {
             infer_binop_type(BinOp::Add, &Type::Error, &Type::Int),
             Type::Error,
         );
+    }
+
+    /// Imaginary-literal sugar `n + mj` desugars to `n + complex(0, m)`
+    /// (reify-syntax `lower_imaginary_literal`) — `Int + Complex{DIMENSIONLESS}`
+    /// must statically widen to `Complex`, not fall to bare `left.clone()`
+    /// (`Int`). Mirrors the runtime's `guard_dimensionless_complex` arm in
+    /// reify-expr's `eval_add`. Regression pin for the `w = 3 + 4j` /
+    /// `w / complex(1.0, 2.0)` chain (compiler-type-hygiene β2 follow-on —
+    /// this combination silently mistyped `w` as `Int`, which the new
+    /// Mul/Div `E_ArithOperandKind` guard then correctly-but-spuriously
+    /// rejected on `w_div`).
+    #[test]
+    fn binop_add_int_plus_dimensionless_complex_widens_to_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Add, &Type::Int, &c), c);
+    }
+
+    #[test]
+    fn binop_add_dimensionless_complex_plus_int_stays_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Add, &c, &Type::Int), c);
+    }
+
+    #[test]
+    fn binop_add_real_plus_dimensionless_complex_widens_to_complex() {
+        // `Real` is not a distinct `Type` variant — `Scalar{DIMENSIONLESS}`
+        // covers the `3.2 + 4.1j` case (complex_literals.ri) for free.
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &Type::dimensionless_scalar(), &c),
+            c
+        );
+    }
+
+    #[test]
+    fn binop_sub_int_minus_dimensionless_complex_widens_to_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Sub, &Type::Int, &c), c);
+    }
+
+    /// Sub-direction counterpart of `binop_add_dimensionless_complex_plus_int_stays_complex`
+    /// with the dimensionless `Complex` on the LEFT — exercises the
+    /// `is_dimensionless_complex(left) && is_dimensionless_numeric(right)` branch
+    /// under `BinOp::Sub` specifically (previously only exercised for `Add`).
+    #[test]
+    fn binop_sub_dimensionless_complex_minus_int_stays_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Sub, &c, &Type::Int), c);
+    }
+
+    #[test]
+    fn binop_add_dimensioned_complex_plus_int_returns_placeholder_poisoned_by_guard() {
+        // D3 policy: a DIMENSIONED Complex does not promote against a bare
+        // Int/Real at runtime (evals Undef). This pure fn is intentionally
+        // UNCHANGED (mirrors the β2 Mul/Div arm's own `Int` placeholder) and
+        // still returns this placeholder; the `expr.rs` operand-kind guard
+        // (`add_sub_dimensioned_complex_reject`) overrides `result_type` to
+        // `Type::Error` downstream. See `add_sub_operand_guard_tests.rs` for
+        // the observable end-to-end behavior.
+        let dimensioned = Type::complex(Type::length());
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &dimensioned, &Type::Int),
+            dimensioned
+        );
+    }
+
+    /// Order-reversed counterpart of the sibling pin above: with the
+    /// DIMENSIONED Complex on the RIGHT, neither widening branch fires, so
+    /// the `else` fallthrough returns `left.clone()` = the bare `Int`, not
+    /// the Complex — the pure fn's placeholder is order-dependent. This fn
+    /// is intentionally UNCHANGED; the `expr.rs` operand-kind guard now
+    /// overrides `result_type` to `Type::Error` for BOTH operand orders,
+    /// closing the asymmetry. See `add_sub_operand_guard_tests.rs` for the
+    /// observable behavior.
+    #[test]
+    fn binop_add_int_plus_dimensioned_complex_returns_placeholder_poisoned_by_guard() {
+        let dimensioned = Type::complex(Type::length());
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &Type::Int, &dimensioned),
+            Type::Int
+        );
+    }
+
+    // ── task-5163: is_dimensioned_complex / add_sub_dimensioned_complex_reject ──
+
+    #[test]
+    fn is_dimensioned_complex_true_for_dimensioned_quantity() {
+        assert!(is_dimensioned_complex(&Type::complex(Type::length())));
+    }
+
+    #[test]
+    fn is_dimensioned_complex_false_for_dimensionless_quantity() {
+        assert!(!is_dimensioned_complex(&Type::complex(
+            Type::dimensionless_scalar()
+        )));
+    }
+
+    #[test]
+    fn is_dimensioned_complex_false_for_non_complex() {
+        assert!(!is_dimensioned_complex(&Type::length()));
+        assert!(!is_dimensioned_complex(&Type::Int));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_int() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(&dimensioned, &Type::Int));
+    }
+
+    /// Order-reversed counterpart: closes the documented asymmetry — both
+    /// operand orders must reject.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_int_plus_dimensioned_complex_order_reversed() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(&Type::Int, &dimensioned));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensionless_scalar()
+    {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &Type::dimensionless_scalar()
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensionless_scalar_plus_dimensioned_complex()
+    {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
+            &Type::dimensionless_scalar(),
+            &dimensioned
+        ));
+    }
+
+    /// Must NOT reject — this is the pre-existing D3 widening case (`3 + 4j`).
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensionless_complex_plus_int_widening_case()
+    {
+        let dimensionless = Type::complex(Type::dimensionless_scalar());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensionless,
+            &Type::Int
+        ));
+    }
+
+    /// `Complex<Length> + Complex<Length>` (SAME dimension on both sides) is
+    /// legitimate Complex arithmetic — the runtime `(Complex,Complex)` arm
+    /// only returns `Value::Undef` when the two dimensions differ (task 5219
+    /// row C, guarded below) — so this must stay FALSE even after the
+    /// mismatched-dimension clause is added.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_same_dimension_complex_plus_complex() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &dimensioned
+        ));
+    }
+
+    /// `Complex<Length> ± Complex<Angle>` (mismatched dimensions) — task 5219
+    /// row C: the runtime `eval_add`/`eval_sub` (reify-expr) `(Complex,
+    /// Complex)` arm returns `Value::Undef` when the two dimensions differ.
+    /// Must reject in BOTH operand orders, mirroring the other rows above.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_mismatched_dimension_complex_plus_complex()
+    {
+        let length_complex = Type::complex(Type::length());
+        let angle_complex = Type::complex(Type::angle());
+        assert!(add_sub_dimensioned_complex_reject(
+            &length_complex,
+            &angle_complex
+        ));
+        assert!(add_sub_dimensioned_complex_reject(
+            &angle_complex,
+            &length_complex
+        ));
+    }
+
+    /// A `Complex` wrapping an unresolved `TypeParam` quantity (rather than a
+    /// concrete `Scalar{dimension}`) must NOT be adjudicated a dimension
+    /// mismatch — gradualism: the row-C helper requires both inner
+    /// quantities to be concrete `Scalar`s before comparing dimensions.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_complex_typeparam_quantity() {
+        let typeparam_complex = Type::complex(Type::TypeParam("T".into()));
+        let dimensioned_complex = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &typeparam_complex,
+            &dimensioned_complex
+        ));
+    }
+
+    /// `Complex<Length> + Length` (dimensioned Complex + dimensioned, non-Int
+    /// `Scalar`) — task 5219 row B: the runtime `eval_add`/`eval_sub`
+    /// (reify-expr) have NO `(Complex, Scalar)` arm at all, so a dimensioned
+    /// `Complex` paired with ANY dimensioned `Scalar` is a structural
+    /// `Value::Undef` regardless of whether the two dimensions match. Must
+    /// reject in BOTH operand orders, mirroring the bare-dimensionless-numeric
+    /// row above.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensioned_scalar()
+    {
+        let dimensioned_complex = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
+            &dimensioned_complex,
+            &Type::length()
+        ));
+        assert!(add_sub_dimensioned_complex_reject(
+            &Type::length(),
+            &dimensioned_complex
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_error_left_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::Error,
+            &dimensioned
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_error_right_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &Type::Error
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_type_param_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::TypeParam("T".into()),
+            &dimensioned
+        ));
+    }
+
+    /// Plain dimensioned `Scalar` (not `Complex`) + `Int` is handled by the
+    /// pre-existing dimension-compat block in `expr.rs`, not this predicate.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensioned_scalar_plus_int() {
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::length(),
+            &Type::Int
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_int_plus_int() {
+        assert!(!add_sub_dimensioned_complex_reject(&Type::Int, &Type::Int));
     }
 
     #[test]
@@ -1877,19 +3042,28 @@ mod tests {
     /// `(Real, Int)` is rejected (left is Real) → `false`.
     #[test]
     fn modulo_operands_real_int_is_false() {
-        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::Int));
+        assert!(!modulo_operands_are_int(
+            &Type::dimensionless_scalar(),
+            &Type::Int
+        ));
     }
 
     /// `(Int, Real)` is rejected (right is Real) → `false`.
     #[test]
     fn modulo_operands_int_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Int, &Type::dimensionless_scalar()));
+        assert!(!modulo_operands_are_int(
+            &Type::Int,
+            &Type::dimensionless_scalar()
+        ));
     }
 
     /// `(Real, Real)` — both wrong → `false`.
     #[test]
     fn modulo_operands_real_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::dimensionless_scalar()));
+        assert!(!modulo_operands_are_int(
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar()
+        ));
     }
 
     /// `(Scalar{LENGTH}, Scalar{LENGTH})` — dimensioned types are not Int → `false`.
@@ -2086,10 +3260,7 @@ mod tests {
     fn type_compatible_face_selector_param_any_selector_arg_is_false() {
         use reify_core::ty::SelectorKind;
         assert!(
-            !type_compatible(
-                &Type::Selector(SelectorKind::Face),
-                &Type::AnySelector
-            ),
+            !type_compatible(&Type::Selector(SelectorKind::Face), &Type::AnySelector),
             "Selector(Face) param with AnySelector arg must be incompatible (one-directional)"
         );
     }
@@ -2215,6 +3386,76 @@ mod tests {
     }
 
     #[test]
+    fn unify_erased_type_param_binding_yields_to_concrete() {
+        // Task #4038 δ (esc-4038-2): a param first bound to a bare `TypeParam`
+        // arg (erased/unknown — e.g. the leaked `Applied{"Result",[T,E]}` from a
+        // chained `or_else`) must UPGRADE to the concrete arg for the same param
+        // rather than hard-conflicting (the E_FALLBACK_TYPE `T vs Scalar[m]`
+        // regression).
+        let mut subst = HashMap::new();
+        // Erased first, then concrete → upgrade to concrete, no conflict.
+        assert!(unify(&tp("T"), &tp("U"), &mut subst).is_ok());
+        assert!(unify(&tp("T"), &Type::length(), &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::length()));
+
+        // Concrete first, then erased → keep concrete, no conflict.
+        let mut subst2 = HashMap::new();
+        assert!(unify(&tp("T"), &Type::length(), &mut subst2).is_ok());
+        assert!(unify(&tp("T"), &tp("U"), &mut subst2).is_ok());
+        assert_eq!(subst2.get("T"), Some(&Type::length()));
+    }
+
+    #[test]
+    fn unify_two_distinct_erased_params_still_conflict() {
+        // Guard: two DIFFERING erased bindings (distinct generic params, e.g.
+        // `pair(a: A, b: B)`) must still conflict — the weak-binding relaxation
+        // only covers the erased-vs-concrete case, never erased-vs-erased.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &tp("A"), &mut subst).is_ok());
+        let err = unify(&tp("T"), &tp("B"), &mut subst)
+            .expect_err("two distinct erased params must still conflict");
+        assert_eq!(err.param, "T");
+    }
+
+    #[test]
+    fn unify_concrete_vs_headed_concrete_still_conflicts() {
+        // Boundary lock (reviewer_comprehensive #1, task #4038 δ amendment):
+        // the erased-vs-concrete relaxation above is scoped to a bare
+        // `TypeParam` leaf ONLY. A HEADED type that merely carries a nested
+        // type-param — e.g. the leaky `Applied{"Result",[A,B]}` produced by a
+        // chained `or_else(parse_length_r(x), parse_length_r(y))` — is NOT a
+        // bare `TypeParam` at its own head, so binding it against an existing
+        // CONCRETE binding for a different type must still hard-conflict.
+        // Without this guard a genuinely-wrong program (e.g. passing a
+        // `Result<..>`-shaped value where a `Length` was already bound to the
+        // same type parameter) would be silently accepted instead of raising
+        // `E_FN_TYPE_ARG_CONFLICT`.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::length(), &mut subst).is_ok());
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("A"), tp("B")],
+        };
+        let err = unify(&tp("T"), &leaky_result, &mut subst)
+            .expect_err("concrete Length binding vs a differently-headed concrete arg must still conflict");
+        assert_eq!(err.param, "T");
+        assert_eq!(err.existing, Type::length());
+        assert_eq!(err.incoming, leaky_result);
+
+        // Symmetric direction: headed-concrete bound first, then a different
+        // concrete type — also still conflicts.
+        let mut subst2 = HashMap::new();
+        let leaky_result2 = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("A"), tp("B")],
+        };
+        assert!(unify(&tp("T"), &leaky_result2, &mut subst2).is_ok());
+        let err2 = unify(&tp("T"), &Type::length(), &mut subst2)
+            .expect_err("headed concrete binding vs a differently-headed concrete arg must still conflict");
+        assert_eq!(err2.param, "T");
+    }
+
+    #[test]
     fn unify_consistent_rebind_ok() {
         // (e) unify T against Int twice → both Ok, no error, single binding.
         let mut subst = HashMap::new();
@@ -2329,7 +3570,10 @@ mod tests {
             params: vec![Type::dimensionless_scalar(), tp("T")],
             return_type: Box::new(Type::dimensionless_scalar()),
         }));
-        assert!(type_carries_type_param(&Type::Union(vec![Type::Int, tp("T")])));
+        assert!(type_carries_type_param(&Type::Union(vec![
+            Type::Int,
+            tp("T")
+        ])));
         assert!(type_carries_type_param(&Type::Tensor {
             rank: 2,
             n: 3,
@@ -2346,6 +3590,53 @@ mod tests {
             codomain: Box::new(Type::length()),
         }));
         assert!(!type_carries_type_param(&Type::List(Box::new(Type::Int))));
+    }
+
+    // ── task γ #4031 amendment: type_mentions_conflicted_param ───────────────
+
+    #[test]
+    fn type_mentions_conflicted_param_recurses_and_checks_membership() {
+        let conflicted: HashSet<String> = ["T".to_string()].into_iter().collect();
+
+        // Bare match: the leaf itself, name in the conflicted set.
+        assert!(type_mentions_conflicted_param(&tp("T"), &conflicted));
+        // Bare non-match: a DIFFERENT type-param name is not in the set.
+        assert!(!type_mentions_conflicted_param(&tp("U"), &conflicted));
+        // Non-type-param leaf: never mentions anything.
+        assert!(!type_mentions_conflicted_param(
+            &Type::dimensionless_scalar(),
+            &conflicted
+        ));
+
+        // Compound nesting: List<T> mentions conflicted "T" (the case the
+        // amendment's anti-cascade skip must catch that a bare-TypeParam-only
+        // check would miss).
+        assert!(type_mentions_conflicted_param(
+            &Type::List(Box::new(tp("T"))),
+            &conflicted
+        ));
+        // Compound nesting with an UNCONFLICTED param: List<U> does not
+        // mention "T".
+        assert!(!type_mentions_conflicted_param(
+            &Type::List(Box::new(tp("U"))),
+            &conflicted
+        ));
+        // Deeper nesting: Applied (user-defined generic, e.g. Tree<T>) args.
+        assert!(type_mentions_conflicted_param(
+            &Type::Applied {
+                name: "Tree".to_string(),
+                args: vec![tp("T")],
+            },
+            &conflicted
+        ));
+        // Field domain/codomain, in parity with unify/type_carries_type_param.
+        assert!(type_mentions_conflicted_param(
+            &Type::Field {
+                domain: Box::new(tp("T")),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            },
+            &conflicted
+        ));
     }
 
     #[test]
@@ -2416,8 +3707,7 @@ mod tests {
     /// `TraitObject("DrivingJoint") != StructureRef("X")` → returns None.
     #[test]
     fn try_default_padding_resolves_when_leading_param_is_trait_carrying() {
-        let default_expr =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_expr = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
         let cand = CompiledFunction {
             name: "f".to_string(),
             doc: None,
@@ -2441,13 +3731,9 @@ mod tests {
         // Provide ONE arg of type StructureRef("X") — the TraitObject param is
         // a wildcard (concrete type conforms at runtime), so the trailing
         // Real default must be returned.
-        let result = try_default_padding(
-            &[&cand],
-            &[Type::StructureRef("X".to_string())],
-        );
-        let (matched_fn, defaults) = result.expect(
-            "trait-carrying leading param must act as a wildcard: expected Some, got None",
-        );
+        let result = try_default_padding(&[&cand], &[Type::StructureRef("X".to_string())]);
+        let (matched_fn, defaults) = result
+            .expect("trait-carrying leading param must act as a wildcard: expected Some, got None");
         assert!(
             std::ptr::eq(matched_fn, &cand),
             "returned candidate must be the same object"
@@ -2473,10 +3759,8 @@ mod tests {
     /// (only B), returning candidate B with default `Real(2.0)`.
     #[test]
     fn try_default_padding_exact_match_wins_over_wildcard() {
-        let default_a =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let default_b =
-            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let default_a = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
         let cand_a = CompiledFunction {
             name: "f".to_string(),
             doc: None,
@@ -2510,13 +3794,10 @@ mod tests {
             type_params: vec![],
         };
 
-        let result = try_default_padding(
-            &[&cand_a, &cand_b],
-            &[Type::StructureRef("X".to_string())],
-        );
-        let (matched_fn, defaults) = result.expect(
-            "exact-match tie-break must resolve to candidate B; expected Some, got None",
-        );
+        let result =
+            try_default_padding(&[&cand_a, &cand_b], &[Type::StructureRef("X".to_string())]);
+        let (matched_fn, defaults) = result
+            .expect("exact-match tie-break must resolve to candidate B; expected Some, got None");
         assert!(
             std::ptr::eq(matched_fn, &cand_b),
             "tie-break must prefer the exact-match candidate (cand_b)"
@@ -2538,8 +3819,7 @@ mod tests {
     /// Expected: `None` (both before and after step-2).
     #[test]
     fn try_default_padding_concrete_mismatch_still_returns_none() {
-        let default_expr =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_expr = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
         let cand = CompiledFunction {
             name: "g".to_string(),
             doc: None,
@@ -2558,10 +3838,7 @@ mod tests {
         };
 
         // Provide Real where Int is expected — concrete mismatch, must stay None.
-        let result = try_default_padding(
-            &[&cand],
-            &[Type::dimensionless_scalar()],
-        );
+        let result = try_default_padding(&[&cand], &[Type::dimensionless_scalar()]);
         assert!(
             result.is_none(),
             "concrete leading-param mismatch (Int vs Real) must return None even after loosening"
@@ -2584,10 +3861,8 @@ mod tests {
     /// multi-candidate arm comment in `try_default_padding` for rationale.
     #[test]
     fn try_default_padding_all_wildcard_ambiguity_returns_none() {
-        let default_a =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let default_b =
-            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let default_a = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
         let cand_a = CompiledFunction {
             name: "f".to_string(),
             doc: None,
@@ -2624,10 +3899,8 @@ mod tests {
         // Both candidates match via wildcard; neither matches by exact equality
         // → exact subset is empty → None (ambiguous padding falls through to
         // NoMatch, not Ambiguous).
-        let result = try_default_padding(
-            &[&cand_a, &cand_b],
-            &[Type::StructureRef("X".to_string())],
-        );
+        let result =
+            try_default_padding(&[&cand_a, &cand_b], &[Type::StructureRef("X".to_string())]);
         assert!(
             result.is_none(),
             "two wildcard-only candidates must return None (ambiguous padding \
@@ -2683,18 +3956,24 @@ mod tests {
             doc: None,
             is_pub: false,
             params: vec![
-                ("law".to_string(), Type::TraitObject("ConstitutiveLaw".to_string())),
+                (
+                    "law".to_string(),
+                    Type::TraitObject("ConstitutiveLaw".to_string()),
+                ),
                 ("nx".to_string(), Type::length()),
                 ("ny".to_string(), Type::length()),
                 ("nz".to_string(), Type::length()),
-                ("loads".to_string(), Type::List(Box::new(Type::TraitObject("Load".to_string())))),
-                ("supports".to_string(), Type::List(Box::new(Type::TraitObject("Support".to_string())))),
+                (
+                    "loads".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+                ),
+                (
+                    "supports".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+                ),
                 ("options".to_string(), Type::dimensionless_scalar()),
             ],
-            param_defaults: vec![
-                None, None, None, None, None, None,
-                Some(default_options_a),
-            ],
+            param_defaults: vec![None, None, None, None, None, None, Some(default_options_a)],
             return_type: Type::dimensionless_scalar(),
             body: stub_body_real(),
             content_hash: ContentHash::of_str("solve_elastic_a_4788"),
@@ -2713,12 +3992,23 @@ mod tests {
                 ("nx".to_string(), Type::length()),
                 ("ny".to_string(), Type::length()),
                 ("nz".to_string(), Type::length()),
-                ("loads".to_string(), Type::List(Box::new(Type::TraitObject("Load".to_string())))),
-                ("supports".to_string(), Type::List(Box::new(Type::TraitObject("Support".to_string())))),
+                (
+                    "loads".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+                ),
+                (
+                    "supports".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+                ),
                 ("options".to_string(), Type::dimensionless_scalar()),
             ],
             param_defaults: vec![
-                None, None, None, None, None, None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
                 Some(default_options_b.clone()),
             ],
             return_type: Type::dimensionless_scalar(),
@@ -2745,7 +4035,7 @@ mod tests {
         let result = try_default_padding(&[&cand_a, &cand_b], &args);
         let (matched_fn, defaults) = result.expect(
             "specificity scoring must resolve to cand_b (score 4 > 3); \
-             expected Some, got None — RED: current all-exact filter returns None"
+             expected Some, got None — RED: current all-exact filter returns None",
         );
         assert!(
             std::ptr::eq(matched_fn, &cand_b),
@@ -2799,10 +4089,8 @@ mod tests {
     /// task-4788
     #[test]
     fn try_default_padding_equal_exact_count_returns_none() {
-        let default_p =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let default_q =
-            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let default_p = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_q = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
 
         let cand_p = CompiledFunction {
             name: "h".to_string(),
@@ -2860,8 +4148,7 @@ mod tests {
         // from the 0-candidate arm rather than the equal-count tie arm, and this
         // sub-case would surface the regression by returning None instead of
         // Some(cand_r).
-        let default_r =
-            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar());
+        let default_r = CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar());
         let cand_r = CompiledFunction {
             name: "h".to_string(),
             doc: None,
@@ -2884,16 +4171,19 @@ mod tests {
         let result_three = try_default_padding(&[&cand_p, &cand_q, &cand_r], &args);
         let (matched_fn, matched_defaults) = result_three.expect(
             "cand_r (score 2) must win over tied pair (score 1 each) — \
-             proves cand_p/cand_q are satisfiable and reach the scoring arm (task-4788)"
+             proves cand_p/cand_q are satisfiable and reach the scoring arm (task-4788)",
         );
         assert!(
             std::ptr::eq(matched_fn, &cand_r),
             "unique-max candidate (cand_r, score 2) must win over cand_p/cand_q (score 1 each)"
         );
-        assert_eq!(matched_defaults.len(), 1, "one trailing default (opt) expected");
         assert_eq!(
-            matched_defaults[0].content_hash,
-            default_r.content_hash,
+            matched_defaults.len(),
+            1,
+            "one trailing default (opt) expected"
+        );
+        assert_eq!(
+            matched_defaults[0].content_hash, default_r.content_hash,
             "returned default must be cand_r's opt literal (Real(3.0))"
         );
     }
@@ -2902,14 +4192,20 @@ mod tests {
 
     /// Helper: build a bare AST `Expr` with a dummy span for unit-testing predicates.
     fn make_ast_expr(kind: reify_ast::ExprKind) -> reify_ast::Expr {
-        reify_ast::Expr { kind, span: SourceSpan::new(0, 1) }
+        reify_ast::Expr {
+            kind,
+            span: SourceSpan::new(0, 1),
+        }
     }
 
     /// `NumberLiteral{value:0.0, is_real:false}` — the bare `0` integer form — must
     /// return `true`.
     #[test]
     fn syntactic_zero_int_literal_zero_is_true() {
-        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: false,
+        });
         assert!(is_syntactic_zero_literal(&expr));
     }
 
@@ -2917,7 +4213,10 @@ mod tests {
     /// return `true`.
     #[test]
     fn syntactic_zero_real_literal_zero_is_true() {
-        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: true,
+        });
         assert!(is_syntactic_zero_literal(&expr));
     }
 
@@ -2925,7 +4224,10 @@ mod tests {
     /// return `true` (unary-neg recursion).
     #[test]
     fn syntactic_zero_neg_zero_is_true() {
-        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: false,
+        });
         let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
             op: "-".to_string(),
             operand: Box::new(inner),
@@ -2937,7 +4239,10 @@ mod tests {
     /// (recursive unary-neg chain).
     #[test]
     fn syntactic_zero_double_neg_zero_is_true() {
-        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: true,
+        });
         let neg_inner = make_ast_expr(reify_ast::ExprKind::UnOp {
             op: "-".to_string(),
             operand: Box::new(inner),
@@ -2952,8 +4257,10 @@ mod tests {
     /// `NumberLiteral{value:1.0, is_real:false}` — non-zero literal — must return `false`.
     #[test]
     fn syntactic_zero_nonzero_literal_is_false() {
-        let expr =
-            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 1.0,
+            is_real: false,
+        });
         assert!(!is_syntactic_zero_literal(&expr));
     }
 
@@ -2979,10 +4286,14 @@ mod tests {
     /// `1 - 1` — must return `false` (syntactic-only contract, §7.2 HARD BOUND).
     #[test]
     fn syntactic_zero_binop_one_minus_one_is_false() {
-        let one_a =
-            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
-        let one_b =
-            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let one_a = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 1.0,
+            is_real: false,
+        });
+        let one_b = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 1.0,
+            is_real: false,
+        });
         let expr = make_ast_expr(reify_ast::ExprKind::BinOp {
             op: "-".to_string(),
             left: Box::new(one_a),
@@ -3002,13 +4313,20 @@ mod tests {
         let mut subst = HashMap::new();
         let result = unify(
             &Type::ScalarParam("Q".to_string()),
-            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
             &mut subst,
         );
-        assert!(result.is_ok(), "expected Ok for ScalarParam(Q) vs Scalar{{LENGTH}}, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok for ScalarParam(Q) vs Scalar{{LENGTH}}, got {result:?}"
+        );
         assert_eq!(
             subst.get("Q"),
-            Some(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            Some(&Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
             "subst[\"Q\"] should be Scalar{{LENGTH}} after binding, got {:?}",
             subst.get("Q")
         );
@@ -3025,11 +4343,15 @@ mod tests {
         let mut subst = HashMap::new();
         subst.insert(
             "Q".to_string(),
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
         );
         let result = unify(
             &Type::ScalarParam("Q".to_string()),
-            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
             &mut subst,
         );
         assert!(
@@ -3047,30 +4369,40 @@ mod tests {
         let mut subst = HashMap::new();
         subst.insert(
             "Q".to_string(),
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
         );
         let result = unify(
             &Type::ScalarParam("Q".to_string()),
-            &Type::Scalar { dimension: DimensionVector::MASS },
+            &Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
             &mut subst,
         );
         match result {
-            Err(TypeArgConflict { param, existing, incoming }) => {
+            Err(TypeArgConflict {
+                param,
+                existing,
+                incoming,
+            }) => {
                 assert_eq!(param, "Q", "conflict param should be Q");
                 assert_eq!(
                     existing,
-                    Type::Scalar { dimension: DimensionVector::LENGTH },
+                    Type::Scalar {
+                        dimension: DimensionVector::LENGTH
+                    },
                     "existing should be Scalar{{LENGTH}}"
                 );
                 assert_eq!(
                     incoming,
-                    Type::Scalar { dimension: DimensionVector::MASS },
+                    Type::Scalar {
+                        dimension: DimensionVector::MASS
+                    },
                     "incoming should be Scalar{{MASS}}"
                 );
             }
-            Ok(()) => panic!(
-                "expected TypeArgConflict for Q (LENGTH) vs Scalar{{MASS}}, got Ok"
-            ),
+            Ok(()) => panic!("expected TypeArgConflict for Q (LENGTH) vs Scalar{{MASS}}, got Ok"),
         }
     }
 
@@ -3081,12 +4413,11 @@ mod tests {
     #[test]
     fn unify_scalar_param_non_scalar_arg_binds_nothing() {
         let mut subst = HashMap::new();
-        let result = unify(
-            &Type::ScalarParam("Q".to_string()),
-            &Type::Bool,
-            &mut subst,
+        let result = unify(&Type::ScalarParam("Q".to_string()), &Type::Bool, &mut subst);
+        assert!(
+            result.is_ok(),
+            "non-scalar arg against ScalarParam should be Ok, got {result:?}"
         );
-        assert!(result.is_ok(), "non-scalar arg against ScalarParam should be Ok, got {result:?}");
         assert!(
             subst.is_empty(),
             "subst should remain empty for non-scalar arg against ScalarParam, got {subst:?}"
@@ -3117,7 +4448,10 @@ mod tests {
     /// RED until step-6.
     #[test]
     fn type_carries_dim_param_vector3_quantity_is_true() {
-        let vec3_q = Type::Vector { n: 3, quantity: Box::new(sp("Q")) };
+        let vec3_q = Type::Vector {
+            n: 3,
+            quantity: Box::new(sp("Q")),
+        };
         assert!(
             type_carries_dim_param(&vec3_q),
             "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
@@ -3130,7 +4464,9 @@ mod tests {
     #[test]
     fn type_carries_dim_param_concrete_scalar_is_false() {
         assert!(
-            !type_carries_dim_param(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            !type_carries_dim_param(&Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
             "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
         );
     }
@@ -3165,7 +4501,12 @@ mod tests {
             matches!(
                 resolve_function_overload(
                     "scale_q",
-                    &[Type::Scalar { dimension: DimensionVector::LENGTH }, Type::dimensionless_scalar()],
+                    &[
+                        Type::Scalar {
+                            dimension: DimensionVector::LENGTH
+                        },
+                        Type::dimensionless_scalar()
+                    ],
                     &fns,
                 ),
                 OverloadResolution::Resolved(_)
@@ -3182,7 +4523,15 @@ mod tests {
     fn overload_non_generic_concrete_fn_still_requires_exact_match() {
         let concrete = make_fn(
             "scale_concrete",
-            vec![("x", Type::Scalar { dimension: DimensionVector::LENGTH }), ("k", Type::dimensionless_scalar())],
+            vec![
+                (
+                    "x",
+                    Type::Scalar {
+                        dimension: DimensionVector::LENGTH,
+                    },
+                ),
+                ("k", Type::dimensionless_scalar()),
+            ],
         );
         let fns = vec![concrete];
         // Calling with (MASS, Real) must NOT resolve — only (LENGTH, Real) is exact.
@@ -3190,12 +4539,162 @@ mod tests {
             matches!(
                 resolve_function_overload(
                     "scale_concrete",
-                    &[Type::Scalar { dimension: DimensionVector::MASS }, Type::dimensionless_scalar()],
+                    &[
+                        Type::Scalar {
+                            dimension: DimensionVector::MASS
+                        },
+                        Type::dimensionless_scalar()
+                    ],
                     &fns,
                 ),
                 OverloadResolution::NoMatch(_)
             ),
             "concrete fn must NOT resolve for wrong dimension arg — exact match only"
+        );
+    }
+
+    /// Regression lock (task #4038 δ, esc-4038-2): the CHAINED
+    /// `fallback(or_else(parse_length_r(x), parse_length_r(y)), dflt)` case.
+    ///
+    /// `or_else<T,E>(Result<T,E>, Result<T,E>)` over two headless-`Enum("Result")`
+    /// subjects binds neither `T` nor `E`, so its result type leaks out as
+    /// `Applied{"Result", [TypeParam("T"), TypeParam("E")]}` (a HEADED type
+    /// carrying nested type-params). That leaky arg then flows into the outer
+    /// `fallback(...)` overload set — `fallback<T>(Option<T>, T)` and
+    /// `fallback<T,E>(Result<T,E>, T)`. Before the head-exact-tier narrowing,
+    /// the bare `type_carries_type_param(arg_ty)` disjunct wildcard-matched the
+    /// leaky arg against BOTH overloads → spurious `Ambiguous`. With the
+    /// narrowing (headed args are discriminated by `heads_unifiable`), only the
+    /// `Result<T,E>` overload survives → `Resolved`.
+    #[test]
+    fn overload_chained_result_leaky_arg_resolves_to_result_overload() {
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("T"), tp("E")],
+        };
+        let option_overload = make_generic_fn(
+            "fallback",
+            vec![("o", Type::Option(Box::new(tp("T")))), ("dflt", tp("T"))],
+            &["T"],
+            tp("T"),
+        );
+        let result_overload = make_generic_fn(
+            "fallback",
+            vec![
+                (
+                    "r",
+                    Type::Applied {
+                        name: "Result".to_string(),
+                        args: vec![tp("T"), tp("E")],
+                    },
+                ),
+                ("dflt", tp("T")),
+            ],
+            &["T", "E"],
+            tp("T"),
+        );
+        let fns = vec![option_overload, result_overload];
+        match resolve_function_overload("fallback", &[leaky_result, Type::length()], &fns) {
+            OverloadResolution::Resolved(matched) => assert_eq!(
+                matched.type_params.len(),
+                2,
+                "leaky Result<T,E> arg must select the Result<T,E> overload, not Option<T>"
+            ),
+            OverloadResolution::Ambiguous(_) => {
+                panic!("expected Resolved(fallback<T,E> over Result), got Ambiguous")
+            }
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoUserFunctions")
+            }
+        }
+    }
+
+    /// Precedent lock (reviewer_comprehensive #2, task #4038 δ amendment):
+    /// the head-exact tier's non-generic exclusion does not regress the
+    /// chained-leaky-arg resolution above when a same-name NON-generic
+    /// candidate is also present in the overload set.
+    ///
+    /// `non_generic_overload` (`fallback(r: Length, dflt: Length)`, no type
+    /// params) is structurally unrelated to the leaky `Applied{"Result",[T,E]}`
+    /// arg, but it IS admitted into the first (`matches`) tier — the
+    /// `type_carries_type_param(arg_ty)` disjunct there looks only at the arg,
+    /// not `param_ty`, so any candidate is provisionally eligible. Before the
+    /// head-exact-tier narrowing (this task), it would ALSO have been eligible
+    /// for `head_matches` via the same permissive arg-only check, joining
+    /// `result_overload` there and forcing a spurious `Ambiguous`. After the
+    /// narrowing, `non_generic_overload` fails `is_generic`, the bare-`TypeParam`
+    /// wildcard, and plain equality, so it is excluded from `head_matches` —
+    /// only the structurally-matching `result_overload` remains, and
+    /// resolution stays a clean `Resolved`, identical to
+    /// `overload_chained_result_leaky_arg_resolves_to_result_overload` above.
+    #[test]
+    fn overload_leaky_headed_arg_excludes_non_generic_candidate() {
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("T"), tp("E")],
+        };
+        let option_overload = make_generic_fn(
+            "fallback",
+            vec![("o", Type::Option(Box::new(tp("T")))), ("dflt", tp("T"))],
+            &["T"],
+            tp("T"),
+        );
+        let result_overload = make_generic_fn(
+            "fallback",
+            vec![
+                (
+                    "r",
+                    Type::Applied {
+                        name: "Result".to_string(),
+                        args: vec![tp("T"), tp("E")],
+                    },
+                ),
+                ("dflt", tp("T")),
+            ],
+            &["T", "E"],
+            tp("T"),
+        );
+        let non_generic_overload =
+            make_fn("fallback", vec![("r", Type::length()), ("dflt", Type::length())]);
+        let fns = vec![option_overload, result_overload, non_generic_overload];
+        match resolve_function_overload("fallback", &[leaky_result, Type::length()], &fns) {
+            OverloadResolution::Resolved(matched) => assert_eq!(
+                matched.type_params.len(),
+                2,
+                "leaky Result<T,E> arg must still select the Result<T,E> overload with a \
+                 same-name non-generic candidate present, not go Ambiguous"
+            ),
+            OverloadResolution::Ambiguous(candidates) => panic!(
+                "expected Resolved(fallback<T,E> over Result), got Ambiguous({} candidates) — \
+                 the non-generic candidate leaked into head_matches",
+                candidates.len()
+            ),
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoUserFunctions")
+            }
+        }
+    }
+
+    /// D4 preservation (task-4232 γ): a BARE `TypeParam` arg (a generic fn body
+    /// passing a `T`-typed value to a concrete-param overload) must STILL
+    /// resolve after the head-exact-tier narrowing — the narrowing only strips
+    /// the wildcard from HEADED nested-type-param args, never bare ones.
+    #[test]
+    fn overload_bare_type_param_arg_still_resolves() {
+        let concrete = make_fn("g", vec![("x", Type::dimensionless_scalar())]);
+        let fns = vec![concrete];
+        assert!(
+            matches!(
+                resolve_function_overload("g", &[tp("U")], &fns),
+                OverloadResolution::Resolved(_)
+            ),
+            "a bare TypeParam arg must still wildcard-resolve a single concrete overload"
         );
     }
 
@@ -3616,6 +5115,568 @@ mod tests {
         assert!(
             !constraint_arg_type_conforms(&length_ty(), &Type::String),
             "String passed as Length param must be rejected"
+        );
+    }
+
+    // ── β2 (task compiler-type-hygiene): infer_mul_div_result — step-1 RED ───
+    //
+    // Unit tests for the new `infer_mul_div_result(op, left, right) ->
+    // Option<Type>`, pinned row-for-row against the β1 runtime truth table
+    // (`crates/reify-expr/tests/mul_div_runtime_truth_table.rs`). This batch
+    // covers the numeric/Scalar-core and aggregate-scale (Vector/Point/Tensor)
+    // arms only — Complex/Transform arms are step-3/4.
+    //
+    // RED: `infer_mul_div_result` does not exist yet.
+
+    fn time_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::TIME,
+        }
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_times_scalar_multiplies_dimensions() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::length()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::LENGTH.mul(&DimensionVector::LENGTH),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_div_scalar_divides_dimensions() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::length(), &Type::length()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::LENGTH.div(&DimensionVector::LENGTH),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_times_int_yields_int() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::Int),
+            Some(Type::Int)
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_div_int_yields_int_exemption() {
+        // β3 exemption ledger (PRD decision 4): stays Some(Int) statically even
+        // though the runtime widens to Real on non-divisible operands.
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::Int, &Type::Int),
+            Some(Type::Int)
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_times_int_preserves_dimension_both_orders() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::Int),
+            Some(Type::length()),
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::length()),
+            Some(Type::length()),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_div_int_preserves_dimension() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::length(), &Type::Int),
+            Some(Type::length()),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_div_scalar_yields_reciprocal_dimension() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::Int, &time_ty()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_dimensionless_scalar_div_scalar_yields_reciprocal_dimension() {
+        // A `Real` literal types as `Scalar{DIMENSIONLESS}` — there is no `Type::Real`.
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::dimensionless_scalar(), &time_ty()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_times_dimensionless_preserves_vector() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &v, &Type::dimensionless_scalar()),
+            Some(v),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_times_vector_is_commutative() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &v), Some(v));
+    }
+
+    #[test]
+    fn infer_mul_div_result_point_times_int_scales_both_orders() {
+        let p = Type::point3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &p, &Type::Int),
+            Some(p.clone())
+        );
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &p), Some(p));
+    }
+
+    #[test]
+    fn infer_mul_div_result_tensor_times_int_scales_both_orders() {
+        let t = Type::tensor(1, 3, Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &t, &Type::Int),
+            Some(t.clone())
+        );
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &t), Some(t));
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_div_dimensionless_preserves_vector_row6() {
+        // β1 row-6 pin: `Vector3<Force> / dimensionless -> Vector3<Force>`.
+        let v = Type::vec3(force_ty());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &v, &Type::dimensionless_scalar()),
+            Some(v),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_div_scalar_time_yields_reciprocal_component() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::vec3(Type::length()), &time_ty()),
+            Some(Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_div_vector_scale_is_not_commutative() {
+        // Div has no reverse-scale arm: `dimensionless / Vector3<Length>` is unsupported.
+        assert_eq!(
+            infer_mul_div_result(
+                BinOp::Div,
+                &Type::dimensionless_scalar(),
+                &Type::vec3(Type::length())
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_times_vector_is_none() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &v, &v), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_tensor_times_tensor_is_none() {
+        let t = Type::tensor(1, 3, Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &t, &t), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_point_times_point_is_none() {
+        let p = Type::point3(Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &p, &p), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_div_vector_is_none() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::length(), &Type::vec3(Type::length())),
+            None,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_matrix_operand_is_none_both_orders() {
+        let m = Type::matrix(2, 2, Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &m, &Type::Int), None);
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &m), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_list_operand_is_none() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::List(Box::new(Type::Int)), &Type::Int),
+            None,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_bool_operand_is_none() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Bool, &Type::Int),
+            None
+        );
+    }
+
+    /// `ScalarParam(Q) * ScalarParam(Q)` is deliberately left unhandled: the
+    /// combined dimension ("Q²") is not representable by `ScalarParam`'s
+    /// bare-name form (see the `ScalarParam` arms' doc comment above) — a
+    /// static representational gap, not a runtime error, so the `expr.rs`
+    /// guard defers (gradualism skip) rather than poisoning; regression pin
+    /// for that documented decision at the `infer_mul_div_result` level. See
+    /// `infer_binop_type_scalar_param_times_scalar_param_propagates_q` below
+    /// for the corresponding `infer_binop_type`-level pin of what the
+    /// deferral actually resolves to.
+    #[test]
+    fn infer_mul_div_result_scalar_param_times_scalar_param_is_none() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &q), None);
+    }
+
+    /// `Int / ScalarParam(Q)` is deliberately left unhandled: the `Int ⊗
+    /// ScalarParam` arms above cover only `Mul` (dimension-preserving); `Div`
+    /// (reciprocal dimension) has no `ScalarParam` arm — regression pin for
+    /// that documented decision.
+    #[test]
+    fn infer_mul_div_result_int_div_scalar_param_is_none() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Div, &Type::Int, &q), None);
+    }
+
+    /// `ScalarParam(Q) * Int` preserves `Q` (Int carries no dimension) — pins
+    /// the `(Type::ScalarParam(name), Type::Int)` arm's Some-returning result
+    /// type, not just the adjacent None-returning edges above.
+    #[test]
+    fn infer_mul_div_result_scalar_param_times_int_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &Type::Int), Some(q));
+    }
+
+    /// `Int * ScalarParam(Q)` preserves `Q` — the commutative (Mul-only)
+    /// counterpart of the arm above.
+    #[test]
+    fn infer_mul_div_result_int_times_scalar_param_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &q), Some(q));
+    }
+
+    /// `ScalarParam(Q) * Scalar{DIMENSIONLESS}` preserves `Q` — the
+    /// `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }`
+    /// pattern (`dim_param_scale_q_resolves_at_two_dimensions` /
+    /// `examples/generics/dim_param.ri`) pinned at the `infer_mul_div_result`
+    /// level, not just via the `infer_binop_type` delegation tests.
+    #[test]
+    fn infer_mul_div_result_scalar_param_times_dimensionless_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &q, &Type::dimensionless_scalar()),
+            Some(q)
+        );
+    }
+
+    /// `Scalar{DIMENSIONLESS} * ScalarParam(Q)` preserves `Q` — the reverse-order
+    /// (Mul-only) counterpart of the arm above.
+    #[test]
+    fn infer_mul_div_result_dimensionless_times_scalar_param_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::dimensionless_scalar(), &q),
+            Some(q)
+        );
+    }
+
+    #[test]
+    fn infer_binop_type_delegates_to_infer_mul_div_result_for_vector_scale() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(infer_binop_type(BinOp::Mul, &v, &Type::Int), v);
+    }
+
+    /// `Scalar<Length> / P::MotionValue` (an unresolved trait-associated-type
+    /// projection, before a concrete arg substitutes `P`) must propagate the
+    /// `Projection` itself, NOT collapse to the `Type::Int` placeholder. The
+    /// `expr.rs` operand-kind guard skips `Type::Projection` operands
+    /// (mirrors its `TypeParam` skip, PRD decision 3), so an unqualified
+    /// `Int` result would leak downstream unpoisoned, risking a spurious
+    /// cascade on a later dimensioned op (e.g. `result + x` where
+    /// `x: Scalar<Length>` misreading as `Int + Scalar<Length>` in the
+    /// Add/Sub dimension guard). Regression pin for the gradualism gap closed
+    /// alongside the `Type::Projection` arm in `infer_binop_type`'s Mul/Div
+    /// case above.
+    #[test]
+    fn infer_binop_type_scalar_div_projection_propagates_projection_not_int() {
+        let projection = Type::Projection {
+            base: Box::new(Type::TypeParam("P".to_string())),
+            member: "MotionValue".to_string(),
+        };
+        assert_eq!(
+            infer_binop_type(BinOp::Div, &Type::length(), &projection),
+            projection
+        );
+    }
+
+    /// Reverse-order (Mul) counterpart: `P::MotionValue * Scalar<Length>` also
+    /// propagates the `Projection`, not `Int`.
+    #[test]
+    fn infer_binop_type_projection_mul_scalar_propagates_projection_not_int() {
+        let projection = Type::Projection {
+            base: Box::new(Type::TypeParam("P".to_string())),
+            member: "MotionValue".to_string(),
+        };
+        assert_eq!(
+            infer_binop_type(BinOp::Mul, &projection, &Type::length()),
+            projection
+        );
+    }
+
+    /// `ScalarParam(Q) * ScalarParam(Q)` (e.g. the body of
+    /// `fn area<Q: Dimension>(x: Scalar<Q>) { x * x }`, before a concrete arg
+    /// substitutes `Q`) must propagate the `ScalarParam` itself, NOT collapse
+    /// to the `Type::Int` placeholder — same gradualism-leak class as the
+    /// `Type::Projection` pins above, closed for `Type::ScalarParam` by
+    /// amendment round 3. The `expr.rs` operand-kind guard now skips
+    /// `Type::ScalarParam` operands (mirrors its `Type::Projection` skip), so
+    /// an unqualified `Int` result would otherwise leak downstream unpoisoned,
+    /// risking a spurious cascade on a later dimensioned op. Regression pin
+    /// for the `Type::ScalarParam` arm in `mul_div_result_or_placeholder`.
+    #[test]
+    fn infer_binop_type_scalar_param_times_scalar_param_propagates_q_not_int() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_binop_type(BinOp::Mul, &q, &q), q);
+    }
+
+    /// `Int / ScalarParam(Q)` counterpart: also propagates the `ScalarParam`,
+    /// not `Int` — pins the `Div` non-commutative-reciprocal case (no
+    /// `ScalarParam` Div arm exists, see `infer_mul_div_result`) through the
+    /// same placeholder path.
+    #[test]
+    fn infer_binop_type_int_div_scalar_param_propagates_q_not_int() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_binop_type(BinOp::Div, &Type::Int, &q), q);
+    }
+
+    /// `TypeParam(_) * Int` (e.g. `Type::TypeParam("StructureMember")`, a
+    /// purpose-subject member access's static type — `subject.a` in
+    /// `purpose marg(subject: Widget) { let m = subject.a - subject.b; let n =
+    /// m * 2; constraint n > 0mm }`) must propagate the `TypeParam` itself,
+    /// NOT collapse to the `Type::Int` placeholder.
+    ///
+    /// Deliberately calls `mul_div_result_or_placeholder` directly rather than
+    /// `infer_binop_type`: `infer_binop_type`'s own pre-match early-return
+    /// (this file, `infer_binop_type`'s `BinOp::Add | BinOp::Sub | BinOp::Mul
+    /// | BinOp::Div | BinOp::Mod | BinOp::Pow` guard) already short-circuits a
+    /// `TypeParam` operand BEFORE reaching this function, so a test that goes
+    /// through `infer_binop_type` cannot observe a regression here.
+    /// `expr.rs::compile_binop` calls `infer_mul_div_result` and
+    /// `mul_div_result_or_placeholder` DIRECTLY for `*`/`/` (see this
+    /// function's own doc), bypassing `infer_binop_type`'s early-return
+    /// entirely — so this function needed its OWN `TypeParam` propagation arm
+    /// to close the same gradualism gap on that path. Without it, `n` above
+    /// statically typed `Int`, and `constraint n > 0mm` produced a false `Int
+    /// vs Scalar[m]` mismatch (`purpose_let_multi_let_earlier_let_visibility`
+    /// integration regression, `crates/reify-compiler/tests/purpose_compile_tests.rs`).
+    /// `Type::Error * Int` (e.g. `undef * 5`, since `undef` compiles to
+    /// `Literal(Value::Undef, Type::Error)`) must propagate `Type::Error`
+    /// itself, NOT collapse to the `Type::Int` placeholder — same
+    /// gradualism-leak class as the `TypeParam`/`Projection`/`ScalarParam`
+    /// pins below. `infer_binop_type`'s own pre-match `is_error()`
+    /// early-return (above) already handles this case when callers go
+    /// through `infer_binop_type` — but `expr.rs::compile_binop` calls
+    /// `infer_mul_div_result` and this function DIRECTLY for `*`/`/`,
+    /// bypassing that early-return entirely, so without this arm `5 * undef`
+    /// statically typed `Int` instead of the anti-cascade `Error`. The
+    /// `expr.rs` guard deliberately skips re-poisoning an already-`Error`
+    /// operand (gradualism), so nothing downstream corrects the leak.
+    /// Regression pin for the `Type::Error` arm in
+    /// `mul_div_result_or_placeholder`; integration-level symptom:
+    /// `undef_literal_compile_tests::binary_with_undef_emits_no_unresolved_name_diagnostic`.
+    #[test]
+    fn mul_div_result_or_placeholder_error_propagates_not_int() {
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &Type::Error, &Type::Int),
+                &Type::Error,
+                &Type::Int
+            ),
+            Type::Error
+        );
+    }
+
+    /// Reverse-order (`Int * Type::Error`) counterpart of the pin above.
+    #[test]
+    fn mul_div_result_or_placeholder_int_times_error_propagates_not_int() {
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::Error),
+                &Type::Int,
+                &Type::Error
+            ),
+            Type::Error
+        );
+    }
+
+    #[test]
+    fn mul_div_result_or_placeholder_type_param_propagates_not_int() {
+        let t = Type::TypeParam("StructureMember".to_string());
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &t, &Type::Int),
+                &t,
+                &Type::Int
+            ),
+            t
+        );
+    }
+
+    /// Reverse-order (`Int * TypeParam(_)`) counterpart of the pin above.
+    #[test]
+    fn mul_div_result_or_placeholder_int_times_type_param_propagates_not_int() {
+        let t = Type::TypeParam("StructureMember".to_string());
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &Type::Int, &t),
+                &Type::Int,
+                &t
+            ),
+            t
+        );
+    }
+
+    // ── β2 step-3 RED — infer_mul_div_result: Complex + Transform arms ──────
+    //
+    // Extends infer_mul_div_result with the Complex(q) and Transform(n) arms,
+    // pinned row-for-row against the β1 runtime truth table (mul: lib.rs
+    // 4361-4458, 4485-4626; div: lib.rs 4699-4754).
+    //
+    // RED: step-2 returns None for every Complex/Transform combo below (no
+    // arm exists yet), so infer_binop_type falls back to the Type::Int
+    // placeholder instead of the Complex/aggregate result.
+
+    fn area_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::AREA,
+        }
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_times_complex_multiplies_dimensions() {
+        let length_complex = Type::complex(Type::length());
+        let time_complex = Type::complex(time_ty());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &length_complex, &time_complex),
+            Some(Type::complex(Type::Scalar {
+                dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_times_scalar_multiplies_dimensions_both_orders() {
+        let length_complex = Type::complex(Type::length());
+        let expected = Some(Type::complex(Type::Scalar {
+            dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
+        }));
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &length_complex, &time_ty()),
+            expected,
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &time_ty(), &length_complex),
+            expected,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_times_int_preserves_dimension_both_orders() {
+        let length_complex = Type::complex(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &length_complex, &Type::Int),
+            Some(length_complex.clone()),
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &length_complex),
+            Some(length_complex),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_div_complex_divides_dimensions() {
+        let area_complex = Type::complex(area_ty());
+        let length_complex = Type::complex(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &area_complex, &length_complex),
+            Some(Type::complex(Type::Scalar {
+                dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_div_scalar_divides_dimensions() {
+        let area_complex = Type::complex(area_ty());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &area_complex, &Type::length()),
+            Some(Type::complex(Type::Scalar {
+                dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_div_int_preserves_dimension() {
+        let length_complex = Type::complex(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &length_complex, &Type::Int),
+            Some(length_complex),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_transform_times_vector_yields_vector() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::transform(3), &v),
+            Some(v),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_transform_times_point_yields_point() {
+        let p = Type::point3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::transform(3), &p),
+            Some(p),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_transform_times_transform_yields_transform_row9() {
+        // β1 row-9 pin: `Transform(3) * Transform(3) -> Transform(3)`.
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::transform(3), &Type::transform(3)),
+            Some(Type::transform(3)),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_times_transform_is_none_order_sensitive() {
+        // Order-sensitive: Transform × Vector IS supported (above), but the
+        // reverse Vector × Transform has no runtime-intentional arm.
+        let v = Type::vec3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &v, &Type::transform(3)),
+            None,
         );
     }
 }

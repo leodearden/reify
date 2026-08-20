@@ -89,11 +89,12 @@ use reify_ir::{
     AttributeHistory, AxisSign, BRepKind, BooleanOpHistoryRecords, BooleanOpParents,
     BooleanOpParentsError, CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
     DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind,
-    FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
+    FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation,
-    QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
-    TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
+    QueryCapability, QueryError, ReprKind, Role, SweepOpHistoryRecords, TessError,
+    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh,
+    debug_assert_query_many_invariant,
 };
 
 // ── geometry (module-path form) ──────────────────────────────────────────────
@@ -107,8 +108,7 @@ use reify_ir::geometry::{
     DeletedRecord as DeletedRecordMod, EdgeCurveKind as EdgeCurveKindMod,
     ElementOrderTag as ElementOrderTagMod, ExportError as ExportErrorMod,
     ExportFormat as ExportFormatMod, FaceSurfaceKind as FaceSurfaceKindMod,
-    FeatureId as FeatureIdMod, FeatureTag as FeatureTagMod,
-    FeatureTagTable as FeatureTagTableMod, GeometryError as GeometryErrorMod,
+    FeatureId as FeatureIdMod, GeometryError as GeometryErrorMod,
     GeometryHandle as GeometryHandleMod, GeometryHandleId as GeometryHandleIdMod,
     GeometryKernel as GeometryKernelMod, GeometryOp as GeometryOpMod,
     GeometryQuery as GeometryQueryMod, HistoryRecord as HistoryRecordMod,
@@ -118,9 +118,10 @@ use reify_ir::geometry::{
     LoftOpHistoryRecords as LoftOpHistoryRecordsMod, Mesh as MeshMod, ModEntry as ModEntryMod,
     Operation as OperationMod, QueryCapability as QueryCapabilityMod,
     QueryError as QueryErrorMod, ReprKind as ReprKindMod, Role as RoleMod,
-    StepKind as StepKindMod, SweepOpHistoryRecords as SweepOpHistoryRecordsMod,
+    SweepOpHistoryRecords as SweepOpHistoryRecordsMod,
     TessError as TessErrorMod, TopologyAttribute as TopologyAttributeMod,
-    TopologyAttributeTable as TopologyAttributeTableMod, VolumeMesh as VolumeMeshMod,
+    TopologyAttributeTable as TopologyAttributeTableMod,
+    VolumeConnectivity as VolumeConnectivityMod, VolumeMesh as VolumeMeshMod,
     debug_assert_query_many_invariant as debug_assert_query_many_invariant_mod,
 };
 
@@ -309,8 +310,10 @@ fn volume_mesh_carries_optional_boundary_field() {
     // the mesh was not produced with attribution (all current constructors).
     let without = VolumeMesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -318,8 +321,10 @@ fn volume_mesh_carries_optional_boundary_field() {
 
     let with = VolumeMesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: Some(BoundaryAssociation::default()),
     };
@@ -465,8 +470,6 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<ExportFormat> = || None;
     let _: fn() -> Option<FaceSurfaceKind> = || None;
     let _: fn() -> Option<FeatureId> = || None;
-    let _: fn() -> Option<FeatureTag> = || None;
-    let _: fn() -> Option<FeatureTagTable> = || None;
     let _: fn() -> Option<GeometryError> = || None;
     let _: fn() -> Option<GeometryOp> = || None;
     let _: fn() -> Option<GeometryQuery> = || None;
@@ -479,11 +482,11 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<QueryError> = || None;
     let _: fn() -> Option<ReprKind> = || None;
     let _: fn() -> Option<Role> = || None;
-    let _: fn() -> Option<StepKind> = || None;
     let _: fn() -> Option<SweepOpHistoryRecords> = || None;
     let _: fn() -> Option<TessError> = || None;
     let _: fn() -> Option<TopologyAttribute> = || None;
     let _: fn() -> Option<TopologyAttributeTable> = || None;
+    let _: fn() -> Option<VolumeConnectivity> = || None;
     let _: fn() -> Option<VolumeMesh> = || None;
     // Module-path forms.
     let _: fn() -> Option<MeshMod> = || None;
@@ -507,8 +510,6 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<ExportFormatMod> = || None;
     let _: fn() -> Option<FaceSurfaceKindMod> = || None;
     let _: fn() -> Option<FeatureIdMod> = || None;
-    let _: fn() -> Option<FeatureTagMod> = || None;
-    let _: fn() -> Option<FeatureTagTableMod> = || None;
     let _: fn() -> Option<GeometryErrorMod> = || None;
     let _: fn() -> Option<GeometryOpMod> = || None;
     let _: fn() -> Option<GeometryQueryMod> = || None;
@@ -521,11 +522,11 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<QueryErrorMod> = || None;
     let _: fn() -> Option<ReprKindMod> = || None;
     let _: fn() -> Option<RoleMod> = || None;
-    let _: fn() -> Option<StepKindMod> = || None;
     let _: fn() -> Option<SweepOpHistoryRecordsMod> = || None;
     let _: fn() -> Option<TessErrorMod> = || None;
     let _: fn() -> Option<TopologyAttributeMod> = || None;
     let _: fn() -> Option<TopologyAttributeTableMod> = || None;
+    let _: fn() -> Option<VolumeConnectivityMod> = || None;
     let _: fn() -> Option<VolumeMeshMod> = || None;
     // DEFAULT_POINT_ON_SHAPE_TOLERANCE_M — same value in both spellings.
     assert_eq!(

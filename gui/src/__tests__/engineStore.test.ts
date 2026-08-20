@@ -8,6 +8,8 @@ import type {
   EvaluationStatus,
   DiagnosticInfo,
   EntityTreeNode,
+  TensegrityWireData,
+  TensegritySurfaceData,
   DisplayDirective,
   AppearanceDirective,
   FeaDiagnosticInfo,
@@ -33,6 +35,11 @@ vi.mock('../bridge', () => ({
   onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
   cancelSolve: vi.fn(() => Promise.resolve()),
   onFeaDiagnosticsChanged: vi.fn(() => Promise.resolve(() => {})),
+  onFeaConvergenceChanged: vi.fn(() => Promise.resolve(() => {})),
+  onTensegrityWiresUpdate: vi.fn(() => Promise.resolve(() => {})),
+  onTensegritySurfacesUpdate: vi.fn(() => Promise.resolve(() => {})),
+  onDisplayPanesUpdate: vi.fn(() => Promise.resolve(() => {})),
+  onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 import {
@@ -51,6 +58,11 @@ import {
   onSolverProgress,
   cancelSolve,
   onFeaDiagnosticsChanged,
+  onFeaConvergenceChanged,
+  onTensegrityWiresUpdate,
+  onTensegritySurfacesUpdate,
+  onDisplayPanesUpdate,
+  onDisplayAppearanceUpdate,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -64,11 +76,16 @@ const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
 const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
 const mockOnCompileDiagnostics = vi.mocked(onCompileDiagnostics);
 const mockOnFeaDiagnosticsChanged = vi.mocked(onFeaDiagnosticsChanged);
+const mockOnFeaConvergenceChanged = vi.mocked(onFeaConvergenceChanged);
 const mockOnAutoResolveStart = vi.mocked(onAutoResolveStart);
 const mockOnAutoResolveIteration = vi.mocked(onAutoResolveIteration);
 const mockOnAutoResolveComplete = vi.mocked(onAutoResolveComplete);
 const mockOnSolverProgress = vi.mocked(onSolverProgress);
 const mockCancelSolve = vi.mocked(cancelSolve);
+const mockOnTensegrityWiresUpdate = vi.mocked(onTensegrityWiresUpdate);
+const mockOnTensegritySurfacesUpdate = vi.mocked(onTensegritySurfacesUpdate);
+const mockOnDisplayPanesUpdate = vi.mocked(onDisplayPanesUpdate);
+const mockOnDisplayAppearanceUpdate = vi.mocked(onDisplayAppearanceUpdate);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -82,6 +99,10 @@ beforeEach(() => {
   mockOnAutoResolveComplete.mockResolvedValue(vi.fn());
   mockOnSolverProgress.mockResolvedValue(vi.fn());
   mockCancelSolve.mockResolvedValue(undefined);
+  mockOnTensegrityWiresUpdate.mockResolvedValue(vi.fn());
+  mockOnTensegritySurfacesUpdate.mockResolvedValue(vi.fn());
+  mockOnDisplayPanesUpdate.mockResolvedValue(vi.fn());
+  mockOnDisplayAppearanceUpdate.mockResolvedValue(vi.fn());
 });
 
 const sampleMesh: MeshData = {
@@ -1591,6 +1612,150 @@ describe('engineStore kernelStatus', () => {
   });
 });
 
+// ── #5031 L2 stopgap: whole-value reducers for the 4 live-sync list fields ──
+
+describe('engineStore live-sync reducers (#5031 step-1)', () => {
+  it('setTensegrityWires replaces state.tensegrityWires with the provided list', () => {
+    createRoot((dispose) => {
+      const { state, setTensegrityWires } = createEngineStore();
+      expect(state.tensegrityWires).toEqual([]);
+
+      const wire: TensegrityWireData = {
+        entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0,
+      };
+      setTensegrityWires([wire]);
+      expect(state.tensegrityWires).toEqual([wire]);
+      dispose();
+    });
+  });
+
+  it('setTensegritySurfaces replaces state.tensegritySurfaces with the provided list', () => {
+    createRoot((dispose) => {
+      const { state, setTensegritySurfaces } = createEngineStore();
+      expect(state.tensegritySurfaces).toEqual([]);
+
+      const surface: TensegritySurfaceData = {
+        entity_path: 'Patch', kind: 'membrane', i0: 0, i1: 1, i2: 2,
+        x0: 0.0, y0: 0.0, z0: 0.0, x1: 1.0, y1: 0.0, z1: 0.0, x2: 0.5, y2: 0.866, z2: 0.0,
+      };
+      setTensegritySurfaces([surface]);
+      expect(state.tensegritySurfaces).toEqual([surface]);
+      dispose();
+    });
+  });
+
+  it('setDisplayPanes replaces state.displayPanes with the provided list', () => {
+    createRoot((dispose) => {
+      const { state, setDisplayPanes } = createEngineStore();
+      expect(state.displayPanes).toEqual([]);
+
+      const directive: DisplayDirective = { subject: 'S#realization[0]', pane: 1 };
+      setDisplayPanes([directive]);
+      expect(state.displayPanes).toEqual([directive]);
+      dispose();
+    });
+  });
+
+  it('setDisplayAppearance replaces state.displayAppearance with the provided list', () => {
+    createRoot((dispose) => {
+      const { state, setDisplayAppearance } = createEngineStore();
+      expect(state.displayAppearance).toEqual([]);
+
+      const styleDirective: AppearanceDirective = {
+        subject: 'S#realization[0]',
+        style: { color: [0.5, 0.3, 0.1, 0.8], finish: 2, opacity: 0.8, wireframe: false },
+      };
+      setDisplayAppearance([styleDirective]);
+      expect(state.displayAppearance).toEqual([styleDirective]);
+      dispose();
+    });
+  });
+});
+
+describe('engineStore subscribeToEvents wiring for 4 live-sync fields (#5031 step-3)', () => {
+  it('subscribeToEvents wires the 4 new listeners, routes payloads to state, and cleanup unsubscribes them', async () => {
+    // RED: subscribeToEvents does not yet import or call the 4 new bridge listeners.
+    await createRoot(async (dispose) => {
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+
+      const unlistenWires = vi.fn();
+      const unlistenSurfaces = vi.fn();
+      const unlistenPanes = vi.fn();
+      const unlistenAppearance = vi.fn();
+
+      let wiresCb: ((wires: TensegrityWireData[]) => void) | undefined;
+      let surfacesCb: ((surfaces: TensegritySurfaceData[]) => void) | undefined;
+      let panesCb: ((panes: DisplayDirective[]) => void) | undefined;
+      let appearanceCb: ((appearance: AppearanceDirective[]) => void) | undefined;
+
+      mockOnTensegrityWiresUpdate.mockImplementation(async (cb) => {
+        wiresCb = cb as typeof wiresCb;
+        return unlistenWires;
+      });
+      mockOnTensegritySurfacesUpdate.mockImplementation(async (cb) => {
+        surfacesCb = cb as typeof surfacesCb;
+        return unlistenSurfaces;
+      });
+      mockOnDisplayPanesUpdate.mockImplementation(async (cb) => {
+        panesCb = cb as typeof panesCb;
+        return unlistenPanes;
+      });
+      mockOnDisplayAppearanceUpdate.mockImplementation(async (cb) => {
+        appearanceCb = cb as typeof appearanceCb;
+        return unlistenAppearance;
+      });
+
+      const store = createEngineStore();
+      const cleanup = await store.subscribeToEvents();
+
+      expect(mockOnTensegrityWiresUpdate).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnTensegritySurfacesUpdate).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnDisplayPanesUpdate).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnDisplayAppearanceUpdate).toHaveBeenCalledWith(expect.any(Function));
+
+      // Prove routing (not just subscription): invoking the captured callback
+      // must update live store state via the reducer.
+      const wire: TensegrityWireData = {
+        entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0,
+      };
+      wiresCb!([wire]);
+      expect(store.state.tensegrityWires).toEqual([wire]);
+
+      const surface: TensegritySurfaceData = {
+        entity_path: 'Patch', kind: 'membrane', i0: 0, i1: 1, i2: 2,
+        x0: 0.0, y0: 0.0, z0: 0.0, x1: 1.0, y1: 0.0, z1: 0.0, x2: 0.5, y2: 0.866, z2: 0.0,
+      };
+      surfacesCb!([surface]);
+      expect(store.state.tensegritySurfaces).toEqual([surface]);
+
+      const directive: DisplayDirective = { subject: 'S#realization[0]', pane: 1 };
+      panesCb!([directive]);
+      expect(store.state.displayPanes).toEqual([directive]);
+
+      const styleDirective: AppearanceDirective = {
+        subject: 'S#realization[0]',
+        style: { color: [0.5, 0.3, 0.1, 0.8], finish: 2, opacity: 0.8, wireframe: false },
+      };
+      appearanceCb!([styleDirective]);
+      expect(store.state.displayAppearance).toEqual([styleDirective]);
+
+      cleanup();
+      expect(unlistenWires).toHaveBeenCalled();
+      expect(unlistenSurfaces).toHaveBeenCalled();
+      expect(unlistenPanes).toHaveBeenCalled();
+      expect(unlistenAppearance).toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+});
+
 describe('engineStore solverProgress', () => {
   it('(step-1a) initial state.solverProgress is { latest: null, trace: [], visible: false, coarseReached: false }', () => {
     createRoot((dispose) => {
@@ -2441,6 +2606,59 @@ describe('engineStore feaConvergence (task 3001)', () => {
       } as unknown as GuiState;
       initFromState(guiState);
       expect((state as any).feaConvergence).toBeNull();
+      dispose();
+    });
+  });
+});
+
+// ── step-8: setFeaConvergence reducer + subscribeToEvents wiring ───────────
+
+describe('engineStore setFeaConvergence and subscribeToEvents wiring (step-8)', () => {
+  it('setFeaConvergence replaces state.feaConvergence', () => {
+    // RED: setFeaConvergence does not exist yet.
+    createRoot((dispose) => {
+      const store = createEngineStore();
+      expect(store.state.feaConvergence).toBeNull();
+
+      (store as any).setFeaConvergence({ converged: true });
+      expect(store.state.feaConvergence).toEqual({ converged: true });
+
+      // A subsequent call with null clears it (pins the clear-stale-indicator path).
+      (store as any).setFeaConvergence(null);
+      expect(store.state.feaConvergence).toBeNull();
+      dispose();
+    });
+  });
+
+  it('subscribeToEvents wires onFeaConvergenceChanged and updates state', async () => {
+    // RED: onFeaConvergenceChanged not yet wired into subscribeToEvents.
+    await createRoot(async (dispose) => {
+      let feaConvergenceCb: ((conv: FeaConvergenceInfo | null) => void) | undefined;
+      const spyUnlisten = vi.fn();
+
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnFeaConvergenceChanged.mockImplementation(async (cb) => {
+        feaConvergenceCb = cb as (conv: FeaConvergenceInfo | null) => void;
+        return spyUnlisten;
+      });
+
+      const store = createEngineStore();
+      const cleanup = await store.subscribeToEvents();
+
+      expect(mockOnFeaConvergenceChanged).toHaveBeenCalledWith(expect.any(Function));
+
+      const convergence: FeaConvergenceInfo = { converged: false, reason: 'MaxDofs' };
+      feaConvergenceCb!(convergence);
+      expect(store.state.feaConvergence).toEqual(convergence);
+
+      await cleanup();
+      expect(spyUnlisten).toHaveBeenCalled();
       dispose();
     });
   });

@@ -950,7 +950,7 @@ mod tests {
         assert_eq!(info.kind, ValueCellKind::Param);
         assert_eq!(*info.cell_type, Type::length());
         // Span starts at the 'p' in 'param width: Length = 80mm'
-        assert_eq!(info.span.start, 24);
+        assert_eq!(info.span.start, 28);
         // Verify span covers the full declaration text
         let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(

@@ -18,6 +18,13 @@
 #   F — NON-GIT PROJECT ROOT: git error is NOT treated as clean; aborts non-zero
 #   G — SCHEDULE-MODE SYSTEMD-RUN FAILURE: exits non-zero, no false confirmation
 #   H — EXEC-MODE START FAILURE: stop attempted, exits non-zero, no false success
+#   I — SCHEDULE-MODE --require-commit ANCESTOR GATE: refuses a non-ancestor or
+#       invalid sha (no systemd-run), threads --setenv=ORCH_REQUIRE_COMMIT and
+#       --setenv=ORCH_MAIN_BRANCH through when set (including a non-default
+#       branch value), byte-identical systemd-run invocation when unset
+#   J — EXEC-MODE --require-commit RE-CHECK: re-checks the precondition at
+#       fire time; neither stop nor start (leaves orchestrator running,
+#       exits 0) when it no longer holds
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -109,6 +116,21 @@ make_dirty_repo() {
     make_clean_repo "$_var"
     eval "local _dir=\$$_var"
     echo "dirty modification" >> "$_dir/tracked.txt"
+}
+
+# make_side_branch_commit REPO_DIR OUTVAR
+#   Given a clean repo (currently checked out on main), create a commit on a
+#   side branch that is NOT merged to main, then check back out main so the
+#   repo is clean again. Sets OUTVAR to the side commit's sha.
+make_side_branch_commit() {
+    local repo="$1" _var="$2" sha
+    git -C "$repo" checkout -q -b side
+    echo "side change" >> "$repo/tracked.txt"
+    git -C "$repo" add tracked.txt
+    git -C "$repo" commit -q -m "side commit not on main"
+    sha="$(git -C "$repo" rev-parse HEAD)"
+    git -C "$repo" checkout -q main
+    printf -v "$_var" '%s' "$sha"
 }
 
 # Reset calls file
@@ -364,5 +386,213 @@ assert "H4: exec-mode start was attempted (stop failure does not short-circuit i
     bash -c 'grep -q "^systemctl --user start fail-start-unit.service$" "$1"' _ "$CALLS_FILE"
 assert "H5: no false 'restarted successfully' confirmation on start failure" \
     bash -c '! printf "%s\n" "$1" | grep -qi "restarted successfully"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — SCHEDULE-MODE --require-commit ANCESTOR GATE
+# --require-commit=<sha> (and ORCH_REQUIRE_COMMIT) gate schedule mode on <sha>
+# being an ancestor of ORCH_MAIN_BRANCH (default main): refuse (exit non-zero,
+# schedule nothing) if not an ancestor or not a valid object; thread
+# --setenv=ORCH_REQUIRE_COMMIT and --setenv=ORCH_MAIN_BRANCH (including a
+# non-default branch value) through to the transient unit when set; leave
+# the systemd-run invocation byte-identical to today when unset.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: schedule-mode --require-commit ancestor gate ---"
+
+BOGUS_SHA="0000000000000000000000000000000000000000"
+
+CLEAN_REPO_I=""
+make_clean_repo CLEAN_REPO_I
+ON_MAIN_SHA_I="$(git -C "$CLEAN_REPO_I" rev-parse HEAD)"
+
+# I-pass: --require-commit=<on-main-sha> on a clean repo -> exits 0, exactly
+# one systemd-run call, and that call threads --setenv=ORCH_REQUIRE_COMMIT=<sha>
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit=$ON_MAIN_SHA_I"
+assert "I1: --require-commit=<on-main-sha> on clean repo -> exits 0" test "$RC" -eq 0
+assert "I2: --require-commit=<on-main-sha> emits exactly one systemd-run call" \
+    bash -c '[ "$(grep -c "^systemd-run" "$1" 2>/dev/null || echo 0)" -eq 1 ]' _ "$CALLS_FILE"
+assert "I3: systemd-run call threads --setenv=ORCH_REQUIRE_COMMIT=<sha>" \
+    bash -c "grep \"^systemd-run\" \"\$1\" | grep -q -- \"--setenv=ORCH_REQUIRE_COMMIT=$ON_MAIN_SHA_I\"" _ "$CALLS_FILE"
+
+# I-refuse-side: --require-commit=<side-branch-sha> -> exits non-zero, no
+# systemd-run scheduled, actionable message
+SIDE_SHA_I=""
+make_side_branch_commit "$CLEAN_REPO_I" SIDE_SHA_I
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit=$SIDE_SHA_I"
+assert "I4: --require-commit=<side-branch-sha> -> exits non-zero" test "$RC" -ne 0
+assert "I5: --require-commit=<side-branch-sha> schedules NO systemd-run" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+assert "I6: --require-commit=<side-branch-sha> prints actionable message (main|ancestor|land)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "main|ancestor|land"' _ "$OUT"
+
+# I-refuse-bogus: --require-commit=<bogus 40-hex non-existent object> -> exits
+# non-zero, no systemd-run (fail-closed on bad object)
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit=$BOGUS_SHA"
+assert "I7: --require-commit=<bogus sha> -> exits non-zero" test "$RC" -ne 0
+assert "I8: --require-commit=<bogus sha> schedules NO systemd-run (fail-closed)" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+
+# I17: the bogus-sha refusal message must distinguish an UNRESOLVABLE object
+# (typo/truncation) from a valid-but-unlanded commit, so the operator is not
+# misdirected to "land/merge" a sha that does not exist (reviewer diagnosability
+# nit). The not-ancestor path never says "resolve"; the bad-object path does.
+assert "I17: --require-commit=<bogus sha> message flags an unresolvable object (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
+
+# I18: a VALID on-main sha but a bogus ORCH_MAIN_BRANCH -> still fail-closed
+# (exit non-zero, no systemd-run), but the message must flag the branch as
+# unresolvable rather than claim the (already-landed) commit needs landing.
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+ORCH_MAIN_BRANCH="no-such-branch-xyz" \
+    run_helper "--require-commit=$ON_MAIN_SHA_I"
+assert "I18a: valid sha + bogus ORCH_MAIN_BRANCH -> exits non-zero" test "$RC" -ne 0
+assert "I18b: valid sha + bogus ORCH_MAIN_BRANCH schedules NO systemd-run (fail-closed)" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+assert "I18c: valid sha + bogus ORCH_MAIN_BRANCH message flags the unresolvable branch (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
+
+# I-noop: no flag on the same clean repo -> exits 0, systemd-run emitted, and
+# that call contains NO --setenv=ORCH_REQUIRE_COMMIT (default byte-unchanged)
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper
+assert "I9: no --require-commit flag -> exits 0" test "$RC" -eq 0
+assert "I10: no --require-commit flag emits systemd-run" \
+    bash -c 'grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+assert "I11: no --require-commit flag -> systemd-run call has NO --setenv=ORCH_REQUIRE_COMMIT" \
+    bash -c '! grep "^systemd-run" "$1" | grep -q -- "--setenv=ORCH_REQUIRE_COMMIT"' _ "$CALLS_FILE"
+
+# I-empty: --require-commit= (empty value) -> exits non-zero (arg-parse error)
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit="
+assert "I12: --require-commit= (empty value) -> exits non-zero" test "$RC" -ne 0
+
+# I-custom-branch: same side-branch-sha as I-refuse-side, but with a
+# NON-DEFAULT ORCH_MAIN_BRANCH="side" (the side-branch-sha IS an ancestor of
+# "side" itself, trivially). This must now PASS, distinguishing "custom
+# ORCH_MAIN_BRANCH was actually threaded/honored" from "silently defaulted to
+# main" (which would have refused this exact sha — see I4-I6 above). Also
+# mirrors I3, asserting --setenv=ORCH_MAIN_BRANCH=side threads alongside
+# --setenv=ORCH_REQUIRE_COMMIT.
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+ORCH_MAIN_BRANCH="side" \
+    run_helper "--require-commit=$SIDE_SHA_I"
+assert "I13: --require-commit=<side-sha> WITH ORCH_MAIN_BRANCH=side -> exits 0" test "$RC" -eq 0
+assert "I14: ORCH_MAIN_BRANCH=side emits exactly one systemd-run call" \
+    bash -c '[ "$(grep -c "^systemd-run" "$1" 2>/dev/null || echo 0)" -eq 1 ]' _ "$CALLS_FILE"
+assert "I15: systemd-run call threads --setenv=ORCH_MAIN_BRANCH=side" \
+    bash -c 'grep "^systemd-run" "$1" | grep -q -- "--setenv=ORCH_MAIN_BRANCH=side"' _ "$CALLS_FILE"
+assert "I16: systemd-run call ALSO threads --setenv=ORCH_REQUIRE_COMMIT=<side-sha>" \
+    bash -c "grep \"^systemd-run\" \"\$1\" | grep -q -- \"--setenv=ORCH_REQUIRE_COMMIT=$SIDE_SHA_I\"" _ "$CALLS_FILE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — EXEC-MODE --require-commit RE-CHECK
+# ORCH_REQUIRE_COMMIT (threaded from schedule mode via --setenv, or set
+# directly) is re-checked at fire time against ORCH_MAIN_BRANCH. If it no
+# longer holds, exec mode leaves the orchestrator RUNNING (no stop/start,
+# exit 0) rather than restarting into stale config.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: exec-mode --require-commit re-check ---"
+
+CLEAN_REPO_J=""
+make_clean_repo CLEAN_REPO_J
+ON_MAIN_SHA_J="$(git -C "$CLEAN_REPO_J" rev-parse HEAD)"
+
+# J-pass: required commit IS an ancestor of main -> stop then start, exits 0
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$ON_MAIN_SHA_J" \
+    run_helper --exec-restart
+assert "J1: --require-commit=<on-main-sha> at fire time -> exits 0" test "$RC" -eq 0
+assert "J2: --require-commit=<on-main-sha> records systemctl --user stop exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user stop exec-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "J3: --require-commit=<on-main-sha> records systemctl --user start exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user start exec-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "J4: stop precedes start (ordering guarantee holds with require-commit set)" \
+    bash -c '
+        stop_ln=$(grep -n "^systemctl --user stop exec-unit.service$" "$1" | head -1 | cut -d: -f1)
+        start_ln=$(grep -n "^systemctl --user start exec-unit.service$" "$1" | head -1 | cut -d: -f1)
+        [ -n "$stop_ln" ] && [ -n "$start_ln" ] && [ "$stop_ln" -lt "$start_ln" ]
+    ' _ "$CALLS_FILE"
+
+# J-refuse-side: required commit is NOT an ancestor of main -> neither stop
+# nor start, exits 0 (leave orchestrator running), warns
+SIDE_SHA_J=""
+make_side_branch_commit "$CLEAN_REPO_J" SIDE_SHA_J
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$SIDE_SHA_J" \
+    run_helper --exec-restart
+assert "J5: --require-commit=<side-branch-sha> at fire time -> exits 0 (leave running)" test "$RC" -eq 0
+assert "J6: --require-commit=<side-branch-sha> records NO systemctl stop" \
+    bash -c '! grep -q "^systemctl.*stop exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J7: --require-commit=<side-branch-sha> records NO systemctl start" \
+    bash -c '! grep -q "^systemctl.*start exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J8: --require-commit=<side-branch-sha> logs a warning (main|ancestor|not on)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "main|ancestor|not on"' _ "$OUT"
+
+# J-refuse-bogus: required commit is not a valid object -> neither stop nor
+# start (fail-closed), exits 0
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$BOGUS_SHA" \
+    run_helper --exec-restart
+assert "J9: --require-commit=<bogus sha> at fire time -> exits 0 (leave running)" test "$RC" -eq 0
+assert "J10: --require-commit=<bogus sha> records NO systemctl stop (fail-closed)" \
+    bash -c '! grep -q "^systemctl.*stop exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J11: --require-commit=<bogus sha> records NO systemctl start (fail-closed)" \
+    bash -c '! grep -q "^systemctl.*start exec-unit.service" "$1"' _ "$CALLS_FILE"
+
+# J15: like I17 at fire time — the bogus-sha warning must flag an unresolvable
+# object (says "resolve"), not misleadingly claim the sha "is no longer an
+# ancestor" (which reads as if it were once valid).
+assert "J15: --require-commit=<bogus sha> at fire time message flags an unresolvable object (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
+
+# J16: a VALID on-main sha but a bogus ORCH_MAIN_BRANCH at fire time -> still
+# fail-closed (exit 0, leave running, no stop/start), with a branch-unresolvable
+# warning rather than a not-ancestor one.
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$ON_MAIN_SHA_J" \
+ORCH_MAIN_BRANCH="no-such-branch-xyz" \
+    run_helper --exec-restart
+assert "J16a: valid sha + bogus ORCH_MAIN_BRANCH at fire time -> exits 0 (leave running)" test "$RC" -eq 0
+assert "J16b: valid sha + bogus ORCH_MAIN_BRANCH records NO stop/start (fail-closed)" \
+    bash -c '! grep -qE "^systemctl.*(stop|start) exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J16c: valid sha + bogus ORCH_MAIN_BRANCH message flags the unresolvable branch (says 'resolve')" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "resolve"' _ "$OUT"
+
+# J-custom-branch: same side-branch-sha as J-refuse-side, but with a
+# NON-DEFAULT ORCH_MAIN_BRANCH="side" set at fire time -> exec mode must now
+# proceed (stop then start), even though the SAME sha with the default
+# ORCH_MAIN_BRANCH (main) was refused in J-refuse-side above. Locks in that a
+# custom ORCH_MAIN_BRANCH is genuinely honored end-to-end in exec mode, not
+# silently defaulted to "main".
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$SIDE_SHA_J" \
+ORCH_MAIN_BRANCH="side" \
+    run_helper --exec-restart
+assert "J12: --require-commit=<side-sha> WITH ORCH_MAIN_BRANCH=side at fire time -> exits 0" test "$RC" -eq 0
+assert "J13: ORCH_MAIN_BRANCH=side records systemctl --user stop exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user stop exec-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "J14: ORCH_MAIN_BRANCH=side records systemctl --user start exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user start exec-unit.service$" "$1"' _ "$CALLS_FILE"
 
 test_summary

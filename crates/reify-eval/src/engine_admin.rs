@@ -6,10 +6,10 @@ use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel,
-    OptimizedImpl, TopologyAttributeTable,
+    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
+    TopologyAttributeTable,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -277,6 +277,12 @@ impl Engine {
             // to UnifiedDag; REIFY_BUILD_SCHEDULER=legacy is the kill-switch.
             // Tests override post-construction via `set_build_scheduler`.
             build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
+            // Task #5105 δ (INV-GEO-1): mesh-contract enforcement posture at
+            // kernel-seam site 1, read ONCE from the environment. `from_env`
+            // fails closed — it defaults to Enforce, and only
+            // REIFY_MESH_CONTRACT=warn downgrades. Tests override
+            // post-construction via `set_mesh_contract_mode`.
+            mesh_contract_mode: reify_ir::geometry::MeshContractMode::from_env(),
             demand: DemandRegistry::new(),
             // Task 4532: passive observed-demand side-channel + would-prune
             // measurement. Both ALWAYS present (not cfg-gated) — the GUI prod
@@ -331,7 +337,6 @@ impl Engine {
             // Read REIFY_WARM_STATE_BUDGET_BYTES once at construction; falls
             // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
             warm_pool: crate::warm_pool::WarmStatePool::from_env_or_default(),
-            feature_tag_table: FeatureTagTable::default(),
             // v0.2 persistent-naming-v2 attribute store. Always empty after
             // construction — task 2590 added the field + accessor as the
             // foundation; tasks 5-8 wire per-op auto-population.
@@ -348,6 +353,10 @@ impl Engine {
             // cached handle satisfies the request under the partial-order
             // rule.
             realization_cache: crate::realization_cache::RealizationCache::new(),
+            // Task 4152: zeroed eval-cache accumulator. Folded forward by
+            // `eval_cached` and surfaced (alongside the live realization
+            // counter) by `Engine::cache_stats`.
+            cumulative_eval_cache_totals: crate::EvalCacheTotals::default(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -381,6 +390,67 @@ impl Engine {
             persistent_hit_count: 0,
             persistent_miss_count: 0,
         }
+    }
+
+    /// Allocates a fresh `(SnapshotId, VersionId)` pair: reads and advances
+    /// `next_snapshot_id`, then reads and advances `next_version_id` — one
+    /// bump each. New call sites, and sites migrated off the old raw
+    /// read-and-bump idiom, should call this instead of bumping the
+    /// counters directly.
+    ///
+    /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
+    /// "Version/snapshot IDs are allocated and read through exactly one API
+    /// each."
+    ///
+    /// **The migration is complete** — this is now the sole writer of both
+    /// `next_snapshot_id` and `next_version_id`. All five live
+    /// paired-allocation sites route through it: `engine_edit.rs`'s
+    /// `edit_param` and `edit_source`, and `engine_eval.rs`'s `eval` (two
+    /// sites) and `dispatch_merged_cluster_solve`.
+    ///
+    /// **One allowlisted exception survives**: `engine_eval.rs`'s
+    /// `eval_cached` re-stamps `next_snapshot_id` alone — reusing the
+    /// caller-supplied `version` — behind a `// version-id-gate: allow`
+    /// comment, since routing through here would spuriously bump
+    /// `next_version_id` too.
+    ///
+    /// The discipline is self-enforcing, not aspirational:
+    /// `crates/reify-eval/tests/version_id_discipline_gate.rs` scans
+    /// `crates/reify-eval/src/` for raw `self.next_*_id` use outside this
+    /// allocator and its readers, which is why `docs/invariants.md`
+    /// records INV-BUILD-2 as `enforced(type+lint)`. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the settled
+    /// contract statement — the gate test above is the live source of
+    /// truth for the call-site set.
+    pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
+        let snapshot_id = SnapshotId(self.next_snapshot_id);
+        self.next_snapshot_id += 1;
+        let version_id = VersionId(self.next_version_id);
+        self.next_version_id += 1;
+        (snapshot_id, version_id)
+    }
+
+    /// Returns the most-recently-allocated eval `VersionId` — the read half
+    /// of the INV-BUILD-2 API family (`allocate_snapshot_version`, above, is
+    /// the write/allocate half — task 5040 / α; this is task 5047 / δ).
+    ///
+    /// **`VersionId(0)` before the first allocation** — this reader
+    /// saturates rather than panics, by design: `next_version_id` starts at
+    /// 0, so `next_version_id.saturating_sub(1)` reads back 0 pre-allocation
+    /// instead of underflowing.
+    ///
+    /// It diverges from [`Engine::current_eval_version`]
+    /// (engine_build.rs) ONLY pre-eval: that reader reads
+    /// `eval_state.snapshot.version` and PANICS before the first eval,
+    /// whereas this one saturates to `VersionId(0)`. Once any eval has run,
+    /// both readers return the same value (`eval()` stamps
+    /// `eval_state.snapshot.version` with exactly the version
+    /// `allocate_snapshot_version` most recently minted). This site
+    /// preserves `drain_and_record_warm_pool_events`'s pre-eval semantics —
+    /// OQ-2 option (i) in `docs/prds/v0_6/engine-build-hardening.md` §9 —
+    /// rather than routing the drain through the panicking reader.
+    pub(crate) fn last_allocated_version(&self) -> VersionId {
+        VersionId(self.next_version_id.saturating_sub(1))
     }
 
     /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** test
@@ -496,16 +566,6 @@ impl Engine {
         entries
     }
 
-    /// Return a reference to the feature-tag table populated by the most recent
-    /// `build()` or `build_snapshot()` call.
-    ///
-    /// Maps each `GeometryHandleId` produced during geometry execution to the
-    /// `FeatureTag` derived from its position in the parallel `feature_tags`
-    /// array on `RealizationDecl`. See task 2323 for full design rationale.
-    pub fn feature_tag_table(&self) -> &FeatureTagTable {
-        &self.feature_tag_table
-    }
-
     /// Return a reference to the v0.2 persistent-naming-v2 attribute table on
     /// this engine.
     ///
@@ -609,6 +669,43 @@ impl Engine {
         &self.realization_cache
     }
 
+    /// Cache counters for this engine (task 4152).
+    ///
+    /// **This method is UNGATED**, unlike the neighbouring
+    /// [`realization_cache`](Self::realization_cache) accessor: it returns only
+    /// `usize` counters by value and never exposes a kernel-internal
+    /// `GeometryHandleId`, so there is nothing here to keep out of production
+    /// builds.
+    ///
+    /// The four fields have two different time bases:
+    ///
+    /// - [`realization_entries`](crate::CacheStats::realization_entries) is
+    ///   **live** — read straight off the current
+    ///   [`RealizationCache`](crate::realization_cache::RealizationCache). It is
+    ///   a monotonic lifetime count of new terminal realizations that survives
+    ///   both cache eviction and [`clear_realization_cache`](Self::clear_realization_cache),
+    ///   which is what makes it usable as a re-mesh-avoidance signal across
+    ///   `edit_param` / `edit_source` (both of which flush the cache).
+    /// - `cache_hits` / `cache_misses` / `early_cutoffs` are **cumulative
+    ///   totals** across every [`Engine::eval_cached`](crate::Engine::eval_cached)
+    ///   call on this engine — not the last call's figures. For a single call's
+    ///   own numbers, read `CachedEvalResult::stats` instead.
+    ///
+    /// Only the `build()` family can move `realization_entries`: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub fn cache_stats(&self) -> crate::CacheStats {
+        // Assembled field-by-field, deliberately not by functional update from
+        // the accumulator: the accumulator holds only the three eval-cache
+        // counters, so `realization_entries` has exactly one source (the live
+        // cache) and cannot be shadowed by a stale accumulated copy.
+        crate::CacheStats {
+            cache_hits: self.cumulative_eval_cache_totals.hits,
+            cache_misses: self.cumulative_eval_cache_totals.misses,
+            early_cutoffs: self.cumulative_eval_cache_totals.early_cutoffs,
+            realization_entries: self.realization_cache.realization_entries(),
+        }
+    }
+
     /// Flush the per-engine [`RealizationCache`](crate::realization_cache::RealizationCache),
     /// dropping every cached `(entity_id, repr_kind, demanded_tol) →
     /// GeometryHandleId` entry.
@@ -647,16 +744,43 @@ impl Engine {
     /// **What this method does NOT touch**: `eval_state`, `snapshot`,
     /// `cache`, `journal`, `feature_tag_table`, `topology_attribute_table`,
     /// `param_overrides`, registered solvers/kernels, or any other engine
-    /// state. The reset is single-purpose: only `realization_cache` is
-    /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
+    /// state. The reset is single-purpose: only `realization_cache`'s entries
+    /// are dropped, via
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
+    ///
+    /// **What this method does NOT reset**: the cache's
+    /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
+    /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
+    /// It is a monotonic count of realizations PERFORMED over the engine's
+    /// lifetime, not of entries currently resident, so it deliberately survives
+    /// the flush (task 4152) — `clear` empties the buckets in place and cannot
+    /// reach the counter, so this holds by construction rather than by a
+    /// save/restore convention here. Since `edit_param` and `edit_source` both
+    /// flush here, resetting it would zero the metric on every edit. Pinned by
+    /// `realization_entries_survives_clear_realization_cache` in
+    /// `tests/tolerance_wiring_e2e.rs` and by
+    /// `clear_empties_the_cache_but_preserves_realization_entries` in
+    /// `src/realization_cache.rs`.
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
     /// in `tests/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
-        self.realization_cache = crate::realization_cache::RealizationCache::new();
+        // Task 4152: `RealizationCache::clear` drops every entry in place and
+        // structurally cannot reach the monotonic `realization_entries`
+        // counter, so the lifetime metric survives the flush by construction.
+        // Do NOT "simplify" this back to a reseat
+        // (`self.realization_cache = RealizationCache::new()`): that zeroes the
+        // counter, and `edit_param`/`edit_source` flush on every edit, so the
+        // metric would be unusable across edits.
+        self.realization_cache.clear();
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
+    ///
+    /// **No compute trampolines are registered.** Call
+    /// [`Self::register_production_compute_fns`] on the returned engine unless you
+    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
+    /// posture doc, `reify-cli/src/main.rs:450-471`).
     ///
     /// This is the standard constructor for production use. For tests that
     /// require an isolated or empty prelude, use `Engine::with_prelude`.
@@ -674,6 +798,11 @@ impl Engine {
     /// Construct an Engine using the inventory-driven multi-kernel registry
     /// (v0.2 entry point per `docs/prds/v0_2/multi-kernel.md` "Resolved
     /// design decisions").
+    ///
+    /// **No compute trampolines are registered.** Call
+    /// [`Self::register_production_compute_fns`] on the returned engine unless you
+    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
+    /// posture doc, `reify-cli/src/main.rs:450-471`).
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
     /// once at startup, picks the **BRep-preferring lex-smallest** entry (see
@@ -1444,28 +1573,36 @@ impl Engine {
         use crate::engine_compute::ComputeOutcome;
         use crate::graph::CancellationHandle;
 
-        match self.compute_registry.fns.get(target).copied() {
-            Some(f) => {
-                let handle = CancellationHandle::new();
-                match f(
-                    value_inputs,
-                    realization_inputs,
-                    options,
-                    prior_warm_state,
-                    &handle,
-                ) {
-                    ComputeOutcome::Completed {
-                        result,
-                        diagnostics,
-                        ..
-                    } => Ok((result, diagnostics)),
-                    ComputeOutcome::Failed { diagnostics, .. } => Err(diagnostics),
-                    ComputeOutcome::Cancelled => Err(vec![reify_core::Diagnostic::error(format!(
-                        "@optimized target {:?}: compute trampoline was cancelled",
-                        target
-                    ))]),
-                }
-            }
+        // Task #5079 step-6: delegate to the single guarded dispatch
+        // chokepoint (`Engine::invoke_compute_trampoline`) instead of
+        // resolving `compute_registry.fns` and calling `f(...)` directly
+        // here. A second, independent `catch_unwind` site would drift from
+        // the guarded one over time and silently reopen the crash-safety
+        // gap this delegation closes — see the maintainer note on
+        // `invoke_compute_trampoline`. The Completed/Failed/Cancelled/None
+        // mapping below is behavior-identical to the prior direct-call
+        // version for every non-panicking outcome; only a panicking
+        // trampoline's behavior changes (Err(diagnostics) instead of an
+        // unwind out of the process).
+        let handle = CancellationHandle::new();
+        match self.invoke_compute_trampoline(
+            target,
+            value_inputs,
+            realization_inputs,
+            options,
+            prior_warm_state,
+            &handle,
+        ) {
+            Some(ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            }) => Ok((result, diagnostics)),
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => Err(diagnostics),
+            Some(ComputeOutcome::Cancelled) => Err(vec![reify_core::Diagnostic::error(format!(
+                "@optimized target {:?}: compute trampoline was cancelled",
+                target
+            ))]),
             // The "(falling back to body-inlining)" clause is intentionally
             // omitted here: fallback is the eval-loop caller's behaviour, not
             // this helper's. Direct callers of `dispatch_compute_node`
@@ -1922,6 +2059,27 @@ impl Engine {
         self.last_dispatch_count
     }
 
+    /// Returns the number of geometry-backed realizations currently tracked in
+    /// `realization_handles` — the GHR-δ validity oracle populated by `build()`
+    /// / `build_snapshot()` (via `post_process_geometry_handle_cells`) and,
+    /// per the load-bearing build↔tessellate asymmetry that
+    /// `reset_per_build_state` preserves (task ι, #5069), left INTACT across
+    /// `tessellate_realizations()` / `tessellate_snapshot()`.
+    ///
+    /// Lets an out-of-crate integration test observe build-surface population
+    /// (`> 0` after a geometry-bearing `build`) versus tessellate-surface
+    /// preservation (unchanged after a following `tessellate_realizations`)
+    /// hermetically, without an OCCT kernel. Mirrors the gated
+    /// `last_dispatch_count()` reader convention.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn realization_handles_len(&self) -> usize {
+        self.realization_handles.len()
+    }
+
     /// **Test-instrumentation only — not a stable public surface.**
     ///
     /// Force the build-time [`crate::BuildScheduler`] selection, bypassing
@@ -1937,16 +2095,39 @@ impl Engine {
         self.build_scheduler = scheduler;
     }
 
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Force the mesh-contract (INV-GEO-1) enforcement posture used at
+    /// kernel-seam site 1, bypassing
+    /// [`reify_ir::geometry::MeshContractMode::from_env`] (task #5105 δ).
+    /// Lets integration tests pin `Warn` or `Enforce` deterministically
+    /// WITHOUT mutating process env — `std::env::set_var` is `unsafe` in
+    /// Rust 2024 and races other parallel tests. Mirrors the
+    /// `set_build_scheduler` seam directly above.
+    ///
+    /// Governs every entry point that reaches site 1: `build` /
+    /// `build_snapshot` (via `RealizationOpsInput::with_mesh_contract_mode`)
+    /// AND `tessellate_realizations` / `tessellate_snapshot` (forwarded as an
+    /// explicit `tessellate_from_values` parameter).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_mesh_contract_mode(&mut self, mode: reify_ir::geometry::MeshContractMode) {
+        self.mesh_contract_mode = mode;
+    }
+
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
     ///
-    /// Called at the start of every `build()` / `build_snapshot()` (alongside
-    /// clearing `realization_handles`), so the count reported afterwards
-    /// reflects only the revalidation reads since the most recent build —
-    /// mirroring the reset-at-operation-start discipline of the `last_*`
-    /// counters. Takes `&self` because the counter is an `AtomicUsize`
-    /// (interior mutability); the reader below observes it. Always available
-    /// (NOT test-gated) since the reset site in `engine_build.rs` is production
-    /// code.
+    /// The counter is reset at the start of every build/tessellate surface so
+    /// the count reported afterwards reflects only the revalidation reads since
+    /// the most recent build — mirroring the reset-at-operation-start discipline
+    /// of the `last_*` counters. Takes `&self` because the counter is an
+    /// `AtomicUsize` (interior mutability); the reader below observes it.
+    ///
+    /// As of #5069 this reset is inlined directly into
+    /// `Engine::reset_per_build_state` (engine_build.rs — production code), the
+    /// single per-build choke-point, so this standalone helper has no remaining
+    /// call sites. It is retained — `#[allow(dead_code)]` — for its GHR-δ §5
+    /// reset-discipline documentation and symmetry with the paired reader below.
+    #[allow(dead_code)]
     pub(crate) fn reset_geometry_revalidation_slow_path_count(&self) {
         self.geometry_revalidation_slow_path
             .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2194,8 +2375,23 @@ impl Engine {
     ///
     /// - After this call, `self.warm_pool.drain_events()` returns an empty Vec.
     /// - Each drained event is recorded on the journal with:
-    ///   - `version = VersionId(self.next_version_id.saturating_sub(1))` — the
-    ///     most recently assigned eval version (or 0 before the first eval).
+    ///   - `version = self.last_allocated_version()` — the most recently
+    ///     *allocated* version (`VersionId(0)` before the first allocation;
+    ///     see `last_allocated_version()`'s doc for the panic-vs-saturate
+    ///     divergence from `current_eval_version()` that this site
+    ///     deliberately avoids). This equals the *current eval* version in
+    ///     eval-only flows, but the two notions are not the same guarantee:
+    ///     `engine_edit.rs`'s `edit_param` and `edit_source` still
+    ///     *allocate* versions on non-eval paths — now via
+    ///     `allocate_snapshot_version()` rather than by hand — so a
+    ///     non-eval allocation occurring between an eval and a drain would
+    ///     stamp drained events with a version that does not correspond to
+    ///     that eval. (The allowlisted `eval_cached` re-stamp is
+    ///     snapshot-only and never advances `next_version_id`, so it cannot
+    ///     contribute to this desync.) Pre-existing exposure — the prior
+    ///     inline `next_version_id.saturating_sub(1)` formula had the
+    ///     identical coupling — left unchanged by this reader (task 5047 /
+    ///     δ).
     ///   - `timestamp = Instant::now()` at drain time.
     ///
     /// # Drain site
@@ -2208,7 +2404,7 @@ impl Engine {
     // G-allow: task #3541 (done)/#3582 (done) eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (gui/src-tauri/src/engine.rs) landed with #3541 (done); remains an in-scope orphan BY DESIGN (audit scopes to crates/reify-*/src, excludes gui/ + tests/); steady-state pinned by tests/warm_pool_drain_steady_state.rs
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
-        let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
+        let version = self.last_allocated_version();
         let timestamp = std::time::Instant::now();
         for ev in &events {
             let eval_event =
@@ -2938,6 +3134,51 @@ mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
 
+    // ── `Engine::cache_stats()` public surface (task 4152, step-03) ──
+
+    /// `Engine::cache_stats()` is an UNGATED public method returning
+    /// `CacheStats` by value, and a freshly-constructed engine reports zeros
+    /// across the board — including the additive `realization_entries` field,
+    /// which is publicly readable and starts at 0.
+    ///
+    /// Ungated (unlike [`Engine::realization_cache`], which is
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]`) because it
+    /// exposes only `usize` counters — never a kernel-internal
+    /// `GeometryHandleId`.
+    #[test]
+    fn fresh_engine_cache_stats_reports_all_zero() {
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        // `CacheStats::default()` zeroes the additive field too — the
+        // workspace's only `CacheStats` construction idiom is `Default` (there
+        // are no `CacheStats { .. }` literals outside `cache_stats()` itself),
+        // which is what makes the added field non-breaking.
+        assert_eq!(
+            crate::CacheStats::default().realization_entries,
+            0,
+            "a default CacheStats must report zero realizations"
+        );
+
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Returned by value: bind it and let the engine borrow end.
+        let stats: crate::CacheStats = engine.cache_stats();
+
+        assert_eq!(
+            stats.realization_entries, 0,
+            "a fresh engine has realized and cached no geometry"
+        );
+        assert_eq!(stats.cache_hits, 0, "a fresh engine has no eval-cache hits");
+        assert_eq!(
+            stats.cache_misses, 0,
+            "a fresh engine has no eval-cache misses"
+        );
+        assert_eq!(
+            stats.early_cutoffs, 0,
+            "a fresh engine has no early cutoffs"
+        );
+    }
+
     // ── VolumeMesh-demand registry unit tests (task 4743 — realization α) ──
 
     /// The VolumeMesh-demand target registry: `register_volume_mesh_demand`
@@ -2975,6 +3216,652 @@ mod tests {
         assert!(
             engine.demands_volume_mesh("test::vm-demand"),
             "re-registering the same target keeps it demanding",
+        );
+    }
+
+    // ── allocate_snapshot_version pair-allocator (task 5040, INV-BUILD-2 α) ──
+
+    /// `allocate_snapshot_version` mints a fresh `(SnapshotId, VersionId)`
+    /// pair and advances both underlying counters by exactly one per call,
+    /// in lockstep. A fresh engine starts both counters at 0 (no allocation
+    /// happens during construction — see the field initializers above), so
+    /// the first call must return `(SnapshotId(0), VersionId(0))` and the
+    /// second `(SnapshotId(1), VersionId(1))`, with `next_snapshot_id` and
+    /// `next_version_id` each having advanced by exactly 1 after each call.
+    /// A final companion check desyncs the counters (mirroring
+    /// `eval_cached()`'s snapshot-only bump) to confirm the "advances each
+    /// counter by exactly one per call" contract also holds when the two
+    /// counters do not start equal.
+    #[test]
+    fn allocate_snapshot_version_allocates_pair_and_bumps_both_counters() {
+        use reify_core::{SnapshotId, VersionId};
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        assert_eq!(
+            engine.next_snapshot_id, 0,
+            "fresh engine must start next_snapshot_id at 0",
+        );
+        assert_eq!(
+            engine.next_version_id, 0,
+            "fresh engine must start next_version_id at 0",
+        );
+
+        let (snap0, ver0) = engine.allocate_snapshot_version();
+        assert_eq!(snap0, SnapshotId(0), "first allocation must mint SnapshotId(0)");
+        assert_eq!(ver0, VersionId(0), "first allocation must mint VersionId(0)");
+        assert_eq!(
+            engine.next_snapshot_id, 1,
+            "next_snapshot_id must advance by exactly 1 after one call",
+        );
+        assert_eq!(
+            engine.next_version_id, 1,
+            "next_version_id must advance by exactly 1 after one call",
+        );
+
+        let (snap1, ver1) = engine.allocate_snapshot_version();
+        assert_eq!(snap1, SnapshotId(1), "second allocation must mint SnapshotId(1)");
+        assert_eq!(ver1, VersionId(1), "second allocation must mint VersionId(1)");
+        assert_eq!(
+            engine.next_snapshot_id, 2,
+            "next_snapshot_id must advance by exactly 1 again",
+        );
+        assert_eq!(
+            engine.next_version_id, 2,
+            "next_version_id must advance by exactly 1 again",
+        );
+
+        // Companion check: confirm the "advances each counter by exactly
+        // one per call" contract still holds when the two counters do not
+        // start equal (mirrors eval_cached()'s snapshot-only bump) —
+        // asserted via deltas from freshly-captured baselines, not
+        // hardcoded absolute ids, so this check needs no re-baselining if
+        // the call count above changes.
+        engine.next_snapshot_id += 1;
+        let before_snapshot_desync = engine.next_snapshot_id;
+        let before_version_desync = engine.next_version_id;
+        let (snap2, ver2) = engine.allocate_snapshot_version();
+        assert_eq!(
+            snap2.0, before_snapshot_desync,
+            "allocated snapshot id must equal the pre-call counter value",
+        );
+        assert_eq!(
+            ver2.0, before_version_desync,
+            "allocated version id must equal the pre-call counter value",
+        );
+        assert_eq!(
+            engine.next_snapshot_id - before_snapshot_desync,
+            1,
+            "next_snapshot_id must still advance by exactly 1",
+        );
+        assert_eq!(
+            engine.next_version_id - before_version_desync,
+            1,
+            "next_version_id must still advance by exactly 1",
+        );
+    }
+
+    /// Shared assertion for the `allocate_snapshot_version` migration's
+    /// characterization tests. Asserts the engine's CURRENT snapshot
+    /// carries the expected `(SnapshotId, VersionId)` pair — the
+    /// "byte-identical numbering" property these tests exist to pin — and
+    /// that each counter advanced by exactly `expected_delta` from its own
+    /// pre-call baseline. The two baselines (`before_snapshot`,
+    /// `before_version`) are taken independently so this helper stays
+    /// correct even if a caller's two counters were desynced before the
+    /// call, rather than assuming they started equal.
+    ///
+    /// These exact ids/deltas are characterization values tied to the
+    /// number and ordering of allocation sites that fire for a given
+    /// input — see `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the
+    /// full site inventory. A legitimate future change that adds/removes a
+    /// site must re-baseline the caller's expected values on purpose.
+    fn assert_snapshot_numbering(
+        engine: &Engine,
+        expected_snapshot: u64,
+        expected_version: u64,
+        before_snapshot: u64,
+        before_version: u64,
+        expected_delta: u64,
+        context: &str,
+    ) {
+        use reify_core::{SnapshotId, VersionId};
+
+        let snapshot = engine
+            .snapshot()
+            .expect("eval() must populate a current snapshot");
+        assert_eq!(
+            snapshot.id,
+            SnapshotId(expected_snapshot),
+            "{context}: expected SnapshotId({expected_snapshot})",
+        );
+        assert_eq!(
+            snapshot.version,
+            VersionId(expected_version),
+            "{context}: expected VersionId({expected_version})",
+        );
+        assert_eq!(
+            engine.next_snapshot_id - before_snapshot,
+            expected_delta,
+            "{context}: next_snapshot_id should have advanced by exactly \
+             {expected_delta} across this call",
+        );
+        assert_eq!(
+            engine.next_version_id - before_version,
+            expected_delta,
+            "{context}: next_version_id should have advanced by exactly \
+             {expected_delta} across this call",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `eval()`'s cold-path snapshot construction (site 1),
+    /// guarding the "byte-identical numbering" claim across its migration
+    /// onto `allocate_snapshot_version` (task 5040 steps 4-6). Passes
+    /// before AND after the migration; would go RED if a migration
+    /// perturbed numbering (extra/missing allocation, reordering, etc).
+    /// See `assert_snapshot_numbering` above for the re-baselining caveat.
+    ///
+    /// `structure S { param width: Length = 100mm }` has no solver
+    /// interaction, so only the eval() site-1 pair fires — the
+    /// resolution-phase and merged-cluster-solve sites stay dormant.
+    #[test]
+    fn eval_snapshot_numbering_is_stable_across_repeated_calls() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let compiled =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let before_first_snapshot = engine.next_snapshot_id;
+        let before_first_version = engine.next_version_id;
+        let _ = engine.eval(&compiled);
+        assert_snapshot_numbering(
+            &engine,
+            0,
+            0,
+            before_first_snapshot,
+            before_first_version,
+            1,
+            "first eval() call (site 1)",
+        );
+
+        let before_second_snapshot = engine.next_snapshot_id;
+        let before_second_version = engine.next_version_id;
+        let _ = engine.eval(&compiled);
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_second_snapshot,
+            before_second_version,
+            1,
+            "second eval() call (site 1)",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by the SOLVER-DRIVEN resolution phase (site 2), complementing
+    /// `eval_snapshot_numbering_is_stable_across_repeated_calls` above (site
+    /// 1 only, no solver interaction). See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the full site
+    /// inventory, including why a single non-coupled template takes this
+    /// branch rather than `dispatch_merged_cluster_solve` (site 3).
+    ///
+    /// Site 1 then site 2 both fire: `SnapshotId(0)`/`VersionId(0)` from the
+    /// cold path, then `SnapshotId(1)`/`VersionId(1)` from resolution, which
+    /// overwrites `snapshot.id`/`.version` before `eval()` returns. Uses
+    /// `MockConstraintSolver::new_solved` for a deterministic outcome,
+    /// mirroring `resolve_single_auto_param` in `tests/resolution.rs`.
+    #[test]
+    fn resolution_phase_snapshot_numbering_is_stable() {
+        use std::collections::HashMap;
+
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::Value;
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
+            TopologyTemplateBuilder, gt, literal, lt, mm, value_ref,
+        };
+
+        let thickness_id = ValueCellId::new("S", "thickness");
+        let mut solved_values = HashMap::new();
+        solved_values.insert(thickness_id.clone(), mm(5.0));
+        let solver = MockConstraintSolver::new_solved(solved_values);
+
+        let template = TopologyTemplateBuilder::new("S")
+            .auto_param("S", "thickness", Type::length())
+            // constraint: thickness > 2mm
+            .constraint(
+                "S",
+                0,
+                None,
+                gt(value_ref("S", "thickness"), literal(mm(2.0))),
+            )
+            // constraint: thickness < 20mm
+            .constraint(
+                "S",
+                1,
+                None,
+                lt(value_ref("S", "thickness"), literal(mm(20.0))),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        let result = engine.eval(&module);
+
+        // Sanity: confirm the solver's Solved arm actually fired (not
+        // Infeasible/NoProgress) — thickness resolved to mm(5.0), not left
+        // Undef — so the assertions below are exercising site 2, not a
+        // dormant no-op resolution pass.
+        let thickness_val = result
+            .values
+            .get(&thickness_id)
+            .expect("thickness should be in values after resolution");
+        assert!(
+            matches!(thickness_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+            "expected mm(5.0) = 0.005 SI, got {:?}",
+            thickness_val
+        );
+
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            2,
+            "resolution-phase eval() call (site 1 + site 2)",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `dispatch_merged_cluster_solve`'s `SolveResult::Solved`
+    /// arm (site 3), complementing the site-1 and site-2 tests above. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the full site
+    /// inventory.
+    ///
+    /// Two templates forming a 2-cycle (`A` reads `B.m`, `B` reads `A.k`)
+    /// get `ClusterDisposition::MergedSolve`, so `eval()` dispatches ONE
+    /// merged solve and the per-template branch (site 2) stays dormant —
+    /// mirrors `two_cycle_cluster_module` in `tests/merged_cluster_solve.rs`.
+    /// Site 1 then site 3 fire: `SnapshotId(0)`/`VersionId(0)` from the cold
+    /// path, then `SnapshotId(1)`/`VersionId(1)` from the merged solve,
+    /// which overwrites `snapshot.id`/`.version` before `eval()` returns.
+    /// Uses `MockConstraintSolver::new_solved` for a deterministic outcome.
+    #[test]
+    fn merged_cluster_solve_snapshot_numbering_is_stable() {
+        use std::collections::HashMap;
+
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::Value;
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
+            TopologyTemplateBuilder, gt, literal, mm, value_ref,
+        };
+
+        let a_k = ValueCellId::new("A", "k");
+        let b_m = ValueCellId::new("B", "m");
+        let mut solved_values = HashMap::new();
+        solved_values.insert(a_k.clone(), mm(3.0));
+        solved_values.insert(b_m.clone(), mm(7.0));
+        let solver = MockConstraintSolver::new_solved(solved_values);
+
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            // A reads B.m — creates edge B→A in the read-DAG.
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            // B reads A.k — creates edge A→B in the read-DAG → cycle!
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(a)
+            .template(b)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        let result = engine.eval(&module);
+
+        // Sanity: confirm the merged solve's Solved arm actually fired
+        // (both cluster members resolved together via ONE merged solve),
+        // not left Undef by a dormant dispatch.
+        assert!(
+            matches!(
+                result.values.get(&a_k),
+                Some(Value::Scalar { si_value, .. }) if (*si_value - 0.003).abs() < 1e-10
+            ),
+            "expected A.k = mm(3.0) = 0.003 SI, got {:?}",
+            result.values.get(&a_k)
+        );
+        assert!(
+            matches!(
+                result.values.get(&b_m),
+                Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10
+            ),
+            "expected B.m = mm(7.0) = 0.007 SI, got {:?}",
+            result.values.get(&b_m)
+        );
+
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            2,
+            "merged-cluster-solve eval() call (site 1 + site 3)",
+        );
+    }
+
+    // ── last_allocated_version reader (task 5047, INV-BUILD-2 δ) ──────────
+
+    /// `last_allocated_version` is the "read" half of the INV-BUILD-2 API
+    /// family (`allocate_snapshot_version`, above, is the "write"/allocate
+    /// half — task 5040 / α). Pins its documented pre-allocation edge —
+    /// `VersionId(0)` before the first allocation, SATURATING rather than
+    /// panicking (unlike `current_eval_version` in engine_build.rs, which
+    /// panics before the first eval) — and confirms it tracks
+    /// `next_version_id` across successive allocations.
+    #[test]
+    fn last_allocated_version_is_zero_pre_allocation_and_tracks_next_version_id() {
+        use reify_core::VersionId;
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Pre-allocation edge: next_version_id == 0, last_allocated_version()
+        // must saturate to VersionId(0) rather than panic.
+        assert_eq!(
+            engine.next_version_id, 0,
+            "fresh engine must start next_version_id at 0",
+        );
+        assert_eq!(
+            engine.last_allocated_version(),
+            VersionId(0),
+            "last_allocated_version() must saturate to VersionId(0) before the first allocation",
+        );
+
+        // First allocation: last_allocated_version() reports the version
+        // just allocated (0), and next_version_id has advanced to 1.
+        engine.allocate_snapshot_version();
+        assert_eq!(
+            engine.next_version_id, 1,
+            "next_version_id must advance to 1 after the first allocation",
+        );
+        assert_eq!(
+            engine.last_allocated_version(),
+            VersionId(0),
+            "after the first allocation, last_allocated_version() must report the \
+             just-allocated VersionId(0)",
+        );
+
+        // Second allocation: tracks forward to VersionId(1).
+        engine.allocate_snapshot_version();
+        assert_eq!(
+            engine.next_version_id, 2,
+            "next_version_id must advance to 2 after the second allocation",
+        );
+        assert_eq!(
+            engine.last_allocated_version(),
+            VersionId(1),
+            "after the second allocation, last_allocated_version() must report VersionId(1)",
+        );
+    }
+
+    /// Cross-check the two INV-BUILD-2 read-API-family members
+    /// (`current_eval_version` in engine_build.rs, `last_allocated_version`
+    /// above) agree once an eval has run, and pin that
+    /// `drain_and_record_warm_pool_events` stamps journal events with that
+    /// SAME version — corroborating the `next_version_id`-derived reader
+    /// against the independent `eval_state.snapshot.version` path. Mirrors
+    /// the driver in `tests/warm_pool_drain_steady_state.rs` (fresh engine,
+    /// 1-byte warm-pool budget, eval, donate x2 to force Donated+Evicted,
+    /// drain).
+    #[test]
+    fn drain_stamps_current_eval_version_and_readers_agree_post_eval() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::OpaqueState;
+        use reify_test_support::parse_and_compile;
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+        // 1-byte budget: the second donate below is guaranteed to evict the
+        // first, producing both a Donated and an Evicted event.
+        *engine.warm_pool_mut() = WarmStatePool::new(1);
+
+        let module = parse_and_compile(
+            r#"structure Bracket {
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
+    constraint thickness > 2mm
+}"#,
+        );
+        engine.eval(&module);
+
+        // The two named INV-BUILD-2 readers must agree post-eval: both
+        // ultimately reflect the version `allocate_snapshot_version` minted
+        // for this eval round, just via independent paths (snapshot.version
+        // vs next_version_id - 1).
+        let expected = engine.current_eval_version();
+        assert_eq!(
+            engine.last_allocated_version(),
+            expected,
+            "last_allocated_version() must agree with current_eval_version() \
+             once an eval has populated eval_state",
+        );
+
+        // Drain any events the eval itself produced so the baseline below is
+        // clean, then force a Donated+Evicted pair via the 1-byte budget.
+        engine.drain_and_record_warm_pool_events();
+        let base = engine.journal().len();
+
+        let node_a = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        let node_b = NodeId::Value(ValueCellId::new("Bracket", "height"));
+        engine
+            .warm_pool_mut()
+            .donate(node_a, OpaqueState::new(1i32, 1));
+        engine
+            .warm_pool_mut()
+            .donate(node_b, OpaqueState::new(2i32, 1));
+        engine.drain_and_record_warm_pool_events();
+
+        let recorded = &engine.journal().all_events()[base..];
+        assert!(
+            !recorded.is_empty(),
+            "donate x2 under a 1-byte budget must produce at least one \
+             drained/recorded warm-pool event (non-vacuous check)",
+        );
+        // Pin the doc comment's actual claim: the 1-byte budget guarantees
+        // the second donate evicts the first, so the drained batch must
+        // contain BOTH a Donated and an Evicted event — not just "some"
+        // event. Without this, a regression that stopped emitting Evicted
+        // events (or only ever emitted Donated) would still pass.
+        let donated_count = recorded
+            .iter()
+            .filter(|event| matches!(event.kind, crate::journal::EventKind::Donated { .. }))
+            .count();
+        let evicted_count = recorded
+            .iter()
+            .filter(|event| matches!(event.kind, crate::journal::EventKind::Evicted { .. }))
+            .count();
+        assert!(
+            donated_count >= 1 && evicted_count >= 1,
+            "donate x2 under a 1-byte budget must produce at least one Donated \
+             AND at least one Evicted event (donated={donated_count}, \
+             evicted={evicted_count}); recorded: {:?}",
+            recorded,
+        );
+        for event in recorded {
+            assert_eq!(
+                event.version, expected,
+                "every warm-pool event drained after the eval must be stamped \
+                 with the eval's current_eval_version, not some other version; \
+                 event: {:?}",
+                event,
+            );
+        }
+    }
+
+    /// Locks the OTHER direction of the documented panic-vs-saturate
+    /// divergence: draining warm-pool events BEFORE any eval has run must
+    /// stamp them with `VersionId(0)`, not panic. This is the whole point of
+    /// routing `drain_and_record_warm_pool_events` through
+    /// `last_allocated_version()` (saturates to `VersionId(0)`) rather than
+    /// the panicking `current_eval_version()` — OQ-2 option (i) in
+    /// `docs/prds/v0_6/engine-build-hardening.md` §9.
+    /// `drain_stamps_current_eval_version_and_readers_agree_post_eval` (above)
+    /// only exercises the post-eval path and
+    /// `last_allocated_version_is_zero_pre_allocation_and_tracks_next_version_id`
+    /// only pins the reader in isolation; neither proves the drain path
+    /// itself produces a `VersionId(0)`-stamped event pre-eval end-to-end.
+    #[test]
+    fn drain_stamps_version_zero_pre_eval() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_core::{ValueCellId, VersionId};
+        use reify_ir::OpaqueState;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let base = engine.journal().len();
+
+        // 1-byte budget: the second donate below is guaranteed to evict the
+        // first, producing both a Donated and an Evicted event — same
+        // pattern as drain_stamps_current_eval_version_and_readers_agree_post_eval,
+        // but with NO preceding eval() call, so eval_state stays unset.
+        *engine.warm_pool_mut() = WarmStatePool::new(1);
+
+        let node_a = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        let node_b = NodeId::Value(ValueCellId::new("Bracket", "height"));
+        engine
+            .warm_pool_mut()
+            .donate(node_a, OpaqueState::new(1i32, 1));
+        engine
+            .warm_pool_mut()
+            .donate(node_b, OpaqueState::new(2i32, 1));
+        engine.drain_and_record_warm_pool_events();
+
+        let recorded = &engine.journal().all_events()[base..];
+        assert!(
+            !recorded.is_empty(),
+            "donate x2 under a 1-byte budget must produce at least one \
+             drained/recorded warm-pool event pre-eval (non-vacuous check)",
+        );
+        for event in recorded {
+            assert_eq!(
+                event.version,
+                VersionId(0),
+                "pre-eval (no eval_state populated yet), \
+                 drain_and_record_warm_pool_events must stamp events with \
+                 VersionId(0) — last_allocated_version()'s saturate edge — \
+                 rather than panicking via current_eval_version(); \
+                 event: {:?}",
+                event,
+            );
+        }
+    }
+
+    // ── engine_edit.rs migration (task 5041, INV-BUILD-2 β) ───────────────
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `edit_param`'s allocation site (β site 1), guarding the
+    /// "byte-identical numbering" claim across its migration onto
+    /// `allocate_snapshot_version` (task 5041 step-2). Passes before AND
+    /// after the migration; would go RED if the migration perturbed
+    /// numbering (extra/missing/reordered allocation). See
+    /// `assert_snapshot_numbering` above for the re-baselining caveat.
+    ///
+    /// `structure S { param width: Length = 100mm }` has no solver
+    /// interaction, so the initial `eval()` fires only its own site-1
+    /// allocation (snapshot lands at `(0,0)`, counters advance to
+    /// `(1,1)`); `edit_param` then fires its single allocation site, the
+    /// one under test here.
+    #[test]
+    fn edit_param_snapshot_numbering_is_stable() {
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let compiled =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let _ = engine.eval(&compiled);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        engine
+            .edit_param(ValueCellId::new("S", "width"), Value::length(0.15))
+            .expect("edit_param must succeed");
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            1,
+            "edit_param call (INV-BUILD-2 β site 1)",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `edit_source`'s allocation site (β site 2), guarding the
+    /// "byte-identical numbering" claim across its migration onto
+    /// `allocate_snapshot_version` (task 5041 step-4). Passes before AND
+    /// after the migration; would go RED if the migration perturbed
+    /// numbering (extra/missing/reordered allocation). See
+    /// `assert_snapshot_numbering` above for the re-baselining caveat.
+    ///
+    /// `structure S { param width: Length = 100mm }` has no solver
+    /// interaction, so the initial `eval()` fires only its own site-1
+    /// allocation (snapshot lands at `(0,0)`, counters advance to
+    /// `(1,1)`); `edit_source` then fires its single allocation site, the
+    /// one under test here.
+    #[test]
+    fn edit_source_snapshot_numbering_is_stable() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let compiled_a =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let compiled_b =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 150mm }");
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let _ = engine.eval(&compiled_a);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        engine
+            .edit_source(&compiled_b)
+            .expect("edit_source must succeed");
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            1,
+            "edit_source call (INV-BUILD-2 β site 2)",
         );
     }
 

@@ -3,8 +3,8 @@
 //! Tests that the compiler emits Warning diagnostics when a deprecated entity
 //! is referenced at a use-site (not at its definition site).
 
-use reify_test_support::{compile_source, errors_only, warnings_only};
 use reify_ir::CompiledExprKind;
+use reify_test_support::{compile_source, errors_only, warnings_only};
 
 /// Helper: filter warnings whose message contains the given substring.
 fn deprecation_warnings<'a>(
@@ -182,8 +182,7 @@ fn deprecated_function_called_via_default_padding_emits_warning() {
     );
     // Format parity with the Resolved arm (deprecation_warning_message_format_contract).
     assert_eq!(
-        &warns[0].message,
-        "use of deprecated function 'old_calc': Use new_calc",
+        &warns[0].message, "use of deprecated function 'old_calc': Use new_calc",
         "message format must match the explicit-call path"
     );
 
@@ -209,8 +208,14 @@ fn deprecated_function_called_via_default_padding_emits_warning() {
         .as_ref()
         .expect("let 'y' should have a compiled expression");
     match &y_expr.kind {
-        CompiledExprKind::UserFunctionCall { function_name, args } => {
-            assert_eq!(function_name, "old_calc", "compiled call should target old_calc");
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
+            assert_eq!(
+                function_name, "old_calc",
+                "compiled call should target old_calc"
+            );
             assert_eq!(
                 args.len(),
                 1,

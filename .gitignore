@@ -35,6 +35,7 @@ test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
 data/.orchestrator/queue/*.db*
+data/queue/*.db*
 *.kate-swp
 .jcodemunch.jsonc
 data/review-checkpoints/
@@ -60,3 +61,17 @@ gui/src-tauri/sidecar/reify-sidecar-*
 # Python bytecode (CPython __pycache__ directories and .pyc files)
 __pycache__/
 *.pyc
+
+# orchestrator runtime queue DB (live SQLite, not version-controlled) — re #5178/#5169
+data/queue/*.db*
+
+# orchestrator runtime reconciliation DB (live SQLite, not version-controlled) — re #5248
+data/reconciliation/*.db*
+data/.orchestrator/reconciliation/*.db*
+
+# Stray repo-root runs.db decoy. The LIVE orchestrator run store is
+# data/orchestrator/runs.db; a 0-byte /runs.db accreted here and sqlite3
+# returns EMPTY (not an error) for every query against it, so anyone probing
+# the obvious repo-root path silently gets a vacuous "nothing recorded"
+# result. Cost one false RCA finding on 2026-08-05. Never version this path.
+/runs.db
