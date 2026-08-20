@@ -259,10 +259,23 @@ fn non_finite_size_errors() {
 /// length), so assertion (b) cannot pass no matter how the field is built —
 /// which is why re-basing alone was not sufficient here.
 ///
-/// Filed as a separate producer-side defect (out of #6200's scope). Until it is
-/// fixed, this must remain the only test in this binary that meshes via
-/// `mesh_to_volume` — i.e. it must not, and no sibling test may do so before
-/// it, or the leaked clamp will resurface as (b) failing with equal counts.
+/// Filed as **task #6298** — a producer-side defect, out of #6200's scope
+/// (#6200 owns the `classify_surfaces` feature angle; the leak is a distinct
+/// bug in a different function). Tasks #6211, #6212 and #6262 cover adjacent
+/// facets of the same global-option leak.
+///
+/// # The constraint this test needs, until #6298 is fixed
+///
+/// **No test in this binary may call `GmshKernel::mesh_to_volume`.** Not "this
+/// one must be the only one", and not "no sibling may do so *before* it" —
+/// `cargo` runs a binary's tests in ONE process with no guaranteed order, so
+/// any sibling that meshes via `mesh_to_volume` can leak its clamp into this
+/// test whatever order they run in. As of this commit no test here calls it,
+/// which is why the constraint reads as a prohibition rather than a
+/// reservation. Nothing enforces it mechanically: `refine_volume.rs` sets only
+/// `Mesh.MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary`, never
+/// `MeshSizeMin` / `MeshSizeMax`, so the defence is this note plus the
+/// self-diagnosing failure message on assertion (b) below.
 #[test]
 fn localized_size_reduction_refines_marked_region_only() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -326,7 +339,14 @@ fn localized_size_reduction_refines_marked_region_only() {
     assert!(
         refined_marked > base_marked,
         "marked region must have more tets after refinement: \
-         baseline={base_marked}, refined={refined_marked}"
+         baseline={base_marked}, refined={refined_marked}.\n\
+         If those two counts are EQUAL and the whole meshes are bit-identical, \
+         suspect the #6298 global-option leak before suspecting the size field: \
+         some test in this binary called `GmshKernel::mesh_to_volume`, which \
+         leaves `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pinned to its own resolved \
+         size process-wide (gmsh's option table survives `gmshClear`), squeezing \
+         every later per-corner `SetSize` into [size, size]. See the \
+         'Why the seed is hand-built' note on this test."
     );
 
     // (c) Unmarked region not over-refined (±25% tolerance).
