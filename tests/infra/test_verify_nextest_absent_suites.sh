@@ -363,7 +363,18 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #                                                    counts rose by the same 11
 #                                                    and the 1-assert delta is
 #                                                    UNCHANGED — re-measured, not
-#                                                    computed, at each re-pin)
+#                                                    computed, at each re-pin.
+#                                                    Task 6018 RE-POINTED 17a,
+#                                                    17e and 17i in place (the
+#                                                    global pool un-narrowed from
+#                                                    a fixed 16 to host nproc)
+#                                                    rather than retiring any of
+#                                                    them, so this row is
+#                                                    UNCHANGED at 59/60 and no
+#                                                    floor re-pin was needed.
+#                                                    Re-measured, not assumed: 60
+#                                                    ambient before AND after,
+#                                                    baseline at bc8f74a4d4)
 #   release_mode       9 nextest-less /   9 ambient (already clean — the
 #                                                    alternation was already
 #                                                    used throughout)
@@ -387,7 +398,10 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 # loop, so the data-driven 15 is unchanged. Only the FIXED half moved again in
 # that task's review-amendment pass, 57 to 59 (42 -> 44): Tests 17j/17k are two
 # more fixed asserts, likewise adding no per-crate loop, so the data-driven 15
-# is STILL 15. Legitimately REMOVING a crate from that manifest
+# is STILL 15. Task 6018 moved NEITHER half: it re-pointed three EXISTING asserts
+# (17a/17e/17i) to the un-narrowed pool value and inverted 17i's comparison, so
+# the split stays 44 fixed + 15 data-driven and this floor stays 59 — measured,
+# not computed. The next reader does not have to re-derive that. Legitimately REMOVING a crate from that manifest
 # drops this suite's count by 3 and trips S7 with a "COVERAGE SHRANK" message
 # whose (a) branch does not apply — re-pin the floor here with the new split
 # rather than hunting for a nextest guard that does not exist. The other eight
