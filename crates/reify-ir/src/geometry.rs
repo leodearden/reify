@@ -10816,6 +10816,94 @@ mod tests {
         );
     }
 
+    /// The ASCII sibling of `write_stl_binary_emits_exact_millimetre_vertices`:
+    /// a `[0, 0.030]^3` cube in reify's SI-metre model space must reach the
+    /// emitted text as exactly 0 and exactly 30, not 0.03.
+    ///
+    /// **Why exact `==`.** Identical reasoning to the binary test: the identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED in the table on
+    /// [`MM_PER_METRE_F32`], and the same fixture through the same multiply is
+    /// already pinned GREEN for the 3MF writer. Any epsilon worth writing would
+    /// also admit the f64-route noise (`29.999999329447746`).
+    ///
+    /// Asserted on the PARSED values, not on the literal decimal text, for the
+    /// reason given on
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`:
+    /// the property under test is EXACTNESS, and pinning literal strings would
+    /// additionally freeze the writer to `{}` shortest-round-trip formatting, so
+    /// a legitimate formatting change would read here as a precision regression
+    /// when it is not. `write_stl_ascii_single_triangle_structure` keeps its
+    /// literal-string asserts — that test is about ASCII STRUCTURE.
+    #[test]
+    fn write_stl_ascii_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        // Each `vertex X Y Z` line carries three whitespace-separated f32s.
+        let coords: Vec<[f32; 3]> = text
+            .split("vertex ")
+            .skip(1)
+            .map(|tail| {
+                let mut it = tail.split_whitespace();
+                let mut next = || {
+                    it.next()
+                        .expect("a `vertex ` line must carry 3 tokens")
+                        .parse::<f32>()
+                        .expect("each vertex token must parse as f32")
+                };
+                [next(), next(), next()]
+            })
+            .collect();
+        assert_eq!(
+            coords.len(),
+            36,
+            "a 12-triangle cube must emit 36 `vertex ` entries"
+        );
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime ASCII STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
+    }
+
     #[test]
     fn write_stl_ascii_two_triangle_quad() {
         let mesh = Mesh {
