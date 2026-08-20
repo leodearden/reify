@@ -9,9 +9,16 @@
 #                                  is outside the govtest name grammar
 #   govtest_slice_units <pid>      echo this run's three unit names, one per
 #                                  line, in TEARDOWN order (children, parent)
+#   govtest_stale_units <self_pid> <listing>
+#                                  filter a `systemctl --user list-units`
+#                                  listing down to one PARENT unit name per
+#                                  dead predecessor run
 #
 # Knobs:
-#   (none yet)
+#   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  space-separated pid list that replaces
+#                                       the `kill -0` liveness oracle (test
+#                                       seam; mirrors the REIFY_CPU_GOV_TEST_*
+#                                       idiom in test_cpu_load_governance.sh)
 #
 # WHY THIS LIVES IN tests/infra/ AND NOT scripts/lib_cgroup.sh
 # The `reify-govtest` prefix is test-private BY CONSTRUCTION:
@@ -85,5 +92,95 @@ govtest_slice_units() {
     printf 'reify-govtest%s-agents.slice\n' "$pid"
     printf 'reify-govtest%s-merge.slice\n' "$pid"
     printf 'reify-govtest%s.slice\n' "$pid"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _govtest_pid_alive <pid>
+#   Internal. Return 0 if <pid> is a live process, non-zero otherwise.
+#
+#   When REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS is set and non-empty it REPLACES
+#   the real oracle with a word-membership test against that list. The seam
+#   exists solely so the reaper's liveness logic is testable without real host
+#   pids: a hermetic test cannot make a chosen pid dead on demand, and picking
+#   a "surely dead" fixture pid is exactly the kind of host-dependence that
+#   turns a pool member into a flake. This is the same environment-fixture
+#   idiom test_cpu_load_governance.sh already uses about ten times over
+#   (REIFY_CPU_GOV_TEST_PROC_PATH, REIFY_CPU_GOV_TEST_CONFINE_CPUS,
+#   REIFY_CPU_ADMIT_MEM_PROC_PATH, ...) and lib_cgroup.sh uses for
+#   REIFY_CPU_GOVERN_CONTROLLERS_PATH.
+# ---------------------------------------------------------------------------
+_govtest_pid_alive() {
+    local pid="${1:-}"
+    [ -n "$pid" ] || return 1
+    if [ -n "${REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS:-}" ]; then
+        local fake
+        for fake in ${REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS}; do
+            [ "$fake" = "$pid" ] && return 0
+        done
+        return 1
+    fi
+    kill -0 "$pid" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# govtest_stale_units <self_pid> <listing>
+#   Echo one PARENT unit name — `reify-govtest<pid>.slice` — per dead
+#   predecessor run found in <listing>, which is raw output of
+#   `systemctl --user list-units --all --plain --no-legend` (unit name in
+#   field 1). Emission is in first-seen order; always returns 0.
+#
+#   ONE LINE PER RUN, NOT PER UNIT. Measured directly rather than inferred
+#   from systemd docs: a throwaway child slice was created under a parent,
+#   the PARENT ALONE was stopped, and BOTH units then vanished from
+#   `systemctl --user list-units --all`. Stopping the parent cascades, so a
+#   leaked run's three unit names must collapse to one action — which is why
+#   deduplication by pid is part of this function's contract rather than an
+#   optimisation, and why there is no ordering hazard from stopping a parent
+#   whose children are still listed.
+#
+#   FAIL-SAFE IN EXACTLY ONE DIRECTION. A pid is skipped when it is alive,
+#   when it is the caller's own, or when the unit name does not parse — and
+#   the name check runs through govtest_slice_pid, so the production
+#   `reify-governed-*` slices and any foreign unit the enumeration glob might
+#   surprise us with are dropped here too. The only error this design can
+#   make is a false NEGATIVE (pid reuse: an unrelated process now holds a
+#   dead run's pid), which merely leaves one empty slice behind for the next
+#   sweep to retry. It can never reap a live concurrent run — which matters
+#   because run_all.sh schedules many lanes at once against ONE shared
+#   per-user systemd session.
+#
+#   Dedup uses a plain space-delimited seen-list rather than an associative
+#   array: the candidate count is bounded by the number of leaked runs (a
+#   handful), and this keeps the library free of a bash-4 dependency.
+# ---------------------------------------------------------------------------
+govtest_stale_units() {
+    local self_pid="${1:-}" listing="${2:-}"
+    local line unit pid seen=" " emitted
+
+    while IFS= read -r line; do
+        # Field 1 is the unit name; `read` also drops blank/whitespace-only
+        # rows here, since unit ends up empty for them.
+        read -r unit _ <<EOF2
+$line
+EOF2
+        [ -n "$unit" ] || continue
+
+        pid="$(govtest_slice_pid "$unit")"
+        [ -n "$pid" ] || continue                 # not a govtest unit
+        [ "$pid" = "$self_pid" ] && continue      # never our own run
+        _govtest_pid_alive "$pid" && continue     # never a live run
+
+        case "$seen" in
+            *" $pid "*) continue ;;               # already emitted this run
+        esac
+        seen="$seen$pid "
+
+        emitted="reify-govtest${pid}.slice"
+        printf '%s\n' "$emitted"
+    done <<EOF
+$listing
+EOF
+
     return 0
 }
