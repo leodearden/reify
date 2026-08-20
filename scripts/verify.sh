@@ -3087,13 +3087,21 @@ build_plan() {
     # last cargo leaf that can compile the parser, or it attests an archive no
     # test binary ever linked.
     #
-    # Guard: RUN_RUST && (lint || typecheck) — deliberately NOT `|| test`, because
-    # that is exactly the condition under which a `cargo check --tests` / `cargo
-    # clippy` leaf has already been emitted. The assertion is only meaningful once
-    # something has actually compiled; emitting it on an action=test plan would
-    # hard-fail a repairable PRE-build condition, converting the false GREEN into a
-    # spurious RED. action=all — every merge path — satisfies both, so the merge
-    # gate always carries the assertion after its full compile wave.
+    # Guard: RUN_RUST && (lint || typecheck || test). The `test` arm was missing
+    # until the amendment pass on #5629, on the reasoning that "action=test has no
+    # compile leaf before this pole, so asserting there would hard-fail a
+    # repairable pre-build condition". That reasoning contradicted this leaf's own
+    # position: it is emitted AFTER add_test_passes, and on an action=test plan
+    # add_test_passes emits `cargo nextest run --workspace`, which COMPILES the
+    # parser. So every action=test plan forced a rebuild via `ensure` and then
+    # asserted nothing — leaving the whole test-only tier carrying exactly the
+    # one-level-up false GREEN this leaf was added to close.
+    #
+    # RUN_RUST is what keeps docs-only / gui-src-only plans at zero command leaves;
+    # with RUN_RUST=1 at least one of the three action flags is always set, so the
+    # inner disjunction is documentation of intent rather than a live filter — it
+    # keeps the leaf tied to "something compiled the parser", which is what makes
+    # the assertion meaningful.
     #
     # `check` hard-asserts over every fingerprint dir whose build-script run marker
     # advanced during THIS run (the epoch `ensure` stamped), so the multi-dir
@@ -3102,7 +3110,8 @@ build_plan() {
     # them, stale forever, so a whole-tree assertion would be permanently RED.
     # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
     # test_verify_plan_includes_freshness_after_generation.
-    if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
+    if [ "$RUN_RUST" -eq 1 ] \
+        && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ] || [ "$DO_TEST" -eq 1 ]; }; then
         add "./scripts/tree-sitter-freshness.sh check"
     fi
 
