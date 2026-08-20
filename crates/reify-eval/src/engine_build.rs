@@ -12809,16 +12809,32 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 
 /// The 3 indices of `nodes` nearest `target`, nearest first. The caller
 /// guarantees `nodes.len() >= 3`.
+///
+/// Fail-closed, never panics (PRD `compute-fea-hardening.md` Resolved design
+/// decision 4): normalizes a non-finite squared distance (NaN, or an
+/// overflow-to-`+INFINITY` from a non-finite or overflowing node/target
+/// coordinate) to `+INFINITY` before comparing, so a non-finite candidate can
+/// never win the pick. The normalization must run BEFORE [`f64::total_cmp`],
+/// not be replaced by it: `total_cmp` alone is a total order, but it ranks a
+/// negative-signed NaN BELOW every finite value (and below `-infinity`) — in
+/// a nearest-node pick that would let the poisoned node win, i.e. fail OPEN
+/// in exactly the direction this guard exists to prevent.
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
-    let mut idx: Vec<usize> = (0..nodes.len()).collect();
-    idx.sort_by(|&a, &b| {
-        dist3_sq(nodes[a], target)
-            .partial_cmp(&dist3_sq(nodes[b], target))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    idx.truncate(3);
-    idx
+    let key = |i: usize| -> f64 {
+        let d = dist3_sq(nodes[i], target);
+        if d.is_nan() { f64::INFINITY } else { d }
+    };
+
+    // Precompute each node's key once, rather than inside the `sort_by`
+    // comparator (which would otherwise re-run `dist3_sq` ~O(n log n) times
+    // for a 3-element result).
+    let mut keyed: Vec<(usize, f64)> = (0..nodes.len()).map(|i| (i, key(i))).collect();
+    // `sort_by` (stable), not `sort_unstable_by`: preserves the lowest-index
+    // tie-break on equal keys that callers rely on.
+    keyed.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+    keyed.truncate(3);
+    keyed.into_iter().map(|(i, _)| i).collect()
 }
 
 /// Returns `true` if `expr`'s compiled tree contains a `CrossSubGeometryRef`
