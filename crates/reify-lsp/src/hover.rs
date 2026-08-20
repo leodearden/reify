@@ -1258,4 +1258,36 @@ structure Bolt {
             "RHS name should still resolve as a structure, got: {md}"
         );
     }
+    /// A parameterized alias must render its type-parameter list, including bounds.
+    /// Probe-verified: `Vel2` has `type_params.len() == 1` and `type_expr` Display
+    /// `Q / Time`.
+    #[test]
+    fn hover_on_parameterized_type_alias_shows_type_params() {
+        let source = "pub type Vel2<Q: Dimension> = Q / Time\n";
+        let position = Position::new(0, 10); // on 'Vel2'
+        let md = hover_markdown(source, position)
+            .expect("hover on a parameterized type-alias name must return Some");
+        assert!(
+            md.contains("type Vel2<Q: Dimension> = Q / Time"),
+            "signature must render the type-parameter list, got: {md}"
+        );
+    }
+
+    /// A zero-parameter alias must emit no empty bracket pair.
+    #[test]
+    fn hover_on_simple_alias_has_no_angle_brackets() {
+        let source = "type Nickname = Bool\n";
+        let position = Position::new(0, 7); // on 'Nickname'
+        let md =
+            hover_markdown(source, position).expect("hover on a simple type alias must return Some");
+        assert!(
+            md.contains("type Nickname = Bool"),
+            "signature must render the alias, got: {md}"
+        );
+        assert!(
+            !md.contains("<>"),
+            "a zero-param alias must not emit an empty bracket pair, got: {md}"
+        );
+    }
+
 }
