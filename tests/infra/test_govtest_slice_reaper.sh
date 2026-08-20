@@ -296,15 +296,29 @@ _REAP_ADD_SELF=0
 _REAP_RC=0
 
 # The OK stub: record the full argv, and answer `list-units` from the fixture
-# file. Shebang is /bin/bash (absolute), NOT /usr/bin/env bash, because the
-# systemctl-absent scenario restricts PATH to an empty dir — `env bash` would
-# then fail to resolve the interpreter and the stub would misreport.
+# file.
+#
+# TWO PATH-HYGIENE CONSTRAINTS, both forced by the systemctl-absent scenario
+# (D4), which sets PATH to a directory holding NOTHING:
+#   * the shebang is /bin/bash (absolute), NOT /usr/bin/env bash — `env` would
+#     have to resolve `bash` through that empty PATH and the stub would die
+#     before recording anything;
+#   * the body uses bash BUILTINS ONLY. An earlier draft echoed the fixture
+#     with `cat`, which silently produced nothing under the restricted PATH
+#     and made a working reaper look like it stopped no units. `systemctl`
+#     lives in the same directory as coreutils, so the empty-PATH scenario
+#     cannot be relaxed to "coreutils but no systemctl".
+# The library under test is already builtin-only apart from systemctl itself,
+# so it needs no equivalent accommodation.
 cat > "$_STUB_ROOT/bin-ok/systemctl" <<'STUBEOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GOVTEST_STUB_LOG"
 for _a in "$@"; do
     if [ "$_a" = "list-units" ]; then
-        [ -s "${GOVTEST_STUB_LISTING_FILE:-/nonexistent}" ] && cat "$GOVTEST_STUB_LISTING_FILE"
+        if [ -s "${GOVTEST_STUB_LISTING_FILE:-/nonexistent}" ]; then
+            while IFS= read -r _l; do printf '%s\n' "$_l"; done \
+                < "$GOVTEST_STUB_LISTING_FILE"
+        fi
         exit 0
     fi
 done

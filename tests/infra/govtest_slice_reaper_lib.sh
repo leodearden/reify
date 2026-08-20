@@ -13,6 +13,8 @@
 #                                  filter a `systemctl --user list-units`
 #                                  listing down to one PARENT unit name per
 #                                  dead predecessor run
+#   govtest_reap_stale [<self_pid>] enumerate + stop every dead predecessor's
+#                                  slice; no-op when systemctl is absent
 #
 # Knobs:
 #   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  space-separated pid list that replaces
@@ -180,6 +182,70 @@ EOF2
         printf '%s\n' "$emitted"
     done <<EOF
 $listing
+EOF
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# govtest_reap_stale [<self_pid>]
+#   CRASH RECOVERY. Enumerate this project's govtest slices, and stop the
+#   parent of every run whose pid is dead. Defaults <self_pid> to `$$`.
+#   Always returns 0.
+#
+#   WHY A STARTUP SWEEP IS NEEDED AT ALL. test_cpu_load_governance.sh tears
+#   its own slices down from an EXIT trap, and that trap is more robust than
+#   it looks — measured on this host, a bash script blocked in a foreground
+#   command runs its EXIT trap on SIGTERM, SIGINT and SIGHUP alike. Only
+#   SIGKILL skips it. So widening the trap to `EXIT INT TERM HUP` would
+#   change nothing; the residue this sweep exists to clean is precisely the
+#   uncatchable one — a verify timeout, a harness reap, or an OOM kill.
+#   Recovering at the next start is the same shape dark-factory's
+#   leftover-verify-scope reaper uses (harness.py `_run_leftover_verify_scope
+#   _reaper_pass` -> verify.py `reap_leftover_verify_scopes`).
+#
+#   TWO BOUNDS ON THE BLAST RADIUS, BOTH DELIBERATE. The enumeration glob
+#   `reify-govtest*.slice` is the OUTER bound: the systemd user session is
+#   shared host-wide, so listing every unit and filtering afterwards would
+#   put the production `reify-governed-*` slices — and every other project's
+#   units — inside the candidate set in the first place. The anchored
+#   grammar re-filter inside govtest_slice_pid is the INNER bound, applied
+#   even though the glob already ran. Keeping both is exactly the
+#   belt-and-braces of dark-factory verify.py:3492 (glob) + :3503 (anchored
+#   regex re-check), and it means a surprise in systemctl's glob semantics
+#   cannot widen what gets stopped.
+#
+#   FAIL-SOFT THROUGHOUT. A missing systemctl returns immediately; a failing
+#   one is swallowed. This function is called at the top of a suite running
+#   under `set -euo pipefail`, so any escaping non-zero status would abort
+#   the whole governance run before a single row executed and surface as a
+#   governance regression that isn't one.
+#
+#   Each reap is announced on stdout rather than done silently, so a sweep is
+#   visible in the governance suite's transcript — the same log-what-you-
+#   reaped discipline the dark-factory sweep follows.
+# ---------------------------------------------------------------------------
+govtest_reap_stale() {
+    local self_pid="${1:-$$}"
+    local listing unit
+
+    command -v systemctl >/dev/null 2>&1 || return 0
+
+    listing=""
+    # `|| true` inside the capture AND a `|| listing=""` outside: the former
+    # covers a non-zero systemctl exit, the latter covers the assignment
+    # itself failing under `set -e`.
+    listing="$(systemctl --user list-units --all --plain --no-legend \
+        'reify-govtest*.slice' 2>/dev/null || true)" || listing=""
+
+    [ -n "$listing" ] || return 0
+
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        systemctl --user stop "$unit" 2>/dev/null || true
+        echo "  reaped stale govtest slice: $unit"
+    done <<EOF
+$(govtest_stale_units "$self_pid" "$listing")
 EOF
 
     return 0
