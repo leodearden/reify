@@ -226,6 +226,27 @@ ts_watched_files() {
     done
 }
 
+# ts_witness_value <ts_dir>
+#
+# The value a real `ensure` writes to the ledger's mtime WITNESS file
+# (.tree-sitter-freshness.ledger.mtime): the highest mtime across the watched
+# inputs at ledger-write time.
+#
+# A hand-seeded ledger must carry this too, or it is not the state a previous
+# force leaves behind. The script bypasses a ledger whose witness is missing or
+# whose value is ABOVE the current max — the warm-lane rewind signature, where
+# seed-warm-lane.sh stamps sources back to 2020 while CoW-cloning target/ (and
+# so the ledger) intact. A fixture seeding only the fingerprint would therefore
+# exercise the bypass rather than whatever rule it meant to test.
+ts_witness_value() {
+    local d="$1" f m best=0
+    while IFS= read -r f; do
+        m=$(ts_mtime "$f")
+        if [ "$m" -gt "$best" ]; then best="$m"; fi
+    done < <(ts_watched_files "$d")
+    printf '%s' "$best"
+}
+
 # ts_freshest_run_dir
 #
 # Print the most recently modified cargo build-script RUN directory for
@@ -1236,6 +1257,36 @@ test_freshness_check_verdicts() {
         return 1
     fi
 
+    # (13a2) the window lasts exactly ONE ensure/check pair: check CONSUMES the
+    # epoch it just read, and a repeat check — with no intervening `ensure` — falls
+    # back to newest-marker scope on the very same tree.
+    #
+    # Pins the epoch LIFECYCLE, which is the half that was missing. `ensure`
+    # created the file and nothing ever removed it, so "no epoch on disk" was a
+    # state a real checkout left behind after its first verify run and never
+    # revisited: every later standalone check silently replayed the last run's
+    # window — hours or days stale — hard-asserting on dirs that run rebuilt but
+    # which have since gone dormant. That is the un-actionable permanent RED the
+    # live/dormant split exists to prevent. Note that (13b) below reaches the same
+    # scope by explicitly `rm -f`-ing the epoch, i.e. it tests a synthetic tree;
+    # this case is the REAL standalone path.
+    if [ -f "$tmp/t_window/.tree-sitter-freshness.epoch" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check left the run-window epoch on disk. It must consume"
+        echo "  the window it read, or every later standalone check inherits this run's"
+        echo "  scope forever and hard-asserts on dirs that have since gone dormant."
+        return 1
+    fi
+    run_ts_freshness check "$tmp/t_window"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a REPEAT check (no new 'ensure') exited $TS_FRESHNESS_RC"
+        echo "  (expected 0). With the window consumed, the same tree must be judged at"
+        echo "  newest-marker scope — the stale dir is dormant, hence a note, not a RED."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
     # (13b) CONTROL — no epoch on disk degrades to the old newest-marker scope, so
     # the very same tree goes green. Without this the case above could pass for a
     # reason unrelated to the window (e.g. a whole-tree assertion), and a revert to
@@ -1296,11 +1347,12 @@ test_freshness_ensure_forces_and_is_idempotent() {
     # makes mtime useless as a freshness signal in a lane.
     local OLD='2020-01-01T00:00:00'
     local f
-    stamp_old() {
-        local d="$1" x
-        while IFS= read -r x; do touch -d "$OLD" "$x"; done < <(ts_watched_files "$d")
-        touch -d "$OLD" "$d/src/parser.c"
+    stamp_at() {
+        local d="$1" when="$2" x
+        while IFS= read -r x; do touch -d "$when" "$x"; done < <(ts_watched_files "$d")
+        touch -d "$when" "$d/src/parser.c"
     }
+    stamp_old() { stamp_at "$1" "$OLD"; }
     stamp_old "$ts"
 
     local baseline
@@ -1386,7 +1438,18 @@ test_freshness_ensure_forces_and_is_idempotent() {
     # stale forever — 7 such dirs exist in this lane). Without the ledger, ensure
     # would touch grammar.js on EVERY verify run, forcing a full ~5 MB parser.c
     # recompile each time.
-    stamp_old "$ts"
+    #
+    # The mtimes are deliberately NOT rewound to 2020 here. Case (1) just forced,
+    # and the ledger's mtime witness records that bump; stamping the sources back
+    # would BE the warm-lane reseed signature, and ensure would then correctly
+    # re-force (case (11) below). What this case models is two consecutive verify
+    # runs in ONE checkout, where run 1's bump is still on disk. Parking them a day
+    # in the future keeps the comparison exact at stat's 1-second resolution — a
+    # re-force would move them back to now, which is unambiguously different.
+    local future post_force
+    future="@$(( $(date +%s) + 86400 ))"
+    stamp_at "$ts" "$future"
+    post_force=$(mtimes_now)
     run_ts_freshness ensure "$tmp/target" "$ts"
     if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
         echo ""
@@ -1394,11 +1457,12 @@ test_freshness_ensure_forces_and_is_idempotent() {
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
-    if [ "$(mtimes_now)" != "$baseline" ]; then
+    if [ "$(mtimes_now)" != "$post_force" ]; then
         echo ""
         echo "  ASSERTION FAILED: ensure re-forced for a fingerprint already in the ledger"
+        echo "  whose force is demonstrably still on disk."
         echo "  This is the force-loop the ledger exists to prevent."
-        echo "  --- expected (2020 stamp) ---"; echo "$baseline"
+        echo "  --- expected (post-force stamp) ---"; echo "$post_force"
         echo "  --- actual ---"; mtimes_now
         echo "$TS_FRESHNESS_OUT"
         return 1
@@ -1534,10 +1598,16 @@ test_freshness_ensure_forces_and_is_idempotent() {
     # thing driving a force is the live archive.
     mk_ts_fixture "$tmp/target_ledger" "tree-sitter-reify-1111111111111111" "$altered4" "2024-01-02 00:00:00"
     mk_ts_fixture "$tmp/target_ledger" "tree-sitter-reify-ffffffffffffffff" "$fp4"      "2024-01-01 00:00:00"
-    # Pre-seed the ledger exactly as a previous run's force would have left it.
+    # Pre-seed the ledger exactly as a previous run's force would have left it —
+    # BOTH halves: the fingerprint AND the mtime witness attesting that force is
+    # still on disk. Seeding only the fingerprint would make ensure bypass on the
+    # missing witness instead, and this case would go green without ever
+    # exercising the live-archive rule it exists for.
     printf '%s\n' "$fp4" > "$tmp/target_ledger/.tree-sitter-freshness.ledger"
 
     stamp_old "$ts"
+    printf '%s\n' "$(ts_witness_value "$ts")" \
+        > "$tmp/target_ledger/.tree-sitter-freshness.ledger.mtime"
     run_ts_freshness ensure "$tmp/target_ledger" "$ts"
     if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
         echo ""
@@ -1565,6 +1635,11 @@ test_freshness_ensure_forces_and_is_idempotent() {
     printf '%s\n' "$fp4" > "$tmp/target_ledger2/.tree-sitter-freshness.ledger"
 
     stamp_old "$ts"
+    # Witness sampled AFTER the stamp, so it says "the mtimes on disk right now are
+    # the ones the force left" — the honest previous-run state. See case (11) for
+    # what happens when that is no longer true.
+    printf '%s\n' "$(ts_witness_value "$ts")" \
+        > "$tmp/target_ledger2/.tree-sitter-freshness.ledger.mtime"
     baseline=$(mtimes_now)
     run_ts_freshness ensure "$tmp/target_ledger2" "$ts"
     if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
@@ -1582,6 +1657,126 @@ test_freshness_ensure_forces_and_is_idempotent() {
         echo "  --- actual ---"; mtimes_now
         echo "$TS_FRESHNESS_OUT"
         return 1
+    fi
+
+    # ---- (11) ...unless the force the ledger stands for has been UNDONE ----
+    # The warm-lane rewind. scripts/seed-warm-lane.sh bulk-stamps every non-target/
+    # file back to 2020-01-01 while target/ — ledger included — is CoW-cloned
+    # intact, so a seeded lane inherits ledger==CURRENT_FP beside 2020 source
+    # mtimes and a stale dormant fingerprint dir. On the fingerprint alone the
+    # short-circuit above fires and no force happens; when that lane's build config
+    # then resolves to the dormant dir, cargo compares the 2020 mtimes against the
+    # dir's later recorded reference, calls it unchanged, and links the stale
+    # archive. That is a residual instance of the exact false GREEN this guard
+    # exists to close, so the ledger carries an mtime WITNESS and a current max
+    # BELOW it re-forces.
+    #
+    # Identical to case (10) in every respect except the witness, which is stamped
+    # from a PRE-reseed clock (now) while the sources sit at 2020.
+    mk_ts_fixture "$tmp/target_rewind" "tree-sitter-reify-1111111111111111" "$fp4"      "2024-01-02 00:00:00"
+    mk_ts_fixture "$tmp/target_rewind" "tree-sitter-reify-ffffffffffffffff" "$altered4" "2024-01-01 00:00:00"
+    printf '%s\n' "$fp4" > "$tmp/target_rewind/.tree-sitter-freshness.ledger"
+    stamp_old "$ts"
+    printf '%s\n' "$(date +%s)" > "$tmp/target_rewind/.tree-sitter-freshness.ledger.mtime"
+
+    run_ts_freshness ensure "$tmp/target_rewind" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure after an mtime rewind exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if ! all_recent; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure honoured a ledger whose force had been rewound away."
+        echo "  The fingerprint says 'a force was applied for these bytes'; it does NOT say"
+        echo "  the mtime bump is still on disk, and a warm-lane reseed removes it while"
+        echo "  CoW-cloning the ledger. Skipping the force there leaves cargo free to"
+        echo "  resurrect the dormant dir and link the stale archive."
+        echo "  --- mtimes ---"; mtimes_now
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"no longer on disk"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure re-forced past a MATCHING ledger without saying why."
+        echo "  'the ledger matched, yet we forced anyway' is otherwise indistinguishable"
+        echo "  from a bug in the short-circuit."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (12) DETECTED BUT UNREPAIRABLE must be LOUD, never silently green ----
+    # ensure's only failing exit path, and the single way this leaf can fail the
+    # merge gate. Everything above asserts exit 0, so a regression that swallowed
+    # the touch failure — dropping `failed=1`, or an `ts_force_touch || true` —
+    # would turn a detected-but-unrepairable stale archive into a silent GREEN
+    # with nothing to catch it: the same defect class as the original bug.
+    #
+    # Driven against a THROWAWAY copy of the source tree, so breaking the watched
+    # set cannot perturb the cases above or leak into the real worktree.
+    local broken="$tmp/ts_broken"
+    cp -a "$ts" "$broken" || return 1
+
+    local fp5 altered5
+    fp5=$(REIFY_TS_FRESHNESS_TS_DIR="$broken" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    if [ "${fp5:0:1}" = "0" ]; then altered5="1${fp5:1}"; else altered5="0${fp5:1}"; fi
+    # No marker => liveness undeterminable => the archive is treated as live; no
+    # ledger in this fresh target dir => the force is unconditionally due.
+    mk_ts_fixture "$tmp/target_unrepairable" "tree-sitter-reify-2222222222222222" "$altered5"
+
+    # (12a) a watched input that is GONE. grammar.js is watched but is not part of
+    # the fingerprint (it is an input to generation, not to compilation), so the
+    # scan still computes a verdict and the failure lands squarely in ts_force_touch.
+    rm -f "$broken/grammar.js"
+    run_ts_freshness ensure "$tmp/target_unrepairable" "$broken"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 1) with a stale"
+        echo "  archive it could NOT repair — a watched input was missing, so the force"
+        echo "  cannot have taken. Continuing green here reports success against a parser"
+        echo "  the gate never compiled."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"DETECTED BUT UNREPAIRABLE"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the unrepairable exit is not greppable — no"
+        echo "  'DETECTED BUT UNREPAIRABLE' line. A bare non-zero exit from a mid-plan leaf"
+        echo "  leaves the operator no way to tell this apart from a crash."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # (12b) the other arm: the input EXISTS but `touch` on it fails. Reached via a
+    # symlink to a root-owned file, since `touch` succeeds for the OWNER of a
+    # mode-0444 file (verified on this host) — chmod alone cannot deny it.
+    # The probe is the guard AND is non-mutating: if the touch unexpectedly
+    # succeeds (running as root, an exotic mount), the arm is skipped rather than
+    # asserted, so this can never become a flaky or destructive case.
+    local unwritable='/proc/version'
+    if [ "$(id -u)" != "0" ] && [ -f "$unwritable" ] && ! touch "$unwritable" 2>/dev/null; then
+        ln -s "$unwritable" "$broken/grammar.js" || return 1
+        run_ts_freshness ensure "$tmp/target_unrepairable" "$broken"
+        rm -f "$broken/grammar.js"
+        if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 1) when 'touch'"
+            echo "  itself failed on a watched input. A read-only tree cannot be repaired, and"
+            echo "  a silent 0 here is the false GREEN with an extra step."
+            echo "$TS_FRESHNESS_OUT"
+            return 1
+        fi
+        if [[ "$TS_FRESHNESS_OUT" != *"DETECTED BUT UNREPAIRABLE"* ]] || \
+           [[ "$TS_FRESHNESS_OUT" != *"'touch' failed"* ]]; then
+            echo ""
+            echo "  ASSERTION FAILED: the touch-failure arm did not name itself. Expected both"
+            echo "  a \"'touch' failed\" line and 'DETECTED BUT UNREPAIRABLE'."
+            echo "$TS_FRESHNESS_OUT"
+            return 1
+        fi
+    else
+        echo "  (skipped 12b: no unwritable regular file available here — running as root?)"
     fi
 }
 
@@ -1678,6 +1873,74 @@ test_build_rs_watches_all_compiled_inputs() {
     fi
 }
 
+test_build_rs_hasher_matches_the_shell_fallbacks() {
+    # The two halves of the attestation contract must agree on WHAT can hash.
+    # build.rs writes $OUT_DIR/tree_sitter_inputs.stamp; the freshness script
+    # recomputes the same manifest via compute_sha256 -> portable_sha256, which
+    # tries `sha256sum` and then `shasum -a 256`.
+    #
+    # With only sha256sum on the Rust side the two disagree on a shasum-only host
+    # (macOS is the canonical one): build.rs writes the literal UNAVAILABLE into
+    # every stamp while the script computes a real fingerprint. Every archive is
+    # then permanently unattestable, `check` prints PARTIAL and exits 0, and the
+    # guard is silently a no-op for that whole checkout — which propagates, since
+    # dormant fingerprint dirs are never rebuilt and target/ is CoW-cloned into
+    # every lane seeded from that base.
+    #
+    # DERIVED from portable_sha256 rather than restated, so adding a hasher there
+    # fails here instead of quietly re-splitting the contract.
+    #
+    # scripts/lib_portable.sh is deliberately NOT added to
+    # scripts/verify-pipeline-infra-tests.txt for this. Routing it would pull this
+    # whole suite — four serial cargo checks — into any task-scope verify that
+    # touches that shared lib, a cost paid by unrelated tasks. The merge gate runs
+    # with --include-infra and so always evaluates this arm; the exposure is one
+    # task-scope run going green before the gate catches it, not a coverage hole.
+    local build_rs="$TS_DIR/build.rs"
+    local portable="$REPO_ROOT/scripts/lib_portable.sh"
+    assert_file_exists "$build_rs" || return 1
+    assert_file_exists "$portable" || return 1
+
+    local body
+    body=$(sed -n '/^portable_sha256() {/,/^}/p' "$portable")
+    if [ -z "$body" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: could not extract portable_sha256 from $portable —"
+        echo "  this guard derives its expected hasher set from that function, so it"
+        echo "  cannot silently pass when the function moves. Re-point it."
+        return 1
+    fi
+
+    local bin found=0
+    for bin in sha256sum shasum; do
+        [[ "$body" == *"$bin"* ]] || continue
+        found=$(( found + 1 ))
+        if ! grep -q "\"$bin\"" "$build_rs"; then
+            echo ""
+            echo "  ASSERTION FAILED: portable_sha256 hashes with '$bin', but build.rs never"
+            echo "  names it. On a host where '$bin' is the ONLY hasher, build.rs stamps"
+            echo "  UNAVAILABLE while the freshness script computes a real fingerprint, so"
+            echo "  every archive becomes unattestable and the guard is a silent no-op."
+            return 1
+        fi
+    done
+    if [ "$found" -lt 2 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: portable_sha256 no longer names both sha256sum and shasum"
+        echo "  ($found of 2 found) — this guard's premise has moved; re-derive it."
+        return 1
+    fi
+
+    # `shasum` alone hashes SHA-1; the algorithm selector is load-bearing.
+    if ! grep -A3 '"shasum"' "$build_rs" | grep -q '256'; then
+        echo ""
+        echo "  ASSERTION FAILED: build.rs invokes 'shasum' without selecting SHA-256."
+        echo "  Bare 'shasum' defaults to SHA-1, so every hash would differ from the"
+        echo "  script's and every archive would read as stale, forever."
+        return 1
+    fi
+}
+
 test_freshness_detects_and_repairs_stale_archive() {
     # End-to-end: reproduce "verified against a stale compiled parser" deterministically,
     # then prove the force actually cures it.
@@ -1711,9 +1974,22 @@ test_freshness_detects_and_repairs_stale_archive() {
     # test_auto_generation_rebuilds_parser precedent.
     #
     # The trailing touch-sweep leaves the lane's target/ consistent with the restored
-    # tree whichever way this test exits: the last cargo check below rebuilds the real
-    # archive from the PROBED parser.c, so once the original is restored that archive
-    # is genuinely stale and something must make cargo recompile it.
+    # tree whichever way this test exits EARLY (the SKIP returns on a busy/absent
+    # toolchain, or any assertion failure): those paths leave the real archive built
+    # from the PROBED parser.c, so once the original is restored that archive is
+    # genuinely stale and something must make cargo recompile it.
+    #
+    # On the SUCCESS path the restore-and-rebuild block at the end of this test does
+    # that job explicitly instead, and then ASSERTS the result. Relying on the sweep
+    # alone was an unverified bet (#5629 amendment pass): the sweep only queues a
+    # rebuild, and the dir this test's `cargo check -p tree-sitter-reify` advanced is
+    # IN this run's window (its marker moved after `ensure` stamped the epoch), so
+    # the plan's later `check` leaf hard-asserts on it. That stayed green only
+    # because the subsequent `cargo nextest run --workspace` waves happened to
+    # recompile the same fingerprint dir — an assumption about build-script
+    # fingerprint identity across two different cargo invocations that nothing here
+    # verified. If it ever stopped holding, this test would turn the merge gate RED
+    # for a reason unrelated to the change under test.
     #
     # It deliberately does NOT run `bash "$FRESHNESS_SCRIPT" ensure` against the real
     # target/. `ts_mode_ensure` writes $TARGET_DIR/.tree-sitter-freshness.epoch
@@ -1818,6 +2094,56 @@ test_freshness_detects_and_repairs_stale_archive() {
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
+
+    # ---- leave the real build tree PROVABLY fresh, and prove it ----
+    # At this point the lane's archive was compiled from the PROBED parser.c, which
+    # is about to stop existing. That dir's run marker advanced inside THIS verify
+    # run's window, so the plan's post-cargo `check` leaf hard-asserts on it — and
+    # leaving it stale here would fail the merge gate for a reason that has nothing
+    # to do with the change under test. Restoring in CLEANUP_ACTIONS only QUEUES a
+    # repair (a touch-sweep) and bets that a later nextest wave happens to recompile
+    # this same fingerprint dir. Do it here instead, and assert the outcome.
+    #
+    # `cp`, not `mv`: the backup must survive for the registered cleanup, which
+    # still runs and is now a no-op-equivalent re-restore. The sweep is applied the
+    # way ts_force_touch would (mtime only, content untouched) rather than via
+    # `ensure`, for the epoch reason spelled out at the top of this test.
+    #
+    # Non-vacuous: right now the archive attests the PROBED bytes, so restoring the
+    # original makes it stale again; only a genuine recompile can make the final
+    # check green.
+    cp -f "$backup" "$parser" || return 1
+    # The final check below is only meaningful if the bytes it attests are the ones
+    # that SURVIVE this test. Without this guard, dropping the restore above would
+    # leave the check comparing the probed archive against the probed source —
+    # green, vacuous, and the lane left stale the moment cleanup restores.
+    if ! cmp -s "$parser" "$backup"; then
+        echo ""
+        echo "  ASSERTION FAILED: src/parser.c was not restored before the final rebuild,"
+        echo "  so the archive about to be attested is not the one this test leaves behind."
+        return 1
+    fi
+    ( cd "$TS_DIR" && { printf 'grammar.js\n'; bash "$FRESHNESS_SCRIPT" --list-inputs; } \
+        | xargs -r touch ) || return 1
+
+    guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
+        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    ts_mirror_run_dir "$tmp/t4" >/dev/null || return 1
+    run_ts_freshness check "$tmp/t4"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: this test left the lane's archive STALE on exit"
+        echo "  (check exit $TS_FRESHNESS_RC). The dir it rebuilt is inside this verify run's"
+        echo "  window, so the plan's later 'tree-sitter-freshness.sh check' leaf will"
+        echo "  hard-assert on it and turn the gate RED for a reason unrelated to the"
+        echo "  change under test."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
 }
 
 test_verify_plan_includes_freshness_after_generation() {
@@ -1901,55 +2227,56 @@ test_verify_plan_includes_freshness_after_generation() {
         # never compiled. `check` after the cargo wave is what turns the attempt
         # into an assertion.
         #
-        # Emitted only where a cargo COMPILE leaf precedes it (lint/typecheck
-        # side). action=test has no such leaf before the pole, and asserting
-        # there — pre-build — would hard-fail a repairable condition, converting
-        # the false GREEN into a spurious RED. So the presence arm is conditional
-        # but the ORDERING arm is absolute: wherever the leaf exists it must come
-        # after EVERY cargo leaf, never before one.
+        # Required on EVERY RUN_RUST plan, action=test included (#5629 amendment
+        # pass). The earlier carve-out excused action=test on the grounds that it
+        # has no compile leaf before this pole — but the leaf is emitted AFTER
+        # add_test_passes, and on an action=test plan add_test_passes emits
+        # `cargo nextest run --workspace`, which compiles the parser. So the
+        # test-only tier forced a rebuild via `ensure` and then asserted nothing,
+        # carrying the whole one-level-up false GREEN this leaf exists to close.
+        # The ORDERING arm is what makes the pre-build hard-fail concern moot:
+        # wherever the leaf exists it must come after EVERY cargo leaf.
         local off_check off_last_cargo
         off_check=$(ts_offset_of "$cmds" "tree-sitter-freshness.sh check")
         off_last_cargo=$(ts_last_offset_of "$cmds" "cargo ")
-        if [[ "$action" == all* || "$action" == lint* || "$action" == typecheck* ]]; then
-            if [ "$off_check" -lt 0 ]; then
-                echo ""
-                echo "  ASSERTION FAILED: verify.sh '$action' has no post-cargo"
-                echo "  './scripts/tree-sitter-freshness.sh check' leaf — the plan only ATTEMPTS"
-                echo "  the repair and never asserts the archive cargo linked is fresh."
-                return 1
-            fi
-            # Against the LAST cargo leaf, not the first (#5629 review round 3).
-            # The first-cargo form passes for a `check` emitted right after the
-            # clippy wave — but clippy compiles into a different fingerprint dir
-            # than the debug/release nextest builds that follow, so such a leaf
-            # attests an archive no test binary ever links while the archives that
-            # ARE linked go unexamined. That is the same false GREEN one level up.
-            if [ "$off_check" -le "$off_last_cargo" ]; then
-                echo ""
-                echo "  ASSERTION FAILED: verify.sh '$action' runs the freshness CHECK leaf at"
-                echo "  offset $off_check, before/at the LAST cargo leaf ($off_last_cargo)."
-                echo "  A cargo leaf that compiles the parser runs after the assertion, so the"
-                echo "  archive actually linked is never attested — and an assertion placed"
-                echo "  before the build would also hard-fail the very staleness 'ensure' had"
-                echo "  just queued a repair for."
-                return 1
-            fi
-            if [ "$off_check" -le "$off_cargo" ]; then
-                echo ""
-                echo "  ASSERTION FAILED: verify.sh '$action' runs the freshness CHECK leaf at"
-                echo "  offset $off_check, before/at the first cargo leaf ($off_cargo)."
-                echo "  A post-condition asserted before the build proves nothing, and would"
-                echo "  hard-fail the very staleness 'ensure' had just queued a repair for."
-                return 1
-            fi
-            # ...and it must be a DIFFERENT leaf from the ensure one, not a rename.
-            if [ "$off_check" -le "$off_fresh" ]; then
-                echo ""
-                echo "  ASSERTION FAILED: verify.sh '$action' emits 'check' at or before the"
-                echo "  'ensure' leaf — the pre-build repair and the post-build assertion are"
-                echo "  both required, in that order."
-                return 1
-            fi
+        if [ "$off_check" -lt 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' has no post-cargo"
+            echo "  './scripts/tree-sitter-freshness.sh check' leaf — the plan only ATTEMPTS"
+            echo "  the repair and never asserts the archive cargo linked is fresh."
+            return 1
+        fi
+        # Against the LAST cargo leaf, not the first (#5629 review round 3).
+        # The first-cargo form passes for a `check` emitted right after the
+        # clippy wave — but clippy compiles into a different fingerprint dir
+        # than the debug/release nextest builds that follow, so such a leaf
+        # attests an archive no test binary ever links while the archives that
+        # ARE linked go unexamined. That is the same false GREEN one level up.
+        if [ "$off_check" -le "$off_last_cargo" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' runs the freshness CHECK leaf at"
+            echo "  offset $off_check, before/at the LAST cargo leaf ($off_last_cargo)."
+            echo "  A cargo leaf that compiles the parser runs after the assertion, so the"
+            echo "  archive actually linked is never attested — and an assertion placed"
+            echo "  before the build would also hard-fail the very staleness 'ensure' had"
+            echo "  just queued a repair for."
+            return 1
+        fi
+        if [ "$off_check" -le "$off_cargo" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' runs the freshness CHECK leaf at"
+            echo "  offset $off_check, before/at the first cargo leaf ($off_cargo)."
+            echo "  A post-condition asserted before the build proves nothing, and would"
+            echo "  hard-fail the very staleness 'ensure' had just queued a repair for."
+            return 1
+        fi
+        # ...and it must be a DIFFERENT leaf from the ensure one, not a rename.
+        if [ "$off_check" -le "$off_fresh" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' emits 'check' at or before the"
+            echo "  'ensure' leaf — the pre-build repair and the post-build assertion are"
+            echo "  both required, in that order."
+            return 1
         fi
     done
 

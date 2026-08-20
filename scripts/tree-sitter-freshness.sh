@@ -110,6 +110,17 @@
 #      tests) behaving exactly as it did before the window existed, and it means a
 #      missing/unwritable epoch degrades to the old scope rather than to no scope.
 #
+# A window lasts exactly ONE ensure/check pair: `check` CONSUMES the epoch,
+# unlinking it once ts_scan has read it.  Without that the file — created by
+# `ensure`, previously never removed — would make "no epoch on disk" a state a
+# real checkout reaches only before its first verify run.  Every later standalone
+# `check` would silently inherit the LAST verify run's window, hours or days old,
+# and hard-assert on dirs that run rebuilt but which have since gone dormant
+# (someone flipped profile or RUSTFLAGS) — reproducing exactly the un-actionable
+# permanent RED the live/dormant split exists to avoid.  Consuming it means a
+# standalone `check` really is newest-marker-only, as documented, and the gate's
+# own `ensure` re-opens a fresh window on every run.
+#
 # A dir's marker is read from cargo's OWN per-run files inside the run dir —
 # `output` (its verbatim capture of build-script stdout), falling back to
 # `invoked.timestamp`.  Measured on this host rather than assumed: a `cargo check`
@@ -128,7 +139,9 @@
 # comparison that drives rerun-if-changed can perfectly well say "fresh" for an
 # archive built from different bytes (that is the whole defect this script
 # exists to close).  Forcing on dormant staleness too is what keeps a resurrected
-# dir honest; the ledger below is what stops it costing a recompile every run.
+# dir honest; the ledger below is what stops it costing a recompile every run —
+# and the ledger's mtime witness is what stops the ledger itself from silently
+# cancelling that force after a warm-lane reseed rewinds the source mtimes.
 #
 # The two scopes compose into the actual gate guarantee.  `ensure` runs BEFORE
 # the cargo wave and repairs anything stale; `check` runs AFTER it and asserts
@@ -158,6 +171,22 @@
 # last force was applied for, bounding the cost to exactly one extra build-script
 # run per source change, and zero when the sources are unchanged.  It is written
 # only AFTER the touch, so a build that then fails still has newer mtimes.
+#
+# The ledger carries a WITNESS beside it (`.tree-sitter-freshness.ledger.mtime`):
+# the highest watched-input mtime at the moment it was written.  A fingerprint
+# alone says "a force was applied for these bytes"; it does NOT say the mtime bump
+# that force consists of is still on disk — and in the exact environment this
+# guard targets, it routinely is not.  scripts/seed-warm-lane.sh bulk-stamps every
+# non-target/ file back to 2020-01-01 while target/ — ledger included — is
+# CoW-cloned intact, so a freshly-seeded lane can inherit ledger==CURRENT_FP
+# beside 2020 source mtimes and a stale DORMANT fingerprint dir.  Honouring the
+# ledger there skips a force that no longer exists; if the lane's build config
+# then resolves to that dir, cargo compares the 2020 mtimes against the dir's
+# later recorded reference, concludes "unchanged", and links the stale archive.
+# That is a residual instance of the very false GREEN this script closes, so the
+# witness is checked too: a current max watched mtime BELOW the recorded one is
+# the warm-lane rewind signature, and it bypasses the ledger.  Missing or
+# unreadable witness also bypasses — fail closed, at a cost of one force.
 #
 # FAIL POLICY
 # -----------
@@ -218,6 +247,13 @@ STAMP_NAME="tree_sitter_inputs.stamp"
 # it is gitignored and travels with the per-lane build tree (CoW-cloned from the
 # warm base alongside the archives it describes).
 LEDGER_NAME=".tree-sitter-freshness.ledger"
+
+# Suffix of the ledger's companion WITNESS file, which records the highest
+# watched-input mtime at the moment the ledger was written. The ledger says WHICH
+# bytes a force was applied for; the witness says the bump is still on disk. See
+# "WHY `touch`, AND WHY A LEDGER" in the header for why the second half is
+# load-bearing in a CoW-seeded warm lane.
+LEDGER_MTIME_SUFFIX=".mtime"
 
 # Stamped by `ensure` at the START of a verify run, before any cargo leaf.  Its
 # MTIME (the file's content is irrelevant) opens the RUN WINDOW: any build-script
@@ -401,6 +437,12 @@ ts_live_run_dir() {
 # Print the RUN WINDOW epoch as an integer mtime, or nothing when no epoch file
 # exists (or its mtime cannot be read).  Empty means "no window": callers fall
 # back to newest-marker-only scope, which is the pre-window behaviour.
+#
+# A window is opened by `ensure` and CONSUMED by `check` (ts_consume_epoch), so
+# "no epoch on disk" is the normal state between verify runs — which is what makes
+# a standalone `check` genuinely newest-marker-only rather than a re-run of the
+# last gate's window.  A mirrored test fixture and an unwritable target tree reach
+# the same state by never having had one.
 ts_epoch_mtime() {
     local f="$TARGET_DIR/$EPOCH_NAME" m
     [ -f "$f" ] || return 0
@@ -426,6 +468,34 @@ ts_write_epoch() {
         echo "    a later 'check' will attest only the newest fingerprint dir, not every"
         echo "    dir rebuilt during this run."
         return 0
+    fi
+}
+
+# ts_consume_epoch
+#
+# Close the RUN WINDOW: unlink the epoch once `check` has read it, so it lasts
+# exactly one ensure/check pair.
+#
+# Why this is not just tidiness: the epoch was created by `ensure` and, before
+# this, never removed.  A real checkout therefore reached "no epoch on disk" only
+# before its FIRST verify run, and every later standalone `check` silently reused
+# the last run's window — hours or days old — hard-asserting on dirs that run
+# rebuilt but which have since gone dormant.  That is the permanent, un-actionable
+# RED the live/dormant split exists to prevent, arrived at from the other side.
+#
+# The narrowing is disclosed rather than silent: a reader who re-runs `check`
+# after a failure must know the second run asserts on less, and that `ensure` is
+# what re-opens the window.  An unlink that fails is only a note — the fallback is
+# the pre-existing (over-wide, fail-closed) behaviour, not a missed assertion.
+ts_consume_epoch() {
+    local f="$TARGET_DIR/$EPOCH_NAME"
+    [ -f "$f" ] || return 0
+    if rm -f "$f" 2>/dev/null; then
+        echo "tree-sitter-freshness: run window consumed; a repeat 'check' with no new"
+        echo "    'ensure' asserts at newest-fingerprint-dir scope only."
+    else
+        echo "tree-sitter-freshness: note: could not remove the run-window epoch ($f);"
+        echo "    a later standalone 'check' will inherit THIS run's window."
     fi
 }
 
@@ -547,9 +617,11 @@ ts_scan() {
     [ -n "$live_dir" ] && TS_LIVE_DIR="$(basename "$live_dir")"
 
     # The RUN WINDOW opened by `ensure` earlier in this verify run. Empty when no
-    # epoch is on disk (standalone `check`, mirrored test fixture, unwritable
-    # tree), in which case the live set collapses to the newest-marker dir alone —
-    # the pre-window scope.
+    # epoch is on disk, in which case the live set collapses to the newest-marker
+    # dir alone — the pre-window scope. That is the normal state OUTSIDE a verify
+    # run, because `check` consumes the epoch it reads (ts_consume_epoch): a
+    # standalone `check` at a human/agent checkpoint, a mirrored test fixture and
+    # an unwritable target tree all land here.
     local epoch
     epoch=$(ts_epoch_mtime)
 
@@ -712,12 +784,74 @@ ts_watched_inputs() {
     done < <(ts_inputs)
 }
 
-# ts_write_ledger <ledger-path> — record CURRENT_FP. Never fatal.
+# ts_max_watched_mtime
+#
+# Highest mtime, in epoch seconds, across the inputs `ensure` is allowed to touch.
+# Prints 0 when none of them can be stat'ed.  Derived from ts_watched_inputs() so
+# it measures exactly the set a force bumps — nothing else can drift into it.
+ts_max_watched_mtime() {
+    local rel abs m best=0
+    while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        abs="$TS_DIR/$rel"
+        [ -f "$abs" ] || continue
+        m=$(stat -c %Y "$abs" 2>/dev/null || stat -f %m "$abs" 2>/dev/null || echo 0)
+        case "$m" in
+            '' | *[!0-9]*) continue ;;
+        esac
+        if [ "$m" -gt "$best" ]; then
+            best="$m"
+        fi
+    done < <(ts_watched_inputs)
+    printf '%s' "$best"
+}
+
+# ts_ledger_force_in_effect <witness-path>
+#
+# True when the mtime bump the ledger stands for is STILL ON DISK.
+#
+# The ledger records which bytes a force was applied for. That is only half the
+# fact: a force IS an mtime bump, and a bump can be undone underneath the ledger.
+# scripts/seed-warm-lane.sh does exactly that — it bulk-stamps every non-target/
+# file back to 2020-01-01 while target/ (ledger included) is CoW-cloned intact —
+# so a seeded lane can inherit ledger==CURRENT_FP beside 2020 source mtimes and a
+# stale dormant fingerprint dir. Skipping the force there leaves cargo free to
+# resurrect that dir, compare the 2020 mtimes against its later recorded
+# reference, call it unchanged, and link the stale archive.
+#
+# The witness is the max watched-input mtime at ledger-write time, so a current
+# max BELOW it is precisely the rewind signature. Fail closed: a missing or
+# unreadable witness (an older ledger, a partially-cloned tree) also returns
+# false, costing one force rather than one silent false GREEN.
+ts_ledger_force_in_effect() {
+    local witness="$1" recorded now
+    [ -f "$witness" ] || return 1
+    recorded=$(cat "$witness" 2>/dev/null) || return 1
+    case "$recorded" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    now=$(ts_max_watched_mtime)
+    [ "$now" -ge "$recorded" ]
+}
+
+# ts_write_ledger <ledger-path> — record CURRENT_FP, plus the mtime witness that
+# says the force it stands for is on disk. Never fatal.
+#
+# Both are written at the same instant, from the same call site, and the witness
+# is sampled AFTER ts_force_touch has run — so it records the state the force
+# created, not the state it replaced.
 ts_write_ledger() {
     local ledger="$1"
+    local witness="$ledger$LEDGER_MTIME_SUFFIX"
     mkdir -p "$(dirname "$ledger")" 2>/dev/null || true
     if ! printf '%s\n' "$CURRENT_FP" > "$ledger" 2>/dev/null; then
         echo "warning: could not write the freshness ledger at $ledger" >&2
+        return 0
+    fi
+    if ! printf '%s\n' "$(ts_max_watched_mtime)" > "$witness" 2>/dev/null; then
+        # A ledger with no witness is bypassed on the next run (fail-closed), so
+        # this costs one extra force, never a missed one.
+        echo "warning: could not write the freshness ledger mtime witness at $witness" >&2
     fi
 }
 
@@ -745,6 +879,10 @@ ts_force_touch() {
 ts_mode_check() {
     echo "tree-sitter-freshness: check — attesting libtree_sitter_reify.a against $TS_DIR"
     ts_scan
+    # Close the window as soon as ts_scan has read it, in EVERY branch below: a
+    # window describes what one verify run rebuilt, and leaving it on disk turns
+    # every later standalone check into a replay of that run at ever-staler scope.
+    ts_consume_epoch
     case "$TS_SCAN_STATUS" in
         skip)
             echo "tree-sitter-freshness: SKIP — $TS_SCAN_SKIP_REASON"
@@ -857,8 +995,17 @@ ts_mode_ensure() {
     # (fail-closed for `check`), but that is an absence of information, not
     # evidence that a force failed — so here the ledger still applies and the
     # pre-liveness force-once-per-source-state behaviour is preserved.
+    #
+    # The ledger ALSO requires its mtime witness to still hold. A matching
+    # fingerprint proves a force was applied for these bytes; it does not prove
+    # the mtime bump survived, and a warm-lane reseed rewinds source mtimes to
+    # 2020 while CoW-cloning the ledger intact. Honouring a cancelled force there
+    # is a residual false GREEN of exactly the class this script closes, so a
+    # rewind (or a missing witness) bypasses the short-circuit — see
+    # ts_ledger_force_in_effect.
     if { [ "$TS_SCAN_STATUS" = "dormant" ] || [ -z "$TS_LIVE_DIR" ]; } \
-        && [ -f "$ledger" ] && [ "$(cat "$ledger")" = "$CURRENT_FP" ]; then
+        && [ -f "$ledger" ] && [ "$(cat "$ledger")" = "$CURRENT_FP" ] \
+        && ts_ledger_force_in_effect "$ledger$LEDGER_MTIME_SUFFIX"; then
         ts_stale_lines
         ts_dormant_lines
         echo "tree-sitter-freshness: the force was already applied for these exact inputs;"
@@ -866,6 +1013,17 @@ ts_mode_ensure() {
         echo "    Dormant fingerprint dirs are never rebuilt, so they stay stale forever;"
         echo "    without this guard every verify run would pay a full parser.c recompile."
         return 0
+    fi
+
+    # Name the rewind explicitly when it is what put us here: "the ledger already
+    # matched, yet we are forcing again" is otherwise indistinguishable from a bug
+    # in the short-circuit above.
+    if [ -f "$ledger" ] && [ "$(cat "$ledger")" = "$CURRENT_FP" ] \
+        && ! ts_ledger_force_in_effect "$ledger$LEDGER_MTIME_SUFFIX"; then
+        echo "tree-sitter-freshness: the ledger matches these inputs, but the mtime bump it"
+        echo "    stands for is no longer on disk (watched-input mtimes were rewound beneath"
+        echo "    it — the warm-lane reseed signature, or a missing witness file). Re-forcing:"
+        echo "    a ledger entry whose force has been undone would otherwise cancel the repair."
     fi
 
     echo "tree-sitter-freshness: forcing rebuild — a built archive does not match the sources on disk:"
