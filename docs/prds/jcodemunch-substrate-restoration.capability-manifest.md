@@ -58,6 +58,19 @@ check that also removes the count-asserting test name
 | S13 | `crates/reify-audit/src/bin/reify-audit.rs` grep | **`leodearden/reify` live at `:111`, `:190`, `:215`, `:774`** (the last inside a `#[cfg(test)]` assertion — γ must update it too). |
 | S14 | `docs/prds/reify-audit-p1-jcodemunch-substrate.md` + `docs/architecture-audit/jcodemunch-serve-activation.md` + `.claude/skills/audit/SKILL.md` | **All three drift targets confirmed present verbatim** — "degrades to exit 125 when serve is down", "**Status (2026-05-30):** Active", `leodearden-reify.db`, and the SKILL's serve-prerequisite prose. |
 
+> **CORRECTION 2026-08-20 (esc-6107-7; ruled 2026-08-17 during /unblock of #6107) — S5 is the probe
+> that missed it, and two of its observations have since inverted.** S5 verified the *formula*
+> (`_local_repo_name`) and cross-checked it on a dark-factory **worktree** — a path that takes the
+> local branch — but never exercised the **mode dispatch** that decides whether that function is called
+> at all. At the pinned 1.108.54 the shipped default is `git_root_identity: True` (`config.py:384`,
+> seeded into `_GLOBAL_CONFIG` by `load_config()` at `config.py:660`), so a checkout with a parseable
+> `origin` resolves to its **git** identity by default. Both of S5's on-disk observations are now
+> inverted: `~/.code-index/local-reify-4ae45bbd.db` **does** exist (55,890 symbols, 2,761 files,
+> 2026-08-17 18:11) and `~/.code-index/leodearden-reify.db` **also** exists (147,456-byte empty husk).
+> S5's verdict for D1 stands only as *"the derivation is correct"*, never as *"the derivation is what
+> jcodemunch does by default"*. S14's `leodearden-reify.db` drift target is likewise no longer a
+> "nonexistent DB" — see the μ correction below. See PRD D1/§2.2 corrections for the full ruling.
+
 ---
 
 ## 2. Per-leaf bindings
@@ -93,6 +106,15 @@ check that also removes the count-asserting test name
 | `refusal-mechanism` (G6 branch 4) | γ **is** the producer of the rejection; nothing upstream is required. Bound by construction. | **PASS** |
 | `mcp-route-needs-α` (**G6 branch-3 resolution**) | If OQ1 resolves to the MCP route, `meta.git_head` is read over a live MCP session ⇒ requires α. The PRD lists γ's prereqs as "none". **Resolution recorded**: **γ → α wired as a real `add_dependency` edge**, so both OQ1 answers are safe. The α-free sqlite route (S6) remains available and is noted in γ's task text — prose ordering was explicitly rejected (overlay drift-guard rule). | **PASS (resolved)** |
 | `refusal-carries-a-code` (**G7 INV-SF-6 resolution**) | B4/B5 assertions would otherwise bind to prose. **Resolution recorded**: γ's two refusals carry the stable greppable markers **`E_JC_INDEX_STALE`** and **`E_JC_INDEX_EMPTY`**, so boundary tests bind to code identity, not substrings (INV-SF-6 house pattern: tasks 2255/3416). | **PASS (resolved)** |
+
+> **CORRECTION 2026-08-20 (esc-6107-7) — `per-path-identity-derivable` PASSes on a narrower claim than
+> it reads.** The evidence substantiates that the per-path identity is **derivable**, not that it is
+> **reachable by default**. It is reached only because reify forces `JCODEMUNCH_GIT_ROOT_IDENTITY=0`
+> at every invocation site (β does; δ and ζ carry the same obligation in their task records). The
+> capability as worded is therefore only satisfied *conditional on the lever*, and γ's derived path
+> matches disk only while that holds. The `kind: manual` check is unchanged and still correct — a grep
+> for the literal digest would still pin the wrong thing — but the lever, not the sha1 rule, is what
+> makes the derivation true of this host.
 
 ### δ — `scripts/with-jcodemunch-serve.sh`
 
@@ -176,6 +198,17 @@ check that also removes the count-asserting test name
 | `drift-targets-exist-verbatim` | S14 — all four confirmed present today: `jcodemunch-serve-activation.md:3` "**Status (2026-05-30):** Active"; `:23/:25` `leodearden-reify` / `leodearden-reify.db`; prior PRD's "degrades to exit 125 when serve is down" row; `.claude/skills/audit/SKILL.md` serve-prerequisite prose + `leodearden/reify` default. | **PASS** |
 | `landed-behaviour-to-document` | producers **γ** (identity + refusal), **ζ** (replacement freshness story), **η** (unit retirement) — **all three wired upstream**. The PRD lists η only; γ and ζ added because μ documents *their* landed behaviour. | **PASS (resolved)** |
 | `player-doc-edit-owned-by-λ` | If λ retires PLAYER, the SKILL edit is part of λ's retirement, not μ's. No unordered overlap. | **PASS** |
+
+> **CORRECTION 2026-08-20 (esc-6107-7) — the μ/`nonexistent-db-claim-removed` binding is defective.**
+> It asserts that `leodearden-reify` and `~/.code-index/leodearden-reify.db` are identifiers "neither of
+> which exists". Both exist. The DB is a live (empty) husk that regenerates as an upstream side effect,
+> and `leodearden/reify` is jcodemunch's **default** identity for this checkout — reify overrides it
+> rather than the identity being fictional. Its `delivered_check` (`expect: absent` grep for
+> `leodearden-reify\.db` in `docs/architecture-audit/jcodemunch-serve-activation.md`) would, as written,
+> require deleting a **true** statement. **μ must re-derive that check**: the doc should say
+> `leodearden/reify` is the default identity that reify deliberately overrides to
+> `local/reify-4ae45bbd`, not that it does not exist. Left mechanically unchanged here so the decision
+> stays visible rather than drifting inside an amendment.
 
 ---
 

@@ -140,7 +140,14 @@ tasks:
     binding: capability→producer — storage/git_root.py:55-57 `_local_repo_name` =
       f"{name}-{sha1(str(path))[:8]}", IDENTICAL in 1.108.27 and 1.108.74; verified
       by prediction-then-measurement (predicted local/3484-e93a7bf3 == observed meta.repo).
-      /home/leo/src/reify -> local/reify-4ae45bbd
+      /home/leo/src/reify -> local/reify-4ae45bbd.
+      CORRECTION 2026-08-20 (esc-6107-7, ruled 2026-08-17) — DERIVABLE, not DEFAULT.
+      jcodemunch 1.108.54 ships git_root_identity=True (config.py:384, seeded into
+      _GLOBAL_CONFIG by load_config at config.py:660), so this checkout resolves to
+      leodearden/reify by default. local/reify-4ae45bbd is reached ONLY because every reify
+      invocation site forces JCODEMUNCH_GIT_ROOT_IDENTITY=0 — beta does, and delta and zeta
+      carry the same obligation in their task records. This verdict holds conditional on that
+      lever, not on the sha1 rule alone
     verdict: PASS
     delivered_check:
       kind: manual
@@ -490,7 +497,16 @@ tasks:
     binding: capability→producer — docs/architecture-audit/jcodemunch-serve-activation.md
       asserts resolved identifier `leodearden-reify` and shared DB file `~/.code-index/leodearden-reify.db`,
       neither of which exists (no leodearden/* git-identity index exists at all; per-path
-      identity is local/reify-4ae45bbd)
+      identity is local/reify-4ae45bbd).
+      CORRECTION 2026-08-20 (esc-6107-7, ruled 2026-08-17) — BOTH identifiers DO exist and
+      this binding is defective. ~/.code-index/leodearden-reify.db is a live empty husk that
+      regenerates as an upstream side effect, and leodearden/reify is jcodemunch's DEFAULT
+      identity for this checkout (git_root_identity=True at config.py:384), which reify
+      overrides to local/reify-4ae45bbd via JCODEMUNCH_GIT_ROOT_IDENTITY=0. The expect-absent
+      grep below would therefore require deleting a TRUE statement. mu must RE-DERIVE this
+      check so the doc states that leodearden/reify is the default identity reify overrides,
+      rather than asserting the identifier does not exist. Left mechanically unchanged here so
+      the decision stays visible rather than drifting inside an amendment
     verdict: PASS
     delivered_check:
       kind: grep
