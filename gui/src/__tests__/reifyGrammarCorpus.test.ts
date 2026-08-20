@@ -4552,15 +4552,36 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * TEXT within `node`'s own span rather than by reading `node`'s children —
    * so this is an independent check of what `foldNodeProp` returns, not a
    * restatement of `foldBody`'s own `getChild('{')` logic against itself.
-   * `node.from` skips any brace belonging to an ENCLOSING node (the structure
-   * body's own `{`, say), and `node.to - 1` bounds the search so a NESTED
-   * body's closing brace (an override block inside a keyed entry, say) is
-   * never mistaken for `node`'s own.
+   * `node.to - 1` bounds the close search so a NESTED body's closing brace
+   * (an override block inside a keyed entry, say) is never mistaken for
+   * `node`'s own.
+   *
+   * The open is NOT simply "the first `{` at or after `node.from`" — a
+   * keyword-led production's HEADER can itself contain a brace pair before
+   * the body's own: `MatchExpression`'s discriminant is a full `expression`
+   * (reify.grammar:932), so `match set { 1 } { A => 1 }` is legal, and the
+   * naive first-`{` reading would return the scrutinee's `set { 1 }` interior
+   * instead. Scanning forward from `node.from` with a brace-depth counter and
+   * taking the position of the LAST 0→1 transition reached before `close`
+   * finds the brace that actually PAIRS WITH `close` — i.e. `node`'s own —
+   * regardless of how many complete brace pairs precede it in the header.
    */
   function ownBraceInterior(src: string, node: SyntaxNode): { from: number; to: number } {
-    const open = src.indexOf('{', node.from);
     const close = src.lastIndexOf('}', node.to - 1);
-    if (open < 0 || close < 0 || open >= close) {
+    if (close < 0) {
+      throw new Error(`no closing brace inside node span [${node.from}, ${node.to}) of: ${src}`);
+    }
+    let depth = 0;
+    let open = -1;
+    for (let i = node.from; i <= close; i++) {
+      if (src[i] === '{') {
+        if (depth === 0) open = i;
+        depth++;
+      } else if (src[i] === '}') {
+        depth--;
+      }
+    }
+    if (open < 0 || open >= close) {
       throw new Error(`no brace pair inside node span [${node.from}, ${node.to}) of: ${src}`);
     }
     return { from: open + 1, to: close };
@@ -4582,11 +4603,20 @@ describe('reifyLanguage — fold and indent coverage', () => {
   );
 
   /**
-   * The other half of the contract: the two brace-less arms where `null` IS
-   * the correct answer, so the non-null assertion above does not simply
-   * invert into a false failure for them. `FnBody`'s `= expression` sugar
-   * (grammar.js:239-246) and `JointDof`/`JointBody`'s bare-field / bare-
-   * expression arms (grammar.js:781-784, 799-802) are the only three.
+   * The other half of the contract: the brace-less arms and the empty-body
+   * case, where `null` IS the correct answer, so the non-null assertion above
+   * does not simply invert into a false failure for them. `FnBody`'s
+   * `= expression` sugar (grammar.js:239-246) and `JointDof`/`JointBody`'s
+   * bare-field / bare-expression arms (grammar.js:781-784, 799-802) are the
+   * only three legitimately brace-LESS arms — pinned by the two `it`s below.
+   *
+   * A fourth path returns `null` for a different reason: it HAS a brace pair,
+   * but nothing between them. `foldBody`'s `open.to >= close.from` guard
+   * (reifyLanguage.ts:83) fires for any empty body, braced or not — there is
+   * nothing to fold — and it is corpus-attested, not merely hypothetical:
+   * `port inlet : in Flow {}` (examples/keyed_vents.ri:23) is an empty
+   * `PortBody`. Pinned separately below via `SetLiteral` so the assertion
+   * stays a minimal, self-contained snippet.
    */
   describe('legitimately brace-less arms return null', () => {
     it('FnBody `= expression` sugar', () => {
@@ -4612,6 +4642,15 @@ describe('reifyLanguage — fold and indent coverage', () => {
         const fold = node!.type.prop(foldNodeProp)!;
         expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
       }
+    });
+
+    it('empty body — nothing between the braces to fold', () => {
+      const src = 'structure def F { let s = set {} }';
+      expect(countErrorNodes(src)).toBe(0);
+      const node = findFirstNodeNamed(src, 'SetLiteral');
+      expect(node, 'no SetLiteral in the parse').not.toBeNull();
+      const fold = node!.type.prop(foldNodeProp)!;
+      expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
     });
   });
 });
