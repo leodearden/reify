@@ -137,6 +137,67 @@ plan_is_narrowing_axis_line() {
     return 1
 }
 
+# plan_narrowing_axis_match <dump> <ere>
+#
+# Returns 0 iff <ere> matches a line of <dump> that plan_is_narrowing_axis_line
+# classifies as ON the narrowing axis; non-zero otherwise. See that function for
+# what the axis IS and why the distinction matters (#6391).
+#
+# Same per-line REG_NEWLINE semantics as plan_match (documented there), applied
+# to the axis subset only. Fork-free — no pipe, no subshell, no external grep.
+plan_narrowing_axis_match() {
+    local dump="$1" ere="$2" _line
+    while IFS= read -r _line; do
+        plan_is_narrowing_axis_line "$_line" || continue
+        [[ "$_line" =~ $ere ]] && return 0
+    done <<< "$dump"
+    return 1
+}
+
+# plan_offaxis_match <dump> <ere>
+#
+# The exact complement of plan_narrowing_axis_match: returns 0 iff <ere> matches
+# a line that is NOT on the narrowing axis. See plan_is_narrowing_axis_line for
+# the axis definition (#6391).
+#
+# "Off-axis" deliberately includes comment lines and non-cargo command lines, not
+# just the fixed-crate cargo axes — that total-complement property is what makes
+# this usable as test_verify_scope.sh Scenario MG-B5-control's classifier drift
+# guard: a crate that reaches ANY line the classifier does not recognise as
+# on-axis shows up here.
+#
+# Note the two matchers are NOT mutually exclusive over a dump: a pattern present
+# on both an axis line and an off-axis line (e.g. ` -p reify-ir`, on the narrowed
+# clippy AND on the release-sensitivity pass) makes BOTH return 0. That is the
+# point — it is the case a blanket whole-plan grep could not express.
+#
+# Same per-line REG_NEWLINE semantics as plan_match. Fork-free.
+plan_offaxis_match() {
+    local dump="$1" ere="$2" _line
+    while IFS= read -r _line; do
+        plan_is_narrowing_axis_line "$_line" && continue
+        [[ "$_line" =~ $ere ]] && return 0
+    done <<< "$dump"
+    return 1
+}
+
+# plan_narrowing_axis_count <dump>
+#
+# Prints the number of lines in <dump> that sit on the narrowing axis (see
+# plan_is_narrowing_axis_line for the definition, #6391). Fork-free.
+#
+# Used to prove a narrowing-axis ABSENCE assertion is not vacuous: if the axis
+# filter matched nothing, "no ` -p ` on the axis" would pass trivially.
+plan_narrowing_axis_count() {
+    local dump="$1" _n=0 _line
+    while IFS= read -r _line; do
+        if plan_is_narrowing_axis_line "$_line"; then
+            _n=$((_n + 1))
+        fi
+    done <<< "$dump"
+    printf '%s' "$_n"
+}
+
 # capture_print_plan <out_var> <max_attempts> <cmd...>
 #
 # Runs <cmd...> up to <max_attempts> times until plan_capture_complete
