@@ -107,6 +107,20 @@ else
     assert "isolation-bug: does not emit the derivative SKIP marker (coverage preserved)" true
 fi
 
+# The FAIL marker line itself, pinned symmetrically with Sub-case C's PASS pin.
+# Without this, nothing in-tree asserts that line at all: Sub-case D's
+# non-vacuity check is satisfied by the `  | `-prefixed dump alone, so renaming
+# or deleting the marker outright would leave this whole suite green while the
+# lib header and the FAIL branch's own comment both promise it stays greppable.
+# Anchored at BOTH ends deliberately:
+#   ^   -- the marker is NOT itself `  | `-prefixed; the prefix filter applies
+#          to the re-emitted capture only.
+#   …$  -- the capture FOLLOWS the marker on its own lines rather than being
+#          interpolated INTO it, which is the pre-6353 shape this task removed
+#          (`… [hostile rc=$_amb_rc; hostile out: $_amb_out]`).
+assert "isolation-bug: emits the FAIL marker line, un-prefixed, with the capture not inlined into it" \
+    plan_match "$_out" '^AMBIENT-ISOLATION FAIL: .*\[hostile rc=1\]$'
+
 # ---------------------------------------------------------------------------
 # Sub-case C "green happy-path": a fake test_run_all.sh that is GREEN
 # regardless of env. Hostile GREEN => PASS immediately (no baseline run) =>
