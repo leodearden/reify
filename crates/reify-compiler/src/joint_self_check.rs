@@ -126,7 +126,11 @@ pub(crate) fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
 /// contribution, or `None` if it has no geometric joint-DOF kind:
 /// - `Scalar<Angle>` → `(1, 0)` (1 rotational),
 /// - `Scalar<Length>` → `(0, 1)` (1 translational),
-/// - `Orientation(_)` → `(3, 0)` (a free spherical orientation),
+/// - `Orientation(3)` → `(3, 0)` (a free spherical orientation) — `SO(N)` has
+///   `N(N-1)/2` rotational DOF, but only `N=3` is inhabited today
+///   (`Value::Orientation` is a quaternion, and `try_infer_type` returns
+///   `Orientation(3)` unconditionally), so every other arity falls through to
+///   `None` below rather than being answered,
 /// - anything else → `None` — a DOF field that is neither an angle, a length,
 ///   nor an orientation has no kind to match against the residual.
 ///
@@ -143,7 +147,7 @@ pub(crate) fn dof_kind_of(ty: &Type) -> Option<DofKinds> {
         Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => {
             Some(DofKinds::new(0, 1))
         }
-        Type::Orientation(_) => Some(DofKinds::new(3, 0)),
+        Type::Orientation(3) => Some(DofKinds::new(3, 0)),
         _ => None,
     }
 }
@@ -457,7 +461,7 @@ mod tests {
         );
     }
 
-    /// An `Orientation(_)` DOF field declares a full 3-rotational freedom (a free
+    /// An `Orientation(3)` DOF field declares a full 3-rotational freedom (a free
     /// spherical/ball orientation).
     #[test]
     fn declared_kinds_orientation_is_three_rotational() {
