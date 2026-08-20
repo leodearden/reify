@@ -3204,6 +3204,13 @@ TMPH="$(mktemp -d)"; _TMPDIRS+=("$TMPH")
 #   4. the `within unlimiteds` wart REIFY_TEST_SEMAPHORE_WAIT=unlimited
 #      produces, which DF's `\S+s\b` deliberately covers
 # Split across stdout and stderr, as the two real streams are.
+#
+# Finally it emits both live forms QUOTED INSIDE assert-shaped `  FAIL: ` lines
+# -- the shape run_all's _ra_collect_fail_detail actually harvests (its branch-1
+# `^[[:space:]]*FAIL:` anchor). That is what gives H3 a second, independent
+# application site to assert on; it mirrors test_run_all_clock_marker_sanitize.sh's
+# `test_marker_flaky.sh`, which exists for exactly the same reason. They are
+# harmless on the PASSING fixture: the collector runs only for a failed member.
 _write_slot_fixture() {  # <path> <exit_code>
     cat > "$1" <<SLOTFIXEOF
 #!/usr/bin/env bash
@@ -3215,6 +3222,8 @@ echo "${SP}TIMEOUT@@ reason=fixture slots=1 waited=0 disposition=fatal lock=/tmp
 echo "  PASS: fixture: stderr quotes ${SP}TIMEOUT@@ reason=fixture in assertion prose" >&2
 echo "ERROR: cargo-test-occt-gated.sh: failed to acquire OCCT slot within 1800s (LOCK=/o, N=1)" >&2
 echo "lib_test_semaphore.sh: failed to acquire test slot within unlimiteds (LOCK=/x, N=8)" >&2
+echo "  FAIL: fixture: stderr contains ${SP}TIMEOUT@@ reason=fixture (assertion prose)"
+echo "  FAIL: fixture: stderr contains lib_test_semaphore.sh: failed to acquire test slot within 0s (LOCK=/tmp/l, N=1)"
 SLOTFIXEOF
     echo "exit $2" >> "$1"
     chmod +x "$1"
@@ -3222,8 +3231,14 @@ SLOTFIXEOF
 
 cat > "$TMPH/classification.manifest" <<'EOF'
 test_slot_pass.sh pool
+test_slot_flaky.sh pool
 EOF
 _write_slot_fixture "$TMPH/test_slot_pass.sh" 0
+# The FAILING twin drives the OTHER two re-emit shapes: the Phase-2.5 serial
+# retry's dual-attempt emission, and _ra_collect_fail_detail -> the Summary
+# FAILED-DETAIL region, which is the text verify.sh / DF's merge-gate block
+# reason quotes verbatim. H3 below is scoped to that region.
+_write_slot_fixture "$TMPH/test_slot_flaky.sh" 1
 
 H_OUT="$TMPH/ra_out.txt"
 RUN_ALL_CLASSIFICATION_MANIFEST="$TMPH/classification.manifest" \
@@ -3303,5 +3318,69 @@ H2C_N="$(grep -acE -- "$H_DF_ANCHOR" "$H2C_IN" || true)"
 
 assert "H2c: a merely INDENTED deadline line still matches DF's anchor, so indentation is not a defence (got $H2C_N)" \
     test "$H2C_N" -eq 1
+
+echo ""
+echo "--- H3: the SECOND application site, _ra_collect_fail_detail's Summary region ---"
+
+# Sanitizing only the per-member re-emission is not enough. run_all harvests a
+# failed pool member's `  FAIL: ` lines and REPRINTS them in the Summary's
+# FAILED-DETAIL region -- and THAT region is the one verify.sh and dark-factory's
+# merge-gate block reason quote verbatim, so a live anchor there is if anything
+# more consequential than one in the bulk output. The clock rule is applied at
+# BOTH sites for exactly this reason; H3 pins that the two slot rules are too.
+#
+# SCOPED EXTRACTION is mandatory, not tidiness: the same FAIL lines also appear
+# in the per-member re-emission, where H1/H2 already prove they are sanitized.
+# A whole-file count could therefore go green on the strength of the FIRST site
+# alone and never see the second. Slicing to the FAILED-DETAIL region is what
+# makes this assertion about the collector.
+H3_REGION="$TMPH/h3-failed-detail.out"
+sed -n '/^--- FAILED-DETAIL: /,/^--- END FAILED-DETAIL: /p' "$H_OUT" > "$H3_REGION"
+
+# H3a/H3b FIRST: both are non-vacuity preconditions. Without the retry branch
+# there is no dual-attempt emission, and without a FAILED-DETAIL block the
+# extracted region is EMPTY -- in which case H3c/H3d would count zero and pass
+# while proving nothing at all.
+assert "H3a: the failing fixture took the retry/dual-attempt emit branch" \
+    _has_text "$H_OUT" "--- attempt 2 (serial retry) ---"
+assert "H3b: the Summary FAILED-DETAIL block was emitted for that member" \
+    _has_text "$H_OUT" "--- FAILED-DETAIL: test_slot_flaky.sh ---"
+
+H3_SENTINEL_N="$(grep -acE -- "$D_ANCHOR" "$H3_REGION" || true)"
+H3_BASENAME_N="$(grep -acE -- "$H_DF_ANCHOR" "$H3_REGION" || true)"
+
+# H3c/H3d are the ANCHORED arm, and they are honest about what they are: on
+# TODAY's collector grammar both are structurally-guaranteed zeros, because
+# _ra_collect_fail_detail harvests only lines that themselves begin (modulo
+# leading blanks) with `FAIL:` or `<TOKEN> FAIL`, which no `^[ \t]*`-anchored
+# slot line can. MEASURED, not assumed: with the collector unsanitized, this
+# region carries both live forms MID-LINE and neither anchor matches. They are
+# kept as a standing guard on that structural claim -- if the collector's own
+# anchors are ever loosened (a `-A`/context flag, a whole-block harvest, a
+# third branch), these are what turn RED. The arm that is actually load-bearing
+# TODAY is H3e/H3f below.
+assert "H3c: ZERO lines in the FAILED-DETAIL region match DF's live sentinel anchor (got $H3_SENTINEL_N)" \
+    test "$H3_SENTINEL_N" -eq 0
+assert "H3d: ZERO lines in the FAILED-DETAIL region match DF's live basename-deadline anchor (got $H3_BASENAME_N)" \
+    test "$H3_BASENAME_N" -eq 0
+
+# H3e/H3f: SUBSTRING absence, which is the strictly stronger property and the
+# one that is RED until the collector applies the two new rules. This is not a
+# gratuitous tightening -- it is the assertion shape the sibling pin for the
+# clock family uses for its CORE cases
+# (tests/infra/test_run_all_clock_marker_sanitize.sh, `_out_lacks`), for the
+# reason run_all.sh's own _RA_CLOCK_SANITIZE block states: the rewrite exists to
+# break BOTH substring and line-anchored matching, because DF's matcher was
+# HISTORICALLY substring-based and was only line-anchored later (Layer 2). A
+# quoted-in-prose live token in the one region DF's merge-gate block reason
+# quotes verbatim is exactly the residue that regression would re-expose.
+# H3g is their non-vacuity: without it an empty or unrelated region would
+# satisfy both absences while proving nothing.
+assert "H3e: no live SLOT sentinel token survives ANYWHERE in the FAILED-DETAIL region, mid-line included" \
+    _lacks_text "$H3_REGION" "${SP}TIMEOUT@@"
+assert "H3f: no live basename-deadline literal survives there either" \
+    _lacks_text "$H3_REGION" "lib_test_semaphore.sh: failed to acquire "
+assert "H3g: ... and the region really did carry those FAIL lines, in neutralized form (non-vacuity)" \
+    _has_text "$H3_REGION" "${QSP}TIMEOUT@@"
 
 test_summary
