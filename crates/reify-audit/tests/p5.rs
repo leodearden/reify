@@ -1354,6 +1354,119 @@ mod tests {
         );
     }
 
+    /// The pre-done gate must accept a task whose deliverable was DELETED (or
+    /// renamed away) by its landing commit.
+    ///
+    /// This is why defects 1 and 2 had to land together. A removed file has
+    /// `path_tracked_on(main, p) == false`, so the tracked-on-main leg alone
+    /// would refuse every removal/refactor task. Only the landing commit's own
+    /// delta (`<merge>^1..<merge>`) shows a deletion — `main..<merge>` can
+    /// never show it, because a path absent from both trees is not in a
+    /// two-point diff at all.
+    ///
+    /// Case (b) pins that the rescue NARROWS the gate rather than defeating
+    /// it: a landing commit that touched something else entirely is not
+    /// evidence that this task's deliverable landed.
+    #[test]
+    fn pre_done_gate_accepts_deletion_task_via_landing_commit() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+
+        // (a) the deletion task — its landing commit removed the declared file.
+        git.set_log_grep(
+            "main",
+            "6345D",
+            vec![GitCommit {
+                sha: "mergesha".to_string(),
+                subject: "Merge task/6345D into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("mergesha", "main", true);
+        git.set_changed_paths_in_commit(
+            "mergesha",
+            vec!["crates/reify-x/src/removed.rs".to_string()],
+        );
+
+        // (b) same shape, but the landing commit's delta covers an unrelated
+        // path only — no evidence this task's deliverable landed.
+        git.set_log_grep(
+            "main",
+            "6345E",
+            vec![GitCommit {
+                sha: "mergeshaE".to_string(),
+                subject: "Merge task/6345E into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("mergeshaE", "main", true);
+        git.set_changed_paths_in_commit(
+            "mergeshaE",
+            vec!["crates/reify-other/src/something_else.rs".to_string()],
+        );
+
+        // `path_tracked_on` stays at its `false` default for both declared
+        // files — that is the whole point: the file is gone from main.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345D".to_string(),
+            pre_done_meta("6345D", "review", &["crates/reify-x/src/removed.rs"]),
+        );
+        task_metadata.insert(
+            "6345E".to_string(),
+            pre_done_meta("6345E", "review", &["crates/reify-x/src/never_landed.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        // (a) must PASS the gate.
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345D");
+        assert!(
+            findings.is_empty(),
+            "a task whose landing commit DELETED its declared file must pass the \
+             pre-done gate — path_tracked_on is false by construction for a removal; \
+             got {:?}",
+            findings
+        );
+
+        // (b) must still be REFUSED.
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345E");
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one refusal for 6345E; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "a landing commit that touched something else entirely must not rescue \
+             an absent deliverable; got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::MetadataFiles { entries }
+                    if entries == &vec!["crates/reify-x/src/never_landed.rs".to_string()]
+            )),
+            "the refusal must cite the still-absent entry; got {:?}",
+            findings[0].evidence
+        );
+    }
+
     /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
     /// unreachable AND no sibling-FF covers the missing set, but every
     /// metadata.files entry resolves to a tracked path on main (dir-aware,
