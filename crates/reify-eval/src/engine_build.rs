@@ -12818,11 +12818,21 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 /// not be replaced by it: `total_cmp` alone is a total order, but it ranks a
 /// negative-signed NaN BELOW every finite value (and below `-infinity`) — in
 /// a nearest-node pick that would let the poisoned node win, i.e. fail OPEN
-/// in exactly the direction this guard exists to prevent.
+/// in exactly the direction this guard exists to prevent. Emits one WARN
+/// (not one per non-finite node) when any candidate's squared distance was
+/// non-finite, as telemetry for the mis-selection this fallback can still
+/// cause.
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
+    // Latches on any non-finite dist3_sq (NaN, or +INFINITY from a non-finite
+    // or overflowing coordinate) for the WARN below, and normalizes NaN to
+    // +INFINITY so it can never win the total_cmp pick (see doc comment).
+    let saw_non_finite = std::cell::Cell::new(false);
     let key = |i: usize| -> f64 {
         let d = dist3_sq(nodes[i], target);
+        if !d.is_finite() {
+            saw_non_finite.set(true);
+        }
         if d.is_nan() { f64::INFINITY } else { d }
     };
 
@@ -12834,6 +12844,19 @@ fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize
     // tie-break on equal keys that callers rely on.
     keyed.sort_by(|(_, a), (_, b)| a.total_cmp(b));
     keyed.truncate(3);
+
+    if saw_non_finite.get() {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_squared_distance",
+            n_nodes = nodes.len(),
+            "three_nearest_node_indices: non-finite squared distance \
+             (non-finite or overflowing node/target coordinate); falling \
+             back to total_cmp for a deterministic 3-nearest pick (a \
+             shell↔tet tie node may consequently be mis-selected)"
+        );
+    }
+
     keyed.into_iter().map(|(i, _)| i).collect()
 }
 
