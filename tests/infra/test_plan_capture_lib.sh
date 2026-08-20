@@ -12,6 +12,8 @@
 #   capture_print_plan    — retry-on-incomplete-capture wrapper
 #   plan_count_noncomment_lines — fork-free non-comment line counter
 #   plan_is_narrowing_axis_line — narrowing-axis line classification (#6391)
+#   plan_narrowing_axis_match / plan_offaxis_match / plan_narrowing_axis_count
+#                         — dump-level axis predicates (#6391)
 
 set -euo pipefail
 
@@ -354,5 +356,92 @@ assert "plan_is_narrowing_axis_line (n): comment line is OFF-axis" \
 # (o) Empty line.
 assert "plan_is_narrowing_axis_line (o): empty line is OFF-axis" \
     refute plan_is_narrowing_axis_line ""
+
+# ---------------------------------------------------------------------------
+# Section 7: plan_narrowing_axis_match / plan_offaxis_match /
+#            plan_narrowing_axis_count — dump-level axis predicates
+# ---------------------------------------------------------------------------
+# The dump-level helpers built on plan_is_narrowing_axis_line (#6391). They are
+# what lets a scenario assert "no ` -p ` reached the NARROWING AXIS" without
+# forbidding the ` -p ` selectors that other axes emit legitimately.
+#
+# _AXIS_SAMPLE_PLAN is assembled from the same verbatim capture as Section 6:
+# a narrowing-ACTIVE `--profile both --scope branch` run (narrowed clippy +
+# narrowed debug nextest, release-sensitivity pass, fixed gui-feature check,
+# non-cargo tool line) plus a merge-gate release pre-build line.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_narrowing_axis_match / plan_offaxis_match / plan_narrowing_axis_count ---"
+
+_AXIS_SAMPLE_PLAN="# verify.sh plan — action=all profile=both scope=branch include_infra=1 nextest=1 role=task
+# narrowing — NARROW_ACTIVE=1 affected=reify-doc reify-ir closure=reify-doc reify-ir
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+export LD_LIBRARY_PATH=\"\${REIFY_AMBIENT_LD_LIBRARY_PATH-}\"; ./scripts/check-manifold-deps.sh
+timeout --kill-after=60 45m nice -n 15 ionice -c 2 -n 7 cargo clippy -p reify-doc -p reify-ir --all-targets -- -D warnings
+if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m nice -n 15 ionice -c 2 -n 7 cargo check -p reify-gui --features gui --tests; fi
+if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 45m nice -n 5 cargo build --release -p reify-audit 2>&1; fi
+timeout --kill-after=60 60m nice -n 15 ionice -c 2 -n 7 cargo nextest run -p reify-doc -p reify-ir --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-
+timeout --kill-after=60 90m nice -n 15 ionice -c 2 -n 7 cargo nextest run -p reify-eval -p reify-eval-fea-tests -p reify-gui -p reify-ir -p reify-solver-elastic --release --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
+
+_AXIS_COMMENTS_ONLY="# verify.sh plan — action=all profile=both scope=all
+# narrowing — NARROW_ACTIVE=0 affected= closure=
+# --- commands ---"
+
+# --- plan_narrowing_axis_match ---------------------------------------------
+
+# (a) The override's crates DO reach the narrowing axis (narrowed clippy +
+# narrowed debug nextest both carry ` -p reify-doc`).
+assert "plan_narrowing_axis_match (a): ' -p reify-doc' matches on the narrowing axis" \
+    plan_narrowing_axis_match "$_AXIS_SAMPLE_PLAN" " -p reify-doc"
+
+# (b) THE assertion that encodes the whole point of #6391. reify-solver-elastic
+# appears ONLY on the release-sensitivity pass — present in the plan, but never
+# via narrowing. A blanket whole-plan grep cannot make this distinction.
+assert "plan_narrowing_axis_match (b): ' -p reify-solver-elastic' (release pass only) does NOT match the axis" \
+    refute plan_narrowing_axis_match "$_AXIS_SAMPLE_PLAN" " -p reify-solver-elastic"
+
+# (c) reify-audit appears only on the fixed release pre-build.
+assert "plan_narrowing_axis_match (c): ' -p reify-audit' (fixed pre-build only) does NOT match the axis" \
+    refute plan_narrowing_axis_match "$_AXIS_SAMPLE_PLAN" " -p reify-audit"
+
+# (d) Empty dump has no axis lines, so nothing can match.
+assert "plan_narrowing_axis_match (d): empty dump matches nothing" \
+    refute plan_narrowing_axis_match "" " -p reify-"
+
+# --- plan_offaxis_match (the exact complement) ------------------------------
+
+# (e) The release-sensitivity pass is off-axis and carries reify-solver-elastic.
+assert "plan_offaxis_match (e): ' -p reify-solver-elastic' matches off-axis" \
+    plan_offaxis_match "$_AXIS_SAMPLE_PLAN" " -p reify-solver-elastic"
+
+# (f) reify-doc reaches ONLY narrowing-axis lines, so it is absent off-axis.
+# (This is the shape MG-B5-control uses as its classifier drift guard.)
+assert "plan_offaxis_match (f): ' -p reify-doc' does NOT match off-axis" \
+    refute plan_offaxis_match "$_AXIS_SAMPLE_PLAN" " -p reify-doc"
+
+# (g) Complement property, asserted directly on a pattern present on BOTH kinds
+# of line: ` -p reify-ir` is on the narrowed clippy AND on the release pass, so
+# both matchers must return 0. This is exactly the case that made the pre-#6391
+# blanket assertion unusable.
+assert "plan_offaxis_match (g1): ' -p reify-ir' matches ON-axis (narrowed clippy)" \
+    plan_narrowing_axis_match "$_AXIS_SAMPLE_PLAN" " -p reify-ir"
+assert "plan_offaxis_match (g2): ' -p reify-ir' ALSO matches OFF-axis (release pass)" \
+    plan_offaxis_match "$_AXIS_SAMPLE_PLAN" " -p reify-ir"
+
+# --- plan_narrowing_axis_count ----------------------------------------------
+
+# (h) The sample has exactly two narrowing-axis lines: the narrowed clippy and
+# the narrowed debug nextest. Everything else is comment, non-cargo, gui-feature,
+# release pre-build, or the release pass.
+assert "plan_narrowing_axis_count (h): sample dump -> 2" \
+    test "$(plan_narrowing_axis_count "$_AXIS_SAMPLE_PLAN")" = "2"
+
+# (i) Empty dump -> 0.
+assert "plan_narrowing_axis_count (i): empty dump -> 0" \
+    test "$(plan_narrowing_axis_count "")" = "0"
+
+# (j) Comment-only dump -> 0.
+assert "plan_narrowing_axis_count (j): comment-only dump -> 0" \
+    test "$(plan_narrowing_axis_count "$_AXIS_COMMENTS_ONLY")" = "0"
 
 test_summary
