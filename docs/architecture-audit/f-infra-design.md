@@ -266,6 +266,10 @@ The pre-done gating loop is **active** on the Reify host as of 2026-05-16 (F-inf
 - **Operator action required:** rewire the systemd `Environment=` line to point at the wrapper: `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`. Then reload and verify via `bash scripts/smoke-predone-hook.sh`.
 - **Procedural memory:** entry keyed `FUSED_MEMORY_PREDONE_HOOK_REIFY systemd activation` in fused-memory memory store
 
+#### 11.1.1 Why the snapshot wrapper? (task 3731)
+
+The `reify-audit` binary is a pure-logic library (no MCP client, no scheduler). Before task 3731, the CLI defaulted `--tasks-file` to `.taskmaster/tasks/tasks.json`, which was deleted in commit `1402b46c63` (Taskmaster removal, 2026-05-12). Any invocation without an explicit `--tasks-file` silently exited 125 ("infrastructure error") and blocked done-flips. The fix makes `--tasks-file` required (no default) and concentrates fused-memory coupling at the wrapper boundary: the wrapper materializes a fresh TaskMetadata snapshot via `mcp__fused-memory__get_tasks` before each invocation, keeping the audit crate dependency-free. See design decisions in `.task/plan.json` for the rationale for Option 1 over Options 2 (new `--from-fused-memory` flag) and 3 (auto-write snapshot on state change).
+
 #### 11.1.2 What the hook subprocess actually receives (task 6345)
 
 Verified read-only against dark-factory. `middleware/pre_done_hook.py`
@@ -293,10 +297,6 @@ whatever landed after `X`. P5 now selects the diff base by ancestry
 (`changed_paths_for_claim`): `<commit>^1..<commit>` for a landed commit,
 `main..<commit>` for an un-landed branch tip. That is also what makes a
 deletion visible, which the pre-done gate's removal/rename rescue depends on.
-
-#### 11.1.1 Why the snapshot wrapper? (task 3731)
-
-The `reify-audit` binary is a pure-logic library (no MCP client, no scheduler). Before task 3731, the CLI defaulted `--tasks-file` to `.taskmaster/tasks/tasks.json`, which was deleted in commit `1402b46c63` (Taskmaster removal, 2026-05-12). Any invocation without an explicit `--tasks-file` silently exited 125 ("infrastructure error") and blocked done-flips. The fix makes `--tasks-file` required (no default) and concentrates fused-memory coupling at the wrapper boundary: the wrapper materializes a fresh TaskMetadata snapshot via `mcp__fused-memory__get_tasks` before each invocation, keeping the audit crate dependency-free. See design decisions in `.task/plan.json` for the rationale for Option 1 over Options 2 (new `--from-fused-memory` flag) and 3 (auto-write snapshot on state change).
 
 ### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
 

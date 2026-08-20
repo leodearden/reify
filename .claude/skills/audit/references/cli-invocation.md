@@ -206,8 +206,8 @@ Skill behaviour: parse empty array, write per-run JSON with `findings: []`, repo
 ```
 $ reify-audit --task 3242 2>/tmp/out.json; echo "exit=$?"
 reify-audit: 2 finding(s):
-  [High] P5PhantomDone task=3242: task marked done but metadata files missing
-  [High] P5PhantomDone task=3242: done_provenance field absent
+  [High] P5PhantomDone task=3242: metadata.files mismatch / commit not reachable from main
+  [High] P5PhantomDone task=3242: metadata.status=done but no task_completed event in runs.db
 exit=2
 
 $ cat /tmp/out.json
@@ -216,20 +216,57 @@ $ cat /tmp/out.json
     "pattern": "P5PhantomDone",
     "severity": "High",
     "task_id": "3242",
-    "summary": "task marked done but metadata files missing",
-    "evidence": [{"RunsDb": {"table": "task_runs", "key": "task_id=3242"}}]
+    "summary": "metadata.files mismatch / commit not reachable from main",
+    "evidence": [{"MetadataFiles": {"entries": ["crates/reify-x/src/never_landed.rs"]}}]
   },
   {
     "pattern": "P5PhantomDone",
     "severity": "High",
     "task_id": "3242",
-    "summary": "done_provenance field absent",
-    "evidence": [{"RunsDb": {"table": "task_runs", "key": "task_id=3242"}}]
+    "summary": "metadata.status=done but no task_completed event in runs.db",
+    "evidence": [{"RunsDb": {"table": "events", "key": "task_id=3242 AND event_type=task_completed"}}]
   }
 ]
 ```
 
 Skill behaviour: exit code 2 (2 High findings); parse 2 findings; escalate both via `mcp__escalation__escalate_info`; write per-run JSON with `action_taken: "escalated"` for each.
+
+### `--pre-done` landing gate (the D-1 hook path)
+
+`reify-audit --task <id> --pre-done` is a DIFFERENT check from the sweep above,
+not a scoped version of it. The hook fires at fused-memory
+`task_interceptor.py` step "2d" — BEFORE the status write — and its command
+template substitutes only `{id}` (no env injection, no stdin). So the
+subprocess sees the pre-transition status and no persisted `done_provenance`,
+and must corroborate landing from `task_id` + `metadata.files` alone.
+
+**Refusal condition:** a declared, non-gitignored `metadata.files` entry that
+is neither tracked on `main` nor covered by a task-referencing commit's own
+delta (`<commit>^1..<commit>`).
+
+**Never refuses:**
+- empty `metadata.files`, or a list consisting solely of gitignored entries
+  (nothing corroboratable — research/ops/escalation tasks must flip freely);
+- every declared entry tracked on `main` (the healthy flip);
+- an entry DELETED or renamed away by the task's own landing commit (only that
+  commit's own delta can show a removal).
+
+The emitted summary, verbatim from `check_pre_done_landing`:
+
+```
+pre-done gate: 1 declared metadata.files entry is neither tracked on main nor covered by a task-referencing commit's own delta — refusing the done-flip for task 63451
+```
+
+(`entries are` for a plural count.) Exit code is the High count, so a refusal
+exits non-zero and the transition is refused.
+
+**Break-glass:** `REIFY_AUDIT_PREDONE_WARN_ONLY=1` downgrades that refusal to
+`Low`, making the gate advisory (exit 0). The finding is still emitted, with
+`[warn-only] ` prefixed to the summary above. Default is ARMED.
+
+Note the SWEEP deliberately still emits nothing for a provenance-less `done`
+task (guard A1) — that is what keeps the 4075/4464 false-positive storm closed.
+The two modes diverge on purpose.
 
 ### 125 legitimate High findings (boundary collision)
 
