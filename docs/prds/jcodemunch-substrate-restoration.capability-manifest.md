@@ -6,7 +6,14 @@ Built at decompose time 2026-08-07 against main `22472828a1`.
 
 Mechanizes G3 + G6 per leaf. Every binding below was resolved by **direct
 observation** (source read, host probe, live sqlite read), not by citation of the
-PRD's own prose.
+PRD's own prose. **Any `<name>.py:NNNN` written below is jcodemunch — dated evidence
+from that 2026-08-07 source read at the package versions named inline (1.108.27 /
+1.108.54 / 1.108.74), not a live breadcrumb.** jcodemunch is third-party, unreadable
+as a repo on this host and uneditable from reify, so those numbers can only ever be a
+record of what was observed; do not re-anchor them — grep the symbol named beside each
+one in the pinned wheel to find the code today. The reify SHA `22472828a1` above dates
+the reify-side evidence (`crates/`, `scripts/`, `bin/`) and covers none of the
+jcodemunch anchors.
 
 ---
 

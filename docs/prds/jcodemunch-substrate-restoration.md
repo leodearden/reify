@@ -4,6 +4,17 @@
 **Type:** repair + evidence-contract PRD extending `docs/prds/reify-audit-p1-jcodemunch-substrate.md`.
 **Approach:** B + H (vertical slice + seam contract and two-way boundary tests).
 
+**Code anchors.** Every bare `<name>.py:NNNN` below is **jcodemunch**, not dark-factory, read from
+the on-disk `jcodemunch_mcp` package at the versions named inline (1.108.27 / 1.108.54 / 1.108.74)
+on **2026-08-07**.
+**They are dated evidence from that reading, not live breadcrumbs** — jcodemunch is a third-party
+package reify cannot edit and which has no source repo on this host, so a "go change this line"
+reading is impossible by construction. Do not re-anchor them: refreshing a dated snapshot destroys
+its value as a record (`.claude/skills/prd/project.md`, "Never re-anchor a dated snapshot"). To find
+the code today, grep the symbol named beside each number in the pinned wheel. The main `16cfb015bc`
+in §2 is a **reify** SHA and covers reify-side observations only — never these. The one dark-factory
+anchor in this document (D5) is cited by symbol instead.
+
 ---
 
 ## 1. Goal
@@ -118,8 +129,9 @@ CPU-minutes of initial indexing, for nothing. The 2026-06-11 identity-collision 
 
 **D5 — The persistent serve unit is retired.** Port 8901 has exactly one consumer in the world:
 `reify-audit`. dark-factory launches jcodemunch as a per-agent **stdio** MCP server
-(`mcp_lifecycle.py:1047-1050` — a `command` block, deliberately unlike its `http` siblings for
-fused-memory and escalation) and has zero coupling to 8901. The sweep spawns and tears down its own
+(`mcp_lifecycle.py`'s `JCODEMUNCH_COMMAND` launch contract, injected by `mcp_config_json` as a
+`command` block — deliberately unlike its `http` siblings for fused-memory and escalation)
+and has zero coupling to 8901. The sweep spawns and tears down its own
 serve; `deploy/systemd/jcodemunch-serve.service` and both dangling symlinks are deleted. This
 permanently removes the failure class in §2.1.
 

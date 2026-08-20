@@ -49,9 +49,11 @@ tasks:
   title: scripts/jcodemunch-index-reify.sh — bare watch --once index primitive
   capabilities:
   - name: paths-from-never-used
-    binding: capability→producer — --paths-from is a real flag (server.py:6426, :7436-7441)
-      that short-circuits discovery and DELETEs every previously-indexed file absent
-      from the list; PRD §4.4 bans it against the production identity
+    binding: capability→producer — --paths-from is a real flag (server.py:6426, :7436-7441
+      — jcodemunch source read at decompose time 2026-08-07; dated evidence, not a live
+      breadcrumb, so grep the flag name rather than the line) that short-circuits discovery
+      and DELETEs every previously-indexed file absent from the list; PRD §4.4 bans it
+      against the production identity
     verdict: PASS
     delivered_check:
       kind: grep
@@ -60,8 +62,9 @@ tasks:
       - scripts/jcodemunch-index-reify.sh
       expect: absent
   - name: no-ai-summaries-used
-    binding: capability→producer — real argparse flag (server.py:6331/:6934); none
-      of the five detector tools read summaries or embeddings, their dependency is
+    binding: capability→producer — real argparse flag (server.py:6331/:6934 — jcodemunch
+      source read at decompose time 2026-08-07; dated evidence, not a live breadcrumb);
+      none of the five detector tools read summaries or embeddings, their dependency is
       index.imports
     verdict: PASS
     delivered_check:
@@ -80,15 +83,22 @@ tasks:
       reason: guard is behavioural (script exits non-zero at N==0); the mechanical
         twin is the --no-ai-summaries/--paths-from pair above
   - name: upstream-summary-token
-    binding: 'G6 branch-1/4 RESOLUTION — watcher.py:305 emits `changed={n} new={n}
-      deleted={n} ({d}s)` in BOTH 1.108.27 and 1.108.74: the literal token is `changed=0`,
-      NOT `changed: 0`. The PRD''s colon form is beta''s OWN stdout (beta owns its
-      summary line); no test may bind to the colon form as if the tool emitted it'
+    binding: 'G6 branch-1/4 RESOLUTION, CORRECTED BY TASK 6270 against the pinned 1.108.54
+      wheel — `watch --once` runs sync_folders(), which prints to stderr only: `<folder>:
+      No changes detected (<duration>s)` on a no-op, or `<folder>: <N> symbols (<duration>s)`
+      when changed. Upstream emits NEITHER `changed: 0` NOR `changed=0` on this path. The
+      watcher.py:305 `changed={n} new={n} deleted={n} ({d}s)` line (read at 1.108.27 and
+      1.108.74, 2026-08-07) belongs to the CONTINUOUS watch loop''s re-index callback and is
+      unreachable from --once, so the decompose-time claim that `changed=0` is the literal
+      one-shot token was wrong in kind, not merely in form. beta''s signal token is beta''s
+      OWN stdout and beta owns its format; no test may bind to EITHER the colon or the equals
+      form as if the tool emitted it on --once. Twin: manifest .md S9 / beta upstream-summary-token'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: beta must re-verify the upstream token against the PINNED 1.108.54 —
-        the decompose-time probe read 1.108.27 and 1.108.74 source, not 1.108.54
+      reason: the 1.108.54 re-verification this binding once deferred to beta has been done
+        (task 6270); beta prints its own summary line and must not assume the continuous-loop
+        token appears on --once
   - name: max-folder-files-truncation-guarded
     binding: 'G7 INV-SF-3 RESOLUTION (declared-intent-consumed-or-diagnosed) — max_folder_files:
       10000 truncates with a WARNING, not an error; silently dropping files is declared
@@ -140,7 +150,8 @@ tasks:
     binding: 'capability→producer — BOTH §4.3 conjuncts obtainable with no MCP session:
       read-only sqlite on a live index yields meta.git_head and `select count(*) from
       symbols` = 54233. The MCP route is also real (get_repo_outline.py:155-162 takes
-      the current_sha != index.git_head branch). Both OQ1 answers substantiated'
+      the current_sha != index.git_head branch — jcodemunch source read at decompose time
+      2026-08-07; dated evidence, not a live breadcrumb). Both OQ1 answers substantiated'
     verdict: PASS
     delivered_check:
       kind: manual
