@@ -169,19 +169,49 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # — or set REIFY_NEXTEST_TEST_THREADS explicitly.  Every verify path already
 # does the former, so this affects the manual dev-convenience path only.
 #
-# A BARE INTEGER is retained deliberately rather than nextest's host-relative
-# `test-threads = "num-cpus"`, which would otherwise be the more faithful
-# expression of "host nproc": gen-nextest-config.sh substitutes on the anchor
-# `^test-threads = [0-9][0-9]*$`, and Test 17k in
-# tests/infra/test_occt_gated_scope.sh pins that exactly one line matches it.
-# A quoted string breaks that anchor (the substitution would silently no-op) and
-# breaks Test 17b's match($0,/[0-9]+/) extraction.  If a future change does want
-# "num-cpus", the anchor and both tests must move WITH it, in one commit.
+# A BARE INTEGER is retained rather than nextest's host-relative
+# `test-threads = "num-cpus"` — and this is a KNOWN WART, tracked as #6374, not
+# a defended design.  State the objection in full so nobody has to rediscover
+# it:
+#
+#   "num-cpus" is the FAITHFUL expression of what task 6018 actually wants.
+#   nextest's own default with this key ABSENT is exactly the host CPU count on
+#   every host, which is the stated intent ("no ceiling below what nextest
+#   would pick on its own").  The only reason the template carries a fixed 32
+#   instead is that gen-nextest-config.sh substitutes on the anchor
+#   `^test-threads = [0-9][0-9]*$`, Test 17k pins that exactly one line matches
+#   it, and Test 17b extracts with match($0,/[0-9]+/) — all three assume a bare
+#   integer, so the TEST SCAFFOLDING is what pins the production value on hosts
+#   the 32-core reference host does not resemble.  A quoted string breaks the
+#   anchor (the substitution silently no-ops) and empties 17b's extraction.
+#   That is a real inversion of concerns and it is why #6374 exists; the anchor
+#   and Tests 17a/17b/17k (and 17l, which compares the literal against
+#   gen-nextest-config.sh's `${_nproc:-N}` fallback) must all move in ONE commit
+#   with it.
+#
+# WHAT THE WART DOES AND DOES NOT COST.  Nothing on any verify path: every one
+# of them consumes the GENERATED config, whose value is host-resolved.  The
+# blast radius is exactly the manual dev-convenience path described in the
+# paragraph above, whose safe invocation is spelled out there.
+#
+# DELETING THE KEY IS NOT THE CHEAPER FIX — checked, not assumed.  The
+# substitution rewrites this LINE; with the key absent there is nothing to
+# rewrite, so BOTH REIFY_NEXTEST_TEST_THREADS and
+# REIFY_NEXTEST_TEST_THREADS_HARD_CAP go dead and the control point this whole
+# block documents disappears (Test 17b pins that it exists).  Making the manual
+# path inherit nextest's default that way would cost the generator its only
+# writable seam; the generator would have to INSERT the key instead of
+# substituting it.  "num-cpus" keeps the seam and fixes the manual path, which
+# is why #6374 goes that way and not this one.
 #
 # CLI PRECEDENCE: nextest's own `--test-threads` beats the config file, so
 # verify.sh's `--test-threads=N` (task 5264, the dark-factory offline deep-test
 # lane) still wins verbatim when passed.  This key changes only the UNSET
-# default.
+# default.  That precedence is also an UNGUARDED DEFEAT PATH — verify.sh
+# forwards TEST_THREADS with nothing asserting the forwarded value against the
+# value gen-nextest-config.sh resolved, so a stray export silently overrides
+# everything documented above.  Inert by default (nothing sets it on the normal
+# paths); deliberately out of scope for task 6018 and tracked as #6360.
 test-threads = 32
 
 # Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).

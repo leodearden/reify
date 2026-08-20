@@ -93,7 +93,7 @@ race is real and is deliberately non-fatal (assert A5), but at ~2.6 s/pass
 against ~0.4 s tests it plausibly dominates.  `peak=14` is therefore best read
 as a **floor**, not a ceiling — it is consistent with a true concurrency of 32
 and equally consistent with one of 14.  Testing this hypothesis requires
-instrument work, not more sampling: see the follow-up below.
+instrument work, not more sampling: tracked as **#6375**.
 
 ## Instrument defects found after the fact
 
@@ -134,6 +134,15 @@ dropped 2 -> 1 in df commit 712e6230d6) plus the merge role's bypass
 observed peak is therefore expected at or below 32, not 64.
 
 ## What a valid re-run needs
+
+**Tracked as #6375** — a live task, filed during task 6018's review-amendment
+pass, covering both (a) the re-run over a full execution phase and (b) the
+prefilter→confirm race fix.  Cited here deliberately and by number.  This
+residual is the same one task 5984 carried and that "was tracked nowhere until
+2026-08-05" (esc-5984-2); a prose "see the follow-up below" pointer naming no
+task is how it went missing the first time, and reify-audit's PTODO gate cannot
+catch that in a document with no TODO marker.  If #6375 is ever closed without
+a conclusive window, this section — not the task — is the thing to re-read.
 
 1. A window covering a **full** `scripts/verify.sh --scope all --profile both`
    execution phase, not a scoped 5-crate pass.
