@@ -2410,4 +2410,37 @@ G_STALE="$(comm -13 <(printf '%s\n' "$G_DERIVED_STATIC") <(printf '%s\n' "$G_DEC
 assert "G0: Section G covers EVERY static-only roster member -- the declared coverage list equals the static-only slice of D_ROSTER (uncovered: ${G_UNCOVERED:-<none>}) (stale: ${G_STALE:-<none>})" \
     test "$G_DECLARED_SORTED" = "$G_DERIVED_STATIC"
 
+echo ""
+echo "--- G2: controls on the site/capture predicate, on synthetic fixtures ---"
+
+# CONTROLS FIRST, this file's own convention throughout (D2 before D1, D4c
+# before D4b, E2/E3 before E1, FC* before F1). G1 below asserts a ZERO, and an
+# absence-assert whose predicate is typo'd is green forever -- G2a is what makes
+# G1's zero mean something. G2b is its mirror: a predicate that flagged a
+# CORRECTLY captured site would make Section G unsatisfiable.
+#
+# Fixtures are PRINTF'd into a mktemp dir, never written as a heredoc: Section
+# F's SCOPE (3) records that a heredoc body reads as a live invocation to a
+# line-oriented scanner. Harmless for F (this file is excluded from its node set
+# by _f_excluded_node) but the habit is worth keeping, and the fixtures stay out
+# of Section G's own scan by construction since G reads only declared members.
+TMPG="$(mktemp -d)"; _TMPDIRS+=("$TMPG")
+
+G_CTRL_BARE="$TMPG/ctrl-same-line-bare.cmds"
+G_CTRL_CAP="$TMPG/ctrl-same-line-captured.cmds"
+G_CTRL_SITE='"\$G_PROBE"'
+printf 'bash "$G_PROBE" --pool || _rc=$?\n' > "$G_CTRL_BARE"
+printf 'bash "$G_PROBE" --pool 2>"$G_ERR" || _rc=$?\n' > "$G_CTRL_CAP"
+
+G2A_N="$(_g_unredirected "$G_CTRL_BARE" "$G_CTRL_SITE")"
+G2B_N="$(_g_unredirected "$G_CTRL_CAP" "$G_CTRL_SITE")"
+
+# Counts only, never the fixture line itself -- the same rule D1/D4b/_e_scan
+# follow, and the reason `test` is the checker here: assert dumps a FAILING
+# checker's captured output.
+assert "G2a: positive control -- a deadline-capable site with NO redirect at all is flagged (got $G2A_N unredirected)" \
+    test "$G2A_N" -eq 1
+assert "G2b: the same site capturing to a file is NOT flagged (got $G2B_N unredirected)" \
+    test "$G2B_N" -eq 0
+
 test_summary
