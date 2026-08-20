@@ -2483,6 +2483,69 @@ mod tests {
         assert_selection_on_name(source, area);
     }
 
+    // --- task #6341: type aliases as document symbols ---
+
+    /// A top-level `type` alias is a navigable symbol and a LEAF (no children),
+    /// per the `children_or_none` convention.
+    #[test]
+    fn document_symbols_include_type_alias() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "type Speed = Length / Time\n";
+        let uri = test_uri();
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single(module_name_from_uri(&uri)),
+        );
+        let symbols = compute_document_symbols_from_parsed(&parsed, source);
+        assert_eq!(
+            symbols.len(),
+            1,
+            "one type alias \u{2192} one top-level symbol, got: {:?}",
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+        );
+        let speed = &symbols[0];
+        assert_eq!(speed.name, "Speed");
+        assert_eq!(speed.kind, SymbolKind::TYPE_PARAMETER);
+        assert!(
+            speed.children.is_none(),
+            "a type alias is a leaf symbol, got: {:?}",
+            speed.children
+        );
+        // selection_range covers just the name token, not the whole declaration.
+        assert_eq!(speed.selection_range.start.line, 0);
+        assert_eq!(
+            speed.selection_range.start.character,
+            source.find("Speed").unwrap() as u32
+        );
+        assert_selection_on_name(source, speed);
+    }
+
+    #[test]
+    fn document_symbols_include_type_alias_alongside_structure() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
+        let uri = test_uri();
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single(module_name_from_uri(&uri)),
+        );
+        let symbols = compute_document_symbols_from_parsed(&parsed, source);
+        assert_eq!(
+            symbols.len(),
+            2,
+            "alias + structure \u{2192} two top-level symbols, got: {:?}",
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            symbols
+                .iter()
+                .map(|s| (s.name.as_str(), s.kind))
+                .collect::<Vec<_>>(),
+            vec![("Speed", SymbolKind::TYPE_PARAMETER), ("S", SymbolKind::STRUCT)],
+            "symbols must be in source order"
+        );
+    }
+
     #[test]
     fn compute_document_symbols_sub_port_and_guarded() {
         use tower_lsp::lsp_types::SymbolKind;
