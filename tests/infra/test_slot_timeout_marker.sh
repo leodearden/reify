@@ -3137,4 +3137,98 @@ for _g_i in "${!G_MEMBERS[@]}"; do
         test "$_g_nbare" -eq 0
 done
 
+echo ""
+echo "=== H: run_all.sh neutralises the SLOT family in re-emitted member output ==="
+
+# THE SYSTEMIC LAYER, and the complement to Sections D/F/G. Those close the
+# leak AT SOURCE, per site, per audited member: a deadline-capable site diverts
+# its own stderr so its sentinel never enters run_all's `<n>.out` capture at
+# all. That is the first line of defence and it stays the first line of
+# defence -- but it is whack-a-mole by construction, and it only covers members
+# the F/G roster machinery has actually derived. A NEW or UNAUDITED member that
+# quotes a live sentinel in assertion prose, or leaks one from a nested
+# subprocess, walks straight past it. Section H pins the backstop: run_all.sh
+# NEUTRALIZES the slot family in the member output it re-emits, so no member's
+# captured bytes can reach dark-factory's classifier wearing a live anchor.
+#
+# This is the exact two-layer framing the @@REIFY_CLOCK_ family already uses
+# (run_all.sh's _RA_CLOCK_SANITIZE block, about the per-source stderr-isolation
+# patches of tasks 4802/4887/4931 that could not close the assertion-text half).
+#
+# WHAT IS DELIBERATELY *NOT* NEUTRALIZED, and must not be: run_all's OWN pool
+# wait sentinel. It rides the worker subshell's INHERITED parent fd 2 -- the
+# `> .out 2>&1` redirect is scoped to the member `bash` command only -- so it
+# never enters the re-emission path this section drives. Section C pins that
+# behaviourally (C1/C2/C5), and it is load-bearing: run_all's pool wait is the
+# one finite-WAIT path absent from DF's three-basename allowlist, so the
+# sentinel is its ONLY classification route.
+#
+# Shape mirrors tests/infra/test_run_all_clock_marker_sanitize.sh (the same pin
+# for the clock family): temp fixture dir + PRIVATE classification manifest +
+# the pool env knobs, with pool-path/fixture-ran preconditions asserted FIRST so
+# nothing here can pass vacuously via the legacy serial fallback (which this
+# sanitizer deliberately does not cover).
+#
+# RECURSION NOTE: run_all.sh is driven against a TEMP fixture dir only, never
+# the real tests/infra/ (this file is itself auto-discovered by the outer
+# run_all).
+#
+# SELF-POLLUTION: $H_OUT deliberately HOLDS live tokens before the fix and is
+# the assertion target after it. It stays in its temp dir -- never cat/echoed --
+# and every assertion below reports a COUNT or a member BASENAME only, per the
+# discipline at the top of this file and the E1 lint.
+
+# The neutralized prefix run_all must produce. Not a live token, so it is safe
+# as a literal; assembled beside $SP so the two stay visibly paired.
+QSP='@@REIFY_QUOTED_SLOT_'
+
+TMPH="$(mktemp -d)"; _TMPDIRS+=("$TMPH")
+
+# Fixture member emitting BOTH pollution shapes -- bare column-0 and
+# quoted-in-prose -- on BOTH stdout and stderr (run_all merges them into one
+# `.out`). Tokens come from $SP via an UNQUOTED heredoc, so no live token is
+# ever contiguous in THIS file's source; `\$\$` stays literal and expands at
+# fixture runtime.
+_write_slot_fixture() {  # <path> <exit_code>
+    cat > "$1" <<SLOTFIXEOF
+#!/usr/bin/env bash
+echo "${SP}TIMEOUT@@ reason=fixture slots=1 waited=0 disposition=fatal lock=/tmp/x"
+echo "  PASS: fixture: stdout quotes ${SP}TIMEOUT@@ reason=fixture in assertion prose"
+echo "${SP}TIMEOUT@@ reason=fixture slots=1 waited=0 disposition=fatal lock=/tmp/x.\$\$" >&2
+echo "  PASS: fixture: stderr quotes ${SP}TIMEOUT@@ reason=fixture in assertion prose" >&2
+SLOTFIXEOF
+    echo "exit $2" >> "$1"
+    chmod +x "$1"
+}
+
+cat > "$TMPH/classification.manifest" <<'EOF'
+test_slot_pass.sh pool
+EOF
+_write_slot_fixture "$TMPH/test_slot_pass.sh" 0
+
+H_OUT="$TMPH/ra_out.txt"
+RUN_ALL_CLASSIFICATION_MANIFEST="$TMPH/classification.manifest" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPH/pool.lock" \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    timeout 300 bash "$RUN_ALL" "$TMPH" > "$H_OUT" 2>&1 || true
+
+# H0 FIRST: without both of these, H1 could pass vacuously via the legacy
+# serial fallback (no pool re-emission at all, hence nothing to rewrite).
+assert "H0a: the pool path was actually taken (INFO: run_all.sh pool: N= present)" \
+    _has_text "$H_OUT" "INFO: run_all.sh pool: N="
+assert "H0b: the fixture member actually ran (the normal re-emit site)" \
+    _has_text "$H_OUT" "--- Running: test_slot_pass.sh ---"
+
+# $D_ANCHOR is dark-factory's live sentinel anchor, transcribed once in Section
+# D (`^[[:blank:]]*` + the token) and reused here rather than retyped, so the
+# two arms of this file can never drift apart. `|| true` because grep -c exits
+# 1 on a zero count, which `set -e` would otherwise turn into a suite abort.
+H1_LIVE_N="$(grep -acE -- "$D_ANCHOR" "$H_OUT" || true)"
+
+assert "H1a: the member's sentinels were rewritten to the neutralized QUOTED form" \
+    _has_text "$H_OUT" "${QSP}TIMEOUT@@"
+assert "H1b: ZERO re-emitted lines still match DF's live sentinel anchor (got $H1_LIVE_N)" \
+    test "$H1_LIVE_N" -eq 0
+
 test_summary
