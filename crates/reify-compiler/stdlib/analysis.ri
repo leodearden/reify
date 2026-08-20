@@ -58,7 +58,11 @@ trait AnalysisResult {
 // ── Analysis configuration trait ───────────────────────────────────────────
 
 // Analysis describes a stress analysis configuration.
-// yield_strength: material yield strength used for safety factor (Pa, using Real)
+// yield_strength: material yield strength used for safety factor (Pa, using Real).
+// Deliberately NOT retyped by RULING Q7 posture 2 (task #6165): this trait
+// belongs to decision 9 / task 5807, not this ruling, so yield_strength's
+// Real-vs-Stress question is left for that task rather than resolved here by
+// symmetry with AnalysisResult's five stress params.
 trait Analysis {
     param yield_strength : Real
     constraint yield_strength > 0
