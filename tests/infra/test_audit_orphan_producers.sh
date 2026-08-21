@@ -52,6 +52,11 @@ pub mod collide_mod;
 pub mod wired;
 pub mod collide_path;
 pub mod turbo;
+pub mod dangling_str;
+pub mod dangling_raw;
+pub mod dangling_comment;
+pub mod dangling_char;
+pub mod lifetime_wired;
 
 // Private driver — provides a genuine bare-call token for `wired`.
 fn drive_wired() -> i32 { wired() }
@@ -59,6 +64,11 @@ fn drive_wired() -> i32 { wired() }
 fn refer_path() -> u32 { collide_path::HELPER }
 // Private driver — calls turbo only via turbofish NAME::<T>().
 fn drive_turbo() { turbo::<i32>(); }
+// Private driver — genuine bare-call token for `lifetime_wired`, itself
+// lifetime-bearing.  Negative guard: if the literal-aware stripper is ever
+// over-eager and blanks real code between two lifetime ticks, this call
+// site is lost and `lifetime_wired` would wrongly show up as an orphan.
+fn drive_lifetime_wired<'a>(s: &'a str) -> &'a str { lifetime_wired(s) }
 RUST
 
 # collide_mod.rs — fn name collides with its own module name.
@@ -92,6 +102,84 @@ RUST
 # The `::` is followed by `<`, so it must be preserved as a real call.
 cat > "$FIXTURE/crates/reify-fixture/src/turbo.rs" <<'RUST'
 pub fn turbo<T>() {}
+RUST
+
+# dangling_str.rs — a `#[cfg(test)]` mod near the top of the file whose test
+# body holds an unbalanced `{` inside a STRING LITERAL (the exact #6096
+# shape). A raw-text brace counter reads that `{` as a real open brace, so
+# the mask never closes and swallows the guarded pub fn below it.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_str.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let s = "structure def ZVShaper : Shaper {";
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_str_guard() -> i32 { 1 }
+RUST
+
+# dangling_raw.rs — same defect, but the unbalanced `{` sits inside a RAW
+# string literal (`r#"..."#`).
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_raw.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let s = r#"structure def X : Y {"#;
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_raw_guard() -> i32 { 1 }
+RUST
+
+# dangling_comment.rs — same defect, but the unbalanced `{` sits inside a
+# BLOCK COMMENT.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_comment.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        /* sample decl: struct Foo { */
+        assert!(true);
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_comment_guard() -> i32 { 1 }
+RUST
+
+# dangling_char.rs — same defect, but the unbalanced `{` sits inside a CHAR
+# LITERAL on a line that also carries lifetime syntax (`<'a>`, `&'a`),
+# pinning the lifetime-vs-char-literal disambiguation: the ticks in `<'a>`
+# and `&'a` have no closing `'` at the grammar-implied offset and must NOT be
+# treated as opening a char literal, while `'{'` (closing `'` at offset 2)
+# must.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_char.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        fn f<'a>(s: &'a str) -> char { let _ = '{'; s.chars().next().unwrap() }
+        assert_eq!(f("z"), 'z');
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_char_guard() -> i32 { 1 }
+RUST
+
+# lifetime_wired.rs — negative guard.  A genuinely-called pub fn whose own
+# signature carries lifetime syntax and no `#[cfg(test)]` at all.  Paired
+# with the drive_lifetime_wired() caller in lib.rs; see assert_not_orphan
+# below.
+cat > "$FIXTURE/crates/reify-fixture/src/lifetime_wired.rs" <<'RUST'
+pub fn lifetime_wired<'a>(s: &'a str) -> &'a str { s }
 RUST
 
 # ---------------------------------------------------------------------------
@@ -137,6 +225,22 @@ sys.exit(0)
 PY
 }
 
+# assert_allowed NAME — succeeds iff NAME appears EXACTLY ONCE in allowed[]
+# with callers==0.  Distinguishes "correctly allow-listed" from "invisible
+# because a cfg(test) mask swallowed it", which assert_not_orphan cannot.
+assert_allowed() {
+    local name="$1"
+    local json
+    json="$(audit_json)"
+    python3 - "$json" "$name" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+name = sys.argv[2]
+count = sum(1 for r in data.get("allowed", []) if r["name"] == name and r["callers"] == 0)
+sys.exit(0 if count == 1 else 1)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # step-1 / step-2: mod-declaration collision
 # ---------------------------------------------------------------------------
@@ -160,6 +264,27 @@ assert "collide_path (referenced only via NAME::Item path qualifier) is flagged 
 
 assert "turbo (called only via turbofish NAME::<T>()) is not orphan" \
     assert_not_orphan turbo
+
+# ---------------------------------------------------------------------------
+# cfg(test) mask: literal/comment-aware brace counting
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- cfg(test) mask: literal/comment-aware brace counting ---"
+
+assert "after_str_guard (dangling { inside a string literal) is allow-listed, not swallowed" \
+    assert_allowed after_str_guard
+
+assert "after_raw_guard (dangling { inside a raw string literal) is allow-listed, not swallowed" \
+    assert_allowed after_raw_guard
+
+assert "after_comment_guard (dangling { inside a block comment) is allow-listed, not swallowed" \
+    assert_allowed after_comment_guard
+
+assert "after_char_guard (dangling { inside a char literal beside a lifetime) is allow-listed, not swallowed" \
+    assert_allowed after_char_guard
+
+assert "lifetime_wired (genuine caller, lifetime-bearing signature) is not orphan" \
+    assert_not_orphan lifetime_wired
 
 # ---------------------------------------------------------------------------
 test_summary
