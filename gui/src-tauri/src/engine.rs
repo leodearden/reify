@@ -3647,6 +3647,77 @@ impl EngineSession {
 
         reify_eval::resolve_entity_at_source_position(compiled, parsed, source, line_offsets, line, col)
     }
+
+    /// Resolve a `"Entity.member"` cell id to the byte range of that param's
+    /// DEFAULT EXPRESSION in the currently-loaded source.
+    ///
+    /// Substrate for INV-GUI-3 (PRD `docs/prds/v0_6/ai-native-editing.md` §6.1).
+    /// The returned span is the default EXPRESSION range ONLY — never the whole
+    /// `param … = …` declaration and never the leading `=` — so a caller can
+    /// splice a replacement literal into exactly that range.
+    ///
+    /// `None` means "no rewritable default literal for this cell", and is the
+    /// caller's cue to emit a structured error rather than to guess (PRD §6.1,
+    /// §7 B7). It covers every non-resolving case:
+    ///
+    /// * the cell id is malformed (no `.`),
+    /// * no module is loaded, so there is no parse to read,
+    /// * the entity is neither a `structure def` nor an `occurrence def` in the
+    ///   loaded module,
+    /// * the member is not a param, has no default, or is declared more than
+    ///   once (see [`reify_ast::find_param_default_span`] for the refusal rule),
+    /// * the cell id names an INSTANCE path (`Parent.childinst.member`),
+    /// * the member names a param inside a PORT body.
+    ///
+    /// The instance-path case is worth stating outright: `parse_cell_id` splits
+    /// on the FIRST `.`, so `"Parent.childinst.height"` yields the member
+    /// `"childinst.height"`, which matches no `ParamDecl.name` because a member
+    /// name never contains a `.`. That `None` is correct rather than a gap — a
+    /// shared structure's default literal is not one instance's value, and
+    /// rewriting it would change every instance.
+    ///
+    /// The port-body case is likewise correct rather than a gap. The compiler
+    /// registers a port member under the COMPOSITE name
+    /// `ValueCellId(entity, "<port>.<param>")` and files it in
+    /// `CompiledPort.members`, which is never merged into
+    /// `TopologyTemplate.value_cells` — the only map [`Self::set_parameter`] and
+    /// the property panel key off. So a port-body param is not an editable cell
+    /// under EITHER spelling, and returning a span for its bare name would hand
+    /// a caller a range it must not splice.
+    ///
+    /// The entity-bearing variant set — `Structure` and `Occurrence` — is
+    /// deliberately identical to
+    /// `reify_eval::source_location::find_parsed_decl_containing_offset`, whose
+    /// own doc calls out that a single shared variant list is what keeps these
+    /// traversals from drifting when a new `Declaration` variant is added. The
+    /// OTHER two member-bearing top-level declarations, `TraitDecl` and
+    /// `PurposeDef` (which additionally nests `structures: Vec<StructureDef>`),
+    /// are deliberately out of reach, matching that same helper: neither is an
+    /// entity a `cell_id` names, so reaching into them could only produce a span
+    /// belonging to a different declaration than the caller asked about.
+    ///
+    /// Unlike [`Self::get_containing_definition`] and
+    /// [`Self::get_entity_at_source_location`], this method does NOT gate on
+    /// `resolve_source()` and carries no `debug_assert!` on the caches: spans
+    /// come straight from the AST, and `parsed_cache` is legitimately `None` on
+    /// a `load_from_compiled`-injected session. Plain `as_ref()?` is the correct
+    /// degradation.
+    pub fn resolve_param_default_span(&self, cell_id_str: &str) -> Option<reify_core::SourceSpan> {
+        // Reuse `parse_cell_id` — the SAME parse `set_parameter` uses — so this
+        // resolver and the entry point that will consume it cannot disagree
+        // about what a cell_id denotes.
+        let cell = parse_cell_id(cell_id_str).ok()?;
+        let parsed = self.parsed_cache.as_ref()?;
+        parsed.declarations.iter().find_map(|decl| match decl {
+            reify_ast::Declaration::Structure(s) if s.name == cell.entity => {
+                reify_ast::find_param_default_span(&s.members, &cell.member)
+            }
+            reify_ast::Declaration::Occurrence(o) if o.name == cell.entity => {
+                reify_ast::find_param_default_span(&o.members, &cell.member)
+            }
+            _ => None,
+        })
+    }
 }
 
 // ---- GUI-state helpers -------------------------------------------------------

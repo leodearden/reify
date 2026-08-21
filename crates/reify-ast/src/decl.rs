@@ -506,6 +506,59 @@ pub fn find_named_member_span<'a>(
     find_named_member_span_depth(members, name, 0)
 }
 
+/// Resolve a param's DEFAULT-EXPRESSION span within a member list.
+///
+/// Substrate for INV-GUI-3 (PRD `docs/prds/v0_6/ai-native-editing.md` §6.1): a
+/// caller that wants to rewrite a param's default literal in source needs the
+/// byte range of the literal itself.
+///
+/// **Invariant (§6.1):** the returned [`SourceSpan`] is the default
+/// EXPRESSION range ONLY — never the whole `param … = …` declaration, and
+/// never the `=` that precedes it. The tree-sitter grammar binds the `default`
+/// field to the expression node alone (`tree-sitter-reify/grammar.js`), so
+/// `ParamDecl.default`'s `Expr.span` already carries exactly that range; this
+/// helper only locates it.
+///
+/// **Contract:** returns `Some(span)` if and only if EXACTLY ONE matching
+/// `Param` is reachable within [`MAX_MEMBER_NESTING_DEPTH`] AND that param's
+/// `default` is `Some`. `None` in every other case — the name is absent, the
+/// member found is not a `Param`, the `Param` has no `default`, or the name is
+/// declared more than once.
+///
+/// **Matches [`MemberDecl::Param`] ONLY**, unlike the sibling
+/// [`find_named_member_span`], which matches both `Param` and `Let`. A `let`
+/// binding has no param default to rewrite, so resolving one here would hand
+/// the caller a span it must not splice into. That divergence is deliberate:
+/// see the asymmetry note on [`walk_specialization_scope_members`], which
+/// already flags these member-walking helpers as individually correct but
+/// caller-surprising when one contract is inferred from another.
+///
+/// **Does not reach inside port bodies.** A port-body param is addressed by the
+/// COMPOSITE name `<port>.<param>`, never by its bare name, and is not an
+/// editable cell at all — see `collect_param_default_candidates` for why
+/// matching a bare name in there could only misfire.
+///
+/// **Refuses rather than guesses on a multiply-declared name** — the one place
+/// this helper deliberately diverges from [`find_named_member_span`]'s
+/// first-match-wins. `where c { param x = 1 } else { param x = 2 }` is legal
+/// source: `where`/`else` branch members are mutually-exclusive SIBLINGS
+/// registered into the same parent frame (see
+/// `reify_compiler::compile_builder::shadow_lint`'s module docs), and the AST
+/// keeps NO record of which branch the condition selects. Picking the first
+/// would let the caller rewrite the possibly INACTIVE branch's literal — the
+/// user sets a value and the design does not change, a silent wrong edit.
+/// Refusing hands the caller (the `set_parameter` path) a clean rejection to
+/// surface as a structured error, which is what PRD §7 B7 requires.
+pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<SourceSpan> {
+    let mut candidates = ParamDefaultCandidates::default();
+    collect_param_default_candidates(members, name, 0, &mut candidates);
+    if candidates.count == 1 {
+        candidates.first_default
+    } else {
+        None
+    }
+}
+
 /// Visit every member of a specialization-scope body (spec §8.7).
 ///
 /// A `SubDecl` whose `body.is_some()` opens a specialization scope; this
@@ -534,6 +587,21 @@ pub fn find_named_member_span<'a>(
 /// surprise callers who infer one from the other. A future consolidation
 /// (shared `walk_members` helper parameterized by `visit_port_body /
 /// visit_sub_body` flags) would unify them; deferred to task η or later.
+///
+/// This module now hand-rolls the member-recursion set in THREE places, so a
+/// newly added [`MemberDecl`] variant must be taught to all three:
+///
+/// | walker | `SubDecl.body` | `PortDecl.members` | early exit |
+/// |---|---|---|---|
+/// | `walk_members_depth` (this one) | yes | no | no — visits everything |
+/// | `find_named_member_span_depth` | no | yes | yes — first match wins |
+/// | `collect_param_default_candidates` | no | no | yes — once ambiguous |
+///
+/// The three differ in BOTH the recursion set and the exit rule, which is why
+/// the consolidation above is still deferred rather than done inline: unifying
+/// only the two that share an exit rule would relocate the drift hazard rather
+/// than remove it. The table is here so the next variant addition starts from a
+/// complete list instead of rediscovering it.
 pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
 where
     F: FnMut(&'a MemberDecl),
@@ -636,6 +704,110 @@ fn find_named_member_span_depth<'a>(
         }
     }
     None
+}
+
+/// Accumulator for [`collect_param_default_candidates`].
+///
+/// `count` is how many matching `Param` members the traversal reached;
+/// `first_default` is the default span of the FIRST one (already `None` when
+/// that param has no default). [`find_param_default_span`] yields
+/// `first_default` only when `count == 1`, so a multiply-declared name is
+/// refused rather than resolved to whichever branch happened to come first.
+#[derive(Default)]
+struct ParamDefaultCandidates {
+    count: usize,
+    first_default: Option<SourceSpan>,
+}
+
+/// Depth-bounded worker for [`find_param_default_span`].
+///
+/// Visits EVERY matching `Param` reachable within [`MAX_MEMBER_NESTING_DEPTH`]
+/// and accumulates into `out` — it deliberately does NOT return on first match,
+/// because the public contract needs the candidate COUNT to decide between
+/// resolving and refusing.
+///
+/// The recursion set is `GuardedGroup` (BOTH `members` and `else_members`) and
+/// each `MatchArmDeclGroup` arm's `member`. Everything else is skipped — in
+/// particular the two bodies below, each for its own reason.
+///
+/// **`PortDecl.members` is deliberately NOT traversed**, and here this helper
+/// diverges from [`find_named_member_span`] ON PURPOSE. Parity with that
+/// sibling is the WRONG invariant for this one: `find_named_member_span` serves
+/// hover/goto-definition, where surfacing a port-internal declaration under its
+/// bare name is exactly right. This helper serves cell_id resolution, where it
+/// is not — a port-body param is not addressable by its bare name and is not an
+/// editable cell at all. The compiler registers port-body members under the
+/// COMPOSITE member name `ValueCellId(entity, "<port>.<param>")` (see
+/// `reify_compiler::entity`'s port-body registration), those decls land in
+/// `CompiledPort.members`, and nothing ever merges them into
+/// `TopologyTemplate.value_cells` — which is the only map the `set_parameter`
+/// path and the property panel key off. So recursing into a port body could
+/// never supply the candidate a caller asked for; it could only
+///
+///   * FALSELY REFUSE — an entity with a top-level `param d` AND a port-internal
+///     `param d` would push `count` to 2 and refuse a genuinely editable cell.
+///     That collision is silently legal: `shadow_lint` deliberately does not
+///     fold port-internal members into the enclosing frame and emits no
+///     warning, so nothing else flags it either; or
+///   * RETURN A WRONG SPAN — with only a port-internal `d` present, the bare
+///     name `d` would resolve to the PORT member's default, handing a caller a
+///     range it must not splice.
+///
+/// Supporting port members would mean splitting the requested name on `'.'` and
+/// resolving `<port>` → `<param>`, mirroring the compiler's composite naming —
+/// a deliberate feature, not a side effect of a shared recursion set.
+///
+/// **`SubDecl.body` is deliberately NOT traversed either.** That omission
+/// mirrors [`find_named_member_span`] and is the asymmetry already documented on
+/// [`walk_specialization_scope_members`]. A `sub`'s body holds SPECIALIZATION
+/// overrides of a child instance, not the child's own param declarations, so a
+/// default span found there would belong to a different entity than the caller's
+/// cell_id names — splicing into it would rewrite the wrong declaration.
+fn collect_param_default_candidates(
+    members: &[MemberDecl],
+    name: &str,
+    depth: usize,
+    out: &mut ParamDefaultCandidates,
+) {
+    // A subtree cut off by the depth bound contributes ZERO candidates, so a
+    // param that is only reachable past the bound leaves `count == 0` and the
+    // caller returns `None` — same observable outcome as the pre-step-6
+    // early `return None`.
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return;
+    }
+    for member in members {
+        // Ambiguity is established at 2 and the public contract never
+        // distinguishes 2 from 7, so stop walking. Checked at the top of every
+        // iteration, which also short-circuits each recursive entry on its
+        // first pass — no per-recursion-site guard needed.
+        if out.count > 1 {
+            return;
+        }
+        match member {
+            MemberDecl::Param(p) if p.name == name => {
+                out.count += 1;
+                if out.count == 1 {
+                    out.first_default = p.default.as_ref().map(|e| e.span);
+                }
+            }
+            MemberDecl::GuardedGroup(g) => {
+                collect_param_default_candidates(&g.members, name, depth + 1, out);
+                collect_param_default_candidates(&g.else_members, name, depth + 1, out);
+            }
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    collect_param_default_candidates(
+                        std::slice::from_ref(&*arm.member),
+                        name,
+                        depth + 1,
+                        out,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// `connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore }`
@@ -1339,5 +1511,357 @@ mod has_test_annotation_tests {
             Annotation { name: "test".into(), args: vec![], span: SourceSpan::empty(0) },
         ];
         assert!(has_test_annotation(&anns));
+    }
+}
+
+#[cfg(test)]
+mod find_param_default_span_tests {
+    use super::{
+        Expr, GuardedGroupDecl, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
+        ParamDecl, PortDecl, find_param_default_span,
+    };
+    use crate::ast::ExprKind;
+    use reify_core::{ContentHash, PortDirection, SourceSpan};
+
+    /// Build a `MemberDecl::Param` by hand — no parser.
+    ///
+    /// `decl_span` is the whole `param … = …` declaration's span; `default_span`,
+    /// when `Some`, is the span of the default EXPRESSION alone. Keeping the two
+    /// distinct is what makes the §6.1 invariant assertable.
+    fn param(name: &str, decl_span: (u32, u32), default_span: Option<(u32, u32)>) -> MemberDecl {
+        MemberDecl::Param(ParamDecl {
+            name: name.to_string(),
+            doc: None,
+            is_priv: false,
+            type_expr: None,
+            default: default_span.map(|(s, e)| Expr {
+                kind: ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
+                span: SourceSpan::new(s, e),
+            }),
+            where_clause: None,
+            annotations: Vec::new(),
+            span: SourceSpan::new(decl_span.0, decl_span.1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// Build a `MemberDecl::Let` by hand — the sibling variant that
+    /// [`super::find_named_member_span`] matches but this helper deliberately does not.
+    fn let_member(name: &str, decl_span: (u32, u32), value_span: (u32, u32)) -> MemberDecl {
+        MemberDecl::Let(LetDecl {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            is_priv: false,
+            is_aux: false,
+            type_expr: None,
+            value: Expr {
+                kind: ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
+                span: SourceSpan::new(value_span.0, value_span.1),
+            },
+            where_clause: None,
+            annotations: Vec::new(),
+            span: SourceSpan::new(decl_span.0, decl_span.1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// A `BoolLiteral(true)` stand-in for a guard condition / match discriminant.
+    fn dummy_expr() -> Expr {
+        Expr {
+            kind: ExprKind::BoolLiteral(true),
+            span: SourceSpan::new(0, 1),
+        }
+    }
+
+    /// `where <cond> { members } else { else_members }`.
+    fn guarded(members: Vec<MemberDecl>, else_members: Vec<MemberDecl>) -> MemberDecl {
+        MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition: dummy_expr(),
+            members,
+            else_members,
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `port <name> : in <T> { members }`.
+    fn port(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
+        MemberDecl::Port(PortDecl {
+            name: name.to_string(),
+            direction: Some(PortDirection::In),
+            type_name: "FluidPort".to_string(),
+            is_priv: false,
+            members,
+            frame_expr: None,
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `match <disc> { P => <member> … }` at decl level.
+    fn match_arm_group(arms: Vec<(&str, MemberDecl)>) -> MemberDecl {
+        MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+            discriminant: dummy_expr(),
+            arms: arms
+                .into_iter()
+                .map(|(pattern, member)| MatchArmDeclArmDecl {
+                    patterns: vec![pattern.to_string()],
+                    member: Box::new(member),
+                    span: SourceSpan::new(0, 1),
+                })
+                .collect(),
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `depth` levels of GuardedGroup nesting wrapping one param that HAS a default.
+    ///
+    /// Same shape as `build_nested_guarded_members` in
+    /// crates/reify-lsp/src/analysis.rs, but with a default attached so the
+    /// depth assertions can name the exact span rather than settling for `is_some`.
+    fn build_nested_guarded_members(
+        depth: usize,
+        target: &str,
+        default_span: (u32, u32),
+    ) -> Vec<MemberDecl> {
+        let mut current = vec![param(target, (0, 40), Some(default_span))];
+        for _ in 0..depth {
+            current = vec![guarded(current, vec![])];
+        }
+        current
+    }
+
+    #[test]
+    fn param_with_default_returns_the_default_expression_span() {
+        // `param width: Length = 80mm` — decl spans (0, 30), the default `80mm` spans (22, 27).
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        assert_eq!(
+            find_param_default_span(&members, "width"),
+            Some(SourceSpan::new(22, 27))
+        );
+    }
+
+    #[test]
+    fn returned_span_is_the_default_only_never_the_whole_decl() {
+        // PRD §6.1 invariant, pinned explicitly rather than left implied by the
+        // equality above: the result must NOT be the whole `param … = …` decl span.
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        let found = find_param_default_span(&members, "width").expect("param has a default");
+        assert_ne!(
+            found,
+            SourceSpan::new(0, 30),
+            "must return the default EXPRESSION range, never the whole param decl"
+        );
+    }
+
+    #[test]
+    fn param_without_default_returns_none() {
+        // `param thickness : Length` — real shape, e.g.
+        // examples/auto/bearing_computed_default_unevaluated.ri:57.
+        let members = vec![param("thickness", (0, 24), None)];
+        assert_eq!(find_param_default_span(&members, "thickness"), None);
+    }
+
+    #[test]
+    fn absent_name_returns_none() {
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        assert_eq!(find_param_default_span(&members, "height"), None);
+    }
+
+    #[test]
+    fn empty_member_slice_returns_none() {
+        assert_eq!(find_param_default_span(&[], "width"), None);
+    }
+
+    #[test]
+    fn let_member_with_matching_name_returns_none() {
+        // Deliberate narrowing vs. `find_named_member_span`, which matches BOTH
+        // Param and Let (decl.rs `find_named_member_span_depth`). A `let` has no
+        // rewritable param default, so it must not resolve.
+        let members = vec![let_member("width", (0, 20), (12, 17))];
+        assert_eq!(find_param_default_span(&members, "width"), None);
+    }
+
+    // ── step-3: nested reach parity with `find_named_member_span` ────────────
+
+    #[test]
+    fn param_inside_guarded_then_branch_resolves() {
+        // examples/m5_guarded_enum.ri:7-9 —
+        //   where shape == Shape.Round { param diameter : Length = size }
+        let members = vec![guarded(
+            vec![param("diameter", (0, 40), Some((10, 14)))],
+            vec![],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "diameter"),
+            Some(SourceSpan::new(10, 14))
+        );
+    }
+
+    #[test]
+    fn param_inside_guarded_else_branch_resolves() {
+        // examples/m5_guarded_enum.ri:9-11 —
+        //   } else { param side_length : Length = size }
+        let members = vec![guarded(
+            vec![],
+            vec![param("side_length", (0, 40), Some((30, 34)))],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "side_length"),
+            Some(SourceSpan::new(30, 34))
+        );
+    }
+
+    #[test]
+    fn param_inside_port_body_is_not_reachable_by_its_bare_name() {
+        // examples/m5_connect_chain.ri:6 —
+        //   port inlet : in FluidPort { param diameter : Length = 25mm }
+        //
+        // The sibling `find_named_member_span` DOES recurse here, and for
+        // hover/goto that is right. For cell-id resolution it is not: the
+        // compiler registers this cell as ValueCellId(entity, "inlet.diameter")
+        // — the COMPOSITE name — and it lands in CompiledPort.members, which is
+        // never merged into TopologyTemplate.value_cells. Returning its span for
+        // the bare name "diameter" would hand a caller a range belonging to a
+        // cell that is not editable at all.
+        let members = vec![port(
+            "inlet",
+            vec![param("diameter", (0, 40), Some((44, 48)))],
+        )];
+        assert_eq!(find_param_default_span(&members, "diameter"), None);
+        // Nor by the composite name — supporting that would mean splitting on
+        // '.' and resolving <port> → <param> deliberately, which α does not do.
+        assert_eq!(find_param_default_span(&members, "inlet.diameter"), None);
+    }
+
+    #[test]
+    fn port_internal_param_does_not_falsely_refuse_a_top_level_one() {
+        // The cross-scope collision, and the reason the port arm had to go: an
+        // entity may declare a top-level `param d` AND a port with its own
+        // `param d`. That is silently legal — shadow_lint deliberately does NOT
+        // fold port-internal members into the enclosing frame ("Port-internal
+        // members live in the port's own scope"), so it emits no warning and
+        // nothing else flags it either.
+        //
+        // With the port body in the recursion set this pushed `count` to 2 and
+        // refused `S.d` — a genuinely editable cell — for an ambiguity that does
+        // not exist. The top-level param is the ONLY candidate, so it resolves.
+        let members = vec![
+            param("d", (0, 30), Some((22, 26))),
+            port("inlet", vec![param("d", (40, 80), Some((70, 74)))]),
+        ];
+        assert_eq!(
+            find_param_default_span(&members, "d"),
+            Some(SourceSpan::new(22, 26)),
+            "a port-internal same-name param must not make a top-level param ambiguous"
+        );
+    }
+
+    #[test]
+    fn param_inside_match_arm_decl_group_resolves() {
+        // Parity with `find_named_member_span_depth`'s MatchArmDeclGroup arm.
+        let members = vec![match_arm_group(vec![(
+            "Round",
+            param("bore", (0, 40), Some((18, 22))),
+        )])];
+        assert_eq!(
+            find_param_default_span(&members, "bore"),
+            Some(SourceSpan::new(18, 22))
+        );
+    }
+
+    #[test]
+    fn param_within_depth_limit_resolves() {
+        // 5 levels of GuardedGroup nesting — well inside MAX_MEMBER_NESTING_DEPTH (32).
+        let members = build_nested_guarded_members(5, "deep_param", (10, 14));
+        assert_eq!(
+            find_param_default_span(&members, "deep_param"),
+            Some(SourceSpan::new(10, 14))
+        );
+    }
+
+    #[test]
+    fn param_beyond_depth_limit_returns_none() {
+        // 33 levels — past MAX_MEMBER_NESTING_DEPTH (32), so the subtree is cut off.
+        let members = build_nested_guarded_members(33, "unreachable_param", (10, 14));
+        assert_eq!(find_param_default_span(&members, "unreachable_param"), None);
+    }
+
+    // ── step-5: refuse to guess when the name is declared more than once ─────
+
+    #[test]
+    fn name_declared_in_both_guarded_branches_returns_none() {
+        // `where c { param size = … } else { param size = … }` is LEGAL, not a
+        // duplicate-decl error: shadow_lint.rs states GuardedGroup branch members
+        // are mutually-exclusive SIBLINGS registered into the SAME parent frame.
+        // Nothing in the AST records which branch the condition selects, so
+        // first-match-wins would let a caller splice a literal into the possibly
+        // INACTIVE branch — the user sets a value and the design does not change.
+        let members = vec![guarded(
+            vec![param("size", (0, 40), Some((10, 14)))],
+            vec![param("size", (50, 90), Some((30, 34)))],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "size"),
+            None,
+            "a multiply-declared name must be refused, not resolved to one branch"
+        );
+    }
+
+    #[test]
+    fn name_declared_twice_with_only_one_default_still_returns_none() {
+        // Refusal is driven by the name being multiply-declared, NOT by how many
+        // defaults happen to exist. Otherwise adding a default to the other branch
+        // would silently flip an accepted edit into a rejected one.
+        let members = vec![guarded(
+            vec![param("size", (0, 40), Some((10, 14)))],
+            vec![param("size", (50, 90), None)],
+        )];
+        assert_eq!(find_param_default_span(&members, "size"), None);
+    }
+
+    #[test]
+    fn name_declared_in_two_match_arms_returns_none() {
+        // The canonical real-source ambiguity, and the one the GuardedGroup cases
+        // above do NOT cover: `match shape { Round => param d = …  Square => param
+        // d = … }`. Each arm desugars to a same-name guarded decl (spec §6.4), so
+        // this is the same mutually-exclusive-siblings shape as `where`/`else` —
+        // and just as unresolvable from the AST alone.
+        //
+        // Load-bearing as a REGRESSION guard on the accumulate-don't-short-circuit
+        // rewrite: if the MatchArmDeclGroup recursion ever reverted to returning on
+        // first match, every other test in this module would still pass.
+        let members = vec![match_arm_group(vec![
+            ("Round", param("d", (0, 40), Some((10, 14)))),
+            ("Square", param("d", (50, 90), Some((60, 64)))),
+        ])];
+        assert_eq!(
+            find_param_default_span(&members, "d"),
+            None,
+            "a name declared in two match arms is ambiguous and must be refused"
+        );
+    }
+
+    #[test]
+    fn unambiguous_nesting_still_resolves() {
+        // Regression guard for step-3's reach: exactly examples/m5_guarded_enum.ri:7-11,
+        // where the two branches declare DIFFERENTLY-named params. Step-6 must narrow
+        // only the genuinely ambiguous case.
+        let members = vec![guarded(
+            vec![param("diameter", (0, 40), Some((10, 14)))],
+            vec![param("side_length", (50, 90), Some((60, 64)))],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "diameter"),
+            Some(SourceSpan::new(10, 14))
+        );
     }
 }
