@@ -14,9 +14,20 @@ hand-built `GeometryOp::Draft` fixtures, and published this ledger.
 
 ## Read this first — the numbers below are a snapshot, not the source of truth
 
-**Measured 2026-08-01 at `50bc85d168`** ("Merge task/5907 into main" — the
-merge-base at measurement time; bucket 2 and the `.ri` corpus are unchanged by α
-except where marked). §3 is stamped later, at `975cbfc301`; see that section.
+**Measured 2026-08-21 at `0675683952`** ("Merge task/6393 into main" —
+`task/5777`'s merge-base, and therefore ON MAIN). **All three buckets share this
+one stamp.** α's own migration is not in it: α sits on top of this commit, and
+every "MIGRATED by task 5777" row below marks a change made after it.
+
+One stamp, because an earlier revision used two and they disagreed. §§1–2 were
+stamped at `50bc85d168` (2026-08-01) and §3 at `975cbfc301`, and task 5623's
+LENGTH-gate leaf landed in between — moving bucket 2 from 31 to 36 (§2.4) *and*
+bucket 3 from 14 to 20, two of those six being bare `arc` angle slots (§3). Every
+one of the five new bucket-2 sites is γ's, so a reader sizing γ off the old §2.1
+table under-scoped it by five. Bucket 1 (§1) and the `.ri` corpus (§5) reproduce
+identically at `50bc85d168` and at this stamp — same per-file counts, same call
+sites on the same lines. Only buckets 2 and 3 moved, and both moved for the same
+reason.
 
 ### Stamp measurements onto a commit that is ON MAIN, never a branch-local one
 
@@ -31,7 +42,17 @@ a rebase rewrote it, so a follow-up commit re-stamped it — onto the *rebased*
 branch-local SHA, which the very next rebase rewrote in turn, leaving that
 commit's own "verified with `git merge-base --is-ancestor`" claim false at the
 tip it created. §§1–2's stamp sat on `50bc85d168`, a `main` merge commit, and
-survived both rebases untouched. §3 now sits on `975cbfc301`, likewise on `main`.
+survived both rebases untouched. Every SHA cited in this file is now on `main`.
+
+### …and stamp the WHOLE file at ONE commit
+
+Re-stamping one section at a time is how the rule above gets obeyed and the note
+still ends up wrong. A per-section stamp is individually reproducible and
+collectively meaningless: two sections measured at different commits cannot be
+added, differenced or cross-checked, and nothing in the prose warns you which
+pairs are safe. That is not hypothetical either — it is the §2/§3 drift the
+header describes. **Re-derive every bucket at the new commit and move all the
+stamps together, or move none of them.**
 
 Nothing in this repository validates a `file:line` citation, and line numbers rot
 on the first edit to the cited file. This is not hypothetical: the site list α
@@ -165,33 +186,40 @@ not retype, generalise or redefine `r` — change individual call sites only.
 
 ## 2. Bucket 2 — GATE-REJECTED (`("angle", <bare literal>)` via `compile_geometry_op`)
 
-**31 sites.** These are the hand-written `CompiledExpr` args that break when a
+**36 sites.** These are the hand-written `CompiledExpr` args that break when a
 gate lands.
 
 > **Scope caveat — bucket 2 is not the whole blast radius.** It covers only
 > angles written as Rust `CompiledExpr` literals. Rust tests that embed bare
 > `.ri` SOURCE TEXT and compile it through the same chokepoint break too, and
 > they are counted separately in [§3](#3-bucket-3--bare-angles-in-ri-source-text-embedded-in-rust-tests).
-> Sizing a leaf off the 6-file / 31-site table below alone will under-scope it.
+> Sizing a leaf off the 6-file / 36-site table below alone will under-scope it.
 
 ### 2.1 Split by consuming leaf
 
 | Task | Builtin | Sites |
 |---|---|---|
-| **γ (5779)** | `revolve` | 16 |
-| | `rotate_around` | 3 |
+| **γ (5779)** | `revolve` | 18 |
+| | `rotate_around` | 4 |
 | | `rotate` | 1 |
-| | `arc` (`start_angle` + `end_angle`) | 2 |
-| | **γ total** | **22** |
+| | `arc` (`start_angle` + `end_angle`) | 4 |
+| | **γ total** | **27** |
 | **δ (5780)** | `draft` | 2 |
 | **ε (5781)** | `circular_pattern` | 7 |
 
-Per file: `reify-eval/src/geometry_ops/tests.rs` 12,
+Per file: `reify-eval/src/geometry_ops/tests.rs` 17,
 `reify-eval/tests/compile_geometry_op_characterization.rs` 8,
 `reify-eval/tests/harness_geometry/geometry_error_handling.rs` 7,
 `reify-eval/tests/harness_fea_solver_e2e/stress_sweep_degenerate.rs` 2,
 `reify-eval/tests/harness_sweep/swept_kind_classifier_e2e.rs` 1,
 `reify-eval/tests/harness_topology_selector/topology_attribute_extrude_revolve_e2e.rs` 1.
+
+Both splits total 36. The per-file column is the cheap one to re-derive — it is
+a direct `rg -c` of the §"Derivation commands" bucket-2 regex plus the single
+`Int` site of §2.2. The per-leaf column is not: it needs every match attributed
+to its enclosing `SweepKind` / `TransformKind` / `PatternKind` / `CurveKind` /
+`ModifyKind`, which no grep does for you. If the two columns ever disagree,
+trust the per-file one.
 
 ### 2.2 Two sub-forms the obvious grep will not find
 
@@ -202,8 +230,8 @@ Per file: `reify-eval/src/geometry_ops/tests.rs` 12,
   `reify-eval/src/geometry_ops/tests.rs`, the `circular_pattern` bare-integer test
   binds `CompiledExpr::literal(Value::Int(360), Type::Int)` to a local and passes
   the local, so no `lit(..)` / `literal_f64(..)` helper appears at the call site.
-  It belongs to ε, and it is the reason the helper-shaped regex above returns 30
-  rather than 31.
+  It belongs to ε, and it is the reason the helper-shaped regex above returns 35
+  rather than 36.
 
 ### 2.3 Which helper makes a literal "bare"
 
@@ -218,23 +246,50 @@ Bare (`Value::Real` + `Type::dimensionless_scalar()`) — these are bucket 2:
 
 Already dimensioned — these are **NOT** bucket 2, do not "migrate" them:
 
-- `literal_angle` — `reify-eval/src/geometry_ops/tests.rs` (11 angle call sites)
+- `literal_angle` — `reify-eval/src/geometry_ops/tests.rs` (10 angle call sites;
+  a raw `rg -o 'literal_angle\('` returns 11 because it also matches the `fn`
+  definition)
 - `rad_literal` — `reify-eval/tests/curve_constructors_e2e.rs` (2 arc call sites)
+
+### 2.4 Why this is 36 and an earlier revision said 31
+
+If you are holding a copy of this table that reads **31**, it was measured at
+`50bc85d168`. Task 5623's LENGTH-gate leaf landed between that commit and the
+current stamp, and it added five bucket-2 sites — all five in
+`reify-eval/src/geometry_ops/tests.rs`, which goes 12 → 17:
+
+| Added by 5623 | Leaf | Why it is bucket 2 |
+|---|---|---|
+| `revolve_with_origin` | γ | shared LENGTH-gate case builder; angle deliberately bare |
+| `compile_geometry_op_revolve_bare_origin_beats_degenerate_axis` | γ | precedence test over the same builder |
+| `rotate_around_with_point` | γ | shared case builder; comment says "ANGLE is PRD 3's, never ours → stays bare" |
+| `arc_with_center_radius` (`start_angle`) | γ | arc's angle pair, §2.2's first sub-form |
+| `arc_with_center_radius` (`end_angle`) | γ | " |
+
+So the delta is γ-only: revolve 16 → 18, `rotate_around` 3 → 4, `arc` 2 → 4,
+γ total 22 → 27. δ and ε are untouched at 2 and 7.
+
+These are all **deliberately** bare, not oversights — 5623's own comments say
+the angle stays bare because it is *this* PRD's to gate. They are still γ's
+work: a gate at `compile_geometry_op` does not read comments.
+
+The same 5623 landing moved bucket 3 from 14 to 20 (§3). One commit, both
+buckets — which is precisely why this file now carries a single stamp.
 
 ---
 
 ## 3. Bucket 3 — bare angles in `.ri` source text embedded in Rust tests
 
-**20 sites across 7 files.** *(Measured at `975cbfc301` — "Merge task/6391 into
-main", `task/5777`'s merge-base and therefore ON MAIN, later than §§1–2's
-`50bc85d168`. Re-derive before acting.)*
+**20 sites across 7 files.** *(At the file-wide stamp `0675683952` — the same
+commit as §§1–2 and §5. Re-derive before acting.)*
 
 An earlier revision of this section reported **14 across 6**, measured on a tree
 predating task 5623's LENGTH-gate leaf signal — the same bucket-3 content
 `50bc85d168` still carries, where the §"Derivation commands" greps return 18 raw
 `let … = builtin(…)` hits and 0 `arc` hits, i.e. (18 − 5) + 0 + 1 = 14. The
 current stamp is later and includes that file, which adds 6 eval-chokepoint
-sites and the 2 bare `arc` slots, giving 22 + 2 and hence 20 (§3.4).
+sites and the 2 bare `arc` slots, giving 22 + 2 and hence 20 (§3.4). That same
+landing is what moved bucket 2 from 31 to 36 (§2.4).
 
 Buckets 1 and 2 are both about angles written as **Rust values**. This third
 class is angles written as **DSL text** inside a Rust string literal, which the
@@ -357,7 +412,7 @@ falls through its `_ => raw` arm for anything that is not `Real` or `Int` — so
 *radians* into a slot that used to receive π/2. Nothing in the current suite
 catches this: the re-baselined goldens would simply absorb the wrong value.
 
-A migrator working uniformly down the 31-site table would make this error in
+A migrator working uniformly down the 36-site table would make this error in
 seven places at once.
 
 **This rule is bucket-2-only — do not carry it into bucket 1.** Bucket 1 also
@@ -376,14 +431,27 @@ prevent, just in the other direction.
 
 A sweep of every tracked `.ri` file (`git ls-files '*.ri'`) finds **21**
 executable angle-consuming builtin call sites (`revolve` / `rotate` /
-`rotate_around` / `circular_pattern` / `arc`).
+`rotate_around` / `circular_pattern` / `arc`) at the file-wide stamp — the same
+21, on the same lines, as at `50bc85d168`. Unlike buckets 2 and 3, the corpus did
+not move.
+
+Reproducing 21 from the raw sweep, which returns **33 matches**:
+
+- **−7 comment-only lines** — the regex matches commented-out call sites and the
+  word "arc" in prose.
+- **−5 duplicate matches** — five call sites in
+  `crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri` carry a
+  trailing `// revolve(…)`-style signature comment, so the builtin name appears
+  twice on ONE line and `rg -o` counts it twice. Count distinct `file:line`
+  pairs, not matches.
+
+33 − 7 − 5 = **21**.
 
 No absolute count of tracked `.ri` files is given here on purpose: it rots on the
-next example that lands, exactly the way a line number does — it already moved by
-one between this note's measurement SHA and the branch that published it. Re-run
-the §"Derivation commands" sweep, and discard its comment-only hits (the raw
-regex matches commented-out call sites and the word "arc" in prose) to reproduce
-the 21.
+next example that lands, exactly the way a line number does. Measured, it went
+595 → 631 between `50bc85d168` and the current stamp — 36 new files in three
+weeks — while the 21 angle sites above did not change at all. That gap is the
+whole argument for counting sites rather than files.
 
 Before α, exactly **three** carried a bare angle. After α, **two** — and both are
 deliberate:
