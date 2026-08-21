@@ -944,9 +944,25 @@ fn strip_inlined_minimize(src: &str) -> String {
 /// halves through the real solver.
 ///
 /// Shared by every merged/frozen fixture pair in this file —
-/// [`joint_drive_halves`] below and `mwhole_halves()` further down both wrap
+/// [`joint_drive_halves`] below and [`mwhole_halves`] further down both wrap
 /// this — so the read+strip+eval mechanics are a single source of truth
 /// instead of drifting apart across the two example fixtures.
+///
+/// # Both wrappers memoize, and why
+///
+/// Each wrapper caches its own pair behind a `OnceLock`, so each shipped
+/// example is read + stripped + solved exactly ONCE per test binary. Every
+/// caller of a given pair wants the SAME evaluation, not an independent one
+/// (they assert about one model's merged-vs-frozen gap), so re-deriving per
+/// call buys no additional signal — only two more real `DimensionalSolver`
+/// runs. `OnceLock::get_or_init` also de-duplicates correctly when the
+/// `#[test]` functions run concurrently on libtest's default thread pool: a
+/// second caller blocks on the first's in-flight solve rather than racing a
+/// redundant one.
+///
+/// Both wrappers therefore return `&'static`, so the whole file has ONE
+/// call-site idiom (`scalar_si(merged, ..)`, never `scalar_si(&merged, ..)`)
+/// — asymmetric signatures for an identical concept were pure reader tax.
 fn halves(path: &str) -> (EvalResult, EvalResult) {
     let merged_src =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"));
@@ -967,15 +983,9 @@ fn halves(path: &str) -> (EvalResult, EvalResult) {
 /// the failure mode `strip_inlined_minimize`'s own doc comment warns about
 /// for "derived, never transcribed" baselines.
 ///
-/// MEMOIZED behind a `OnceLock`: this is the most expensive fixture in the
-/// file (two real `DimensionalSolver` runs end to end), and it has exactly
-/// two callers. Without caching, each call site re-solves both halves
-/// independently, doubling the cost for no additional signal — the two
-/// callers want the SAME evaluation, not two independent ones.
-/// `OnceLock::get_or_init` also de-duplicates correctly if the two `#[test]`
-/// functions run concurrently on separate threads (the default libtest
-/// harness): the second caller blocks on the first's in-flight solve rather
-/// than racing a redundant one.
+/// MEMOIZED behind a `OnceLock` — rationale on [`halves`], which both
+/// wrappers share. Two callers here (BT-5 and the pin), so caching collapses
+/// two real solver runs into one.
 fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
     static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| halves(JOINT_DRIVE_EXAMPLE_PATH))
@@ -1588,8 +1598,14 @@ const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
 /// source of truth instead of three literal copies — and, since
 /// [`joint_drive_halves`] wraps the same [`halves`], across both example
 /// fixtures in this file.
-fn mwhole_halves() -> (EvalResult, EvalResult) {
-    halves(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH)
+///
+/// MEMOIZED behind a `OnceLock` — rationale on [`halves`], which both
+/// wrappers share. THREE callers here, and this example couples two children
+/// into a dimension-2 cluster, so it is the larger of the file's two fixtures
+/// on both axes: caching collapses three real solver-pair runs into one.
+fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
+    static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| halves(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH))
 }
 
 /// BT4(i) — the joint-drive signal generalised to TWO coupled children under
@@ -1640,8 +1656,8 @@ fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_
     // single source of truth for both children.
     for structure in ["Plate", "Spacer"] {
         let auto_id = ValueCellId::new(structure, "quantity_produced");
-        let merged_q = scalar_si(&merged, &auto_id, "merged");
-        let frozen_q = scalar_si(&frozen, &auto_id, "frozen-cascade");
+        let merged_q = scalar_si(merged, &auto_id, "merged");
+        let frozen_q = scalar_si(frozen, &auto_id, "frozen-cascade");
 
         assert!(
             merged_q < frozen_q,
@@ -1713,8 +1729,8 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
         plate + spacer
     };
 
-    let merged_total = whole_assembly_cost(&merged, "merged");
-    let frozen_total = whole_assembly_cost(&frozen, "frozen-cascade");
+    let merged_total = whole_assembly_cost(merged, "merged");
+    let frozen_total = whole_assembly_cost(frozen, "frozen-cascade");
 
     assert!(
         merged_total < frozen_total,
@@ -1784,12 +1800,12 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         let alias_id = ValueCellId::new(instance_path, "line_cost");
 
         // (a) resolves to a Scalar in the merged eval -- not Undef.
-        let merged_aliased = scalar_si(&merged, &alias_id, "merged");
+        let merged_aliased = scalar_si(merged, &alias_id, "merged");
 
         // (b) equals its structure-keyed source in the SAME eval -- proving
         // the alias is freshly refolded, not stale.
         let merged_structure_keyed = scalar_si(
-            &merged,
+            merged,
             &ValueCellId::new(structure, "line_cost"),
             "merged",
         );
@@ -1809,12 +1825,12 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         // regression. (BT3(b) above, which compares two cells that must hold
         // the SAME folded value, is legitimately exact.)
         let merged_unit_cost = scalar_si(
-            &merged,
+            merged,
             &ValueCellId::new(structure, "unit_cost"),
             "merged",
         );
         let merged_q = scalar_si(
-            &merged,
+            merged,
             &ValueCellId::new(structure, "quantity_produced"),
             "merged",
         );
@@ -1863,7 +1879,7 @@ fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
         // differed (e.g. drifted upward) would satisfy `!=` while contradicting
         // the whole point of the objective.
         let frozen_structure_keyed = scalar_si(
-            &frozen,
+            frozen,
             &ValueCellId::new(structure, "line_cost"),
             "frozen-cascade",
         );
