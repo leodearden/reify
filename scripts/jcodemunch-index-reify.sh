@@ -439,9 +439,17 @@ JC_PYTHON="3.13"
 #
 # PIN-BUMP CHECKLIST: this env var is accepted but DEPRECATED upstream — the
 # package logs "will be removed in v2.0. Use config.jsonc instead." A bump past
-# v2.0 must re-establish the lever (`"identity_mode": "local"`) before landing,
-# or the identity silently reverts to `leodearden/reify` and every gate below
-# starts interrogating a path nothing writes.
+# v2.0 must re-establish the lever in config.jsonc before landing, or the
+# identity silently reverts to `leodearden/reify` and every gate below starts
+# interrogating a path nothing writes.
+#
+# THE KEY IS `"git_root_identity": false` (config.py:474) — NOT
+# `"identity_mode": "local"`. That second spelling is a trap worth naming
+# rather than merely omitting: the shipped config template ADVERTISES it
+# (config.py:1872-1896), yet it is absent from CONFIG_TYPES and is therefore
+# discarded SILENTLY at the pinned 1.108.54 (config.py:708). It fails closed
+# with no error and no log line, so a bump that reached for the advertised key
+# would look configured while the identity had already reverted.
 #
 # NOT SUFFICIENT ON ITS OWN: `resolve_index_identity` returns an ALREADY-EXISTING
 # git-identity index (git_root.py:174-178) BEFORE it ever consults the configured

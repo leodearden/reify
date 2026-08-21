@@ -1149,7 +1149,7 @@ else
 
     # (b) NEGATIVE — the SAME stub binary, with the lever overridden downstream
     # of the script's own `env` prefix via its documented word-split seam
-    # (scripts/jcodemunch-index-reify.sh:466-475): INDEXER_ARGV becomes
+    # (scripts/jcodemunch-index-reify.sh:475-482): INDEXER_ARGV becomes
     # `env …=0 env …=1 <stub> watch …` and the second env wins. The stub then
     # takes git_root.py's GIT branch and writes leodearden-reify.db, which is
     # the real failure mode the script's own hijack_note names —
