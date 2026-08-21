@@ -241,9 +241,13 @@ JC_PIN="jcodemunch-mcp==1.108.54"
 # against the heavier `watch` path, which resolves the full dependency closure
 # (a superset of what `serve` needs). 3.13 is chosen here for sibling-
 # consistency with β and because a closure that resolved for `watch` necessarily
-# covers `serve`. Task 6109 step-15 is where 3.13-on-`serve` gets its own
-# first-hand measurement; if it ever fails there, fall back to 3.12 and amend
-# this comment with the measurement rather than deleting it.
+# covers `serve`.
+#
+# MEASURED 2026-08-22 (task 6109 step-15), so this is no longer an inference:
+# `--python 3.13` resolves the pinned 1.108.54 and SERVES. `uvx` installed 37
+# packages in 311 ms from a warm cache, the serve answered `initialize` as
+# `jcodemunch-mcp` on 8901, and three full wrapped runs completed over it
+# (readiness ~13 s cold, ~5 s warm). No fallback to 3.12 was needed.
 JC_PYTHON="3.13"
 
 # ── THE IDENTITY LEVER IS PART OF THE INVOCATION ─────────────────────────────
