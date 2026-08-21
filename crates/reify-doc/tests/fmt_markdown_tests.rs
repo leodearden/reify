@@ -221,7 +221,10 @@ fn item_h2_headings_per_variant() {
                     annotations: vec![],
                     pragmas: vec![],
                 },
-                kind: ItemKind::Trait { members: vec![] },
+                kind: ItemKind::Trait {
+                    type_params: vec![],
+                    members: vec![],
+                },
             }),
             "## `pub trait Foo` <a id=\"Foo\"></a>",
         ),
@@ -317,6 +320,7 @@ fn item_h2_headings_per_variant() {
                     pragmas: vec![],
                 },
                 kind: ItemKind::TypeAlias {
+                    type_params: vec![],
                     type_repr: "f64".into(),
                 },
             }),
@@ -747,6 +751,7 @@ fn trait_body_renders_members() {
             pragmas: vec![],
         },
         kind: ItemKind::Trait {
+            type_params: vec![],
             members: vec!["voltage: Voltage".into(), "current: Current".into()],
         },
     };
@@ -773,7 +778,10 @@ fn trait_body_omits_members_when_empty() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Members"), "should omit, got:\n{out}");
@@ -1119,6 +1127,7 @@ fn type_alias_body_renders_rhs() {
             pragmas: vec![],
         },
         kind: ItemKind::TypeAlias {
+            type_params: vec![],
             type_repr: "f64".into(),
         },
     };
@@ -1127,6 +1136,64 @@ fn type_alias_body_renders_rhs() {
         out.contains("= `f64`"),
         "type alias rhs line missing:\n{out}"
     );
+}
+
+/// Formatter-level type-param rendering for `ItemKind::TypeAlias` (task #6342).
+///
+/// The mirror image of `fmt_html_tests::type_alias_heading_renders_escaped_type_params`:
+/// Markdown emits the `<…>` RAW, unescaped, because the heading wraps it in a
+/// backtick code span.  (Outside a code span a bare `<T>` in a GFM heading is
+/// parsed as a raw HTML tag and silently swallowed — which is exactly why the
+/// segment must land inside the span, before the closing backtick, and never
+/// after it.)
+///
+/// Hand-written `DocModel` rather than a compiled `.ri` source, so it can cover
+/// an unbounded bare param and a mixed multi-param list.
+#[test]
+fn type_alias_heading_renders_raw_type_params_inside_code_span() {
+    let cases: Vec<(&str, Vec<String>, &str)> = vec![
+        // Single bare param — raw `<T>`, inside the backticks.
+        (
+            "Box",
+            vec!["T".into()],
+            "## `pub type Box<T>` <a id=\"Box\"></a>",
+        ),
+        // Two params, the second bounded — joined with `, `.
+        (
+            "Pair",
+            vec!["T".into(), "U: Rigid".into()],
+            "## `pub type Pair<T, U: Rigid>` <a id=\"Pair\"></a>",
+        ),
+        // No params: no `<>` at all.
+        ("Plain", vec![], "## `pub type Plain` <a id=\"Plain\"></a>"),
+    ];
+
+    for (name, type_params, expected_heading) in cases {
+        let item = ItemDoc {
+            header: ItemHeader {
+                name: name.into(),
+                doc: None,
+                is_pub: true,
+                annotations: vec![],
+                pragmas: vec![],
+            },
+            kind: ItemKind::TypeAlias {
+                type_params,
+                type_repr: "f64".into(),
+            },
+        };
+        let out = render_one_item(item);
+
+        assert!(
+            out.contains(expected_heading),
+            "expected heading `{expected_heading}` for `{name}`; got:\n{out}"
+        );
+        // Identity is display-independent: the TOC bullet stays the bare name.
+        assert!(
+            out.contains(&format!("- [`{name}`](#{name})")),
+            "TOC bullet for `{name}` must stay the bare name; got:\n{out}"
+        );
+    }
 }
 
 /// TypeAlias body uses safe inline-code fencing when `type_repr` contains a
@@ -1145,6 +1212,7 @@ fn type_alias_body_uses_safe_inline_code_fence() {
             pragmas: vec![],
         },
         kind: ItemKind::TypeAlias {
+            type_params: vec![],
             type_repr: type_repr.into(),
         },
     };
@@ -1490,7 +1558,10 @@ fn mk_item(kind: &str, name: &str) -> ItemDoc {
                 annotations: vec![],
                 pragmas: vec![],
             },
-            kind: ItemKind::Trait { members: vec![] },
+            kind: ItemKind::Trait {
+                type_params: vec![],
+                members: vec![],
+            },
         },
         "function" => ItemDoc {
             header: ItemHeader {
@@ -1562,6 +1633,7 @@ fn mk_item(kind: &str, name: &str) -> ItemDoc {
                 pragmas: vec![],
             },
             kind: ItemKind::TypeAlias {
+                type_params: vec![],
                 type_repr: "f64".into(),
             },
         },
@@ -1924,6 +1996,7 @@ fn split_mode_emits_index_and_per_item_files() {
             pragmas: vec![],
         },
         kind: ItemKind::Trait {
+            type_params: vec![],
             members: vec!["voltage: Voltage".into()],
         },
     };
@@ -2145,7 +2218,21 @@ fn build_integration_full_v01_fixture() -> DocModel {
                         pragmas: vec![],
                     },
                     kind: ItemKind::TypeAlias {
+                        type_params: vec![],
                         type_repr: "Force / Area".into(),
+                    },
+                },
+                ItemDoc {
+                    header: ItemHeader {
+                        name: "Rate".into(),
+                        doc: Some("Rate of change of a quantity per unit time.".into()),
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::TypeAlias {
+                        type_params: vec!["Q: Dimension".into()],
+                        type_repr: "Q / Time".into(),
                     },
                 },
                 ItemDoc {
@@ -2194,6 +2281,7 @@ fn build_integration_full_v01_fixture() -> DocModel {
                         pragmas: vec![],
                     },
                     kind: ItemKind::Trait {
+                        type_params: vec![],
                         members: vec!["mass: Mass".into()],
                     },
                 },
@@ -2403,6 +2491,7 @@ fn snapshot_integration_full_v01_split_mode() {
     let expected_filenames: Vec<&str> = vec![
         "index.md",
         "type_alias-Pressure.md",
+        "type_alias-Rate.md",
         "unit-mil.md",
         "enum-Grade.md",
         "function-safety_factor.md",
@@ -2589,7 +2678,10 @@ fn split_mode_per_item_cross_refs_use_filename_links() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let bolt = ItemDoc {
         header: ItemHeader {
@@ -2740,7 +2832,10 @@ fn multi_module_split_per_item_cross_refs_use_relative_paths() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     // beta: Fastener (Trait — cross-module reference from alpha/Bolt)
     let fastener = ItemDoc {
@@ -2751,7 +2846,10 @@ fn multi_module_split_per_item_cross_refs_use_relative_paths() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let model = DocModel {
         modules: vec![
@@ -2846,7 +2944,10 @@ fn multi_module_split_cross_ref_ambiguous_name_falls_back_to_fragment() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let shared_beta = ItemDoc {
         header: ItemHeader {
@@ -2856,7 +2957,10 @@ fn multi_module_split_cross_ref_ambiguous_name_falls_back_to_fragment() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     // Conformer lives in alpha; its cross-ref target name "Shared" is
     // ambiguous because alpha::Shared and beta::Shared both exist.
