@@ -22,8 +22,8 @@ three different waits:
 | Acquirer | Wait | On timeout |
 |---|---|---|
 | `GitOps.merge_verify_lease` (`git_ops.py`, `_MERGE_VERIFY_LEASE_WAIT_SECS`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
-| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_SEED_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py`) | plain `RuntimeError` → `merge_queue.py`'s generic `f'Verification error: {exc}'` handler in `_run_inflight_verify` → `MergeOutcome('blocked', 'Verification error: Timed out after 30s...')` → `workflow.py` `category = 'merge_error'` → `_mark_blocked` → **escalation. Terminal, never requeued** |
-| `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w 30 -E 124` | same 30s constant |
+| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | plain `RuntimeError` → `merge_queue.py`'s generic `f'Verification error: {exc}'` handler in `_run_inflight_verify` → `MergeOutcome('blocked', 'Verification error: Timed out after 30s...')` → `workflow.py` `category = 'merge_error'` → `_mark_blocked` → **escalation. Terminal, never requeued** |
+| `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled from those two constants (currently 30 / 124); no such literal string exists anywhere in DF source | same 30s constant |
 
 **The defect is that asymmetry on one inode**, not speculation about load: a
 lease held for ~2h starves a 30s waiter, and the two paths disagree about what a
@@ -32,7 +32,7 @@ failed". That is exactly the observed esc-5363-5 signature (task 5384's lease
 held the inode for ~2h; task 5363's `reset_persistent_merge_worktree` waited 30s
 and died into a `merge_error` escalation).
 
-`_SEED_WARM_LANE_LOCK_WAIT_SECS` is a hardcoded module constant. There is **no**
+`_RESET_WARM_LANE_LOCK_WAIT_SECS` is a hardcoded module constant. There is **no**
 yaml key and **no** env override for it anywhere: zero hits for
 `lock_timeout` / `lock_wait` / `flock_wait` / `lane_lock` across DF `config.py`,
 DF `defaults.yaml`, and reify's `dark-factory-orchestrator.yaml`. Raising it
@@ -120,8 +120,10 @@ the copy to amend when one of them changes.
 Telling *would-block* from *tool error* is the load-bearing implementation
 detail: `flock -n` returns a bare `1` on contention, indistinguishable from
 "flock itself failed". The guard therefore asks for a distinct conflict status
-via `-E 124` — mirroring DF's own `flock -x -w 30 -E 124` — and treats every
-other non-zero as a degradation.
+via `-E 124` — mirroring the conflict-status value DF's `_seed_warm_lane`
+(`git_ops.py`) assembles from its own `_SEED_WARM_LANE_LOCK_TIMEOUT_RC`
+constant (currently 124; DF builds the whole invocation from constants, not a
+quoted literal — see §3) — and treats every other non-zero as a degradation.
 
 **Known divergence from `warm-lane-audit.sh`.** Two scripts now probe the same
 `<mount>/<lane>.lock` inode with the same read-only shared-`flock` technique —

@@ -113,8 +113,10 @@ FLOCK_BIN="${REIFY_WARM_LANE_LOCK_GUARD_FLOCK:-flock}"
 # on contention, which is indistinguishable from "flock itself failed" — and
 # reading a tool fault as contention is exactly the false BUSY this guard must
 # never emit. A distinct code separates the two. 124 mirrors dark-factory's own
-# `flock -x -w 30 -E 124` in _seed_warm_lane, so the two repos speak one dialect
-# about this lock.
+# conflict-status value: git_ops.py's _seed_warm_lane assembles its flock
+# invocation from _SEED_WARM_LANE_LOCK_WAIT_SECS / _SEED_WARM_LANE_LOCK_TIMEOUT_RC
+# (currently 30 / 124) rather than a literal string, so the two repos speak one
+# dialect about this lock via those constants' current values.
 FLOCK_CONFLICT_RC=124
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
