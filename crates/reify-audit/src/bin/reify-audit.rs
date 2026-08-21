@@ -951,9 +951,10 @@ mod tests {
         assert!(
             args.jcodemunch_repo.is_none(),
             "no --jcodemunch-repo must leave the id UNSET so it is derived \
-             per §4.2 from the project root; a hardcoded default index does \
-             not and must not exist — a git-identity index would collide \
-             across reify's many worktrees and is never GC'd"
+             per §4.2 from the project root; a hardcoded git-identity default \
+             MUST NOT exist — such an index names the project rather than the \
+             checkout, so it would collide across reify's many worktrees and \
+             is never GC'd"
         );
     }
 
@@ -1082,11 +1083,19 @@ mod tests {
         assert_eq!(args.jcodemunch_index_dir, "/tmp/ix");
     }
 
-    /// `--help` must not advertise a default index that does not exist.
+    /// `--help` must not advertise a `<owner>/<project>` git-identity default.
     ///
-    /// Same CLI-surface contract as [`usage_text_lists_pdoccover`]: help text
-    /// naming a `<owner>/<project>` git-identity default would send an
-    /// operator to build an index this binary never probes.
+    /// NOT because no such index exists — one demonstrably DOES, and it
+    /// regenerates as an upstream side effect of every jcodemunch run, so it
+    /// survives deletion. The rationale is the COLLISION HAZARD (§4.2
+    /// CORRECTION 2026-08-20, esc-6107-7): a git-identity index names the
+    /// *project*, not the *checkout*, so every one of reify's worktrees
+    /// resolves to the same identity with a different `git_root`,
+    /// `index_folder`'s collision guard hard-refuses, and such an index is
+    /// never GC'd. Advertising it as a default would send an operator to
+    /// build an index this binary never probes.
+    ///
+    /// Same CLI-surface contract as [`usage_text_lists_pdoccover`].
     ///
     /// The needle below is the ONLY remaining occurrence of that token in this
     /// file — it is the guard proving the absence, so it cannot be spelled any
