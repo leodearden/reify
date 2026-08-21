@@ -1458,19 +1458,40 @@ fn write_solved_pinned_connector_autos(
 /// ## Why the two disjuncts are asymmetric about normalisation
 ///
 /// The `auto_ids` test is deliberately left EXACTLY as it was — raw trace
-/// reads, no namespace bridging. The `reaching` test normalises, because
-/// `reaching` is template-keyed (it comes from the index's `cell_map`) while a
-/// constraint reading `self.<sub>.<member>` traces an INSTANCE-PATH id, and
-/// without the bridge a merged-cluster constraint reading a child's `let`
-/// would miss it.
-///
-/// Keeping the first disjunct un-normalised is what makes D1 exact rather than
+/// reads, no namespace bridging. That is what makes D1 exact rather than
 /// approximate: with an EMPTY `reaching` the second disjunct is vacuously
 /// false, so the filter's output on a model with no dependent cells is
 /// byte-identical to the pre-α behaviour. Widening the first disjunct too
 /// would silently start admitting instance-path-keyed DIRECT auto reads that
 /// are dropped today — a real behaviour change on direct-only models, which is
 /// exactly what B2 forbids.
+///
+/// The `reaching` test, by contrast, is ADDITIVE — raw OR normalised — which
+/// makes it the third and last of this branch's namespace-bridging sites to be
+/// spelled that way, alongside [`CellReadIndex::read_closure`]'s `push` and
+/// [`CellReadIndex::cells_reaching`]'s reverse-map keying. Each half earns its
+/// place differently:
+///
+/// * The NORMALISED probe is the one that does work today. `reaching` is
+///   template-keyed (it is a set of `cell_map` keys) while a constraint reading
+///   `self.<sub>.<member>` traces an INSTANCE-PATH id, so without the bridge a
+///   merged-cluster constraint reading a child's `let` misses it entirely.
+///   Pinned by `a_parent_constraint_reading_a_childs_let_through_an_instance_path_is_admitted`.
+/// * The RAW probe is a DEFENSIVE guard, and — unlike its two siblings, which
+///   repaired live misses — it is provably a no-op on today's compiler. Every
+///   instance-path-keyed `ValueCellDecl` the compiler mints is an
+///   `Auto { .. }` with `default_expr: None`: `reify-compiler/src/entity.rs`
+///   (construction named-arg, sub-override) and `connect.rs` (connector
+///   param). `cell_map` admits only NON-auto cells that carry a
+///   `default_expr`, so its keys — hence every element of `reaching` — are
+///   always template-keyed, `normalize` is the identity on them, and the two
+///   probes coincide. It is here so that a future minting site producing an
+///   instance-path-keyed cell WITH a `default_expr` cannot silently reopen the
+///   layer-1 miss, and so that all three bridging sites read the same way.
+///
+/// Neither probe can perturb D1: an empty `reaching` makes the whole
+/// parenthesised disjunct vacuously false regardless of spelling, and both
+/// probes only ever ADMIT, never drop.
 fn filter_constraints_reading_autos(
     constraints: &[reify_compiler::CompiledConstraint],
     auto_ids: &HashSet<&ValueCellId>,
@@ -1483,10 +1504,9 @@ fn filter_constraints_reading_autos(
             let trace = extract_dependency_trace(&c.expr);
             trace.reads.iter().any(|r| auto_ids.contains(r))
                 || (!reaching.is_empty()
-                    && trace
-                        .reads
-                        .iter()
-                        .any(|r| reaching.contains(&index.normalize(r.clone()))))
+                    && trace.reads.iter().any(|r| {
+                        reaching.contains(r) || reaching.contains(&index.normalize(r.clone()))
+                    }))
         })
         .map(|c| (c.id.clone(), c.expr.clone()))
         .collect()
@@ -11931,6 +11951,132 @@ mod transitive_constraint_admission_tests {
             !got.contains(&2),
             "constraint[2] reads only `S.c = 1.0 + p`, which reaches no auto — \
              it must stay DROPPED; got {got:?}",
+        );
+    }
+
+    /// A PARENT constraint reading a CHILD's `let` through an INSTANCE PATH.
+    ///
+    /// ```text
+    /// RivetedPanel.rivets : sub Rivet
+    /// RivetedPanel constraint[0]: RivetedPanel.rivets.line_cost == 5.0   ← instance-path READ
+    /// Rivet.line_cost = Rivet.unit_cost * Rivet.quantity_produced
+    /// Rivet.quantity_produced : auto
+    /// ```
+    ///
+    /// The α fixture above declares every `let` in the SAME template as the
+    /// constraint that reads it, so `normalize` is the identity on both sides
+    /// and the namespace bridge inside the `reaching` disjunct is never
+    /// exercised — the gap this fixture closes (review suggestion 3). Here the
+    /// trace read is `RivetedPanel.rivets.line_cost` while `reaching` holds the
+    /// declaring template's `Rivet.line_cost`, so a raw-only probe misses and
+    /// the one constraint that pins `Rivet.quantity_produced` is dropped.
+    ///
+    /// Fixture shape reused from `instance_path_templates` in the sibling
+    /// `CellReadIndex` module, with the parent's `let` replaced by a
+    /// constraint — layer 1 gates CONSTRAINTS, not lets.
+    fn cross_template_let_fixture() -> Vec<reify_compiler::TopologyTemplate> {
+        let parent = TopologyTemplateBuilder::new("RivetedPanel")
+            .sub_component("rivets", "Rivet", vec![])
+            .constraint(
+                "RivetedPanel",
+                0,
+                None,
+                eq(
+                    value_ref("RivetedPanel.rivets", "line_cost"),
+                    literal(mm(5.0)),
+                ),
+            )
+            .build();
+        let child = TopologyTemplateBuilder::new("Rivet")
+            .auto_param("Rivet", "quantity_produced", Type::dimensionless_scalar())
+            .param(
+                "Rivet",
+                "unit_cost",
+                Type::dimensionless_scalar(),
+                Some(literal(mm(0.50))),
+            )
+            .let_binding(
+                "Rivet",
+                "line_cost",
+                Type::dimensionless_scalar(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Rivet", "unit_cost"),
+                    value_ref("Rivet", "quantity_produced"),
+                ),
+            )
+            .build();
+        vec![parent, child]
+    }
+
+    /// THE NAMESPACE BRIDGE, at layer 1. Deleting the `index.normalize(..)`
+    /// probe from the `reaching` disjunct turns this red while leaving every
+    /// other test in this module green.
+    #[test]
+    fn a_parent_constraint_reading_a_childs_let_through_an_instance_path_is_admitted() {
+        let templates = cross_template_let_fixture();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let auto = ValueCellId::new("Rivet", "quantity_produced");
+        let autos: HashSet<ValueCellId> = [auto.clone()].into_iter().collect();
+        let reaching = index.cells_reaching(&autos);
+
+        assert!(
+            reaching.contains(&ValueCellId::new("Rivet", "line_cost")),
+            "fixture integrity: `reaching` must hold the child's `let` under \
+             its DECLARING template's id `Rivet.line_cost`, or the assertion \
+             below is vacuous — the whole point is that this spelling differs \
+             from the `RivetedPanel.rivets.line_cost` the constraint traces; \
+             got {reaching:?}",
+        );
+
+        let auto_ids: HashSet<&ValueCellId> = [&auto].into_iter().collect();
+        let got: Vec<u32> = filter_constraints_reading_autos(
+            &templates[0].constraints,
+            &auto_ids,
+            &reaching,
+            &index,
+        )
+        .into_iter()
+        .map(|(id, _)| id.index)
+        .collect();
+
+        assert_eq!(
+            got,
+            vec![0u32],
+            "the parent's constraint reads `Rivet.quantity_produced` neither \
+             directly nor under a matching spelling — only as \
+             `RivetedPanel.rivets.line_cost`, two hops and one NAMESPACE away. \
+             It must still be ADMITTED, or the child's auto reaches the solver \
+             with no residual and comes back `undef`; got {got:?}",
+        );
+    }
+
+    /// D1 for the cross-template shape: an EMPTY `reaching` drops it again.
+    /// Without this the bridge test alone would pass on a filter that admitted
+    /// every constraint unconditionally.
+    #[test]
+    fn an_empty_reaching_set_drops_the_instance_path_constraint_too() {
+        let templates = cross_template_let_fixture();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let auto = ValueCellId::new("Rivet", "quantity_produced");
+        let auto_ids: HashSet<&ValueCellId> = [&auto].into_iter().collect();
+
+        let got: Vec<u32> = filter_constraints_reading_autos(
+            &templates[0].constraints,
+            &auto_ids,
+            &HashSet::new(),
+            &index,
+        )
+        .into_iter()
+        .map(|(id, _)| id.index)
+        .collect();
+
+        assert!(
+            got.is_empty(),
+            "with an EMPTY reaching set the parenthesised disjunct is \
+             vacuously false and this constraint — which reads no auto id \
+             RAW — must be dropped, exactly as pre-α. Anything else means the \
+             widening leaked past the D1 boundary; got {got:?}",
         );
     }
 
