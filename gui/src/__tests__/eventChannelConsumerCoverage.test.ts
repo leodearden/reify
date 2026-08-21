@@ -134,10 +134,11 @@ const NON_BRIDGE_CONSUMERS: Record<string, string> = {
  * matters. `staleConsumerlessEntries` deliberately does not flag an entry whose
  * row is not yet `*(none)*`, because the entry suppresses nothing on its own —
  * the doc cell does — and because pre-registering is what keeps this guard
- * decoupled from another task's merge order. Task 6227 deletes
- * `bridge.ts::onDiagnostics` and rewrites that row's Consumer cell; it holds no
- * lock on this file, so requiring the entry only as it lands would turn a
- * cross-task doc edit into a red tree here. The reason is written once, now.
+ * decoupled from another task's merge order. Task 6227 deleted
+ * `bridge.ts::onDiagnostics` and rewrote that row's Consumer cell; it held no
+ * lock on this file, so requiring the entry only as it landed would have
+ * turned a cross-task doc edit into a red tree here. The reason is written
+ * once, now.
  */
 const DELIBERATELY_CONSUMERLESS: Record<string, string> = {
   diagnostics:
