@@ -3647,6 +3647,52 @@ impl EngineSession {
 
         reify_eval::resolve_entity_at_source_position(compiled, parsed, source, line_offsets, line, col)
     }
+
+    /// Resolve a `"Entity.member"` cell id to the byte range of that param's
+    /// DEFAULT EXPRESSION in the currently-loaded source.
+    ///
+    /// Substrate for INV-GUI-3 (PRD `docs/prds/v0_6/ai-native-editing.md` §6.1).
+    /// The returned span is the default EXPRESSION range ONLY — never the whole
+    /// `param … = …` declaration and never the leading `=` — so a caller can
+    /// splice a replacement literal into exactly that range.
+    ///
+    /// `None` means "no rewritable default literal for this cell", and is the
+    /// caller's cue to emit a structured error rather than to guess (PRD §6.1,
+    /// §7 B7). It covers every non-resolving case:
+    ///
+    /// * the cell id is malformed (no `.`),
+    /// * no module is loaded, so there is no parse to read,
+    /// * the entity is not a `structure def` in the loaded module,
+    /// * the member is not a param, has no default, or is declared more than
+    ///   once (see [`reify_ast::find_param_default_span`] for the refusal rule),
+    /// * the cell id names an INSTANCE path (`Parent.childinst.member`).
+    ///
+    /// The instance-path case is worth stating outright: `parse_cell_id` splits
+    /// on the FIRST `.`, so `"Parent.childinst.height"` yields the member
+    /// `"childinst.height"`, which matches no `ParamDecl.name` because a member
+    /// name never contains a `.`. That `None` is correct rather than a gap — a
+    /// shared structure's default literal is not one instance's value, and
+    /// rewriting it would change every instance.
+    ///
+    /// Unlike [`Self::get_containing_definition`] and
+    /// [`Self::get_entity_at_source_location`], this method does NOT gate on
+    /// `resolve_source()` and carries no `debug_assert!` on the caches: spans
+    /// come straight from the AST, and `parsed_cache` is legitimately `None` on
+    /// a `load_from_compiled`-injected session. Plain `as_ref()?` is the correct
+    /// degradation.
+    pub fn resolve_param_default_span(&self, cell_id_str: &str) -> Option<reify_core::SourceSpan> {
+        // Reuse `parse_cell_id` — the SAME parse `set_parameter` uses — so this
+        // resolver and the entry point that will consume it cannot disagree
+        // about what a cell_id denotes.
+        let cell = parse_cell_id(cell_id_str).ok()?;
+        let parsed = self.parsed_cache.as_ref()?;
+        parsed.declarations.iter().find_map(|decl| match decl {
+            reify_ast::Declaration::Structure(s) if s.name == cell.entity => {
+                reify_ast::find_param_default_span(&s.members, &cell.member)
+            }
+            _ => None,
+        })
+    }
 }
 
 // ---- GUI-state helpers -------------------------------------------------------
