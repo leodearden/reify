@@ -392,13 +392,16 @@ def mask_cfg_test(lines):
       3. Struct field / enum variant / match arm with `#[cfg(test)]`
          (line ends with `,`): mask the field line only.
 
-    Brace counts are computed from a literal/comment-stripped "code view"
-    (see `strip_literals_and_comments`), so `{`/`}` inside string, raw
-    string, char, or byte-string literals and line/block comments do not
-    perturb the block-walk. Two approximations remain: the
-    `#[cfg(test)]` attribute match itself (`CFG_TEST_RE.search` below)
-    still reads raw line text, and no full Rust lexing is performed
-    beyond what brace-counting needs.
+    Brace counts, and the item-shape test that decides whether an item is
+    a block (`fn`/`mod`/`impl`/`struct`/`enum`/`trait`/`union`) or a
+    single statement/field (its `;`/`,` suffix), are computed from a
+    literal/comment-stripped "code view" (see
+    `strip_literals_and_comments`), so `{`/`}` and keyword/suffix text
+    inside string, raw string, char, or byte-string literals and
+    line/block comments do not perturb either decision. Two
+    approximations remain: the `#[cfg(test)]` attribute match itself
+    (`CFG_TEST_RE.search` below) still reads raw line text, and no full
+    Rust lexing is performed beyond what these two checks need.
     """
     masked = [False] * len(lines)
     n = len(lines)
@@ -429,12 +432,11 @@ def mask_cfg_test(lines):
             i = j
             continue
 
-        header = lines[j]
-        header_stripped = header.rstrip()
+        header_stripped = code[j].rstrip()
         # `mod foo;`, `struct Foo;`, `extern fn ... ;` etc. are
         # block-keyword-bearing but single-statement; treat as field.
         is_block = (
-            bool(BLOCK_KW_RE.search(header))
+            bool(BLOCK_KW_RE.search(code[j]))
             and not header_stripped.endswith(";")
             and not header_stripped.endswith(",")
         )
