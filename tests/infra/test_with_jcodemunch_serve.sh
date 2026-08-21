@@ -682,6 +682,16 @@ STUB
             echo 'python3 "$0.py" "$STUB_PORT" jcodemunch-mcp &' >> "$path"
             echo 'printf "stub-grandchild-pid=[%s]\n" "$!" >> "$REIFY_JC_SERVE_WITNESS"' >> "$path"
             echo 'exec sleep 600' >> "$path" ;;
+        escapee)
+            # A LEAK, deliberately constructed. The listener is put in a brand
+            # new SESSION, so it is outside the process group the wrapper
+            # signals and survives both -TERM and -KILL. You cannot build this
+            # fixture out of a signal handler — SIGKILL is uncatchable — so the
+            # only honest leak is a process that escaped the group, which is
+            # also the realistic one. Records its own pgid under a distinct key
+            # so this suite's cleanup can still reap it.
+            echo 'setsid bash -c '"'"'printf "stub-escapee-pgid=[%s]\n" "$$" >> "$REIFY_JC_SERVE_WITNESS"; exec python3 "$1" "$2" "$3"'"'"' _ "$0.py" "$STUB_PORT" jcodemunch-mcp &' >> "$path"
+            echo 'exec sleep 600' >> "$path" ;;
         *)
             echo "mk_stub_serve: unknown mode '$mode'" >&2; return 1 ;;
     esac
@@ -704,7 +714,8 @@ _reap_stub_groups() {
             [ -n "$pgid" ] || continue
             kill -TERM -- "-$pgid" 2>/dev/null || true
             kill -KILL -- "-$pgid" 2>/dev/null || true
-        done < <(sed -n 's/^stub-pgid=\[\([0-9]\{1,\}\)\]$/\1/p' "$w" | sort -u)
+        done < <(sed -n -e 's/^stub-pgid=\[\([0-9]\{1,\}\)\]$/\1/p' \
+                        -e 's/^stub-escapee-pgid=\[\([0-9]\{1,\}\)\]$/\1/p' "$w" | sort -u)
     done
 }
 cleanup() {
@@ -1171,5 +1182,149 @@ b6_signalled() {
 
 assert "a SIGTERMed wrapper exits 143 and tears the serve group down"       b6_signalled TERM 143
 assert "a SIGINTed wrapper exits 130 and tears the serve group down"        b6_signalled INT 130
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 7 — the trailing-stderr invariant
+#
+# THIS IS THE ASSERTION THAT PROTECTS THIS TASK'S OWN USER-OBSERVABLE SIGNAL.
+# `reify-audit` writes its JSON findings array to STDERR
+# (crates/reify-audit/src/bin/reify-audit.rs:689-695) and every consumer
+# extracts it as the TRAILING block — scripts/smoke-predone-hook.sh:233 pipes
+# through the awk below, and crates/reify-audit/tests/cli.rs uses
+# `rfind("\n[")`. So a single line of wrapper chatter appended to stderr AFTER
+# the wrapped command silently breaks that extraction, and δ's whole PRD signal
+# ("emits a findings array") fails with the wrapper still reporting success.
+#
+# Silent on success, loud on a leak: both halves are pinned here, and the leak
+# half is what stops "silent on success" being satisfied by simply deleting the
+# teardown diagnostic.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 7: the trailing-stderr invariant ---"
+
+# mk_findings_emitter <path> <exit-code> — a reify-audit-shaped wrapped command:
+# diagnostic lines, then a JSON array, all on STDERR, then the given status.
+mk_findings_emitter() {
+    cat > "$1" <<EMITTER
+#!/usr/bin/env bash
+printf 'reify-audit: resolving jcodemunch identity local/reify-4ae45bbd\n' >&2
+printf 'reify-audit: running detector P1 over 3 changed symbols\n' >&2
+printf '[\n' >&2
+printf '  {"pattern":"P1","severity":"high","symbol":"foo::bar"}\n' >&2
+printf ']\n' >&2
+exit $2
+EMITTER
+    chmod +x "$1"
+}
+
+# THE CANONICAL CONSUMER EXTRACTOR, byte-for-byte as smoke-predone-hook.sh:233
+# spells it. Copied rather than approximated: an extractor that differed from
+# the real one could pass here while the real consumer broke.
+extract_trailing_array() {
+    awk 'BEGIN{p=0} /^\[/{p=1} p{print}' "$1" | jq -e 'type == "array"' >/dev/null
+}
+
+B7_DIR="$(mk_tmpdir)"
+
+b7_trailing_array() {
+    local want_rc="$1"
+    local emitter="$B7_DIR/emit-$want_rc"
+    mk_findings_emitter "$emitter" "$want_rc" || return 1
+    rw_run healthy "$emitter" || return 1
+    [ "$RW_RC" = "$want_rc" ] || { printf '%s\n' "wrapper status $RW_RC, expected $want_rc"; return 1; }
+    extract_trailing_array "$RW_ERR" && return 0
+    printf '%s\n' "the trailing findings array no longer extracts from the wrapper's stderr:" "$(cat "$RW_ERR")"
+    return 1
+}
+
+# The direct form of "silent on success": the wrapped command's last stderr byte
+# is still the LAST thing on the wrapper's stderr. Strictly stronger than the
+# extractor test — the extractor would survive a trailing line that happened to
+# parse as part of the array.
+b7_last_line_is_the_array() {
+    local emitter="$B7_DIR/emit-tail" last
+    mk_findings_emitter "$emitter" 0 || return 1
+    rw_run healthy "$emitter" || return 1
+    last="$(tail -n1 "$RW_ERR")"
+    [ "$last" = "]" ] && return 0
+    printf '%s\n' "the last line of the wrapper's stderr is [$last], not the array's closing bracket:" "$(cat "$RW_ERR")"
+    return 1
+}
+
+assert "a successful reify-audit-shaped run still yields a trailing array"  b7_trailing_array 0
+assert "a FAILING reify-audit-shaped run still yields a trailing array"     b7_trailing_array 2
+assert "teardown appends nothing after the wrapped command's last byte"     b7_last_line_is_the_array
+
+# -- the LEAK half ------------------------------------------------------------
+#
+# Without this, "silent on success" is satisfiable by deleting the teardown
+# diagnostic entirely — and a leaked serve keeps holding the port, so the very
+# next invocation would refuse E_JC_SERVE_PORT_BUSY with nothing in the log to
+# say why. Each leak run costs the wrapper's full 10 s free-wait, so exactly two
+# are driven and every assertion reads their captured output rather than
+# re-running.
+B7L_EMITTER="$B7_DIR/emit-leak"
+mk_findings_emitter "$B7L_EMITTER" 0
+rw_run escapee "$B7L_EMITTER"
+B7L_ERR="$RW_ERR"; B7L_RC="$RW_RC"; B7L_PORT="$RW_PORT"
+# Observed IMMEDIATELY after the run, before anything else can disturb it.
+B7L_STILL_HELD=0
+port_is_free "$B7L_PORT" || B7L_STILL_HELD=1
+
+B7F_EMITTER="$B7_DIR/emit-leak-fail"
+mk_findings_emitter "$B7F_EMITTER" 9
+rw_run escapee "$B7F_EMITTER"
+B7F_ERR="$RW_ERR"; B7F_RC="$RW_RC"
+
+# ANTI-VACUITY, and it is a check on the FIXTURE, not on the wrapper: did the
+# escapee really escape? If the wrapper's group signal had reached it there
+# would be no leak to report, and every assertion below would be about a case
+# that never happened. Measured independently of anything the wrapper printed.
+b7_leak_fixture_escaped() {
+    [ "$B7L_STILL_HELD" = "1" ] && return 0
+    echo "the escapee stub did NOT survive teardown, so there is no leak to report and this block is vacuous"
+    return 1
+}
+
+# leak_report_has <errfile> <needle> — the needle must appear in the LEAK
+# REPORT, i.e. at or after the marker line, not merely somewhere on stderr. The
+# port number in particular already appears in the readiness line, so a
+# whole-file search would pass without any report existing at all.
+leak_report_has() {
+    local f="$1" needle="$2"
+    require_nonempty "needle" "$needle" || return 1
+    [ -f "$f" ] || { echo "no such file: $f"; return 1; }
+    awk -v m="$M_LEAKED" 'BEGIN{p=0} index($0,m){p=1} p{print}' "$f" | grep -qF -- "$needle" && return 0
+    printf '%s\n' "'$needle' not found in the leak report portion of $f:" "$(cat "$f")"
+    return 1
+}
+
+b7_leak_fixture_real() { has_line "$B7L_ERR" "$M_LEAKED"; }
+b7_leak_names_port()   { leak_report_has "$B7L_ERR" "$B7L_PORT"; }
+b7_leak_names_ss()     { leak_report_has "$B7L_ERR" "ss -ltnp"; }
+# A leak on an otherwise-successful run must NOT report success: the leaked
+# serve keeps holding the port and would make the next invocation refuse.
+b7_leak_nonzero()      {
+    [ "$B7L_RC" -ne 0 ] && return 0
+    echo "a run that leaked a serve still exited 0"
+    return 1
+}
+# ...but when the wrapped command already failed, its status is the one that
+# matters and must not be masked. α's unwinding case (jcodemunch_session_live.rs
+# :325-331) makes the same distinction.
+b7_leak_preserves_status() {
+    [ "$B7F_RC" = "9" ] && return 0
+    printf '%s\n' "a leak masked the wrapped command's status: got $B7F_RC, expected 9" "$(cat "$B7F_ERR")"
+    return 1
+}
+b7_leak_still_reported() { has_line "$B7F_ERR" "$M_LEAKED"; }
+
+assert "the escapee stub really survives the group signal (anti-vacuity)"     b7_leak_fixture_escaped
+assert "a leaked serve is reported $M_LEAKED"                                b7_leak_fixture_real
+assert "the leak report names the port"                                      b7_leak_names_port
+assert "the leak report names 'ss -ltnp' as the reclaim instruction"         b7_leak_names_ss
+assert "a leak on an otherwise-successful run exits non-zero"                b7_leak_nonzero
+assert "a leak does not mask the wrapped command's own failing status"       b7_leak_preserves_status
+assert "a leak is still reported when the wrapped command failed"            b7_leak_still_reported
 
 test_summary
