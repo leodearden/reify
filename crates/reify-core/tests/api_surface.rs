@@ -73,6 +73,12 @@ use reify_core::primitives::{
     SOLVER_HINT_ANNOTATION as SOLVER_MOD, TEST_ANNOTATION as TEST_MOD,
 };
 
+// ── units ────────────────────────────────────────────────────────────────────
+use reify_core::{ri_emittable_units, unit_symbol_to_si};
+use reify_core::units::{
+    ri_emittable_units as ri_emittable_units_mod, unit_symbol_to_si as unit_symbol_to_si_mod,
+};
+
 // ── flat PortDirection ────────────────────────────────────────────────────────
 use reify_core::PortDirection as PortDirectionFlat;
 
@@ -259,4 +265,22 @@ fn port_direction_flat_and_module_path() {
     let pd2: PortDirection = PortDirection::Out;
     assert_ne!(pd, pd2);
     assert_eq!(pd, PortDirectionFlat::In);
+}
+
+#[test]
+fn units_flat_and_module_path() {
+    // The built-in symbol → SI table, in both spellings.
+    let (factor, dim) = unit_symbol_to_si("mm").expect("mm is a built-in symbol");
+    assert_eq!(dim, DimensionVector::LENGTH);
+    assert_eq!(factor, 0.001);
+    assert_eq!(unit_symbol_to_si_mod("mm"), Some((factor, dim)));
+    assert_eq!(unit_symbol_to_si("furlong"), None);
+
+    // The reverse (.ri-emission) table, in both spellings. `reify-ir`'s
+    // `value_to_ri_literal` depends on this surface, so pin it at compile
+    // time rather than incidentally (task #5095).
+    let ladder: &'static [&'static str] = ri_emittable_units(&DimensionVector::LENGTH);
+    assert_eq!(ladder, &["mm", "cm", "m"]);
+    assert_eq!(ri_emittable_units_mod(&DimensionVector::LENGTH), ladder);
+    assert!(ri_emittable_units(&DimensionVector::DIMENSIONLESS).is_empty());
 }

@@ -50,11 +50,66 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
     }
 }
 
-/// Ordered `.ri`-emittable unit symbols for a dimension, most-preferred first.
+/// Ordered `.ri`-**emittable** unit symbols for a dimension, most-preferred
+/// first — the reverse of [`unit_symbol_to_si`] (task #5095).
 ///
-/// Placeholder — implemented in step-2.
-pub fn ri_emittable_units(_dim: &DimensionVector) -> &'static [&'static str] {
-    &[]
+/// Used by `reify_ir::ri_literal` to write a [`crate::DimensionVector`]-carrying
+/// value back out as `.ri` source text (`80mm`, `90deg`). The caller walks the
+/// returned slice front-to-back and takes the first symbol whose magnitude is
+/// **bit-exactly** recoverable (`magnitude * factor == si_value`), so the order
+/// here directly decides which literal a user's file ends up carrying.
+///
+/// Two contracts hold for every returned slice, both pinned by
+/// `ri_emittable_ladders_resolve_to_their_dimension_and_end_at_factor_one`:
+///
+/// 1. Every symbol is a **bare built-in** that [`unit_symbol_to_si`] resolves
+///    to this same dimension. That matters because the compiler resolves a
+///    bare unit as `registry.lookup(..).or_else(|| unit_to_scalar(..))` — the
+///    built-in table is an unconditional fallback, so these symbols parse in
+///    any module with no `std.units` import and no seeded `UnitRegistry`.
+/// 2. The **last** symbol has SI factor exactly `1.0`. `mag * 1.0 == si_value`
+///    then holds by IEEE identity, so the caller's exactness ladder can never
+///    exhaust for a finite `si_value` and never has to fall back to a lossy
+///    emission.
+///
+/// Returns `&[]` — meaning "not emittable as a bare unit literal" — for
+/// dimensionless values and for every dimension that would need a compound
+/// `UnitExpr` (Area `m^2`, Volume `m^3`, Pressure, Force, …). Compound unit
+/// expressions go through the compiler's `resolve_unit_expr`, which is
+/// registry-ONLY with no built-in fallback, so emitting one would make the
+/// round-trip contingent on the target module's imports. `sr` (SolidAngle)
+/// and `USD` (Money) are simply absent from [`unit_symbol_to_si`].
+///
+/// # Intentionally NOT [`crate::display_units::unit_ladders`]
+///
+/// That table is also an ordered per-dimension unit ladder, and unifying the
+/// two would be a mistake. It answers a different question — what a human
+/// picks in the GUI unit picker — and is unusable here on three independent
+/// grounds: its labels include forms `unit_symbol_to_si` cannot resolve and
+/// the lexer cannot tokenise (`mm²`, `cm³`, `L`, `MPa`, `kg/m³`, `N`, `J`,
+/// `W`); its Length rungs end at `in` (0.0254) rather than a factor-1.0
+/// terminator; and its coverage differs in both directions. Emission order is
+/// load-bearing for round-trip exactness, display order is picker ergonomics
+/// and is free to change. The two are cross-guarded for *physical* agreement
+/// only, by `ri_emittable_units_agrees_physically_with_display_ladders`.
+pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
+    // Ladders are ordered smallest-unit-first so an edit stays in the unit a
+    // human would write (`80mm`, not `0.08m`), with the SI base last as the
+    // always-exact terminator. `in` is deliberately absent: it is emittable
+    // only via an explicit caller hint, never chosen canonically.
+    match *dim {
+        DimensionVector::LENGTH => &["mm", "cm", "m"],
+        DimensionVector::ANGLE => &["deg", "rad"],
+        // `g` (0.001) exists in the built-in table but is not a canonical
+        // choice — `kg` is the SI base and the exact terminator.
+        DimensionVector::MASS => &["kg"],
+        DimensionVector::TIME => &["s"],
+        DimensionVector::TEMPERATURE => &["K"],
+        DimensionVector::CURRENT => &["A"],
+        DimensionVector::AMOUNT_OF_SUBSTANCE => &["mol"],
+        DimensionVector::LUMINOUS_INTENSITY => &["cd"],
+        _ => &[],
+    }
 }
 
 #[cfg(test)]
