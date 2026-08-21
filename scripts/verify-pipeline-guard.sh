@@ -151,9 +151,18 @@ if [ -f "$_verify_sh" ]; then
     while IFS= read -r _gate; do
         [ -z "$_gate" ] && continue
         _SET="${_SET}"$'\n'"${_gate}"
+    #    The '(^|[^A-Za-z0-9_./-])' LEFT PATH BOUNDARY is load-bearing, not
+    #    decoration: without it grep -o matches the 'scripts/x.sh' TAIL of an
+    #    emitted 'other/scripts/x.sh', collapsing it to the top-level
+    #    'scripts/x.sh' and promoting an unrelated script to load-bearing. Do
+    #    not simplify it away. (Pair D's clause carries the same property via
+    #    its '^' anchor; pinned by Pair E (c) in
+    #    tests/infra/test_verify_pipeline_guard.sh.) The class consumes one
+    #    preceding character, which the '$'-anchored sed capture then strips
+    #    along with any './' prefix.
     done < <(grep -E '^[[:space:]]*add(_tool)?[[:space:]]+"' "$_verify_sh" \
-             | grep -oE '(\./)?scripts/[A-Za-z0-9_.-]+\.sh' \
-             | sed -E 's|^\./||')
+             | grep -oE '(^|[^A-Za-z0-9_./-])(\./)?scripts/[A-Za-z0-9_.-]+\.sh' \
+             | sed -E 's|^.*(scripts/[A-Za-z0-9_.-]+\.sh)$|\1|')
 fi
 
 # 4. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
