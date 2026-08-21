@@ -125,12 +125,17 @@
 //! because the measurement is over constructor-ARG sites and this param has
 //! none: no `.ri` file constructs a `Bead` today (the `Toolpath` / `Bead` values
 //! are built Rust-side by `toolpath_to_value`, which no conformance walk sees).
-//! Even a literal `.ri` arg would stay silent — `point3(…)` erases to a
-//! placeholder leaf carrying no quantity slot at all — so only a
-//! `List<Point3<Length>>`-typed value REF could trip it.  The `Real` quantity
-//! slots in `stdlib/solver_elastic.ri:536/547` are out of reach for a different
-//! reason: they sit inside `Field<…>`, and the `Field` arm below does not
-//! recurse into its `domain` / `codomain`.
+//! Even a literal `.ri` arg stays silent under the ARG-side erasure premise
+//! recorded below — `point3(…)` carries no quantity slot to compare — so only a
+//! `List<Point3<Length>>`-typed value REF trips it today.  THAT PREMISE IS
+//! EXPIRING: task 5344 landed on `main` in `3c4ee5e9ac`, claiming `point3` /
+//! `point2` into the math construction family, which gives `math_fn_result_type`
+//! a real `Type::Point` to return for them.  When that merges, this reach — and
+//! every "no `.ri` source can produce a dimensioned `Type::Point` arg" rationale
+//! in `conformance/mod.rs` — must be RE-MEASURED, not re-asserted (esc-6159-3).
+//! The `Real` quantity slots in `stdlib/solver_elastic.ri:536/547` are out of
+//! reach for a different and durable reason: they sit inside `Field<…>`, and the
+//! `Field` arm below does not recurse into its `domain` / `codomain`.
 //!
 //! **The asymmetry is a RULING, not an inconsistency — do not "fix" it by
 //! symmetry.**  It tracks a real difference in what the two sides know: erasure
