@@ -747,7 +747,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // updateFileContent (the "anti-loop invariant", Editor.tsx:493-497) so
       // that typing does not re-fire the store→view sync and compile-diagnostics
       // effects on each keystroke.  The live buffer lives on ctx.editorView,
-      // the same handle that type_in_editor reads (bridge.ts:509).
+      // the same handle the `type_in_editor` handler in `buildHandlers` reads.
       // Guard: substitute live content only when an active file is open AND
       // the EditorView is present; otherwise fall back to the store snapshot.
       // When there is no active file we must NOT use editorView (it holds ''
