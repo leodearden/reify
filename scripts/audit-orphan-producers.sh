@@ -429,10 +429,15 @@ def mask_cfg_test(lines):
     literal/comment-stripped "code view" (see
     `strip_literals_and_comments`), so `{`/`}` and keyword/suffix text
     inside string, raw string, char, or byte-string literals and
-    line/block comments do not perturb either decision. Two
-    approximations remain: the `#[cfg(test)]` attribute match itself
-    (`CFG_TEST_RE.search` below) still reads raw line text, and no full
-    Rust lexing is performed beyond what these two checks need.
+    line/block comments do not perturb either decision. Locating the item
+    header itself -- skipping blank lines, line comments, and stacked
+    attributes between the `#[cfg(test)]` attribute and the header -- also
+    consults the code view, so a BLOCK comment alone on its own line
+    (`/* ... */`, which the raw-text `//`/`#[` prefix checks do not
+    recognise) is not mistaken for the header itself. Two approximations
+    remain: the `#[cfg(test)]` attribute match itself (`CFG_TEST_RE.search`
+    below) still reads raw line text, and no full Rust lexing is performed
+    beyond what these checks need.
 
     Corpus sweep at introduction (task #6421, base main 3a1219a2d5):
     classification output is UNCHANGED by the literal-aware counter --
@@ -460,12 +465,16 @@ def mask_cfg_test(lines):
             i += 1
             continue
         masked[i] = True
-        # Skip blank lines, line comments, and stacked attributes to find
-        # the actual item header.
+        # Skip blank lines, line comments, block comments, and stacked
+        # attributes to find the actual item header. `code[j].strip() ==
+        # ""` catches a line that is a block comment in its entirety (a
+        # bare `//`/`#[` prefix test on RAW text cannot: the comment's own
+        # delimiters `/*`...`*/` do not match either prefix), in addition
+        # to the raw-text blank/`//` checks already below.
         j = i + 1
         while j < n:
             stripped = lines[j].lstrip()
-            if stripped == "" or stripped.startswith("//"):
+            if stripped == "" or stripped.startswith("//") or code[j].strip() == "":
                 masked[j] = True
                 j += 1
                 continue

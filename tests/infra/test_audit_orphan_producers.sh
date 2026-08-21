@@ -67,6 +67,8 @@ pub mod dangling_char;
 pub mod dangling_multiline;
 pub mod lifetime_wired;
 pub mod stmt_trailing_comment;
+pub mod comment_header_target;
+pub mod comment_header_probe;
 
 // Private driver — provides a genuine bare-call token for `wired`.
 fn drive_wired() -> i32 { wired() }
@@ -248,6 +250,34 @@ mod inner_probe; // sibling test module — declaration only
 
 // G-allow: hermetic fixture for cfg(test) single-statement header shape
 pub fn after_stmt_guard() -> i32 { 4 }
+RUST
+
+# comment_header_target.rs / comment_header_probe.rs — a `#[cfg(test)]`
+# attribute followed by a BLOCK COMMENT (not a `//` line comment) before the
+# actual item header.  Pre-fix, the skip loop only recognised raw-text `//`
+# and `#[` prefixes, so the block-comment line was mistaken for the item
+# header itself: its blank code view means BLOCK_KW_RE finds nothing there,
+# is_block goes False, and only that ONE line gets masked — leaving the
+# real `mod tests { ... }` body below, including its call to the cross-file
+# target `comment_header_target`, unmasked as ordinary "production" text.
+# Two files (not one), because the audit's caller accounting only counts a
+# reference as "external" when it lives in a DIFFERENT file from the
+# candidate's own declaration (`external = total - per_file[same_file]`) —
+# same reasoning as collide_mod.rs's cross-file `pub mod collide_mod;`
+# reference above.  No G-allow marker: once the test body is correctly
+# masked, comment_header_target has zero real callers and must be flagged
+# as a genuine orphan.
+cat > "$FIXTURE/crates/reify-fixture/src/comment_header_target.rs" <<'RUST'
+pub fn comment_header_target() -> i32 { 9 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/comment_header_probe.rs" <<'RUST'
+#[cfg(test)]
+/* explanatory block comment between the attribute and the item header */
+mod tests {
+    #[test]
+    fn t() { comment_header_target(); }
+}
 RUST
 
 # ---------------------------------------------------------------------------
@@ -476,6 +506,9 @@ assert "after_multiline_raw_guard (dangling { inside a raw string spanning multi
 
 assert "after_nested_comment_guard (dangling { inside a nested block comment) is allow-listed, not swallowed" \
     assert_allowed after_nested_comment_guard
+
+assert "comment_header_target (block comment between #[cfg(test)] and its item header) is flagged orphan, not hidden by the leaked test body" \
+    assert_orphan comment_header_target
 
 # ---------------------------------------------------------------------------
 # EOF self-check: a genuinely unclosed cfg(test) mask warns on stderr
