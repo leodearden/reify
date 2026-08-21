@@ -179,8 +179,13 @@ struct CensusRow {
     source: &'static str,
     /// MEASURED `overload_family` of the matched candidate's `params[0]`.
     ///
-    /// Pinned per row rather than derived, because for three pairs it does NOT
-    /// equal the call site's own subject family — see `OVERLOAD_MISRESOLVED`.
+    /// Pinned per row rather than derived: deriving it from the fixture would
+    /// beg the question this census exists to answer. `fallback/2` is the row
+    /// that proves it — its selection flipped from the Option overload to the
+    /// Result overload when #5685 added the constructor-head narrowing tier,
+    /// and a derived expectation would have tracked that flip silently. No row
+    /// crosses its own subject's family today, which is why
+    /// `OVERLOAD_MISRESOLVED` is empty rather than naming any pair.
     matched_family: &'static str,
 }
 
