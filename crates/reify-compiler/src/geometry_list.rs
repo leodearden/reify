@@ -137,7 +137,7 @@ mod tests {
     /// the inputs honest: these shapes — list literals, lambdas, nested
     /// arithmetic — are exactly the ones a hand-built tree is most likely to
     /// get subtly wrong.
-    fn let_init(src: &str) -> reify_ast::Expr {
+    pub(super) fn let_init(src: &str) -> reify_ast::Expr {
         let source = format!("structure S {{\n    let x = {src}\n}}");
         let parsed = reify_syntax::parse(&source, reify_core::ModulePath::single("test_geomlist"));
         assert!(
@@ -264,5 +264,172 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
         ));
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::tests::let_init;
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Classify + expand `src`, returning `(elements, diagnostics)`.
+    ///
+    /// `known` seeds `known_geometry_lets` so a list literal of bare idents
+    /// (`[a, b]`) classifies without needing real constructor calls.
+    fn expand(src: &str, known: &[&str]) -> (Option<Vec<reify_ast::Expr>>, Vec<Diagnostic>) {
+        let expr = let_init(src);
+        let functions: Vec<CompiledFunction> = Vec::new();
+        let known_geometry_lets: HashSet<&str> = known.iter().copied().collect();
+        let shape = classify_geometry_list_let(
+            &expr,
+            &functions,
+            &known_geometry_lets,
+            &HashSet::new(),
+        )
+        .unwrap_or_else(|| panic!("`{src}` should classify as a geometry-list let"));
+        let mut diagnostics = Vec::new();
+        let out = expand_geometry_list_elements(&expr, &shape, expr.span, &mut diagnostics);
+        (out, diagnostics)
+    }
+
+    /// Count `Ident("<name>")` nodes in an expression tree.
+    ///
+    /// Counting over the derived `Debug` rendering rather than a second
+    /// hand-written walker keeps the probe honest: a walker that forgot an
+    /// `ExprKind` arm would silently agree with a substituter that forgot the
+    /// same arm, and the test would pass vacuously. `LambdaParam` renders as
+    /// `LambdaParam { name: "i", .. }`, so a *binder* never counts as a use.
+    fn ident_uses(expr: &reify_ast::Expr, name: &str) -> usize {
+        let needle = format!("Ident({name:?})");
+        format!("{expr:?}").matches(&needle).count()
+    }
+
+    /// Every use of the index param in a `generate` body is replaced by that
+    /// element's integer literal — including uses buried inside a geometry
+    /// constructor's scalar arguments, which is the whole motivating idiom.
+    #[test]
+    fn generate_substitutes_index_at_every_use_site() {
+        let (elements, diags) = expand(
+            "generate(3, |i| translate(cylinder(5mm, 20mm), i * 10mm, 0mm, 0mm))",
+            &[],
+        );
+        let elements = elements.expect("expansion must succeed");
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        assert_eq!(elements.len(), 3, "one element per index");
+
+        for (k, element) in elements.iter().enumerate() {
+            assert_eq!(
+                ident_uses(element, "i"),
+                0,
+                "element {k} still references the index param: {element:?}"
+            );
+            // …substituted with *this* element's index, in order.
+            let rendered = format!("{element:?}");
+            assert!(
+                rendered.contains(&format!(
+                    "NumberLiteral {{ value: {}.0, is_real: false }}",
+                    k
+                )),
+                "element {k} does not carry integer literal {k}: {rendered}"
+            );
+            // Non-index idents are untouched — `cylinder`/`translate` are
+            // FunctionCall names, so probe a real Ident: none here, but the
+            // constructor call itself must survive verbatim.
+            assert!(
+                rendered.contains("\"cylinder\""),
+                "element {k} lost its geometry constructor: {rendered}"
+            );
+        }
+    }
+
+    /// Idents that are NOT the index param survive expansion untouched.
+    #[test]
+    fn generate_leaves_other_idents_untouched() {
+        let (elements, _) = expand("generate(2, |i| cylinder(r, i * 1mm))", &[]);
+        let elements = elements.expect("expansion must succeed");
+        for (k, element) in elements.iter().enumerate() {
+            assert_eq!(ident_uses(element, "i"), 0, "element {k}: index not folded");
+            assert_eq!(
+                ident_uses(element, "r"),
+                1,
+                "element {k}: unrelated ident `r` must survive verbatim"
+            );
+        }
+    }
+
+    /// A zero count is an empty list, not an error.
+    #[test]
+    fn generate_with_zero_count_expands_to_nothing() {
+        let (elements, diags) = expand("generate(0, |i| cylinder(5mm, 20mm))", &[]);
+        assert_eq!(elements.expect("expansion must succeed").len(), 0);
+        assert!(diags.is_empty(), "empty list must be silent: {diags:?}");
+    }
+
+    /// A list literal expands to its own elements, cloned in source order.
+    #[test]
+    fn list_literal_expands_to_its_elements_verbatim() {
+        let src = "[a, b]";
+        let (elements, diags) = expand(src, &["a", "b"]);
+        let elements = elements.expect("expansion must succeed");
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        let reify_ast::ExprKind::ListLiteral(original) = &let_init(src).kind else {
+            panic!("`{src}` should parse as a list literal");
+        };
+        assert_eq!(&elements, original, "elements must be verbatim, in order");
+    }
+
+    /// A nested lambda that REBINDS the index name shadows it: the inner `i`
+    /// is a different binding and must survive expansion unsubstituted.
+    #[test]
+    fn nested_lambda_rebinding_the_param_shadows_substitution() {
+        let (elements, _) = expand(
+            "generate(2, |i| translate(cylinder(5mm, 20mm), \
+             flat_map([1], |i| [i * 1mm]).count * 1mm, 0mm, 0mm))",
+            &[],
+        );
+        let elements = elements.expect("expansion must succeed");
+        assert_eq!(elements.len(), 2);
+        for (k, element) in elements.iter().enumerate() {
+            assert_eq!(
+                ident_uses(element, "i"),
+                1,
+                "element {k}: exactly the INNER (shadowed) `i` must remain: {element:?}"
+            );
+        }
+    }
+
+    /// The unroll is capped: each element becomes its own `RealizationDecl`,
+    /// so an unbounded count would explode the realization graph. Over the
+    /// cap is a loud Error, never a silent truncation.
+    #[test]
+    fn count_above_the_cap_is_rejected_with_one_labelled_error() {
+        let n = GEOMETRY_LIST_MAX_ELEMENTS + 1;
+        let (elements, diags) = expand(&format!("generate({n}, |i| cylinder(5mm, 20mm))"), &[]);
+        assert!(elements.is_none(), "over-cap expansion must not succeed");
+        assert_eq!(diags.len(), 1, "exactly one diagnostic: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert!(
+            d.message.contains("generate"),
+            "message must name the construct: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains(&GEOMETRY_LIST_MAX_ELEMENTS.to_string()),
+            "message must name the cap {GEOMETRY_LIST_MAX_ELEMENTS}: {}",
+            d.message
+        );
+        assert!(!d.labels.is_empty(), "diagnostic must carry a span label");
+    }
+
+    /// Exactly at the cap is still accepted — the boundary is inclusive, so
+    /// the rejection above is not off-by-one.
+    #[test]
+    fn count_exactly_at_the_cap_is_accepted() {
+        let n = GEOMETRY_LIST_MAX_ELEMENTS;
+        let (elements, diags) = expand(&format!("generate({n}, |i| cylinder(5mm, 20mm))"), &[]);
+        assert_eq!(elements.expect("at-cap expansion must succeed").len(), n);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     }
 }
