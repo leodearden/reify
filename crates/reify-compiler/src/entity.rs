@@ -1191,6 +1191,11 @@ pub(crate) fn compile_entity(
     // `is_geometry_let` rejects, and the Let arm tries geometry-let FIRST.
     // (task #5385)
     let mut known_geometry_list_lets: HashMap<&str, GeometryListShape> = HashMap::new();
+    // Lets that plainly intend geometry-in-a-collection but cannot be statically
+    // unrolled (non-literal `generate` count, mixed-kind list literal). The Error
+    // is emitted once, here in pass 1; the name is recorded so pass 2 and the
+    // realization-emission loop both skip it and no cascade follows. (task #5385)
+    let mut rejected_geometry_list_lets: HashSet<&str> = HashSet::new();
     // Tracks cluster logical names already registered in this pre-pass so that a
     // second MatchArmDeclGroup with the same logical name is skipped wholesale.
     // Mirrors the dup-cluster check in compile_match_arm_decl_group (entity.rs:2038)
@@ -1504,6 +1509,18 @@ pub(crate) fn compile_entity(
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
                     known_geometry_list_lets.insert(let_decl.name.as_str(), shape);
+                } else if diagnose_unsupported_geometry_list(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                    diagnostics,
+                ) {
+                    // The Error is already reported. Register the name at its
+                    // evident intended type so downstream references type-check
+                    // rather than cascade a second, unrelated diagnostic.
+                    scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
+                    rejected_geometry_list_lets.insert(let_decl.name.as_str());
                 } else {
                     // We'll register with a placeholder type; the actual type will
                     // be determined when we compile the expression. For now, use Real.
@@ -2199,6 +2216,14 @@ pub(crate) fn compile_entity(
                 // geometry lets from its own guarded-member compilation, unchanged by
                 // this task — a guarded geometry let has no backing realization to
                 // mint against).
+                // A geometry-list let that pass 1 REJECTED emits neither a
+                // value cell nor realizations: its Error is already on the
+                // diagnostics list, and lowering half of it would only add
+                // downstream noise. (task #5385)
+                if rejected_geometry_list_lets.contains(let_decl.name.as_str()) {
+                    continue;
+                }
+
                 // Geometry-LIST let (task #5385): emits a `List<Geometry>`
                 // value cell here, alongside the N sibling `RealizationDecl`s
                 // the emission loop below produces. Exactly the geometry-let

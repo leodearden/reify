@@ -372,6 +372,93 @@ fn substitute_index_ident(expr: &reify_ast::Expr, param: &str, value: usize) -> 
     }
 }
 
+/// Emit the loud compile-time rejection for a let that *plainly* intends
+/// geometry-in-a-collection but cannot be statically unrolled.
+///
+/// Called for any let `classify_geometry_list_let` rejected. Two cases are
+/// diagnosed; everything else is silently left alone (it is an ordinary
+/// non-geometry let and none of this module's business):
+///
+///   * `generate(<non-literal>, |i| <geom>)` — the count must be a literal
+///     because each element becomes its own compile-time `RealizationDecl`.
+///   * a list literal mixing geometry and non-geometry elements.
+///
+/// Returns `true` when a diagnostic was emitted, so the caller skips BOTH the
+/// value-cell and realization paths for that let and no cascade follows.
+///
+/// This is the compile-time arm of the seam split: the eval-time
+/// `UndefCause` provenance for geometry-in-a-collection is task #5402's half,
+/// deliberately not duplicated here.
+pub(crate) fn diagnose_unsupported_geometry_list(
+    expr: &reify_ast::Expr,
+    functions: &[CompiledFunction],
+    known_geometry_lets: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let is_geom = |e: &reify_ast::Expr| {
+        crate::geometry::is_geometry_let(e, functions, known_geometry_lets, known_selector_lets)
+    };
+
+    match &expr.kind {
+        reify_ast::ExprKind::FunctionCall { name, args, .. } if name == "generate" => {
+            if functions.iter().any(|f| f.name == *name) {
+                return false;
+            }
+            let [count_expr, lambda_expr] = args.as_slice() else {
+                return false;
+            };
+            let reify_ast::ExprKind::Lambda { params, body } = &lambda_expr.kind else {
+                return false;
+            };
+            // Only a GEOMETRY-producing lambda is our business; a scalar
+            // `generate` keeps its existing (non-geometry) behaviour whatever
+            // its count expression is.
+            if params.len() != 1 || !is_geom(body) {
+                return false;
+            }
+            if non_negative_int_literal(count_expr).is_some() {
+                return false;
+            }
+            diagnostics.push(
+                Diagnostic::error(
+                    "generate() with a geometry-producing lambda requires a literal \
+                     non-negative Int count",
+                )
+                .with_label(DiagnosticLabel::new(
+                    count_expr.span,
+                    "this count is not a literal non-negative Int, so the geometry \
+                     elements cannot be laid out at compile time",
+                )),
+            );
+            true
+        }
+        reify_ast::ExprKind::ListLiteral(elements) => {
+            let geometry = elements.iter().filter(|e| is_geom(e)).count();
+            if geometry == 0 || geometry == elements.len() {
+                return false;
+            }
+            let offender = elements
+                .iter()
+                .find(|e| !is_geom(e))
+                .map(|e| e.span)
+                .unwrap_or(expr.span);
+            diagnostics.push(
+                Diagnostic::error(
+                    "list literal mixes geometry and non-geometry elements; a geometry \
+                     list must contain only geometry expressions",
+                )
+                .with_label(DiagnosticLabel::new(
+                    offender,
+                    "this element is not a geometry expression",
+                )),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
 /// `Some(n)` iff `expr` is a non-negative *integer* literal (`3`, `0`).
 ///
 /// `is_real` distinguishes `3` from `3.0` at the token level, so a Real
