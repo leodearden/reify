@@ -324,7 +324,12 @@ fi
 # the caller right there, before assert()'s trailing `return 0` was ever
 # reached -- the same class of bug as Test (l), on a different trigger.
 # Stubs `rm` as a shell function (not TMPDIR=/dev/null/nope, which forces
-# mktemp -- not rm -- to fail) to force exactly this path.
+# mktemp -- not rm -- to fail) to force exactly this path. The stub emits a
+# unique sentinel to stderr before failing so a non-vacuity check below can
+# prove assert() genuinely reached and invoked it -- the same class of
+# defence Test (l)/(l2)'s mktemp_failure_observed control gives the
+# TMPDIR=/dev/null/nope idiom, applied to this test's own stub-based trigger
+# (task 6363 amendment).
 echo ""
 echo "--- Test l3: assert() survives an rm failure after a successful mktemp (task 6363) ---"
 
@@ -332,7 +337,7 @@ rc=0
 rmf_out=$(bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
-    rm() { return 1; }
+    rm() { printf 'RM-STUB-INVOKED\n' >&2; return 1; }
     assert 'first assert with failing rm' true
     echo 'REACHED-AFTER-RM-FAILURE'
     test_summary
@@ -354,6 +359,18 @@ if echo "$rmf_out" | grep -q "Results: 1 passed, 0 failed"; then
     check "assert survives rm failure: test_summary prints the correct Results line" "true"
 else
     check "assert survives rm failure: test_summary prints the correct Results line (got: $rmf_out)" "false"
+fi
+
+# Non-vacuity control: proves the sub-shell's rm stub was genuinely invoked
+# (not silently bypassed, e.g. by a future hardening of assert()'s rm call to
+# `command rm`/`\rm`/an absolute path -- at which point rm would quietly
+# succeed, and the three checks above would still pass, but vacuously). The
+# sentinel cannot self-match: no assert description or other helper output
+# contains it.
+if echo "$rmf_out" | grep -qF "RM-STUB-INVOKED"; then
+    check "assert survives rm failure: sub-shell's rm stub was genuinely invoked (non-vacuity)" "true"
+else
+    check "assert survives rm failure: sub-shell's rm stub was genuinely invoked (non-vacuity) (got: $rmf_out)" "false"
 fi
 
 # -- Test (l4): mktemp_failure_observed discriminator is live ----------------
