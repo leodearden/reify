@@ -875,9 +875,10 @@ fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bui
         .expect("edit_param must succeed against the MyDesign.thickness Real param");
 
     // (c) Assert the cache was cleared by edit_param. This pins the
-    // auto-invalidation contract step-18 establishes — without it, the
-    // entry persists and a subsequent build_snapshot() would silently
-    // return a stale GeometryHandleId from the (entity, repr, tol) bucket.
+    // edit_param/edit_source realization-cache auto-invalidation contract
+    // (Engine::clear_realization_cache) — without it, the entry persists and
+    // a subsequent build_snapshot() would silently return a stale
+    // GeometryHandleId from the (entity, repr, tol) bucket.
     assert!(
         engine
             .realization_cache()
@@ -887,7 +888,8 @@ fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bui
          subsequent build_snapshot() cannot return a stale GeometryHandleId. \
          Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) \
          after edit_param — the entry survived the edit, breaking the \
-         auto-invalidation contract step-18 establishes. Cache len={}, dump: \
+         edit_param/edit_source realization-cache auto-invalidation contract \
+         (Engine::clear_realization_cache). Cache len={}, dump: \
          {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
@@ -1017,11 +1019,14 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
         .expect("edit_source must succeed against a structurally-valid second module");
 
     // (c) Assert the cache was cleared by edit_source. This pins the
-    // auto-invalidation contract step-18 establishes for edit_source —
-    // symmetric with the edit_param contract pinned by step-17. Without
-    // it, the entry persists and a subsequent build()/build_snapshot()
-    // would silently return a stale GeometryHandleId from the
-    // (entity, repr, tol) bucket pointing at the OLD geometry.
+    // edit_param/edit_source realization-cache auto-invalidation contract
+    // (Engine::clear_realization_cache) for edit_source — symmetric with the
+    // edit_param contract pinned by
+    // edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot
+    // above. Without it, the entry persists and a subsequent
+    // build()/build_snapshot() would silently return a stale
+    // GeometryHandleId from the (entity, repr, tol) bucket pointing at the
+    // OLD geometry.
     assert!(
         engine
             .realization_cache()
@@ -1031,7 +1036,8 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
          subsequent build()/build_snapshot() cannot return a stale \
          GeometryHandleId. Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) \
          returned Some(_) after edit_source — the entry survived the edit, \
-         breaking the auto-invalidation contract step-18 establishes (the \
+         breaking the edit_param/edit_source realization-cache \
+         auto-invalidation contract (Engine::clear_realization_cache) (the \
          reset must fire in BOTH edit_param and edit_source; this test \
          guards against a future refactor that resets in only one of the \
          two functions). Cache len={}, dump: {:?}",
