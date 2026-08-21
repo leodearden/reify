@@ -1005,9 +1005,25 @@ assert "G9: cross-profile isolation — reify-govtest1234.slice => EMPTY under t
 # intact: half-applying a prefix while keeping the old suffixes would produce a
 # grammar nobody reviewed.
 _expect_profile_refused() {
-    local rc=0
+    local rc=0 intact_rc=0
     : > "$_G_PROFILE_ERR"
     govtest_profile_set "$@" >/dev/null 2>"$_G_PROFILE_ERR" || rc=$?
+
+    # The "previous profile survived" half of the contract, read FIRST —
+    # before the containment re-arm below could mask it.
+    _profile_is_reify_test || intact_rc=$?
+
+    # CONTAINMENT, and it is not belt-and-braces: a regression in any of these
+    # refusals means the call SUCCEEDED, which silently re-points the profile
+    # this whole FILE runs under from G1 onwards. Measured while mutation-
+    # testing G18 — deleting the guard under test turned one real failure into
+    # NINE, with H1-H4/H11/H12 and J3/J4 all reporting causes that named the
+    # wrong thing, because they were parsing unit names under a profile nobody
+    # meant to set. Re-arming unconditionally keeps a broken refusal reported
+    # as the one failure it is. It cannot hide the drift, which was already
+    # read into intact_rc above.
+    _set_test_profile || true
+
     if [ "$rc" -eq 0 ]; then
         printf 'govtest_profile_set %s returned 0, want non-zero\n' "$*"
         return 1
@@ -1016,8 +1032,7 @@ _expect_profile_refused() {
         printf 'govtest_profile_set %s refused SILENTLY — want a message on stderr\n' "$*"
         return 1
     fi
-    _profile_is_reify_test || return 1
-    return 0
+    return "$intact_rc"
 }
 
 # G10 — regex metacharacters are the dangerous shape, because the prefix is
@@ -1144,6 +1159,29 @@ _expect_default_profile_in_child() {
 }
 assert "G17: a child shell that sources the library and never sets a profile keeps the reify-govtest default" \
     _expect_default_profile_in_child
+
+# (h) THE PREFIX/PID BOUNDARY. A prefix ending in a digit passes the charset
+# test in G10 — `reify-test1` is lowercase alphanumerics in dash-separated
+# segments — but it makes two profiles' grammars OVERLAP instead of disjoint:
+# reify-test1234.slice reads as pid 1234 under `reify-test` and as pid 234
+# under `reify-test1`, because nothing marks where the prefix stops and the pid
+# starts. That is not a cosmetic ambiguity. The pid is what the liveness oracle
+# consults, so one suite's startup sweep could read the OTHER suite's LIVE
+# parent slice as a dead run — its pid, misparsed, belongs to nothing — and
+# stop it mid-measurement. G9 asserts the disjoint-namespace property from the
+# unit side; this asserts the validation that actually guarantees it.
+#
+# `reify-govtest9` and the bare `x9` cover the same hazard at the two other
+# shapes a prefix can take (multi-segment, and a minimal single segment), so
+# the rule reads as "no digit at the end" rather than "not that one string".
+_g18() {
+    _expect_profile_refused 'reify-test1' agents merge || return 1
+    _expect_profile_refused 'reify-govtest9' agents merge || return 1
+    _expect_profile_refused 'x9' agents || return 1
+    return 0
+}
+assert "G18: a prefix ending in a DIGIT is REFUSED (the prefix/pid boundary must be unambiguous), profile left intact" \
+    _g18
 
 # ---------------------------------------------------------------------------
 # Block H — govtest_legacy_stale: the PIDLESS dash-nesting parent filter
@@ -1305,6 +1343,25 @@ reify-test-task.slice"
 assert "H11: emission is in ARGUMENT order and deduplicated when a name is passed twice" \
     _expect_legacy_stale "$_H_HOST_LISTING" "$_H_H_WANT" \
         "$_H_LEGACY_MERGE" "$_H_LEGACY_TASK" "$_H_LEGACY_MERGE"
+
+# (i) PIDLESS ONLY, STRUCTURALLY. H6 covers a name inside the PID GRAMMAR
+# (reify-test1234.slice); this covers the other pid-bearing shape — the
+# PRE-rename reify-test-task-1234.slice, which the grammar cannot recognise
+# (Block G7) and which the namespace filter alone WOULD admit, since `task`
+# and `1234` are both [a-z0-9]+. It is presented here in the worst possible
+# light for the filter: passed explicitly as an arg, present in the listing,
+# and with no dash-child of its own, so emptiness is the only thing standing
+# behind a stop — and emptiness is no evidence at all about whether pid 1234 is
+# still running. Stopping it would pull a live pre-rename lane's slice out from
+# under its measurement while bypassing the liveness oracle govtest_reap_stale
+# applies to exactly this kind of name. Its pidless parents remain emittable in
+# the same call, so the guard is proven to be per-argument rather than a
+# whole-call abort.
+_H_I_LISTING="reify-test-task-1234.slice  loaded active active Slice /reify/test/task/1234
+reify-test-merge.slice      loaded active active Slice /reify/test/merge"
+assert "H12: a pid-bearing PRE-rename name is never emitted, even present and childless" \
+    _expect_legacy_stale "$_H_I_LISTING" "$_H_LEGACY_MERGE" \
+        "reify-test-task-1234.slice" "$_H_LEGACY_MERGE"
 
 # ---------------------------------------------------------------------------
 # Block I — govtest_reap_legacy: the ACTUATOR for Block H's filter.

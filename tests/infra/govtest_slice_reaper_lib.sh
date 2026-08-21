@@ -119,6 +119,21 @@ _GOVTEST_PROFILE_SUFFIX_ALT=""
 #   segments, nothing else — is what makes every such widening unreachable,
 #   for metacharacters nobody has thought of as much as for the ones above.
 #
+#   WHY THE PREFIX MAY NOT END IN A DIGIT. The charset alone would admit
+#   `reify-test1`, and its grammar then OVERLAPS `reify-test`'s rather than
+#   being disjoint from it: `reify-test1234.slice` reads as pid 1234 under one
+#   profile and pid 234 under the other, because nothing marks where the prefix
+#   stops and the pid starts. Two suites would each claim that unit as their
+#   own under a different pid — and since the pid is what the liveness oracle
+#   consults, one suite's sweep could read the OTHER's live parent slice as a
+#   dead run and stop it mid-measurement. Requiring a non-digit final character
+#   makes the boundary unambiguous by construction, which is what the
+#   disjoint-namespace property this library's isolation rests on actually
+#   needs. It is a separate check from the charset rather than a denser single
+#   regex, because it answers a different question — where the prefix ENDS, not
+#   which characters it may contain — and the charset regex is the one a
+#   reviewer must be able to read at a glance.
+#
 #   WHY EACH CHILD SUFFIX MUST BE DASH-FREE. systemd dash-nesting means
 #   `a-b-c.slice` implies parents `a.slice` and `a-b.slice`, vivified
 #   automatically and named by nobody. A suffix of `d7-task` would therefore
@@ -145,6 +160,14 @@ govtest_profile_set() {
 
     if [[ ! "$prefix" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]]; then
         echo "govtest_profile_set: refusing prefix '$prefix' — must match ^[a-z][a-z0-9]*(-[a-z0-9]+)*\$ (it is interpolated unquoted into the unit-name regex)" >&2
+        return 1
+    fi
+
+    # A SECOND, SEPARATELY-JUSTIFIED CHECK — see the header. The charset test
+    # above is about what CHARACTERS may reach the regex; this one is about
+    # where the prefix ENDS, which the charset cannot express.
+    if [[ "$prefix" =~ [0-9]$ ]]; then
+        echo "govtest_profile_set: refusing prefix '$prefix' — must not end in a digit; the prefix/pid boundary would be ambiguous and two profiles' grammars would overlap" >&2
         return 1
     fi
 
@@ -413,6 +436,12 @@ EOF
 #        while this one requires `-` or `.`, so the two languages are disjoint.
 #        Pid units belong to govtest_reap_stale, which consults the liveness
 #        oracle first; admitting one here would stop it on emptiness alone.
+#     1b. The arg's final dash segment must not be all digits. Filter (1)
+#        admits a PRE-rename pid-bearing name like `<prefix>-task-1234.slice`
+#        — `task` and `1234` are both `[a-z0-9]+` — and that unit's owning run
+#        may well be alive; emptiness is no evidence either way, and there is
+#        no liveness oracle on this path. Same destination as (1)'s pid-grammar
+#        exclusion, reached for names (1) cannot recognise.
 #     2. The arg must appear as field 1 of some row in the FRESH listing. A
 #        name nobody enumerated is not residue.
 #     3. No other enumerated row may begin with the arg's basename plus a dash.
@@ -448,12 +477,12 @@ EOF
 #   genuinely IS a dash-child of `reify-test-task.slice` and correctly does
 #   block it, which is exactly the cascade this rule exists to prevent.
 #
-#   CALLER CONTRACT: pass PIDLESS parent names only. Filter (1) admits any
-#   dash-segmented name under the prefix, including a pid-bearing pre-rename
-#   name like `reify-test-task-1234.slice`, and emptiness does not prove that
-#   unit's owning run is dead. The one caller hardcodes its own three pidless
-#   names, which is the right place for that knowledge — the naming history
-#   belongs to the suite that made it, not to this library.
+#   CALLER CONTRACT: pass PIDLESS parent names only — now ENFORCED by filter
+#   (1b) rather than merely documented here, so a caller that gets it wrong
+#   loses its stop instead of getting an unchecked one. The one caller
+#   hardcodes its own three pidless names, which is the right place for that
+#   knowledge: the naming history belongs to the suite that made it, not to
+#   this library.
 #
 #   Dedup uses the same plain space-delimited seen-list idiom as
 #   govtest_stale_units, and field 1 is parsed with the same `read -r unit _`
@@ -486,6 +515,14 @@ EOF
     for arg in "$@"; do
         # (1) inside this profile's legacy namespace — see header
         [[ "$arg" =~ $re ]] || continue
+        # (1b) PIDLESS ONLY. A final dash segment of pure digits means a
+        # pid-bearing name — `<prefix>-task-1234.slice` — which filter (1)
+        # admits (both `task` and `1234` are `[a-z0-9]+`) but which must never
+        # be stopped from here: emptiness does not prove its owning run is
+        # dead, and this path has no liveness oracle. Those belong to
+        # govtest_reap_stale. See the header's CALLER CONTRACT, which this
+        # makes structural rather than documentary.
+        [[ ! "$arg" =~ -[0-9]+\.slice$ ]] || continue
         # (2) present in the fresh enumeration
         case "$units" in
             *" $arg "*) ;;
