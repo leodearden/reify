@@ -31,6 +31,9 @@
 #                                  dash-nesting parents that are safe to stop
 #                                  right now (present, and with no enumerated
 #                                  dash-child left to cascade into)
+#   govtest_reap_legacy <legacy_unit>...
+#                                  enumerate + stop those; no-op when
+#                                  systemctl is absent
 #   govtest_slice_teardown <pid>   unconditionally stop this run's own slices,
 #                                  children before parent
 #
@@ -572,6 +575,68 @@ govtest_reap_stale() {
         echo "  reaped stale govtest slice: $unit"
     done <<EOF
 $(govtest_stale_units "$self_pid" "$listing")
+EOF
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# govtest_reap_legacy <legacy_unit>...
+#   LEGACY-RESIDUE RECOVERY. Enumerate this profile's slices and stop whichever
+#   of the caller-named PIDLESS dash-nesting parents govtest_legacy_stale says
+#   is safe right now. Always returns 0.
+#
+#   WHY A SEPARATE ACTUATOR RATHER THAN A BRANCH INSIDE govtest_reap_stale.
+#   That function's contract — enumerate, consult the liveness oracle, stop one
+#   parent per DEAD run — is pinned by seven Block D assertions and is the more
+#   dangerous of the two paths. Folding a second, differently-justified stop
+#   rule into it would put both blast-radius arguments in one body where a
+#   reviewer has to disentangle them, and would make every existing assertion
+#   about "what reap_stale stops" conditional on a new argument. The only cost
+#   of keeping them apart is one extra `systemctl list-units` per run, which is
+#   negligible against a suite that places real cgroup scopes.
+#
+#   Structurally a direct mirror of govtest_reap_stale, deliberately: the same
+#   `command -v systemctl` guard, the same `|| true` inside the capture AND
+#   `|| listing=""` outside (the former covers a non-zero systemctl exit, the
+#   latter the assignment itself failing under `set -e`), the same early return
+#   on an empty listing, the same fail-soft stop, the same announce-what-you-
+#   reaped line, the same unconditional `return 0`.
+#
+#   THE `</dev/null` IS STRUCTURAL, not cosmetic — same reason as on the two
+#   loops above. This loop's stdin IS the heredoc carrying the remaining units,
+#   so a callee that read from stdin would swallow them and silently truncate
+#   the sweep to its first unit. systemctl does not read stdin today; detaching
+#   it means a future one, or a shim placed on PATH, cannot change that.
+#
+#   THE CALLER SUPPLIES THE NAMES, not this library. A legacy name is a fact
+#   about one suite's own naming HISTORY — which slices its previous shape
+#   accreted — and belongs in the file that made them, not in generic
+#   machinery every profile shares. It also keeps this function's blast radius
+#   a function of its arguments, re-filtered against the configured prefix by
+#   govtest_legacy_stale before anything is stopped.
+# ---------------------------------------------------------------------------
+govtest_reap_legacy() {
+    local listing unit
+
+    # No legacy names to look for means nothing to enumerate FOR — skip the
+    # systemctl round-trip rather than listing and then filtering to empty.
+    [ "$#" -gt 0 ] || return 0
+
+    command -v systemctl >/dev/null 2>&1 || return 0
+
+    listing=""
+    listing="$(systemctl --user list-units --all --plain --no-legend \
+        "${_GOVTEST_PROFILE_PREFIX}*.slice" 2>/dev/null || true)" || listing=""
+
+    [ -n "$listing" ] || return 0
+
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        systemctl --user stop "$unit" </dev/null 2>/dev/null || true
+        echo "  reaped legacy slice: $unit"
+    done <<EOF
+$(govtest_legacy_stale "$listing" "$@")
 EOF
 
     return 0
