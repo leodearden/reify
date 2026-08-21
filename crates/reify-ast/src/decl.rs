@@ -506,6 +506,39 @@ pub fn find_named_member_span<'a>(
     find_named_member_span_depth(members, name, 0)
 }
 
+/// Resolve a param's DEFAULT-EXPRESSION span within a member list.
+///
+/// Substrate for INV-GUI-3 (PRD `docs/prds/v0_6/ai-native-editing.md` §6.1): a
+/// caller that wants to rewrite a param's default literal in source needs the
+/// byte range of the literal itself.
+///
+/// **Invariant (§6.1):** the returned [`SourceSpan`] is the default
+/// EXPRESSION range ONLY — never the whole `param … = …` declaration, and
+/// never the `=` that precedes it. The tree-sitter grammar binds the `default`
+/// field to the expression node alone (`tree-sitter-reify/grammar.js`), so
+/// `ParamDecl.default`'s `Expr.span` already carries exactly that range; this
+/// helper only locates it.
+///
+/// Returns `None` when the name resolves to no rewritable default literal —
+/// the name is absent, or the member found has no `default`.
+///
+/// **Matches [`MemberDecl::Param`] ONLY**, unlike the sibling
+/// [`find_named_member_span`], which matches both `Param` and `Let`. A `let`
+/// binding has no param default to rewrite, so resolving one here would hand
+/// the caller a span it must not splice into. That divergence is deliberate:
+/// see the asymmetry note on [`walk_specialization_scope_members`], which
+/// already flags these member-walking helpers as individually correct but
+/// caller-surprising when one contract is inferred from another.
+pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<SourceSpan> {
+    members
+        .iter()
+        .find_map(|member| match member {
+            MemberDecl::Param(p) if p.name == name => Some(p),
+            _ => None,
+        })
+        .and_then(|p| p.default.as_ref().map(|e| e.span))
+}
+
 /// Visit every member of a specialization-scope body (spec §8.7).
 ///
 /// A `SubDecl` whose `body.is_some()` opens a specialization scope; this
