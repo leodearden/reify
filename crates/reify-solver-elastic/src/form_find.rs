@@ -202,23 +202,43 @@ pub fn form_find_anchored(
 // Laplace–Beltrami operator) scaled by its surface stress σ, assembled with the
 // identical rank-1 edge pattern the line solve uses for the member q.
 
-/// Equilibrium-residual convergence tolerance for the cotangent fixed point. The
-/// iteration stops once the free-node net force `‖(D·x)_free‖∞ / (1+scale)`
-/// drops below this — the honest physical signal (prestress-only equilibrium),
-/// and the SAME quantity the catenoid integration golden re-checks independently.
-/// Set ~10× below the golden's `1e-9` acceptance bound so a converged solve
-/// clears it with margin.
+/// Equilibrium-residual convergence tolerance for the cotangent fixed point,
+/// applied RELATIVE to `D`'s own magnitude (task 6119). The iteration stops
+/// once `‖(D·x)_free‖∞ / (1+scale) / d_scale` drops below this, where
+/// `d_scale = ‖D‖∞` restricted to the free rows — the honest physical signal
+/// (prestress-only equilibrium), additionally normalised so the bound is
+/// GAUGE-free, not just coordinate-scale-free.
+///
+/// `D` is exactly linear in the force densities `q` and the surface stresses
+/// `σ`, so an ABSOLUTE bound on the un-normalised residual makes convergence
+/// depend on the gauge: the same structure at `q` and at `λ·q` could take a
+/// different iteration count, land on different coordinates, or fail to
+/// converge outright — task 6119's reported defect. Dividing by `d_scale`
+/// cancels that one factor of `λ` exactly, since numerator and denominator
+/// each scale linearly with the gauge. This mirrors [`DEGENERATE_AREA_EPS`]'s
+/// relative (not absolute) triangle-degeneracy test — "so the test is
+/// scale-free" there, "so the test is gauge-free" here; same principle,
+/// applied to the convergence criterion instead of the degeneracy check.
+///
+/// CALIBRATED, not guessed, so this change re-anchors rather than loosens the
+/// bound: `d_scale` at `σ ≈ 1` measures `8.95` / `8.52` / `9.71` on the
+/// 16×3 / 32×6 / 8×2 catenoid meshes (`tensegrity_gamma_membrane_form_find.rs`),
+/// so this relative `1e-11` reproduces the *previous* absolute `1e-10` stop
+/// point to within ~10% (measured stops `8.73e-11` / `8.49e-11` / `8.82e-11`
+/// vs the old `9.91e-11` / `9.97e-11` / `8.82e-11`) — still ~11.5× below the
+/// γ catenoid golden's independently-checked `EQUIL_TOL = 1e-9`
+/// (`tensegrity_gamma_membrane_form_find.rs:318`).
 ///
 /// This replaces the earlier *coordinate-change* criterion: the Picard rate
 /// approaches 1 as the mesh refines, so a machine-epsilon coordinate-change tol
 /// could not be reached within any sane iteration cap on a fine membrane — yet
 /// the residual (what actually matters) is already tiny there. Judging on the
 /// residual directly converges finer meshes honestly.
-const SURFACE_EQUILIBRIUM_TOL: f64 = 1e-10;
+const SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
 /// Iteration cap for the cotangent fixed point. The Picard iteration converges
 /// linearly with a rate that approaches 1 under mesh refinement, so a fine
-/// membrane can need ~1–2k solves to reach [`SURFACE_EQUILIBRIUM_TOL`]; the cap
+/// membrane can need ~1–2k solves to reach [`SURFACE_EQUILIBRIUM_REL_TOL`]; the cap
 /// is a generous backstop above that, reached only by a pathological /
 /// non-settling input (which then honestly reports `converged == false`). Each
 /// iteration is a single assemble + faer solve (per axis), so the cap bounds
@@ -320,13 +340,16 @@ pub fn form_find_anchored_surfaces(
     for _ in 0..max_iters {
         let d = assemble_d(n, members, q, surfaces, surface_stresses, &current)?;
 
-        // Convergence is judged on the EQUILIBRIUM RESIDUAL of the current
-        // geometry under the freshly-assembled `D` — the honest physical signal
-        // (and the exact quantity the integration golden re-checks). It reuses
-        // the assembly we already need for the solve, so it adds no extra matrix
-        // build. At a force-density fixed point `D(x*)·x*` ≈ 0 on the free rows.
+        // Convergence is judged on the GAUGE-RELATIVE EQUILIBRIUM RESIDUAL of the
+        // current geometry under the freshly-assembled `D` — the honest physical
+        // signal (prestress-only equilibrium), additionally normalised by `D`'s
+        // own magnitude so the stop condition is gauge-free (task 6119; see
+        // SURFACE_EQUILIBRIUM_REL_TOL's doc). It reuses the assembly we already
+        // need for the solve, so it adds no extra matrix build. At a
+        // force-density fixed point `D(x*)·x*` ≈ 0 on the free rows.
         if !surfaces.is_empty()
-            && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
+            && free_equilibrium_residual_relative(&d, &current, &free_indices)
+                <= SURFACE_EQUILIBRIUM_REL_TOL
         {
             converged = true;
             break;
@@ -482,15 +505,32 @@ fn solve_reduced(
     Ok(out_nodes)
 }
 
-/// Free-node equilibrium residual `‖(D·x)_free‖∞ / (1+scale)` — the prestress-only
-/// net force on the free nodes, scaled by the coordinate magnitude so the bound
-/// is coordinate-scale-free. It is ~0 at a force-density fixed point, so the
-/// cotangent iteration uses it as its convergence signal; it mirrors the
-/// independent check the catenoid integration golden runs (same formula), so the
-/// kernel's stop condition and the test's acceptance bound measure the SAME
-/// quantity.
+/// Free-node equilibrium residual `‖(D·x)_free‖∞ / (1+scale) / d_scale` — the
+/// prestress-only net force on the free nodes, scaled by the coordinate
+/// magnitude AND by `d_scale = ‖D‖∞` restricted to the free rows, so the bound
+/// is both coordinate-scale-free AND GAUGE-free (task 6119): `D` is exactly
+/// linear in the force densities `q` / `σ`, so normalising only by coordinate
+/// scale would make convergence depend on the gauge. It is ~0 at a
+/// force-density fixed point, so the cotangent iteration uses it as its
+/// convergence signal. See [`SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the
+/// calibration that keeps this in a known, auditable relationship to the
+/// catenoid integration golden's independent (un-normalised) check.
+///
+/// `d_scale <= 0` (including NaN, via the `!(d_scale > 0.0)` spelling) returns
+/// `f64::INFINITY` rather than dividing by zero: a free block touched by
+/// neither a member nor a triangle has every free row of `D` identically
+/// zero, so `resid` above is vacuously 0 — not because equilibrium was
+/// reached, but because nothing acts on the node at all. Returning `INFINITY`
+/// forces the fixed point to fall through to `solve_reduced`, which reports
+/// `SingularReducedStiffness` (no path to any anchor) instead of breaking out
+/// at iteration 0 and echoing the caller's unsolved initial guess back as a
+/// "converged" result (task 6119).
 #[allow(clippy::needless_range_loop)]
-fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[usize]) -> f64 {
+fn free_equilibrium_residual_relative(
+    d: &Mat<f64>,
+    nodes: &[[f64; 3]],
+    free_indices: &[usize],
+) -> f64 {
     let n = nodes.len();
     let mut resid = 0.0_f64;
     for &i in free_indices {
@@ -509,14 +549,8 @@ fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[u
         }
     }
 
-    // ‖D‖∞ restricted to the FREE rows. A free block touched by neither a
-    // member nor a triangle has every free row identically zero, so `resid`
-    // above is vacuously 0 — not because equilibrium was reached, but because
-    // nothing acts on the node at all. Falling through to `solve_reduced` in
-    // that case lets it report `SingularReducedStiffness` (no path to any
-    // anchor) instead of the fixed point breaking out at iteration 0 and
-    // echoing the caller's unsolved initial guess back as a "converged"
-    // result (task 6119).
+    // d_scale = ‖D‖∞ restricted to the FREE rows — see the guard-and-gauge
+    // rationale in the function doc above.
     let mut d_scale = 0.0_f64;
     for &i in free_indices {
         let mut row = 0.0_f64;
@@ -529,7 +563,11 @@ fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[u
         return f64::INFINITY;
     }
 
-    resid / (1.0 + scale)
+    // Dividing by d_scale (in addition to the coordinate scale) is what makes
+    // this criterion gauge-invariant: D — and therefore both resid and
+    // d_scale — scale linearly with a uniform q/σ rescaling, so the ratio is
+    // exactly unchanged (task 6119).
+    resid / (d_scale * (1.0 + scale))
 }
 
 /// Relative threshold below which a triangle is judged degenerate: when
@@ -725,8 +763,11 @@ pub fn form_find_anchored_surfaces_aniso(
     for _ in 0..max_iters {
         let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
 
+        // Same gauge-relative criterion as form_find_anchored_surfaces (task
+        // 6119) — shared function, so both entry points inherit the fix.
         if !surfaces.is_empty()
-            && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
+            && free_equilibrium_residual_relative(&d, &current, &free_indices)
+                <= SURFACE_EQUILIBRIUM_REL_TOL
         {
             converged = true;
             break;
@@ -1660,9 +1701,13 @@ mod tests {
     // checkable with assert_eq! rather than a tolerance. A non-power-of-two λ
     // would only test the identity to rounding.
     //
-    // MEASURED RED today: `free_equilibrium_residual` divides only by
-    // `(1 + coord_scale)`, which does not depend on D's magnitude at all, so
-    // the λ-scaled residual comes out ~λ× the base residual instead of equal.
+    // BEFORE task 6119's fix, `free_equilibrium_residual` (as it was then
+    // named) divided only by `(1 + coord_scale)`, which does not depend on
+    // D's magnitude at all, so the λ-scaled residual came out ~λ× the base
+    // residual instead of equal (MEASURED RED: base=1.2243416093590493e0,
+    // λ-scaled=1.2838152273752745e6 — exactly base × 2^20). The rename to
+    // `free_equilibrium_residual_relative` and the added `d_scale` division
+    // are what makes this GREEN.
     #[test]
     fn free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling() {
         const LAMBDA: f64 = 1_048_576.0; // 2^20
@@ -1684,14 +1729,14 @@ mod tests {
 
         let d_base = assemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
             .expect("non-degenerate fixture");
-        let resid_base = free_equilibrium_residual(&d_base, &nodes, &free_indices);
+        let resid_base = free_equilibrium_residual_relative(&d_base, &nodes, &free_indices);
 
         let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
         let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
         let d_scaled =
             assemble_d(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
                 .expect("non-degenerate fixture");
-        let resid_scaled = free_equilibrium_residual(&d_scaled, &nodes, &free_indices);
+        let resid_scaled = free_equilibrium_residual_relative(&d_scaled, &nodes, &free_indices);
 
         assert_eq!(
             resid_base, resid_scaled,
