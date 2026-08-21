@@ -1,11 +1,70 @@
-//! `Value` → `.ri` source-literal serializer (task #5095, ai-native-editing β).
+//! `Value` → `.ri` source-literal serializer (task #5095, ai-native-editing β;
+//! PRD `docs/prds/v0_6/ai-native-editing.md`, INV-GUI-3 substrate).
 //!
-//! Writes a [`Value`] back out as `.ri` source text that **re-parses to that
-//! same value**, so an agent (or the GUI) can rewrite a `param` default in
-//! place without changing its type, its unit, or its last bit.
+//! Writes a [`Value`] back out as `.ri` source text, so an agent (or the GUI)
+//! can rewrite a `param` default in place. The contract is narrow and total:
 //!
-//! Structured rejections and the caller-supplied unit hint arrive in
-//! steps 5-8; the full contract note lands in step-10.
+//! > For every value [`value_to_ri_literal`] returns `Ok` for, re-parsing
+//! > that text yields the **same `Value` variant, the same dimension, and the
+//! > identical f64 bits**. Everything else is a structured [`RiLiteralError`]
+//! > — never a best-effort string.
+//!
+//! There is no third outcome. A "close enough" literal would silently corrupt
+//! a user's design file, which is strictly worse than refusing to edit it.
+//!
+//! # Why not `Display for Value`
+//!
+//! `Display` is a human-facing rendering and breaks the round-trip in three
+//! separate ways, each of which this module exists to avoid:
+//!
+//! 1. Its `Scalar` arm emits `"{si_value} {dimension}"` — the SI base value,
+//!    a space, and a dimension string. `0.08 m` is not the `80mm` the user
+//!    wrote; and the space alone is fatal, because the `_unit_expr_start`
+//!    scanner token is zero-width and refuses to fire across whitespace, so
+//!    `80 mm` does not lex as a `quantity_literal` at all.
+//! 2. It renders a whole `Real` with `{:.0}`, so `Real(80.0)` becomes `80` —
+//!    which re-parses as `Value::Int(80)`. That is a silent *type* change: the
+//!    lexer sets `is_real` from `text.contains('.'|'e'|'E')`, and
+//!    `classify_number_literal` routes an `is_real == false` token with an
+//!    exact-i64 value to `NumberClass::Int`.
+//! 3. It emits a `String`'s contents unescaped and unchecked, so a quote, a
+//!    backslash or a brace produces text that either fails to lex or (for
+//!    `{`/`}`) diverts to `interpolated_string`, where `{expr}` is a hole.
+//!
+//! # Earned exactness
+//!
+//! Bit-exactness here is achieved BY CONFIGURATION, not assumed. The obvious
+//! `magnitude = si_value / factor` does **not** round-trip: measured over
+//! 200k uniform magnitudes per unit, it fails for 4252/200000 `mm` values,
+//! 25905/200000 `cm`, 27707/200000 `in` and 18085/200000 `deg` — while
+//! factor-1.0 units (`m`, `rad`, `kg`) fail 0/200000.
+//!
+//! So the serializer walks an ordered ladder of candidate symbols and accepts
+//! a rung only when `magnitude * factor == si_value` holds **bit-identically**
+//! — the same f64 factor from the same `unit_symbol_to_si` table, applied by
+//! the same single multiply the compiler performs for a bare unit literal. An
+//! acceptance is therefore a proof, not an estimate. The ladder's last rung
+//! has factor exactly 1.0, so `mag * 1.0 == si_value` closes it by IEEE
+//! identity and it can never exhaust for a finite input.
+//!
+//! Neither half is removable. Drop the multiply-back check and ~2% of `mm`
+//! and ~9% of `deg` writes corrupt silently; drop the factor-1.0 terminator
+//! and the ladder starts falling off its end.
+//!
+//! # Why the emission ladder is not `display_units::unit_ladders()`
+//!
+//! `reify_core::display_units` already ships ordered per-dimension unit
+//! ladders, and unifying the two tables would look like an obvious cleanup.
+//! It is not. That table answers "what may a human pick in the GUI unit
+//! picker"; `ri_emittable_units` answers "what may be written into source and
+//! read back unchanged". Concretely: the display labels include forms that
+//! neither `unit_symbol_to_si` nor the lexer can handle (`mm²`, `cm³`, `L`,
+//! `Pa`, `MPa`, `kg/m³`, `N`, `J`, `W`); its Length rungs end at `in`
+//! (0.0254), not at a factor-1.0 terminator; and its coverage differs in both
+//! directions. Emission order is load-bearing for correctness, display order
+//! is picker ergonomics and is free to change — coupling them would let a
+//! cosmetic reorder reintroduce lossy write-back. The two are cross-guarded
+//! for physical agreement only, in reify-core's `units` tests.
 
 use crate::Value;
 use reify_core::DimensionVector;
