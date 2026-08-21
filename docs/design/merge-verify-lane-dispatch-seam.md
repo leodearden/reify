@@ -22,15 +22,49 @@ three different waits:
 | Acquirer | Wait | On timeout |
 |---|---|---|
 | `GitOps.merge_verify_lease` (`git_ops.py`, `_MERGE_VERIFY_LEASE_WAIT_SECS`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
-| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | plain `RuntimeError` → `merge_queue.py`'s generic `f'Verification error: {exc}'` handler in `_run_inflight_verify` → `MergeOutcome('blocked', 'Verification error: Timed out after 30s...')` → `workflow.py` `category = 'merge_error'` → `_mark_blocked` → **escalation. Terminal, never requeued** |
+| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | **the lock acquire** raises `MergeVerifyLeaseContended` (DF task 3003; fail-CLOSED — tree untouched) → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(category=NONE, escalate_to_human=False, requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → caught by `merge_queue.py` `_run_inflight_verify`'s defer arm, placed **before** its generic `except Exception` → `InflightStatus.REQUEUED` with `req.result` left PENDING → **transient DEFER, not a merge failure**. Two bounds: git faults *inside the method body* still raise plain `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git fault still classifies as blocked"); and continuous contention past `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally resolve `MergeOutcome('blocked')` |
 | `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled from those two constants (currently 30 / 124); no such literal string exists anywhere in DF source | same 30s constant |
 
-**The defect is that asymmetry on one inode**, not speculation about load: a
-lease held for ~2h starves a 30s waiter, and the two paths disagree about what a
-timeout on the *same lock* means — 300s says "requeue", 30s says "this merge
-failed". That is exactly the observed esc-5363-5 signature (task 5384's lease
-held the inode for ~2h; task 5363's `reset_persistent_merge_worktree` waited 30s
-and died into a `merge_error` escalation).
+**That asymmetry on one inode WAS the defect**, not speculation about load — and
+it is now HISTORICAL: DF task 3003 closed it upstream (verified at DF HEAD
+`7cb0ef2e0c`, 2026-08-21). Recorded here because it is esc-5363-5's signature
+and nothing else in this repo states it: a lease held for ~2h starves a 30s
+waiter, and the two paths *then* disagreed about what a timeout on the *same
+lock* meant — 300s said "requeue", 30s said "this merge failed". Pre-3003, a
+plain `RuntimeError` fell through to `merge_queue.py`'s generic `f'Verification
+error: {exc}'` handler in `_run_inflight_verify` → `MergeOutcome('blocked',
+'Verification error: Timed out after 30s...')` → `workflow.py` `category =
+'merge_error'` → `_mark_blocked` → escalation, terminal, never requeued. That
+reason string is deterministic, so every attempt carried an identical
+`merge_outcome_signature` — which is what tripped `workflow.py`'s
+`consecutive_merge_thrash` ladder into a false-positive human escalation. That
+is exactly the observed esc-5363-5 signature (task 5384's lease held the inode
+for ~2h; task 5363's `reset_persistent_merge_worktree` waited 30s and died into
+a `merge_error` escalation).
+
+Note the base class was never the discriminator: `MergeVerifyLeaseContended`
+**is-a** `RuntimeError`. "Plain `RuntimeError`" above had the base class right
+and the classification wrong, which is precisely how a reader mis-derives this
+seam — read the disposition table and the handler order, not the type's ancestry.
+
+Both bounded waits now classify an acquire timeout the same way, so the
+disagreement is gone. What survives is **the wait itself**: a starved dispatch
+still burns the full 30s before deferring, then pays a requeue and re-dispatch
+cycle. That cost is what §4(a)'s pre-dispatch consult avoids, and it is why the
+reify-side guard's reason to exist is untouched by DF 3003.
+
+Two further bounds keep "requeued, never escalates" from being unconditional
+even inside the contended family. `LaneLockSelfOwnedLeak` (`git_ops.py`) is-a
+`MergeVerifyLeaseContended` and keeps REQUEUE with no cap burn, but flips
+`escalate_to_human=True` — a lane lock the kernel attributes to *this* process
+with no registered in-process hold is a leaked fd, and nothing releases it
+before process exit, so deferring can never succeed. (On the merge-worker path
+that row is not what fires: the defer arm catches the leak as its parent class
+first, and the loud first-occurrence signal is the `logger.error` at the
+detection site in `GitOps._lane_lock_self_owned_leak`. The row governs `cli.py`
+`verify-merge` and workflow block classification.) Separately, a fail-CLOSED
+pre-check raises `MergeVerifyLeaseHeld` — same disposition row, same defer arm —
+when a **different** live pgid holds the merge-verify lease.
 
 `_RESET_WARM_LANE_LOCK_WAIT_SECS` is a hardcoded module constant. There is **no**
 yaml key and **no** env override for it anywhere: zero hits for
