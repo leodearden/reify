@@ -42,9 +42,16 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// explicit `* 1000.0` (see `export_body_stl` / `read_slice_settings`).
 const MM_TO_M: f64 = 1.0e-3;
 
-/// G-code feedrate mm·min⁻¹ → SI m·s⁻¹ (1e-3 metres per millimetre ÷ 60 seconds
-/// per minute).
-const MM_PER_MIN_TO_M_PER_S: f64 = 1.0 / 60_000.0;
+/// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
+/// metre × 60 seconds per minute), not the reciprocal factor.
+///
+/// Divisor rather than a `1.0 / 60_000.0` constant because dividing is exact for
+/// the round feedrates a slicer emits while multiplying by the rounded
+/// reciprocal is not: `1800.0 * (1.0 / 60_000.0)` is 0.030000000000000002,
+/// `1800.0 / 60_000.0` is exactly 0.03. One divide per bead costs nothing, and
+/// unlike `MM_TO_M` this constant has no cross-file convention to match.
+/// Pinned by `speed_conversion_divides_rather_than_multiplying_a_reciprocal`.
+const MM_PER_MIN_PER_M_PER_S: f64 = 60_000.0;
 
 /// °C → K. Not a free choice: this is the offset the language itself declares
 /// for `degC` (`crates/reify-compiler/stdlib/units.ri`, `pub unit degC :
@@ -135,7 +142,7 @@ fn bead_to_value(b: &Bead) -> Value {
                 "nominal_temp",
                 super::temperature(b.nominal_temp + DEG_C_TO_K_OFFSET),
             ),
-            ("speed", super::velocity(b.speed * MM_PER_MIN_TO_M_PER_S)),
+            ("speed", super::velocity(b.speed / MM_PER_MIN_PER_M_PER_S)),
         ],
     )
 }
@@ -766,6 +773,42 @@ mod tests {
         assert_point3_length(&cl1[0], [0.0, 0.0, 4.0e-4], "bead 1 centerline point 0");
         assert_point3_length(&cl1[1], [1.0e-2, 0.0, 4.0e-4], "bead 1 centerline point 1");
         assert_point3_length(&cl1[2], [1.0e-2, 5.0e-3, 4.0e-4], "bead 1 centerline point 2");
+    }
+
+    /// The feedrate conversion DIVIDES by 60_000 rather than multiplying by a
+    /// rounded reciprocal — asserted bitwise, because that is the only way to
+    /// observe the difference.
+    ///
+    /// `1800.0 * (1.0 / 60_000.0)` is 0.030000000000000002; `1800.0 / 60_000.0`
+    /// is exactly 0.03. The gap is ~7e-17 relative, so
+    /// [`assert_scalar`]'s 1e-12 tolerance (sized to catch unit errors, the
+    /// smallest of which is 1000x) cannot see it and neither could any
+    /// tolerance-based check. Hence `assert_eq!` on the f64 here: it is the
+    /// guard that keeps a round feedrate round through the marshalling
+    /// boundary, so a design author's `bead.speed == 30mm/s` is not defeated by
+    /// a representation artefact.
+    #[test]
+    fn speed_conversion_divides_rather_than_multiplying_a_reciprocal() {
+        let v = toolpath_to_value(&sample_toolpath());
+        let beads = as_list(field(&v, "beads").unwrap());
+        let speed = match field(&beads[0], "speed").expect("speed field") {
+            Value::Scalar { si_value, .. } => *si_value,
+            other => panic!("speed must be a dimensioned Scalar, got {other:?}"),
+        };
+        assert_eq!(
+            speed, 0.03,
+            "1800 mm/min must marshal to exactly 0.03 m/s; got {speed:?} \
+             (multiplying by a rounded 1.0/60_000.0 reciprocal yields \
+             0.030000000000000002)"
+        );
+        // Control: the reciprocal-multiply spelling this test rules out really
+        // does differ, so the assertion above is not vacuous on some platform
+        // where both happen to round the same way.
+        assert_ne!(
+            1800.0_f64 * (1.0_f64 / 60_000.0_f64),
+            1800.0_f64 / 60_000.0_f64,
+            "the two spellings must genuinely differ for this pin to bite"
+        );
     }
 
     /// The two adjacency lists are marshalled into distinctly-named fields, each
