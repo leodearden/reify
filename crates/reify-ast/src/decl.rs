@@ -1750,6 +1750,28 @@ mod find_param_default_span_tests {
     }
 
     #[test]
+    fn name_declared_in_two_match_arms_returns_none() {
+        // The canonical real-source ambiguity, and the one the GuardedGroup cases
+        // above do NOT cover: `match shape { Round => param d = …  Square => param
+        // d = … }`. Each arm desugars to a same-name guarded decl (spec §6.4), so
+        // this is the same mutually-exclusive-siblings shape as `where`/`else` —
+        // and just as unresolvable from the AST alone.
+        //
+        // Load-bearing as a REGRESSION guard on the accumulate-don't-short-circuit
+        // rewrite: if the MatchArmDeclGroup recursion ever reverted to returning on
+        // first match, every other test in this module would still pass.
+        let members = vec![match_arm_group(vec![
+            ("Round", param("d", (0, 40), Some((10, 14)))),
+            ("Square", param("d", (50, 90), Some((60, 64)))),
+        ])];
+        assert_eq!(
+            find_param_default_span(&members, "d"),
+            None,
+            "a name declared in two match arms is ambiguous and must be refused"
+        );
+    }
+
+    #[test]
     fn unambiguous_nesting_still_resolves() {
         // Regression guard for step-3's reach: exactly examples/m5_guarded_enum.ri:7-11,
         // where the two branches declare DIFFERENTLY-named params. Step-6 must narrow
