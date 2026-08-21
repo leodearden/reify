@@ -2167,6 +2167,109 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     None
 }
 
+/// Walk a chain of UNRESOLVED, NON-PARAMETRIC type aliases to the name their
+/// bodies ultimately spell, e.g. `A2 = A1` / `A1 = Zq` yields `Some("Zq")`
+/// (task 6259).
+///
+/// # Why this exists — three positions that own a PRIVATE enum namespace
+///
+/// The deferred use-site arm in [`resolve_type_expr_with_aliases_kinded`]
+/// resolves an entity-bodied alias by RECURSING into that same function, so the
+/// body's ENUM-ness is only visible where the ambient [`RESOLUTION_ENUM_NAMES`]
+/// set is live. [`EnumNameScope`] installs it at exactly two places: struct-param
+/// resolution (`entity.rs`) and fn param/return resolution (`functions.rs`).
+///
+/// Three other declared-type positions install no such scope. Each instead owns
+/// a PRIVATE enum namespace, consulted by a post-hoc fallback AFTER
+/// `resolve_type_expr_with_aliases` has already returned `None`, and keyed on
+/// the OUTER name — which for `type AL = Zq` is `AL`, never `Zq`. The body's
+/// enum-ness is therefore structurally unreachable at:
+///
+///   * `compile_builder/enums_phase.rs` — enum variant payload field;
+///   * `traits.rs` — trait member `param`/`let` annotation;
+///   * `compile_builder/defs_phase.rs` — constraint-def param.
+///
+/// Each of those sites resolves its private namespace against
+/// `unresolved_alias_body_name(name, reg).unwrap_or_else(|| name.to_string())`,
+/// so the lookup sees `Zq` and matches the direct spelling exactly.
+///
+/// # Why NOT install `EnumNameScope` at those three sites instead
+///
+/// That uniform-looking alternative perturbs the DIRECT path, and at the
+/// constraint-def site the perturbation is a real semantic change outside this
+/// task's scope. Today `constraint def K { param g : Zq }` stores `ty: None`:
+/// `resolve_type_expr_with_aliases` returns `None` for a bare enum there and
+/// `defs_phase.rs`'s guard only SUPPRESSES the diagnostic via `resolve_enum_type`
+/// — it never populates `ty`. An ambient enum scope would make that same direct
+/// spelling start storing `Some(Type::Enum("Zq"))`, changing what
+/// `expand_constraint_inst` type-checks at every instantiation site.
+///
+/// This helper cannot do that: it is consulted ONLY on a branch the direct
+/// spelling never reaches (the `.or_else(..)` / `is_none()` fallback that runs
+/// after resolution has already failed), so the direct path is provably
+/// unperturbed. Do not "simplify" it back into an `EnumNameScope` install.
+///
+/// # Contract
+///
+/// * Walks only entries with `resolved_type.is_none() && type_params.is_empty()`
+///   — a RESOLVED alias needs no hop (`resolve_type_with_aliases` already
+///   handled it) and a PARAMETRIC one belongs to `resolve_parameterized_alias`.
+/// * Follows only a bare `Named { type_args: [] }` body. A non-bare body
+///   (`type A = Option<Zq>`, a `DimensionalOp`, …) yields `None`, leaving those
+///   cases at today's behaviour — which is also what the DIRECT spelling does
+///   there, so parity still holds (pinned by the direct-baseline assertions in
+///   `alias_to_entity_type_private_enum_namespaces`).
+/// * Carries a `visited` set so `type C1 = C2` / `type C2 = C1` terminates
+///   instead of looping. This is the SAME cycle hazard [`AliasDeferScope`]
+///   guards for the deferred arm, in a second place — mandatory, not defensive:
+///   a circular alias leaves BOTH entries in exactly the shape this walk
+///   follows. A local `HashSet` is used rather than the shared
+///   [`ALIAS_DEFER_IN_PROGRESS`] thread-local because this walk is a plain loop
+///   with no re-entrancy into the resolver, so it needs no ambient state and
+///   must not disturb an enclosing deferral in progress.
+/// * Returns the TERMINAL name — the first body name that is not itself an
+///   unresolved non-parametric alias. That name may still be unknown to the
+///   caller's namespace, in which case the caller's existing unresolved
+///   handling runs unchanged.
+pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) -> Option<String> {
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut current = name;
+    let mut hopped: Option<&str> = None;
+
+    loop {
+        if !visited.insert(current) {
+            // Cycle (`type C1 = C2` / `type C2 = C1`): the chain has no terminal
+            // body name, so yield `None`. The caller then keeps its raw name and
+            // runs its existing unresolved handling, which leaves the
+            // definition-site `circular type alias` diagnostic as the only report.
+            return None;
+        }
+        let Some(entry) = reg.lookup(current) else {
+            break;
+        };
+        if entry.resolved_type.is_some() || !entry.type_params.is_empty() {
+            break;
+        }
+        let Some(body) = entry.type_expr.as_ref() else {
+            break;
+        };
+        let reify_ast::TypeExprKind::Named {
+            name: body_name,
+            type_args,
+        } = &body.kind
+        else {
+            return None;
+        };
+        if !type_args.is_empty() {
+            return None;
+        }
+        hopped = Some(body_name.as_str());
+        current = body_name.as_str();
+    }
+
+    hopped.map(str::to_string)
+}
+
 /// Maximum recursion depth for parameterized alias instantiation.
 /// Prevents stack overflow from recursive type aliases like `type A<T> = List<A<T>>`.
 const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
