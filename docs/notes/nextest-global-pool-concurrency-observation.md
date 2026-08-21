@@ -18,7 +18,7 @@ host, not assumed:
 | host `nproc` | 32 |
 | generated `[profile.default] test-threads` | 32 |
 | generated `[test-groups] occt max-threads` | 24 |
-| in-file `.config/nextest.toml` literal | `test-threads = 32` |
+| in-file `.config/nextest.toml` template value | `test-threads = "num-cpus"` (was the bare literal `32` until task 6374; this row records the TEMPLATE value, not a resolved one) |
 
 Before task 6018 the generated value was 16.  The occt group cap is unchanged
 at 24 and is now a genuine backstop *below* the global (Test 17i pins that

@@ -92,7 +92,13 @@
 #   it.  Task 6018 pushed that reasoning one step further: the DEFAULT ceiling
 #   is now nproc itself, so the derivation tracks the host exactly and narrows
 #   only when an operator sets REIFY_NEXTEST_TEST_THREADS_HARD_CAP (tighten the
-#   derivation) or REIFY_NEXTEST_TEST_THREADS (replace it verbatim).
+#   derivation) or REIFY_NEXTEST_TEST_THREADS (replace it verbatim).  Task 6374
+#   closed the last gap in that argument: the CHECKED-IN TEMPLATE this script
+#   rewrites was itself a bare literal (32) until then, so the manual
+#   `cargo nextest run` path — the one that bypasses this script entirely — still
+#   carried the oversubscription this paragraph describes.  It now reads
+#   `test-threads = "num-cpus"`, nextest's own host-relative spelling, so every
+#   path is host-relative and only the reify-side knobs need this generator.
 #
 # Env knobs (all strictly digits-only validated):
 #   REIFY_OCCT_NEXTEST_MAX_THREADS  — explicit occt-group override; wins verbatim.
@@ -240,9 +246,14 @@ esac
 # unavailable, mirroring the occt min()'s skip-unavailable-term structure above,
 # so a host without nproc/getconf falls back to HARD_CAP rather than erroring —
 # and since the default HARD_CAP is derived from that same unresolved nproc,
-# that path lands on the ${_nproc:-32} last-resort constant.  That constant is
-# deliberately the SAME 32 as the in-file `test-threads = 32` literal in
-# .config/nextest.toml; keep the two coupled if either moves.
+# that path lands on the ${_nproc:-32} last-resort constant.  That constant used
+# to be kept textually equal to a `test-threads = 32` integer literal in
+# .config/nextest.toml; task 6374 moved that template value to nextest's
+# host-relative `"num-cpus"`, so there is no literal left to couple it to.  It is
+# now the value emitted ONLY when neither `nproc` nor `getconf _NPROCESSORS_ONLN`
+# resolves, and it is pinned BEHAVIOURALLY — Test 17l in
+# tests/infra/test_occt_gated_scope.sh forces that branch with exit-1 shims on
+# PATH and checks the constant documented here is the one actually emitted.
 #
 # Same strict digits-only parse idiom as REIFY_OCCT_NEXTEST_MAX_THREADS: empty,
 # non-digit or whitespace-padded input falls through to the derivation.
@@ -256,9 +267,13 @@ case "${REIFY_NEXTEST_TEST_THREADS:-}" in
         # derivation imposes NO ceiling below what nextest would itself pick
         # (task 6018).  ${_nproc:-32} is the LAST RESORT, reached only when
         # neither `nproc` nor `getconf _NPROCESSORS_ONLN` resolved — mirroring
-        # the occt derivation's skip-unavailable-term structure, and the same
-        # constant as the in-file `test-threads = 32` literal in
-        # .config/nextest.toml (keep the two coupled).
+        # the occt derivation's skip-unavailable-term structure.  It no longer
+        # has a cross-file twin (task 6374 moved .config/nextest.toml's template
+        # value to `"num-cpus"`); Test 17l pins it behaviourally instead, by
+        # forcing this branch and checking the emitted value.  Task 6374
+        # deliberately did NOT re-value it: on a host where neither tool resolves
+        # 32 oversubscribes a small container while 1 would serialise verify
+        # entirely, and that trade is out of scope for a spelling change.
         case "${REIFY_NEXTEST_TEST_THREADS_HARD_CAP:-}" in
             (''|*[!0-9]*) tt_hard_cap="${_nproc:-32}" ;;
             (*)           tt_hard_cap="${REIFY_NEXTEST_TEST_THREADS_HARD_CAP}" ;;
@@ -313,7 +328,9 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 # per-test slow-timeout/terminate-after ceilings, task 5141) and every other
 # [profile.default] key is untouched.
 #
-# `^test-threads = [0-9][0-9]*$` (task 5984) is LINE-anchored but NOT
+# `^test-threads = \("num-cpus"\|[0-9][0-9]*\)$` (task 5984; WIDENED to this
+# alternation by task 6374, when the checked-in template moved from the bare
+# integer 32 to nextest's host-relative `"num-cpus"`) is LINE-anchored but NOT
 # section-anchored, and is correct only while exactly one line in the file
 # matches it.  Unlike the occt anchor — safe because `occt = { max-threads = N }`
 # is unique by key NAME — `test-threads` is a generic nextest PROFILE key: a
@@ -322,6 +339,17 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 # silently clobbering the second profile's deliberate setting.  The current
 # [[profile.default.overrides]] blocks carry no such key, so the precondition
 # holds today.
+#
+# AN ALTERNATION, NOT `.*`, AND THAT IS LOAD-BEARING.  The lazy widening
+# `^test-threads = .*$` would match ANY right-hand side, including a second
+# profile's — which would make the uniqueness precondition above a tautology and
+# Test 17k's count vacuous, so the clobber this whole block guards against would
+# ship silently.  The alternation covers exactly the two spellings the template
+# may legitimately carry and nothing else.  The integer branch is deliberately
+# RETAINED rather than replaced: this script is copied into scratch repos by
+# seven other infra suites, and an operator or a future revert may legitimately
+# put an integer back — a spelling-specific anchor would silently no-op there
+# instead of failing loudly.
 #
 # That precondition is CHECKED, not merely asserted here: Test 17k in
 # tests/infra/test_occt_gated_scope.sh pins that exactly one line matches this
@@ -336,7 +364,7 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 # BOTH anchors in ONE generate and checks both landed, converting the silent
 # no-op into a loud CI failure.
 sed -e "s/^occt = { max-threads = [0-9][0-9]* }$/occt = { max-threads = ${cap} }/" \
-    -e "s/^test-threads = [0-9][0-9]*$/test-threads = ${tt}/" \
+    -e "s/^test-threads = \(\"num-cpus\"\|[0-9][0-9]*\)$/test-threads = ${tt}/" \
     "$REPO_ROOT/.config/nextest.toml" > "$tmp"
 
 # Stdout contract: ONLY the path.
