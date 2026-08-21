@@ -221,7 +221,10 @@ fn item_h2_headings_per_variant() {
                     annotations: vec![],
                     pragmas: vec![],
                 },
-                kind: ItemKind::Trait { members: vec![] },
+                kind: ItemKind::Trait {
+                    type_params: vec![],
+                    members: vec![],
+                },
             }),
             "## `pub trait Foo` <a id=\"Foo\"></a>",
         ),
@@ -748,6 +751,7 @@ fn trait_body_renders_members() {
             pragmas: vec![],
         },
         kind: ItemKind::Trait {
+            type_params: vec![],
             members: vec!["voltage: Voltage".into(), "current: Current".into()],
         },
     };
@@ -774,7 +778,10 @@ fn trait_body_omits_members_when_empty() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let out = render_one_item(item);
     assert!(!out.contains("### Members"), "should omit, got:\n{out}");
@@ -1131,7 +1138,6 @@ fn type_alias_body_renders_rhs() {
     );
 }
 
-
 /// Formatter-level type-param rendering for `ItemKind::TypeAlias` (task #6342).
 ///
 /// The mirror image of `fmt_html_tests::type_alias_heading_renders_escaped_type_params`:
@@ -1147,7 +1153,11 @@ fn type_alias_body_renders_rhs() {
 fn type_alias_heading_renders_raw_type_params_inside_code_span() {
     let cases: Vec<(&str, Vec<String>, &str)> = vec![
         // Single bare param — raw `<T>`, inside the backticks.
-        ("Box", vec!["T".into()], "## `pub type Box<T>` <a id=\"Box\"></a>"),
+        (
+            "Box",
+            vec!["T".into()],
+            "## `pub type Box<T>` <a id=\"Box\"></a>",
+        ),
         // Two params, the second bounded — joined with `, `.
         (
             "Pair",
@@ -1155,11 +1165,7 @@ fn type_alias_heading_renders_raw_type_params_inside_code_span() {
             "## `pub type Pair<T, U: Rigid>` <a id=\"Pair\"></a>",
         ),
         // No params: no `<>` at all.
-        (
-            "Plain",
-            vec![],
-            "## `pub type Plain` <a id=\"Plain\"></a>",
-        ),
+        ("Plain", vec![], "## `pub type Plain` <a id=\"Plain\"></a>"),
     ];
 
     for (name, type_params, expected_heading) in cases {
@@ -1552,7 +1558,10 @@ fn mk_item(kind: &str, name: &str) -> ItemDoc {
                 annotations: vec![],
                 pragmas: vec![],
             },
-            kind: ItemKind::Trait { members: vec![] },
+            kind: ItemKind::Trait {
+                type_params: vec![],
+                members: vec![],
+            },
         },
         "function" => ItemDoc {
             header: ItemHeader {
@@ -1987,6 +1996,7 @@ fn split_mode_emits_index_and_per_item_files() {
             pragmas: vec![],
         },
         kind: ItemKind::Trait {
+            type_params: vec![],
             members: vec!["voltage: Voltage".into()],
         },
     };
@@ -2258,6 +2268,7 @@ fn build_integration_full_v01_fixture() -> DocModel {
                         pragmas: vec![],
                     },
                     kind: ItemKind::Trait {
+                        type_params: vec![],
                         members: vec!["mass: Mass".into()],
                     },
                 },
@@ -2653,7 +2664,10 @@ fn split_mode_per_item_cross_refs_use_filename_links() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let bolt = ItemDoc {
         header: ItemHeader {
@@ -2804,7 +2818,10 @@ fn multi_module_split_per_item_cross_refs_use_relative_paths() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     // beta: Fastener (Trait — cross-module reference from alpha/Bolt)
     let fastener = ItemDoc {
@@ -2815,7 +2832,10 @@ fn multi_module_split_per_item_cross_refs_use_relative_paths() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let model = DocModel {
         modules: vec![
@@ -2910,7 +2930,10 @@ fn multi_module_split_cross_ref_ambiguous_name_falls_back_to_fragment() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     let shared_beta = ItemDoc {
         header: ItemHeader {
@@ -2920,7 +2943,10 @@ fn multi_module_split_cross_ref_ambiguous_name_falls_back_to_fragment() {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::Trait { members: vec![] },
+        kind: ItemKind::Trait {
+            type_params: vec![],
+            members: vec![],
+        },
     };
     // Conformer lives in alpha; its cross-ref target name "Shared" is
     // ambiguous because alpha::Shared and beta::Shared both exist.

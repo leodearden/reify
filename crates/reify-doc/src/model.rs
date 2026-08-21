@@ -221,6 +221,19 @@ pub enum ItemKind {
     },
     /// A `trait` declaration — interface definition.
     Trait {
+        /// PRE-RENDERED display strings for the trait's type parameters, in
+        /// declaration order (e.g. `["T: Rigid"]` for `trait Holder<T: Rigid>`).
+        /// Empty for a non-generic trait.
+        ///
+        /// A separate field from `members` on purpose: `members` holds rendered
+        /// REQUIREMENT lines (`param x: T`, `fn f(..) -> ..`), which are a
+        /// different axis entirely and render in the body rather than the
+        /// heading.
+        ///
+        /// See `ItemKind::TypeAlias::type_params` for why these are strings and
+        /// why the `#[serde(default)]` is per-field rather than struct-level.
+        #[serde(default)]
+        type_params: Vec<String>,
         /// Rendered member signatures (e.g. `["voltage: Voltage", "current: Current"]`).
         members: Vec<String>,
     },
@@ -322,7 +335,9 @@ impl ItemKind {
     /// resolution and split-mode filenames, so it must never absorb these.
     pub(crate) fn type_params(&self) -> &[String] {
         match self {
-            ItemKind::TypeAlias { type_params, .. } => type_params,
+            ItemKind::TypeAlias { type_params, .. } | ItemKind::Trait { type_params, .. } => {
+                type_params
+            }
             _ => &[],
         }
     }
@@ -738,6 +753,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("HasPower", true),
                     kind: ItemKind::Trait {
+                        type_params: vec![],
                         members: vec!["voltage: Voltage".to_string()],
                     },
                 },
@@ -840,7 +856,10 @@ mod tests {
             (
                 ItemDoc {
                     header: hdr("T"),
-                    kind: ItemKind::Trait { members: vec![] },
+                    kind: ItemKind::Trait {
+                        type_params: vec![],
+                        members: vec![],
+                    },
                 },
                 "trait",
             ),
@@ -952,6 +971,34 @@ mod tests {
         }
     }
 
+    /// Forward-compat guard for `ItemKind::Trait`, mirroring
+    /// `item_doc_type_alias_deserializes_without_type_params`.
+    ///
+    /// Both variants carry the additive `type_params` field, so both need their
+    /// own per-field `#[serde(default)]` — an internally-tagged enum has no
+    /// struct-level slot for one, and a missing key is otherwise a hard
+    /// deserialization error.
+    #[test]
+    fn item_doc_trait_deserializes_without_type_params() {
+        let legacy_json = r#"{"kind":"trait","name":"Physical","doc":null,"is_pub":true,"annotations":[],"pragmas":[],"members":["param mass: Mass"]}"#;
+        let item: ItemDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
+        assert_eq!(item.header.name, "Physical");
+        match &item.kind {
+            ItemKind::Trait {
+                type_params,
+                members,
+            } => {
+                assert_eq!(members, &vec!["param mass: Mass".to_string()]);
+                assert_eq!(
+                    type_params,
+                    &Vec::<String>::new(),
+                    "a legacy payload with no `type_params` key must default to empty"
+                );
+            }
+            other => panic!("expected ItemKind::Trait, got {other:?}"),
+        }
+    }
+
     /// Forward-compat guard: JSON serialized before `cross_refs` was added
     /// (and before any future additive field) must still deserialize via
     /// `#[serde(default)]`.  Catches accidental removal of the attribute.
@@ -1039,7 +1086,10 @@ mod tests {
             },
             ItemDoc {
                 header: hdr("T"),
-                kind: ItemKind::Trait { members: vec![] },
+                kind: ItemKind::Trait {
+                    type_params: vec![],
+                    members: vec![],
+                },
             },
             ItemDoc {
                 header: hdr("F"),

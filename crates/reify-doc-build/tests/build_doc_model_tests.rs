@@ -406,7 +406,7 @@ constraint def non_negative {
     let trait_item = find_item(module, "HasValue");
     assert!(!trait_item.header.is_pub, "HasValue is not pub");
     match &trait_item.kind {
-        ItemKind::Trait { members } => {
+        ItemKind::Trait { members, .. } => {
             assert_eq!(members.len(), 1, "HasValue has 1 member; got {members:?}");
             assert!(
                 members[0].contains("value"),

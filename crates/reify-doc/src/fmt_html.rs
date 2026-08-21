@@ -555,7 +555,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
             render_constraints(out, constraints);
             render_meta(out, meta);
         }
-        ItemKind::Trait { members } => {
+        ItemKind::Trait { members, .. } => {
             render_trait_members(out, members);
         }
         ItemKind::Function { signature } => {

@@ -336,7 +336,10 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
             annotations: lower_annotations(&t.annotations),
             pragmas: lower_pragmas(&t.pragmas),
         },
-        kind: ItemKind::Trait { members },
+        kind: ItemKind::Trait {
+            type_params: render_type_params(&t.type_params),
+            members,
+        },
     }
 }
 

@@ -58,7 +58,10 @@ mod tests {
                         annotations: vec![],
                         pragmas: vec![],
                     },
-                    kind: ItemKind::Trait { members: vec![] },
+                    kind: ItemKind::Trait {
+                        type_params: vec![],
+                        members: vec![],
+                    },
                 }],
                 annotations: vec![],
                 pragmas: vec![],
