@@ -521,3 +521,156 @@ fn geometry_list_count_cell_types_to_int() {
         "`holes.count` must compile to an Int-typed expr",
     );
 }
+
+// ─── task #5385: union_all/intersection_all over a List<Geometry> ───
+
+/// Count `Boolean` ops with the given operator in the realization named `name`.
+fn boolean_op_count(
+    compiled: &reify_compiler::CompiledModule,
+    structure: &str,
+    name: &str,
+    op: reify_compiler::BooleanOp,
+) -> usize {
+    let t = template(compiled, structure);
+    let r = t
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some(name))
+        .unwrap_or_else(|| {
+            panic!("no realization named '{name}' in {structure}; got {:#?}", t.realizations)
+        });
+    r.operations
+        .iter()
+        .filter(|o| matches!(o, reify_compiler::CompiledGeometryOp::Boolean { op: got, .. } if *got == op))
+        .count()
+}
+
+/// `union_all(<geometry-list let>)` accepts the single list argument and folds
+/// it left-to-right into n-1 binary Union ops.
+///
+/// RED today: the single arg hits the `expects at least 2 arguments` gate.
+#[test]
+fn union_all_accepts_a_single_geometry_list_let() {
+    let source = r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let combined = union_all(holes)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(errors.is_empty(), "union_all over a geometry list: {errors:?}");
+    assert_eq!(
+        boolean_op_count(&compiled, "S", "combined", reify_compiler::BooleanOp::Union),
+        2,
+        "a 3-element list folds to exactly n-1 = 2 Union ops",
+    );
+}
+
+/// The same for a list literal passed inline, and for `intersection_all`.
+#[test]
+fn boolean_all_accepts_a_direct_geometry_list_literal() {
+    let source = r#"
+        structure S {
+            let u = union_all([cylinder(5mm, 20mm), cylinder(6mm, 20mm)])
+            let x = intersection_all([cylinder(5mm, 20mm), cylinder(6mm, 20mm)])
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(errors.is_empty(), "boolean-all over a list literal: {errors:?}");
+    assert_eq!(
+        boolean_op_count(&compiled, "S", "u", reify_compiler::BooleanOp::Union),
+        1,
+        "a 2-element list folds to exactly 1 Union op",
+    );
+    assert_eq!(
+        boolean_op_count(
+            &compiled,
+            "S",
+            "x",
+            reify_compiler::BooleanOp::Intersection
+        ),
+        1,
+        "intersection_all must fold with BooleanOp::Intersection",
+    );
+}
+
+/// A single List argument that is NOT a geometry list reports THAT, rather
+/// than the bare arity text — the arity message would send the user looking
+/// for a second argument they do not need.
+#[test]
+fn union_all_over_a_non_geometry_list_reports_the_element_kind() {
+    let source = r#"
+        structure S {
+            let xs = [1, 2, 3]
+            let combined = union_all(xs)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.iter().any(|m| m.contains("geometry list")),
+        "expected a 'must be a geometry list' error; got: {errors:?}",
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|m| m.contains("expects at least 2 arguments")),
+        "the bare arity message must NOT be what the user sees here; got: {errors:?}",
+    );
+}
+
+/// An EMPTY geometry list has nothing to fold — a distinct, specific error.
+#[test]
+fn union_all_over_an_empty_geometry_list_reports_the_empty_fold() {
+    let source = r#"
+        structure S {
+            let holes = generate(0, |i| cylinder(5mm, 20mm))
+            let combined = union_all(holes)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("empty") && m.contains("at least one element")),
+        "expected an empty-fold error naming the requirement; got: {errors:?}",
+    );
+}
+
+/// Regression: a single NON-list geometry argument is unchanged — it still
+/// gets the arity message pinned by
+/// `geometry_arg_count_span_tests::union_all_arg_count_diagnostic_has_span_label`.
+#[test]
+fn union_all_over_a_single_non_list_geometry_still_reports_arity() {
+    let source = r#"
+        structure S {
+            let u = union_all(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("union_all() expects at least 2 arguments")),
+        "a single non-list geometry arg must still hit the arity gate; got: {errors:?}",
+    );
+}
