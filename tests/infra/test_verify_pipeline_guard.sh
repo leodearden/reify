@@ -434,4 +434,59 @@ assert_exit "STDIN: emitted gate piped in -> full gate required (exit 0)" 0 \
 assert_exit "NORMALIZE: ./scripts/check-manifold-deps.sh stripped then matched (exit 0)" 0 \
     run_guard requires-full-gate ./scripts/check-manifold-deps.sh
 
+# (c) SELF-HEALING + PRECISION, driven through a throwaway verify.sh copy via
+# REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH -- the same synthetic-injection idiom
+# Pair B uses for the sourced-lib clause. Proves the emitted-gate clause is a
+# LIVE derivation (a new plan-emitted gate is covered with no manifest edit)
+# and that it is surgical (only actually-emitted top-level scripts/ paths).
+_SYNTH_DIR_E="$(mktemp -d)"
+_TMPDIRS+=("$_SYNTH_DIR_E")
+_SYNTH_VERIFY_E="$_SYNTH_DIR_E/verify.sh"
+cp "$REPO_ROOT/scripts/verify.sh" "$_SYNTH_VERIFY_E"
+cat >> "$_SYNTH_VERIFY_E" <<'SYNTH_PLAN_LINES_EOF'
+
+add_tool "./scripts/zzz-synthetic-gate.sh"
+add_tool "if test -f scripts/zzz-synthetic-guarded.sh; then bash scripts/zzz-synthetic-guarded.sh; fi"
+#   add_tool "./scripts/zzz-comment-only-gate.sh"
+add_tool "./other/scripts/zzz-nested.sh"
+SYNTH_PLAN_LINES_EOF
+
+# PIN (green on arrival): the bare './scripts/<x>.sh' emission shape derives.
+assert_exit "SELF-HEALING: zzz-synthetic-gate.sh auto-covered after plan-line injection (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-synthetic-gate.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# PIN (green on arrival): the guarded 'if test -f …; then bash scripts/<x>.sh; fi'
+# shape derives too -- that is the real shape of check_event_inventory.sh and
+# test_pm_standardization.sh at verify.sh:2630-2631, so this pins the exact
+# emission form sub-block (a)'s ground truth depends on.
+assert_exit "SELF-HEALING: zzz-synthetic-guarded.sh ('if test -f …; then bash …' shape) auto-covered (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-synthetic-guarded.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# PIN (green on arrival): a sibling never mentioned in ANY plan line stays
+# fast-path-safe. Proves the clause flags only actually-emitted gates, not
+# every script under scripts/ (mirrors Pair B's PRECISION negative).
+assert_exit "PRECISION: scripts/zzz-not-emitted.sh never emitted -> fast-path-safe (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-not-emitted.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# PIN (green on arrival): a COMMENTED-OUT add_tool line must not make its path
+# load-bearing. Pins the '^[[:space:]]*add(_tool)?' statement anchor -- the same
+# hardening clause 3's source-statement grep carries.
+assert_exit "PRECISION: scripts/zzz-comment-only-gate.sh in a '#' comment line -> fast-path-safe (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-comment-only-gate.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# RED DRIVER (the genuine failure this sub-block exists for): an emitted
+# 'other/scripts/zzz-nested.sh' must NOT be mis-derived as the top-level
+# 'scripts/zzz-nested.sh'. The extraction has no LEFT path boundary yet, so
+# grep -o matches the 'scripts/…' tail of the nested path and wrongly promotes
+# an unrelated top-level script to load-bearing. Step-4 adds the boundary.
+# (Pair D's (j) unanchored-substring negative is this same property for the
+# infra-test glob clause.)
+assert_exit "PRECISION: other/scripts/zzz-nested.sh must NOT promote scripts/zzz-nested.sh (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-nested.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
 test_summary
