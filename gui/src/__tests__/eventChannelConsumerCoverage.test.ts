@@ -298,14 +298,10 @@ describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
    *
    * DIVISION OF LABOUR with (e), which is why this loop asserts nothing about
    * rows: (e) owns register↔row (every `*(none)*` row has an entry, every entry
-   * names a live row), (f) owns row↔bridge.ts. So (f) iterates
-   * `landedConsumerlessChannels` rather than the raw register, and SKIPS an
-   * entry whose row has not yet flipped to `*(none)*`. Such an entry pins
-   * nothing — the doc cell is what asserts the absence — and demanding it have
-   * landed would re-couple this suite to another task's merge order, the exact
-   * asymmetry `staleConsumerlessEntries`' one-directional rule and this file's
-   * `DELIBERATELY_CONSUMERLESS` docblock both exist to preserve. The floor
-   * below keeps that skip from emptying the loop unnoticed.
+   * names a live row), (f) owns row↔bridge.ts. Hence the iteration set is
+   * `landedConsumerlessChannels`, which skips a not-yet-landed entry; see
+   * `staleConsumerlessEntries`' docblock for why that asymmetry is required.
+   * The floor below keeps the skip from emptying the loop unnoticed.
    */
   it('(f) every deliberately-consumer-less channel has no bridge.ts registration site', () => {
     // Non-vacuity for the source matcher, one live channel per registration
@@ -335,7 +331,7 @@ describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
     for (const channel of landed) {
       expect(
         channelRegistrationsIn(BRIDGE_SOURCE, channel),
-        `bridge.ts must not subscribe to the '${channel}' channel while its doc row says \`*(none)*\``,
+        `bridge.ts must not name the '${channel}' channel in a registration position while its doc row says \`*(none)*\``,
       ).toStrictEqual([]);
     }
   });

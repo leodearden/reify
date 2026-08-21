@@ -33,6 +33,7 @@ import {
   unregisteredConsumerlessRows,
   staleConsumerlessEntries,
   landedConsumerlessChannels,
+  channelRegistrationsIn,
   type ClassifiedRow,
   type EventChannelRow,
 } from './eventChannelConsumerContract';
@@ -957,11 +958,8 @@ describe('staleConsumerlessEntries', () => {
 
 describe('landedConsumerlessChannels', () => {
   // Check (f)'s ITERATION SET: register entries whose row has actually landed as
-  // `*(none)*`. The two exclusions below are the whole reason it is not just
-  // `Object.keys(register)` — an entry whose row has not (yet) flipped pins
-  // nothing, so iterating the raw register would re-couple the coverage suite to
-  // another task's merge order, contradicting the pre-registration contract
-  // `staleConsumerlessEntries` documents one describe above.
+  // `*(none)*`. Not simply `Object.keys(register)` — see `staleConsumerlessEntries`
+  // one describe above for why a not-yet-landed entry has to skip.
 
   const REGISTER = {
     diagnostics: 'LSP diagnostics are routed by the notification sink, not a bridge subscriber.',
@@ -983,8 +981,7 @@ describe('landedConsumerlessChannels', () => {
   it('excludes a pre-registered entry whose row is still named — the tolerance the register promises', () => {
     // The exact regression the review of task 6380 step-1 found: asserting
     // `kind === 'explicit-none'` over every register key makes a legitimately
-    // pre-registered entry a red tree. Both `staleConsumerlessEntries`' docblock
-    // and `DELIBERATELY_CONSUMERLESS`' say this direction must be tolerated.
+    // pre-registered entry a red tree.
     expect(
       landedConsumerlessChannels([classified('diagnostics', ['onDiagnostics'], 'named')], REGISTER),
     ).toStrictEqual([]);
@@ -1026,5 +1023,93 @@ describe('landedConsumerlessChannels', () => {
   it('returns [] for an empty register', () => {
     expect(landedConsumerlessChannels([classified('diagnostics', [], 'explicit-none')], {})).toStrictEqual([]);
     expect(landedConsumerlessChannels([], {})).toStrictEqual([]);
+  });
+});
+
+describe('channelRegistrationsIn', () => {
+  // The code→doc matcher behind coverage check (f). Its live callers only ever
+  // run it over real bridge.ts text — two non-vacuity probes that assert MATCH,
+  // and the loop that asserts NO-MATCH — i.e. only the loosening-safe direction.
+  // The properties its docblock actually claims (the `(`/`[` prefix, the exact
+  // closing-quote backreference, the escaping) are pinned here over synthetic
+  // sources, so dropping one surfaces as a failure rather than as a mystery
+  // false positive on some unrelated future channel.
+
+  it('matches the direct `listen<T>(...)` registration shape', () => {
+    expect(channelRegistrationsIn(`listen<MeshPayload>('mesh-update', cb);`, 'mesh-update')).toStrictEqual([
+      `('mesh-update'`,
+    ]);
+  });
+
+  it('matches a `[channel, mapper]` tuple entry', () => {
+    // The second shape bridge.ts uses (`subscribeToClaudeEvents`); a bare
+    // `listen('` matcher would miss every one of these.
+    expect(
+      channelRegistrationsIn(`const entries = [['claude-text-delta', toDelta]];`, 'claude-text-delta'),
+    ).toStrictEqual([`['claude-text-delta'`]);
+  });
+
+  it('matches across a newline and indent between the bracket and the quote', () => {
+    expect(channelRegistrationsIn(`listen(\n      'mesh-update',\n      cb,\n    );`, 'mesh-update')).toHaveLength(
+      1,
+    );
+  });
+
+  it('matches double-quote and backtick spellings', () => {
+    expect(channelRegistrationsIn(`listen("mesh-update", cb);`, 'mesh-update')).toStrictEqual(['("mesh-update"']);
+    expect(channelRegistrationsIn('listen(`mesh-update`, cb);', 'mesh-update')).toStrictEqual([
+      '(`mesh-update`',
+    ]);
+  });
+
+  it('returns every site, not just the first', () => {
+    // (f) compares against `[]`, so one hit is enough to fail it — but the
+    // docblock promises EVERY place, and a caller reporting sites wants them all.
+    expect(
+      channelRegistrationsIn(`listen('a', x);\nconst e = [['a', y]];\nlisten('a', z);`, 'a'),
+    ).toHaveLength(3);
+  });
+
+  it('keeps prose and bare identifiers out — the bracket-prefix property', () => {
+    // Without the `[([]` prefix these would both match, and every mention of a
+    // channel name in a comment would read as a registration.
+    expect(channelRegistrationsIn(`// the 'mesh-update' channel is emitted by main.rs`, 'mesh-update')).toStrictEqual(
+      [],
+    );
+    expect(channelRegistrationsIn(`const meshUpdate = resolve(meshUpdate);`, 'meshUpdate')).toStrictEqual([]);
+  });
+
+  it('matches the name EXACTLY, not as a substring — the closing-backreference property', () => {
+    // The bug this style of matcher usually ships with. Without the `\1`
+    // backreference, asking for `diagnostics` would count the unrelated
+    // `tessellation-diagnostics` channel as a registration of it.
+    expect(channelRegistrationsIn(`listen('tessellation-diagnostics', cb);`, 'diagnostics')).toStrictEqual([]);
+    expect(channelRegistrationsIn(`listen('diagnostics-raw', cb);`, 'diagnostics')).toStrictEqual([]);
+  });
+
+  it('ignores a quote-mismatched literal', () => {
+    expect(channelRegistrationsIn(`listen("mesh-update', cb);`, 'mesh-update')).toStrictEqual([]);
+  });
+
+  it('escapes regex metacharacters in the channel name', () => {
+    // An exported helper over a caller-supplied name: unescaped, `(` throws a
+    // SyntaxError at construction and `.` silently wildcards. Today's only
+    // caller passes parser-derived `[a-z0-9-]+` names, so nothing else pins this.
+    expect(() => channelRegistrationsIn(`listen('a(b', cb);`, 'a(b')).not.toThrow();
+    expect(channelRegistrationsIn(`listen('a(b', cb);`, 'a(b')).toStrictEqual([`('a(b'`]);
+    expect(channelRegistrationsIn(`listen('abc', cb);`, 'a.c')).toStrictEqual([]);
+    expect(channelRegistrationsIn(`listen('a.c', cb);`, 'a.c')).toStrictEqual([`('a.c'`]);
+  });
+
+  it('also matches non-subscription call sites — a documented over-match', () => {
+    // `(` before the quote is any call position, so this is a hit. Deliberate:
+    // a channel named in `invoke(...)` inside bridge.ts is still worth a look
+    // from (f). Pinned so (f)'s failure message keeps saying "in a registration
+    // position" rather than the narrower, and here wrong, "subscribes to".
+    expect(channelRegistrationsIn(`invoke('diagnostics');`, 'diagnostics')).toStrictEqual([`('diagnostics'`]);
+  });
+
+  it('returns [] for an empty source', () => {
+    expect(channelRegistrationsIn('', 'mesh-update')).toStrictEqual([]);
   });
 });

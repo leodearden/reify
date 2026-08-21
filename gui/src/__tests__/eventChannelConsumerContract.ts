@@ -635,16 +635,10 @@ export function staleConsumerlessEntries(
  * `explicit-none` row — sorted. This is the set check (f) of
  * `eventChannelConsumerCoverage.test.ts` iterates.
  *
- * The INTERSECTION, not the register itself, and that is the point. An entry
- * whose row has not yet flipped to `*(none)*` pins nothing and suppresses
- * nothing: the doc cell is what asserts the absence, so until it lands there is
- * no documented absence for bridge.ts to contradict. Asserting against such an
- * entry anyway would re-couple this suite to another task's merge order —
- * precisely what the pre-registration contract documented twice here
- * (`staleConsumerlessEntries` above, and `DELIBERATELY_CONSUMERLESS`'s docblock
- * in the coverage suite) exists to prevent. Defined over register KEYS rather
- * than over rows for the same reason (f) is: an entry is what carries the
- * reviewed reason that makes a code→doc pin owed in the first place.
+ * The intersection rather than the register itself: an entry whose row has not
+ * yet flipped to `*(none)*` skips, because it pins nothing until the doc cell
+ * asserting the absence lands. See `staleConsumerlessEntries` above for why
+ * that asymmetry is required.
  *
  * Third member of the register/row trio, and it owns only the intersection —
  * both rot directions belong to its neighbours, so (f) never re-reports what
@@ -671,7 +665,13 @@ export function landedConsumerlessChannels(
  * `subscribeToClaudeEvents` feeds to a loop over `listen(name, mapper)`
  * (bridge.ts:457) — a bare `listen('` match would miss the second entirely.
  * Requiring a `(` or `[` immediately before the quote keeps prose and bare
- * identifiers out.
+ * identifiers out, and the closing `\1` backreference pins the name EXACTLY:
+ * `'chan-suffix'` and `'prefix-chan'` are not registrations of `chan`.
+ *
+ * Deliberately over-broad in one direction, since `(` before the quote matches
+ * ANY call position: `invoke('chan')` counts as a hit too. Callers should
+ * therefore phrase a failure as "names this channel in a registration
+ * position", not "subscribes to it".
  *
  * Pure over a caller-supplied `source` string, like the rest of this module —
  * it does not itself read bridge.ts off disk, so a caller can pass any source
@@ -683,6 +683,12 @@ export function landedConsumerlessChannels(
  * channel in `DELIBERATELY_CONSUMERLESS`, not just one hardcoded name.
  */
 export function channelRegistrationsIn(source: string, channel: string): string[] {
-  const pattern = new RegExp(`[([]\\s*(['"\`])${channel}\\1`, 'g');
+  // Escaped, not interpolated raw: this is an exported helper over an arbitrary
+  // caller-supplied name, and a metacharacter would otherwise throw at
+  // construction (`(`, `[`) or silently wildcard (`.`, `+`, `*`, `?`). Today's
+  // only caller passes parser-derived `[a-z0-9-]+` channels, but that
+  // constraint lives two files away.
+  const escaped = channel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`[([]\\s*(['"\`])${escaped}\\1`, 'g');
   return [...source.matchAll(pattern)].map((m) => m[0]);
 }
