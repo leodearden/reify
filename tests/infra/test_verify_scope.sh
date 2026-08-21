@@ -131,6 +131,12 @@ plan_has()    { plan_match "$PLAN_OUT" "$1"; }
 plan_lacks()  { ! plan_match "$PLAN_OUT" "$1"; }
 plan_cmdcount() { plan_count_noncomment_lines "$PLAN_OUT"; }
 
+# Negative assertion helper (assert() only checks for success rc, and a
+# `bash -c '! ...'` subshell cannot see sourced shell functions). Mirrors the
+# one in tests/infra/test_plan_capture_lib.sh. Used by the axis-aware
+# narrowing assertions below (#6391).
+refute() { ! "$@"; }
+
 # ---------------------------------------------------------------------------
 # Scenario 1: docs/markdown/yaml only -> nothing heavy
 # ---------------------------------------------------------------------------
@@ -1277,8 +1283,25 @@ assert "MG-B6a: clippy keeps --workspace (override narrowing defeated by role-gu
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B6A"
 assert "MG-B6a: ungated tail keeps --workspace (override narrowing defeated by role-guard)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B6A"
-assert "MG-B6a: NO -p reify-doc anywhere (override narrowing defeated by role-guard)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B6A"
+# Same #6391 hardening as MG-B5: assert the absence ON THE NARROWING AXIS rather
+# than blanket-forbidding a crate name anywhere in the plan. Behaviour-preserving
+# here (a --profile debug merge-gate plan has no ` -p ` on the axis at all), but
+# it removes the twin landmine — MG-B6a was latently safe only because
+# --profile debug emits no release-sensitivity pass.
+#
+# Non-vacuity lower bound, carried over from MG-B5 (#6391): an ABSENCE assertion
+# over a FILTERED line subset is worthless if the filter matches nothing. Without
+# it, a plan_is_narrowing_axis_line model gone stale for the --profile debug shape
+# (say a new flag on the clippy/check/nextest lines tripping the ` --release` or
+# `--features gui` exclusion) would empty the subset and silently retire the guard
+# below, with every assertion still green. MG-B6a's --workspace assertions above
+# mitigate but do not cover this: they are whole-plan greps and never exercise the
+# classifier. >= 2 (clippy + debug nextest) is a lower bound, not an exact count,
+# so adding a narrowable command cannot false-RED it.
+assert "MG-B6a: narrowing axis non-empty (clippy + debug nextest present — the absence assertion below cannot go vacuous)" \
+    test "$(plan_narrowing_axis_count "$PLAN_MG_B6A")" -ge 2
+assert "MG-B6a: narrowing axis carries NO -p selector at all (override narrowing defeated by role-guard)" \
+    refute plan_narrowing_axis_match "$PLAN_MG_B6A" " -p reify-"
 
 # ---------------------------------------------------------------------------
 # Scenario MG-B6b: role=merge force is unconditional (RED until step-2 impl)
@@ -1304,27 +1327,56 @@ assert "MG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not emp
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_MG_B6B"
 
 # ---------------------------------------------------------------------------
-# Scenario MG-B5: merge gate full; OCCT+release -p axes permitted (GREEN now)
+# Scenario MG-B5: merge gate full; no narrowing ON THE NARROWING AXIS (GREEN now)
 # ---------------------------------------------------------------------------
 # role=merge + --profile both + --scope all: scope=all ignores the override
-# (C1 contract: no branch-diff narrowing). But --profile both LEGITIMATELY
-# emits -p flags on the OCCT gated pass and the release-sensitivity pass.
-# Assert: reify-doc / reify-ast (override sentinels, neither OCCT nor
-# release-sensitive) never appear; POSITIVELY permit the OCCT gated -p and
-# the release-sensitivity -p axes.
+# (C1 contract: no branch-diff narrowing). The assertions below are AXIS-AWARE
+# and SENTINEL-FREE (#6391): they scope WHICH LINES are examined rather than
+# which crate name is forbidden.
 #
-# SENTINEL REQUIREMENT (task 5166): a sentinel here must be absent from BOTH
-# scripts/occt-touching-crates.txt AND scripts/release-sensitive-crates.txt,
-# because --profile both legitimately emits ` -p <crate>` for crates on either
-# list via axes that REIFY_AFFECTED_CRATES_OVERRIDE does not narrow. reify-ir
-# was the sentinel here until it became release-sensitive (release-only
-# check_mesh_contract_welded tests), which tripped the assertion below for a
-# reason unrelated to narrowing. Its replacement must also not be a string
-# PREFIX of another sentinel (reify-doc-build would match ` -p reify-doc`).
-# Task #6391 tracks making these assertions axis-aware so the sentinel choice
-# stops being load-bearing.
+# The NARROWING AXIS is the three verify.sh $AFFECTED_ALL_FLAGS construction
+# sites — see plan_is_narrowing_axis_line in tests/infra/plan_capture_lib.sh for
+# the definition and the site anchors (single source of truth; not restated
+# here). Under scope=all those sites emit `--workspace`, so the whole contract
+# is "the narrowing axis carries NO ` -p ` selector at all" — a statement no
+# crate name appears in, and that no crate joining any declared list can break.
+#
+# WHY IT IS NOT A BLANKET GREP. --profile both legitimately emits ` -p <crate>`
+# on axes the override does NOT narrow: the release-sensitivity nextest pass, the
+# fixed `-p reify-gui --features gui` lines, and the fixed
+# `cargo build --release -p reify-audit/-p reify-cli` pre-builds. The pre-#6391
+# assertion was a whole-plan `! grep -qE " -p <sentinel>"`, which conflated
+# "appeared VIA the narrowing axis" with "appeared AT ALL" and could only be kept
+# green by choosing a sentinel crate that was on none of those axes.
+#
+# WHY THAT SENTINEL RULE WAS NEVER DURABLE. Release-sensitivity is GREP-DERIVED,
+# not declared-by-hand: `release_sensitive_set` (scripts/release-scope-lib.sh)
+# scans crates/ for `#[cfg_attr(debug_assertions, ignore`, `cfg(not(debug_assertions))`
+# and `cfg!(debug_assertions)`. ANY crate can therefore become release-sensitive
+# as an ordinary side effect of someone writing a release-only test — which is
+# exactly what happened to the old sentinel reify-ir, and is part of why task 5166
+# sat in infra-hold 2026-07-20 -> 2026-08-20. A rule of the form "pick a crate on
+# neither list" can be invalidated by an unrelated commit; scoping by axis cannot.
+#
+# The override is now `reify-doc reify-ir` and reify-ir is DELIBERATELY a crate
+# that IS release-sensitive today (scripts/release-sensitive-crates.txt): its
+# ` -p reify-ir` on the release pass is expected, permitted, and no longer
+# confusable with a narrowing leak. That retires the old SENTINEL REQUIREMENT
+# outright rather than re-parameterising it.
+#
+# STILL-LIVE TRAP for any FUTURE prefix-based rework: ` -p reify-doc` is a string
+# PREFIX of ` -p reify-doc-build`, so a per-crate pattern would need an explicit
+# end anchor. The axis-scoped form below sidesteps this by scoping which LINES
+# are grepped instead of tightening the pattern — do not reintroduce a per-crate
+# grep here without solving the prefix problem first. MG-B5-control below is the
+# one place a per-crate pattern IS unavoidable (its job is "THESE override crates
+# reached the axis", which cannot be said crate-agnostically); it solves the trap
+# with an explicit `( |$)` end anchor — see its header before copying its shape.
+#
+# Non-vacuity and classifier drift are covered by Scenario MG-B5-control below,
+# which reruns the SAME fixture and SAME override with only the role/scope varied.
 echo ""
-echo "--- Scenario MG-B5: merge gate full (both profiles); OCCT+release -p permitted, no branch-diff narrowing (GREEN, regression guard) ---"
+echo "--- Scenario MG-B5: merge gate full (both profiles); off-axis -p permitted, narrowing axis carries none (GREEN, regression guard) ---"
 FIX_MG_B5=""
 make_branch_fixture FIX_MG_B5
 git -C "$FIX_MG_B5" checkout -q -b task-branch
@@ -1335,7 +1387,16 @@ git -C "$FIX_MG_B5" commit -q -m "task changes"
 # (the file-level REIFY_RELEASE_DELTA_SKIP=0 export near the top of this file
 # keeps this capture's release-pass-present assertion below hermetic against
 # the ambient knob)
-PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ast" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+# MG-B5-control (see the scenario below): the SAME fixture and the SAME
+# override, captured here because --scope branch needs task-branch still
+# checked out, and the branch restore immediately below deletes it. Exactly ONE
+# variable differs from the capture above: NO DF_VERIFY_ROLE=merge, so the role-guard
+# that MG-B6a/MG-B6b prove forces scope=all is not armed and narrowing
+# engages. --profile both is retained so the release-sensitivity pass is
+# present in the control too — that is what makes its off-axis drift guard
+# meaningful.
+PLAN_MG_B5_CONTROL="$(cd "$FIX_MG_B5" && REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope branch --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_MG_B5" checkout -q main
 git -C "$FIX_MG_B5" branch -q -D task-branch
 assert "MG-B5: scope=all in plan header" \
@@ -1346,14 +1407,76 @@ assert "MG-B5: nextest debug tail keeps --workspace (task 4451: OCCT folded in, 
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$PLAN_MG_B5"
-assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
-assert "MG-B5: NO -p reify-ast (no branch-diff narrowing in merge gate)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ast"' _ "$PLAN_MG_B5"
+# Lower bound, not an exact count: the absence assertion that follows is
+# worthless if the axis filter matches nothing. >= 2 (clippy + debug nextest)
+# so a future added narrowable command cannot false-RED this.
+assert "MG-B5: narrowing axis non-empty (clippy + debug nextest present — absence assertion cannot go vacuous)" \
+    test "$(plan_narrowing_axis_count "$PLAN_MG_B5")" -ge 2
+assert "MG-B5: narrowing axis carries NO -p selector at all (scope=all -> --workspace; C1 no branch-diff narrowing)" \
+    refute plan_narrowing_axis_match "$PLAN_MG_B5" " -p reify-"
+assert "MG-B5: plan DOES carry -p selectors off the narrowing axis (release-sensitivity + fixed reify-audit/reify-cli/gui-feature axes) — permitted, and what the pre-6391 blanket grep wrongly forbade" \
+    plan_offaxis_match "$PLAN_MG_B5" " -p reify-"
 assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
+
+# ---------------------------------------------------------------------------
+# Scenario MG-B5-control: the non-vacuity + classifier-drift control for MG-B5
+# ---------------------------------------------------------------------------
+# MG-B5 proves an ABSENCE on the narrowing axis. An absence assertion is worth
+# nothing if the axis filter matches no lines, or if the override's crates could
+# never have reached the plan in the first place. This scenario is the positive
+# control: it runs the SAME fixture with the SAME override and varies exactly one
+# thing — the merge role / scope — so narrowing actually engages and the very
+# same ` -p ` selectors MG-B5 asserts are absent show up on the very same axis.
+#
+# (Scenario B2-narrow above used to serve as that control for reify-ir. It no
+# longer covers MG-B5's override, and being a separate fixture with a different
+# profile it was never a single-variable control for it.)
+#
+# The last assertion is the load-bearing one: plan_is_narrowing_axis_line
+# (tests/infra/plan_capture_lib.sh) encodes a MODEL of verify.sh's three
+# $AFFECTED_ALL_FLAGS sites, and a model can go stale. reify-doc is on neither
+# declared list (occt-touching-crates.txt, release-sensitive-crates.txt) and on
+# no fixed axis, so under an active override it can ONLY reach the plan via
+# narrowing. Finding it OFF the axis therefore means verify.sh grew a narrowing
+# site the classifier does not recognise — which would silently turn MG-B5's
+# absence assertion vacuous. This is the behavioural guard that stops that
+# (#6391); it is what MG-B5 and plan_is_narrowing_axis_line's header both point
+# at instead of trusting a comment.
+echo ""
+echo "--- Scenario MG-B5-control: same fixture + same override, narrowing ACTIVE -> the axis DOES carry the override's -p (GREEN, non-vacuity control) ---"
+assert "MG-B5-control: PLAN_MG_B5_CONTROL non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_MG_B5_CONTROL"
+assert "MG-B5-control: NARROW_ACTIVE=1 (narrowing really engaged — the -p presence below is not accidental)" \
+    test "$(plan_narrow_active "$PLAN_MG_B5_CONTROL")" = "1"
+assert "MG-B5-control: narrowing axis LACKS --workspace (it was narrowed, not left full)" \
+    refute plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" "--workspace"
+# THE PREFIX ANCHOR, and why these three patterns carry `( |$)` while MG-B5's
+# do not. MG-B5 scopes by AXIS and greps the crate-agnostic " -p reify-", so no
+# crate name is load-bearing there. This control cannot do that — its whole job
+# is "THESE override crates reached the axis", so it must name them, which walks
+# straight back into the prefix trap MG-B5's header flags: ` -p reify-doc` is a
+# string PREFIX of ` -p reify-doc-build`, and crates/reify-doc-build is a real
+# crate in this workspace. Unanchored, an off-axis ` -p reify-doc-build` (which
+# reify-doc-build would acquire on the release-sensitivity pass the moment anyone
+# writes a release-only test in it — release sensitivity is GREP-derived, see
+# MG-B5's header) would satisfy the drift guard's pattern and false-RED this
+# scenario for a reason having nothing to do with classifier drift. That is the
+# 2026-07-20 -> 2026-08-20 infra-hold failure mode #6391 exists to retire, so it
+# is closed here rather than left to be rediscovered.
+#
+# `( |$)` is the anchor because plan_narrowing_axis_match / plan_offaxis_match
+# apply `[[ =~ ]]` PER LINE, so `$` binds to end-of-line, not end-of-dump. The
+# ` -p reify-ir` case takes the same anchor for consistency: it has no prefix
+# sibling today, but that is a fact about the current crate list, not a contract.
+assert "MG-B5-control: narrowing axis HAS -p reify-doc (the override DOES reach the axis — MG-B5's absence assertion is not vacuous)" \
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" ' -p reify-doc( |$)'
+assert "MG-B5-control: narrowing axis HAS -p reify-ir (same override; a release-sensitive crate reaches the axis when narrowing is active)" \
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" ' -p reify-ir( |$)'
+assert "MG-B5-control: NO -p reify-doc off the narrowing axis (classifier drift guard — reify-doc is on neither declared list and on no fixed axis, so an off-axis hit means verify.sh grew a narrowing site plan_is_narrowing_axis_line does not recognise)" \
+    refute plan_offaxis_match "$PLAN_MG_B5_CONTROL" ' -p reify-doc( |$)'
 
 # ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
