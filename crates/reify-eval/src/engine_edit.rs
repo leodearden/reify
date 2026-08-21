@@ -6522,6 +6522,189 @@ mod tests {
         }
     }
 
+    /// Task #6373: pins that `edit_source`'s `SolveResult::Solved` resolution
+    /// back-prop arm (the per-cell write-back inside the per-entity-group
+    /// solver loop) is wired through the `commit_cell_result` primitive
+    /// (`cell_commit.rs`) rather than the hand-rolled
+    /// values-insert/snapshot-insert/record_evaluation copy that writes no
+    /// journal leg at all. This is the `edit_source` half of the
+    /// edit_param/edit_source resolution-arm sync pair (INV-EVAL-1): its
+    /// mirror is `edit_param_dependent_reeval_routes_through_commit_primitive`
+    /// above, and the edit_param side of this exact migration has its own
+    /// suite at `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    ///
+    /// FIXTURE: two `.ri` sources differing only in the constraint's target —
+    /// SRC_A seeds the solver at x = 20mm via cold `eval()`, SRC_B retargets
+    /// the constraint to `x == 10mm` via `edit_source`. This is the same
+    /// seed-20mm → target-10mm direction `edit_param_back_props_moved_auto`
+    /// above already pins as reaching `SolveResult::Solved` post-#4700 —
+    /// forcing a real Nelder-Mead search, not the initially-feasible
+    /// early-exit — so `MOVED_AUTO_TOL = 1e-6` is used for every value
+    /// assertion here, exactly as that test uses it (see its doc comment for
+    /// why `1e-9` would be wrong for a search-path fixture).
+    ///
+    /// RED on base: `x` is declared `auto`, so its `value_cells` node carries
+    /// no `default_expr`; both edit_source's main eval walk and its wave2
+    /// loop are guarded by `if let Some(ref expr) = node.default_expr`, so
+    /// neither touches `x` — the Solved arm's hand-rolled write-back is the
+    /// only site that resolves `x`, and it calls no `self.journal.record(..)`
+    /// today. Assertion (1) below (the `resolved_params` guard) already
+    /// passes on base; assertion (2) (the journal pair) is the RED signal.
+    #[test]
+    fn edit_source_resolution_back_prop_routes_through_commit_primitive() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::DeterminacyState;
+        use reify_test_support::compile_source;
+
+        use crate::cache::{CachedResult, NodeId};
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const MOVED_AUTO_TOL: f64 = 1e-6;
+
+        const SRC_A: &str = r#"structure WarmAutoSrcCommit {
+    param x : Length = auto
+    constraint x == 20mm
+    let y = x + 5mm
+}"#;
+        const SRC_B: &str = r#"structure WarmAutoSrcCommit {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled_a = compile_source(SRC_A);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        // Cold eval — populates eval_state; solver resolves x = 20mm = 0.02 m.
+        engine.eval(&compiled_a);
+
+        let x_id = ValueCellId::new("WarmAutoSrcCommit", "x");
+        let x_node = NodeId::Value(x_id.clone());
+        let events_before = engine.journal().events_for_node(&x_node).len();
+
+        let compiled_b = compile_source(SRC_B);
+        let result = engine
+            .edit_source(&compiled_b)
+            .expect("edit_source must succeed");
+
+        // (1) GUARD: the Solved arm actually fired. A failure here means the
+        // fixture is wrong, not the production code under test.
+        let x_resolved = result.resolved_params.get(&x_id).expect(
+            "x must be in resolved_params after SolveResult::Solved back-prop; \
+             if absent, the fixture never reached the Solved arm",
+        );
+        assert_scalar_si_approx_eq(
+            x_resolved,
+            0.01,
+            MOVED_AUTO_TOL,
+            "edit_source moved-auto: x must be resolved to 0.01 m (10mm), not the seeded 20mm",
+        );
+
+        // (2) RED SIGNAL — journal: the primitive's own Started/Completed
+        // pair, with the EditReeval provenance slug recorded on Started.
+        // Checks the LAST two events (rather than assuming an exact total)
+        // since cold eval() may itself record journal events for x before
+        // edit_source runs.
+        let events_after = engine.journal().events_for_node(&x_node);
+        assert!(
+            events_after.len() >= events_before + 2,
+            "edit_source must append at least a Started+Completed pair for x, \
+             had {events_before} events before, {} after",
+            events_after.len()
+        );
+        let started = events_after[events_after.len() - 2];
+        let completed = events_after[events_after.len() - 1];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug,
+                TraceSource::EditReeval.as_str(),
+                "Started payload must carry the edit-reeval provenance slug"
+            ),
+            other => panic!(
+                "expected Started payload Custom(\"{}\"), got {other:?}",
+                TraceSource::EditReeval.as_str()
+            ),
+        }
+        assert!(
+            matches!(completed.kind, EventKind::Completed { .. }),
+            "expected the last event to be Completed, got {:?}",
+            completed.kind
+        );
+
+        // (3) Three-leg agreement: result.values, snapshot, and cache all
+        // carry (0.01 m, Determined) for x.
+        let x_result_val = result
+            .values
+            .get(&x_id)
+            .expect("x must be in result.values after edit_source back-prop");
+        assert_scalar_si_approx_eq(
+            x_result_val,
+            0.01,
+            MOVED_AUTO_TOL,
+            "result.values[x] must be 0.01 m (10mm) after back-prop",
+        );
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_source");
+        let (snap_x, snap_det) = snapshot
+            .values
+            .get(&x_id)
+            .expect("x must be in snapshot.values after edit_source");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[x] must be Determined"
+        );
+        assert_scalar_si_approx_eq(
+            snap_x,
+            0.01,
+            MOVED_AUTO_TOL,
+            "snapshot.values[x] must be 0.01 m (10mm) after back-prop",
+        );
+
+        let cache_entry = engine
+            .cache_store()
+            .get(&x_node)
+            .expect("x must have a cache entry after edit_source");
+        match &cache_entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Determined,
+                    "cache[x] determinacy must be Determined"
+                );
+                assert_scalar_si_approx_eq(
+                    v,
+                    0.01,
+                    MOVED_AUTO_TOL,
+                    "cache[x] must be 0.01 m (10mm)",
+                );
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+
+        // (4) Downstream reseed unaffected: y = x + 5mm = 15mm.
+        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        let y_val = result
+            .values
+            .get(&y_id)
+            .expect("y must be in result.values after edit_source reseed");
+        assert_scalar_si_approx_eq(
+            y_val,
+            0.015,
+            MOVED_AUTO_TOL,
+            "edit_source reseed: y must be 0.015 m (15mm = x + 5mm)",
+        );
+    }
+
     /// Assert that `id`'s journal, snapshot, and cache all show the effects of
     /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
     /// commit: a `Started`/`Completed` journal pair with the edit-reeval
