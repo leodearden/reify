@@ -17751,19 +17751,41 @@ fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
 
 #[test]
 fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
-    // parse_cell_id splits on the FIRST '.', so "Bracket.sub.width" yields
-    // member == "sub.width", which matches no ParamDecl.name (member names never
-    // contain a '.'). None is the RIGHT answer, not a gap: an instance's value
-    // cannot be changed by rewriting the shared structure's default literal,
-    // because that default is shared by every instance. γ surfaces it as a
-    // structured error.
+    // The source below declares a REAL `sub` with a specialization override, so
+    // "Holder.child.width" is an instance path that actually exists rather than a
+    // name nothing could ever match. That distinction is what gives this test
+    // teeth: `Holder` ALSO declares its own `param width = 10mm`, so a plausible
+    // wrong implementation — one that split the cell_id on the LAST '.', or that
+    // otherwise took `width` as the member and `Holder` as the entity — would
+    // return Some(span-of-"10mm") here and let a caller rewrite the SHARED
+    // structure default when the user only asked to change one instance's value.
+    // That is precisely the silent-wrong-edit INV-GUI-3 exists to prevent.
+    //
+    // `parse_cell_id` splits on the FIRST '.', so the member is "child.width",
+    // which matches no ParamDecl.name (member names never contain a '.') — hence
+    // None, which γ surfaces as a structured error.
+    const SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
+                       structure def Holder {\n\
+                           param width : Length = 10mm\n\
+                           sub child : Leaf { width = 90mm }\n\
+                       }";
+
     let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
     session
-        .load_from_source(bracket_source(), "bracket")
+        .load_from_source(SRC, "holder")
         .expect("load should succeed");
+
+    // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
+    // below cannot be blamed on the entity or the source failing to load.
+    let own = session
+        .resolve_param_default_span("Holder.width")
+        .expect("Holder.width is a plain param with a default");
+    assert_eq!(&SRC[own.start as usize..own.end as usize], "10mm");
+
     assert_eq!(
-        session.resolve_param_default_span("Bracket.sub.width"),
-        None
+        session.resolve_param_default_span("Holder.child.width"),
+        None,
+        "an instance path must not resolve to the shared structure's own default"
     );
 }
 
