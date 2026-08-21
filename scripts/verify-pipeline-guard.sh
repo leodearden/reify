@@ -165,7 +165,11 @@ if [ -f "$_verify_sh" ]; then
         [ -z "$_gate" ] && continue
         _SET="${_SET}"$'\n'"${_gate}"
     #    Both greps below are load-bearing, not decoration. Do not simplify
-    #    either away:
+    #    either away. (This block sits at the TAIL of the loop body, not above
+    #    the `if`, so it is adjacent to the pipeline it documents — where a
+    #    future simplifier actually looks. Bash admits no comment between
+    #    `done` and its `< <(...)` redirect, so this is as close as the syntax
+    #    allows; please keep it here rather than hoisting it.)
     #
     #    (i) '^[[:space:]]*add(_tool)?[[:space:]]+' is a STATEMENT anchor: it
     #    matches real plan-emission statements only, never a '#'-prefixed
