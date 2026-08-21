@@ -12,10 +12,6 @@
 //! list of geometry needs N such nodes with N known at compile time. That is
 //! precisely what this module computes.
 
-// Removed once entity.rs wires this module in (task #5385 step-6): until then
-// every item here is exercised only by the inline tests below.
-#![allow(dead_code)]
-
 use super::*;
 use std::collections::HashSet;
 
@@ -32,6 +28,17 @@ pub(crate) enum GeometryListShape {
     /// `generate(<count>, |<param>| <geom>)` with a non-negative integer
     /// literal count.
     Generate { count: usize, param: String },
+}
+
+impl GeometryListShape {
+    /// How many elements this list has — i.e. how many `RealizationDecl`s the
+    /// let emits, and hence the length of the resulting `List<Geometry>`.
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            GeometryListShape::ListLiteral { elements } => *elements,
+            GeometryListShape::Generate { count, .. } => *count,
+        }
+    }
 }
 
 /// Classify `expr` as a *geometry-list* let initializer, or `None`.

@@ -1181,6 +1181,16 @@ pub(crate) fn compile_entity(
     // is_selector_expr's Ident arm. Threaded into every is_geometry_let call
     // and into register_guarded_names. (task 4527)
     let mut known_selector_lets: HashSet<&str> = HashSet::new();
+    // Parallel to `known_geometry_lets`: tracks which let names are geometry-LIST
+    // lets — `[<geom>, ...]` or `generate(<int literal>, |i| <geom>)` — mapped to
+    // their statically-known shape. Each such let lowers to N sibling
+    // `RealizationDecl`s (one per element) that eval regroups into a single
+    // `Value::List` cell, so the element COUNT must survive from this pre-pass to
+    // the realization-emission loop below. Disjoint from `known_geometry_lets` by
+    // construction: `classify_geometry_list_let` only accepts shapes that
+    // `is_geometry_let` rejects, and the Let arm tries geometry-let FIRST.
+    // (task #5385)
+    let mut known_geometry_list_lets: HashMap<&str, GeometryListShape> = HashMap::new();
     // Tracks cluster logical names already registered in this pre-pass so that a
     // second MatchArmDeclGroup with the same logical name is skipped wholesale.
     // Mirrors the dup-cluster check in compile_match_arm_decl_group (entity.rs:2038)
@@ -1479,6 +1489,21 @@ pub(crate) fn compile_entity(
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
+                } else if let Some(shape) = classify_geometry_list_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) {
+                    // Geometry-LIST let (task #5385). Classified AFTER the
+                    // geometry-let branch so the two stay disjoint, and
+                    // registered as `List<Geometry>` rather than the
+                    // `List<Real>` the ordinary list-helper return-type ladder
+                    // would infer from the (deliberately mis-typed) geometry
+                    // constructor call in the body.
+                    scope.has_geometry = true;
+                    scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
+                    known_geometry_list_lets.insert(let_decl.name.as_str(), shape);
                 } else {
                     // We'll register with a placeholder type; the actual type will
                     // be determined when we compile the expression. For now, use Real.
@@ -2174,6 +2199,52 @@ pub(crate) fn compile_entity(
                 // geometry lets from its own guarded-member compilation, unchanged by
                 // this task — a guarded geometry let has no backing realization to
                 // mint against).
+                // Geometry-LIST let (task #5385): emits a `List<Geometry>`
+                // value cell here, alongside the N sibling `RealizationDecl`s
+                // the emission loop below produces. Exactly the geometry-let
+                // pair-shape above, one level up: the cell's Value is
+                // authoritative only AFTER `post_process_geometry_handle_cells`
+                // regroups those realizations' handles back into a list.
+                //
+                // `cell_type` is set EXPLICITLY, for the same reason the
+                // geometry-let arm sets `Type::Geometry` explicitly — the
+                // general expression compiler types geometry-function calls as
+                // dimensionless scalars, so the inferred type here would be
+                // `List<Real>`. Pass 1 already registered the name as
+                // `List<Geometry>` in scope; do NOT re-register it.
+                if known_geometry_list_lets.contains_key(let_decl.name.as_str()) {
+                    let id = ValueCellId::new(entity_name, &let_decl.name);
+
+                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+                    validate_annotations(&lowered_annotations, "let", diagnostics);
+                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
+
+                    let list_geometry = Type::List(Box::new(Type::Geometry));
+                    let compiled_expr = compile_expr_with_expected(
+                        &let_decl.value,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        Some(&list_geometry),
+                    );
+
+                    value_cells.push(ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Let,
+                        // Internal-only, matching the geometry-let arm below.
+                        visibility: Visibility::Private,
+                        is_aux: let_decl.is_aux,
+                        cell_type: list_geometry,
+                        default_expr: Some(compiled_expr),
+                        solver_hints,
+                        span: let_decl.span,
+                    });
+
+                    continue;
+                }
+
                 if is_geometry_let(
                     &let_decl.value,
                     functions,
@@ -3822,11 +3893,38 @@ pub(crate) fn compile_entity(
         }
     };
 
+    // Sibling of `geometry_realization_member_name` for geometry-LIST lets
+    // (task #5385), which lower to N realizations rather than one — hence a
+    // `Vec` rather than an `Option`. Same lockstep obligation: the emission
+    // loop below MUST mint exactly these names, or `geometry_realization_names`
+    // and eval's `named_steps` drift apart.
+    //
+    // The synthetic `"{list}#{k}"` names cannot collide with a user identifier
+    // (`#` is not an identifier character) and cannot be written in source, so
+    // they never resolve a `GeomRef::Sub`. They are registered anyway so this
+    // set stays exactly the set of names with `named_steps` entries at eval.
+    let geometry_list_realization_member_names = |member: &reify_ast::MemberDecl| -> Vec<String> {
+        match member {
+            reify_ast::MemberDecl::Let(let_decl) => known_geometry_list_lets
+                .get(let_decl.name.as_str())
+                .map(|shape| {
+                    (0..shape.len())
+                        .map(|k| format!("{}#{}", let_decl.name, k))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    };
+
     // Populate geometry_realization_names via the shared helper before the
     // emission loop so forward references (a later member's arg naming an
     // earlier sibling) are already in scope when their compilation runs.
     for member in structure.members {
         if let Some(name) = geometry_realization_member_name(member) {
+            scope.geometry_realization_names.insert(name);
+        }
+        for name in geometry_list_realization_member_names(member) {
             scope.geometry_realization_names.insert(name);
         }
     }
@@ -3840,6 +3938,49 @@ pub(crate) fn compile_entity(
     // that will have `named_steps[name]` entries at eval time.
     for member in structure.members {
         match member {
+            // Geometry-LIST let (task #5385): statically unroll the initializer
+            // and emit ONE realization per element, named `"{list}#{k}"` and
+            // tagged with its `GeometryListBinding` so eval can regroup the
+            // handles into a single `Value::List` cell. Placed before the
+            // single-geometry arm to mirror the pass-1 classification order;
+            // the two predicates are disjoint either way.
+            reify_ast::MemberDecl::Let(let_decl)
+                if known_geometry_list_lets.contains_key(let_decl.name.as_str()) =>
+            {
+                let shape = &known_geometry_list_lets[let_decl.name.as_str()];
+                if let Some(elements) = expand_geometry_list_elements(
+                    &let_decl.value,
+                    shape,
+                    let_decl.span,
+                    diagnostics,
+                ) {
+                    for (k, element) in elements.iter().enumerate() {
+                        if let Some(ops) = compile_geometry_call(
+                            element,
+                            &scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            0,
+                            &geometry_lets,
+                            &mut HashSet::new(),
+                        ) {
+                            realizations.push(RealizationDecl {
+                                id: RealizationNodeId::new(entity_name, realization_index),
+                                name: Some(format!("{}#{}", let_decl.name, k)),
+                                is_aux: let_decl.is_aux,
+                                list_binding: Some(GeometryListBinding {
+                                    list_name: let_decl.name.clone(),
+                                    index: k,
+                                }),
+                                operations: ops,
+                                span: let_decl.span,
+                            });
+                            realization_index += 1;
+                        }
+                    }
+                }
+            }
             reify_ast::MemberDecl::Let(let_decl)
                 if is_geometry_let(
                     &let_decl.value,
@@ -6321,6 +6462,21 @@ pub(crate) fn build_structure_def_skeleton(
                 // alias it (Ident/branch references) are also classified as
                 // geometry — matching the authoritative path (entity.rs:853-856).
                 known_geometry_lets.insert(let_decl.name.as_str());
+                continue;
+            }
+            // Geometry-LIST lets (task #5385) route out here too: the skeleton
+            // carries `realizations: vec![]` unconditionally, so a
+            // `List<Geometry>` cell here would be a promise nothing hydrates.
+            // Skipping matches the geometry-let `continue` directly above and
+            // keeps skeleton and authoritative `value_cells` in agreement.
+            if classify_geometry_list_let(
+                &let_decl.value,
+                functions,
+                &known_geometry_lets,
+                &known_selector_lets,
+            )
+            .is_some()
+            {
                 continue;
             }
             // Track selector lets BEFORE the where_clause guard — mirrors the authoritative
