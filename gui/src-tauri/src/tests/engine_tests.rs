@@ -17656,3 +17656,120 @@ mod gui_feature_tests {
     }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5094 α — EngineSession::resolve_param_default_span (INV-GUI-3 substrate)
+//
+// The happy-path assertions slice the SOURCE with the returned span. That is
+// what makes PRD v0_6 ai-native-editing §6.1's "default expression range only,
+// never the whole `param … = …` decl" observable rather than merely structural:
+// a span that covered the decl, or included the `=`, would produce a different
+// slice and fail here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Slice `bracket_source()` with a span the resolver returned.
+fn slice_bracket(span: reify_core::SourceSpan) -> &'static str {
+    &bracket_source()[span.start as usize..span.end as usize]
+}
+
+#[test]
+fn resolve_param_default_span_slices_the_default_literal_only() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Bracket.width")
+        .expect("Bracket.width has a default literal");
+    let slice = slice_bracket(span);
+
+    assert_eq!(slice, "80mm", "span must cover the default expression exactly");
+    // §6.1 invariant, from the observable side: expression range ONLY.
+    assert!(
+        !slice.contains("param"),
+        "span must not reach back over the `param` keyword, got {slice:?}"
+    );
+    assert!(
+        !slice.contains('='),
+        "span must not include the `=`, got {slice:?}"
+    );
+}
+
+#[test]
+fn resolve_param_default_span_resolves_a_non_first_member() {
+    // `thickness` is the THIRD param in bracket_source(). A single case on the
+    // first member would not catch a first-member / off-by-one bias.
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Bracket.thickness")
+        .expect("Bracket.thickness has a default literal");
+    assert_eq!(slice_bracket(span), "5mm");
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_with_no_module_loaded() {
+    // parsed_cache is None on a fresh session (and on load_from_compiled-injected
+    // sessions). Must degrade to None, never panic.
+    let session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    assert_eq!(session.resolve_param_default_span("Bracket.width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_unknown_entity() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("Nope.width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_unknown_member() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("Bracket.nope"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
+    // No '.' — parse_cell_id returns Err, which this method maps to None.
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
+    // parse_cell_id splits on the FIRST '.', so "Bracket.sub.width" yields
+    // member == "sub.width", which matches no ParamDecl.name (member names never
+    // contain a '.'). None is the RIGHT answer, not a gap: an instance's value
+    // cannot be changed by rewriting the shared structure's default literal,
+    // because that default is shared by every instance. γ surfaces it as a
+    // structured error.
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("Bracket.sub.width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_param_without_default() {
+    // PRD §6.1's explicit "returns None if the param has no default literal to
+    // rewrite". Shape verified against real source (examples/appearance_surface.ri:16,
+    // `param name : String` inside a structure def).
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source("structure def S { param t : Length }", "s")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("S.t"), None);
+}
