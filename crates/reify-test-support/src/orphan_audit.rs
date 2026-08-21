@@ -957,8 +957,9 @@ mod tests {
     /// [`crate::git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
     /// script spawn sanitizes from the SHARED definition, not from a
     /// module-local copy. Uses [`crate::git_env::removed_vars`], the same
-    /// removal-collecting helper the definition site's own tests use, so both
-    /// read the `(key, None)` encoding through one place.
+    /// removal-collecting helper the definition site's own tests and
+    /// `reify_audit::git_env`'s tests use, so every assertion site in the
+    /// workspace reads the `(key, None)` encoding through one place.
     ///
     /// This covers the WIRING only — that [`build_audit_command`] applies the
     /// sanitizer. That the sanitizer actually defeats an ambient redirect var

@@ -141,14 +141,20 @@ pub fn sanitize(cmd: &mut Command) -> &mut Command {
 /// as a `(key, None)` pair in `get_envs()`; an overwrite would be
 /// `(key, Some(value))`, and an untouched var does not appear at all.
 ///
-/// Shared with `crate::orphan_audit`'s
-/// `build_audit_command_removes_every_repo_redirect_var` rather than inlined at
-/// each assertion site, so this crate's two assertion sites read that encoding
-/// through one place. IN-CRATE only: `#[cfg(test)] pub(crate)` is invisible to
-/// dependent crates, so `reify_audit::git_env`'s tests keep their own copy and
-/// this is not the workspace's single reader of the `(key, None)` encoding.
-#[cfg(test)]
-pub(crate) fn removed_vars(cmd: &Command) -> Vec<String> {
+/// The workspace's single reader of that encoding: this module's tests,
+/// `crate::orphan_audit`'s
+/// `build_audit_command_removes_every_repo_redirect_var` and
+/// `reify_audit::git_env`'s tests all assert through here, so there is one
+/// place to fix if the encoding ever changes. `pub` rather than
+/// `#[cfg(test)] pub(crate)` for exactly that reason — a `cfg(test)` item is
+/// invisible to dependent crates, and that invisibility is what previously
+/// forced a hand-copied twin one crate up. Exporting test helpers is what this
+/// crate is for.
+///
+/// The `pub` caveat on [`sanitize`] applies here too, minus the production
+/// reach: this helper is called only from test code, which is the premise the
+/// crate's audit exclusion already rests on.
+pub fn removed_vars(cmd: &Command) -> Vec<String> {
     cmd.get_envs()
         .filter(|(_, v)| v.is_none())
         .map(|(k, _)| k.to_string_lossy().into_owned())

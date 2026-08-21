@@ -99,24 +99,12 @@ pub fn command(root: &Path) -> Command {
 #[cfg(test)]
 mod tests {
     use super::{REPO_REDIRECT_VARS, command};
+    // The `(key, None)` removal encoding is read through the definition site's
+    // helper rather than a local twin. Imported here rather than added to this
+    // module's `pub use`, which is the production surface.
+    use reify_test_support::git_env::removed_vars;
     use std::ffi::OsStr;
     use std::path::Path;
-    use std::process::Command;
-
-    /// Collect the vars a `Command` has marked for REMOVAL. `std` encodes an
-    /// `env_remove` as a `(key, None)` pair in `get_envs()`; an overwrite would
-    /// be `(key, Some(value))`.
-    ///
-    /// `reify_test_support::git_env` has a twin of this, used by that crate's
-    /// own two assertion sites. It is `#[cfg(test)] pub(crate)`, which no
-    /// dependent crate can see, so this copy stays rather than making a test
-    /// helper part of that crate's public API for one caller.
-    fn removed_vars(cmd: &Command) -> Vec<String> {
-        cmd.get_envs()
-            .filter(|(_, v)| v.is_none())
-            .map(|(k, _)| k.to_string_lossy().into_owned())
-            .collect()
-    }
 
     #[test]
     fn command_targets_git_dash_c_at_the_requested_root() {
