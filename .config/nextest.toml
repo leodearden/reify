@@ -181,10 +181,11 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # concerns was #6374's whole subject.  It was resolved by moving the anchor to
 # the alternation `^test-threads = \("num-cpus"\|[0-9][0-9]*\)$` and re-pointing
 # Tests 17a/17b/17k/17l in tests/infra/test_occt_gated_scope.sh in the SAME
-# commit, plus Test 17m, which asserts the template spelling AND that a real
-# generate still emits an integer — the conjunct that makes a future half-done
-# split fail loudly instead of silently leaking the string into the config
-# verify.sh consumes.  Verified on nextest 0.9.136 that this key accepts the
+# commit.  A half-done split — template moved, anchor not — already fails loudly
+# rather than silently leaking the string into the config verify.sh consumes:
+# every assert in the 17c-17j family reads a GENERATED config with a digits
+# extractor that returns empty on the leaked string.  Measured on that state:
+# 52 passed / 9 FAILED.  Verified on nextest 0.9.136 that this key accepts the
 # string: a misspelt `"num-cpuz"` is rejected with `invalid value: string
 # "num-cpuz", expected an integer or the string "num-cpus"`, so the accept is a
 # real parse and not another instance of the fail-open hazard above.
