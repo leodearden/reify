@@ -213,6 +213,13 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             }
             // log(q) = (axis * angle) where angle = 2*atan2(|v|, w), axis = v/|v|.
             // Near identity (|v| ≈ 0), use leading-order Taylor: log ≈ 2*(x,y,z).
+            //
+            // The emitted components carry ANGLE (slot 7, `rad`) — #6080. The axis
+            // is a unit dimensionless direction and the magnitude is the angle, so
+            // under reify's dimensional algebra the product is ANGLE. This is the
+            // same dimension `orient_to_axis_angle` already gives its `angle` field
+            // (`Value::angle`, below); the two spellings of the same rotation must
+            // agree.
             let v_norm = (x * x + y * y + z * z).sqrt();
             const EPS: f64 = 1e-12;
             let (lx, ly, lz) = if v_norm < EPS {
@@ -225,7 +232,11 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if !lx.is_finite() || !ly.is_finite() || !lz.is_finite() {
                 return Some(Value::Undef);
             }
-            Value::Vector(vec![Value::Real(lx), Value::Real(ly), Value::Real(lz)])
+            Value::Vector(vec![
+                Value::angle(lx),
+                Value::angle(ly),
+                Value::angle(lz),
+            ])
         }
         "orient_inverse" => {
             if args.len() != 1 {
