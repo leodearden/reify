@@ -891,3 +891,78 @@ fn scale(x: Real) -> Real { x }
         other => panic!("expected ItemKind::Function for 'scale', got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// task #6342 step-9: generic trait heading
+// ---------------------------------------------------------------------------
+
+/// A generic `pub trait Holder<T: Rigid>` must render its type params in both
+/// the Markdown and HTML headings — today `lower_trait` never reads
+/// `CompiledTrait.type_params`, so it documents as an indistinguishable
+/// `pub trait Holder`.
+///
+/// Fixture shaped after `trait Container<T: Rigid>`
+/// (`crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:13`).
+/// The non-generic control is declared in the same source rather than reusing
+/// an existing fixture, so the two headings are compared under identical
+/// compilation conditions.
+#[test]
+fn generic_trait_renders_type_params_in_headings() {
+    let source = r#"
+pub trait Holder<T: Rigid> { param count : Int }
+pub trait Plain { param value : Real }
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in generic trait source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // ── (c) identity unchanged ────────────────────────────────────────────
+    let holder = find_item(module, "Holder");
+    assert_eq!(
+        holder.header.name, "Holder",
+        "header.name must stay the bare identity `Holder`"
+    );
+
+    // ── (a) Markdown heading ──────────────────────────────────────────────
+    let md_str = match render_markdown(&model, None, &MarkdownOptions::default()) {
+        MarkdownOutput::Single(s) => s,
+        MarkdownOutput::Split(_) => panic!("MarkdownOptions::default() must yield single mode"),
+    };
+    assert!(
+        md_str.contains("## `pub trait Holder<T: Rigid>` <a id=\"Holder\"></a>"),
+        "generic trait heading must render its type params inside the backtick \
+         code span; got markdown:\n{md_str}"
+    );
+
+    // ── (b) HTML heading, escaped; section id stays the bare name ─────────
+    let html = render_html(&model, None);
+    assert!(
+        html.contains("<h2>pub trait Holder&lt;T: Rigid&gt;</h2>"),
+        "generic trait <h2> must carry HTML-escaped type params; got html:\n{html}"
+    );
+    assert!(
+        html.contains("<section id=\"Holder\">"),
+        "section id must remain the bare name `Holder`; got html:\n{html}"
+    );
+
+    // ── (d) no-regression: non-generic trait emits no empty `<>` ──────────
+    assert!(
+        md_str.contains("## `pub trait Plain` <a id=\"Plain\"></a>"),
+        "non-generic trait heading must be unchanged (no empty `<>`); got markdown:\n{md_str}"
+    );
+    assert!(
+        html.contains("<h2>pub trait Plain</h2>"),
+        "non-generic trait <h2> must be unchanged (no empty `<>`); got html:\n{html}"
+    );
+}
