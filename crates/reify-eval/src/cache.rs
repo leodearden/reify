@@ -160,8 +160,33 @@ impl CachedResult {
     /// No separate `CachedResult` arm for geometry handles is required — the
     /// `Value` layer already carries the correct key fragment.
     ///
-    /// See also [`crate::significance_filter::geometry_handle_significance`]
-    /// for the corresponding per-handle significance comparison.
+    /// # Why there is no separate per-handle significance comparison
+    ///
+    /// A standalone GH significance helper once lived in
+    /// `crate::significance_filter`. It was implemented, never wired to any
+    /// production caller, and deleted by task #6372 as subsumed by the
+    /// composition described above. It is deliberately NOT reintroduced:
+    ///
+    /// - It was extensionally identical to machinery already on the live path.
+    ///   `Value::PartialEq`'s GH arm and `Value::content_hash`'s tag-28 arm
+    ///   both key on `realization_ref` + `upstream_values_hash` and both
+    ///   exclude `kernel_handle` — the very predicate the helper computed.
+    /// - [`CacheStore::record_evaluation_with_freshness`] early-cutoffs on
+    ///   `result_hash`, so a re-realization to a fresh handle already yields
+    ///   [`EvalOutcome::Unchanged`] and dirties no dependents — for every
+    ///   target, with no opt-in allowlist gate in the way.
+    ///
+    /// The anti-goal is worth recording too. Routing geometry handles through
+    /// the significance filter would have *suppressed* the write and kept the
+    /// prior value to hold the hash bit-identical. Since the hash already
+    /// excludes `kernel_handle`, that buys zero cache benefit while persisting
+    /// a STALE `kernel_handle` — which GHR-ζ (#3608) dereferences for kernel
+    /// dispatch. Storing the fresh handle under a stable key strictly
+    /// dominates.
+    ///
+    /// Pinned by `tests::geometry_handle_cache_key`, whose early-cutoff tests
+    /// assert this contract through the real `record_evaluation_with_freshness`
+    /// API.
     pub fn content_hash(&self) -> ContentHash {
         match self {
             CachedResult::Value(val, det) => {
@@ -5777,12 +5802,14 @@ mod tests {
         // content hash" to "no downstream invalidation"; these tests close it.
         //
         // They are also the gate that licensed #6372's deletion of the
-        // standalone `significance_filter::geometry_handle_significance`
-        // helper: they demonstrate, through the real production API, that the
-        // `Value` layer already delivers that helper's contract for every
-        // target and with no opt-in allowlist, so deleting it lost no
-        // behaviour.  They remain as the permanent regression pin that would
-        // fire if a future change re-admitted `kernel_handle` into the key.
+        // never-wired standalone GH significance helper in
+        // `crate::significance_filter` (see the `CachedResult::content_hash`
+        // doc for the full rationale): they demonstrate, through the real
+        // production API, that the `Value` layer already delivers that
+        // helper's contract for every target and with no opt-in allowlist, so
+        // deleting it lost no behaviour.  They remain as the permanent
+        // regression pin that would fire if a future change re-admitted
+        // `kernel_handle` into the key.
 
         /// (3) Re-realization to a FRESH kernel handle, with `realization_ref`
         /// and `upstream_values_hash` unchanged, must early-cutoff.
