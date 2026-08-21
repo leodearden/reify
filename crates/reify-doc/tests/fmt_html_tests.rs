@@ -2036,6 +2036,19 @@ fn build_integration_full_v01_fixture() -> DocModel {
                 },
                 ItemDoc {
                     header: ItemHeader {
+                        name: "Rate".into(),
+                        doc: Some("Rate of change of a quantity per unit time.".into()),
+                        is_pub: true,
+                        annotations: vec![],
+                        pragmas: vec![],
+                    },
+                    kind: ItemKind::TypeAlias {
+                        type_params: vec!["Q: Dimension".into()],
+                        type_repr: "Q / Time".into(),
+                    },
+                },
+                ItemDoc {
+                    header: ItemHeader {
                         name: "mil".into(),
                         doc: Some("One mil = 1/1000 inch.".into()),
                         is_pub: true,
