@@ -758,6 +758,29 @@ verify_runners:
     enabled: true
 verify_drift_check_every_n_lands: 20
 #
+# verify_cross_check_remote_green: DISABLED 2026-08-21 (Leo) as an interim
+# mitigation for dark_factory:4579. The task-2822 per-land cross-check re-verifies
+# every non-trivial remote green with a full LOCAL verify, inside the merge
+# worker's awaited verify_task. That local leg is invisible to merge_queue's
+# in-flight no-progress detector (its content-mtime probe is gated behind
+# `if lease.is_local:` while the lease is remote), so the 1800s budget SIGKILLs a
+# healthy cross-check every time and 3 strikes finalize the request 'blocked'
+# with a false "repeated dead/hung in-flight verify".
+# MEASURED: 13 confirmed cross-check starts since 2026-07-20 -> ZERO verdicts;
+# laptop-attributed lands went 57 (5 weeks pre-2822) -> 1 (month post-2822), and
+# that one was a 4s trivial pass which the `not verify.trivial` guard skips.
+# Specimen: mr-945466ca / task 6393, three passing ~17.4-min remote verifies
+# discarded 2026-08-20.
+# TRADE-OFF, EYES OPEN: this reverts to the PRE-2822 safety posture — a single
+# host's green decides a land, with verify_drift_check_every_n_lands (20) above as
+# the only standing fidelity guarantee. That is the configuration in which #5120
+# landed a red commit off a laptop false green. Accepted because the cross-check
+# is currently contributing zero verdicts anyway, so no real corroboration is
+# being given up, while the false 'blocked' verdicts and the wasted ~47 min per
+# remote green are real.
+# REVERT THIS (back to true) once dark_factory:4579 lands and reify redeploys.
+verify_cross_check_remote_green: false
+#
 # sccache shared backend (κ): both hosts share a redis cache so the laptop free-rides
 # the workstation's warm compilation artifacts. ENABLED 2026-06-10 alongside the C enable.
 # Requires the workstation sccache server to be (re)started with this backend (the running
