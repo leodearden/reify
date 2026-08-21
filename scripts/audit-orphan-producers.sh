@@ -256,6 +256,18 @@ def strip_literals_and_comments(lines):
     depth and raw-string hash count) is carried ACROSS lines within one
     call, and reset at the start of each call -- `mask_cfg_test` invokes
     this once per file, so a misparse is bounded to a single file.
+
+    Returns (code_view, final_state). `final_state` is None when the file
+    ends cleanly back in "code" state, or one of "block_comment" /
+    "raw_string" / "string" when that state is still open at EOF -- an
+    unterminated construct (e.g. a truncated file, or a stray `"`). From
+    the open point on, every code-view line is entirely blank (see the
+    "no closing token on this line" branches below), which can hide a
+    later `#[cfg(test)]` item's real header shape from `mask_cfg_test`
+    the same way an unclosed brace count does, but SILENTLY: no brace
+    count ever goes non-zero, so the unclosed-mask warning never fires
+    for it. See the "lexer state unbalanced at EOF" self-check in this
+    repo's two awk siblings (module header comment above).
     """
     out = []
     state = "code"  # "code" | "block_comment" | "raw_string" | "string"
@@ -398,7 +410,7 @@ def strip_literals_and_comments(lines):
 
         out.append(''.join(buf))
 
-    return out
+    return out, (None if state == "code" else state)
 
 
 def mask_cfg_test(lines):
@@ -428,13 +440,20 @@ def mask_cfg_test(lines):
     and after. What DID change: 10 files whose `#[cfg(test)]` mask
     previously ran unclosed to EOF now close correctly, so this fix is
     preventive rather than corrective on today's corpus.
+
+    Returns (masked, unclosed, lexer_open_state). `lexer_open_state` is
+    the `strip_literals_and_comments` terminal state (None, or one of
+    "block_comment" / "raw_string" / "string") -- see that function's
+    docstring for why an open state at EOF is a DIFFERENT, silent failure
+    mode from an unclosed brace count, and why the caller must warn on it
+    separately.
     """
     masked = [False] * len(lines)
     unclosed = []
     n = len(lines)
     if not any(CFG_TEST_RE.search(l) for l in lines):
-        return masked, unclosed
-    code = strip_literals_and_comments(lines)
+        return masked, unclosed, None
+    code, lexer_open_state = strip_literals_and_comments(lines)
     i = 0
     while i < n:
         if not CFG_TEST_RE.search(lines[i]):
@@ -505,7 +524,7 @@ def mask_cfg_test(lines):
             # Single-statement item or field/variant. Mask one line.
             masked[j] = True
             i = j + 1
-    return masked, unclosed
+    return masked, unclosed, lexer_open_state
 
 
 def name_token_re(name):
@@ -522,11 +541,15 @@ for path in src_files:
         print(f"audit-orphan-producers.sh: skip {path}: {e}", file=sys.stderr)
         continue
     lines = text.splitlines()
-    masked, unclosed = mask_cfg_test(lines)
+    masked, unclosed, lexer_open_state = mask_cfg_test(lines)
     for lineno in unclosed:
         print(f"audit-orphan-producers.sh: WARNING: {path}:{lineno}: "
               f"#[cfg(test)] mask never closes and runs to EOF; any `pub fn` "
               f"below it is hidden from this audit", file=sys.stderr)
+    if lexer_open_state is not None:
+        print(f"audit-orphan-producers.sh: WARNING: {path}: "
+              f"literal/comment lexer state {lexer_open_state} still open "
+              f"at EOF; masking below may be wrong", file=sys.stderr)
     masked_cache[str(path)] = (lines, masked)
     for idx, line in enumerate(lines):
         if masked[idx]:

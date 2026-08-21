@@ -270,6 +270,42 @@ mod unterminated {
 // (closing brace deliberately absent — pins the EOF self-check)
 RUST
 
+# unterminated_string_before_cfg_test.rs -- a DIFFERENT failure mode from
+# unterminated.rs above: here the brace count is never even reached. A
+# string literal earlier in the file (in ordinary, non-cfg(test) code)
+# never closes, so strip_literals_and_comments()'s "string" state carries
+# to EOF and every code-view line from that point on is entirely blank.
+# When mask_cfg_test then reaches the #[cfg(test)] below, its item-header
+# test (BLOCK_KW_RE on the blank code view) finds no block keyword, so
+# is_block is False, only the `mod tests {` line itself gets masked, and
+# the real test body -- including its call to the cross-file target
+# `unterminated_string_target` -- leaks in as unmasked "production" text.
+# Because is_block never went True, the brace walk (and its `unclosed`
+# list) never runs at all, so the PRE-EXISTING "mask never closes"
+# self-check stays silent here -- only the lexer-state-at-EOF self-check
+# can catch this case.
+cat > "$FIXTURE2/crates/reify-fixture/src/unterminated_string_before_cfg_test.rs" <<'RUST'
+pub fn precedes_cfg_test() -> i32 {
+    let _s = "this string is never closed;
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() { unterminated_string_target(); }
+}
+RUST
+
+# unterminated_string_target.rs -- defines the fn referenced only from the
+# leaked test body above. A DIFFERENT file from the probe, so a leaked
+# reference counts as an "external" caller (see the audit's
+# `external = total - per_file.get(path_str, 0)` accounting) the same way
+# collide_mod.rs's cross-file `pub mod collide_mod;` reference does.
+cat > "$FIXTURE2/crates/reify-fixture/src/unterminated_string_target.rs" <<'RUST'
+pub fn unterminated_string_target() -> i32 { 5 }
+RUST
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -458,6 +494,22 @@ assert "stdout stays valid JSON even though the unclosed-mask warning fires" \
 
 assert "well-formed shared fixture triggers no unclosed-mask warning (no false positives)" \
     assert_stderr_lacks "$FIXTURE" "mask never closes"
+
+# ---------------------------------------------------------------------------
+# EOF self-check: an open literal/comment lexer state at EOF also warns.
+# A DIFFERENT (and, pre-fix, entirely silent) failure mode from the brace
+# self-check above: see unterminated_string_before_cfg_test.rs's fixture
+# comment for why the "mask never closes" check cannot catch this one.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- EOF self-check: open literal/comment lexer state warns on stderr ---"
+
+assert "unterminated string literal (lexer state still open at EOF) warns on stderr, naming file and state" \
+    assert_stderr_contains "$FIXTURE2" \
+        "crates/reify-fixture/src/unterminated_string_before_cfg_test.rs: literal/comment lexer state string still open at EOF"
+
+assert "well-formed shared fixture triggers no lexer-state-open warning (no false positives)" \
+    assert_stderr_lacks "$FIXTURE" "literal/comment lexer state"
 
 # ---------------------------------------------------------------------------
 test_summary
