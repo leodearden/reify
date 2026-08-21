@@ -360,4 +360,78 @@ assert_exit "PRECISION: scripts/zzz-not-infra.sh OUTSIDE tests/infra -> fast-pat
 assert_exit "PRECISION: other/tests/infra/test_z.sh unanchored -> fast-path-safe (exit 1)" 1 \
     run_guard requires-full-gate other/tests/infra/test_z.sh
 
+# ---------------------------------------------------------------------------
+# Pair E — emitted-gate plan-line derivation (task 6320)
+# ---------------------------------------------------------------------------
+#
+# ORIGIN: task 6243's reviewer_comprehensive completeness comment — 6243
+# registered two emitted gate scripts by hand
+# (check-nan-safe-ordering.sh, check-compute-trampoline-registration.sh) and
+# the reviewer observed that its siblings share the identical defect.
+#
+# DEFECT: verify.sh's lint plan invokes these gate scripts via EMITTED plan
+# lines -- add() / add_tool() (scripts/verify.sh:1507 / :1571, the only two
+# PLAN+= sites) -- and never `source`s them. The guard's live sourced-lib
+# clause therefore cannot see them, so a gate-script-only diff is classified
+# config-only and takes the dark-factory merge-worker trivial-pass fast-path,
+# skipping the full gate. That is exactly the #4618/#4624 -> #4288 ambush
+# class Pair B already guards for sourced libs: the gate script lands green
+# without ever having been run, and the NEXT task eats the RED.
+#
+# Fix shape: a LIVE derivation clause (like Pair B's, not like a manifest
+# row), so a future emitted gate is covered with no manifest edit at all.
+
+echo ""
+echo "-- Pair E: emitted-gate plan-line derivation --"
+
+# (a) GROUND-TRUTH: a hard-coded, literal list of every gate script emitted by
+# verify.sh's plan today. Deliberately NOT derived from verify.sh: a
+# derivation-driven loop alone would go silently VACUOUS (not red) if a future
+# plan-emission refactor broke the extraction, so this hard-coded tier is the
+# anti-drift net. Mirrors Pair B's REAL-LIB-loop + GROUND-TRUTH split and Pair
+# C's (a)/(b) split for the same reason.
+#
+# RED until step-2 adds the emitted-gate derivation clause for the first SEVEN
+# entries (measured exit 1 at HEAD fee75336ca); the last two are already GREEN
+# via their task-6243 rows in scripts/verify-pipeline-paths.txt.
+for _gate in \
+    scripts/check-manifold-deps.sh \
+    scripts/check-infra-classification-manifest.sh \
+    scripts/check-harness-baseline-registration.sh \
+    scripts/tree-sitter-generate.sh \
+    scripts/ensure-gui-sidecar-placeholder.sh \
+    scripts/check_event_inventory.sh \
+    scripts/test_pm_standardization.sh \
+    scripts/check-nan-safe-ordering.sh \
+    scripts/check-compute-trampoline-registration.sh
+do
+    assert_exit "GROUND-TRUTH: $_gate is load-bearing (emitted by verify.sh's plan; exit 0)" 0 \
+        run_guard requires-full-gate "$_gate"
+    assert "--list includes $_gate (emitted gate; hard-coded ground truth)" \
+        bash -c 'bash "$1" --list | grep -qxF "$2"' \
+        _ "$GUARD_SH" "$_gate"
+done
+
+# (b) DIFF-SHAPE coverage, mirroring Pair A / Pair D, driven through
+# scripts/check-manifold-deps.sh -- an emitted gate that is NOT in any
+# manifest today, so each of these is a genuine RED against the pre-step-2
+# guard rather than a restatement of an already-covered manifest row.
+
+# INCIDENT-SIM: the ambush shape -- a gate-script-only diff must NOT fast-path.
+assert_exit "INCIDENT-SIM: scripts/check-manifold-deps.sh (gate-only diff) -> full gate required (exit 0)" 0 \
+    run_guard requires-full-gate scripts/check-manifold-deps.sh
+
+# MIXED: a config-only file alongside an emitted gate still forces the full gate.
+assert_exit "MIXED: docs/note.md + scripts/check-manifold-deps.sh -> full gate required (exit 0)" 0 \
+    run_guard requires-full-gate docs/note.md scripts/check-manifold-deps.sh
+
+# STDIN form: piped paths (large diffs that would exceed ARG_MAX as argv).
+assert_exit "STDIN: emitted gate piped in -> full gate required (exit 0)" 0 \
+    bash -c 'printf "docs/x.md\nscripts/check-manifold-deps.sh\n" | bash "$1" requires-full-gate' \
+    _ "$GUARD_SH"
+
+# NORMALIZE: a caller-prefixed './' is stripped before the match runs.
+assert_exit "NORMALIZE: ./scripts/check-manifold-deps.sh stripped then matched (exit 0)" 0 \
+    run_guard requires-full-gate ./scripts/check-manifold-deps.sh
+
 test_summary
