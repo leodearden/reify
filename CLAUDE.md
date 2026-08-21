@@ -73,6 +73,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | offline_lane_red task-record corruption: audit + remediation recipe | `docs/notes/offline-lane-red-corruption-remediation.md` |
 | Orchestrator safe-restart modes & knobs | `scripts/orchestrator-redeploy-restart.sh` header |
 | Debug-port provisioning contract | `scripts/setup-worktree-debug-port.sh` header |
+| PRD `.ri` fixture location standard (4 tiers; `docs/prds/**/fixtures/` deprecated) | `tests/prd-gate/README.md` → "Where fixtures live"; `.claude/skills/prd/project.md` → "Landing PRD artifacts" |
 | PTODO grammar & violation taxonomy | `docs/prds/reify-audit-ptodo-detector.md` §8 |
 | sccache / cross-worktree build-cache design | `~/.claude/plans/playful-hopping-nygaard.md` |
 
