@@ -1786,14 +1786,31 @@ mod alias_to_entity_type_private_enum_namespaces {
 // asserting `alias_ty == direct_ty` records the DECISION — the coupling — and
 // tracks α automatically.
 //
-// `LocalEnumShadowScope` does not exist on this branch (grepped: zero hits
-// workspace-wide), so α has not landed and the post-α answer is untestable
-// today. What IS testable, and what these tests pin, is the coupling that
-// determines the answer once α lands.
+// α HAS SINCE LANDED, AND THE DECISION SURVIVED IT — measured, not predicted.
+// `LocalEnumShadowScope` does not exist on this branch's base (`1f9731ad7d`;
+// grepped: zero hits workspace-wide), but it DOES exist on `main`
+// @ `fee75336ca`, which advanced 20 commits while this task was in flight.
 //
-// MEASURED on this branch, both shadowed configurations, all four positions
-// (struct param + the three private-enum-namespace ones), direct AND alias:
-// `StructureRef` with zero errors. Parity holds everywhere.
+// Two MEASUREMENTS, both first-hand:
+//
+//   * On this branch (α absent): both shadowed configurations, all four
+//     positions (struct param + the three private-enum-namespace ones), direct
+//     AND alias — `StructureRef` with zero errors. Parity holds everywhere.
+//
+//   * On a scratch merge of this branch with `main` @ `fee75336ca` (α present,
+//     two textual conflicts in `type_resolution.rs` resolved by keeping both
+//     sides — each is a pure addition against an EMPTY merge base): the direct
+//     spelling of the prelude-vs-local case flips to `Enum("Fit")`, because a
+//     module-local `enum Fit` now shadows the prelude `structure def Fit`.
+//     Every parity test in this module passed UNCHANGED in that run
+//     (harness_langcore 319 passed / 1 failed, the single failure being an
+//     earlier draft of the non-vacuity test below that had frozen the literal
+//     `StructureRef`).
+//
+// That is the decision doing exactly what it was written to do: the alias
+// spelling tracked the direct spelling's flip automatically, with no
+// alias-specific rule to update. Nothing in this module needs to change when α
+// merges — which is the property being recorded.
 //
 // `Fit` IS USED DELIBERATELY HERE, unlike everywhere else in this file — the
 // `alias_to_entity_type_parity` fixture constraint bans it precisely because
@@ -1967,31 +1984,52 @@ mod alias_body_shadow_semantics {
         );
     }
 
-    /// Guard on the claim in this module's doc that α has NOT landed, so the
-    /// coupling — not the post-α answer — is what the tests above pin. When α
-    /// lands, `LocalEnumShadowScope` appears and this test fails, which is the
-    /// prompt to re-read the decision above and confirm the parity assertions
-    /// still express it (they should: they compare the two spellings, not a
-    /// literal variant).
+    /// Non-vacuity guard for the parity tests above: it must not be possible for
+    /// them to pass because BOTH spellings are equally broken.
+    ///
+    /// PRECEDENCE-AGNOSTIC ON PURPOSE. An earlier draft asserted the literal
+    /// `Type::StructureRef("Fit")` — today's answer on this branch's base. That
+    /// is precisely the shape this module's doc warns against, and it was
+    /// measured to break: against `main` @ `fee75336ca` (where
+    /// `enum-shadow-coherence` leaf α HAS landed) the same fixture yields
+    /// `Type::Enum("Fit")`, because a module-local `enum Fit` now shadows the
+    /// prelude `structure def Fit`. Every parity test in this module passed
+    /// unchanged in that same run — which is the decision working as designed.
+    ///
+    /// So this asserts only what non-vacuity actually needs: the shadowed name
+    /// resolves to SOMETHING concrete and unpoisoned, with no errors. Which of
+    /// `Enum` / `StructureRef` wins is α's call, not this task's.
     #[test]
-    fn structure_still_wins_the_shadow_today_so_the_parity_tests_are_not_vacuous() {
-        // Not a decision — a dated MEASUREMENT, recorded so a future reader can
-        // tell "parity holds because both sides are right" from "parity holds
-        // because both sides are equally broken".
-        let (ty, errs) = param_type_and_errors(
-            "enum Fit { Close, Medium }\nstructure def D {\n    param p : Fit\n}\n",
-            "D",
-            "p",
-        );
-        assert!(errs.is_empty(), "baseline must be clean; got: {errs:?}");
-        assert_eq!(
-            ty,
-            Type::StructureRef("Fit".to_string()),
-            "today the STRUCTURE binding wins a shadowed name in a declared-type \
-             position. If this flips, `enum-shadow-coherence` leaf α has landed (or \
-             precedence changed some other way): the parity tests above stay correct \
-             by construction, but re-read this module's recorded decision before \
-             adjusting anything."
-        );
+    fn shadowed_name_resolves_to_a_real_type_so_the_parity_tests_are_not_vacuous() {
+        for case in SHADOW_CASES {
+            let source = format!(
+                "{decls}\nstructure def D {{\n    param p : {body}\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+            let (ty, errs) = param_type_and_errors(&source, "D", "p");
+            assert!(
+                errs.is_empty(),
+                "[{}] baseline must be clean; got: {:?}",
+                case.label,
+                errs
+            );
+            assert!(
+                !ty.is_error(),
+                "[{}] a shadowed name must resolve to a real type, not the `Type::Error` \
+                 poison — otherwise the parity assertions above could hold with BOTH \
+                 spellings broken. Got: {:?}",
+                case.label,
+                ty
+            );
+            assert!(
+                matches!(ty, Type::Enum(_) | Type::StructureRef(_)),
+                "[{}] expected the shadowed name to land on one of the two competing \
+                 bindings (enum or structure); which one wins is `enum-shadow-coherence` \
+                 leaf α's call, not this task's. Got: {:?}",
+                case.label,
+                ty
+            );
+        }
     }
 }
