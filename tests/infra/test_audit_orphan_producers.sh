@@ -327,8 +327,10 @@ assert_stderr_lacks() {
 }
 
 # assert_stdout_valid_json_despite_warning DIR [EXTRA_ARGS...] — succeeds
-# iff stdout still parses as JSON even when a warning fires on stderr.
-# Pins the stdout-purity contract the nine Rust test binaries (via
+# iff the unclosed-mask warning actually fires on stderr (so this assertion
+# fails, rather than passing vacuously, if that warning ever regresses) AND
+# stdout still parses as JSON despite it firing. Pins the stdout-purity
+# contract the nine Rust test binaries (via
 # reify_test_support::run_orphan_audit) depend on.
 assert_stdout_valid_json_despite_warning() {
     local dir="$1"
@@ -336,6 +338,10 @@ assert_stdout_valid_json_despite_warning() {
     local err rc=0 out
     err="$(mktemp)"
     out="$(run_audit_capture "$dir" "$err" "$@")" || rc=$?
+    if ! grep -qF "mask never closes" "$err"; then
+        rm -f "$err"
+        return 1
+    fi
     rm -f "$err"
     printf '%s' "$out" | python3 -c "import json,sys; json.load(sys.stdin)" >/dev/null 2>&1
 }
