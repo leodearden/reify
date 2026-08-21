@@ -99,6 +99,13 @@ set -euo pipefail
 # `pool` member and must never bind a host-global fixed port.
 DEFAULT_PORT=8901
 
+# This script's OWN readiness token, emitted on stderr the moment readiness is
+# PROVEN and before the wrapped command runs. Every refusal path asserts its
+# absence, so a run that refused after already claiming a live serve is
+# detectable. It lives on stderr, not stdout, for the reason in the header:
+# stdout belongs entirely to the wrapped command.
+READY_MARKER="JC-SERVE-READY"
+
 usage() {
     cat <<'USAGE'
 Usage: scripts/with-jcodemunch-serve.sh [--port N] [--dry-run] [--] <command> [args...]
@@ -319,8 +326,165 @@ if ! port_is_free "$PORT"; then
         "something is already accepting on 127.0.0.1:$PORT. This script never adopts a serve it did not spawn (unknown pin, unknown identity lever — it may answer for leodearden/reify instead of local/reify-4ae45bbd) and never kills one either. Find the listener with 'ss -ltnp | grep $PORT' and stop it, or pass --port N to use a different port."
 fi
 
-# INTERIM (task 6109, TDD): spawn, readiness, run and teardown land in the
-# following steps. Refusing loudly here keeps this intermediate commit from
-# looking like a successful no-op.
+# ── Readiness constants ──────────────────────────────────────────────────────
+#
+# Inherited from α's MEASURED values, not guessed: `READY_TIMEOUT` /
+# `READY_POLL_INTERVAL` at jcodemunch_session_live.rs:93-97, where a cold start
+# with the wheels already in the uv cache was ~37 s and the ceiling is generous
+# because a cold uv cache must also fetch from PyPI. Exceeding it is a hard
+# refusal, never a skip.
+#
+# REIFY_JC_SERVE_READY_TIMEOUT is a TEST-ONLY override. The guard needs it for
+# two reasons: it is a `pool` member and cannot spend three minutes on each
+# negative case, and the never-ready refusal only has a reachable code path at
+# all if the deadline can be brought within a test's patience. Never set it in
+# production use — a short deadline turns a legitimately slow cold resolve into
+# a spurious E_JC_SERVE_NOT_READY.
+READY_TIMEOUT="${REIFY_JC_SERVE_READY_TIMEOUT:-180}"
+READY_POLL_INTERVAL=1
+
+SERVE_URL="http://127.0.0.1:$PORT/mcp"
+
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/with-jcodemunch-serve-XXXXXX")"
+SERVE_OUT="$SCRATCH/serve.out"
+SERVE_ERR="$SCRATCH/serve.err"
+PROBE_BODY="$SCRATCH/probe.body"
+PROBE_HEAD="$SCRATCH/probe.head"
+
+# Whatever the serve has written so far, for a failure message (α's
+# `Serve::output`, :197-208). Only ever called on a refusal path.
+serve_output() {
+    printf -- '--- serve stdout ---\n%s\n--- serve stderr ---\n%s\n' \
+        "$(cat "$SERVE_OUT" 2>/dev/null || echo '<unreadable>')" \
+        "$(cat "$SERVE_ERR" 2>/dev/null || echo '<unreadable>')"
+}
+
+# ── Spawn ────────────────────────────────────────────────────────────────────
+#
+# THE PROCESS GROUP IS THE POINT. `uvx` fronts a child python that actually
+# holds the port, and a bare kill of the direct child orphans it. Putting the
+# serve in a process group of its OWN lets teardown signal `uvx` *and* the
+# python by group id alone — this is the bash equivalent of α's
+# `.process_group(0)` (jcodemunch_session_live.rs:177-182), and the alternative
+# it rejects is a `pkill -f` pattern match, which is an unanchored substring
+# test against every command line on the host (`--port 8917` also matches a
+# `--port 89170` serve, and the blast radius is somebody else's watcher).
+#
+# `echo $$` inside the `bash -c` names the GROUP LEADER, and `exec` preserves
+# that pid, so the value is the leader's whether or not `setsid` chose to fork.
+# MEASURED on this host: $! equals the value written here, the leader's pgid
+# equals its own pid, that pgid differs from this script's, and `wait $!`
+# returns the exec'd child's true exit status. The pgid file is nonetheless the
+# load-bearing source — it is derived from the child itself rather than from an
+# assumption about whether setsid forked.
+PGID_FILE="$SCRATCH/serve.pgid"
+setsid bash -c 'echo $$ >"$1"; shift; exec "$@"' _ "$PGID_FILE" "${SERVE_ARGV[@]}" \
+    </dev/null >"$SERVE_OUT" 2>"$SERVE_ERR" &
+SERVE_JOB=$!
+
+SERVE_PGID=""
+for _ in $(seq 1 100); do
+    if [ -s "$PGID_FILE" ]; then
+        SERVE_PGID="$(cat "$PGID_FILE")"
+        break
+    fi
+    # The child may also have died before it could write the file at all; the
+    # readiness loop below reports that as a spawn failure with its status.
+    kill -0 "$SERVE_JOB" 2>/dev/null || break
+    sleep 0.05
+done
+[ -n "$SERVE_PGID" ] || SERVE_PGID="$SERVE_JOB"
+
+# ── Readiness ────────────────────────────────────────────────────────────────
+#
+# IDENTITY, NOT LIVENESS. Ported from α's `await_ready`
+# (jcodemunch_session_live.rs:210-264). `result.serverInfo.name ==
+# "jcodemunch-mcp"` is positive proof that the endpoint answering is the serve
+# THIS script spawned; a bare TCP connect is answered happily by any squatter,
+# and this script defaults to a FIXED port, so that risk is higher here than in
+# α's ephemeral-port case.
+#
+# `/mcp` with NO trailing slash, and NO `mcp-session-id` REQUEST header: a real
+# serve answers `initialize` carrying a client-minted session id with 404, and
+# assigns one itself on the header-less form.
+LAST_PROBE="no attempt completed"
+
+probe_once() {
+    local code name session
+    : > "$PROBE_BODY"
+    : > "$PROBE_HEAD"
+    code="$(curl -s -o "$PROBE_BODY" -D "$PROBE_HEAD" -w '%{http_code}' \
+        --max-time 5 -X POST "$SERVE_URL" \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"with-jcodemunch-serve","version":"0.1"}}}' \
+        2>/dev/null)" || { LAST_PROBE="POST $SERVE_URL: curl failed (connection refused or timeout)"; return 1; }
+
+    if [ "$code" != "200" ]; then
+        LAST_PROBE="POST $SERVE_URL: HTTP $code (expected 200)"
+        return 1
+    fi
+
+    # SSE-vs-plain-JSON body routing, reusing scripts/smoke-jcodemunch-serve.sh's
+    # shape (:96-102): a streamable-http serve may answer with
+    # `text/event-stream`, in which case the JSON-RPC payload is the first
+    # `data:` line rather than the whole body.
+    if grep -qi 'text/event-stream' "$PROBE_HEAD" 2>/dev/null; then
+        grep '^data:' "$PROBE_BODY" | head -n1 | sed 's/^data://' > "$PROBE_BODY.json"
+    else
+        cp "$PROBE_BODY" "$PROBE_BODY.json"
+    fi
+
+    name="$(jq -r '.result.serverInfo.name // empty' "$PROBE_BODY.json" 2>/dev/null || true)"
+    if [ "$name" != "jcodemunch-mcp" ]; then
+        LAST_PROBE="POST $SERVE_URL: HTTP 200 but result.serverInfo.name=[${name:-<absent>}] (expected [jcodemunch-mcp])"
+        return 1
+    fi
+
+    # The server must ASSIGN a session id. Its absence means the session
+    # contract is not being honoured server-side, so nothing downstream of here
+    # could be trusted (α's assertion at :240-245). Header names are
+    # case-insensitive per RFC 7230, hence `grep -i`.
+    session="$(grep -i '^mcp-session-id:' "$PROBE_HEAD" 2>/dev/null | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)"
+    if [ -z "$session" ]; then
+        LAST_PROBE="POST $SERVE_URL: answered as jcodemunch-mcp but assigned no Mcp-Session-Id"
+        return 1
+    fi
+    return 0
+}
+
+await_ready() {
+    local deadline elapsed=0 status
+    deadline="$READY_TIMEOUT"
+    while [ "$elapsed" -lt "$deadline" ]; do
+        # A serve that died (bad pin, no network, port taken between preflight
+        # and spawn) will NEVER become ready — refuse now rather than burn the
+        # whole deadline and then blame a timeout for what was really a spawn
+        # failure (α's try_wait check at :224-230).
+        if ! kill -0 "$SERVE_PGID" 2>/dev/null; then
+            status=0
+            wait "$SERVE_JOB" 2>/dev/null || status=$?
+            refuse E_JC_SERVE_SPAWN_FAILED \
+                "the serve child exited with status $status before becoming ready at $SERVE_URL. Command: $(printf '%q ' "${SERVE_ARGV[@]}")
+$(serve_output)"
+        fi
+
+        probe_once && return 0
+
+        sleep "$READY_POLL_INTERVAL"
+        elapsed=$((elapsed + READY_POLL_INTERVAL))
+    done
+
+    refuse E_JC_SERVE_NOT_READY \
+        "the serve never answered as jcodemunch-mcp at $SERVE_URL within ${READY_TIMEOUT}s; last probe: $LAST_PROBE
+$(serve_output)"
+}
+
+await_ready
+say "$READY_MARKER  serve is live at $SERVE_URL (pgid $SERVE_PGID)"
+
+# INTERIM (task 6109, TDD): running the wrapped command and tearing the serve
+# down land in the following steps. Refusing loudly here keeps this intermediate
+# commit from looking like a successful no-op.
 say "the serve lifecycle is not wired up yet in this commit"
 exit 70
