@@ -8850,6 +8850,12 @@ mod tests {
     /// silently. The three-way failure split below names the culprit: the two
     /// forms DIVERGING is the D2 contradiction; both failing IDENTICALLY
     /// exonerates the dimension tag and indicts the fixture.
+    ///
+    /// The success arm's oracle is equal VOLUME plus equal FACE COUNT, over two
+    /// handles asserted to be distinct. That is deliberately not a proof of
+    /// congruence — no cheap query here is — but it is strictly more than a
+    /// single scalar, and the handle assertion closes the vacuity path a
+    /// memoising `execute` would otherwise open.
     #[test]
     fn draft_angle_dimensioned_matches_bare_real_volume() {
         let angle_rad = std::f64::consts::PI / 60.0;
@@ -8886,13 +8892,47 @@ mod tests {
 
             match (bare, dimensioned) {
                 (Ok(b), Ok(d)) => {
+                    // Anti-vacuity, the axis the `compared > 0` guard does not
+                    // cover: the comparison only means something if the two
+                    // calls actually executed TWO drafts. `execute` builds a
+                    // fresh shape per call today, but a future content-hash
+                    // memoisation keyed on the `extract_f64` output — exactly
+                    // the change this pin exists to survive — would hand the
+                    // same handle back twice and make every assertion below
+                    // trivially true.
+                    assert_ne!(
+                        b.id, d.id,
+                        "both forms must have executed a fresh draft; identical handles \
+                         mean the comparison below is vacuous"
+                    );
                     let vb = volume_of(&mut kernel, &b);
                     let vd = volume_of(&mut kernel, &d);
                     assert_eq!(
                         vb, vd,
                         "Value::angle({angle_rad}) and Value::Real({angle_rad}) must \
-                         produce bit-identical draft geometry — they differ only in a \
+                         produce equal draft volume — they differ only in a \
                          dimension tag that extract_f64 discards"
+                    );
+                    // Volume alone is a weak oracle: two distinct shapes can
+                    // share one. Compare the face count too, so a divergence
+                    // that redistributes material without changing its total
+                    // is still caught. Neither oracle makes the shapes provably
+                    // congruent — the claim this pin actually supports is
+                    // "equal volume AND equal face count", not "bit-identical
+                    // geometry".
+                    let fb = kernel
+                        .extract_faces(b.id)
+                        .expect("extract_faces on the bare-form draft must succeed")
+                        .len();
+                    let fd = kernel
+                        .extract_faces(d.id)
+                        .expect("extract_faces on the dimensioned-form draft must succeed")
+                        .len();
+                    assert_eq!(
+                        fb, fd,
+                        "Value::angle({angle_rad}) and Value::Real({angle_rad}) must produce \
+                         the same face count; equal volume with a different face count would \
+                         be a shape change the volume oracle alone cannot see"
                     );
                     compared += 1;
                 }
