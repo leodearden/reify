@@ -908,6 +908,37 @@ mod tests {
         }
     }
 
+    /// Forward-compat guard: `ItemDoc` JSON serialized before `type_params`
+    /// was added to `ItemKind::TypeAlias` (task #6342) must still deserialize,
+    /// with `type_params` defaulting to an empty vec.
+    ///
+    /// `ItemKind` carries no struct-level `#[serde(default)]` — an internally
+    /// tagged enum cannot express one — so the new field needs a per-field
+    /// `#[serde(default)]` or a missing key is a hard deserialization error.
+    /// Mirrors `module_doc_deserializes_without_cross_refs` and
+    /// `constraint_doc_deserializes_without_line`.
+    #[test]
+    fn item_doc_type_alias_deserializes_without_type_params() {
+        let legacy_json = r#"{"kind":"type_alias","name":"Pressure","doc":null,"is_pub":true,"annotations":[],"pragmas":[],"type_repr":"Force / Area"}"#;
+        let item: ItemDoc = serde_json::from_str(legacy_json).expect("deserialize legacy");
+        assert_eq!(item.header.name, "Pressure");
+        assert!(item.header.is_pub);
+        match &item.kind {
+            ItemKind::TypeAlias {
+                type_params,
+                type_repr,
+            } => {
+                assert_eq!(type_repr, "Force / Area");
+                assert_eq!(
+                    type_params,
+                    &Vec::<String>::new(),
+                    "a legacy payload with no `type_params` key must default to empty"
+                );
+            }
+            other => panic!("expected ItemKind::TypeAlias, got {other:?}"),
+        }
+    }
+
     /// Forward-compat guard: JSON serialized before `cross_refs` was added
     /// (and before any future additive field) must still deserialize via
     /// `#[serde(default)]`.  Catches accidental removal of the attribute.

@@ -172,4 +172,80 @@ mod tests {
             "kind tag must not be camelCase, got: {output}"
         );
     }
+
+    /// Wire-shape guard for `ItemKind::TypeAlias::type_params` (task #6342).
+    ///
+    /// The field is ALWAYS present — `reify-doc` uses no `skip_serializing_if`
+    /// anywhere, so the JSON shape stays uniform across parametric and
+    /// non-parametric aliases and consumers can index it unconditionally.
+    ///
+    /// Also pins that the identity fields did not absorb the params: `"name"`
+    /// stays the bare `Vel`, and the `"kind"` tag stays `"type_alias"`.
+    #[test]
+    fn render_json_type_alias_emits_type_params_array() {
+        let model = DocModel {
+            modules: vec![ModuleDoc {
+                path: "m".to_string(),
+                doc: None,
+                items: vec![
+                    ItemDoc {
+                        header: ItemHeader {
+                            name: "Vel".to_string(),
+                            doc: None,
+                            is_pub: true,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::TypeAlias {
+                            type_params: vec!["Q: Dimension".to_string()],
+                            type_repr: "Q / Time".to_string(),
+                        },
+                    },
+                    ItemDoc {
+                        header: ItemHeader {
+                            name: "Meters".to_string(),
+                            doc: None,
+                            is_pub: false,
+                            annotations: vec![],
+                            pragmas: vec![],
+                        },
+                        kind: ItemKind::TypeAlias {
+                            type_params: vec![],
+                            type_repr: "f64".to_string(),
+                        },
+                    },
+                ],
+                annotations: vec![],
+                pragmas: vec![],
+                cross_refs: Default::default(),
+            }],
+        };
+
+        let output = render_json(&model, true);
+
+        // Parametric alias: the rendered param strings appear verbatim.
+        assert!(
+            output.contains(r#""type_params":["Q: Dimension"]"#),
+            "expected populated `type_params` array in: {output}"
+        );
+        // Non-parametric alias: the key is still present, as an empty array.
+        assert!(
+            output.contains(r#""type_params":[]"#),
+            "`type_params` must always serialize (no skip_serializing_if) in: {output}"
+        );
+
+        // Identity fields are unchanged by the new display field.
+        assert!(
+            output.contains(r#""kind":"type_alias""#),
+            "expected unchanged `type_alias` kind tag in: {output}"
+        );
+        assert!(
+            output.contains(r#""name":"Vel""#),
+            "`name` must stay the bare identifier, not absorb the params, in: {output}"
+        );
+        assert!(
+            !output.contains(r#""name":"Vel<"#),
+            "`name` must not absorb the type params in: {output}"
+        );
+    }
 }
