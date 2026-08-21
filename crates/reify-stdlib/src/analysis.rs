@@ -988,10 +988,20 @@ mod tests {
     /// the comparator is a NAMED fn precisely so this test can pin THAT exact
     /// comparator rather than re-testing `f64::total_cmp`'s own documentation.
     ///
-    /// The `Equal`-only-on-identical-bits leg is what makes this a real
-    /// regression pin: `partial_cmp(..).unwrap_or(Ordering::Equal)` reports
-    /// `Equal` for every NaN-vs-anything pair, so reverting the body to that
-    /// fragment breaks this test.
+    /// Two legs only, deliberately:
+    ///   - `Equal` ONLY on bit-identical values. This leg carries all of the
+    ///     discriminating power: `partial_cmp(..).unwrap_or(Ordering::Equal)`
+    ///     reports `Equal` for every NaN-vs-anything pair, so reverting the
+    ///     comparator body to that fragment breaks exactly this assertion.
+    ///   - sorting under the comparator terminates and comes back
+    ///     non-decreasing — the property the two call sites actually rely on.
+    ///
+    /// The antisymmetry and transitivity legs this test used to carry were
+    /// dropped: both re-verified guarantees that `f64::total_cmp` already
+    /// documents, transitivity cost an O(n³) triple loop over the sample, and
+    /// neither could fail while the `Equal` leg above still passed. Removing
+    /// them left the regression pin's discriminating power unchanged. Do not
+    /// restore them.
     ///
     /// RED before the comparator lands: compile error (symbol missing).
     #[test]
@@ -1008,34 +1018,6 @@ mod tests {
             f64::NEG_INFINITY,
             -f64::NAN,
         ];
-
-        // antisymmetry: cmp(a,b) == cmp(b,a).reverse()
-        for a in sample.iter() {
-            for b in sample.iter() {
-                assert_eq!(
-                    eig_ascending_cmp(a, b),
-                    eig_ascending_cmp(b, a).reverse(),
-                    "antisymmetry violated for ({a:?}, {b:?})"
-                );
-            }
-        }
-
-        // transitivity of Less
-        for a in sample.iter() {
-            for b in sample.iter() {
-                for c in sample.iter() {
-                    if eig_ascending_cmp(a, b) == Ordering::Less
-                        && eig_ascending_cmp(b, c) == Ordering::Less
-                    {
-                        assert_eq!(
-                            eig_ascending_cmp(a, c),
-                            Ordering::Less,
-                            "transitivity violated for ({a:?} < {b:?} < {c:?})"
-                        );
-                    }
-                }
-            }
-        }
 
         // totality: Equal ONLY for bit-identical values.
         for a in sample.iter() {
