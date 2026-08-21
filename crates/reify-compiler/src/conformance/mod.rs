@@ -1400,6 +1400,13 @@ fn quantity_slot(ty: &Type) -> Option<&Type> {
 /// types points at the one difference that is fine and never names the dimension
 /// that caused the rejection. The code stays `ArgTypeMismatch` — that contract is
 /// pinned by the fixtures and stated in `crates/reify-core/src/ty.rs`.
+///
+/// The parenthetical therefore claims ACCEPTANCE, not shape EQUALITY: two of the
+/// three arms reach here with a genuinely different shape — the `Matrix`/`Tensor`
+/// arm applies no arity check at all (a `Tensor2x3` arg at a `Matrix3x3` param),
+/// and the `Vector` arm admits a rank-1 `Type::Tensor` regardless of its element
+/// count. Wording it as "conforms in shape to" would stop the reader chasing the
+/// shape difference by telling them something false about it.
 fn emit_quantity_slot_mismatch(
     param_type: &Type,
     param_quantity: &Type,
@@ -1412,7 +1419,8 @@ fn emit_quantity_slot_mismatch(
             ctx.severity,
             format!(
                 "argument '{}' has quantity '{}' but param '{}' requires quantity '{}' \
-                 (the arg type '{}' conforms in shape to '{}'; only the quantity slot disagrees)",
+                 (the arg type '{}' is otherwise accepted at param type '{}'; only the quantity \
+                 slot disagrees)",
                 ctx.arg_name, arg_quantity, ctx.arg_name, param_quantity, arg_ty, param_type,
             ),
         )
@@ -7558,12 +7566,10 @@ mod tests {
                 }),
             },
             "origin",
-            ExpectedRendering {
-                param_type: "Point3<Scalar[m]>",
-                param_quantity: "Scalar[m]",
-                arg_ty: "Point3<Scalar[kg]>",
-                arg_quantity: "Scalar[kg]",
-            },
+            "argument 'origin' has quantity 'Scalar[kg]' but param 'origin' requires quantity \
+             'Scalar[m]' (the arg type 'Point3<Scalar[kg]>' is otherwise accepted at param \
+             type 'Point3<Scalar[m]>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Scalar[m]', got 'Scalar[kg]'",
             "a Point3<Mass> arg at a Point3<Length> param must be REJECTED — both sides name a \
              concrete dimension and they disagree (task 5766).",
         );
@@ -7596,12 +7602,10 @@ mod tests {
                 }),
             },
             "axis",
-            ExpectedRendering {
-                param_type: "Vector3<Scalar[m]>",
-                param_quantity: "Scalar[m]",
-                arg_ty: "Vector3<Scalar[kg]>",
-                arg_quantity: "Scalar[kg]",
-            },
+            "argument 'axis' has quantity 'Scalar[kg]' but param 'axis' requires quantity \
+             'Scalar[m]' (the arg type 'Vector3<Scalar[kg]>' is otherwise accepted at param \
+             type 'Vector3<Scalar[m]>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Scalar[m]', got 'Scalar[kg]'",
             "a Vector3<Mass> arg at a Vector3<Length> param must be REJECTED — both sides name a \
              concrete dimension and they disagree (task 5766) — and the QUANTITY conflict must \
              route to ArgTypeMismatch, leaving TypeNotConformingToVector owning ARITY/FAMILY only.",
@@ -7647,31 +7651,26 @@ mod tests {
         );
     }
 
-    /// The four values [`emit_quantity_slot_mismatch`] renders, as each must
-    /// appear in the emitted text — anchored to its ROLE KEYWORD, not to its
-    /// position in that emitter's four consecutive `&Type` parameters.
-    ///
-    /// Written out by hand at each probe rather than derived from the `Type`s
-    /// under test: an expectation computed by the same extraction the emitter
-    /// uses could not detect a TRANSPOSED pair, which is the one defect a
-    /// four-`&Type` signature invites — swapping `param_quantity`/`arg_quantity`
-    /// (or `param_type`/`arg_ty`) compiles cleanly and produces a message
-    /// telling the reader the exact opposite of the truth.
-    ///
-    /// For a probe whose param/arg types are WRAPPERS (the `List<Vector3<…>>`
-    /// recursion probe), these are the INNER types the rule actually fires on —
-    /// which is itself worth pinning.
-    struct ExpectedRendering<'a> {
-        param_type: &'a str,
-        param_quantity: &'a str,
-        arg_ty: &'a str,
-        arg_quantity: &'a str,
-    }
-
     /// Rejecting sibling of [`assert_quantity_slot_clean`]: assert that `arg_ty`
     /// at `param_type` produces exactly one `ArgTypeMismatch`, at
-    /// `Severity::Error`, phrased around the QUANTITY slots and rendering each
-    /// of `expected`'s four values in its own role.
+    /// `Severity::Error`, whose message and span label are EXACTLY
+    /// `expected_message` and `expected_label`.
+    ///
+    /// Both expectations are written out by hand at each probe rather than
+    /// derived from the `Type`s under test: an expectation computed by the same
+    /// extraction the emitter uses could not detect a TRANSPOSED pair, which is
+    /// the one defect [`emit_quantity_slot_mismatch`]'s four consecutive `&Type`
+    /// parameters invite — swapping `param_quantity`/`arg_quantity` (or
+    /// `param_type`/`arg_ty`) compiles cleanly and produces a message telling
+    /// the reader the exact opposite of the truth. Whole-string equality also
+    /// pins the QUANTITY phrasing that separates this emitter from
+    /// `emit_arg_type_mismatch`, whose whole-type rendering leads with the
+    /// `Tensor2x3`-vs-`Matrix3x3` difference the `Matrix`/`Tensor` arm
+    /// deliberately ACCEPTS.
+    ///
+    /// For a probe whose param/arg types are WRAPPERS (the `List<Vector3<…>>`
+    /// recursion probe), the types rendered are the INNER ones the rule actually
+    /// fires on — which is itself worth pinning.
     ///
     /// This is where the Error half of the rule's severity split is pinned — the
     /// fn-call entry point this scaffold drives sets `Severity::Error` while the
@@ -7683,7 +7682,8 @@ mod tests {
         param_type: Type,
         arg_ty: Type,
         arg_name: &str,
-        expected: ExpectedRendering<'_>,
+        expected_message: &str,
+        expected_label: &str,
         why: &str,
     ) {
         let diagnostics = quantity_slot_diags(param_type, arg_ty, arg_name);
@@ -7713,22 +7713,17 @@ mod tests {
         // rendering leads with (`Tensor2x3` vs `Matrix3x3`) is exactly what this
         // arm ACCEPTS, so it points the reader away from the actual cause.
         //
-        // Each check below anchors a rendered VALUE to the ROLE KEYWORD that
-        // introduces it, so a transposition inside `emit_quantity_slot_mismatch`
-        // fails here rather than shipping a message that states the opposite of
-        // the truth. Asserting only that the text contains "quantity" would
-        // distinguish this emitter from `emit_arg_type_mismatch` and nothing
-        // more.
-        let ExpectedRendering {
-            param_type: expected_param_type,
-            param_quantity,
-            arg_ty: expected_arg_ty,
-            arg_quantity,
-        } = expected;
-        assert_ne!(
-            param_quantity, arg_quantity,
-            "{why}\nthe probe's two expected quantity renderings must DIFFER, or the \
-             role-anchored checks below cannot detect a transposition",
+        // Asserted as WHOLE strings: a transposition inside
+        // `emit_quantity_slot_mismatch` then fails here rather than shipping a
+        // message that states the opposite of the truth, and no drift anywhere
+        // in either rendering can slip past. Asserting only that the text
+        // contains "quantity" would distinguish this emitter from
+        // `emit_arg_type_mismatch` and nothing more.
+        assert_eq!(
+            diagnostics[0].message, expected_message,
+            "{why}\nthe message must name the ARG's quantity slot after `has quantity` and the \
+             PARAM's after `requires quantity` — transposed, it reads as the exact opposite of \
+             the rule that fired",
         );
         assert_eq!(
             diagnostics[0].labels.len(),
@@ -7737,35 +7732,10 @@ mod tests {
             diagnostics[0].labels,
         );
         assert_eq!(
-            diagnostics[0].labels[0].message,
-            format!("quantity mismatch: expected '{param_quantity}', got '{arg_quantity}'"),
+            diagnostics[0].labels[0].message, expected_label,
             "{why}\nthe label must name the PARAM slot as `expected` and the ARG slot as `got` — \
              transposed, it reads as the exact opposite of the rule that fired",
         );
-        for (fragment, role) in [
-            (
-                format!("has quantity '{arg_quantity}'"),
-                "the ARG's quantity slot, after `has quantity`",
-            ),
-            (
-                format!("requires quantity '{param_quantity}'"),
-                "the PARAM's quantity slot, after `requires quantity`",
-            ),
-            (
-                format!("the arg type '{expected_arg_ty}'"),
-                "the ARG's whole type, after `the arg type`",
-            ),
-            (
-                format!("conforms in shape to '{expected_param_type}'"),
-                "the PARAM's whole type, after `conforms in shape to`",
-            ),
-        ] {
-            assert!(
-                diagnostics[0].message.contains(&fragment),
-                "{why}\nthe message must render {role} — expected to find {fragment:?} in {:?}",
-                diagnostics[0].message,
-            );
-        }
     }
 
     /// FENCE (a-i), task 5766 unknown-ness boundary: a dimension-GENERIC param
@@ -7850,12 +7820,10 @@ mod tests {
                 }),
             },
             "direction",
-            ExpectedRendering {
-                param_type: "Vector3<Real>",
-                param_quantity: "Real",
-                arg_ty: "Vector3<Scalar[m]>",
-                arg_quantity: "Scalar[m]",
-            },
+            "argument 'direction' has quantity 'Scalar[m]' but param 'direction' requires \
+             quantity 'Real' (the arg type 'Vector3<Scalar[m]>' is otherwise accepted at param \
+             type 'Vector3<Real>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Real', got 'Scalar[m]'",
             "a Vector3<Length> arg at a DIMENSIONLESS Vector3<Dimensionless> param must be \
              REJECTED (task 6159) — a param's quantity slot is a written declaration, never an \
              erasure, so `Dimensionless` there asserts unit-lessness. The ARG-side tolerance \
@@ -7893,12 +7861,10 @@ mod tests {
                 },
             ),
             "jacobian",
-            ExpectedRendering {
-                param_type: "Matrix3x3<Real>",
-                param_quantity: "Real",
-                arg_ty: "Tensor2x3<Scalar[m]>",
-                arg_quantity: "Scalar[m]",
-            },
+            "argument 'jacobian' has quantity 'Scalar[m]' but param 'jacobian' requires \
+             quantity 'Real' (the arg type 'Tensor2x3<Scalar[m]>' is otherwise accepted at \
+             param type 'Matrix3x3<Real>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Real', got 'Scalar[m]'",
             "a Tensor2x3<Length> arg at a DIMENSIONLESS Matrix3x3<Dimensionless> param must be \
              REJECTED (task 6159): this arm applies no arity check, so the quantity slot is the \
              only separator — and the ty.rs ruling's Matrix/Tensor consequence is stated in terms \
@@ -7925,12 +7891,10 @@ mod tests {
                 }),
             },
             "origin",
-            ExpectedRendering {
-                param_type: "Point3<Real>",
-                param_quantity: "Real",
-                arg_ty: "Point3<Scalar[m]>",
-                arg_quantity: "Scalar[m]",
-            },
+            "argument 'origin' has quantity 'Scalar[m]' but param 'origin' requires quantity \
+             'Real' (the arg type 'Point3<Scalar[m]>' is otherwise accepted at param type \
+             'Point3<Real>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Real', got 'Scalar[m]'",
             "a Point3<Length> arg at a DIMENSIONLESS Point3<Dimensionless> param must be \
              REJECTED (task 6159): the arity check passes, so the STRICT param-side predicate \
              decides — the same cell the Vector arm's probe pins, reached through a different \
@@ -7988,12 +7952,10 @@ mod tests {
                 },
             ),
             "axis",
-            ExpectedRendering {
-                param_type: "Vector3<Scalar[m]>",
-                param_quantity: "Scalar[m]",
-                arg_ty: "Tensor1x3<Scalar[kg]>",
-                arg_quantity: "Scalar[kg]",
-            },
+            "argument 'axis' has quantity 'Scalar[kg]' but param 'axis' requires quantity \
+             'Scalar[m]' (the arg type 'Tensor1x3<Scalar[kg]>' is otherwise accepted at param \
+             type 'Vector3<Scalar[m]>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Scalar[m]', got 'Scalar[kg]'",
             "a Tensor1x3<Mass> arg at a Vector3<Length> param must be REJECTED: the Vector arm \
              accepts a rank-1 Tensor as vector-shaped, so the quantity slots are then compared \
              and both name a concrete — and different — dimension (task 5766).",
@@ -8021,12 +7983,10 @@ mod tests {
                 dimension: DimensionVector::LENGTH,
             }),
             "inertia",
-            ExpectedRendering {
-                param_type: "Matrix3x3<Scalar[m^2·kg]>",
-                param_quantity: "Scalar[m^2·kg]",
-                arg_ty: "Vector3<Scalar[m]>",
-                arg_quantity: "Scalar[m]",
-            },
+            "argument 'inertia' has quantity 'Scalar[m]' but param 'inertia' requires quantity \
+             'Scalar[m^2·kg]' (the arg type 'Vector3<Scalar[m]>' is otherwise accepted at \
+             param type 'Matrix3x3<Scalar[m^2·kg]>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Scalar[m^2·kg]', got 'Scalar[m]'",
             "a Vector3<Length> arg at a Matrix<3,3,MomentOfInertia> param must be REJECTED: \
              Rules 1a/1b make Vector conforming at this arm, so the quantity slots are then \
              compared and both name a concrete — and different — dimension (task 5766).",
@@ -8063,12 +8023,10 @@ mod tests {
                 }),
             },
             "inertia",
-            ExpectedRendering {
-                param_type: "Matrix3x3<Scalar[m^2·kg]>",
-                param_quantity: "Scalar[m^2·kg]",
-                arg_ty: "Matrix3x3<Scalar[m]>",
-                arg_quantity: "Scalar[m]",
-            },
+            "argument 'inertia' has quantity 'Scalar[m]' but param 'inertia' requires quantity \
+             'Scalar[m^2·kg]' (the arg type 'Matrix3x3<Scalar[m]>' is otherwise accepted at \
+             param type 'Matrix3x3<Scalar[m^2·kg]>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Scalar[m^2·kg]', got 'Scalar[m]'",
             "a Matrix<3,3,Length> arg at a Matrix<3,3,MomentOfInertia> param must be REJECTED: \
              the families agree and the arm applies no arity check, so the quantity slot is the \
              only separator and both sides name a concrete — and different — dimension \
@@ -8103,12 +8061,10 @@ mod tests {
             "axes",
             // The INNER types: the rule fires one level down, after the
             // `List`/`List` wrapper arm has recursed.
-            ExpectedRendering {
-                param_type: "Vector3<Scalar[m]>",
-                param_quantity: "Scalar[m]",
-                arg_ty: "Vector3<Scalar[kg]>",
-                arg_quantity: "Scalar[kg]",
-            },
+            "argument 'axes' has quantity 'Scalar[kg]' but param 'axes' requires quantity \
+             'Scalar[m]' (the arg type 'Vector3<Scalar[kg]>' is otherwise accepted at param \
+             type 'Vector3<Scalar[m]>'; only the quantity slot disagrees)",
+            "quantity mismatch: expected 'Scalar[m]', got 'Scalar[kg]'",
             "a List<Vector3<Mass>> arg at a List<Vector3<Length>> param must be REJECTED with \
              EXACTLY ONE diagnostic: the List/List wrapper arm recurses lockstep into the \
              element types, so the quantity rule fires at the Vector arm one level down and \
