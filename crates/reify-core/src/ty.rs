@@ -81,6 +81,33 @@
 //! `dimensionless_quantity_point_param_rejects_dimensioned_point_arg` and
 //! `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`.
 //!
+//! **`Real` is the SAME CELL as `Dimensionless`; the ruling covers both.**  The
+//! two spellings are exact synonyms at every route into a quantity slot.
+//! `resolve_type_name` maps `"Real"` to `Type::dimensionless_scalar()` and
+//! `"Dimensionless"` to `Type::Scalar { dimension: DIMENSIONLESS }`
+//! (`crates/reify-compiler/src/type_resolution.rs`) — the same value, since
+//! [`Type::dimensionless_scalar`] IS that `Scalar` — and the
+//! dimension-EXPRESSION route the `Vector` / `Point` arms take special-cases the
+//! two names together in one condition.  Both render as `Real` and both name
+//! `DIMENSIONLESS` to the strict param-side predicate, so `Vector3<Real>`,
+//! `Point3<Real>` and `Matrix<M, N, Real>` params are tightened exactly as the
+//! `Dimensionless` spellings are.
+//!
+//! Stating that explicitly matters because the two spellings do NOT carry the
+//! same authorial intent.  Task 5848's ruling is about `Dimensionless`, whereas
+//! `Real` is also the idiomatic "just a raw number" spelling — including for a
+//! number that is a measurement carried in native units.
+//! `crates/reify-compiler/stdlib/fdm_slice.ri:43`'s
+//! `param centerline : List<Point3<Real>>` is exactly that: its module doc fixes
+//! a marshalling contract in which centerline coordinates are raw G-code
+//! MILLIMETRES, "Hence `Real` / `Point3<Real>` here, not `Length` /
+//! `Point3<Length>`".  The ruling still applies there, and that is the intended
+//! reading rather than a casualty of it: the declaration says these coordinates
+//! are bare numbers, so a `List<Point3<Length>>` arg is a real breach of that
+//! contract.  What differs is the PREMISE of the rejection — contract-imposed
+//! erasure rather than an assertion of unit-lessness — so anyone tempted to
+//! retype that param must weigh the marshalling contract, not this rule alone.
+//!
 //! **Measured reach, and what that measurement does NOT cover.**  The tightening
 //! landed with zero new diagnostics: every constructor-arg site at a
 //! `Dimensionless`-quantity param in `stdlib/` and `examples/` passes a
@@ -92,6 +119,18 @@
 //! comment, i.e. genuinely `Length`-dimensioned direction vectors.  They are
 //! referenced nowhere today, so they trip nothing; they are exactly the shape
 //! this rule rejects if anyone ever wires one into a `Vec3<Dimensionless>` slot.
+//!
+//! Inside the measured tree the nearest latent instance is that same
+//! `fdm_slice.ri:43` `List<Point3<Real>>`.  It is absent from the measurement
+//! because the measurement is over constructor-ARG sites and this param has
+//! none: no `.ri` file constructs a `Bead` today (the `Toolpath` / `Bead` values
+//! are built Rust-side by `toolpath_to_value`, which no conformance walk sees).
+//! Even a literal `.ri` arg would stay silent — `point3(…)` erases to a
+//! placeholder leaf carrying no quantity slot at all — so only a
+//! `List<Point3<Length>>`-typed value REF could trip it.  The `Real` quantity
+//! slots in `stdlib/solver_elastic.ri:536/547` are out of reach for a different
+//! reason: they sit inside `Field<…>`, and the `Field` arm below does not
+//! recurse into its `domain` / `codomain`.
 //!
 //! **The asymmetry is a RULING, not an inconsistency — do not "fix" it by
 //! symmetry.**  It tracks a real difference in what the two sides know: erasure
