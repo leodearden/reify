@@ -240,3 +240,89 @@ fn generate_bolt_circle_example_golden() {
         other => panic!("BoltCircle.positions should be a List of 4 point3s; got: {:?}", other),
     }
 }
+
+// ─── task #5385: generate() over a GEOMETRY body ───
+
+/// Assert `cell` is a `Value::List` of exactly `len` geometry handles, none
+/// `Undef`, with pairwise-distinct `realization_ref`s, and return them.
+fn assert_geometry_handle_list(
+    result: &EvalResult,
+    entity: &str,
+    cell: &str,
+    len: usize,
+) -> Vec<reify_core::identity::RealizationNodeId> {
+    let value = result
+        .values
+        .get(&ValueCellId::new(entity, cell))
+        .unwrap_or_else(|| panic!("no value cell `{entity}.{cell}`"));
+    let Value::List(items) = value else {
+        panic!("`{entity}.{cell}` should be a List; got: {value:?}");
+    };
+    assert_eq!(
+        items.len(),
+        len,
+        "`{entity}.{cell}` should have {len} elements; got: {items:?}",
+    );
+    let mut refs = Vec::new();
+    for (k, item) in items.iter().enumerate() {
+        assert!(
+            !item.is_undef(),
+            "`{entity}.{cell}[{k}]` is undef — the silent-undef repro is back: {items:?}",
+        );
+        match item {
+            Value::GeometryHandle {
+                realization_ref, ..
+            } => refs.push(realization_ref.clone()),
+            other => panic!("`{entity}.{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
+        }
+    }
+    let distinct: std::collections::HashSet<_> = refs.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        len,
+        "the elements must be SEPARATE realizations, not clones of one: {refs:?}",
+    );
+    refs
+}
+
+/// The headline acceptance: `generate(n, |i| <geometry>)` yields an evaluable
+/// `List<Geometry>` — n distinct geometry handles, no undefs.
+#[test]
+fn generate_over_geometry_yields_evaluable_geometry_list() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+        }
+    "#,
+    );
+    assert_geometry_handle_list(&result, "S", "holes", 3);
+}
+
+/// The list-literal form yields the same evaluable `List<Geometry>`.
+#[test]
+fn geometry_list_literal_yields_evaluable_geometry_list() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let parts = [cylinder(5mm, 20mm), box(1mm, 1mm, 1mm)]
+        }
+    "#,
+    );
+    assert_geometry_handle_list(&result, "S", "parts", 2);
+}
+
+/// The probe-captured repro itself, read from the PRD fixture on disk so the
+/// pinned signal cannot drift from the artifact that documents it.
+///
+/// Probed 2026-07-24: `P.holes = [undef, undef, undef, undef]`, no diagnostic,
+/// `reify check` green. That is the user-observable defect this task closes.
+#[test]
+fn prd_fixture_silent_undef_generate_geometry_no_longer_undefs() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/prds/v0_6/fixtures/silent_undef_generate_geometry.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read fixture {}: {e}", path.display()));
+    let result = eval_source(&source);
+    assert_geometry_handle_list(&result, "P", "holes", 4);
+}
