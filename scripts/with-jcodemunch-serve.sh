@@ -261,8 +261,66 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
-# INTERIM (task 6109, TDD): preflight, spawn, readiness, run and teardown land
-# in the following steps. Refusing loudly here keeps this intermediate commit
-# from looking like a successful no-op.
+# ── Preflight ────────────────────────────────────────────────────────────────
+#
+# ALL of it runs BEFORE any spawn, so a refusal costs no `uvx` resolve and
+# leaves no process to reap. Not reached on the --dry-run path above, which
+# prints a command it does not run — that is what keeps this script's guard
+# hermetic in a task worktree, where jcodemunch is legitimately absent (PRD §9).
+
+# require_tools — curl and jq build the readiness probe, and the serve command
+# has to exist before there is any point spawning it. Each refusal names the fix
+# rather than the symptom, modelled on β's `require_indexer`.
+require_tools() {
+    local tool
+    for tool in curl jq; do
+        command -v "$tool" >/dev/null 2>&1 && continue
+        die "'$tool' is not on PATH. The readiness probe POSTs an MCP initialize with curl and reads result.serverInfo.name with jq; neither is optional. Install it, or use --dry-run to see the exact serve command without running one."
+    done
+    command -v "${SERVE_CMD[0]}" >/dev/null 2>&1 || \
+        die "'${SERVE_CMD[0]}' is not on PATH. Install uv (https://docs.astral.sh/uv/) or add its bin dir — on this host uvx lives at /home/leo/.local/bin/uvx. Use --dry-run to see the exact command that would be run."
+}
+
+# port_is_free <port> — does NOTHING accept a connection there right now?
+#
+# A bounded pure-bash /dev/tcp connect, the same primitive α's Drop uses
+# (`TcpStream::connect_timeout`, jcodemunch_session_live.rs:366-370) and
+# deliberately not a second dependency: this is called both here in preflight
+# and in the teardown free-wait, so one implementation serves both and the two
+# cannot drift. `timeout 1` bounds it — a loopback connect to a closed port is
+# refused immediately, but a bare /dev/tcp open has no ceiling of its own and
+# this must never be the thing that hangs a teardown.
+port_is_free() {
+    local port="$1"
+    ! timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null
+}
+
+require_tools
+
+# ── REFUSE AN OCCUPIED PORT — never adopt it, never kill it ─────────────────
+#
+# WHY REFUSING BEATS ADOPTING. An already-running serve carries an UNKNOWN pin
+# and an UNKNOWN identity lever. Adopting it means the wrapped command may be
+# answered for `leodearden/reify` — the empty husk — instead of the per-path
+# `local/reify-4ae45bbd` that β actually indexes, and the run then emits a
+# perfectly well-formed EMPTY findings array. That is exactly the wrong-identity
+# vacuity class this PRD exists to eliminate (PRD §2.4), and it is silent: an
+# adopted-serve run and a healthy run look identical at the call site.
+#
+# WHY REFUSING BEATS KILLING. Tearing down a process this script did not spawn
+# is out of scope and unsafe — on 8901 the listener could be a hand-started
+# serve someone is mid-debug on. The operator, not this script, decides.
+#
+# The diagnostic names `ss -ltnp` for the same reason α's does
+# (jcodemunch_session_live.rs:320-324): the port number alone does not tell an
+# operator WHICH process to reclaim.
+if ! port_is_free "$PORT"; then
+    refuse E_JC_SERVE_PORT_BUSY \
+        "something is already accepting on 127.0.0.1:$PORT. This script never adopts a serve it did not spawn (unknown pin, unknown identity lever — it may answer for leodearden/reify instead of local/reify-4ae45bbd) and never kills one either. Find the listener with 'ss -ltnp | grep $PORT' and stop it, or pass --port N to use a different port."
+fi
+
+# INTERIM (task 6109, TDD): spawn, readiness, run and teardown land in the
+# following steps. Refusing loudly here keeps this intermediate commit from
+# looking like a successful no-op.
 say "the serve lifecycle is not wired up yet in this commit"
 exit 70
