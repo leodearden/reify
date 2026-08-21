@@ -32,6 +32,7 @@ pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
 pub mod ranked;
+pub mod ri_literal;
 pub mod sampled;
 pub mod structure_registry;
 pub mod traits;
