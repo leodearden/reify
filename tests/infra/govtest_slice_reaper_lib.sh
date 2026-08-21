@@ -26,6 +26,11 @@
 #                                  dead predecessor run
 #   govtest_reap_stale [<self_pid>] enumerate + stop every dead predecessor's
 #                                  slice; no-op when systemctl is absent
+#   govtest_legacy_stale <listing> <legacy_unit>...
+#                                  filter a listing down to the PIDLESS
+#                                  dash-nesting parents that are safe to stop
+#                                  right now (present, and with no enumerated
+#                                  dash-child left to cascade into)
 #   govtest_slice_teardown <pid>   unconditionally stop this run's own slices,
 #                                  children before parent
 #
@@ -367,6 +372,137 @@ EOF2
     done <<EOF
 $listing
 EOF
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# govtest_legacy_stale <listing> <legacy_unit>...
+#   Echo the subset of <legacy_unit>... that is safe to stop right now, in
+#   ARGUMENT order, deduplicated. <listing> is raw output of
+#   `systemctl --user list-units --all --plain --no-legend` (unit name in
+#   field 1). Always returns 0 — emptiness is the only signal, matching
+#   govtest_slice_pid's contract, because callers run under `set -euo pipefail`
+#   and a non-zero return from inside a capture is an abort hazard.
+#
+#   WHAT THESE ARE. systemd dash-nesting means `a-b-c.slice` implies parents
+#   `a.slice` and `a-b.slice`, vivified automatically and named by nothing.
+#   test_cpu_governed_exec_hostexcl.sh's pre-rename `reify-test-task-<pid>
+#   .slice` therefore accreted `reify-test.slice` and `reify-test-task.slice`
+#   on the host — units no teardown stopped and no pid-keyed sweep could
+#   recognise. They carry NO PID, so govtest_stale_units' liveness oracle has
+#   nothing to consult and they sit correctly outside the pid grammar. This is
+#   the separate, explicitly-listed path they need, and its safety argument has
+#   to be rebuilt from scratch: "the pid is dead" is unavailable, and what
+#   replaces it is EMPTINESS read off a fresh enumeration.
+#
+#   THREE FILTERS, IN ORDER.
+#     1. The arg must match `^<prefix>(-[a-z0-9]+)*\.slice$`. This is what
+#        makes `reify.slice` — the shared implicit ROOT of the LIVE production
+#        hierarchy, under which reify-governed.slice and
+#        reify-governed-agents.slice carry real orchestrator agent placement —
+#        structurally unreachable, along with the production slices themselves,
+#        the other profile's namespace, and any path-traversal string. It also
+#        excludes everything inside the PID grammar, and provably so rather
+#        than incidentally: after the prefix that grammar requires a DIGIT
+#        while this one requires `-` or `.`, so the two languages are disjoint.
+#        Pid units belong to govtest_reap_stale, which consults the liveness
+#        oracle first; admitting one here would stop it on emptiness alone.
+#     2. The arg must appear as field 1 of some row in the FRESH listing. A
+#        name nobody enumerated is not residue.
+#     3. No other enumerated row may begin with the arg's basename plus a dash.
+#
+#   WHY (3) IS "BLOCKED BY ANY DASH-CHILD" AND NOT DEEPEST-FIRST-IN-ONE-PASS.
+#   Stopping a slice CASCADES to its children (measured in task 5930), so a
+#   parent with a live descendant must not be stopped. The alternative — sort
+#   candidates deepest-first and stop them in that order within a single pass —
+#   would have to justify each parent stop by a child stop that ALREADY
+#   HAPPENED, and every stop on this path is fail-soft (`|| true`), so a
+#   silently-failed child stop would leave the parent looking clear and cascade
+#   into it anyway. Reasoning from a fresh enumeration instead means each stop
+#   is justified by what systemd currently reports, with no such window.
+#
+#   WHY TWO-PASS CONVERGENCE IS ACCEPTABLE. The consequence of (3) is that the
+#   first post-rename run stops the two childless leaves and skips their root,
+#   and the NEXT run — whose enumeration then holds only the root — stops that.
+#   Two passes to zero. The consuming suite is host-exclusive on the hot path
+#   of every run_all.sh, so that is two verify runs; and after the rename
+#   nothing in the repo produces these names again, so the sweep goes silent
+#   and stays silent. This is the same fail-safe DIRECTION govtest_stale_units
+#   already documents for pid reuse: the only error reachable is a false
+#   NEGATIVE, which costs one more sweep. A false positive would stop
+#   something live.
+#
+#   THE MEASURED PARENTAGE FACT THAT MAKES (3) CONVERGE AT ALL (host,
+#   2026-08-21). `reify-test<pid>.slice` parents to `reify.slice`, NOT to
+#   `reify-test.slice` — `reify-test1234` is ONE dash segment, not
+#   `reify-test` + `1234` — so a concurrent lane's own units are not
+#   dash-children of the legacy root and cannot block it. Were that not so,
+#   any concurrent run would block the sweep forever and it would never
+#   converge. Conversely a PRE-rename lane's `reify-test-task-<pid>.slice`
+#   genuinely IS a dash-child of `reify-test-task.slice` and correctly does
+#   block it, which is exactly the cascade this rule exists to prevent.
+#
+#   CALLER CONTRACT: pass PIDLESS parent names only. Filter (1) admits any
+#   dash-segmented name under the prefix, including a pid-bearing pre-rename
+#   name like `reify-test-task-1234.slice`, and emptiness does not prove that
+#   unit's owning run is dead. The one caller hardcodes its own three pidless
+#   names, which is the right place for that knowledge — the naming history
+#   belongs to the suite that made it, not to this library.
+#
+#   Dedup uses the same plain space-delimited seen-list idiom as
+#   govtest_stale_units, and field 1 is parsed with the same `read -r unit _`
+#   heredoc, so blank and whitespace-only rows drop out identically.
+# ---------------------------------------------------------------------------
+govtest_legacy_stale() {
+    local listing="${1:-}"
+    shift 2>/dev/null || true
+    local line unit units=" " arg base other seen=" " re blocked
+
+    re="^${_GOVTEST_PROFILE_PREFIX}(-[a-z0-9]+)*\\.slice$"
+
+    # Normalise the listing to a deduplicated, space-delimited set of unit
+    # names ONCE. Unit names contain no spaces, so the membership and
+    # dash-child tests below are plain `case` patterns and this function stays
+    # builtin-only like the rest of the library.
+    while IFS= read -r line; do
+        read -r unit _ <<EOF2
+$line
+EOF2
+        [ -n "$unit" ] || continue
+        case "$units" in
+            *" $unit "*) continue ;;
+        esac
+        units="$units$unit "
+    done <<EOF
+$listing
+EOF
+
+    for arg in "$@"; do
+        # (1) inside this profile's legacy namespace — see header
+        [[ "$arg" =~ $re ]] || continue
+        # (2) present in the fresh enumeration
+        case "$units" in
+            *" $arg "*) ;;
+            *) continue ;;
+        esac
+        case "$seen" in
+            *" $arg "*) continue ;;
+        esac
+
+        # (3) no enumerated dash-child, or stopping this would cascade into it
+        base="${arg%.slice}"
+        blocked=0
+        for other in $units; do
+            case "$other" in
+                "$base-"*) blocked=1; break ;;
+            esac
+        done
+        [ "$blocked" -eq 0 ] || continue
+
+        seen="$seen$arg "
+        printf '%s\n' "$arg"
+    done
 
     return 0
 }
