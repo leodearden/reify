@@ -85,9 +85,15 @@ fn cyl_template(module: &CompiledModule) -> &TopologyTemplate {
 ///
 /// Shared by every argument assertion below (the angle and each axis-direction
 /// component) so the "not found" diagnostic — the message that actually has to
-/// carry a reader through a signature change — is written once. A future ANGLE
-/// corpus pin added by γ/δ/ε should reach for this rather than re-inlining the
-/// `find` + `panic!` pair a third time.
+/// carry a reader through a signature change — is written once.
+///
+/// Deduplication LOCAL TO THIS BINARY, and it cannot be anything else: a Rust
+/// `tests/` integration binary exports no items, so neither another crate nor
+/// another test file in this one can link `named_arg`. A γ/δ/ε corpus pin that
+/// wants the same lookup must either re-inline it or first promote it into
+/// `reify-test-support` (already a dev-dependency of both `reify-compiler` and
+/// `reify-eval`). Stated explicitly because the earlier wording here invited a
+/// reuse the module boundary forbids.
 fn named_arg<'a>(args: &'a [(String, CompiledExpr)], name: &str) -> &'a CompiledExpr {
     &args
         .iter()
