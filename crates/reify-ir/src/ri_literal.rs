@@ -99,9 +99,36 @@ fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
 
 /// Serialize a [`Value`] as `.ri` source text that re-parses to that same value.
 ///
+/// Equivalent to [`value_to_ri_literal_with_unit`] with no unit preference.
+pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
+    value_to_ri_literal_with_unit(value, None)
+}
+
+/// Serialize a [`Value`] as `.ri` source text, preferring `preferred_unit`
+/// for a dimensioned scalar when — and only when — that unit is honourable.
+///
+/// The hint is the unit symbol the caller read off the literal being
+/// replaced, so an edit to `width = 50mm` keeps writing millimetres instead
+/// of hopping to whatever the canonical ladder prefers. It is deliberately a
+/// plain `&str` resolved through [`unit_symbol_to_si`] rather than a span or
+/// a registry handle: that keeps this module free of any reify-compiler
+/// coupling, and independent of the span-resolution work in sibling task
+/// #5094.
+///
+/// The hint is **advisory** — it is taken only when it resolves as a bare
+/// built-in, its dimension matches the value's, and its magnitude is
+/// bit-exact by the same test the ladder applies. Anything else (an unknown
+/// symbol, a dimension mismatch, an affine unit like `degC` whose offset the
+/// built-in table cannot represent, or a rung that would round) silently
+/// falls back to the canonical ladder. A hint can therefore change *which*
+/// exact literal is written, never *whether* the write is exact.
+///
 /// Every arm checks finiteness and representability BEFORE it formats
 /// anything, so no partially-formed literal can escape on the error path.
-pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
+pub fn value_to_ri_literal_with_unit(
+    value: &Value,
+    preferred_unit: Option<&str>,
+) -> Result<String, RiLiteralError> {
     match value {
         Value::Bool(b) => Ok(if *b {
             "true".to_owned()
@@ -145,6 +172,17 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
                     dimension: *dimension,
                 });
             }
+            // Honour the caller's unit first, but only on the ladder's own
+            // terms: same dimension, and bit-exact. Note this is checked
+            // AFTER the empty-ladder rejection, so a hint can never smuggle a
+            // symbol onto a dimension the canonical table refuses to emit.
+            if let Some(hint) = preferred_unit
+                && let Some((_, hint_dim)) = unit_symbol_to_si(hint)
+                && hint_dim == *dimension
+                && let Some(magnitude) = exact_magnitude(*si_value, hint)
+            {
+                return Ok(format!("{}{hint}", format_f64_shortest(magnitude, false)));
+            }
             for sym in ladder {
                 if let Some(magnitude) = exact_magnitude(*si_value, sym) {
                     return Ok(format!("{}{sym}", format_f64_shortest(magnitude, false)));
@@ -164,16 +202,6 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
             kind: value_kind_name(other),
         }),
     }
-}
-
-/// Serialize a [`Value`] as `.ri` source text, preferring `preferred_unit`.
-///
-/// Signature only — hint handling is implemented in step-8.
-pub fn value_to_ri_literal_with_unit(
-    value: &Value,
-    _preferred_unit: Option<&str>,
-) -> Result<String, RiLiteralError> {
-    value_to_ri_literal(value)
 }
 
 /// Whether an `i64` survives the `i64 → f64 → i64` trip the parser forces.
