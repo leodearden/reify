@@ -489,4 +489,58 @@ assert_exit "PRECISION: other/scripts/zzz-nested.sh must NOT promote scripts/zzz
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-nested.sh' \
     _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
 
+# (d) MAP-WIRING: this guard's own oracle and static manifest must select this
+# test as a per-task fail-fast pole.
+#
+# MEASURED GAP this closes: select_infra_tests() (scripts/verify.sh:1254-1280)
+# matches artifact fields by EXACT repo-relative path, and at HEAD fee75336ca
+# scripts/verify-pipeline-infra-tests.txt had NO row for either
+# scripts/verify-pipeline-guard.sh or scripts/verify-pipeline-paths.txt. The
+# nearest row, 'scripts/verify.sh -> tests/infra/test_verify_*.sh', does not
+# fire on them. So a guard-only or manifest-only task-scope (--scope
+# branch/staged) verify selected ZERO infra poles -- including this task's own
+# diff -- and the new emitted-gate derivation clause could regress with no
+# fail-fast signal at all until the merge-tier tests/infra/run_all.sh pool.
+#
+# This is the CHEAP per-task complement to the full-gate route, not a
+# substitute for it -- the same two-lever pairing the task-5252 block in
+# scripts/verify-pipeline-infra-tests.txt already describes, and the same
+# "citing-test subset" cost point as the task-4955 doc-sync rows. This test is
+# hermetic (no cargo, no git), so the pole is nearly free.
+#
+# Matched by GLOB EXPANSION rather than by literal string, so a future
+# broadening to e.g. tests/infra/test_verify_pipeline_*.sh still satisfies it.
+# Precedent shape: tests/infra/test_target_per_lane_independence.sh:293
+# ("verify-pipeline-infra-tests.txt maps <artifact> -> this test") and
+# test_warm_lane_gc_sweep.sh block F.
+
+VP_INFRA_MAP="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+_SELF_TEST_PATH="$SCRIPT_DIR/test_verify_pipeline_guard.sh"
+
+# _map_selects_this_test <artifact-path> — mirror select_infra_tests()'s parse
+# exactly (same active-row filter, same two-field `read`), then expand each
+# matching row's glob under $REPO_ROOT and report success if the expansion
+# contains THIS file.
+_map_selects_this_test() {
+    local _want="$1" _artifact _glob _line _expanded
+    [ -f "$VP_INFRA_MAP" ] || return 1
+    while IFS= read -r _line; do
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob" ]     || continue
+        [ "$_artifact" = "$_want" ] || continue
+        for _expanded in "$REPO_ROOT"/$_glob; do
+            [ "$_expanded" = "$_SELF_TEST_PATH" ] && return 0
+        done
+    done < <(grep -v '^\s*#' "$VP_INFRA_MAP" | grep -v '^\s*$')
+    return 1
+}
+
+# RED until step-6 adds the two rows.
+assert "MAP-WIRING: verify-pipeline-infra-tests.txt maps scripts/verify-pipeline-guard.sh -> this test" \
+    _map_selects_this_test scripts/verify-pipeline-guard.sh
+
+assert "MAP-WIRING: verify-pipeline-infra-tests.txt maps scripts/verify-pipeline-paths.txt -> this test" \
+    _map_selects_this_test scripts/verify-pipeline-paths.txt
+
 test_summary
