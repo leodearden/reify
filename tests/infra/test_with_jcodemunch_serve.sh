@@ -995,4 +995,158 @@ assert "the wrapped command is handed JCODEMUNCH_URL for the CHOSEN port"   b5_u
 assert "the exported JCODEMUNCH_URL carries no trailing slash"              b5_url_has_no_trailing_slash
 assert "a pre-set foreign JCODEMUNCH_URL is overridden, not inherited"      b5_url_overrides_ambient
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 6 — teardown on EVERY exit path
+#
+# A leaked serve keeps holding the port, so the NEXT invocation refuses
+# E_JC_SERVE_PORT_BUSY — a leak here is not a tidiness problem, it breaks the
+# following run. Five exits are driven, and every one of them is driven against
+# the `grandchild` stub (except the never-ready case, which needs a listener
+# that answers under the wrong name):
+#
+#   THE GRANDCHILD IS WHAT MAKES THIS NON-VACUOUS. In that mode the process the
+#   wrapper spawned is a `sleep`, and a SEPARATE forked python holds the port.
+#   A teardown that signalled only the direct child would leave that python
+#   listening — precisely the `uvx`-fronts-python leak α's signal_process_group
+#   exists to prevent. Against a single-process stub, group logic and
+#   child-only logic are indistinguishable.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 6: teardown on every exit path ---"
+
+# witness_field <witness> <name> — the LAST recorded value of `<name>=[…]`.
+witness_field() {
+    local w="$1" name="$2"
+    [ -f "$w" ] || return 1
+    sed -n "s/^${name}=\[\(.*\)\]$/\1/p" "$w" | tail -n1
+}
+
+# group_gone <pgid> — is the whole process group gone? `kill -0 -- -<pgid>`
+# tests the GROUP, not one pid, which is the property that matters: the leader
+# can be reaped while a grandchild in the same group still holds the port.
+group_gone() {
+    local pgid="$1"
+    require_nonempty "pgid" "$pgid" || return 1
+    ! kill -0 -- "-$pgid" 2>/dev/null
+}
+
+# wait_gone <pgid> <port> <secs> — bounded, to absorb scheduler jitter ONLY.
+# The wrapper's own teardown already waits for the port before exiting, so by
+# the time control reaches here the answer should already be yes; a generous
+# window here would mask a teardown that returns before it has finished.
+wait_gone() {
+    local pgid="$1" port="$2" secs="$3" i
+    for i in $(seq 1 $((secs * 10))); do
+        if group_gone "$pgid" && port_is_free "$port"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    group_gone "$pgid" || printf '%s\n' "process group $pgid is still alive after the wrapper exited:" "$(ps -eo pid,pgid,cmd | awk -v g="$pgid" '$2==g')"
+    port_is_free "$port" || printf '%s\n' "port $port is still accepting after the wrapper exited"
+    return 1
+}
+
+# -- exits 1-3: the wrapped command returned (0 / non-zero / 127) -------------
+b6_teardown_after_exit() {
+    local want="$1"; shift
+    local pgid
+    rw_run grandchild "$@" || return 1
+    [ "$RW_RC" = "$want" ] || { printf '%s\n' "expected status $want, got $RW_RC" "$(cat "$RW_ERR")"; return 1; }
+    pgid="$(witness_field "$RW_WITNESS" stub-pgid)"
+    require_nonempty "recorded stub pgid" "$pgid" || return 1
+    wait_gone "$pgid" "$RW_PORT" 2
+}
+
+assert "a successful wrapped command still tears the serve group down"      b6_teardown_after_exit 0   true
+assert "a failing wrapped command still tears the serve group down"         b6_teardown_after_exit 7   bash -c 'exit 7'
+assert "a missing wrapped command (127) still tears the serve group down"   b6_teardown_after_exit 127 /nonexistent/dir/no-such-command
+
+# -- exit 4: readiness was never achieved ------------------------------------
+#
+# The `foreign` stub, not `die`: a child that never bound anything has nothing
+# to leak, so it cannot distinguish a real teardown from no teardown at all.
+# A live listener that never becomes ready is where teardown actually matters.
+b6_teardown_after_not_ready() {
+    local pgid
+    rw_run foreign true || return 1
+    [ "$RW_RC" -ne 0 ] || { echo "the never-ready run exited 0"; return 1; }
+    has_line "$RW_ERR" "$M_NOT_READY" || return 1
+    pgid="$(witness_field "$RW_WITNESS" stub-pgid)"
+    require_nonempty "recorded stub pgid" "$pgid" || return 1
+    wait_gone "$pgid" "$RW_PORT" 2
+}
+assert "a never-ready serve is torn down rather than left listening"        b6_teardown_after_not_ready
+
+# -- exits 5-6: the wrapper itself is signalled -------------------------------
+#
+# rw_run_bg launches the wrapper in the BACKGROUND so the suite can signal it
+# mid-run. MAIN-SHELL ONLY, same registration reason as start_squatter.
+RWB_PID=""
+rw_run_bg() {
+    local mode="$1"; shift
+    local stub
+    RW_DIR="$(mk_tmpdir)" || return 1
+    RW_WITNESS="$RW_DIR/witness"
+    : > "$RW_WITNESS"
+    _WITNESSES+=("$RW_WITNESS")
+    RW_PORT="$(pick_free_port)" || return 1
+    stub="$RW_DIR/stub-serve"
+    mk_stub_serve "$stub" "$mode" || return 1
+    RW_OUT="$RW_DIR/stdout"
+    RW_ERR="$RW_DIR/stderr"
+    env REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
+        REIFY_JC_SERVE_READY_TIMEOUT="$RW_TIMEOUT" \
+        REIFY_JC_SERVE_CMD="$stub" \
+        "$JC_SERVE" --port "$RW_PORT" "$@" >"$RW_OUT" 2>"$RW_ERR" &
+    RWB_PID=$!
+    _BGPIDS+=("$RWB_PID")
+    return 0
+}
+
+wait_for_ready() {
+    local errfile="$1" secs="$2" i
+    for i in $(seq 1 $((secs * 10))); do
+        grep -qF "$READY_MARKER" "$errfile" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    printf '%s\n' "the wrapper never reported $READY_MARKER within ${secs}s:" "$(cat "$errfile" 2>/dev/null)"
+    return 1
+}
+
+# b6_signalled <SIG> <expected status>
+#
+# The wrapped command is a SHORT sleep on purpose. bash defers a trap until the
+# running FOREGROUND child returns (the same property run-gui-dev.sh:169-171
+# names), and the wrapper deliberately keeps the wrapped command in the
+# foreground so its stdin stays inherited — so the handler fires when the sleep
+# ends, not during it. A short sleep keeps that deterministic rather than slow.
+b6_signalled() {
+    local sig="$1" want="$2"
+    local pgid leader gpid rc=0
+    rw_run_bg grandchild sleep 3 || return 1
+    wait_for_ready "$RW_ERR" 25 || return 1
+
+    # ANTI-VACUITY, checked while the fixture is still LIVE: the port really is
+    # held, and it is held by a grandchild rather than by the process the
+    # wrapper spawned. Without this the "group gone" assertion below could pass
+    # against a teardown that only ever killed the leader.
+    pgid="$(witness_field "$RW_WITNESS" stub-pgid)"
+    leader="$(witness_field "$RW_WITNESS" stub-pid)"
+    gpid="$(witness_field "$RW_WITNESS" stub-grandchild-pid)"
+    require_nonempty "recorded stub pgid" "$pgid" || return 1
+    require_nonempty "recorded grandchild pid" "$gpid" || return 1
+    [ "$gpid" != "$leader" ] || { echo "the grandchild fixture is degenerate: listener pid == leader pid"; return 1; }
+    port_is_free "$RW_PORT" && { echo "the grandchild stub is not holding the port — the fixture proves nothing"; return 1; }
+    kill -0 "$gpid" 2>/dev/null || { echo "the grandchild listener is already gone before the signal"; return 1; }
+
+    kill -"$sig" "$RWB_PID" 2>/dev/null || { echo "could not signal the wrapper (pid $RWB_PID)"; return 1; }
+    wait "$RWB_PID" || rc=$?
+    [ "$rc" = "$want" ] || { printf '%s\n' "a SIG$sig-ed wrapper exited $rc (expected $want)" "$(cat "$RW_ERR")"; return 1; }
+    wait_gone "$pgid" "$RW_PORT" 5
+}
+
+assert "a SIGTERMed wrapper exits 143 and tears the serve group down"       b6_signalled TERM 143
+assert "a SIGINTed wrapper exits 130 and tears the serve group down"        b6_signalled INT 130
+
 test_summary
