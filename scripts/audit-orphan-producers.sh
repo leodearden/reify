@@ -177,6 +177,19 @@ BLOCK_KW_RE = re.compile(r'\b(?:fn|mod|impl|struct|enum|trait|union)\b')
 # interesting position" probes; the heavy lifting (raw-string hash
 # counting, char-literal offset tests) is plain string indexing once a
 # candidate position is found, not backtracking regexes.
+#
+# This is the THIRD Rust literal/comment lexer in this repo (the second
+# design): scripts/check-nan-safe-ordering.sh and
+# scripts/check-compute-trampoline-registration.sh each carry an awk
+# `_strip_line(line, out, i, n, ch, h, j, k, pfx, rest)` with the same
+# state machine -- nesting block comments, cross-line raw-string/string
+# state, the same char-literal-vs-lifetime rule -- and the same `lexer
+# state unbalanced at EOF` self-check (see mask_cfg_test's docstring
+# below). One deliberate divergence: the awk lexers BLANK literal/comment
+# CONTENTS but KEEP the delimiters, so a blanked string reads exactly `""`;
+# this Python view blanks the delimiters too, so a blanked string leaves
+# nothing. Nothing wires the three together -- an edge-case fix in one is
+# not automatically ported to the others.
 _CODE_SPECIAL_RE = re.compile(r'["\'/]')
 _BLOCK_COMMENT_TOKEN_RE = re.compile(r'/\*|\*/')
 _STRING_TOKEN_RE = re.compile(r'["\\]')
