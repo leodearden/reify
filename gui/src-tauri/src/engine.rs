@@ -3666,7 +3666,8 @@ impl EngineSession {
     ///   loaded module,
     /// * the member is not a param, has no default, or is declared more than
     ///   once (see [`reify_ast::find_param_default_span`] for the refusal rule),
-    /// * the cell id names an INSTANCE path (`Parent.childinst.member`).
+    /// * the cell id names an INSTANCE path (`Parent.childinst.member`),
+    /// * the member names a param inside a PORT body.
     ///
     /// The instance-path case is worth stating outright: `parse_cell_id` splits
     /// on the FIRST `.`, so `"Parent.childinst.height"` yields the member
@@ -3674,6 +3675,15 @@ impl EngineSession {
     /// name never contains a `.`. That `None` is correct rather than a gap — a
     /// shared structure's default literal is not one instance's value, and
     /// rewriting it would change every instance.
+    ///
+    /// The port-body case is likewise correct rather than a gap. The compiler
+    /// registers a port member under the COMPOSITE name
+    /// `ValueCellId(entity, "<port>.<param>")` and files it in
+    /// `CompiledPort.members`, which is never merged into
+    /// `TopologyTemplate.value_cells` — the only map [`Self::set_parameter`] and
+    /// the property panel key off. So a port-body param is not an editable cell
+    /// under EITHER spelling, and returning a span for its bare name would hand
+    /// a caller a range it must not splice.
     ///
     /// The entity-bearing variant set — `Structure` and `Occurrence` — is
     /// deliberately identical to

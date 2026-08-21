@@ -535,7 +535,7 @@ pub fn find_named_member_span<'a>(
 ///
 /// **Does not reach inside port bodies.** A port-body param is addressed by the
 /// COMPOSITE name `<port>.<param>`, never by its bare name, and is not an
-/// editable cell at all — see [`collect_param_default_candidates`] for why
+/// editable cell at all — see `collect_param_default_candidates` for why
 /// matching a bare name in there could only misfire.
 ///
 /// **Refuses rather than guesses on a multiply-declared name** — the one place
@@ -587,6 +587,21 @@ pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<Sou
 /// surprise callers who infer one from the other. A future consolidation
 /// (shared `walk_members` helper parameterized by `visit_port_body /
 /// visit_sub_body` flags) would unify them; deferred to task η or later.
+///
+/// This module now hand-rolls the member-recursion set in THREE places, so a
+/// newly added [`MemberDecl`] variant must be taught to all three:
+///
+/// | walker | `SubDecl.body` | `PortDecl.members` | early exit |
+/// |---|---|---|---|
+/// | `walk_members_depth` (this one) | yes | no | no — visits everything |
+/// | `find_named_member_span_depth` | no | yes | yes — first match wins |
+/// | `collect_param_default_candidates` | no | no | yes — once ambiguous |
+///
+/// The three differ in BOTH the recursion set and the exit rule, which is why
+/// the consolidation above is still deferred rather than done inline: unifying
+/// only the two that share an exit rule would relocate the drift hazard rather
+/// than remove it. The table is here so the next variant addition starts from a
+/// complete list instead of rediscovering it.
 pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
 where
     F: FnMut(&'a MemberDecl),
