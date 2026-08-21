@@ -522,12 +522,14 @@ trait Shaper { }
 // this trait and let the per-half param-shape tests carry the duality — an
 // empty marker with no consumer is not worth keeping on its own.
 //
-// That disposition is not left to whoever next reads this comment: a
-// follow-up task, filed by #6096 and DEP-GATED ON #6240, exists solely to
-// re-ask the question once #6240 reaches a terminal state, and it carries the
-// exact deletion recipe (this decl, both `: ActuatorLimit` refinements, and
-// step (a) of `assert_actuator_limit_param_shape` in
-// trajectory_stdlib_compile.rs). Deleting the trait early, before #6240 has
+// That disposition is not left to whoever next reads this comment: #6096
+// filed it as a follow-up, and it now lives INSIDE #6240's own scope as an
+// explicit "DISPOSITION CHECK" bullet carrying the exact deletion recipe
+// (this decl, both `: ActuatorLimit` refinements, and step (a) of
+// `assert_actuator_limit_param_shape` in trajectory_stdlib_compile.rs). So
+// there is no separate dep-gated task to chase — the SAME implementer who
+// answers the pairing question answers this one, in the same pass, with the
+// evidence in front of them. Deleting the trait early, before #6240 has
 // answered, is the one thing that would waste that gating.
 //
 // Kept empty by design, same marker-trait discipline as `trait Shaper { }`,
