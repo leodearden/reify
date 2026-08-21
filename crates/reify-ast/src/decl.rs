@@ -530,13 +530,7 @@ pub fn find_named_member_span<'a>(
 /// already flags these member-walking helpers as individually correct but
 /// caller-surprising when one contract is inferred from another.
 pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<SourceSpan> {
-    members
-        .iter()
-        .find_map(|member| match member {
-            MemberDecl::Param(p) if p.name == name => Some(p),
-            _ => None,
-        })
-        .and_then(|p| p.default.as_ref().map(|e| e.span))
+    find_param_default_span_depth(members, name, 0)
 }
 
 /// Visit every member of a specialization-scope body (spec §8.7).
@@ -662,6 +656,64 @@ fn find_named_member_span_depth<'a>(
                         depth + 1,
                     ) {
                         return Some(result);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Depth-bounded worker for [`find_param_default_span`].
+///
+/// The recursion set matches [`find_named_member_span_depth`] variant-for-variant
+/// so the two sibling accessors cannot drift: `GuardedGroup` (BOTH `members` and
+/// `else_members`), `PortDecl.members`, and each `MatchArmDeclGroup` arm's
+/// `member`. Everything else is skipped.
+///
+/// **`SubDecl.body` is deliberately NOT traversed.** That omission is not an
+/// oversight — it mirrors [`find_named_member_span`] and is the asymmetry
+/// already documented on [`walk_specialization_scope_members`]. A `sub`'s body
+/// holds SPECIALIZATION overrides of a child instance, not the child's own
+/// param declarations, so a default span found there would belong to a
+/// different entity than the caller's cell_id names — splicing into it would
+/// rewrite the wrong declaration.
+fn find_param_default_span_depth(
+    members: &[MemberDecl],
+    name: &str,
+    depth: usize,
+) -> Option<SourceSpan> {
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return None;
+    }
+    for member in members {
+        match member {
+            MemberDecl::Param(p) if p.name == name => {
+                return p.default.as_ref().map(|e| e.span);
+            }
+            MemberDecl::GuardedGroup(g) => {
+                if let Some(span) = find_param_default_span_depth(&g.members, name, depth + 1) {
+                    return Some(span);
+                }
+                if let Some(span) = find_param_default_span_depth(&g.else_members, name, depth + 1)
+                {
+                    return Some(span);
+                }
+            }
+            MemberDecl::Port(port) => {
+                if let Some(span) = find_param_default_span_depth(&port.members, name, depth + 1) {
+                    return Some(span);
+                }
+            }
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    if let Some(span) = find_param_default_span_depth(
+                        std::slice::from_ref(&*arm.member),
+                        name,
+                        depth + 1,
+                    ) {
+                        return Some(span);
                     }
                 }
             }
