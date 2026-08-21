@@ -78,6 +78,7 @@ import {
   staleAllowlistEntries,
   unregisteredConsumerlessRows,
   staleConsumerlessEntries,
+  landedConsumerlessChannels,
   channelRegistrationsIn,
 } from './eventChannelConsumerContract';
 
@@ -294,6 +295,17 @@ describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
    * a direct `listen<T>('<channel>', ...)` call and the `['<channel>', mapper]`
    * tuple entries `subscribeToClaudeEvents` feeds to its `listen(name, mapper)`
    * loop (bridge.ts:457) — so a bare `listen('` match could not miss the second.
+   *
+   * DIVISION OF LABOUR with (e), which is why this loop asserts nothing about
+   * rows: (e) owns register↔row (every `*(none)*` row has an entry, every entry
+   * names a live row), (f) owns row↔bridge.ts. So (f) iterates
+   * `landedConsumerlessChannels` rather than the raw register, and SKIPS an
+   * entry whose row has not yet flipped to `*(none)*`. Such an entry pins
+   * nothing — the doc cell is what asserts the absence — and demanding it have
+   * landed would re-couple this suite to another task's merge order, the exact
+   * asymmetry `staleConsumerlessEntries`' one-directional rule and this file's
+   * `DELIBERATELY_CONSUMERLESS` docblock both exist to preserve. The floor
+   * below keeps that skip from emptying the loop unnoticed.
    */
   it('(f) every deliberately-consumer-less channel has no bridge.ts registration site', () => {
     // Non-vacuity for the source matcher, one live channel per registration
@@ -308,17 +320,19 @@ describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
       'channel matcher found no tuple-entry registration in bridge.ts',
     ).not.toStrictEqual([]);
 
-    for (const channel of Object.keys(DELIBERATELY_CONSUMERLESS)) {
-      const row = CLASSIFIED.find((c) => c.channel === channel);
+    // Register-side non-vacuity. Skipping not-yet-landed entries is correct
+    // (see the docblock), but a register that drifted ENTIRELY into
+    // pre-registered state would leave this loop checking nothing while staying
+    // green. A `>= 1` floor, deliberately not `=== Object.keys(...).length`:
+    // equality would forbid pre-registration, reintroducing in a new spelling
+    // the merge-order coupling this check was fixed to shed.
+    const landed = landedConsumerlessChannels(CLASSIFIED, DELIBERATELY_CONSUMERLESS);
+    expect(
+      landed.length,
+      'no DELIBERATELY_CONSUMERLESS entry has a row that landed as `*(none)*` — (f) would check nothing',
+    ).toBeGreaterThanOrEqual(1);
 
-      // Non-vacuity: a find() that silently returned undefined would make the
-      // kind assertion below unreachable rather than failing.
-      expect(row, `no \`${channel}\` row in docs/gui-event-channels.md §1/§2`).toBeDefined();
-      expect(
-        row!.kind,
-        `docs/gui-event-channels.md \`${channel}\` Consumer cell must be \`*(none)*\``,
-      ).toBe('explicit-none');
-
+    for (const channel of landed) {
       expect(
         channelRegistrationsIn(BRIDGE_SOURCE, channel),
         `bridge.ts must not subscribe to the '${channel}' channel while its doc row says \`*(none)*\``,
