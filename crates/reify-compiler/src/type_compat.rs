@@ -6129,10 +6129,12 @@ mod tests {
     /// CORPUS, so the guard cannot silently degenerate into a tautology as the
     /// corpus is edited.
     ///
-    /// Both the pinned `expected` column and the canonical implementation's
-    /// MEASURED verdicts are checked: the first catches a corpus edited to one
-    /// verdict, the second catches an `expected` column that has stopped
-    /// describing the implementation at all.
+    /// Only the pinned `expected` column is checked, not either
+    /// implementation's measured verdicts. The differential above already
+    /// asserts `heads_unifiable(param, arg) == expected` for EVERY row, so once
+    /// it passes, "some row is pinned true" and "some row measures true" are
+    /// the same statement — a measured assertion here could only fire in a
+    /// state the differential has already rejected, with a worse message.
     #[test]
     fn sync_drift_check_heads_unifiable_corpus_exercises_both_verdicts() {
         let corpus = heads_unifiable_corpus();
@@ -6143,14 +6145,6 @@ mod tests {
         assert!(
             corpus.iter().any(|(_, _, expected, _)| !*expected),
             "corpus must pin at least one head-MISMATCH pair"
-        );
-        assert!(
-            corpus.iter().any(|(p, a, _, _)| heads_unifiable(p, a)),
-            "corpus must MEASURE at least one head-MATCH pair"
-        );
-        assert!(
-            corpus.iter().any(|(p, a, _, _)| !heads_unifiable(p, a)),
-            "corpus must MEASURE at least one head-MISMATCH pair"
         );
     }
 }
