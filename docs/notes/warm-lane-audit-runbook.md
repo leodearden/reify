@@ -136,6 +136,14 @@ split, and why only `STRANDED` warns per lane while `REWRITTEN` is counted and o
 *different* diff changes the patch id, and will read `STRANDED`. This is the reason `STRANDED` is
 an investigate-then-escalate signal and never an auto-repair trigger.
 
+**Empty-commit anchors are not a gap in this script.** The standalone `git patch-id` command emits
+no output for a zero-diff commit, but this script never invokes that command — `git cherry`'s own
+internal patch-id computation still treats two empty commits as equivalent (verified empirically
+2026-08-21 against a synthetic empty-commit pair), so an empty-commit anchor whose replay is
+reachable in `HEAD` reads `REWRITTEN` exactly like any other rewritten step. Only a genuinely absent
+empty step — no equivalent commit anywhere in `HEAD`'s history — reads `STRANDED`, which is the
+intended, correct behaviour, not a false positive.
+
 **Trailing HEADROOM line** (table format: one summary line after all per-lane rows; JSON format:
 the `"headroom"` object):
 
@@ -326,13 +334,11 @@ pre-replay ones and is never rewritten to match. The recorded SHA going dangling
 ancestor check — is the mechanism **working as designed**, not work being lost: `acquire_lane`
 always re-seeds from the base (CLAUDE.md → "Warm lanes").
 
-**The discriminator is patch-id, never reachability.** `git cherry HEAD <anchor> <anchor>^`: a
-leading `-` means the patch **is** present in `HEAD`'s history under a new SHA (benign —
-`REWRITTEN`); a leading `+` means the patch is genuinely absent (`STRANDED`).
-`scripts/warm-lane-audit.sh` already implements exactly this discriminator — see its `plan_sync`
-column, the "`plan_sync` verdicts" table above, and invariant A6. Dark-factory's equivalent path
-is `_reconcile_done_step_commits` → `find_equivalent_commit`, which files only `severity='info'`.
-This section does not restate either's verdict semantics — read those directly.
+**The discriminator is patch-id equivalence, never reachability** — see the "`plan_sync` verdicts"
+table above and invariant A6 for the mechanism (`scripts/warm-lane-audit.sh`'s `git cherry`
+invocation) and full verdict semantics; this section does not restate them. Dark-factory's
+equivalent path is `_reconcile_done_step_commits` → `find_equivalent_commit`, which files only
+`severity='info'`.
 
 A **subject-only** match (comparing commit messages instead of patch content) is *not* a
 substitute for patch-id: on one measured branch, subject-matching scored 0/18 where patch-id
@@ -342,12 +348,14 @@ scored 18/18.
 diff a fresh run against:**
 
 - **Measured 2026-08-19 on the live reify pool:** of 71 tasks holding 530 unique SHAs still on
-  disk, 52 of 71 had at least one dangling SHA and 43 of 71 were all-dangling (~60% dangle rate).
-  Of 27 non-`done` tasks holding 205 dangling SHAs, 204 were patch-id-present on their own
-  branch; the single miss was an **empty commit** (`git patch-id` emits nothing for a zero-diff
-  commit) whose replayed twin existed with an identical subject. **Zero** real strands.
-  `scripts/warm-lane-audit.sh` reported `plan_stranded=0 plan_rewritten=28 plan_unknown=1
-  plan_mismatch=0`.
+  disk, 52 of 71 had at least one dangling SHA and 43 of 71 were all-dangling (43/71 ≈ 61% of
+  tasks all-dangling). Of 27 non-`done` tasks holding 205 dangling SHAs, 204 were patch-id-present
+  on their own branch; the single miss was an **empty commit** — its replayed twin existed with an
+  identical subject, but the standalone `git patch-id` command used for this finer-grained, ad hoc
+  per-SHA sweep emits no output for a zero-diff commit and so could not match it. This script's own
+  `git cherry`-based discriminator does not share that gap (see the empty-commit note by the
+  `plan_sync` verdicts table above). **Zero** real strands. `scripts/warm-lane-audit.sh` reported
+  `plan_stranded=0 plan_rewritten=28 plan_unknown=1 plan_mismatch=0`.
 - **Corpus-wide (dark-factory task 4032 §4, D6/INV-5; corpus measured by dark-factory task
   3157's 2026-08-05 addendum):** 991 of 1,973 recorded done-step SHAs (50.2%) no longer exist as
   git objects; a bare `merge-base --is-ancestor` fires on 185 of 200 live task branches (92.5%);
@@ -469,7 +477,12 @@ Expect `plan_rewritten` to dominate — that is a healthy pool, not a finding. A
 `plan_stranded` is an **investigate-then-escalate** signal, never an auto-repair trigger; work the
 triage order in "Reading a STRANDED lane" above. No measured counts are recorded here on purpose: a
 point-in-time number frozen into a runbook is the frozen-constant antipattern D8/G6 reject — the
-recipe belongs in tracked docs, its output does not.
+recipe belongs in tracked docs, its output does not. That prohibition targets a *live pool's current
+counters* presented as a value a future run is expected to reproduce; it does not reach the dated,
+attributed historical measurements recorded elsewhere in this file (e.g. "Reading a PINNED-heavy
+pool" above, and the evidence in `"A plan.json done-step commit SHA is dangling / unreachable"`
+further above) — those record a past incident or a past measurement for context, never a baseline to
+diff a fresh run against, so they are not the antipattern this sentence rejects.
 
 ## Exit codes
 
