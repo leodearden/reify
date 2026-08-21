@@ -907,8 +907,18 @@ fn collect_uses_in_connect(c: &ConnectDecl, name: &str, out: &mut Vec<SourceSpan
 }
 
 /// Collect uses inside a `sub` declaration: constructor args, specialization
-/// param overrides, the `at` placement pose, the `where` guard, and any nested
-/// specialization-body / keyed-block members (depth-bounded).
+/// param overrides, the `at` placement pose, the indexer clause's domain
+/// expression, the `where` guard, and any nested specialization-body /
+/// keyed-block members (depth-bounded).
+///
+/// `index_binder` (the `i` in `sub xs[i in 0..4] = …`, task #5481 α) is
+/// deliberately NOT registered as a new local binding site here, mirroring
+/// the existing `ExprKind::Quantifier` precedent: its `variable`/
+/// `variable_span` fields are likewise never walked as a binding by
+/// `collect_idents_in_expr` below (only `collection`/`predicate` are) — see
+/// the "Known limitation" doc comment on that function. `index_domain` IS an
+/// ordinary expression in the enclosing scope (task #5579), so it is walked
+/// like `pose_expr`.
 fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<SourceSpan>) {
     for (_, arg) in &s.args {
         collect_idents_in_expr(arg, name, out);
@@ -918,6 +928,9 @@ fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<Sour
     }
     if let Some(pose) = &s.pose_expr {
         collect_idents_in_expr(pose, name, out);
+    }
+    if let Some(domain) = &s.index_domain {
+        collect_idents_in_expr(domain, name, out);
     }
     // Inline `at … where { … }` relate-block relations (task δ 4384): collect
     // uses in each, the same as a member-level `relate { }` block.
