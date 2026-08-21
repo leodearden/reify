@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
-# tests/infra/govtest_slice_reaper_lib.sh — lifecycle for the private
-# per-run systemd slices created by tests/infra/test_cpu_load_governance.sh
-# (task 5930). Designed to be sourced by that test and by
-# tests/infra/test_govtest_slice_reaper.sh.
+# tests/infra/govtest_slice_reaper_lib.sh — lifecycle for the private per-run
+# systemd slices created by the infra suites that place real cgroup work:
+#   * tests/infra/test_cpu_load_governance.sh   — `reify-govtest` (task 5930)
+#   * tests/infra/test_cpu_governed_exec_hostexcl.sh — `reify-test` (task 6386)
+# and by tests/infra/test_govtest_slice_reaper.sh, which is this library's test.
 #
 # Functions:
+#   govtest_profile_set <prefix> <child_suffix>...
+#                                  select the name grammar this library
+#                                  operates on. VALIDATES both arguments; a
+#                                  refused call leaves the previous profile
+#                                  intact. The DEFAULT `reify-govtest agents
+#                                  merge` is applied at source time, so a
+#                                  consumer that never calls this is unaffected
 #   govtest_slice_pid <unit>       echo the embedded pid, or nothing if <unit>
-#                                  is outside the govtest name grammar
-#   govtest_slice_units <pid>      echo this run's three unit names, one per
-#                                  line, in TEARDOWN order (children, parent)
+#                                  is outside the configured name grammar
+#   govtest_slice_name <pid> [child_suffix]
+#                                  echo ONE unit name — the bare parent, or the
+#                                  named child
+#   govtest_slice_units <pid>      echo this run's unit names, one per line, in
+#                                  TEARDOWN order (children, parent)
 #   govtest_stale_units <self_pid> <listing>
 #                                  filter a `systemctl --user list-units`
 #                                  listing down to one PARENT unit name per
 #                                  dead predecessor run
 #   govtest_reap_stale [<self_pid>] enumerate + stop every dead predecessor's
 #                                  slice; no-op when systemctl is absent
-#   govtest_slice_teardown <pid>   unconditionally stop this run's own three
-#                                  slices, children before parent
+#   govtest_slice_teardown <pid>   unconditionally stop this run's own slices,
+#                                  children before parent
 #
 # Knobs:
 #   REIFY_GOVTEST_TEST_MODE             set to 1 to ARM the test seams below.
@@ -32,19 +43,31 @@
 #                                       seam needs a second key.
 #
 # WHY THIS LIVES IN tests/infra/ AND NOT scripts/lib_cgroup.sh
-# The `reify-govtest` prefix is test-private BY CONSTRUCTION:
-# test_cpu_load_governance.sh requires its slice names to differ from the
-# production `reify-governed-{agents,merge}.slice` so that its usage_usec
-# deltas stay isolated from concurrent real agent placement (ζ). Meanwhile
-# scripts/lib_cgroup.sh is sourced by scripts/cpu-governed-exec.sh on EVERY
-# governed exec, so teaching that production hot-path library about a
-# test-only slice prefix would be a layering inversion — production code
-# would carry knowledge of, and a stop path for, units only tests create.
+# Both prefixes this library serves are test-private BY CONSTRUCTION: each
+# consuming suite requires its slice names to differ from the production
+# `reify-governed-{agents,merge}.slice` so its measurements stay isolated from
+# concurrent real agent placement (ζ) and so it can never disturb the live
+# orchestrator's governance hierarchy. Meanwhile scripts/lib_cgroup.sh is
+# sourced by scripts/cpu-governed-exec.sh on EVERY governed exec, so teaching
+# that production hot-path library about test-only slice prefixes would be a
+# layering inversion — production code would carry knowledge of, and a stop
+# path for, units only tests create.
 # tests/infra/*_lib.sh is the established house pattern for logic shared
 # between infra tests (cpu_load_fixture.sh, load_tolerance_lib.sh,
 # nextest_absent_lib.sh, run-all-classification-lib.sh). It is also not a
 # `test_*.sh`, so run_all.sh's auto-discovery skips it and it needs no
 # run-all-classification.manifest row.
+#
+# WHY THE PREFIX IS A PROFILE AND NOT A CONSTANT (task 6386)
+# test_cpu_governed_exec_hostexcl.sh leaked its own five per-run units in the
+# same two ways task 5930 closed here for `reify-govtest`. Duplicating this
+# file to serve it would be a lockstep copy of an already-reviewed SAFETY
+# mechanism — the worst thing to fork, because the two copies drift silently
+# and only one of them gets the next fix. So the two literals became a
+# profile. What used to be guaranteed by the literal `reify-govtest` being
+# spelled in the source is now guaranteed by govtest_profile_set's charset
+# validation instead: see its header for why that validation is the load-
+# bearing safety boundary rather than input hygiene.
 
 # Source guard — prevent double-sourcing (mirrors lib_portable.sh /
 # lib_cgroup.sh / lib_test_semaphore.sh).
@@ -54,11 +77,106 @@ fi
 _REIFY_GOVTEST_SLICE_REAPER_LIB_SOURCED=1
 
 # ---------------------------------------------------------------------------
-# govtest_slice_pid <unit>
-#   Echo the pid embedded in a govtest slice unit name, or NOTHING when the
-#   name is outside the grammar
+# THE PROFILE — the prefix and child-suffix set every function below derives
+# from. Set through govtest_profile_set; never assigned directly by a consumer.
 #
-#       ^reify-govtest([0-9]+)(-agents|-merge)?\.slice$
+#   _GOVTEST_PROFILE_PREFIX      e.g. `reify-test`
+#   _GOVTEST_PROFILE_SUFFIXES    ordered, space-delimited, e.g. `agents merge`
+#   _GOVTEST_PROFILE_SUFFIX_ALT  derived regex alternation, e.g. `-agents|-merge`
+#                                (EMPTY when the profile declares no children)
+# ---------------------------------------------------------------------------
+_GOVTEST_PROFILE_PREFIX=""
+_GOVTEST_PROFILE_SUFFIXES=""
+_GOVTEST_PROFILE_SUFFIX_ALT=""
+
+# ---------------------------------------------------------------------------
+# govtest_profile_set <prefix> <child_suffix>...
+#   Select the name grammar this library operates on. Returns 0 on success;
+#   on refusal returns non-zero, writes a message to stderr, and leaves the
+#   PREVIOUS profile completely intact.
+#
+#   THIS VALIDATION IS THE SAFETY BOUNDARY, NOT INPUT HYGIENE. <prefix> is
+#   interpolated UNQUOTED into govtest_slice_pid's `[[ =~ ]]` pattern — it has
+#   to be, since a quoted right-hand side is matched literally and the grammar
+#   would never fire at all. That makes the prefix live regex source, and
+#   govtest_slice_pid is the single chokepoint deciding whether a unit is
+#   eligible to be STOPPED. A prefix of `reify-.*` would therefore make
+#   `reify.slice` a match — and that is the shared implicit ROOT of the LIVE
+#   production hierarchy (`reify-governed.slice` and
+#   `reify-governed-agents.slice` nest under it and carry real orchestrator
+#   agent placement), so stopping it cascades into the running fleet. The
+#   conservative charset below — lowercase alphanumerics in dash-separated
+#   segments, nothing else — is what makes every such widening unreachable,
+#   for metacharacters nobody has thought of as much as for the ones above.
+#
+#   WHY EACH CHILD SUFFIX MUST BE DASH-FREE. systemd dash-nesting means
+#   `a-b-c.slice` implies parents `a.slice` and `a-b.slice`, vivified
+#   automatically and named by nobody. A suffix of `d7-task` would therefore
+#   emit `<prefix><pid>-d7-task.slice` and silently create
+#   `<prefix><pid>-d7.slice` — a unit no name list mentions, no teardown
+#   stops, and no sweep can recognise. That is precisely the leak class task
+#   6386 exists to close (it is how the pidless `reify-test-task.slice` /
+#   `reify-test-merge.slice` parents accreted on the host in the first place),
+#   so refusing the dash here is structural rather than stylistic.
+#
+#   The dot and the empty suffix are refused for the same round-trip reason:
+#   every name govtest_slice_units emits must be re-recognised by
+#   govtest_slice_pid, or teardown would stop units the startup sweep could
+#   never identify as its own residue.
+#
+#   ALL-OR-NOTHING. Validation completes before anything is assigned, so a
+#   half-applied profile — a new prefix paired with the old suffixes, a
+#   grammar nobody reviewed — is not reachable.
+# ---------------------------------------------------------------------------
+govtest_profile_set() {
+    local prefix="${1:-}"
+    shift 2>/dev/null || true
+    local suffix alt="" suffixes=""
+
+    if [[ ! "$prefix" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]]; then
+        echo "govtest_profile_set: refusing prefix '$prefix' — must match ^[a-z][a-z0-9]*(-[a-z0-9]+)*\$ (it is interpolated unquoted into the unit-name regex)" >&2
+        return 1
+    fi
+
+    for suffix in "$@"; do
+        if [[ ! "$suffix" =~ ^[a-z0-9]+$ ]]; then
+            echo "govtest_profile_set: refusing child suffix '$suffix' — must match ^[a-z0-9]+\$; a dash would vivify an unnamed implicit parent slice" >&2
+            return 1
+        fi
+        case " $suffixes " in
+            *" $suffix "*)
+                echo "govtest_profile_set: refusing duplicate child suffix '$suffix'" >&2
+                return 1
+                ;;
+        esac
+        suffixes="${suffixes:+$suffixes }$suffix"
+        alt="${alt:+$alt|}-$suffix"
+    done
+
+    _GOVTEST_PROFILE_PREFIX="$prefix"
+    _GOVTEST_PROFILE_SUFFIXES="$suffixes"
+    _GOVTEST_PROFILE_SUFFIX_ALT="$alt"
+    return 0
+}
+
+# The DEFAULT profile, applied at source time and BELOW the source guard (so a
+# double-source cannot reset a consumer's chosen profile). It reproduces the
+# exact grammar this library shipped with as a pair of literals in task 5930,
+# which is what keeps test_cpu_load_governance.sh — a consumer that never calls
+# the setter — byte-for-byte unaffected by the parameterisation.
+govtest_profile_set reify-govtest agents merge
+
+# ---------------------------------------------------------------------------
+# govtest_slice_pid <unit>
+#   Echo the pid embedded in a slice unit name, or NOTHING when the name is
+#   outside the CONFIGURED grammar
+#
+#       ^<prefix>([0-9]+)(<-suffix|-suffix...>)?\.slice$
+#
+#   e.g. `^reify-govtest([0-9]+)(-agents|-merge)?\.slice$` under the default
+#   profile. The pid is BASH_REMATCH[1] whether or not the optional child
+#   alternation participates in the match, and stays there however many
+#   suffixes the profile declares — that group is the only one after it.
 #
 #   EMPTINESS IS THE ONLY SIGNAL — this function always returns 0. Callers
 #   run under `set -euo pipefail`, and a non-zero return from inside a
@@ -78,31 +196,72 @@ _REIFY_GOVTEST_SLICE_REAPER_LIB_SOURCED=1
 #   semantics can never widen the blast radius.
 # ---------------------------------------------------------------------------
 govtest_slice_pid() {
-    local unit="${1:-}"
-    if [[ "$unit" =~ ^reify-govtest([0-9]+)(-agents|-merge)?\.slice$ ]]; then
+    local unit="${1:-}" re
+
+    # Built as a string and matched UNQUOTED: a quoted right-hand side is
+    # matched literally by `[[ =~ ]]`, so quoting here would silently disable
+    # the grammar entirely. govtest_profile_set's charset validation is what
+    # makes interpolating into live regex source safe — see its header.
+    if [ -n "$_GOVTEST_PROFILE_SUFFIX_ALT" ]; then
+        re="^${_GOVTEST_PROFILE_PREFIX}([0-9]+)(${_GOVTEST_PROFILE_SUFFIX_ALT})?\\.slice$"
+    else
+        # A profile with no declared children. Spelled as its own branch
+        # rather than letting the alternation collapse to `()?`, which is
+        # undefined in POSIX ERE.
+        re="^${_GOVTEST_PROFILE_PREFIX}([0-9]+)\\.slice$"
+    fi
+
+    if [[ "$unit" =~ $re ]]; then
         printf '%s\n' "${BASH_REMATCH[1]}"
     fi
     return 0
 }
 
 # ---------------------------------------------------------------------------
+# govtest_slice_name <pid> [child_suffix]
+#   Echo exactly ONE unit name: the bare parent `<prefix><pid>.slice`, or the
+#   child `<prefix><pid>-<child_suffix>.slice`.
+#
+#   Consumers need the names INDIVIDUALLY as well as as a list —
+#   test_cpu_governed_exec_hostexcl.sh feeds each of its five into a separate
+#   REIFY_CPU_GOVERN_SLICE_* override — and cannot parse them back out of the
+#   newline-separated teardown list govtest_slice_units emits. This is that
+#   accessor, so the prefix is still spelled in exactly one place.
+# ---------------------------------------------------------------------------
+govtest_slice_name() {
+    local pid="${1:-}" suffix="${2:-}"
+    if [ -n "$suffix" ]; then
+        printf '%s%s-%s.slice\n' "$_GOVTEST_PROFILE_PREFIX" "$pid" "$suffix"
+    else
+        printf '%s%s.slice\n' "$_GOVTEST_PROFILE_PREFIX" "$pid"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # govtest_slice_units <pid>
-#   Echo the three unit names a single test_cpu_load_governance.sh run owns,
-#   one per line: the -agents child, the -merge child, then the bare parent.
+#   Echo the unit names a single run owns, one per line: every child declared
+#   by the profile IN DECLARED ORDER, then the bare parent.
 #
 #   THE ORDER IS TEARDOWN ORDER — children first, parent last. It preserves
-#   the ordering rationale already carried by that script's _cleanup_all,
-#   which stops the confined-quota parent LAST, after its children, to avoid
-#   leaving a quota'd empty parent unit behind.
+#   the ordering rationale already carried by test_cpu_load_governance.sh's
+#   _cleanup_all, which stops the confined-quota parent LAST, after its
+#   children, to avoid leaving a quota'd empty parent unit behind.
+#
+#   DECLARED ORDER is part of the contract too, not an artefact of the loop: a
+#   consumer naming its own slices through govtest_slice_name and its teardown
+#   through this function must not be able to disagree with itself about which
+#   suffix is which.
 #
 #   The names are fully determined by the pid, which is why teardown needs no
 #   record of what was actually created (see govtest_slice_teardown).
 # ---------------------------------------------------------------------------
 govtest_slice_units() {
-    local pid="${1:-}"
-    printf 'reify-govtest%s-agents.slice\n' "$pid"
-    printf 'reify-govtest%s-merge.slice\n' "$pid"
-    printf 'reify-govtest%s.slice\n' "$pid"
+    local pid="${1:-}" suffix
+    for suffix in ${_GOVTEST_PROFILE_SUFFIXES}; do
+        govtest_slice_name "$pid" "$suffix"
+    done
+    govtest_slice_name "$pid"
     return 0
 }
 
@@ -152,7 +311,7 @@ _govtest_pid_alive() {
 
 # ---------------------------------------------------------------------------
 # govtest_stale_units <self_pid> <listing>
-#   Echo one PARENT unit name — `reify-govtest<pid>.slice` — per dead
+#   Echo one PARENT unit name — `<prefix><pid>.slice` — per dead
 #   predecessor run found in <listing>, which is raw output of
 #   `systemctl --user list-units --all --plain --no-legend` (unit name in
 #   field 1). Emission is in first-seen order; always returns 0.
@@ -203,7 +362,7 @@ EOF2
         esac
         seen="$seen$pid "
 
-        emitted="reify-govtest${pid}.slice"
+        emitted="$(govtest_slice_name "$pid")"
         printf '%s\n' "$emitted"
     done <<EOF
 $listing
@@ -214,12 +373,12 @@ EOF
 
 # ---------------------------------------------------------------------------
 # govtest_reap_stale [<self_pid>]
-#   CRASH RECOVERY. Enumerate this project's govtest slices, and stop the
-#   parent of every run whose pid is dead. Defaults <self_pid> to `$$`.
+#   CRASH RECOVERY. Enumerate this profile's slices, and stop the parent of
+#   every run whose pid is dead. Defaults <self_pid> to `$$`.
 #   Always returns 0.
 #
-#   WHY A STARTUP SWEEP IS NEEDED AT ALL. test_cpu_load_governance.sh tears
-#   its own slices down from an EXIT trap, and that trap is more robust than
+#   WHY A STARTUP SWEEP IS NEEDED AT ALL. A consuming suite tears its own
+#   slices down from an EXIT trap, and that trap is more robust than
 #   it looks — measured on this host, a bash script blocked in a foreground
 #   command runs its EXIT trap on SIGTERM, SIGINT and SIGHUP alike. Only
 #   SIGKILL skips it. So widening the trap to `EXIT INT TERM HUP` would
@@ -230,7 +389,7 @@ EOF
 #   _reaper_pass` -> verify.py `reap_leftover_verify_scopes`).
 #
 #   TWO BOUNDS ON THE BLAST RADIUS, BOTH DELIBERATE. The enumeration glob
-#   `reify-govtest*.slice` is the OUTER bound: the systemd user session is
+#   `<prefix>*.slice` is the OUTER bound: the systemd user session is
 #   shared host-wide, so listing every unit and filtering afterwards would
 #   put the production `reify-governed-*` slices — and every other project's
 #   units — inside the candidate set in the first place. The anchored
@@ -261,7 +420,7 @@ govtest_reap_stale() {
     # covers a non-zero systemctl exit, the latter covers the assignment
     # itself failing under `set -e`.
     listing="$(systemctl --user list-units --all --plain --no-legend \
-        'reify-govtest*.slice' 2>/dev/null || true)" || listing=""
+        "${_GOVTEST_PROFILE_PREFIX}*.slice" 2>/dev/null || true)" || listing=""
 
     [ -n "$listing" ] || return 0
 
@@ -284,7 +443,7 @@ EOF
 
 # ---------------------------------------------------------------------------
 # govtest_slice_teardown <pid>
-#   Stop this run's own three slices — children first, parent last —
+#   Stop this run's own slices — children first, parent last —
 #   UNCONDITIONALLY. Always returns 0. Safe to call from an EXIT trap.
 #
 #   WHY UNCONDITIONAL RATHER THAN FLAG-GUARDED. The mechanism this replaces
@@ -301,7 +460,7 @@ EOF
 #   leak govtest_reap_stale handles.
 #
 #   Unconditional teardown closes that whole class rather than the one
-#   instance: the three names are fully determined by the pid, and
+#   instance: the names are fully determined by the pid, and
 #   `systemctl --user stop` on a never-started slice is a harmless no-op
 #   already swallowed by the `|| true` this function keeps. So there is
 #   nothing left to remember, and no future call site can forget to.
