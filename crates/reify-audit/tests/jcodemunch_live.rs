@@ -41,21 +41,31 @@ mod common;
 
 /// Invoke the `reify-audit` binary with the given arguments.
 ///
-/// Returns `(exit_code, findings)` where `findings` is the JSON array parsed
-/// from the binary's stderr output (adapting cli.rs's `parse_findings_from_stderr`
-/// idiom: `rfind("\n[")` to skip any git-diagnostic preamble).
+/// Returns `(exit_code, findings, stderr)` where `findings` is the JSON array
+/// parsed from the binary's stderr output (adapting cli.rs's
+/// `parse_findings_from_stderr` idiom: `rfind("\n[")` to skip any
+/// git-diagnostic preamble).
+///
+/// The raw `stderr` is returned ALONGSIDE the parsed findings, not merely
+/// consumed to produce them, because the two exit-125 arms are otherwise
+/// indistinguishable at the call site: a serve/IO failure and a §4.3 index
+/// refusal both emit zero findings, and only the prose says which. A refusal
+/// names its marker token (`E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY`) plus the
+/// probed repo id, index head, live head and symbol count — exactly what an
+/// operator needs to fix it — and dropping the buffer here would reduce that
+/// to a bare "exit 125".
 ///
 /// An exit code of `None` means the binary was killed by a signal.
-fn run_reify_audit(args: &[&str]) -> (Option<i32>, Vec<serde_json::Value>) {
+fn run_reify_audit(args: &[&str]) -> (Option<i32>, Vec<serde_json::Value>, String) {
     let bin = env!("CARGO_BIN_EXE_reify-audit");
     let out = std::process::Command::new(bin)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke reify-audit: {e}"));
 
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let findings = parse_findings_from_stderr(&stderr);
-    (out.status.code(), findings)
+    (out.status.code(), findings, stderr)
 }
 
 /// Parse the JSON findings array from binary stderr.
@@ -207,8 +217,30 @@ fn is_pdead_finding(v: &serde_json::Value) -> bool {
 // ff1cb80c31 = merge of task/4097 (L-PDEAD) which added pdead_dead_code.rs,
 // a new Rust source file with new public symbols.
 const PINNED_P1_COMMIT: &str = "ff1cb80c31";
-const JCODEMUNCH_REPO: &str = "leodearden/reify";
 const DEFAULT_SERVE_URL: &str = "http://127.0.0.1:8901/mcp";
+
+// NOTE — there is deliberately NO `JCODEMUNCH_REPO` constant here any more.
+//
+// This capstone used to pin `leodearden/reify` and pass it as
+// `--jcodemunch-repo` on both legs. That identity is jcodemunch's *git*
+// identity for this origin, and on this host it maps to
+// `~/.code-index/leodearden-reify.db`, which is the documented empty husk
+// (`meta` holds only `call_refs_missing` + `index_version` — no `git_head`
+// row — and `symbols` is 0). Upstream re-creates that husk as a side effect
+// of any run, so deleting it does not help. Under the §4.3 freshness gate an
+// explicit override at that identity therefore refuses with
+// `E_JC_INDEX_EMPTY` and exit 125 on every invocation, which is a correct
+// verdict about a useless index and a useless thing for the capstone to
+// assert against.
+//
+// The identity the audit is *supposed* to probe is the §4.2 per-path one the
+// binary now derives from `--project-root` (for `/home/leo/src/reify` that is
+// `local/reify-4ae45bbd`, the index jcodemunch actually populates under the
+// `JCODEMUNCH_GIT_ROOT_IDENTITY=0` lever reify forces everywhere). Omitting
+// the flag is what selects it, so re-introducing a pinned constant here would
+// re-break the capstone. If a future leg genuinely needs an explicit id, derive
+// it with `reify_audit::jcodemunch_index::resolve_repo_id` rather than
+// spelling one out.
 
 // -----------------------------------------------------------------------
 // Capstone live integration test (#[ignore]-gated; requires serve up)
@@ -226,6 +258,16 @@ const DEFAULT_SERVE_URL: &str = "http://127.0.0.1:8901/mcp";
 /// ```sh
 /// cargo test -p reify-audit --test jcodemunch_live -- --ignored
 /// ```
+///
+/// **Second prerequisite, beyond a reachable serve.** No `--jcodemunch-repo`
+/// is passed, so the binary derives the §4.2 per-path identity from
+/// `--project-root` — which this test resolves from `CARGO_MANIFEST_DIR`, i.e.
+/// *the checkout the test is compiled in*. That checkout must itself carry a
+/// fresh, non-empty jcodemunch index or the §4.3 gate refuses with exit 125
+/// before any detector runs. Running the capstone from a warm lane rather than
+/// the primary checkout is therefore expected to refuse: lanes are re-seeded
+/// per task and nothing indexes them. That is the gate working, not a
+/// regression — run it from the indexed checkout.
 #[ignore = "live integration: requires jcodemunch-serve up on default or $JCODEMUNCH_URL; run via --ignored"]
 #[test]
 fn live_audit_produces_p1_and_pdead_findings() {
@@ -260,13 +302,11 @@ fn live_audit_produces_p1_and_pdead_findings() {
     // P-DEAD leg: --pattern PDEAD (repo-wide; serve-only; no tasks needed)
     // -------------------------------------------------------------------
     let empty_tasks = write_empty_tasks_file(dir);
-    let (pdead_code, pdead_findings) = run_reify_audit(&[
+    let (pdead_code, pdead_findings, pdead_stderr) = run_reify_audit(&[
         "--pattern",
         "PDEAD",
         "--jcodemunch-url",
         &serve_url,
-        "--jcodemunch-repo",
-        JCODEMUNCH_REPO,
         "--tasks-file",
         empty_tasks.to_str().unwrap(),
         "--runs-db",
@@ -277,7 +317,12 @@ fn live_audit_produces_p1_and_pdead_findings() {
     assert_ne!(
         pdead_code,
         Some(125),
-        "PDEAD leg: exit 125 = infra/connection error; serve may have dropped\n\
+        "PDEAD leg: exit 125 = infra/connection error OR a §4.3 index refusal.\n\
+         If stderr names E_JC_INDEX_EMPTY or E_JC_INDEX_STALE, the serve is fine \
+         and the index for the derived per-path identity of {project_root} is \
+         missing/empty/stale — reindex that checkout (jcodemunch must be invoked \
+         under JCODEMUNCH_GIT_ROOT_IDENTITY=0) rather than editing this test.\n\
+         stderr:\n{pdead_stderr}\n\
          all findings: {:#}",
         serde_json::Value::Array(pdead_findings.clone())
     );
@@ -306,13 +351,11 @@ fn live_audit_produces_p1_and_pdead_findings() {
     // done_at_epoch ≈ 2025-05-23 (any non-zero epoch is fine; P1 only
     // checks that done_at is Some, not the exact value).
     let synthetic_tasks = write_synthetic_done_task(dir, PINNED_P1_COMMIT, 1_748_000_000);
-    let (p1_code, p1_findings) = run_reify_audit(&[
+    let (p1_code, p1_findings, p1_stderr) = run_reify_audit(&[
         "--pattern",
         "P1",
         "--jcodemunch-url",
         &serve_url,
-        "--jcodemunch-repo",
-        JCODEMUNCH_REPO,
         "--tasks-file",
         synthetic_tasks.to_str().unwrap(),
         "--runs-db",
@@ -323,7 +366,12 @@ fn live_audit_produces_p1_and_pdead_findings() {
     assert_ne!(
         p1_code,
         Some(125),
-        "P1 leg: exit 125 = infra/connection error; serve may have dropped\n\
+        "P1 leg: exit 125 = infra/connection error OR a §4.3 index refusal.\n\
+         If stderr names E_JC_INDEX_EMPTY or E_JC_INDEX_STALE, the serve is fine \
+         and the index for the derived per-path identity of {project_root} is \
+         missing/empty/stale — reindex that checkout (jcodemunch must be invoked \
+         under JCODEMUNCH_GIT_ROOT_IDENTITY=0) rather than editing this test.\n\
+         stderr:\n{p1_stderr}\n\
          all findings: {:#}",
         serde_json::Value::Array(p1_findings.clone())
     );
