@@ -825,3 +825,69 @@ type MyLength = Length
         "non-parametric alias <h2> must be unchanged (no empty `<>`); got html:\n{html}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// task #6342 step-7: generic function signature
+// ---------------------------------------------------------------------------
+
+/// A generic `pub fn pick<T>(...)` must carry its generic segment in the
+/// rendered `ItemKind::Function { signature }`.
+///
+/// Unlike `TypeAlias`, this needs no model change: `signature` is already a
+/// single rendered DISPLAY string, so the generics fold into it and
+/// `header.name` stays the bare identity `pick`.
+///
+/// Fixture shaped after the proven stdlib forms `pub fn unwrap_or<T, E>(...)`
+/// (`crates/reify-compiler/stdlib/result.ri:52`) and
+/// `pub fn clamp_field<D, Q: Dimension>(...)` (`stdlib/fields.ri:162`).
+#[test]
+fn generic_function_renders_type_params_in_signature() {
+    let source = r#"
+pub fn pick<T>(a: T, b: T) -> T { a }
+fn scale(x: Real) -> Real { x }
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in generic fn source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // ── generic fn: signature carries `<T>` between name and param list ───
+    let pick = find_item(module, "pick");
+    assert_eq!(
+        pick.header.name, "pick",
+        "header.name must stay the bare identity `pick`"
+    );
+    match &pick.kind {
+        ItemKind::Function { signature } => {
+            assert!(
+                signature.starts_with("fn pick<T>("),
+                "generic fn signature must splice `<T>` between the name and the \
+                 parameter list; got {signature:?}"
+            );
+        }
+        other => panic!("expected ItemKind::Function for 'pick', got {other:?}"),
+    }
+
+    // ── no-regression: non-generic fn signature is unchanged, no empty `<>` ─
+    let scale = find_item(module, "scale");
+    match &scale.kind {
+        ItemKind::Function { signature } => {
+            assert!(
+                signature.starts_with("fn scale("),
+                "non-generic fn signature must be unchanged (no empty `<>`); \
+                 got {signature:?}"
+            );
+        }
+        other => panic!("expected ItemKind::Function for 'scale', got {other:?}"),
+    }
+}
