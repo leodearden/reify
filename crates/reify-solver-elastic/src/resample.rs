@@ -381,15 +381,25 @@ pub struct GridMissReport {
     pub missed_edge: usize,
     /// Misses extreme on all 3 axes (an AABB corner).
     pub missed_corner: usize,
-    /// Grid points with *some but not all* stride components `NaN`.
+    /// Grid points carrying a non-finite component that is NOT the out-of-solid
+    /// sentinel — i.e. any point with `!v.is_finite()` somewhere whose `stride`
+    /// components are not *all* `NaN`.
     ///
-    /// Not a miss — the out-of-solid sentinel is written all-or-nothing, so a
-    /// partially-`NaN` point is a non-finite *solution* value (a diverged solve),
-    /// a different defect. It is counted rather than bucketed so the condition
-    /// stays visible in release builds, where the `debug_assert!` that flags it
-    /// loudly is compiled out. A non-zero value here means the rest of this
-    /// report is describing a field that is already broken upstream of the
-    /// sampler, so read it before drawing any conclusion from the buckets.
+    /// Not a miss — the sentinel is written all-or-nothing, so such a point is a
+    /// non-finite *solution* value (a diverged solve), a different defect. It is
+    /// counted rather than bucketed, in BOTH build profiles, because that count
+    /// is the only thing between a broken field and a report claiming full
+    /// coverage.
+    ///
+    /// The predicate is `!is_finite()`, not `is_nan()`: a diverged solve
+    /// overflows to `±INF` at least as readily as it produces `NaN`, and an
+    /// all-`INF` point has `n_nan == 0` — under a NaN-only test it would be
+    /// neither a miss nor an anomaly, i.e. silently reported as a valid, covered
+    /// sample. That is the precise inversion this counter exists to prevent.
+    ///
+    /// A non-zero value here means the rest of this report is describing a field
+    /// that is already broken upstream of the sampler, so read it before drawing
+    /// any conclusion from the buckets.
     pub n_partial_nan: usize,
     /// Physical coordinates of each miss, in visit order.
     pub missed_points: Vec<[f64; 3]>,
@@ -404,14 +414,18 @@ pub struct GridMissReport {
 /// so the classifier cannot drift from the producer's layout.
 ///
 /// A grid point counts as missed iff **all** `stride` components are `NaN`,
-/// matching the sentinel's all-or-nothing write. A *partially* `NaN` point is a
-/// different defect (a non-finite solution value, not an out-of-solid marker),
-/// so it is never bucketed: it trips a `debug_assert!` AND increments
-/// [`GridMissReport::n_partial_nan`]. The counter is what carries the signal in
-/// release builds, where the assert is compiled out — without it a diverged
-/// solve that writes one `NaN` component per point would be reported as full
-/// coverage, i.e. the instrument would claim the opposite of the truth in
-/// exactly the situation it exists to diagnose.
+/// matching the sentinel's all-or-nothing write. Any OTHER non-finite point — a
+/// `NaN` in some but not all components, or an `±INF` anywhere — is a different
+/// defect (a non-finite solution value, not an out-of-solid marker), so it is
+/// never bucketed: it increments [`GridMissReport::n_partial_nan`] instead.
+///
+/// That counter, and not an assertion, is what carries the signal. Flagging the
+/// condition with a `debug_assert!` was tried and removed: whether the caller's
+/// field is finite is a property of the *field*, not an invariant of this
+/// function, so a debug-profile abort would deny the caller the very report that
+/// exists to describe the situation — and would make the instrument's two build
+/// profiles disagree about whether the anomaly is reportable at all. Callers who
+/// want it loud assert on the counter (the `reify-eval` e2e reconciler does).
 ///
 /// Bucketing is purely INDEX-based — an axis is *extreme* when
 /// `index == 0 || index == axis_grids[a].len() - 1`. Because the §7a grid spans
@@ -468,15 +482,13 @@ pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport 
                 let flat = (ix * ny1 + iy) * nz1 + iz;
                 let comps = &sf.data[flat * stride..flat * stride + stride];
                 let n_nan = comps.iter().filter(|v| v.is_nan()).count();
-                debug_assert!(
-                    n_nan == 0 || n_nan == stride,
-                    "classify_grid_misses: grid point ({ix},{iy},{iz}) is PARTIALLY NaN \
-                     ({n_nan}/{stride} components). The out-of-solid sentinel is written \
-                     all-or-nothing, so this is a non-finite solution value, not an \
-                     out-of-solid marker — a different defect.",
-                );
                 if n_nan != stride {
-                    if n_nan > 0 {
+                    // Not the all-or-nothing out-of-solid sentinel. Anything
+                    // non-finite HERE is therefore a diverged solution value —
+                    // and the test is `!is_finite()`, not `is_nan()`, because an
+                    // all-`INF` point has `n_nan == 0` and would otherwise fall
+                    // through as a valid, covered sample.
+                    if comps.iter().any(|v| !v.is_finite()) {
                         report.n_partial_nan += 1;
                     }
                     continue;
@@ -1367,13 +1379,13 @@ mod miss_diag_tests {
 
     /// A partially-`NaN` grid point is counted, never bucketed.
     ///
-    /// RELEASE-ONLY by construction: in a debug profile the same input trips
-    /// `classify_grid_misses`' `debug_assert!` (which is the *intended* loud
-    /// signal there), so this can only assert the release-mode behaviour — the
-    /// counter that keeps the condition visible once the assert is compiled
-    /// out. The verify pipeline runs both profiles, so it is exercised.
+    /// Runs in BOTH profiles. It used to be `#[cfg(not(debug_assertions))]`,
+    /// because `classify_grid_misses` also tripped a `debug_assert!` on this
+    /// input; that assert is gone (a data-dependent abort in a diagnostic
+    /// function denied the caller the report describing the very anomaly it
+    /// asked about), so the counter is now the single, profile-independent
+    /// signal — and this fixture is what pins it.
     #[test]
-    #[cfg(not(debug_assertions))]
     fn miss_report_counts_partially_nan_points_without_bucketing_them() {
         let mut sf = well_formed_field();
         // Fixture (a) proves this field has ZERO misses, so any non-zero bucket
@@ -1384,9 +1396,9 @@ mod miss_diag_tests {
 
         assert_eq!(
             report.n_partial_nan, 1,
-            "a 1-of-3 NaN point must be COUNTED as partial — in release the \
-             debug_assert! is gone, so this counter is the only thing standing \
-             between a diverged solve and a report claiming full coverage",
+            "a 1-of-3 NaN point must be COUNTED as an anomaly — this counter is \
+             the only thing standing between a diverged solve and a report \
+             claiming full coverage",
         );
         assert_eq!(
             report.n_missed, 0,
@@ -1397,6 +1409,46 @@ mod miss_diag_tests {
             (report.missed_interior, report.missed_face, report.missed_edge, report.missed_corner),
             (0, 0, 0, 0),
             "and it must not land in any bucket",
+        );
+    }
+
+    /// `±INF` is an anomaly too — the case a NaN-only test reports as CLEAN.
+    ///
+    /// A diverged/overflowing solve reaches `±INF` at least as readily as `NaN`,
+    /// and an all-`INF` grid point has `n_nan == 0`: under an `is_nan()`-only
+    /// predicate it is neither a miss nor an anomaly, so the instrument would
+    /// report a broken field as fully covered — the exact inversion
+    /// `n_partial_nan` exists to prevent. Both the all-`INF` point (0 of 3 NaN)
+    /// and the mixed `INF`-plus-finite point are pinned, since only the former
+    /// is invisible to the old predicate.
+    #[test]
+    fn miss_report_counts_infinite_points_as_anomalies_not_coverage() {
+        let mut sf = well_formed_field();
+        // Grid point 0: every component +INF — `n_nan == 0`, so a NaN-only
+        // predicate sees a perfectly ordinary sample here.
+        sf.data[0] = f64::INFINITY;
+        sf.data[1] = f64::INFINITY;
+        sf.data[2] = f64::INFINITY;
+        // Grid point 1: one component -INF, the rest finite.
+        sf.data[4] = f64::NEG_INFINITY;
+
+        let report = classify_grid_misses(&sf, 3);
+
+        assert_eq!(
+            report.n_partial_nan, 2,
+            "both the all-INF point and the mixed INF/finite point are non-finite \
+             SOLUTION values, so both must be counted; an all-INF point has \
+             n_nan == 0 and is invisible to an is_nan()-only test",
+        );
+        assert_eq!(
+            report.n_missed, 0,
+            "INF is not the out-of-solid sentinel (which is all-NaN), so neither \
+             point may be reported as a miss",
+        );
+        assert_eq!(
+            (report.missed_interior, report.missed_face, report.missed_edge, report.missed_corner),
+            (0, 0, 0, 0),
+            "and neither may land in any bucket",
         );
     }
 
@@ -1463,11 +1515,13 @@ mod miss_diag_tests {
     /// as comfortably inside, the exact inverse of the coverage-vs-round-off
     /// verdict this instrument exists to deliver.
     ///
-    /// RELEASE-ONLY by construction, for the same reason as
-    /// `miss_report_counts_partially_nan_points_without_bucketing_them` above: in
-    /// a debug profile `barycentric_p1`'s `debug_assert!` fires first (which is
-    /// the intended loud signal there), so only the release behaviour is
-    /// assertable. The verify pipeline runs both profiles, so it is exercised.
+    /// RELEASE-ONLY by construction: in a debug profile `barycentric_p1`'s own
+    /// `debug_assert!` fires first, so only the release behaviour is assertable.
+    /// The verify pipeline runs both profiles, so it is exercised. Note that
+    /// `miss_report_counts_partially_nan_points_without_bucketing_them` above is
+    /// NOT gated this way any more — `classify_grid_misses`' data-dependent
+    /// `debug_assert!` was removed, whereas this one is `interpolation.rs`'
+    /// contract and stands.
     #[test]
     #[cfg(not(debug_assertions))]
     fn nearest_miss_margin_skips_degenerate_elements() {
