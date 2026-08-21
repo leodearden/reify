@@ -499,7 +499,10 @@ fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::TypeAlias { type_repr },
+        kind: ItemKind::TypeAlias {
+            type_params: render_type_params(&a.type_params),
+            type_repr,
+        },
     }
 }
 
@@ -617,6 +620,45 @@ fn lower_module_pragmas(pragmas: &[Pragma]) -> Vec<PragmaDoc> {
 /// Render a `Type` to a human-readable string.
 fn type_to_string(ty: &Type) -> String {
     format!("{ty}")
+}
+
+/// Render a declaration's type parameters to display strings, one per param,
+/// in declaration order (task #6342).
+///
+/// Each param renders as `name`, then `": "` followed by its bounds joined
+/// with `" + "` when it has any, then `" = "` followed by its default when it
+/// has one — e.g. `T`, `Q: Dimension`, `T: A + B`, `T = Real`.
+///
+/// `reify-doc` is a pure-data crate with no `reify-ir` dependency, so the
+/// rendering has to happen here rather than in a `Display` impl consumed by
+/// the formatters.
+///
+/// `TraitBound.trait_ref.type_args` is intentionally NOT rendered: the only
+/// production construction site, `convert_type_params`
+/// (`crates/reify-compiler/src/type_resolution.rs:3839-3852`), always builds
+/// it as `vec![]`, so a `<…>` arm here would be dead code.
+fn render_type_params(params: &[reify_ir::TypeParam]) -> Vec<String> {
+    params
+        .iter()
+        .map(|p| {
+            let mut rendered = p.name.clone();
+            if !p.bounds.is_empty() {
+                rendered.push_str(": ");
+                rendered.push_str(
+                    &p.bounds
+                        .iter()
+                        .map(|b| b.trait_ref.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" + "),
+                );
+            }
+            if let Some(default) = &p.default {
+                rendered.push_str(" = ");
+                rendered.push_str(&type_to_string(default));
+            }
+            rendered
+        })
+        .collect()
 }
 
 /// Slice `source` at the byte offsets of `span`. Returns an empty string if

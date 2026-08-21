@@ -130,6 +130,7 @@ mod tests {
                             pragmas: vec![],
                         },
                         kind: ItemKind::TypeAlias {
+                            type_params: vec![],
                             type_repr: "f64".to_string(),
                         },
                     },

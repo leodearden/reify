@@ -568,7 +568,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
         ItemKind::Unit { base_unit, scale } => {
             render_unit_body(out, base_unit, scale);
         }
-        ItemKind::TypeAlias { type_repr } => {
+        ItemKind::TypeAlias { type_repr, .. } => {
             render_type_alias_body(out, type_repr);
         }
         ItemKind::ConstraintDef { expr_repr } => {

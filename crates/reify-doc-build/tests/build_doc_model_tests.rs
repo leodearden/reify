@@ -479,7 +479,7 @@ constraint def non_negative {
     // ── TypeAlias ─────────────────────────────────────────────────────────
     let alias_item = find_item(module, "MyLength");
     match &alias_item.kind {
-        ItemKind::TypeAlias { type_repr } => {
+        ItemKind::TypeAlias { type_repr, .. } => {
             assert!(
                 !type_repr.is_empty(),
                 "MyLength type_repr must be non-empty"

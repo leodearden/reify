@@ -257,6 +257,16 @@ pub enum ItemKind {
     },
     /// A `type` alias declaration.
     TypeAlias {
+        /// PRE-RENDERED display strings for the alias's type parameters, in
+        /// declaration order (e.g. `["Q: Dimension"]` for
+        /// `pub type Rate<Q: Dimension> = Q / Time`).  Empty for a
+        /// non-parametric alias, in which case the formatters emit no `<>` at
+        /// all.
+        ///
+        /// Strings, not typed nodes: `reify-doc` is pure-data and must stay
+        /// free of any dependency on `reify-ir`/`reify-types`, so the bound
+        /// and default syntax is rendered upstream by the lowering pass.
+        type_params: Vec<String>,
         /// Rendered right-hand-side type (e.g. `"f64"`).
         type_repr: String,
     },
@@ -286,6 +296,21 @@ impl ItemKind {
             ItemKind::Unit { .. } => "unit",
             ItemKind::TypeAlias { .. } => "type",
             ItemKind::ConstraintDef { .. } => "constraint",
+        }
+    }
+
+    /// Pre-rendered type-parameter display strings for the kinds that carry
+    /// generics, in declaration order; an empty slice for every other kind.
+    ///
+    /// Exists so both formatters share a single lookup when appending the
+    /// `<…>` segment to an item heading, exactly as they share
+    /// [`ItemKind::keyword`].  The segment is DISPLAY only — `ItemHeader.name`
+    /// remains the sole join key for anchors, TOC hrefs, cross-reference
+    /// resolution and split-mode filenames, so it must never absorb these.
+    pub(crate) fn type_params(&self) -> &[String] {
+        match self {
+            ItemKind::TypeAlias { type_params, .. } => type_params,
+            _ => &[],
         }
     }
 
@@ -372,6 +397,11 @@ impl ItemDoc {
     /// Language keyword displayed in the H2 heading — delegates to `ItemKind`.
     pub(crate) fn keyword(&self) -> &'static str {
         self.kind.keyword()
+    }
+
+    /// Pre-rendered type-parameter display strings — delegates to `ItemKind`.
+    pub(crate) fn type_params(&self) -> &[String] {
+        self.kind.type_params()
     }
 
     /// Stable TOC group label — delegates to `ItemKind`.
@@ -642,6 +672,7 @@ mod tests {
                 pragmas: vec![],
             },
             kind: ItemKind::TypeAlias {
+                type_params: vec![],
                 type_repr: "f64".to_string(),
             },
         };
@@ -850,6 +881,7 @@ mod tests {
                 ItemDoc {
                     header: hdr("A"),
                     kind: ItemKind::TypeAlias {
+                        type_params: vec![],
                         type_repr: "f64".into(),
                     },
                 },
@@ -999,6 +1031,7 @@ mod tests {
             ItemDoc {
                 header: hdr("A"),
                 kind: ItemKind::TypeAlias {
+                    type_params: vec![],
                     type_repr: "f64".into(),
                 },
             },

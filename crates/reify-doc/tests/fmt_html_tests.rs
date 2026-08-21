@@ -366,6 +366,7 @@ fn item_section_h2_per_variant() {
                     pragmas: vec![],
                 },
                 kind: ItemKind::TypeAlias {
+                    type_params: vec![],
                     type_repr: "f64".into(),
                 },
             },
@@ -1214,6 +1215,7 @@ fn type_alias_body_renders() {
             pragmas: vec![],
         },
         kind: ItemKind::TypeAlias {
+            type_params: vec![],
             type_repr: "f64".into(),
         },
     };
@@ -1968,6 +1970,7 @@ fn build_integration_full_v01_fixture() -> DocModel {
                         pragmas: vec![],
                     },
                     kind: ItemKind::TypeAlias {
+                        type_params: vec![],
                         type_repr: "Force / Area".into(),
                     },
                 },

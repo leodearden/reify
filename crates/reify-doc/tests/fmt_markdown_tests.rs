@@ -317,6 +317,7 @@ fn item_h2_headings_per_variant() {
                     pragmas: vec![],
                 },
                 kind: ItemKind::TypeAlias {
+                    type_params: vec![],
                     type_repr: "f64".into(),
                 },
             }),
@@ -1119,6 +1120,7 @@ fn type_alias_body_renders_rhs() {
             pragmas: vec![],
         },
         kind: ItemKind::TypeAlias {
+            type_params: vec![],
             type_repr: "f64".into(),
         },
     };
@@ -1145,6 +1147,7 @@ fn type_alias_body_uses_safe_inline_code_fence() {
             pragmas: vec![],
         },
         kind: ItemKind::TypeAlias {
+            type_params: vec![],
             type_repr: type_repr.into(),
         },
     };
@@ -1562,6 +1565,7 @@ fn mk_item(kind: &str, name: &str) -> ItemDoc {
                 pragmas: vec![],
             },
             kind: ItemKind::TypeAlias {
+                type_params: vec![],
                 type_repr: "f64".into(),
             },
         },
@@ -2145,6 +2149,7 @@ fn build_integration_full_v01_fixture() -> DocModel {
                         pragmas: vec![],
                     },
                     kind: ItemKind::TypeAlias {
+                        type_params: vec![],
                         type_repr: "Force / Area".into(),
                     },
                 },
