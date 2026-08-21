@@ -62,10 +62,13 @@
 //
 // RayleighDamping: matches the PRD §1 dogfood snippet and the resonance-budget
 //   purpose (per-mode damping ratios ζₙ = (α + β·ωₙ²) / (2·ωₙ)). It is a
-//   real stdlib structure def (modal_analysis.ri:46-48), fully supported by the
-//   trampoline (extract_damping:1162, rayleigh_damping_ratio:981). Damping does
-//   NOT affect the extracted natural frequencies, so the frequency gate is
-//   unaffected. Fall back to `NoDamping()` if ctor-lowering ever misbehaves.
+//   real stdlib structure def (modal_analysis.ri:134-137), fully supported by
+//   the trampoline (extract_damping at reify-eval/src/modal_ops.rs:2658).
+//   rayleigh_damping_ratio is NOT in modal_ops.rs — it is cross-crate, at
+//   reify-stdlib/src/modal/free_vibration.rs:43, imported at modal_ops.rs:35.
+//   Damping does NOT affect the extracted natural frequencies, so the
+//   frequency gate is unaffected. Fall back to `NoDamping()` if ctor-lowering
+//   ever misbehaves.
 
 structure PrinterGantryModes {
     // Geometry: 500 mm span, 60 × 40 mm rectangular cross-section.
