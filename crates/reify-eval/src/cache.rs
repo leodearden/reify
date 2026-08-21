@@ -5710,11 +5710,24 @@ mod tests {
 
         /// Build a `CachedResult::Value` wrapping a `Value::GeometryHandle`.
         fn cached_gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> CachedResult {
+            cached_gh_opt(entity, index, hash, Some(kernel_id))
+        }
+
+        /// As [`cached_gh`], but admits `kernel_handle: None` — the symbolic
+        /// mint shape produced before a realization has been dispatched to a
+        /// kernel (`engine_build.rs`, symbolic-handle mint path).  Needed by
+        /// the symbolic → realized transition pin below.
+        fn cached_gh_opt(
+            entity: &str,
+            index: u32,
+            hash: [u8; 32],
+            kernel_id: Option<u64>,
+        ) -> CachedResult {
             CachedResult::Value(
                 Value::GeometryHandle {
                     realization_ref: RealizationNodeId::new(entity, index),
                     upstream_values_hash: hash,
-                    kernel_handle: Some(GeometryHandleId(kernel_id)),
+                    kernel_handle: kernel_id.map(GeometryHandleId),
                 },
                 DeterminacyState::Determined,
             )
@@ -5749,6 +5762,129 @@ mod tests {
                 a.content_hash(),
                 b.content_hash(),
                 "kernel_handle must be EXCLUDED from the in-memory cache key",
+            );
+        }
+
+        // ── Task #6372: behavioural early-cutoff pins ───────────────────────
+        //
+        // The two tests above pin the cache KEY (content_hash equality).  The
+        // three below pin the BEHAVIOUR that key is load-bearing for: an equal
+        // key must make `CacheStore::record_evaluation_with_freshness` — the
+        // single early-cutoff decision site (its `existing.result_hash ==
+        // new_hash` branch) — return `EvalOutcome::Unchanged`, because only
+        // `EvalOutcome::Changed` causes `engine_edit.rs` to mark dependents
+        // dirty.  Nothing else in the tree asserts that bridge from "equal
+        // content hash" to "no downstream invalidation"; these tests close it.
+        //
+        // They are also the gate that licensed #6372's deletion of the
+        // standalone `significance_filter::geometry_handle_significance`
+        // helper: they demonstrate, through the real production API, that the
+        // `Value` layer already delivers that helper's contract for every
+        // target and with no opt-in allowlist, so deleting it lost no
+        // behaviour.  They remain as the permanent regression pin that would
+        // fire if a future change re-admitted `kernel_handle` into the key.
+
+        /// (3) Re-realization to a FRESH kernel handle, with `realization_ref`
+        /// and `upstream_values_hash` unchanged, must early-cutoff.
+        ///
+        /// This is the load-bearing behavioural pin: semantically-identical
+        /// geometry that happens to be backed by a new ephemeral session
+        /// handle must NOT dirty dependents.
+        #[test]
+        fn geometry_handle_kernel_handle_change_early_cutoffs() {
+            let mut store = CacheStore::new();
+            let node = NodeId::Value(ValueCellId::new("Widget", "body"));
+
+            let first = store.record_evaluation_with_freshness(
+                node.clone(),
+                cached_gh("Widget", 0, [0xAAu8; 32], 1),
+                VersionId(1),
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+            assert_eq!(first, EvalOutcome::Changed, "cold start must be Changed");
+
+            let second = store.record_evaluation_with_freshness(
+                node.clone(),
+                cached_gh("Widget", 0, [0xAAu8; 32], 999),
+                VersionId(2),
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+            assert_eq!(
+                second,
+                EvalOutcome::Unchanged,
+                "re-realization to a fresh kernel_handle for identical \
+                 realization_ref + upstream_values_hash must early-cutoff, so \
+                 dependents are never marked dirty",
+            );
+        }
+
+        /// (4) Negative control: a genuinely different `upstream_values_hash`
+        /// must report `Changed`, so the pin above cannot pass vacuously by
+        /// the store always reporting `Unchanged`.
+        #[test]
+        fn geometry_handle_upstream_hash_change_is_changed() {
+            let mut store = CacheStore::new();
+            let node = NodeId::Value(ValueCellId::new("Widget", "body"));
+
+            store.record_evaluation_with_freshness(
+                node.clone(),
+                cached_gh("Widget", 0, [0xAAu8; 32], 1),
+                VersionId(1),
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+
+            let second = store.record_evaluation_with_freshness(
+                node.clone(),
+                cached_gh("Widget", 0, [0xBBu8; 32], 1),
+                VersionId(2),
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+            assert_eq!(
+                second,
+                EvalOutcome::Changed,
+                "a different upstream_values_hash is a real semantic change \
+                 and must propagate as Changed",
+            );
+        }
+
+        /// (5) The real symbolic → realized production transition: a handle
+        /// first cached with `kernel_handle: None` (symbolic mint) and later
+        /// re-recorded with `Some(..)` after kernel dispatch must early-cutoff
+        /// at the cache layer.
+        #[test]
+        fn geometry_handle_symbolic_to_realized_early_cutoffs() {
+            let mut store = CacheStore::new();
+            let node = NodeId::Value(ValueCellId::new("Widget", "body"));
+
+            let first = store.record_evaluation_with_freshness(
+                node.clone(),
+                cached_gh_opt("Widget", 0, [0xAAu8; 32], None),
+                VersionId(1),
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+            assert_eq!(
+                first,
+                EvalOutcome::Changed,
+                "cold start (symbolic mint) must be Changed"
+            );
+
+            let second = store.record_evaluation_with_freshness(
+                node.clone(),
+                cached_gh_opt("Widget", 0, [0xAAu8; 32], Some(7)),
+                VersionId(2),
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+            assert_eq!(
+                second,
+                EvalOutcome::Unchanged,
+                "the symbolic None → realized Some(id) transition preserves \
+                 realization_ref + upstream_values_hash and must early-cutoff",
             );
         }
     }
