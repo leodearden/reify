@@ -296,4 +296,246 @@ assert "--dry-run exits 0" b2_dry_run_exits_zero
 assert "--dry-run spawns nothing (its port is still free afterwards)" b2_dry_run_spawns_nothing
 assert "--dry-run does not run the wrapped command" b2_dry_run_skips_wrapped_command
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 3 — preflight refusals
+#
+# All three refusals must land BEFORE any spawn, so a refusal costs no `uvx`
+# resolve and no process to reap. Every fixture here is hermetic: this suite
+# binds its own ephemeral ports and drives its own stub binaries. There is
+# deliberately NO `command -v uvx || exit 0` anywhere in this file — a whole-
+# file skip on a host without uv would bank a vacuous green, which is precisely
+# PRD §2.4's disease.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 3: preflight refusals ---"
+
+# Background pids this suite owns, reaped by cleanup(). Kept in a file-free
+# array because every append happens in the MAIN shell (never in a subshell).
+_BGPIDS=()
+_reap_bgpids() {
+    local pid
+    for pid in ${_BGPIDS+"${_BGPIDS[@]}"}; do
+        [ -n "$pid" ] || continue
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+}
+# Compose with the existing EXIT trap rather than installing a second one —
+# bash EXIT traps do not stack, so a `trap … EXIT` here would silently clobber
+# the _TMPDIRS cleanup installed above.
+cleanup() {
+    _reap_bgpids
+    local d
+    for d in ${_TMPDIRS+"${_TMPDIRS[@]}"}; do
+        [ -n "$d" ] && rm -rf "$d"
+    done
+}
+
+# start_squatter <dir> — bind and HOLD an ephemeral port in a background
+# process. This is the foreign listener the wrapper must refuse to adopt and
+# must never kill.
+#
+# MAIN-SHELL ONLY, and it reports through the globals SQ_PORT/SQ_PID rather than
+# on stdout, precisely so callers cannot reach for `$(start_squatter …)` or
+# `< <(start_squatter …)`. Either form runs the body in a SUBSHELL, where the
+# `_BGPIDS+=` registration below is discarded on exit — leaking a listening
+# process out of a `pool` member for the squatter's whole lifetime. The same
+# subshell hazard test_helpers.sh's make_isolated_lane documents.
+SQ_PORT=""
+SQ_PID=""
+start_squatter() {
+    local dir="$1"
+    local portfile="$dir/squatter.port"
+    local i
+    SQ_PORT=""
+    SQ_PID=""
+    python3 - "$portfile" <<'PY' &
+import socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(8)
+with open(sys.argv[1], "w") as fh:
+    fh.write(str(s.getsockname()[1]))
+time.sleep(600)
+PY
+    SQ_PID=$!
+    _BGPIDS+=("$SQ_PID")
+    for i in $(seq 1 100); do
+        [ -s "$portfile" ] && break
+        sleep 0.05
+    done
+    SQ_PORT="$(cat "$portfile" 2>/dev/null || true)"
+    [ -n "$SQ_PORT" ] || { echo "start_squatter: the squatter never reported a port" >&2; return 1; }
+    return 0
+}
+
+# mk_min_path <dir> [hidden-tool] — a PATH holding symlinks to exactly the
+# wrapper's external dependency surface, minus <hidden-tool>.
+#
+# WHY A CURATED DIR RATHER THAN A SHADOWING PREFIX: you cannot hide a binary by
+# putting a directory FIRST on PATH — `command -v jq` still resolves to the one
+# further down. Hiding requires a PATH from which the tool is genuinely absent,
+# so this mints one. The whitelist doubles as an executable statement of the
+# wrapper's dependency surface: a wrapper that grows a new external dependency
+# without declaring it here fails this block loudly instead of silently
+# depending on the ambient PATH.
+_MIN_PATH_TOOLS=(env bash sh cat cut grep sed head tail tr wc sort mktemp rm
+                 mkdir touch sleep timeout setsid curl jq python3 ss ps
+                 awk dirname basename readlink date kill)
+mk_min_path() {
+    local dir="$1" hidden="${2:-}" tool real
+    mkdir -p "$dir" || return 1
+    for tool in "${_MIN_PATH_TOOLS[@]}"; do
+        [ "$tool" = "$hidden" ] && continue
+        real="$(command -v "$tool" 2>/dev/null)" || continue
+        ln -sf "$real" "$dir/$tool" 2>/dev/null || true
+    done
+    # Anti-vacuity: if the tool we were asked to hide is not on the real PATH
+    # either, the whole fixture proves nothing.
+    if [ -n "$hidden" ] && ! command -v "$hidden" >/dev/null 2>&1; then
+        echo "mk_min_path: '$hidden' is not on the real PATH, so hiding it proves nothing" >&2
+        return 1
+    fi
+    return 0
+}
+
+# -- 3(a) the port is already occupied ---------------------------------------
+#
+# REFUSE, never adopt and never kill. An adopted serve carries an unknown pin
+# and an unknown identity lever — it may answer for `leodearden/reify` instead
+# of `local/reify-4ae45bbd`, the exact wrong-identity class this PRD exists to
+# eliminate — and tearing down a process this script did not spawn is out of
+# scope.
+B3A_DIR="$(mk_tmpdir)"
+B3A_PORT=""
+B3A_PID=""
+B3A_OUT=""
+B3A_RC=0
+B3A_WITNESS="$B3A_DIR/wrapped-ran"
+if [ -n "$B3A_DIR" ]; then
+    start_squatter "$B3A_DIR" || true
+    B3A_PORT="$SQ_PORT"
+    B3A_PID="$SQ_PID"
+    if [ -n "$B3A_PORT" ]; then
+        B3A_OUT="$("$JC_SERVE" --port "$B3A_PORT" touch "$B3A_WITNESS" 2>&1)" || B3A_RC=$?
+    fi
+fi
+
+b3a_fixture_live()  { [ -n "$B3A_PORT" ] && [ -n "$B3A_PID" ] && ! port_is_free "$B3A_PORT"; }
+b3a_refuses()       {
+    require_nonempty "port-busy output" "$B3A_OUT" || return 1
+    [ "$B3A_RC" -ne 0 ] || { echo "wrapper exited 0 over an occupied port"; return 1; }
+    case "$B3A_OUT" in *"$M_PORT_BUSY"*) return 0 ;; esac
+    printf '%s\n' "no $M_PORT_BUSY in:" "$B3A_OUT"; return 1
+}
+b3a_no_ready_claim() {
+    require_nonempty "port-busy output" "$B3A_OUT" || return 1
+    case "$B3A_OUT" in *"$READY_MARKER"*) printf '%s\n' "wrapper claimed $READY_MARKER before refusing:" "$B3A_OUT"; return 1 ;; esac
+    return 0
+}
+b3a_skips_wrapped()  { [ ! -e "$B3A_WITNESS" ]; }
+# THE LOAD-BEARING HALF: the foreign listener survives untouched.
+b3a_squatter_alive() {
+    kill -0 "$B3A_PID" 2>/dev/null || { echo "the wrapper KILLED a serve it did not spawn (pid $B3A_PID is gone)"; return 1; }
+    port_is_free "$B3A_PORT" && { echo "the foreign listener stopped accepting — the wrapper tore down a port it did not own"; return 1; }
+    return 0
+}
+# Negative control: the marker is caused by the OCCUPIED port, not emitted
+# unconditionally.
+b3a_negative_control() {
+    local port out
+    port="$(pick_free_port)" || return 1
+    out="$("$JC_SERVE" --port "$port" true 2>&1 || true)"
+    case "$out" in *"$M_PORT_BUSY"*) printf '%s\n' "$M_PORT_BUSY fired on a FREE port:" "$out"; return 1 ;; esac
+    return 0
+}
+
+assert "the port-busy fixture really holds a port (anti-vacuity)"          b3a_fixture_live
+assert "an occupied port refuses $M_PORT_BUSY and exits non-zero"          b3a_refuses
+assert "the port-busy refusal never claims $READY_MARKER"                  b3a_no_ready_claim
+assert "the port-busy refusal does not run the wrapped command"            b3a_skips_wrapped
+assert "the wrapper neither kills nor adopts the foreign listener"         b3a_squatter_alive
+assert "on a FREE port the same invocation does not emit $M_PORT_BUSY"     b3a_negative_control
+
+# -- 3(b) the serve binary is missing ----------------------------------------
+#
+# Must refuse PROMPTLY and name the fix, rather than crashing or hanging until
+# the 180 s readiness deadline — a missing binary is not a slow start.
+B3B_OUT=""
+B3B_RC=0
+B3B_PORT="$(pick_free_port || true)"
+if [ -n "$B3B_PORT" ]; then
+    B3B_OUT="$(REIFY_JC_SERVE_CMD="/nonexistent/dir/no-such-serve" \
+        "$JC_SERVE" --port "$B3B_PORT" true 2>&1)" || B3B_RC=$?
+fi
+
+b3b_refuses()       { require_nonempty "missing-serve output" "$B3B_OUT" || return 1; [ "$B3B_RC" -ne 0 ]; }
+b3b_names_missing() {
+    require_nonempty "missing-serve output" "$B3B_OUT" || return 1
+    case "$B3B_OUT" in *"/nonexistent/dir/no-such-serve"*) return 0 ;; esac
+    printf '%s\n' "the refusal does not name the missing command:" "$B3B_OUT"; return 1
+}
+b3b_names_the_fix() {
+    require_nonempty "missing-serve output" "$B3B_OUT" || return 1
+    case "$B3B_OUT" in *"/home/leo/.local/bin/uvx"*) ;; *) printf '%s\n' "the refusal does not name where uvx lives on this host:" "$B3B_OUT"; return 1 ;; esac
+    case "$B3B_OUT" in *"--dry-run"*) ;; *) printf '%s\n' "the refusal does not offer --dry-run:" "$B3B_OUT"; return 1 ;; esac
+    return 0
+}
+b3b_no_ready_claim() {
+    require_nonempty "missing-serve output" "$B3B_OUT" || return 1
+    case "$B3B_OUT" in *"$READY_MARKER"*) return 1 ;; esac
+    return 0
+}
+# The refusal must be preflight, not a burnt readiness deadline: nothing may be
+# left listening on the port it was given.
+b3b_port_untouched() { [ -n "$B3B_PORT" ] && port_is_free "$B3B_PORT"; }
+
+assert "a missing serve binary refuses and exits non-zero"                 b3b_refuses
+assert "the missing-serve refusal names the command it could not find"     b3b_names_missing
+assert "the missing-serve refusal names uvx's location and --dry-run"      b3b_names_the_fix
+assert "the missing-serve refusal never claims $READY_MARKER"              b3b_no_ready_claim
+assert "the missing-serve refusal leaves nothing listening"                b3b_port_untouched
+
+# -- 3(c) curl / jq are missing ----------------------------------------------
+#
+# The readiness probe cannot be built out of either one alone, so both are
+# preflight requirements rather than lazily-discovered failures partway into a
+# poll loop.
+B3C_DIR="$(mk_tmpdir)"
+b3c_missing_tool_named() {
+    local hidden="$1" dir out port fake
+    [ -n "$B3C_DIR" ] || return 1
+    dir="$B3C_DIR/no-$hidden"
+    mk_min_path "$dir" "$hidden" || return 1
+    # A real, resolvable serve command, so the refusal under test is about the
+    # hidden tool and not about a missing uvx.
+    fake="$B3C_DIR/fake-serve"
+    printf '#!/bin/sh\nexit 0\n' > "$fake" && chmod +x "$fake"
+    port="$(pick_free_port)" || return 1
+    out="$(PATH="$dir" REIFY_JC_SERVE_CMD="$fake" "$JC_SERVE" --port "$port" "$fake" 2>&1 || true)"
+    require_nonempty "missing-$hidden output" "$out" || return 1
+    case "$out" in
+        *"'$hidden'"*|*" $hidden "*) return 0 ;;
+    esac
+    printf '%s\n' "the refusal does not name the missing '$hidden':" "$out"
+    return 1
+}
+b3c_negative_control() {
+    local dir out port fake
+    [ -n "$B3C_DIR" ] || return 1
+    dir="$B3C_DIR/complete"
+    mk_min_path "$dir" || return 1
+    fake="$B3C_DIR/fake-serve"
+    printf '#!/bin/sh\nexit 0\n' > "$fake" && chmod +x "$fake"
+    port="$(pick_free_port)" || return 1
+    out="$(PATH="$dir" REIFY_JC_SERVE_CMD="$fake" "$JC_SERVE" --port "$port" "$fake" 2>&1 || true)"
+    case "$out" in
+        *"is not on PATH"*) printf '%s\n' "a COMPLETE PATH still produced a missing-tool refusal:" "$out"; return 1 ;;
+    esac
+    return 0
+}
+
+assert "a PATH without curl refuses and names curl"                        b3c_missing_tool_named curl
+assert "a PATH without jq refuses and names jq"                            b3c_missing_tool_named jq
+assert "a complete PATH produces no missing-tool refusal (control)"        b3c_negative_control
+
 test_summary
