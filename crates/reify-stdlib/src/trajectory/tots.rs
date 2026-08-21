@@ -34,6 +34,328 @@ use super::simulate::{
 };
 use crate::dynamics::rnea::inverse_dynamics_open_chain;
 
+// ── Shaper-family recognition ─────────────────────────────────────────────────
+
+/// Is `type_name` a member of the TOTS shaper family? (task 6096)
+///
+/// **Single source of truth.** Both eval-side dispatch sites —
+/// `input_shape::eval_input_shape` and `trampoline::input_shape_value` — MUST
+/// route their TOTS-arm decision through this predicate rather than comparing
+/// the string themselves, so the two arms cannot drift apart. `tots.rs` holds
+/// it because both files already import from here, so the name set lives in
+/// exactly one place with no new module wiring.
+///
+/// The family has two members, one per joint kind (the per-joint-kind duality
+/// declared in `trajectory.ri`):
+///
+/// - `TOTSShaper` — prismatic/linear (`Scalar<Velocity>` /
+///   `Scalar<Acceleration>` limits)
+/// - `RevoluteTOTSShaper` — revolute/rotational (`Scalar<AngularVelocity>` /
+///   `Rate<AngularVelocity>` limits)
+///
+/// **Why this must be widened in lockstep with the `.ri` surface.** A `Shaper`
+/// refiner that a dispatch site does not recognise falls through to
+/// `build_train_for_shaper`, which knows only ZV/ZVD/EI/Cascaded, gets `None`,
+/// and yields `Value::Undef` — exit 0, ZERO diagnostics. Adding a shaper type
+/// without adding it here therefore ships a booby-trapped surface that looks
+/// green from every angle except the value it produces.
+///
+/// Both kinds marshal identically downstream: `field_f64` → `read_scalar_si`
+/// discards the dimension, so the revolute shaper's rad·s⁻¹ / rad·s⁻² SI
+/// magnitudes flow into the canonical stand-in model exactly as the linear
+/// half's m·s⁻¹ / m·s⁻² do. Recognition is the only thing that differs.
+///
+/// The prose invariant above is MECHANICALLY enforced by
+/// `shaper_family_guard::every_shipped_shaper_structure_is_recognised` below:
+/// it scans the shipped `trajectory.ri` for every `structure def <Name> :
+/// Shaper` and fails if any of them is recognised by neither this predicate
+/// nor `build_train_for_shaper`. That turns "must be widened in lockstep"
+/// from a comment into a RED at the source of the next drift.
+pub(crate) fn is_tots_shaper_type_name(type_name: &str) -> bool {
+    matches!(type_name, "TOTSShaper" | "RevoluteTOTSShaper")
+}
+
+#[cfg(test)]
+mod shaper_family_guard {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+    use super::is_tots_shaper_type_name;
+    use crate::trajectory::input_shape::build_train_for_shaper;
+
+    /// The shipped stdlib source, embedded at COMPILE time so the guard needs
+    /// no runtime cwd and cannot silently no-op on a missing file. This is the
+    /// very file the compiler ships (`stdlib_loader.rs` `include_str!`s the
+    /// same path), so the scan below sees exactly the declarations authors get.
+    const TRAJECTORY_RI: &str = include_str!("../../../reify-compiler/stdlib/trajectory.ri");
+
+    /// Every structure declared in `source` that refines `Shaper`.
+    ///
+    /// Deliberately a dumb line scan rather than a parse: the guard must keep
+    /// working without pulling `reify-compiler` into `reify-stdlib`'s
+    /// dependency graph (the dependency edge does not exist and must not be
+    /// created for a test). Comment lines are skipped so the module-header
+    /// bullet list at the top of `trajectory.ri` is not mistaken for a decl.
+    ///
+    /// The scan admits every SINGLE-LINE spelling the grammar accepts
+    /// (`grammar.js` `structure_definition`), because a form it silently
+    /// missed would be a shaper the lockstep gate below never checked:
+    ///
+    /// - `pub` is optional and live in the stdlib (`solver_elastic.ri:660`);
+    /// - `def` is optional too;
+    /// - the bound list is `+`-separated and `Shaper` need not come first
+    ///   (multi-bound refinement is live: `kinematic.ri:145/163`), so this
+    ///   tests MEMBERSHIP rather than the first token;
+    /// - a type-parameter colon (`structure def X<T: B> : Shaper`, cf.
+    ///   `kinematic.ri:214`) must not be mistaken for the bound colon, so the
+    ///   split is on the first `:` at angle-bracket depth ZERO.
+    ///
+    /// A header split across LINES, or carrying an interior comment, is still
+    /// outside a per-line scan's reach — the grammar's `extras` admit both.
+    /// That residue is covered by the exact-set assertion in
+    /// [`every_shipped_shaper_structure_is_recognised`]: any miss, partial or
+    /// total, goes RED naming the name that went missing.
+    fn declared_shaper_type_names(source: &str) -> Vec<String> {
+        source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//"))
+            .filter_map(shaper_refiner_name)
+            .collect()
+    }
+
+    /// `Name` iff the trimmed `line` opens a structure declaration whose bound
+    /// list contains `Shaper`; `None` otherwise. See
+    /// [`declared_shaper_type_names`] for which spellings this accepts and why.
+    fn shaper_refiner_name(line: &str) -> Option<String> {
+        let rest = line.strip_prefix("pub ").unwrap_or(line);
+        let rest = rest.strip_prefix("structure ")?;
+        let rest = rest.strip_prefix("def ").unwrap_or(rest);
+
+        let (name, bounds) = split_at_bound_colon(rest)?;
+        // Drop any type-parameter list from the name: `X<T: B>` → `X`.
+        let name = name.split('<').next()?.trim();
+        if name.is_empty() {
+            return None;
+        }
+        // Membership in the `+`-separated bound list, comparing each bound's
+        // leading IDENTIFIER. Taking the identifier prefix rather than the
+        // whole trimmed segment is what makes the trailing body brace (and any
+        // trailing comment) fall away without this file having to spell a
+        // brace character — see the brace-balance note on
+        // `shaper_refiner_name_accepts_every_single_line_declaration_form`.
+        bounds
+            .split('+')
+            .any(|bound| leading_identifier(bound) == "Shaper")
+            .then(|| name.to_string())
+    }
+
+    /// The leading identifier of `s` after trimming: everything up to the
+    /// first character that cannot appear in a Rust/Reify identifier. So
+    /// `" Shaper "`, `"Shaper{ }"` and `"Shaper // note"` all yield `"Shaper"`,
+    /// while `"ShaperLike"` yields itself and is correctly NOT a match.
+    fn leading_identifier(s: &str) -> &str {
+        let s = s.trim_start();
+        let end = s
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(s.len());
+        &s[..end]
+    }
+
+    /// Split `s` at the first `:` that is NOT inside a `<…>` type-parameter
+    /// list — i.e. the trait-bound colon. `None` when there is no such colon
+    /// (a structure that refines nothing).
+    fn split_at_bound_colon(s: &str) -> Option<(&str, &str)> {
+        let mut depth = 0usize;
+        for (idx, ch) in s.char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => depth = depth.saturating_sub(1),
+                ':' if depth == 0 => return Some((&s[..idx], &s[idx + 1..])),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// A field-less `Shaper` instance carrying `type_name`, exactly the shape
+    /// the eval path routes on (both dispatch sites read the nominal tag; the
+    /// impulse arms fall back to their `.ri` defaults for absent fields).
+    fn bare_shaper_instance(type_name: &str) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: type_name.to_string(),
+            version: 0,
+            fields: PersistentMap::new(),
+        }))
+    }
+
+    /// LOCKSTEP GATE (task 6096). Every shaper structure shipped in
+    /// `trajectory.ri` must be recognised by one of the two eval-side
+    /// recognisers — [`is_tots_shaper_type_name`] (the SQP family) or
+    /// [`build_train_for_shaper`] (the ZV/ZVD/EI/Cascaded impulse family).
+    ///
+    /// WHY this exists rather than a comment: a `Shaper` refiner that neither
+    /// recogniser knows falls through to `build_train_for_shaper` → `None` →
+    /// `Value::Undef`, with exit 0 and ZERO diagnostics. That failure is
+    /// SILENT, so the next shaper addition would look green from every angle
+    /// except the value it produces — which is exactly how the gap this task
+    /// closed was opened. If you are reading this because it just went RED:
+    /// add your new shaper to whichever arm evaluates it (widen
+    /// `is_tots_shaper_type_name` for an SQP-family shaper, add a
+    /// `build_train_for_shaper` arm for an impulse-family one). Do NOT add it
+    /// to an allowlist here.
+    /// The shaper structures shipped in `trajectory.ri`, sorted. Pinned as an
+    /// EXACT set, not a floor: a floor only catches TOTAL scan breakage, while
+    /// the failure this guard exists to prevent is a SILENT PARTIAL miss — a
+    /// declaration form the scan drops while still returning enough names to
+    /// clear any lower bound.
+    const SHIPPED_SHAPER_STRUCTURES: [&str; 6] = [
+        "CascadedShaper",
+        "EIShaper",
+        "RevoluteTOTSShaper",
+        "TOTSShaper",
+        "ZVDShaper",
+        "ZVShaper",
+    ];
+
+    #[test]
+    fn every_shipped_shaper_structure_is_recognised() {
+        let declared = declared_shaper_type_names(TRAJECTORY_RI);
+
+        // Exact-set pin on the scan itself (see SHIPPED_SHAPER_STRUCTURES).
+        let mut sorted: Vec<&str> = declared.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted, SHIPPED_SHAPER_STRUCTURES,
+            "the scan of trajectory.ri no longer yields exactly the shipped \
+             shaper structures. If you ADDED a shaper: add its name to \
+             SHIPPED_SHAPER_STRUCTURES (and make sure an eval-side arm \
+             recognises it — that is what the loop below checks). If you \
+             REMOVED one: drop its name here. If you did NEITHER, the scan \
+             itself has broken on a declaration spelling it does not accept \
+             (a multi-line or comment-interrupted header, say) — fix \
+             `shaper_refiner_name`, do NOT edit this list to match."
+        );
+
+        for name in &declared {
+            let by_tots = is_tots_shaper_type_name(name);
+            let by_impulse = build_train_for_shaper(&bare_shaper_instance(name)).is_some();
+            assert!(
+                by_tots || by_impulse,
+                "`structure def {name} : Shaper` is shipped in trajectory.ri but no \
+                 eval-side dispatch arm recognises it: is_tots_shaper_type_name() is \
+                 false and build_train_for_shaper() returns None. Evaluating it would \
+                 yield a SILENT Value::Undef (exit 0, zero diagnostics). Widen \
+                 `is_tots_shaper_type_name` (SQP family) or add a \
+                 `build_train_for_shaper` arm (impulse family)."
+            );
+        }
+    }
+
+    /// Direct coverage of the SCAN, form by form. The lockstep gate above is
+    /// only as good as this parser: a declaration spelling it silently drops
+    /// is a shipped shaper the gate never checks. Every accepted form below
+    /// is one the grammar admits (`grammar.js` `structure_definition`), and
+    /// each rejected form is one that must NOT be mistaken for a shaper decl.
+    ///
+    /// ⚠ BRACE BALANCE — every fixture below closes its brace pair, and no
+    /// line in this module may leave one open. Do NOT "fix" these to end in a
+    /// dangling open brace the way a real decl line does.
+    /// `scripts/audit-orphan-producers.sh` masks `#[cfg(test)]` items by
+    /// counting brace characters per LINE with no string awareness, so an
+    /// unbalanced brace inside a string literal (or inside a comment, this one
+    /// included) extends the mask past the end of this module and silently
+    /// hides the REST of this file from the orphan audit — at which point the
+    /// 14 `// G-allow:` pins over the SQP helpers below drop out of the audit's
+    /// allow-list and `new_orphans_2026_06_02_g_allow.rs` goes red. Measured
+    /// first-hand: 14 fixtures with a dangling brace masked lines 79→EOF.
+    /// The paired form is itself a real spelling — every empty marker
+    /// structure uses it, e.g. `structure def NaturalSpline :
+    /// BoundaryCondition` with an empty body — and the dangling form is
+    /// covered for real by [`every_shipped_shaper_structure_is_recognised`],
+    /// which scans the actual shipped file.
+    #[test]
+    fn shaper_refiner_name_accepts_every_single_line_declaration_form() {
+        for (line, expected) in [
+            // The plain form the stdlib uses today.
+            ("structure def ZVShaper : Shaper { }", Some("ZVShaper")),
+            // `def` is optional in the grammar.
+            ("structure ZVShaper : Shaper { }", Some("ZVShaper")),
+            // `pub` is optional and live in the stdlib (solver_elastic.ri:660).
+            ("pub structure def PubShaper : Shaper { }", Some("PubShaper")),
+            ("pub structure PubShaper : Shaper { }", Some("PubShaper")),
+            // Shaper need not be FIRST in a `+`-separated bound list
+            // (multi-bound refinement is live: kinematic.ri:145/163).
+            (
+                "structure def FooShaper : Marker + Shaper { }",
+                Some("FooShaper"),
+            ),
+            (
+                "structure def FooShaper : Shaper + Marker { }",
+                Some("FooShaper"),
+            ),
+            // The type-parameter colon must not be read as the bound colon
+            // (cf. kinematic.ri:214), and the `<…>` must not reach the name.
+            (
+                "structure def GenShaper<T: Bound> : Shaper { }",
+                Some("GenShaper"),
+            ),
+            // Whitespace is `extras`, so spacing must not matter.
+            ("structure def TightShaper:Shaper{ }", Some("TightShaper")),
+            // ── must NOT match ──
+            // A structure refining nothing.
+            ("structure def Waypoint { }", None),
+            // A different marker trait entirely.
+            ("structure def NaturalSpline : BoundaryCondition { }", None),
+            // A bound that merely CONTAINS "Shaper" is a different trait.
+            ("structure def X : ShaperLike { }", None),
+            ("structure def X : NotAShaper { }", None),
+            // Only the type-parameter bound is Shaper — the structure itself
+            // does not refine it.
+            ("structure def X<T: Shaper> { }", None),
+            // Not a structure declaration at all.
+            ("occurrence def X : Shaper { }", None),
+            ("pub fn input_shape(profile: Profile, shaper: Shaper)", None),
+        ] {
+            assert_eq!(
+                shaper_refiner_name(line).as_deref(),
+                expected,
+                "scan mis-read {line:?} — a form the scan drops is a shipped \
+                 shaper the lockstep gate never checks"
+            );
+        }
+    }
+
+    /// Direct unit coverage of the predicate's name set: both family members
+    /// in, and the neighbouring shaper structures — which MUST be handled by
+    /// the impulse arm instead — out. Pins the boundary the guard above
+    /// checks only in aggregate.
+    #[test]
+    fn is_tots_shaper_type_name_matches_exactly_the_sqp_family() {
+        for member in ["TOTSShaper", "RevoluteTOTSShaper"] {
+            assert!(
+                is_tots_shaper_type_name(member),
+                "{member} is an SQP-family shaper and must be recognised"
+            );
+        }
+        for outsider in [
+            "ZVShaper",
+            "ZVDShaper",
+            "EIShaper",
+            "CascadedShaper",
+            "TOTSShaperX",
+            "totsshaper",
+            "",
+        ] {
+            assert!(
+                !is_tots_shaper_type_name(outsider),
+                "{outsider:?} is not an SQP-family shaper; recognising it would route \
+                 it into the SQP loop instead of its own arm"
+            );
+        }
+    }
+}
+
 // ── Parameter types ───────────────────────────────────────────────────────────
 
 /// Per-joint waypoint specification.
