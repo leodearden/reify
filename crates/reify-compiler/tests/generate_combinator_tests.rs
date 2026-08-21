@@ -345,3 +345,155 @@ fn generate_over_geometry_emits_one_realization_per_index() {
         Type::List(Box::new(Type::Geometry)),
     );
 }
+
+/// The list-literal form is the same defect with no lambda involved: a
+/// geometry constructor outside geometry-let head position. It lowers to the
+/// same N-sibling-realization shape.
+#[test]
+fn geometry_list_literal_emits_one_realization_per_element() {
+    let source = r#"
+        structure S {
+            let parts = [cylinder(5mm, 20mm), box(1mm, 1mm, 1mm)]
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a geometry list literal must compile clean; got: {errors:?}",
+    );
+
+    let t = template(&compiled, "S");
+    let elements = list_realizations(t, "parts");
+    assert_eq!(
+        elements.len(),
+        2,
+        "expected 2 list-bound realizations for `parts`, got {:#?}",
+        t.realizations,
+    );
+    assert_eq!(elements[0].name.as_deref(), Some("parts#0"));
+    assert_eq!(elements[1].name.as_deref(), Some("parts#1"));
+    assert!(
+        elements[0].operations.iter().any(|op| matches!(
+            op,
+            reify_compiler::CompiledGeometryOp::Primitive {
+                kind: reify_compiler::PrimitiveKind::Cylinder,
+                ..
+            }
+        )),
+        "parts#0 must be the cylinder; got {:#?}",
+        elements[0].operations,
+    );
+    assert!(
+        elements[1].operations.iter().any(|op| matches!(
+            op,
+            reify_compiler::CompiledGeometryOp::Primitive {
+                kind: reify_compiler::PrimitiveKind::Box,
+                ..
+            }
+        )),
+        "parts#1 must be the box; got {:#?}",
+        elements[1].operations,
+    );
+
+    assert_eq!(
+        value_cell(t, "parts").cell_type,
+        Type::List(Box::new(Type::Geometry)),
+    );
+}
+
+/// A `generate` count that is not a literal cannot be unrolled at compile
+/// time, and a realization graph cannot be sized at eval time. That is a
+/// COMPILE-TIME Error naming the construct — never a silently `List<Real>`-
+/// typed cell that evaluates to `[undef, …]`, which is exactly the failure
+/// class this task exists to kill.
+#[test]
+fn generate_with_non_literal_count_over_geometry_is_a_loud_error() {
+    let source = r#"
+        structure S {
+            param n : Int = 3
+            let holes = generate(n, |i| cylinder(5mm, 20mm))
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a geometry-producing generate() with a non-literal count must be an \
+         ERROR, not a silent undef list",
+    );
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| {
+            d.message.contains("generate")
+                && d.message.contains("literal")
+                && d.message.contains("Int")
+        })
+        .collect();
+    assert!(
+        !matching.is_empty(),
+        "expected an error naming generate() and the literal-Int-count \
+         requirement; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
+    assert!(
+        matching.iter().any(|d| !d.labels.is_empty()),
+        "the diagnostic must carry a span label anchored at the call",
+    );
+
+    // …and nothing is emitted for `holes`: no half-lowered realization.
+    let t = template(&compiled, "S");
+    assert!(
+        t.realizations
+            .iter()
+            .all(|r| !r.name.as_deref().is_some_and(|n| n.starts_with("holes"))),
+        "no realization may be emitted for the rejected let; got {:#?}",
+        t.realizations,
+    );
+}
+
+/// A list literal mixing geometry and non-geometry elements is likewise a
+/// loud compile-time Error rather than a `List<Real>` cell of undefs.
+#[test]
+fn mixed_kind_geometry_list_literal_is_a_loud_error() {
+    let source = r#"
+        structure S {
+            let bad = [cylinder(5mm, 20mm), 3]
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("geometry") && d.message.contains("list literal"))
+        .collect();
+    assert!(
+        !matching.is_empty(),
+        "expected an error naming the mixed-kind list literal; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
+    assert!(
+        matching.iter().any(|d| !d.labels.is_empty()),
+        "the diagnostic must carry a span label",
+    );
+
+    let t = template(&compiled, "S");
+    assert!(
+        t.realizations
+            .iter()
+            .all(|r| !r.name.as_deref().is_some_and(|n| n.starts_with("bad"))),
+        "no realization may be emitted for the rejected let; got {:#?}",
+        t.realizations,
+    );
+}
