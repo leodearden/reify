@@ -3903,8 +3903,16 @@ fn compile_expr_guarded_with_expected_inner(
             // instead. The folded value is exactly the number of list-bound
             // realizations emitted for that let (both come from the same
             // `GeometryListShape`), so the two can never disagree.
+            //
+            // SHADOWING (review esc-5385-3): `geometry_list_lens` is inherited
+            // verbatim by every derived scope (lambda body, quantifier
+            // predicate, match arm with payload binders), each of which
+            // registers its binder in `names` only. Gate the fold on the name
+            // still resolving to THIS entity's list let, or a binder that
+            // shadows one is silently folded to the OUTER list's length.
             if member == "count"
                 && let reify_ast::ExprKind::Ident(list_name) = &object.kind
+                && scope.geometry_list_binding_is_live(list_name.as_str())
                 && let Some(&len) = scope.geometry_list_lens.get(list_name.as_str())
             {
                 return CompiledExpr::literal(Value::Int(len as i64), Type::Int);

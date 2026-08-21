@@ -462,3 +462,93 @@ fn generate_with_index_arithmetic_in_geometry_args_evaluates() {
     );
     assert_geometry_handle_list(&result, "S", "holes", 4);
 }
+
+// ─── task #5385 (review esc-5385-3): shadowing must defeat the .count fold ───
+
+/// A LAMBDA PARAM that shadows a geometry-list let must NOT inherit that let's
+/// statically-folded length.
+///
+/// `geometry_list_lens` is populated once in entity.rs pass 1 and then inherited
+/// verbatim by the cloned lambda scope, which registers its binder in `names`
+/// only. Keying the `.count` fold on the raw identifier text therefore folded the
+/// INNER `holes` to the OUTER list's length.
+///
+/// RED before the shadow guard: `ns` evaluated to `List([Int(3), Int(3)])` — the
+/// outer list's length, silently, with zero diagnostics, regardless of what the
+/// lambda actually received. That is a silently-wrong compile-time CONSTANT,
+/// exactly the class this task exists to eliminate.
+///
+/// The assertion is deliberately negative-only. Once the fold is correctly
+/// suppressed the body is a genuine `MethodCall` on an `Int`-typed binder, and
+/// what a `.count` on a non-collection should yield is #5402's (eval-side
+/// provenance) question, not this task's. Pinning `Int(3)` as forbidden is the
+/// whole regression.
+#[test]
+fn lambda_param_shadowing_a_geometry_list_let_does_not_inherit_its_count() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let ns = generate(2, |holes| holes.count)
+        }
+    "#,
+    );
+    let ns = result.values.get(&ValueCellId::new("S", "ns"));
+    let Some(Value::List(elems)) = ns else {
+        panic!("`ns` must evaluate to a List; got {ns:?}");
+    };
+    assert!(
+        !elems.iter().any(|e| *e == Value::Int(3)),
+        "the lambda's `holes.count` must NOT fold to the OUTER geometry list's \
+         length 3 — the param shadows it; got {ns:?}",
+    );
+}
+
+/// The same for a QUANTIFIER VARIABLE, which `expr.rs` binds through a second,
+/// independent `scope.clone()` that likewise leaves `geometry_list_lens` intact.
+///
+/// RED before the shadow guard: the predicate's `holes.count` folded to
+/// `Literal(Int(3))`, so `holes.count == 2` was decided at COMPILE time and `ok`
+/// evaluated to `Bool(false)` — a wrong answer, silently, with no diagnostic and
+/// without the quantifier variable ever being consulted.
+#[test]
+fn quantifier_variable_shadowing_a_geometry_list_let_does_not_inherit_its_count() {
+    let parsed = reify_syntax::parse(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let xs = [1, 2]
+            let ok = forall holes in xs: holes.count == 2
+        }
+    "#,
+        ModulePath::single("test"),
+    );
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Assert against the COMPILED predicate rather than the evaluated Bool: the
+    // fold is a compile-time rewrite, so the tree is where it is unambiguously
+    // present or absent. (`Bool(false)` vs `Undef` would also discriminate today,
+    // but only incidentally.)
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let ok_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "ok")
+        .expect("value cell 'ok'");
+    let rendered = format!("{:?}", ok_cell.default_expr.as_ref().expect("default_expr"));
+    assert!(
+        rendered.contains("MethodCall"),
+        "the quantifier variable's `holes.count` must survive as a MethodCall on \
+         the bound variable, not be folded away; got: {rendered}",
+    );
+    assert!(
+        !rendered.contains("Literal(Int(3))"),
+        "the predicate must contain no folded `Int(3)` — that is the OUTER \
+         geometry list's length leaking past the shadowing binder; got: {rendered}",
+    );
+}

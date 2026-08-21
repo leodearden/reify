@@ -392,6 +392,40 @@ impl<'u> CompilationScope<'u> {
             .and_then(|(_, _, guard)| guard.as_ref())
     }
 
+    /// True iff `name` still names THIS entity's geometry-LIST let — i.e. it has
+    /// not been shadowed by a binder introduced in a derived scope (task #5385).
+    ///
+    /// `geometry_list_lens` / `geometry_list_elements` are populated exactly once,
+    /// in entity.rs pass 1, and are then inherited VERBATIM by every derived
+    /// scope: `expr.rs` clones `scope` for a lambda body, for a quantifier
+    /// predicate, and for a `match` arm carrying `VariantBind` payload binders.
+    /// Each of those registers its binder in `names` ONLY, leaving the inherited
+    /// geometry-list maps intact — so a bare-name lookup in those maps resolves a
+    /// SHADOWING binder to the outer let's data, yielding a silently-wrong
+    /// compile-time constant (`holes.count` folded to the outer length, or
+    /// `union_all(holes)` expanded over the outer let's elements). Every
+    /// geometry-list-keyed lookup must therefore be gated on this predicate.
+    ///
+    /// The entity comparison is the discriminator. The let itself is registered
+    /// through [`Self::register`], which mints `ValueCellId::new(&self.entity_name,
+    /// name)`; each derived binder is minted against a freshly generated entity
+    /// (`$lambdaN.<entity>`, `$quantN.<entity>`, `$matcharmN.<entity>`), and
+    /// `entity_name` is deliberately NOT rewritten when the scope is cloned. So
+    /// `id.entity == self.entity_name` holds for the declaring let and fails for
+    /// every shadowing binder.
+    ///
+    /// The `List<Geometry>` type check is a second, independent belt: entity.rs
+    /// pass 1 registers a geometry-list let at exactly that type, so a name that
+    /// resolves to anything else was never the let this map is keyed on.
+    pub(crate) fn geometry_list_binding_is_live(&self, name: &str) -> bool {
+        match self.resolve(name) {
+            Some((id, Type::List(elem))) => {
+                **elem == Type::Geometry && id.entity == self.entity_name
+            }
+            _ => false,
+        }
+    }
+
     /// Register a match-arm `GuardedDeclGroup` under its logical name.
     ///
     /// Stored in `match_arm_groups` — deliberately separate from `names` so that

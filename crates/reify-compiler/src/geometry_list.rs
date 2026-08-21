@@ -521,7 +521,16 @@ pub(crate) fn resolve_geometry_list_arg(
     functions: &[CompiledFunction],
 ) -> GeometryListArg {
     if let reify_ast::ExprKind::Ident(name) = &arg.kind {
-        if let Some(elements) = scope.geometry_list_elements.get(name.as_str()) {
+        // SHADOWING (review esc-5385-3): `geometry_list_elements` is inherited
+        // verbatim by every derived scope, so gate the expansion on the name
+        // still resolving to THIS entity's list let. Without it, a lambda
+        // param / quantifier variable / match-arm binder that shadows a
+        // geometry-list let expands to the OUTER let's elements. A shadowed
+        // name falls through to the classification below, so the outcome is a
+        // diagnostic rather than a silently-wrong fold.
+        if scope.geometry_list_binding_is_live(name.as_str())
+            && let Some(elements) = scope.geometry_list_elements.get(name.as_str())
+        {
             return GeometryListArg::Elements(elements.clone());
         }
         // A List-typed let that is NOT a geometry list — e.g. `[1, 2, 3]`.
