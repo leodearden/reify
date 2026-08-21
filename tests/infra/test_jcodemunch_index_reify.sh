@@ -192,6 +192,34 @@ mk_index_db() {
     printf '%s\n' "$db"
 }
 
+# mk_origin_repo — a temp project root that is a real git repo carrying an
+# `origin` remote, echoed as a path. Used ONLY by Test 14.
+#
+# WHY THE REMOTE EXISTS, and why this is NOT the shape the ratified description
+# bans: the remote is read by the identity-dispatch STUB only, which needs it to
+# mimic jcodemunch_mcp/storage/git_root.py:256-265's git branch and produce the
+# `leodearden-reify` slug the hijack diagnostic must name. The script under test
+# is deliberately GIT-BLIND — its derivation (scripts/jcodemunch-index-reify.sh
+# :126-137) is a pure function of the path string — so asserting that the
+# SCRIPT's identity moves because a remote is present would pin nothing and is
+# correctly forbidden. Both Test 14 assertions bind to the script's OUTPUT, never
+# to a claim that the script consulted git. Do not "simplify" this remote away.
+#
+# `git init` is explicit rather than relying on the ambient tree: without it,
+# `git -C <root> config --get remote.origin.url` walks UP and could pick up an
+# enclosing repo's origin if TMPDIR ever pointed inside one. No commit and no
+# user.name/user.email are needed — `git remote add` and `git config --get` both
+# work on a bare `git init`.
+mk_origin_repo() {
+    local root
+    root="$(mk_tmpdir)" || return 1
+    [ -n "$root" ] || return 1
+    git -C "$root" init -q >/dev/null 2>&1 || return 1
+    git -C "$root" remote add origin https://github.com/leodearden/reify.git \
+        >/dev/null 2>&1 || return 1
+    printf '%s\n' "$root"
+}
+
 # with_index_path <dir> <checker> [args...] — run a checker with CODE_INDEX_PATH
 # exported to <dir>, restoring the previous value (or unset-ness) afterwards.
 # `env CODE_INDEX_PATH=… expect_refusal …` cannot be used: env execs a PROGRAM,
@@ -423,6 +451,84 @@ STUB
         # string mentions the var" apart from "the indexer process is really
         # running under it" — the distinction esc-6107-6 turned on.
         env-echo)   echo 'echo "  $root: identity-env=[${JCODEMUNCH_GIT_ROOT_IDENTITY-<unset>}]" >&2; echo "  $root: No changes detected (0.1s)" >&2; exit 0' >> "$path" ;;
+        # The ONLY kind that closes the identity loop. Every other kind is
+        # identity-blind and lets the SUITE plant the DB at a path it chose;
+        # this one mimics jcodemunch_mcp/storage/git_root.py's dispatch at the
+        # pinned 1.108.54 — it reads JCODEMUNCH_GIT_ROOT_IDENTITY out of its OWN
+        # environment, resolves the identity that lever selects, and writes its
+        # index THERE. Test 14 then drives both branches through this one binary.
+        #
+        # Appended via a quoted heredoc rather than the single-line `echo` the
+        # other arms use, simply because the body is multi-line.
+        identity-dispatch)
+            cat >> "$path" <<'DISPATCH'
+# HARD SAFETY PROPERTY: this stub must never be able to write into the real
+# host-global ~/.code-index. Refuse to run at all unless redirected.
+: "${CODE_INDEX_PATH:?identity-dispatch stub refuses to write to the real host store}"
+
+# Resolve the slug in python3 on purpose — the same reason recompute_repo_name
+# exists: the script under test derives with sha1sum, so a sha1sum-based slug
+# here could agree with it while both were wrong.
+slug="$(python3 - "$root" "${JCODEMUNCH_GIT_ROOT_IDENTITY-1}" <<'PY'
+import hashlib, pathlib, subprocess, sys
+
+root, lever = sys.argv[1], sys.argv[2]
+p = pathlib.Path(root).expanduser().resolve()
+if lever == "0":
+    # The LOCAL, per-path branch (git_root.py:55-57) — git is never consulted.
+    print(f"local-{p.name}-{hashlib.sha1(str(p).encode()).hexdigest()[:8]}")
+else:
+    # The GIT branch (git_root.py:256-265) — <owner>-<name> off origin's URL.
+    url = subprocess.run(
+        ["git", "-C", str(p), "config", "--get", "remote.origin.url"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+    parts = [seg for seg in url.replace(":", "/").split("/") if seg]
+    print("-".join(parts[-2:]))
+PY
+)"
+if [ -z "$slug" ]; then
+    echo "  identity-dispatch stub: could not resolve a slug for $root" >&2
+    exit 9
+fi
+
+# The real 1.108.54 table shapes (storage/sqlite_store.py:39 symbols, :68 files)
+# plus meta.source_root — the key the script's hijack_note matches on, so the
+# negative assertion depends on it being written here.
+#
+# Built with python3's stdlib sqlite3, NOT the sqlite3 CLI: this is a generated
+# standalone file that cannot call the suite's t_sqlite3, and routing it through
+# the CLI would force a THIRD inline LD_LIBRARY_PATH scrub into the tree. The
+# python3 module links its own libsqlite3 and is structurally immune to the
+# "SQLite header and source version mismatch" abort that reddened the merge gate
+# on 2026-08-20. Exactly 1 file, far under the package-default 2000-file cap, so
+# the script's truncation guard cannot fire.
+mkdir -p "$CODE_INDEX_PATH"
+rm -f "$CODE_INDEX_PATH/$slug.db"
+python3 - "$CODE_INDEX_PATH/$slug.db" "$root" <<'PY'
+import pathlib, sqlite3, sys
+
+db = sys.argv[1]
+root = str(pathlib.Path(sys.argv[2]).expanduser().resolve())
+conn = sqlite3.connect(db)
+conn.executescript(
+    "create table symbols(id text primary key, file text, name text);"
+    "create table files(path text primary key);"
+    "create table meta(key text primary key, value text);"
+)
+conn.execute("insert into meta values('source_root',?)", (root,))
+conn.execute("insert into symbols values('s0','f0.rs','sym0')")
+conn.execute("insert into files values('f0.rs')")
+conn.commit()
+conn.close()
+PY
+
+echo "  $root: 1 symbols (0.1s)" >&2
+exit 0
+DISPATCH
+            ;;
         *) echo "mk_stub_indexer: bad mode $mode" >&2; return 1 ;;
     esac
     chmod +x "$path"
