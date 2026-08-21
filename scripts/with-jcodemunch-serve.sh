@@ -483,8 +483,37 @@ $(serve_output)"
 await_ready
 say "$READY_MARKER  serve is live at $SERVE_URL (pgid $SERVE_PGID)"
 
-# INTERIM (task 6109, TDD): running the wrapped command and tearing the serve
-# down land in the following steps. Refusing loudly here keeps this intermediate
-# commit from looking like a successful no-op.
-say "the serve lifecycle is not wired up yet in this commit"
-exit 70
+# ── Run the wrapped command ──────────────────────────────────────────────────
+#
+# NOT `exec`. `exec` replaces this shell with the wrapped command and DESTROYS
+# the EXIT trap that reaps the serve — the same trap-killing hazard
+# `scripts/run-gui-dev.sh:165-173` calls out explicitly for reify-gui. Every
+# path out of here has to run teardown, so the command runs as an ordinary
+# foreground child and this script survives it.
+#
+# FOREGROUND, with stdin/stdout/stderr INHERITED UNTOUCHED. Backgrounding it
+# would be the usual way to keep signal handlers prompt, but in a non-
+# interactive shell a background job's stdin is redirected from /dev/null, and
+# an interactive wrapped command would silently stop reading input. Prompt
+# signal delivery is worth less here than transparency: the wrapped command's
+# stdin is part of the contract, and the TERM/INT traps still fire — just after
+# the foreground child returns rather than during it.
+#
+# `rc=0; "$@" || rc=$?` rather than a bare call, so `set -e` cannot short-
+# circuit past the teardown bookkeeping when the wrapped command fails. The
+# status is preserved and re-raised as this script's own.
+export JCODEMUNCH_URL="$SERVE_URL"
+
+WRAPPED_RC=0
+"${WRAPPED[@]}" || WRAPPED_RC=$?
+
+# NOTHING MAY BE PRINTED FROM HERE ON — see the stderr-discipline block in the
+# header. `reify-audit` writes its JSON findings array to stderr and every
+# consumer extracts it as the TRAILING block, so one line of teardown chatter
+# appended after the wrapped command breaks that extraction and takes the whole
+# δ signal with it. Teardown (task 6109 step-12) is silent on success and loud
+# only on a leak, for exactly this reason.
+
+# INTERIM (task 6109, TDD): the serve is still running here — teardown lands in
+# the next step.
+exit "$WRAPPED_RC"
