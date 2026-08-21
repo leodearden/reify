@@ -185,7 +185,8 @@ and DF already writes its own holder pgid.
 ## 4. Dark-factory wiring still required
 
 This is the half that actually ends the failure mode. Either fix works; (b)
-alone stops the escalation, (a) additionally avoids burning the wait.
+alone stops the escalation, (a) additionally avoids burning the wait. **(b) has
+since LANDED upstream** (below), leaving (a) as the only outstanding item.
 
 **(a) Consult the guard before dispatching onto `_merge-verify`, and defer on 3.**
 
@@ -213,10 +214,22 @@ else
 fi
 ```
 
-**(b) Give the 30s `reset_persistent_merge_worktree` path the requeue
-disposition the 300s lease path already has** — `workflow_types.py`
-`BlockDisposition`, so lock contention on this inode is never classified
-`merge_error`.
+**(b) ~~Give the 30s `reset_persistent_merge_worktree` path the requeue
+disposition the 300s lease path already has~~ — LANDED upstream as DF task
+3003.** Verified at DF HEAD `7cb0ef2e0c` (2026-08-21): the path's lock acquire
+raises `MergeVerifyLeaseContended`, `workflow_types.py` carries its REQUEUE /
+no-cap-burn `BlockDisposition` row, and `merge_queue.py` `_run_inflight_verify`
+requeues it in a defer arm ahead of the generic handler. Contention on this
+inode is therefore no longer classified `merge_error`. Kept here, struck rather
+than deleted, because §1's historical chain and esc-5363-5 both refer to it; see
+§1 for the four bounds that keep the fix from being unconditional.
+
+Only **(a)** remains outstanding, and it is genuinely unlanded — at the same DF
+HEAD, zero hits for `lock_guard_enabled`, `warm-lane-lock-guard` or
+`WARM_LANE_LOCK_BUSY` anywhere in DF source, and no `lock_guard` key in reify's
+`dark-factory-orchestrator.yaml`. Its value survives (b): a contended dispatch
+that is *deferred upstream of the acquire* never burns the 30s bounded wait, nor
+the requeue and re-dispatch cycle that now follows it.
 
 **Proposed knob block — NOT YET ADDED, and must not be added alone:**
 
@@ -242,9 +255,14 @@ script's `${REIFY_...:-<literal>}` fallback.)
 
 ## 5. Scope bound
 
-**Task 5608 does not by itself eliminate the spurious 30s lock-timeout
-`merge_error`.** It ships the reify primitive and pins this contract; the
-failure mode ends only when the dark-factory half in §4 lands.
+**Task 5608 does not by itself eliminate the cost of a contended 30s lock
+wait.** The spurious `merge_error` it was originally scoped against is gone —
+DF task 3003 reclassified that timeout as a defer (§1, §4(b)). What a reify-side
+primitive still cannot fix alone is the wait: with no pre-dispatch consult, DF
+burns the full 30s bounded wait on an inode it could have known was held, then
+pays a requeue and re-dispatch cycle. Task 5608 ships the primitive and pins
+this contract; that remaining cost ends only when the §4(a) half lands in
+dark-factory.
 
 Consequently no test in `tests/infra/test_warm_lane_lock_guard.sh` asserts an
 end-to-end merge-queue outcome — that capability needs a live orchestrator, a
