@@ -519,8 +519,11 @@ pub fn find_named_member_span<'a>(
 /// `ParamDecl.default`'s `Expr.span` already carries exactly that range; this
 /// helper only locates it.
 ///
-/// Returns `None` when the name resolves to no rewritable default literal —
-/// the name is absent, or the member found has no `default`.
+/// **Contract:** returns `Some(span)` if and only if EXACTLY ONE matching
+/// `Param` is reachable within [`MAX_MEMBER_NESTING_DEPTH`] AND that param's
+/// `default` is `Some`. `None` in every other case — the name is absent, the
+/// member found is not a `Param`, the `Param` has no `default`, or the name is
+/// declared more than once.
 ///
 /// **Matches [`MemberDecl::Param`] ONLY**, unlike the sibling
 /// [`find_named_member_span`], which matches both `Param` and `Let`. A `let`
@@ -529,8 +532,26 @@ pub fn find_named_member_span<'a>(
 /// see the asymmetry note on [`walk_specialization_scope_members`], which
 /// already flags these member-walking helpers as individually correct but
 /// caller-surprising when one contract is inferred from another.
+///
+/// **Refuses rather than guesses on a multiply-declared name** — the one place
+/// this helper deliberately diverges from [`find_named_member_span`]'s
+/// first-match-wins. `where c { param x = 1 } else { param x = 2 }` is legal
+/// source: `where`/`else` branch members are mutually-exclusive SIBLINGS
+/// registered into the same parent frame (see
+/// `reify_compiler::compile_builder::shadow_lint`'s module docs), and the AST
+/// keeps NO record of which branch the condition selects. Picking the first
+/// would let the caller rewrite the possibly INACTIVE branch's literal — the
+/// user sets a value and the design does not change, a silent wrong edit.
+/// Refusing hands the caller (the `set_parameter` path) a clean rejection to
+/// surface as a structured error, which is what PRD §7 B7 requires.
 pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<SourceSpan> {
-    find_param_default_span_depth(members, name, 0)
+    let mut candidates = ParamDefaultCandidates::default();
+    collect_param_default_candidates(members, name, 0, &mut candidates);
+    if candidates.count == 1 {
+        candidates.first_default
+    } else {
+        None
+    }
 }
 
 /// Visit every member of a specialization-scope body (spec §8.7).
@@ -665,7 +686,25 @@ fn find_named_member_span_depth<'a>(
     None
 }
 
+/// Accumulator for [`collect_param_default_candidates`].
+///
+/// `count` is how many matching `Param` members the traversal reached;
+/// `first_default` is the default span of the FIRST one (already `None` when
+/// that param has no default). [`find_param_default_span`] yields
+/// `first_default` only when `count == 1`, so a multiply-declared name is
+/// refused rather than resolved to whichever branch happened to come first.
+#[derive(Default)]
+struct ParamDefaultCandidates {
+    count: usize,
+    first_default: Option<SourceSpan>,
+}
+
 /// Depth-bounded worker for [`find_param_default_span`].
+///
+/// Visits EVERY matching `Param` reachable within [`MAX_MEMBER_NESTING_DEPTH`]
+/// and accumulates into `out` — it deliberately does NOT return on first match,
+/// because the public contract needs the candidate COUNT to decide between
+/// resolving and refusing.
 ///
 /// The recursion set matches [`find_named_member_span_depth`] variant-for-variant
 /// so the two sibling accessors cannot drift: `GuardedGroup` (BOTH `members` and
@@ -679,48 +718,47 @@ fn find_named_member_span_depth<'a>(
 /// param declarations, so a default span found there would belong to a
 /// different entity than the caller's cell_id names — splicing into it would
 /// rewrite the wrong declaration.
-fn find_param_default_span_depth(
+fn collect_param_default_candidates(
     members: &[MemberDecl],
     name: &str,
     depth: usize,
-) -> Option<SourceSpan> {
+    out: &mut ParamDefaultCandidates,
+) {
+    // A subtree cut off by the depth bound contributes ZERO candidates, so a
+    // param that is only reachable past the bound leaves `count == 0` and the
+    // caller returns `None` — same observable outcome as the pre-step-6
+    // early `return None`.
     if depth > MAX_MEMBER_NESTING_DEPTH {
-        return None;
+        return;
     }
     for member in members {
         match member {
             MemberDecl::Param(p) if p.name == name => {
-                return p.default.as_ref().map(|e| e.span);
+                out.count += 1;
+                if out.count == 1 {
+                    out.first_default = p.default.as_ref().map(|e| e.span);
+                }
             }
             MemberDecl::GuardedGroup(g) => {
-                if let Some(span) = find_param_default_span_depth(&g.members, name, depth + 1) {
-                    return Some(span);
-                }
-                if let Some(span) = find_param_default_span_depth(&g.else_members, name, depth + 1)
-                {
-                    return Some(span);
-                }
+                collect_param_default_candidates(&g.members, name, depth + 1, out);
+                collect_param_default_candidates(&g.else_members, name, depth + 1, out);
             }
             MemberDecl::Port(port) => {
-                if let Some(span) = find_param_default_span_depth(&port.members, name, depth + 1) {
-                    return Some(span);
-                }
+                collect_param_default_candidates(&port.members, name, depth + 1, out);
             }
             MemberDecl::MatchArmDeclGroup(g) => {
                 for arm in &g.arms {
-                    if let Some(span) = find_param_default_span_depth(
+                    collect_param_default_candidates(
                         std::slice::from_ref(&*arm.member),
                         name,
                         depth + 1,
-                    ) {
-                        return Some(span);
-                    }
+                        out,
+                    );
                 }
             }
             _ => {}
         }
     }
-    None
 }
 
 /// `connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore }`
