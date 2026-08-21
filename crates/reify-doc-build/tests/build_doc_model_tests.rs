@@ -760,3 +760,68 @@ type MyLength = Length
         "non-parametric alias heading must be unchanged (no empty `<>`); got:\n{md_str}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// task #6342 step-3(a): parametric type-alias heading (HTML, end-to-end)
+// ---------------------------------------------------------------------------
+
+/// The HTML formatter must render the same type params as Markdown, but with
+/// `<`/`>` HTML-escaped in the heading TEXT — and must keep them out of the
+/// `id`/`href` attributes entirely.
+///
+/// Escaping is what makes the HTML side a distinct risk from Markdown: the
+/// Markdown heading relies on a backtick code span to survive `<Q: …>`, while
+/// HTML relies on `escape_into`.  A naive `out.push_str(&generics)` here would
+/// emit a literal `<Q: Dimension>` that browsers parse as an unknown tag.
+///
+/// Uses the same zero-Error fixture as the Markdown test.
+#[test]
+fn parametric_type_alias_renders_escaped_type_params_in_html_heading() {
+    let source = r#"
+pub type Vel<Q: Dimension> = Q / Time
+type MyLength = Length
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in parametric alias source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let html = render_html(&model, None);
+
+    // ── heading text: params present and HTML-escaped ─────────────────────
+    assert!(
+        html.contains("<h2>pub type Vel&lt;Q: Dimension&gt;</h2>"),
+        "parametric alias <h2> must carry HTML-escaped type params; got html:\n{html}"
+    );
+
+    // ── identity: section id and nav href stay the bare name ──────────────
+    assert!(
+        html.contains("<section id=\"Vel\">"),
+        "section id must remain the bare name `Vel`; got html:\n{html}"
+    );
+    assert!(
+        html.contains("<a href=\"#Vel\">Vel</a>"),
+        "nav entry must link and label the bare name `Vel`; got html:\n{html}"
+    );
+
+    // ── the raw, unescaped form must never appear anywhere ────────────────
+    assert!(
+        !html.contains("Vel<Q"),
+        "type params must never be emitted unescaped (browsers would parse \
+         `<Q: Dimension>` as a tag); got html:\n{html}"
+    );
+
+    // ── no-regression: non-parametric alias emits no empty `<>` ───────────
+    assert!(
+        html.contains("<h2>type MyLength</h2>"),
+        "non-parametric alias <h2> must be unchanged (no empty `<>`); got html:\n{html}"
+    );
+}

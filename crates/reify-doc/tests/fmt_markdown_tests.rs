@@ -1131,6 +1131,65 @@ fn type_alias_body_renders_rhs() {
     );
 }
 
+
+/// Formatter-level type-param rendering for `ItemKind::TypeAlias` (task #6342).
+///
+/// The mirror image of `fmt_html_tests::type_alias_heading_renders_escaped_type_params`:
+/// Markdown emits the `<…>` RAW, unescaped, because the heading wraps it in a
+/// backtick code span.  (Outside a code span a bare `<T>` in a GFM heading is
+/// parsed as a raw HTML tag and silently swallowed — which is exactly why the
+/// segment must land inside the span, before the closing backtick, and never
+/// after it.)
+///
+/// Hand-written `DocModel` rather than a compiled `.ri` source, so it can cover
+/// an unbounded bare param and a mixed multi-param list.
+#[test]
+fn type_alias_heading_renders_raw_type_params_inside_code_span() {
+    let cases: Vec<(&str, Vec<String>, &str)> = vec![
+        // Single bare param — raw `<T>`, inside the backticks.
+        ("Box", vec!["T".into()], "## `pub type Box<T>` <a id=\"Box\"></a>"),
+        // Two params, the second bounded — joined with `, `.
+        (
+            "Pair",
+            vec!["T".into(), "U: Rigid".into()],
+            "## `pub type Pair<T, U: Rigid>` <a id=\"Pair\"></a>",
+        ),
+        // No params: no `<>` at all.
+        (
+            "Plain",
+            vec![],
+            "## `pub type Plain` <a id=\"Plain\"></a>",
+        ),
+    ];
+
+    for (name, type_params, expected_heading) in cases {
+        let item = ItemDoc {
+            header: ItemHeader {
+                name: name.into(),
+                doc: None,
+                is_pub: true,
+                annotations: vec![],
+                pragmas: vec![],
+            },
+            kind: ItemKind::TypeAlias {
+                type_params,
+                type_repr: "f64".into(),
+            },
+        };
+        let out = render_one_item(item);
+
+        assert!(
+            out.contains(expected_heading),
+            "expected heading `{expected_heading}` for `{name}`; got:\n{out}"
+        );
+        // Identity is display-independent: the TOC bullet stays the bare name.
+        assert!(
+            out.contains(&format!("- [`{name}`](#{name})")),
+            "TOC bullet for `{name}` must stay the bare name; got:\n{out}"
+        );
+    }
+}
+
 /// TypeAlias body uses safe inline-code fencing when `type_repr` contains a
 /// literal backtick in the interior (no leading/trailing → no pad).
 #[test]

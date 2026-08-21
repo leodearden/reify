@@ -1227,6 +1227,57 @@ fn type_alias_body_renders() {
     );
 }
 
+
+/// Formatter-level type-param rendering for `ItemKind::TypeAlias` (task #6342).
+///
+/// Built from a hand-written `DocModel` rather than a compiled `.ri` source so
+/// it can cover shapes the surface grammar makes awkward to reach end-to-end:
+/// an unbounded bare param (`<T>`) and a multi-param list mixing bounded and
+/// unbounded (`<T, U: Rigid>`).  The `", "` join and the escaping of BOTH
+/// angle brackets are the contract under test.
+#[test]
+fn type_alias_heading_renders_escaped_type_params() {
+    let cases: Vec<(&str, Vec<String>, &str)> = vec![
+        // Single bare param.
+        ("Box", vec!["T".into()], "<h2>pub type Box&lt;T&gt;</h2>"),
+        // Two params, the second bounded — joined with `, `.
+        (
+            "Pair",
+            vec!["T".into(), "U: Rigid".into()],
+            "<h2>pub type Pair&lt;T, U: Rigid&gt;</h2>",
+        ),
+        // No params: no `<>` at all.
+        ("Plain", vec![], "<h2>pub type Plain</h2>"),
+    ];
+
+    for (name, type_params, expected_h2) in cases {
+        let item = ItemDoc {
+            header: ItemHeader {
+                name: name.into(),
+                doc: None,
+                is_pub: true,
+                annotations: vec![],
+                pragmas: vec![],
+            },
+            kind: ItemKind::TypeAlias {
+                type_params,
+                type_repr: "f64".into(),
+            },
+        };
+        let out = render_one_item(item);
+
+        assert!(
+            out.contains(expected_h2),
+            "expected heading `{expected_h2}` for `{name}`; got:\n{out}"
+        );
+        // Identity is display-independent: the section id stays the bare name.
+        assert!(
+            out.contains(&format!("<section id=\"{name}\">")),
+            "section id for `{name}` must stay the bare name; got:\n{out}"
+        );
+    }
+}
+
 /// ConstraintDef body: `<p><code>{escaped-expr}</code></p>`.  `<=` must be
 /// escaped to `&lt;=`.
 #[test]
