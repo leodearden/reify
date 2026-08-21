@@ -852,4 +852,104 @@ mod expand_tests {
         assert_eq!(elements.expect("at-cap expansion must succeed").len(), n);
         assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     }
+
+    // ── match-arm payload binders shadow the index param ─────────────────
+    //
+    // `MatchPattern::VariantBind` carries `(field_name, LOCAL_BINDER_NAME)`
+    // pairs, and the local binder is USER-CHOSEN — so `Circle { radius: i }`
+    // rebinds `i` over that arm's body exactly as a nested `|i| …` does.
+    // `is_geometry_let` recurses into match-arm bodies, so such a body really
+    // does reach this substituter.
+
+    /// An arm that rebinds the index param must keep its OWN `i`.
+    ///
+    /// Substituting here would build geometry from the loop index instead of
+    /// the matched payload, silently and with no diagnostic.
+    #[test]
+    fn match_arm_rebinding_the_param_shadows_substitution() {
+        let (elements, _) = expand(
+            "generate(2, |i| match kind { Circle { radius: i } => cylinder(i, 20mm), \
+             _ => box(1mm, 1mm, 1mm) })",
+            &[],
+        );
+        let elements = elements.expect("expansion must succeed");
+        assert_eq!(elements.len(), 2);
+        for (k, element) in elements.iter().enumerate() {
+            assert!(
+                ident_uses(element, "i") >= 1,
+                "element {k}: the arm-bound `i` must survive substitution: {element:?}"
+            );
+        }
+    }
+
+    /// The rebinding scan must cover EVERY binder in the pattern, not just the
+    /// first — here `i` is the second `(field, binder)` pair.
+    #[test]
+    fn match_arm_rebinding_in_a_later_binder_also_shadows() {
+        let (elements, _) = expand(
+            "generate(2, |i| match kind { Rect { width: w, height: i } => cylinder(i, 20mm), \
+             _ => box(1mm, 1mm, 1mm) })",
+            &[],
+        );
+        let elements = elements.expect("expansion must succeed");
+        assert_eq!(elements.len(), 2);
+        for (k, element) in elements.iter().enumerate() {
+            assert!(
+                ident_uses(element, "i") >= 1,
+                "element {k}: a non-first binder must shadow too: {element:?}"
+            );
+        }
+    }
+
+    /// NEGATIVE CONTROL: an arm that binds NO payload names does not shadow,
+    /// so its body must still substitute. This is what stops an over-broad
+    /// "skip every match arm" fix from passing the two tests above.
+    #[test]
+    fn match_arm_without_binders_still_substitutes() {
+        let (elements, _) = expand(
+            "generate(2, |i| match kind { Circle => cylinder(i * 1mm, 20mm), \
+             _ => box(1mm, 1mm, 1mm) })",
+            &[],
+        );
+        let elements = elements.expect("expansion must succeed");
+        assert_eq!(elements.len(), 2);
+        for (k, element) in elements.iter().enumerate() {
+            assert_eq!(
+                ident_uses(element, "i"),
+                0,
+                "element {k}: a binder-free arm must still fold the index: {element:?}"
+            );
+            assert!(
+                format!("{element:?}")
+                    .contains(&format!("NumberLiteral {{ value: {k}.0, is_real: false }}")),
+                "element {k} must carry integer literal {k}"
+            );
+        }
+    }
+
+    /// The DISCRIMINANT sits outside every arm, so it must substitute even
+    /// when an arm rebinds the param — the shadow is arm-scoped.
+    #[test]
+    fn match_discriminant_substitutes_even_when_an_arm_rebinds() {
+        let (elements, _) = expand(
+            "generate(2, |i| match enum_of(i) { Circle { radius: i } => cylinder(i, 20mm), \
+             _ => box(1mm, 1mm, 1mm) })",
+            &[],
+        );
+        let elements = elements.expect("expansion must succeed");
+        assert_eq!(elements.len(), 2);
+        for (k, element) in elements.iter().enumerate() {
+            let rendered = format!("{element:?}");
+            // `enum_of` must have been applied to the folded literal, not to a
+            // surviving `Ident("i")`.
+            let discriminant_folded = rendered.contains(&format!(
+                "\"enum_of\", args: [Expr {{ kind: NumberLiteral {{ value: {k}.0, is_real: false }}"
+            ));
+            assert!(
+                discriminant_folded,
+                "element {k}: the discriminant must substitute even though an \
+                 arm rebinds `i`: {rendered}"
+            );
+        }
+    }
 }
