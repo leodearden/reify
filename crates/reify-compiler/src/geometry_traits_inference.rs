@@ -1042,7 +1042,8 @@ mod tests {
 
         assert_eq!(
             via_list, via_args,
-            "union_all over a List<Geometry> must infer exactly what the              equivalent multi-arg call infers",
+            "union_all over a List<Geometry> must infer exactly what the \
+             equivalent multi-arg call infers",
         );
         assert!(
             !via_list.bounded,

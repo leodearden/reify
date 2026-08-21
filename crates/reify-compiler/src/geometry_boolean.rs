@@ -191,7 +191,8 @@ pub(crate) fn compile_boolean_op(
                         if elements.is_empty() {
                             diagnostics.push(
                                 Diagnostic::error(format!(
-                                    "{name}() over an empty geometry list has nothing to                                      fold; it needs at least one element"
+                                    "{name}() over an empty geometry list has nothing \
+                                     to fold; it needs at least one element"
                                 ))
                                 .with_label(DiagnosticLabel::new(
                                     args[0].span,
@@ -207,7 +208,9 @@ pub(crate) fn compile_boolean_op(
                     GeometryListArg::NotGeometry => {
                         diagnostics.push(
                             Diagnostic::error(format!(
-                                "{name}()'s single argument must be a geometry list                                  (a list literal of geometry, or generate(<literal>,                                  |i| <geometry>))"
+                                "{name}()'s single argument must be a geometry list \
+                                 (a list literal of geometry, or generate(<literal>, \
+                                 |i| <geometry>))"
                             ))
                             .with_label(DiagnosticLabel::new(
                                 args[0].span,
