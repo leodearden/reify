@@ -1601,6 +1601,36 @@ mod tests {
         }
     }
 
+    // (e) TASK 6119 — a free node touched by neither a member nor a triangle
+    // leaves its entire free-row block of D identically zero, so the net force
+    // on it is 0 for the vacuous reason that nothing acts on it at all. That
+    // must not be read as "converged": the honest outcome is
+    // SingularReducedStiffness (no path to any anchor), not echoing the
+    // caller's unsolved initial guess back as an "equilibrium".
+    #[test]
+    fn surfaces_solve_rejects_isolated_free_node_instead_of_echoing_it_back() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0], // anchor
+            [1.0, 0.0, 0.0], // anchor
+            [0.0, 1.0, 0.0], // anchor
+            [5.0, 5.0, 5.0], // free node 3 — isolated: no member, no triangle
+        ];
+        let surfaces = vec![(0, 1, 2)];
+        let surface_stresses = vec![1.0];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        let anchors = vec![0, 1, 2];
+
+        assert_eq!(
+            form_find_anchored_surfaces(
+                &nodes, &members, &kinds, &q, &surfaces, &surface_stresses, &anchors
+            )
+            .unwrap_err(),
+            FormFindError::SingularReducedStiffness,
+        );
+    }
+
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
 
     /// Tolerance for the anisotropic stencil reduction test (σ_w=σ_f → isotropic).
