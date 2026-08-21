@@ -727,7 +727,11 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
-/// Retrieve the compiled `default_expr` of a let binding by name from a named template.
+/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+///
+/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
+/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
+/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
 /// not be the desired template. `get_let_expr` delegates to this function.
@@ -758,7 +762,11 @@ pub fn get_let_expr_in<'a>(
     })
 }
 
-/// Retrieve the compiled `default_expr` of a let binding by name from the first template.
+/// Retrieve the compiled `default_expr` of any value cell by name from the first template.
+///
+/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
+/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
+/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
 /// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
