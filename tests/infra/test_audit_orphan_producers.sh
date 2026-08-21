@@ -64,6 +64,7 @@ pub mod dangling_str;
 pub mod dangling_raw;
 pub mod dangling_comment;
 pub mod dangling_char;
+pub mod dangling_multiline;
 pub mod lifetime_wired;
 pub mod stmt_trailing_comment;
 
@@ -181,6 +182,46 @@ mod tests {
 
 // G-allow: hermetic fixture for the literal-aware brace counter
 pub fn after_char_guard() -> i32 { 1 }
+RUST
+
+# dangling_multiline.rs — regression guard for the CROSS-LINE half of the
+# stripper's state machine, which the single-line dangling_* fixtures above
+# never exercise: (a) a multi-line raw string whose unbalanced `{` sits on
+# a line BEFORE the closing `"#`, pinning that "raw_string" state (and the
+# hash count) carries from one line to the next rather than resetting at
+# EOL; (b) a nested block comment (`/* outer /* inner { */ still-comment
+# */`), pinning the `block_depth` nesting increment — a non-nesting
+# implementation would treat the FIRST `*/` as the close, which would
+# leave `still-comment */` as stray unmasked code. Both were already
+# correct in the shipped stripper (535/535 real corpus files end
+# brace-balanced in the code view); this fixture is a regression guard,
+# not a bug fix.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_multiline.rs" <<'RUST'
+#[cfg(test)]
+mod raw_tests {
+    #[test]
+    fn t() {
+        let s = r#"structure def X : Y {
+still inside the raw string
+"#;
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture for cross-line raw-string state carry
+pub fn after_multiline_raw_guard() -> i32 { 1 }
+
+#[cfg(test)]
+mod comment_tests {
+    #[test]
+    fn t() {
+        /* outer /* inner { */ still-comment */
+        assert!(true);
+    }
+}
+
+// G-allow: hermetic fixture for nested block-comment depth counting
+pub fn after_nested_comment_guard() -> i32 { 1 }
 RUST
 
 # lifetime_wired.rs — negative guard.  A genuinely-called pub fn whose own
@@ -393,6 +434,12 @@ assert "lifetime_wired (genuine caller, lifetime-bearing signature) is not orpha
 
 assert "after_stmt_guard (single-statement cfg(test) item, trailing comment defeats the ';' suffix test) is allow-listed, not swallowed" \
     assert_allowed after_stmt_guard
+
+assert "after_multiline_raw_guard (dangling { inside a raw string spanning multiple lines) is allow-listed, not swallowed" \
+    assert_allowed after_multiline_raw_guard
+
+assert "after_nested_comment_guard (dangling { inside a nested block comment) is allow-listed, not swallowed" \
+    assert_allowed after_nested_comment_guard
 
 # ---------------------------------------------------------------------------
 # EOF self-check: a genuinely unclosed cfg(test) mask warns on stderr
