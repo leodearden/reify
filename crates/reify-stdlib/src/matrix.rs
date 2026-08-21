@@ -205,13 +205,21 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                 return Value::Undef;
             }
             // INV-FEA-3 / task #6376 — FAIL CLOSED on non-finite INPUT.
-            // Mirrors this file's own precedent: the sibling
-            // "complex_eigenvalues" arm below already does exactly this, for
-            // the same reason.
+            // The sibling "complex_eigenvalues" arm below carries the SAME
+            // one-line input guard. It also keeps an OUTPUT guard, but that is
+            // a different check answering a different question (it protects
+            // the List<Complex<Q>> contract) — do not read it as covering the
+            // input hazard.
             //
             // On the INPUT rather than the eigenvalue output, deliberately:
             //   - it covers the symmetric AND general branches in one place;
-            //   - nalgebra is never handed a NaN matrix;
+            //   - nalgebra is never handed a non-finite matrix. That is not
+            //     merely tidy: under nalgebra 0.34.2,
+            //     `DMatrix::complex_eigenvalues()` on a NaN-bearing matrix
+            //     DOES NOT TERMINATE (`Schur::do_decompose` runs with
+            //     `max_niter = 0` and its convergence comparisons are never
+            //     true on NaN), so the general branch's call at the bottom of
+            //     this arm would hang the evaluator rather than return;
             //   - it closes the ordering hazard where `sanitize_value` runs
             //     per element AFTER the sort, turning a NaN spectrum into
             //     List([Undef, ...]) instead of a single Undef.
@@ -271,11 +279,28 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
             if n != ncols {
                 return Value::Undef;
             }
+            // INV-FEA-3 / task #6376 — FAIL CLOSED on non-finite INPUT, before
+            // nalgebra sees it. Identical idiom and identical result (Undef)
+            // to the "eigenvalues" arm above.
+            //
+            // The output guard below CANNOT stand in for this one: under
+            // nalgebra 0.34.2, `complex_eigenvalues()` on a NaN-bearing matrix
+            // never returns (`Schur::do_decompose` with `max_niter = 0`; NaN
+            // convergence tests never fire), so the output guard is
+            // unreachable and the evaluator hangs instead of degrading.
+            // Measured on this tree: without this guard,
+            // `complex_eigenvalues_non_finite_entry_returns_undef` is killed
+            // by timeout rather than failing.
+            if data.iter().any(|x| !x.is_finite()) {
+                return Value::Undef;
+            }
             let m = DMatrix::from_row_slice(n, n, &data);
             let raw_eigs: Vec<Complex<f64>> = m.complex_eigenvalues().iter().copied().collect();
-            // Eigenvalues of a finite real matrix are always finite; guard
-            // defensively so the returned List never mixes Complex and Undef
-            // variants (which would violate the List<Complex<Q>> contract).
+            // Eigenvalues of a finite real matrix are always finite, and the
+            // input guard above has already established finiteness; this stays
+            // as defense-in-depth so the returned List never mixes Complex and
+            // Undef variants (which would violate the List<Complex<Q>>
+            // contract).
             if raw_eigs.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
                 return Value::Undef;
             }
@@ -1813,6 +1838,49 @@ mod tests {
     #[test]
     fn complex_eigenvalues_non_matrix_returns_undef() {
         assert!(eval_builtin("complex_eigenvalues", &[Value::Real(5.0)]).is_undef());
+    }
+
+    /// (e) Guard: a non-finite ENTRY → Undef, on the `complex_eigenvalues`
+    /// builtin itself (INV-FEA-3, task #6376 amendment).
+    ///
+    /// The arm's pre-existing guard inspects the OUTPUT of
+    /// `DMatrix::complex_eigenvalues()`, which is unreachable for a NaN input:
+    /// under nalgebra 0.34.2 that call DOES NOT TERMINATE on a NaN-bearing
+    /// matrix (`Schur::do_decompose` runs with `max_niter = 0` and its
+    /// convergence comparisons are never true on NaN), so the evaluator hangs
+    /// instead of returning `Undef`. Only the INPUT guard closes it.
+    ///
+    /// NOTE FOR FUTURE EDITORS: deleting that input guard makes this test HANG
+    /// rather than fail — a timeout/killed run here means the guard went
+    /// missing, not that the harness is sick. The same is true of
+    /// `eigenvalues_non_finite_entry_returns_undef`'s general-branch leg.
+    #[test]
+    fn complex_eigenvalues_non_finite_entry_returns_undef() {
+        // (a) NaN — the hanging case.
+        let nan = make_matrix(&[
+            &[f64::NAN, 1.0, 2.0],
+            &[3.0, 4.0, 5.0],
+            &[6.0, 7.0, 8.0],
+        ]);
+        let nan_result = eval_builtin("complex_eigenvalues", &[nan]);
+        assert!(
+            nan_result.is_undef(),
+            "complex_eigenvalues(NaN-bearing matrix) must be Undef, got {:?}",
+            nan_result
+        );
+
+        // (b) ±Inf — same fail-closed contract.
+        let inf = make_matrix(&[
+            &[1.0, 2.0, 0.0],
+            &[7.0, f64::NEG_INFINITY, 0.0],
+            &[0.0, 0.0, 3.0],
+        ]);
+        let inf_result = eval_builtin("complex_eigenvalues", &[inf]);
+        assert!(
+            inf_result.is_undef(),
+            "complex_eigenvalues(-inf-bearing matrix) must be Undef, got {:?}",
+            inf_result
+        );
     }
 
     // --- list_matrix_components_f64 characterization tests (step-1 RED / step-2 GREEN) ---
