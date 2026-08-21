@@ -29,6 +29,15 @@
 #   sourced:  scripts/<lib> for each 'source "$SCRIPT_DIR/<lib>"' line in verify.sh
 #             (auto-derived live; self-healing — future sourced libs are
 #             automatically load-bearing without any manifest edit)
+#   emitted:  scripts/<x>.sh for each scripts/*.sh path invoked by an EMITTED
+#             plan line in verify.sh — i.e. an add() / add_tool() argument
+#             (auto-derived live; self-healing — a future lint/gate script
+#             wired into the plan is automatically load-bearing without any
+#             manifest edit). These gate scripts are never `source`d, so the
+#             'sourced' clause above cannot see them; without this clause a
+#             gate-script-only diff is fast-path eligible and lands without
+#             ever having been run (task 6320; the #4618/#4624 -> #4288
+#             ambush class, doc-side analogue in 'doc-sync' below).
 #   doc-sync: docs cross-referenced by tests/infra doc-sync checks, from
 #             scripts/doc-sync-paths.txt (the doc-side analogue of the
 #             manifest source above — see that file's header for the
@@ -45,8 +54,11 @@
 #
 # Environment knobs:
 #   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
-#             live sourced-lib derivation (testability / operator override; mirrors
-#             the REIFY_* knob idiom used throughout verify.sh and its libs).
+#             BOTH live derivations that read verify.sh: the sourced-lib clause
+#             and the emitted-gate clause (testability / operator override;
+#             mirrors the REIFY_* knob idiom used throughout verify.sh and its
+#             libs). One knob, both clauses — a synthetic verify.sh injected
+#             here drives sourced-lib and emitted-gate coverage alike.
 #   REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS — override path to the doc-sync
 #             manifest (testability / synthetic-injection + operator override;
 #             mirrors REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH above). Defaults to
@@ -118,6 +130,30 @@ if [ -f "$_verify_sh" ]; then
         _SET="${_SET}"$'\n'"scripts/${_lib}"
     done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$_verify_sh" \
              | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p')
+fi
+
+# 5. Live emitted-gate derivation (task 6320): append scripts/<x>.sh for every
+#    scripts/*.sh path invoked by verify.sh's EMITTED plan lines (add()/add_tool(),
+#    the only two PLAN+= sites). These gate scripts are never `source`d, so
+#    clause 3 cannot see them; without this clause a gate-script-only diff is
+#    fast-path eligible (measured exit 1 at HEAD fee75336ca for
+#    check-manifold-deps.sh and six siblings, while task 6243's two hand-added
+#    manifest rows were the only covered ones). Self-healing: a future emitted
+#    gate needs no verify-pipeline-paths.txt row.
+#    Ordered here, ahead of clause 4, to sit with clause 3 — the two live
+#    verify.sh derivations share the $_verify_sh resolved just above, so the
+#    REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH override applies to both with no
+#    second env knob.
+#    The '^[[:space:]]*add(_tool)?[[:space:]]+"' statement anchor matches real
+#    plan-emission STATEMENTS only (not '#'-prefixed comment mentions), the same
+#    hardening clause 3's source-statement grep carries.
+if [ -f "$_verify_sh" ]; then
+    while IFS= read -r _gate; do
+        [ -z "$_gate" ] && continue
+        _SET="${_SET}"$'\n'"${_gate}"
+    done < <(grep -E '^[[:space:]]*add(_tool)?[[:space:]]+"' "$_verify_sh" \
+             | grep -oE '(\./)?scripts/[A-Za-z0-9_.-]+\.sh' \
+             | sed -E 's|^\./||')
 fi
 
 # 4. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
