@@ -538,4 +538,310 @@ assert "a PATH without curl refuses and names curl"                        b3c_m
 assert "a PATH without jq refuses and names jq"                            b3c_missing_tool_named jq
 assert "a complete PATH produces no missing-tool refusal (control)"        b3c_negative_control
 
+# ─────────────────────────────────────────────────────────────────────────────
+# The hermetic stub serve
+#
+# A stdlib-only responder driven through the wrapper's REIFY_JC_SERVE_CMD seam,
+# so spawn, readiness, transparency and teardown are all exercised with no uvx,
+# no PyPI and no network. Modelled on β's mk_stub_indexer.
+#
+# The wrapper replaces only the `uvx … jcodemunch-mcp` prefix, so the stub is
+# handed the REST of the constructed argv verbatim:
+#     serve --transport streamable-http --host 127.0.0.1 --port <N> --watcher=false
+# It parses --port out of that argv rather than being told the port some other
+# way, which is what makes "the constructed argv actually reaches the child" an
+# observation rather than an assumption.
+#
+# EVERY mode records, into $REIFY_JC_SERVE_WITNESS: the identity lever AS THE
+# CHILD RECEIVED IT, its own pid/pgid, the port it parsed, its whole argv, and
+# (once serving) every request path it is asked for.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# mk_stub_serve <path> <healthy|foreign|slow|die|grandchild>
+#
+# Writes TWO files: <path> (the bash entry point) and <path>.py (the responder).
+# The responder is a separate file rather than a heredoc so the entry point can
+# `exec` it — with `exec`, the process-group LEADER is the server itself, which
+# is what makes the `grandchild` mode structurally different rather than merely
+# differently named.
+mk_stub_serve() {
+    local path="$1" mode="$2"
+
+    cat > "$path.py" <<'STUBPY'
+"""Stub jcodemunch serve: stdlib only. argv = <port> <serverInfo.name>."""
+import http.server
+import json
+import os
+import sys
+
+PORT = int(sys.argv[1])
+NAME = sys.argv[2]
+WITNESS = os.environ["REIFY_JC_SERVE_WITNESS"]
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):  # keep the stub silent on stderr
+        pass
+
+    def do_POST(self):
+        # Recorded BEFORE the response, so a probe that never got an answer is
+        # still visible in the witness. The exact path matters: a real serve
+        # 307-redirects `/mcp/` and the redirect drops mcp-session-id.
+        with open(WITNESS, "a") as fh:
+            fh.write("request-path=[%s]\n" % self.path)
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "serverInfo": {"name": NAME, "version": "1.108.54"},
+                },
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Mcp-Session-Id", "stub-session-0001")
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST
+
+
+http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+STUBPY
+
+    cat > "$path" <<'STUB'
+#!/usr/bin/env bash
+# Test stub serve — tests/infra/test_with_jcodemunch_serve.sh.
+set -uo pipefail
+
+# HARD SAFETY PROPERTY (β's shape): refuse to run unredirected. Without a
+# witness this stub has nowhere to record what it observed, and every
+# witness-based assertion in the suite would pass vacuously.
+: "${REIFY_JC_SERVE_WITNESS:?stub serve refuses to run unredirected}"
+
+STUB_PORT=""
+_prev=""
+for _a in "$@"; do
+    [ "$_prev" = "--port" ] && STUB_PORT="$_a"
+    case "$_a" in --port=*) STUB_PORT="${_a#*=}" ;; esac
+    _prev="$_a"
+done
+
+{
+    printf 'identity-env=[%s]\n' "${JCODEMUNCH_GIT_ROOT_IDENTITY-<unset>}"
+    printf 'stub-pid=[%s]\n' "$$"
+    printf 'stub-pgid=[%s]\n' "$(ps -o pgid= -p $$ | tr -d ' ')"
+    printf 'stub-port=[%s]\n' "$STUB_PORT"
+    printf 'stub-argv=[%s]\n' "$*"
+} >> "$REIFY_JC_SERVE_WITNESS"
+STUB
+
+    case "$mode" in
+        healthy)
+            # exec, so the process-group LEADER is the listener itself.
+            echo 'exec python3 "$0.py" "$STUB_PORT" jcodemunch-mcp' >> "$path" ;;
+        foreign)
+            # Well-formed JSON-RPC, 200, a session header — everything a
+            # LIVENESS check would accept — under somebody else's name.
+            echo 'exec python3 "$0.py" "$STUB_PORT" not-jcodemunch' >> "$path" ;;
+        slow)
+            # Refuses connections outright for a few polls, then becomes
+            # healthy. A cold `uvx` resolve looks exactly like this.
+            echo 'sleep "${REIFY_JC_STUB_SLOW_SECS:-4}"' >> "$path"
+            echo 'exec python3 "$0.py" "$STUB_PORT" jcodemunch-mcp' >> "$path" ;;
+        die)
+            echo 'printf "stub-die=[3]\n" >> "$REIFY_JC_SERVE_WITNESS"' >> "$path"
+            echo 'exit 3' >> "$path" ;;
+        grandchild)
+            # The leak shape `uvx` produces: the thing the wrapper spawns is NOT
+            # the thing holding the port. A teardown that signalled only the
+            # direct child would leave this python listening forever.
+            echo 'python3 "$0.py" "$STUB_PORT" jcodemunch-mcp &' >> "$path"
+            echo 'printf "stub-grandchild-pid=[%s]\n" "$!" >> "$REIFY_JC_SERVE_WITNESS"' >> "$path"
+            echo 'exec sleep 600' >> "$path" ;;
+        *)
+            echo "mk_stub_serve: unknown mode '$mode'" >&2; return 1 ;;
+    esac
+    chmod +x "$path"
+    return 0
+}
+
+# Witness files this suite has produced, swept by cleanup(). A stub serve is
+# torn down by the WRAPPER on every path the wrapper implements — but the TDD
+# commits between here and the teardown step do not implement it yet, and a
+# `pool` member must not leak a listener either way. The sweep is precise
+# rather than port-shaped: it reaps only process groups this suite's own stubs
+# recorded, never "whatever is listening on that port".
+_WITNESSES=()
+_reap_stub_groups() {
+    local w pgid
+    for w in ${_WITNESSES+"${_WITNESSES[@]}"}; do
+        [ -f "$w" ] || continue
+        while IFS= read -r pgid; do
+            [ -n "$pgid" ] || continue
+            kill -TERM -- "-$pgid" 2>/dev/null || true
+            kill -KILL -- "-$pgid" 2>/dev/null || true
+        done < <(sed -n 's/^stub-pgid=\[\([0-9]\{1,\}\)\]$/\1/p' "$w" | sort -u)
+    done
+}
+cleanup() {
+    _reap_stub_groups
+    _reap_bgpids
+    local d
+    for d in ${_TMPDIRS+"${_TMPDIRS[@]}"}; do
+        [ -n "$d" ] && rm -rf "$d"
+    done
+}
+
+# rw_run <mode> [wrapped command...] — one wrapper invocation against a stub.
+#
+# MAIN-SHELL ONLY (it registers into _WITNESSES; see start_squatter's note).
+# Sets: RW_DIR RW_PORT RW_WITNESS RW_OUT RW_ERR RW_RC RW_ELAPSED.
+# Reads:  RW_SERVE_PREFIX  extra words prepended to the stub inside
+#                          REIFY_JC_SERVE_CMD — the identity negative control.
+#         RW_TIMEOUT       the wrapper's readiness deadline, in seconds.
+RW_SERVE_PREFIX=""
+RW_TIMEOUT=20
+rw_run() {
+    local mode="$1"; shift
+    local stub t0
+    RW_DIR="$(mk_tmpdir)" || return 1
+    RW_WITNESS="$RW_DIR/witness"
+    : > "$RW_WITNESS"
+    _WITNESSES+=("$RW_WITNESS")
+    RW_PORT="$(pick_free_port)" || return 1
+    stub="$RW_DIR/stub-serve"
+    mk_stub_serve "$stub" "$mode" || return 1
+    RW_OUT="$RW_DIR/stdout"
+    RW_ERR="$RW_DIR/stderr"
+    RW_RC=0
+    t0=$SECONDS
+    REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
+    REIFY_JC_SERVE_READY_TIMEOUT="$RW_TIMEOUT" \
+    REIFY_JC_SERVE_CMD="${RW_SERVE_PREFIX:+$RW_SERVE_PREFIX }$stub" \
+        "$JC_SERVE" --port "$RW_PORT" "$@" >"$RW_OUT" 2>"$RW_ERR" || RW_RC=$?
+    RW_ELAPSED=$((SECONDS - t0))
+    return 0
+}
+
+# has_line <file> <needle> / lacks_line <file> <needle>
+has_line() {
+    local f="$1" needle="$2"
+    require_nonempty "needle" "$needle" || return 1
+    [ -f "$f" ] || { echo "no such file: $f"; return 1; }
+    grep -qF -- "$needle" "$f" && return 0
+    printf '%s\n' "'$needle' not found in $f:" "$(cat "$f")"
+    return 1
+}
+lacks_line() {
+    local f="$1" needle="$2"
+    require_nonempty "needle" "$needle" || return 1
+    [ -f "$f" ] || return 0
+    grep -qF -- "$needle" "$f" || return 0
+    printf '%s\n' "'$needle' unexpectedly present in $f:" "$(cat "$f")"
+    return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 4 — spawn and readiness
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 4: spawn and readiness ---"
+
+rw_run healthy true
+B4H_ERR="$RW_ERR"; B4H_WITNESS="$RW_WITNESS"
+
+b4_healthy_ready()      { has_line "$B4H_ERR" "$READY_MARKER"; }
+b4_child_saw_argv()     { has_line "$B4H_WITNESS" "stub-argv=[serve --transport streamable-http --host 127.0.0.1 --port"; }
+b4_child_saw_watcher()  { has_line "$B4H_WITNESS" "--watcher=false]"; }
+
+# THE 307 GOTCHA, bound to an OBSERVATION rather than to a grep of the source:
+# what path did the server actually receive?
+b4_probe_path()         { has_line "$B4H_WITNESS" "request-path=[/mcp]"; }
+b4_probe_no_slash()     { lacks_line "$B4H_WITNESS" "request-path=[/mcp/]"; }
+
+# THE IDENTITY LEVER REACHES THE CHILD (β Test 12's behavioural half): the value
+# is read out of the CHILD's environment, not out of the argv the parent printed.
+b4_child_identity()     { has_line "$B4H_WITNESS" "identity-env=[0]"; }
+
+assert "a healthy stub serve reaches readiness ($READY_MARKER on stderr)"  b4_healthy_ready
+assert "the constructed argv reaches the child verbatim"                   b4_child_saw_argv
+assert "the child is told --watcher=false"                                 b4_child_saw_watcher
+assert "the readiness probe requests /mcp"                                 b4_probe_path
+assert "the readiness probe never requests /mcp/ (307 drops the session id)" b4_probe_no_slash
+assert "the spawned child really runs with JCODEMUNCH_GIT_ROOT_IDENTITY=0"  b4_child_identity
+
+# β Test 14's NEGATIVE CONTROL: drive the lever to 1 through the same seam and
+# prove the assertion above can fail. Without this, `identity-env=[0]` could be
+# a constant the stub prints regardless.
+RW_SERVE_PREFIX="env JCODEMUNCH_GIT_ROOT_IDENTITY=1"
+rw_run healthy true
+B4N_WITNESS="$RW_WITNESS"
+RW_SERVE_PREFIX=""
+
+b4_identity_control()   { has_line "$B4N_WITNESS" "identity-env=[1]"; }
+assert "negative control: forcing the lever to 1 is observed as identity-env=[1]" b4_identity_control
+
+# -- slow: waited out, not failed ---------------------------------------------
+rw_run slow true
+B4S_ERR="$RW_ERR"
+
+b4_slow_ready()    { has_line "$B4S_ERR" "$READY_MARKER"; }
+b4_slow_no_refuse(){ lacks_line "$B4S_ERR" "$M_NOT_READY"; }
+assert "a slow-starting serve is waited out, not failed"                   b4_slow_ready
+assert "a slow-starting serve produces no $M_NOT_READY"                    b4_slow_no_refuse
+
+# -- foreign: identity, not liveness ------------------------------------------
+rw_run foreign true
+B4F_ERR="$RW_ERR"; B4F_WITNESS="$RW_WITNESS"; B4F_RC="$RW_RC"
+
+# ANTI-VACUITY FIRST: the foreign stub really did answer. Without this, an
+# E_JC_SERVE_NOT_READY caused by an unreachable port would masquerade as the
+# identity finding.
+b4_foreign_answered() { has_line "$B4F_WITNESS" "request-path=[/mcp]"; }
+b4_foreign_refuses()  { has_line "$B4F_ERR" "$M_NOT_READY"; }
+b4_foreign_not_ready(){ lacks_line "$B4F_ERR" "$READY_MARKER"; }
+b4_foreign_nonzero()  { [ "$B4F_RC" -ne 0 ]; }
+
+assert "the foreign stub really answered the probe (anti-vacuity)"         b4_foreign_answered
+assert "a serve answering under another name refuses $M_NOT_READY"         b4_foreign_refuses
+assert "the foreign refusal never claims $READY_MARKER"                    b4_foreign_not_ready
+assert "the foreign refusal exits non-zero"                                b4_foreign_nonzero
+
+# -- die: a spawn failure, reported promptly and as itself --------------------
+RW_TIMEOUT=120
+rw_run die true
+B4D_ERR="$RW_ERR"; B4D_RC="$RW_RC"; B4D_ELAPSED="$RW_ELAPSED"
+RW_TIMEOUT=20
+
+b4_die_marker()  { has_line "$B4D_ERR" "$M_SPAWN_FAILED"; }
+# A specific needle, not a bare "3": the port, the pin and the deadline all
+# carry digits, so a loose match would pass on prose that names no status.
+b4_die_status()  { has_line "$B4D_ERR" "status 3"; }
+b4_die_nonzero() { [ "$B4D_RC" -ne 0 ]; }
+# The deadline is 120 s for this run precisely so "prompt" is falsifiable: a
+# wrapper that blamed a timeout for a spawn failure would take at least that
+# long. 30 s is generous headroom over the ~1 s the correct behaviour costs.
+b4_die_prompt()  {
+    [ "$B4D_ELAPSED" -lt 30 ] && return 0
+    echo "the die-stub run took ${B4D_ELAPSED}s against a 120s readiness deadline — the spawn failure was reported as a timeout"
+    return 1
+}
+b4_die_not_ready() { lacks_line "$B4D_ERR" "$READY_MARKER"; }
+
+assert "a serve child that dies refuses $M_SPAWN_FAILED"                   b4_die_marker
+assert "the spawn-failure refusal names the child's exit status"           b4_die_status
+assert "the spawn-failure refusal exits non-zero"                          b4_die_nonzero
+assert "the spawn failure is reported promptly, not at the deadline"       b4_die_prompt
+assert "the spawn-failure refusal never claims $READY_MARKER"              b4_die_not_ready
+
 test_summary
