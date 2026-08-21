@@ -1652,6 +1652,53 @@ mod tests {
         );
     }
 
+    // (f) TASK 6119 — the criterion itself must be EXACTLY invariant under a
+    // uniform gauge change q → λ·q, σ → λ·σ at a FIXED geometry. `D` is exactly
+    // linear in q and σ, so D_λ = λ·D entrywise; λ = 2^20 is a power of two, so
+    // λ·q and λ·σ are exact in IEEE-754 and D_λ = λ·D holds bit-exactly (not
+    // merely to rounding) — this makes the invariance an arithmetic identity,
+    // checkable with assert_eq! rather than a tolerance. A non-power-of-two λ
+    // would only test the identity to rounding.
+    //
+    // MEASURED RED today: `free_equilibrium_residual` divides only by
+    // `(1 + coord_scale)`, which does not depend on D's magnitude at all, so
+    // the λ-scaled residual comes out ~λ× the base residual instead of equal.
+    #[test]
+    fn free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling() {
+        const LAMBDA: f64 = 1_048_576.0; // 2^20
+
+        let (nodes, surfaces, anchors) = tent_membrane();
+        // Note: `assemble_d` (unlike the public entry points) does not take
+        // `kinds` — it has no sign contract to enforce — so no MemberKind
+        // value is needed here.
+        let members = [(0usize, 1usize)];
+        let q = [0.7_f64];
+        let sigma = 2.0_f64;
+        let sigmas = vec![sigma; surfaces.len()];
+
+        let mut is_anchor = vec![false; nodes.len()];
+        for &a in &anchors {
+            is_anchor[a] = true;
+        }
+        let free_indices: Vec<usize> = (0..nodes.len()).filter(|&i| !is_anchor[i]).collect();
+
+        let d_base = assemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
+            .expect("non-degenerate fixture");
+        let resid_base = free_equilibrium_residual(&d_base, &nodes, &free_indices);
+
+        let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
+        let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
+        let d_scaled =
+            assemble_d(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
+                .expect("non-degenerate fixture");
+        let resid_scaled = free_equilibrium_residual(&d_scaled, &nodes, &free_indices);
+
+        assert_eq!(
+            resid_base, resid_scaled,
+            "criterion must be exactly gauge-invariant: base={resid_base:e} λ-scaled={resid_scaled:e}",
+        );
+    }
+
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
 
     /// Tolerance for the anisotropic stencil reduction test (σ_w=σ_f → isotropic).

@@ -1,0 +1,348 @@
+//! Integration golden for task 6119 — the surfaces-path `form_find` convergence
+//! criterion must be GAUGE-INVARIANT: solving at `(q, σ)` and at `(λ·q, λ·σ)`
+//! for any `λ > 0` must converge to the identical geometry and scale every
+//! member force by exactly `λ`.
+//!
+//! # PRD reference
+//!
+//! `docs/prds/v0_6/dimension-checked-readers.md` §"Deliberately bare" (:206-214):
+//! tensegrity `force_densities` are **nullity-invariant relative ratios** —
+//! genuinely dimensionless, not a gap — so a uniform rescaling of every `q`
+//! (and every `σ`) by `λ > 0` must be a no-op on the solved shape and scale
+//! every member force by exactly `λ`.
+//!
+//! The line-only path (`form_find_anchored`) was already covariant
+//! unconditionally: `D_ff x_f = −D_fa x_a` is linear in `D`, so `λ` cancels
+//! exactly regardless of the convergence criterion. The surfaces path iterates
+//! a cotangent fixed point and judges convergence against
+//! `SURFACE_EQUILIBRIUM_REL_TOL`; before task 6119 that criterion was an
+//! ABSOLUTE bound on a residual that is itself linear in `q`/`σ`, so a gauge
+//! change could change the iteration count, the stop geometry, or whether the
+//! solve converged at all. This file is the user-observable signal that the
+//! fix restores covariance on BOTH surfaces entry points —
+//! [`form_find_anchored_surfaces`] and [`form_find_anchored_surfaces_aniso`],
+//! which share the identical criterion.
+
+use reify_solver_elastic::{
+    AnisotropicSurfaceStress, MemberKind, form_find_anchored_surfaces,
+    form_find_anchored_surfaces_aniso,
+};
+
+// ---------------------------------------------------------------------------
+// Catenoid-tube fixture (adapted from tensegrity_gamma_membrane_form_find.rs
+// at the cheap 8-azimuthal × 2-axial resolution) plus ring line-members so
+// `q` genuinely enters `D_ff` — a pure-membrane fixture would leave the line
+// contribution trivially zero and under-test the gauge argument.
+// ---------------------------------------------------------------------------
+
+/// Catenoid waist parameter `c` in `r(z) = c·cosh(z/c)`.
+const C: f64 = 1.0;
+
+/// Half-height: boundary rings sit at `z = ±H` (same stable-branch choice as
+/// the γ golden — well below the `t·tanh(t) = 1` existence limit).
+const H: f64 = 0.8;
+
+fn catenoid_radius(z: f64) -> f64 {
+    C * (z / C).cosh()
+}
+
+/// Deterministic, RNG-free perturbation in `[-1, 1]` keyed on two indices (RNG
+/// is unavailable to workflow/golden code and would break reproducibility).
+fn jitter(a: usize, b: usize) -> f64 {
+    ((a as f64) * 12.9898 + (b as f64) * 78.233).sin()
+}
+
+/// Build the 8-azimuthal × 2-axial catenoid tube: 3 rings × 8 nodes = 24
+/// nodes. The two boundary rings (16 nodes) are anchored exactly on the
+/// analytic catenoid; the single interior ring (8 nodes) is free, seeded on
+/// the catenoid plus a small deterministic perturbation. 32 triangles (2 axial
+/// segments × 8 quads × 2 triangles each).
+///
+/// Additionally scatters 4 struts across the free ring's diameters and 8 hoop
+/// cables around it (struts-then-cables order), so line members genuinely
+/// couple into `D_ff` alongside the membrane.
+///
+/// Returns `(nodes, surfaces, anchors, free_indices, members, kinds)`.
+#[allow(clippy::type_complexity)]
+fn build_catenoid_tube_with_ring_members(
+    perturb: f64,
+) -> (
+    Vec<[f64; 3]>,
+    Vec<(usize, usize, usize)>,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<(usize, usize)>,
+    Vec<MemberKind>,
+) {
+    const N_THETA: usize = 8;
+    const N_AXIAL: usize = 2;
+    let n_rings = N_AXIAL + 1;
+    let node_id = |ring: usize, j: usize| ring * N_THETA + (j % N_THETA);
+
+    let mut nodes = vec![[0.0_f64; 3]; n_rings * N_THETA];
+    let mut anchors = Vec::new();
+    let mut free = Vec::new();
+
+    for ring in 0..n_rings {
+        let z = -H + 2.0 * H * (ring as f64) / (N_AXIAL as f64);
+        let r_true = catenoid_radius(z);
+        let is_boundary = ring == 0 || ring == n_rings - 1;
+        for j in 0..N_THETA {
+            let theta = 2.0 * std::f64::consts::PI * (j as f64) / (N_THETA as f64);
+            let id = node_id(ring, j);
+            if is_boundary {
+                // Anchors stay EXACTLY on the catenoid — the fixed BVP data.
+                nodes[id] = [r_true * theta.cos(), r_true * theta.sin(), z];
+                anchors.push(id);
+            } else {
+                let r = r_true + perturb * jitter(ring, j);
+                let dz = 0.5 * perturb * jitter(j, ring);
+                nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
+                free.push(id);
+            }
+        }
+    }
+
+    // Triangulate each quad between adjacent rings (consistent diagonal split).
+    let mut surfaces = Vec::new();
+    for ring in 0..N_AXIAL {
+        for j in 0..N_THETA {
+            let a = node_id(ring, j);
+            let b = node_id(ring, j + 1);
+            let c = node_id(ring + 1, j);
+            let d = node_id(ring + 1, j + 1);
+            surfaces.push((a, b, c));
+            surfaces.push((b, d, c));
+        }
+    }
+
+    // The only interior (non-boundary) ring is ring 1 for N_AXIAL=2.
+    let ring1 = |j: usize| node_id(1, j);
+    let mut members = Vec::new();
+    let mut kinds = Vec::new();
+    // 4 struts across the ring diameters (opposite nodes, N_THETA/2 apart).
+    for j in 0..4 {
+        members.push((ring1(j), ring1(j + 4)));
+        kinds.push(MemberKind::Strut);
+    }
+    // 8 hoop cables around the free ring.
+    for j in 0..N_THETA {
+        members.push((ring1(j), ring1(j + 1)));
+        kinds.push(MemberKind::Cable);
+    }
+
+    (nodes, surfaces, anchors, free, members, kinds)
+}
+
+/// Force density magnitudes for the ring members: struts compressive, cables
+/// tensile (the sign contract [`MemberKind`] enforces).
+const STRUT_Q: f64 = -0.05;
+const CABLE_Q: f64 = 0.3;
+
+fn ring_member_q(kinds: &[MemberKind]) -> Vec<f64> {
+    kinds
+        .iter()
+        .map(|k| match k {
+            MemberKind::Strut => STRUT_Q,
+            MemberKind::Cable => CABLE_Q,
+        })
+        .collect()
+}
+
+/// Perturbation off the analytic catenoid — large enough that the solve must
+/// do real work, small enough to stay in the basin of attraction (matches the
+/// γ golden's choice).
+const PERTURB: f64 = 0.02;
+
+/// Gauge factor `λ = 2^20`, chosen as a power of two on purpose: `λ·q` and
+/// `λ·σ` are then exact in IEEE-754, so the assembled `D_λ = λ·D` holds
+/// entrywise-exactly and the whole covariance claim is an arithmetic identity
+/// rather than a rounding accident. A non-power-of-two `λ` would only test the
+/// identity to rounding.
+const LAMBDA: f64 = 1_048_576.0;
+
+/// Bound for the relative agreement between the base-gauge and λ-gauge
+/// solves. MEASURED agreement is bit-exact (`0.0`) for a power-of-two `λ`;
+/// `1e-13` is deliberately ~13 orders of margin above that measurement so a
+/// future faer LU implementation change cannot turn a correct kernel red — it
+/// is NOT a tuned-to-fit threshold.
+const GAUGE_REL_TOL: f64 = 1e-13;
+
+// ---------------------------------------------------------------------------
+// Relative-difference helpers
+// ---------------------------------------------------------------------------
+
+/// Max componentwise relative difference between two equal-length node lists:
+/// `max|Δx| / (1 + max|x_ref|)`.
+fn max_coord_rel_diff(a: &[[f64; 3]], b_ref: &[[f64; 3]]) -> f64 {
+    let mut num = 0.0_f64;
+    let mut scale = 0.0_f64;
+    for (pa, pb) in a.iter().zip(b_ref.iter()) {
+        for k in 0..3 {
+            num = num.max((pa[k] - pb[k]).abs());
+            scale = scale.max(pb[k].abs());
+        }
+    }
+    num / (1.0 + scale)
+}
+
+/// Max relative difference between `scaled` and `λ·base`:
+/// `max|λ·base − scaled| / (1 + max|λ·base|)`. Used to check that member
+/// forces / force-density echoes / principal-stress echoes all scale by
+/// exactly `λ` under a gauge change.
+fn max_rel_diff_scaled(base: &[f64], scaled: &[f64], lambda: f64) -> f64 {
+    let mut num = 0.0_f64;
+    let mut scale = 0.0_f64;
+    for (&nb, &ns) in base.iter().zip(scaled.iter()) {
+        let expected = lambda * nb;
+        num = num.max((expected - ns).abs());
+        scale = scale.max(expected.abs());
+    }
+    num / (1.0 + scale)
+}
+
+// ---------------------------------------------------------------------------
+// Isotropic surfaces path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn iso_surfaces_form_find_is_gauge_covariant() {
+    let (nodes, surfaces, anchors, _free, members, kinds) =
+        build_catenoid_tube_with_ring_members(PERTURB);
+    let q = ring_member_q(&kinds);
+    let sigma = 1.0_f64;
+    let sigmas = vec![sigma; surfaces.len()];
+
+    let base =
+        form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+            .expect("base-gauge catenoid+ring-members solve must be feasible");
+
+    let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
+    let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
+    let scaled = form_find_anchored_surfaces(
+        &nodes, &members, &kinds, &q_scaled, &surfaces, &sigmas_scaled, &anchors,
+    )
+    .expect("λ-gauge catenoid+ring-members solve must be feasible");
+
+    eprintln!(
+        "[ISO] base.converged={} scaled.converged={}",
+        base.converged, scaled.converged,
+    );
+
+    assert!(base.converged, "base-gauge solve must converge");
+    assert!(
+        scaled.converged,
+        "λ-gauge solve must converge — the criterion must be gauge-invariant (task 6119)",
+    );
+
+    let node_err = max_coord_rel_diff(&base.nodes, &scaled.nodes);
+    assert!(
+        node_err < GAUGE_REL_TOL,
+        "solved geometry must be gauge-invariant: rel err = {node_err:e}, expected < {GAUGE_REL_TOL:e}",
+    );
+
+    let force_err = max_rel_diff_scaled(&base.member_forces, &scaled.member_forces, LAMBDA);
+    assert!(
+        force_err < GAUGE_REL_TOL,
+        "member forces must scale by exactly λ: rel err = {force_err:e}, expected < {GAUGE_REL_TOL:e}",
+    );
+
+    let q_echo_err = max_rel_diff_scaled(&base.force_densities, &scaled.force_densities, LAMBDA);
+    assert!(
+        q_echo_err < GAUGE_REL_TOL,
+        "force_densities echo must scale by exactly λ: rel err = {q_echo_err:e}",
+    );
+
+    let sigma_echo_err =
+        max_rel_diff_scaled(&base.surface_stresses, &scaled.surface_stresses, LAMBDA);
+    assert!(
+        sigma_echo_err < GAUGE_REL_TOL,
+        "surface_stresses echo must scale by exactly λ: rel err = {sigma_echo_err:e}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Anisotropic surfaces path — shares the identical criterion (:708)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn aniso_surfaces_form_find_is_gauge_covariant() {
+    let (nodes, surfaces, anchors, _free, members, kinds) =
+        build_catenoid_tube_with_ring_members(PERTURB);
+    let q = ring_member_q(&kinds);
+    let sigma_warp = 1.0_f64;
+    let sigma_weft = 0.4_f64;
+    let warp_dir = [0.0, 0.0, 1.0];
+    let prestress = vec![
+        AnisotropicSurfaceStress { warp_dir, sigma_warp, sigma_weft };
+        surfaces.len()
+    ];
+
+    let base = form_find_anchored_surfaces_aniso(
+        &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
+    )
+    .expect("base-gauge aniso solve must be feasible");
+
+    let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
+    let prestress_scaled = vec![
+        AnisotropicSurfaceStress {
+            warp_dir,
+            sigma_warp: sigma_warp * LAMBDA,
+            sigma_weft: sigma_weft * LAMBDA,
+        };
+        surfaces.len()
+    ];
+    let scaled = form_find_anchored_surfaces_aniso(
+        &nodes, &members, &kinds, &q_scaled, &surfaces, &prestress_scaled, &anchors,
+    )
+    .expect("λ-gauge aniso solve must be feasible");
+
+    eprintln!(
+        "[ANISO] base.converged={} scaled.converged={}",
+        base.converged, scaled.converged,
+    );
+
+    assert!(base.converged, "base-gauge aniso solve must converge");
+    assert!(
+        scaled.converged,
+        "λ-gauge aniso solve must converge — same criterion as the isotropic path (task 6119)",
+    );
+
+    let node_err = max_coord_rel_diff(&base.nodes, &scaled.nodes);
+    assert!(
+        node_err < GAUGE_REL_TOL,
+        "aniso solved geometry must be gauge-invariant: rel err = {node_err:e}",
+    );
+
+    let force_err = max_rel_diff_scaled(&base.member_forces, &scaled.member_forces, LAMBDA);
+    assert!(
+        force_err < GAUGE_REL_TOL,
+        "aniso member forces must scale by exactly λ: rel err = {force_err:e}",
+    );
+
+    let q_echo_err = max_rel_diff_scaled(&base.force_densities, &scaled.force_densities, LAMBDA);
+    assert!(
+        q_echo_err < GAUGE_REL_TOL,
+        "aniso force_densities echo must scale by exactly λ: rel err = {q_echo_err:e}",
+    );
+
+    // Principal-stress echo: recover_principal_stress reads σ_w/σ_f straight
+    // from the input spec, so this is the aniso analogue of the isotropic
+    // surface_stresses echo check above.
+    assert_eq!(base.principal_stresses.len(), scaled.principal_stresses.len());
+    let major_base: Vec<f64> = base.principal_stresses.iter().map(|p| p.major).collect();
+    let major_scaled: Vec<f64> = scaled.principal_stresses.iter().map(|p| p.major).collect();
+    let major_err = max_rel_diff_scaled(&major_base, &major_scaled, LAMBDA);
+    assert!(
+        major_err < GAUGE_REL_TOL,
+        "principal major-stress echo must scale by exactly λ: rel err = {major_err:e}",
+    );
+
+    let minor_base: Vec<f64> = base.principal_stresses.iter().map(|p| p.minor).collect();
+    let minor_scaled: Vec<f64> = scaled.principal_stresses.iter().map(|p| p.minor).collect();
+    let minor_err = max_rel_diff_scaled(&minor_base, &minor_scaled, LAMBDA);
+    assert!(
+        minor_err < GAUGE_REL_TOL,
+        "principal minor-stress echo must scale by exactly λ: rel err = {minor_err:e}",
+    );
+}
