@@ -9659,6 +9659,11 @@ impl Engine {
         // (via eval_ctx), then write them back via &mut ValueMap. This avoids a
         // split-borrow conflict between the read and write phases.
         let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        // Geometry-list lets (task #5385): their element realizations are named
+        // `"{list}#{k}"` — synthetic, unaddressable from source — so they are
+        // routed away from the scalar `entries` write and regrouped into one
+        // `Value::List` cell after the loop.
+        let mut geometry_lists = GeometryListCellAccumulator::default();
 
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
@@ -9668,6 +9673,9 @@ impl Engine {
                     Some(n) => n.as_str(),
                     None => continue,
                 };
+                // Declared BEFORE the `named_steps` miss `continue` below, so an
+                // unresolved element still counts against the all-or-nothing check.
+                let is_list_element = geometry_lists.declare(realization);
                 let kernel_handle = match named_steps.get(name) {
                     Some(kh) => kh.id,
                     None => continue,
@@ -9707,16 +9715,23 @@ impl Engine {
                 let upstream_values_hash =
                     compute_realization_upstream_values_hash(realization, &ctx);
 
-                entries.push((
-                    ValueCellId::new(realization.id.entity.as_str(), name),
-                    Value::GeometryHandle {
-                        realization_ref: realization.id.clone(),
-                        upstream_values_hash,
-                        kernel_handle: Some(kernel_handle),
-                    },
-                ));
+                let value = Value::GeometryHandle {
+                    realization_ref: realization.id.clone(),
+                    upstream_values_hash,
+                    kernel_handle: Some(kernel_handle),
+                };
+                if is_list_element {
+                    geometry_lists.resolve(realization, value);
+                } else {
+                    entries.push((
+                        ValueCellId::new(realization.id.entity.as_str(), name),
+                        value,
+                    ));
+                }
             }
         } // ctx dropped — &ValueMap borrow released
+
+        entries.extend(geometry_lists.into_entries());
 
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
@@ -10127,6 +10142,10 @@ impl Engine {
         use reify_ir::Value;
 
         let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        // Same geometry-list regrouping as `post_process_geometry_handle_cells`
+        // (task #5385), so the tessellate surface exposes the same
+        // `List<Geometry>` cell the build surface does.
+        let mut geometry_lists = GeometryListCellAccumulator::default();
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
             for realization in &template.realizations {
@@ -10134,22 +10153,29 @@ impl Engine {
                     Some(n) => n.as_str(),
                     None => continue,
                 };
+                let is_list_element = geometry_lists.declare(realization);
                 let kernel_handle = match named_steps.get(name) {
                     Some(kh) => kh.id,
                     None => continue,
                 };
                 let upstream_values_hash =
                     compute_realization_upstream_values_hash(realization, &ctx);
-                entries.push((
-                    ValueCellId::new(realization.id.entity.as_str(), name),
-                    Value::GeometryHandle {
-                        realization_ref: realization.id.clone(),
-                        upstream_values_hash,
-                        kernel_handle: Some(kernel_handle),
-                    },
-                ));
+                let value = Value::GeometryHandle {
+                    realization_ref: realization.id.clone(),
+                    upstream_values_hash,
+                    kernel_handle: Some(kernel_handle),
+                };
+                if is_list_element {
+                    geometry_lists.resolve(realization, value);
+                } else {
+                    entries.push((
+                        ValueCellId::new(realization.id.entity.as_str(), name),
+                        value,
+                    ));
+                }
             }
         }
+        entries.extend(geometry_lists.into_entries());
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
         }
@@ -10294,6 +10320,10 @@ impl Engine {
         // Two-phase: collect while holding a &ValueMap borrow (via eval_ctx),
         // then write back via &mut ValueMap to avoid a split-borrow conflict.
         let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        // Geometry-list lets (task #5385): the pure-eval symbolic route must
+        // agree with the kernel-backed one, so element realizations are
+        // regrouped here too rather than written as synthetic scalar cells.
+        let mut geometry_lists = GeometryListCellAccumulator::default();
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
             for realization in module.templates.iter().flat_map(|t| &t.realizations) {
@@ -10301,12 +10331,15 @@ impl Engine {
                     Some(n) => n.as_str(),
                     None => continue, // unnamed realizations have no named cell
                 };
+                let is_list_element = geometry_lists.declare(realization);
                 let cell_id = ValueCellId::new(realization.id.entity.as_str(), name);
                 // Do not clobber a realized handle already stamped by the build path.
-                if matches!(
-                    values.get(&cell_id),
-                    Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
-                ) {
+                if !is_list_element
+                    && matches!(
+                        values.get(&cell_id),
+                        Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
+                    )
+                {
                     continue;
                 }
                 // Delegate to the single canonical fold (step-6, task #4652):
@@ -10314,16 +10347,34 @@ impl Engine {
                 // path so eval-mint == build-realize (§7.1 identity, GHR-β).
                 let upstream_values_hash =
                     compute_realization_upstream_values_hash(realization, &ctx);
-                entries.push((
-                    cell_id,
-                    Value::GeometryHandle {
-                        realization_ref: realization.id.clone(),
-                        upstream_values_hash,
-                        kernel_handle: None,
-                    },
-                ));
+                let value = Value::GeometryHandle {
+                    realization_ref: realization.id.clone(),
+                    upstream_values_hash,
+                    kernel_handle: None,
+                };
+                if is_list_element {
+                    geometry_lists.resolve(realization, value);
+                } else {
+                    entries.push((cell_id, value));
+                }
             }
         } // ctx dropped — &ValueMap borrow released
+        // The per-element clobber guard above cannot apply to list elements
+        // (their synthetic cells never exist), so the list-cell equivalent is
+        // applied here: a list already holding realized handles is left alone.
+        for (cell_id, value) in geometry_lists.into_entries() {
+            let already_realized = matches!(
+                values.get(&cell_id),
+                Some(Value::List(items))
+                    if items.iter().any(|v| matches!(
+                        v,
+                        Value::GeometryHandle { kernel_handle: Some(_), .. }
+                    ))
+            );
+            if !already_realized {
+                entries.push((cell_id, value));
+            }
+        }
         // No caller reads a flipped set (see doc comment above) — just write
         // back the mint results, skipping any per-entry `values.get`
         // re-probe or `HashSet` allocation.
@@ -11911,6 +11962,88 @@ impl Engine {
         })
     }
 }
+
+/// Regroups the sibling realizations of a *geometry-list let* back into the
+/// single `Value::List` its cell should hold (task #5385).
+///
+/// A `let holes = generate(3, |i| cylinder(…))` lowers to three realizations
+/// named `holes#0..holes#2`, each tagged with a
+/// [`reify_compiler::GeometryListBinding`]. Those synthetic names are not
+/// addressable from source, so instead of writing three scalar cells the
+/// hydration passes funnel them through this accumulator and emit one
+/// `ValueCellId::new(entity, "holes")` holding the handles in index order.
+///
+/// **All-or-nothing.** A list cell is emitted only when every DECLARED element
+/// resolved. A partially-resolved list leaves the cell untouched, so the
+/// eval-side undef provenance (task #5402) still owns that failure case rather
+/// than seeing a silently short list and reporting nothing.
+#[derive(Default)]
+struct GeometryListCellAccumulator {
+    /// `(entity, list_name)` → number of list-bound realizations DECLARED.
+    declared: BTreeMap<(String, String), usize>,
+    /// `(entity, list_name)` → `index` → resolved handle value.
+    resolved: BTreeMap<(String, String), BTreeMap<usize, reify_ir::Value>>,
+}
+
+impl GeometryListCellAccumulator {
+    /// Record that `realization` is declared as a list element.
+    ///
+    /// MUST be called for every list-bound realization *before* any early
+    /// `continue` that could skip it — otherwise an unresolved element goes
+    /// uncounted and the all-or-nothing check passes on a short list.
+    ///
+    /// Returns `true` iff the realization is list-bound, i.e. iff the caller
+    /// must NOT also write it as a scalar geometry cell.
+    fn declare(&mut self, realization: &reify_compiler::RealizationDecl) -> bool {
+        let Some(binding) = &realization.list_binding else {
+            return false;
+        };
+        *self
+            .declared
+            .entry((realization.id.entity.clone(), binding.list_name.clone()))
+            .or_insert(0) += 1;
+        true
+    }
+
+    /// Record a resolved handle for a list element. No-op for a realization
+    /// that is not list-bound.
+    fn resolve(&mut self, realization: &reify_compiler::RealizationDecl, value: reify_ir::Value) {
+        let Some(binding) = &realization.list_binding else {
+            return;
+        };
+        self.resolved
+            .entry((realization.id.entity.clone(), binding.list_name.clone()))
+            .or_default()
+            .insert(binding.index, value);
+    }
+
+    /// Emit `(list cell, Value::List)` for every list whose elements ALL
+    /// resolved, in ascending index order.
+    ///
+    /// An empty geometry list (`generate(0, …)`) declares zero elements and so
+    /// never enters `resolved`; it is emitted here as the empty list rather
+    /// than left absent, since "no elements" is a determinate answer.
+    fn into_entries(self) -> Vec<(reify_core::identity::ValueCellId, reify_ir::Value)> {
+        let mut out = Vec::new();
+        for (key, &expected) in &self.declared {
+            let elements = self.resolved.get(key);
+            let resolved_count = elements.map(|m| m.len()).unwrap_or(0);
+            if resolved_count != expected {
+                continue;
+            }
+            let (entity, list_name) = key;
+            let items = elements
+                .map(|m| m.values().cloned().collect())
+                .unwrap_or_default();
+            out.push((
+                reify_core::identity::ValueCellId::new(entity.clone(), list_name.clone()),
+                reify_ir::Value::List(items),
+            ));
+        }
+        out
+    }
+}
+
 
 /// Collect centroid values for each topology-attribute handle, coalescing
 /// kernel query errors and parse errors into at most one summary warning each.
