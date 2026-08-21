@@ -161,8 +161,14 @@ tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classifi
 # a tests/infra/test_*.sh has no run-all-classification.manifest row (or a row
 # has no file). scripts/check-infra-classification-manifest.sh is
 # emitted-not-sourced by verify.sh (like scripts/check-manifold-deps.sh), so it
-# is intentionally absent from scripts/verify-pipeline-paths.txt; per-task
-# fail-fast coverage comes from these rows (one-artifact-multiple-rows pattern,
+# still has no manual row in scripts/verify-pipeline-paths.txt — but as of task
+# 6320 that is no longer a coverage gap: the guard's emitted-gate clause
+# auto-derives every repo-relative *.sh path invoked LITERALLY by an
+# add()/add_tool() plan line, so this script IS load-bearing and an edit to it
+# routes through the full --scope all gate. It needs no manual row precisely BECAUSE it is
+# auto-derived (the same reason the sourced libs have none).
+# These rows are therefore the cheap per-task fail-fast complement to that
+# full-gate route, not a substitute for it (one-artifact-multiple-rows pattern,
 # like scripts/seed-warm-lane.sh above): the lib row guards the accessors, and
 # the scripts/verify.sh row runs the (e) plan-shape assertion as a per-task
 # pole whenever build_plan()'s gate emission is edited.
@@ -262,3 +268,18 @@ scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_w
 # path at all — it is written into index_folder's result dict, which
 # watcher.py::sync_folders never prints).
 scripts/jcodemunch-index-reify.sh    tests/infra/test_jcodemunch_index_reify.sh
+
+# Task 6320: the merge-worker trivial-pass oracle and its static manifest had
+# NO row here at all, so a guard-only or manifest-only task-scope verify
+# selected ZERO infra poles (select_infra_tests() matches artifact paths
+# EXACTLY, and the scripts/verify.sh -> test_verify_*.sh glob row above does
+# not fire on either of these two paths). These rows give the oracle's own
+# drift-guard a hermetic fail-fast pole — no cargo, no git — on exactly the
+# diffs that can break classification.
+#
+# This is the cheap citing-test complement, NOT a substitute for full-gate
+# routing: whether a self-edit to these two files should itself force the full
+# gate remains an open, separately-documented self-protection gap (see the
+# "pre-existing self-protection gap" note in scripts/doc-sync-paths.txt).
+scripts/verify-pipeline-guard.sh     tests/infra/test_verify_pipeline_guard.sh
+scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
