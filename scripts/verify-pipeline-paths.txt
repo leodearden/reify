@@ -4,9 +4,9 @@
 # Purpose:
 #   Lists repo-relative paths that load-bear the --scope all verify pipeline
 #   but are NOT derivable from verify.sh itself — neither from its
-#   'source "$SCRIPT_DIR/..."' lines nor from the scripts/*.sh paths its
-#   add() / add_tool() plan lines invoke (both of those are auto-derived live
-#   by scripts/verify-pipeline-guard.sh).
+#   'source "$SCRIPT_DIR/..."' lines nor from the *.sh paths its
+#   add() / add_tool() plan lines invoke literally (both of those are
+#   auto-derived live by scripts/verify-pipeline-guard.sh).
 #   This manifest is ONE clause of the canonical load-bearing set consulted by
 #   the drift-guard oracle; see that script's header for the full union.
 #
@@ -33,18 +33,38 @@
 # for future additions.  Listing them here too would be harmless but redundant.
 #
 # NOTE: The EMITTED GATE SCRIPTS are likewise NOT listed here (task 6320).
-# Any scripts/*.sh path invoked by an add() / add_tool() plan line in verify.sh
-# — check-manifold-deps.sh, check-infra-classification-manifest.sh,
-# check-harness-baseline-registration.sh, tree-sitter-generate.sh,
-# ensure-gui-sidecar-placeholder.sh, check_event_inventory.sh,
-# test_pm_standardization.sh, and the two below — is auto-derived live by
+# Any repo-relative *.sh path invoked by an add() / add_tool() plan line in
+# verify.sh — scripts/check-manifold-deps.sh,
+# scripts/check-infra-classification-manifest.sh,
+# scripts/check-harness-baseline-registration.sh,
+# scripts/tree-sitter-generate.sh, scripts/ensure-gui-sidecar-placeholder.sh,
+# scripts/check_event_inventory.sh, scripts/test_pm_standardization.sh,
+# tests/sync_comments_test.sh, and the two below — is auto-derived live by
 # scripts/verify-pipeline-guard.sh's emitted-gate clause, exactly as the
-# sourced libs are by its source-line clause. A NEW lint/gate script wired
+# sourced libs are by its source-line clause. The clause is NOT scripts/-only:
+# it derives any directory-qualified *.sh, which is what covers
+# tests/sync_comments_test.sh (verify.sh:2627). A NEW lint/gate script wired
 # into the plan therefore needs NO row here: do not add one. This is the
 # self-healing property the per-script alternative lacks — task 6243's
-# hand-registration approach covered 2 of the 9 emitted gates, its follow-up
-# ticket named 6 more, and a 7th (test_pm_standardization.sh) was in neither
-# list.
+# hand-registration approach covered 2 of the 10 emitted gates, its follow-up
+# ticket named 6 more, and two others (scripts/test_pm_standardization.sh,
+# tests/sync_comments_test.sh) were in neither list.
+#
+#   ONE QUALIFICATION on "do not add one". The guard reads verify.sh's SOURCE
+#   TEXT, so auto-derivation covers a plan line that mentions the script path
+#   LITERALLY. A plan line assembled through a VARIABLE derives nothing:
+#
+#       _cmd="./scripts/new-gate.sh"      # <- invisible to the guard
+#       add_tool "$_cmd"
+#
+#   That shape is already in use (_gui_cmd / _sidecar_cmd / _ts_cmd, emitted at
+#   scripts/verify.sh:2615-2617 and assembled at :2532-2538). A gate wired that
+#   way is silently fast-path eligible with no red signal anywhere, since the
+#   ground-truth tier in tests/infra/test_verify_pipeline_guard.sh Pair E is
+#   pinned to today's gates. So: prefer writing the path literally in the plan
+#   line; if it genuinely must be variable-assembled, add a row here and say
+#   why. The limitation is pinned by Pair E's LIMITATION case, so this note and
+#   the code cannot drift apart.
 #
 # cpu-admit.sh (task α, #4630) is intentionally omitted: verify.sh sources it
 # directly (`source "$SCRIPT_DIR/cpu-admit.sh"`), so verify-pipeline-guard.sh
@@ -86,9 +106,14 @@ scripts/lib_lane_x_flock.sh
 scripts/lib_clock_stop.sh
 #
 # tests/infra/run_all.sh: the infra-test runner every verify invocation drives
-#   (verify.sh: bash run_all.sh).  It is neither sourced by verify.sh nor
-#   otherwise listed, so verify-pipeline-guard.sh's auto-derivation misses it.
-#   A run_all.sh-only diff (e.g. H2's concurrent hermetic pool, task 4924)
+#   (verify.sh: bash run_all.sh).  It is not sourced by verify.sh, so the
+#   guard's source-line clause misses it, and when this row was added no other
+#   clause covered it either.  It is now DOUBLY redundant — the task-5256
+#   in-code tests/infra/*.sh glob covers it, and as of task 6320 so does the
+#   emitted-gate clause (verify.sh:2844 invokes it from an add_tool() plan
+#   line).  The row is kept as belt-and-braces on the same terms as the two
+#   task-6243 rows below, and for the incident rationale it records: a
+#   run_all.sh-only diff (e.g. H2's concurrent hermetic pool, task 4924)
 #   could otherwise take the merge-worker config fast-path and skip actually
 #   running the concurrent suite; a resulting dropped `FAILED <names>` marker
 #   reclassifies a real infra-suite failure as tree_sitter_generate_error (see
@@ -132,5 +157,10 @@ scripts/check-compute-trampoline-registration.sh
 #
 # task-6243-followup (tkt_0RSKSDAK6WDWWR3N29RQ804T1B): CLOSED by task 6320 via
 #   auto-derivation (see the EMITTED GATE SCRIPTS note in the header) — all six
-#   gate scripts the ticket enumerated are now load-bearing, as is a seventh
-#   sibling it did not list, scripts/test_pm_standardization.sh.
+#   gate scripts the ticket enumerated are now load-bearing, as are two
+#   siblings it did not list: scripts/test_pm_standardization.sh and
+#   tests/sync_comments_test.sh (the latter found in review, and the reason the
+#   clause derives any directory-qualified *.sh rather than scripts/ only).
+#   "CLOSED" means the emitted-LITERAL-path class is closed; the
+#   variable-assembled shape is a known, documented, test-pinned exception —
+#   see the ONE QUALIFICATION paragraph in the header note.
