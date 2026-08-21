@@ -93,8 +93,6 @@ mod stress_sweep_degenerate;
 mod stress_trait_hierarchy;
 #[path = "harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs"]
 mod tensegrity_delta_combined_form_find_e2e;
-#[path = "harness_fea_solver_e2e/tensegrity_force_density_gauge.rs"]
-mod tensegrity_force_density_gauge;
 #[path = "harness_fea_solver_e2e/tensegrity_membrane_load.rs"]
 mod tensegrity_membrane_load;
 #[path = "harness_fea_solver_e2e/tensegrity_pavilion_e2e.rs"]
