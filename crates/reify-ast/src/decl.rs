@@ -533,6 +533,11 @@ pub fn find_named_member_span<'a>(
 /// already flags these member-walking helpers as individually correct but
 /// caller-surprising when one contract is inferred from another.
 ///
+/// **Does not reach inside port bodies.** A port-body param is addressed by the
+/// COMPOSITE name `<port>.<param>`, never by its bare name, and is not an
+/// editable cell at all — see [`collect_param_default_candidates`] for why
+/// matching a bare name in there could only misfire.
+///
 /// **Refuses rather than guesses on a multiply-declared name** — the one place
 /// this helper deliberately diverges from [`find_named_member_span`]'s
 /// first-match-wins. `where c { param x = 1 } else { param x = 2 }` is legal
@@ -706,18 +711,43 @@ struct ParamDefaultCandidates {
 /// because the public contract needs the candidate COUNT to decide between
 /// resolving and refusing.
 ///
-/// The recursion set matches [`find_named_member_span_depth`] variant-for-variant
-/// so the two sibling accessors cannot drift: `GuardedGroup` (BOTH `members` and
-/// `else_members`), `PortDecl.members`, and each `MatchArmDeclGroup` arm's
-/// `member`. Everything else is skipped.
+/// The recursion set is `GuardedGroup` (BOTH `members` and `else_members`) and
+/// each `MatchArmDeclGroup` arm's `member`. Everything else is skipped — in
+/// particular the two bodies below, each for its own reason.
 ///
-/// **`SubDecl.body` is deliberately NOT traversed.** That omission is not an
-/// oversight — it mirrors [`find_named_member_span`] and is the asymmetry
-/// already documented on [`walk_specialization_scope_members`]. A `sub`'s body
-/// holds SPECIALIZATION overrides of a child instance, not the child's own
-/// param declarations, so a default span found there would belong to a
-/// different entity than the caller's cell_id names — splicing into it would
-/// rewrite the wrong declaration.
+/// **`PortDecl.members` is deliberately NOT traversed**, and here this helper
+/// diverges from [`find_named_member_span`] ON PURPOSE. Parity with that
+/// sibling is the WRONG invariant for this one: `find_named_member_span` serves
+/// hover/goto-definition, where surfacing a port-internal declaration under its
+/// bare name is exactly right. This helper serves cell_id resolution, where it
+/// is not — a port-body param is not addressable by its bare name and is not an
+/// editable cell at all. The compiler registers port-body members under the
+/// COMPOSITE member name `ValueCellId(entity, "<port>.<param>")` (see
+/// `reify_compiler::entity`'s port-body registration), those decls land in
+/// `CompiledPort.members`, and nothing ever merges them into
+/// `TopologyTemplate.value_cells` — which is the only map the `set_parameter`
+/// path and the property panel key off. So recursing into a port body could
+/// never supply the candidate a caller asked for; it could only
+///
+///   * FALSELY REFUSE — an entity with a top-level `param d` AND a port-internal
+///     `param d` would push `count` to 2 and refuse a genuinely editable cell.
+///     That collision is silently legal: `shadow_lint` deliberately does not
+///     fold port-internal members into the enclosing frame and emits no
+///     warning, so nothing else flags it either; or
+///   * RETURN A WRONG SPAN — with only a port-internal `d` present, the bare
+///     name `d` would resolve to the PORT member's default, handing a caller a
+///     range it must not splice.
+///
+/// Supporting port members would mean splitting the requested name on `'.'` and
+/// resolving `<port>` → `<param>`, mirroring the compiler's composite naming —
+/// a deliberate feature, not a side effect of a shared recursion set.
+///
+/// **`SubDecl.body` is deliberately NOT traversed either.** That omission
+/// mirrors [`find_named_member_span`] and is the asymmetry already documented on
+/// [`walk_specialization_scope_members`]. A `sub`'s body holds SPECIALIZATION
+/// overrides of a child instance, not the child's own param declarations, so a
+/// default span found there would belong to a different entity than the caller's
+/// cell_id names — splicing into it would rewrite the wrong declaration.
 fn collect_param_default_candidates(
     members: &[MemberDecl],
     name: &str,
@@ -732,6 +762,13 @@ fn collect_param_default_candidates(
         return;
     }
     for member in members {
+        // Ambiguity is established at 2 and the public contract never
+        // distinguishes 2 from 7, so stop walking. Checked at the top of every
+        // iteration, which also short-circuits each recursive entry on its
+        // first pass — no per-recursion-site guard needed.
+        if out.count > 1 {
+            return;
+        }
         match member {
             MemberDecl::Param(p) if p.name == name => {
                 out.count += 1;
@@ -742,9 +779,6 @@ fn collect_param_default_candidates(
             MemberDecl::GuardedGroup(g) => {
                 collect_param_default_candidates(&g.members, name, depth + 1, out);
                 collect_param_default_candidates(&g.else_members, name, depth + 1, out);
-            }
-            MemberDecl::Port(port) => {
-                collect_param_default_candidates(&port.members, name, depth + 1, out);
             }
             MemberDecl::MatchArmDeclGroup(g) => {
                 for arm in &g.arms {
@@ -1672,17 +1706,47 @@ mod find_param_default_span_tests {
     }
 
     #[test]
-    fn param_inside_port_body_resolves() {
+    fn param_inside_port_body_is_not_reachable_by_its_bare_name() {
         // examples/m5_connect_chain.ri:6 —
         //   port inlet : in FluidPort { param diameter : Length = 25mm }
-        // Matches the port recursion `find_named_member_span` already has.
+        //
+        // The sibling `find_named_member_span` DOES recurse here, and for
+        // hover/goto that is right. For cell-id resolution it is not: the
+        // compiler registers this cell as ValueCellId(entity, "inlet.diameter")
+        // — the COMPOSITE name — and it lands in CompiledPort.members, which is
+        // never merged into TopologyTemplate.value_cells. Returning its span for
+        // the bare name "diameter" would hand a caller a range belonging to a
+        // cell that is not editable at all.
         let members = vec![port(
             "inlet",
             vec![param("diameter", (0, 40), Some((44, 48)))],
         )];
+        assert_eq!(find_param_default_span(&members, "diameter"), None);
+        // Nor by the composite name — supporting that would mean splitting on
+        // '.' and resolving <port> → <param> deliberately, which α does not do.
+        assert_eq!(find_param_default_span(&members, "inlet.diameter"), None);
+    }
+
+    #[test]
+    fn port_internal_param_does_not_falsely_refuse_a_top_level_one() {
+        // The cross-scope collision, and the reason the port arm had to go: an
+        // entity may declare a top-level `param d` AND a port with its own
+        // `param d`. That is silently legal — shadow_lint deliberately does NOT
+        // fold port-internal members into the enclosing frame ("Port-internal
+        // members live in the port's own scope"), so it emits no warning and
+        // nothing else flags it either.
+        //
+        // With the port body in the recursion set this pushed `count` to 2 and
+        // refused `S.d` — a genuinely editable cell — for an ambiguity that does
+        // not exist. The top-level param is the ONLY candidate, so it resolves.
+        let members = vec![
+            param("d", (0, 30), Some((22, 26))),
+            port("inlet", vec![param("d", (40, 80), Some((70, 74)))]),
+        ];
         assert_eq!(
-            find_param_default_span(&members, "diameter"),
-            Some(SourceSpan::new(44, 48))
+            find_param_default_span(&members, "d"),
+            Some(SourceSpan::new(22, 26)),
+            "a port-internal same-name param must not make a top-level param ambiguous"
         );
     }
 
