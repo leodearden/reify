@@ -1979,6 +1979,64 @@ mod tests {
         assert_eq!(with.references, expected);
     }
 
+    // --- task #5579: indexed-sub domain expression uses (#5481 α consumer gap) ---
+
+    #[test]
+    fn collect_references_reaches_indexed_sub_domain_use() {
+        // `n` is used only inside the indexer clause's domain expression
+        // (`sub xs[i in 0..n] = …`), never in the sub's args/pose/where. Before
+        // this fix, `collect_uses_in_sub` never walked `SubDecl::index_domain`,
+        // so a find-references/rename query rooted at the `param n` decl missed
+        // this use entirely (silent miss — no compile error, since #5481 added
+        // the AST fields with zero struct-pattern destructures elsewhere).
+        let source = "\
+structure S {
+    param n: Int = 4
+    sub xs[i in 0..n] = Hole(bore: 3mm)
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("indexed_sub"));
+        // The indexer clause lowers to a fully-populated `index_binder`/
+        // `index_domain` pair (both are the AST contract β builds on), but
+        // always travels with an interim #5482 ERROR-severity diagnostic until
+        // compiler elaboration lands — see the doc comment on
+        // `SubDecl::index_binder` (crates/reify-ast/src/decl.rs). That
+        // diagnostic doesn't block AST consumption, so the reference walker
+        // under test here still has a real `index_domain` expression to walk.
+        assert_eq!(
+            parsed.errors.len(),
+            1,
+            "expected exactly the interim #5482 indexed-sub diagnostic: {:?}",
+            parsed.errors
+        );
+        assert!(
+            parsed.errors[0].message.contains("#5482"),
+            "expected the interim #5482 indexed-sub diagnostic, got: {:?}",
+            parsed.errors
+        );
+
+        // The 1-char identifier `n` is not safe to locate via `occurrences`
+        // (it also matches inside `Int`, `in`, etc.), so find the two sites we
+        // care about directly instead.
+        let decl_off = source.find("param n:").expect("param n decl") + "param ".len();
+        let domain_off = source.find("0..n").expect("0..n domain use") + "0..".len();
+        assert_eq!(&source[decl_off..decl_off + 1], "n");
+        assert_eq!(&source[domain_off..domain_off + 1], "n");
+
+        // Cursor on the `param n` declaration; query with declaration excluded.
+        let pos = offset_to_position(source, decl_off as u32);
+        let refset = collect_references(source, &parsed, pos, false)
+            .expect("param n declaration should resolve to a ReferenceSet");
+        assert_eq!(refset.name, "n");
+        assert_eq!(refset.kind, RefSymbolKind::Param);
+        assert_eq!(refset.declaration, span_of(decl_off, "n"));
+        assert_eq!(
+            refset.references,
+            vec![span_of(domain_off, "n")],
+            "the sole use of `n` inside the indexer domain expression `0..n` must \
+             be reachable from a find-references query on its declaration"
+        );
+    }
+
     // --- step-7: cross-structure isolation (Boundary row 1 — scope soundness) ---
 
     #[test]
