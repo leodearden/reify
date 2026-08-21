@@ -31,6 +31,12 @@ module dev_capstan
 //    DEFAULTS placed by pose only (`at` works), so 4147 never bites here. The
 //    ShuttlePlate size is hand-matched to the idler corner spacing for the same
 //    reason (can't pass sizes through the `sub`).
+//  - DIN 15061 oversize seat arc (task 5683) is Capstan-only, NOT extended to
+//    IdlerPulley: that seat is a RECTANGULAR flat-bottomed groove cut by a plain
+//    cylinder — no seat ARC for a 0.53*d factor to apply to — and its round seat
+//    stays deferred behind the unimplemented `torus` builtin (the dogfood gap
+//    printer.ri records at its own IdlerPulley). This copy must stay verbatim:
+//    printer.ri is out of 5683's scope, so re-seating here alone forks the two.
 
 #version(0.1)
 
