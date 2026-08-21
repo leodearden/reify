@@ -22,8 +22,8 @@
  * `bridgeMockCoverage.test.ts` compares bridge.ts against vitest mock factories,
  * not against docs.
  *
- * The live instance this guard exists for is task 6227, which deletes
- * `bridge.ts::onDiagnostics`; the `diagnostics` row names it. The detector is
+ * The live instance this guard exists for was task 6227, which deleted
+ * `bridge.ts::onDiagnostics`; the `diagnostics` row named it. The detector is
  * pinned MECHANICALLY against that exact drift by
  * `eventChannelConsumerContract.test.ts`, not merely claimed here.
  *
@@ -141,7 +141,7 @@ const NON_BRIDGE_CONSUMERS: Record<string, string> = {
  */
 const DELIBERATELY_CONSUMERLESS: Record<string, string> = {
   diagnostics:
-    'Task 6227 deletes bridge.ts::onDiagnostics and sets this row to *(none)*: LSP diagnostics are routed by main.rs::TauriNotificationSink, with no bridge.ts subscriber left. Pre-registered so 6227 lands in either merge order without editing this file. Until it lands the row still names onDiagnostics and is checked normally by (b).',
+    'Task 6227 deleted bridge.ts::onDiagnostics and set this row to *(none)*: LSP diagnostics are routed by main.rs::TauriNotificationSink, with no bridge.ts subscriber left. Pre-registered so 6227 could land in either merge order without editing this file. Landed by 6227; the row now reads `*(none)*` and is accounted for here by check (e) rather than by (b).',
 };
 
 describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
