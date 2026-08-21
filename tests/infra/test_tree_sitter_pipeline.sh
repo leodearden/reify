@@ -126,6 +126,19 @@ assert_file_nonempty() {
     fi
 }
 
+require_tree_sitter_cli() {
+    # Usage: require_tree_sitter_cli || return 0
+    # SKIPs (not fails) when the tree-sitter CLI is not on PATH. The CLI is
+    # an optional dev dependency (cargo install tree-sitter-cli); tests that
+    # need to invoke it directly must degrade gracefully rather than report
+    # a false FAIL for an environment gap. Shared by
+    # test_auto_generation_rebuilds_parser and test_generate_script_succeeds_normally.
+    if ! command -v tree-sitter >/dev/null 2>&1; then
+        echo "  SKIP: tree-sitter CLI not on PATH (install via: cargo install tree-sitter-cli)"
+        return 1
+    fi
+}
+
 # --- Guard Helper ---
 # run_guarded_cargo_check <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
@@ -189,22 +202,33 @@ test_auto_generation_rebuilds_parser() {
     local parser="$TS_DIR/src/parser.c"
     local backup="$TS_DIR/src/parser.c.bak"
 
+    # This test deletes parser.c below and relies on `cargo check` to
+    # regenerate it; build.rs's run_tree_sitter_generate() spawns the
+    # 'tree-sitter' binary directly and panics if it's missing, which
+    # run_guarded_cargo_check reports as a hard FAIL rather than a SKIP. That
+    # applies whether or not parser.c happens to exist right now (e.g. left
+    # over from a prior run), so check for the CLI first, unconditionally,
+    # rather than only in the self-provisioning branch below.
+    require_tree_sitter_cli || return 0
+
     # parser.c is a gitignored generated artifact. In a freshly-seeded warm
     # lane (tracked-files-only + git clean -xfd) it does not exist until
     # something generates it — under scripts/verify.sh that's always the
     # tree-sitter-generate.sh plan leaf running first, but a standalone
     # invocation of this test file has no such guarantee. Self-provision it
     # here rather than assume it, so the failure mode (if any) is a legible
-    # SKIP/assertion instead of a bare `cp: cannot stat`.
+    # assertion instead of a bare `cp: cannot stat`.
     if [ ! -f "$parser" ]; then
-        if ! command -v tree-sitter >/dev/null 2>&1; then
-            echo "  SKIP: parser.c absent and tree-sitter CLI not on PATH to regenerate it (install via: cargo install tree-sitter-cli)"
-            return 0
-        fi
-        "$REPO_ROOT/scripts/tree-sitter-generate.sh" >/dev/null 2>&1 || true
+        local gen_out
+        gen_out=$(mktemp)
+        CLEANUP_ACTIONS+=("rm -f '$gen_out'")
+        "$REPO_ROOT/scripts/tree-sitter-generate.sh" >"$gen_out" 2>&1 || true
         if [ ! -f "$parser" ]; then
             echo ""
             echo "  ASSERTION FAILED: parser.c does not exist and scripts/tree-sitter-generate.sh did not produce it"
+            echo "  --- captured output ---"
+            cat "$gen_out"
+            echo "  --- end output ---"
             return 1
         fi
     fi
@@ -334,10 +358,7 @@ test_generate_script_succeeds_normally() {
     # Positive baseline: tree-sitter-generate.sh should succeed when
     # grammar.js is present, producing all expected output files.
     # Skip gracefully when tree-sitter CLI is not installed in this environment.
-    if ! command -v tree-sitter >/dev/null 2>&1; then
-        echo "  SKIP: tree-sitter CLI not on PATH (install via: cargo install tree-sitter-cli)"
-        return 0
-    fi
+    require_tree_sitter_cli || return 0
     assert_cmd_success "generate script succeeds with grammar.js present" \
         "$REPO_ROOT/scripts/tree-sitter-generate.sh" || return 1
 
