@@ -130,6 +130,33 @@ pub(crate) fn classify_geometry_list_let(
 /// silent truncation.
 pub(crate) const GEOMETRY_LIST_MAX_ELEMENTS: usize = 256;
 
+/// Push the single labelled Error that rejects an over-cap geometry list.
+///
+/// Shared by BOTH shapes so the cap can never be enforced on one and silently
+/// skipped on the other (review esc-5385-3). `subject` names the construct in
+/// the user's own terms and is repeated verbatim in the message, so a caller
+/// that adds a third shape must name it rather than inherit a wrong one.
+fn push_element_cap_error(
+    subject: &str,
+    count: usize,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "{subject} is limited to {GEOMETRY_LIST_MAX_ELEMENTS} geometry \
+             elements, but this one has {count}"
+        ))
+        .with_label(DiagnosticLabel::new(
+            span,
+            format!(
+                "each element becomes its own realization; reduce it to at most \
+                 {GEOMETRY_LIST_MAX_ELEMENTS} elements"
+            ),
+        )),
+    );
+}
+
 /// Statically unroll a geometry-list let into its element expressions.
 ///
 /// Returns the elements in index order — one per `RealizationDecl` the let
@@ -137,9 +164,10 @@ pub(crate) const GEOMETRY_LIST_MAX_ELEMENTS: usize = 256;
 /// substituted by that index's integer literal; list-literal elements are
 /// returned verbatim.
 ///
-/// Returns `None` (after pushing exactly one labelled Error) when the count
-/// exceeds [`GEOMETRY_LIST_MAX_ELEMENTS`]. An empty list (`generate(0, …)`)
-/// is a *successful* expansion to zero elements, not a failure.
+/// Returns `None` (after pushing exactly one labelled Error) when the element
+/// count exceeds [`GEOMETRY_LIST_MAX_ELEMENTS`] — for BOTH shapes, via the
+/// shared [`push_element_cap_error`]. An empty list (`generate(0, …)`) is a
+/// *successful* expansion to zero elements, not a failure.
 ///
 /// Spans on substituted nodes are inherited from the original lambda body, so
 /// a diagnostic raised while compiling element `k` still points at the single
@@ -152,6 +180,20 @@ pub(crate) fn expand_geometry_list_elements(
 ) -> Option<Vec<reify_ast::Expr>> {
     match shape {
         GeometryListShape::ListLiteral { elements } => {
+            // The cap is a property of the realization blow-up, not of the
+            // syntax that produced it, so it binds a literal exactly as it
+            // binds `generate` (review esc-5385-3): a machine-generated
+            // 500-element geometry literal explodes the realization graph
+            // identically.
+            if *elements > GEOMETRY_LIST_MAX_ELEMENTS {
+                push_element_cap_error(
+                    "a geometry list literal",
+                    *elements,
+                    span,
+                    diagnostics,
+                );
+                return None;
+            }
             let reify_ast::ExprKind::ListLiteral(items) = &expr.kind else {
                 // Shape and expr always come from the same `classify_…` call.
                 return None;
@@ -161,18 +203,11 @@ pub(crate) fn expand_geometry_list_elements(
         }
         GeometryListShape::Generate { count, param } => {
             if *count > GEOMETRY_LIST_MAX_ELEMENTS {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "generate() with a geometry-producing lambda is limited to \
-                         {GEOMETRY_LIST_MAX_ELEMENTS} elements, but the count is {count}"
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!(
-                            "each element becomes its own realization; \
-                             reduce the count to at most {GEOMETRY_LIST_MAX_ELEMENTS}"
-                        ),
-                    )),
+                push_element_cap_error(
+                    "generate() with a geometry-producing lambda",
+                    *count,
+                    span,
+                    diagnostics,
                 );
                 return None;
             }
@@ -220,9 +255,36 @@ fn substitute_index_ident(expr: &reify_ast::Expr, param: &str, value: usize) -> 
             is_real: false,
         },
 
-        // ── binders that SHADOW `param`: stop, keeping the subtree intact ─
+        // ── binders that SHADOW `param`: stop descending into whatever the
+        //    binder covers, while still substituting anything it does not ─
+        //
+        // A `LambdaParam` carries only a name, an optional `TypeExpr` and a
+        // span — no `Expr` evaluated in the enclosing scope — so cloning the
+        // whole lambda is exactly right here.
         K::Lambda { params, .. } if params.iter().any(|p| p.name == param) => expr.kind.clone(),
-        K::Quantifier { variable, .. } if variable == param => expr.kind.clone(),
+        // A quantifier is NOT symmetric with a lambda: only `predicate` sits
+        // under the binder. `collection` is compiled in the OUTER scope
+        // (expr.rs's `Quantifier` arm compiles it with `scope` and only the
+        // predicate with `quant_scope`), so it must keep substituting even
+        // when the variable shadows `param` — otherwise `generate(2, |i|
+        // forall i in slice(xs, i) : …)` leaves the outer `i` inside
+        // `slice(xs, i)` unsubstituted, to be misresolved later as the
+        // quantifier variable. This mirrors the `Match` arm below, whose
+        // discriminant likewise sits outside every arm's binder (review
+        // esc-5385-3).
+        K::Quantifier {
+            kind,
+            variable,
+            variable_span,
+            collection,
+            predicate,
+        } if variable == param => K::Quantifier {
+            kind: *kind,
+            variable: variable.clone(),
+            variable_span: *variable_span,
+            collection: sub_box(collection),
+            predicate: predicate.clone(),
+        },
 
         // ── leaves ───────────────────────────────────────────────────────
         K::Ident(_)
@@ -883,6 +945,50 @@ mod expand_tests {
 
     /// Exactly at the cap is still accepted — the boundary is inclusive, so
     /// the rejection above is not off-by-one.
+    /// The cap binds a LIST LITERAL exactly as it binds `generate` — a
+    /// machine-generated 257-element geometry literal explodes the realization
+    /// graph identically, and the function's doc promises one labelled Error
+    /// for "the element count", not "the generate count" (review esc-5385-3).
+    #[test]
+    fn list_literal_above_the_cap_is_rejected_with_one_labelled_error() {
+        let n = GEOMETRY_LIST_MAX_ELEMENTS + 1;
+        let src = format!("[{}]", vec!["cylinder(5mm, 20mm)"; n].join(", "));
+        let (elements, diags) = expand(&src, &[]);
+        assert!(
+            elements.is_none(),
+            "an over-cap list literal must not expand"
+        );
+        assert_eq!(diags.len(), 1, "exactly one diagnostic: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert!(
+            d.message.contains("list literal"),
+            "message must name the construct: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains(&GEOMETRY_LIST_MAX_ELEMENTS.to_string()),
+            "message must name the cap {GEOMETRY_LIST_MAX_ELEMENTS}: {}",
+            d.message
+        );
+        assert!(!d.labels.is_empty(), "diagnostic must carry a span label");
+    }
+
+    /// The list-literal boundary is inclusive too, so the rejection above is
+    /// not off-by-one.
+    #[test]
+    fn list_literal_exactly_at_the_cap_is_accepted() {
+        let n = GEOMETRY_LIST_MAX_ELEMENTS;
+        let src = format!("[{}]", vec!["cylinder(5mm, 20mm)"; n].join(", "));
+        let (elements, diags) = expand(&src, &[]);
+        assert_eq!(
+            elements.map(|e| e.len()),
+            Some(n),
+            "exactly at the cap must expand"
+        );
+        assert!(diags.is_empty(), "no diagnostic at the cap: {diags:?}");
+    }
+
     #[test]
     fn count_exactly_at_the_cap_is_accepted() {
         let n = GEOMETRY_LIST_MAX_ELEMENTS;
@@ -989,5 +1095,87 @@ mod expand_tests {
                  arm rebinds `i`: {rendered}"
             );
         }
+    }
+
+    /// A quantifier whose bound variable SHADOWS the index param keeps its
+    /// predicate intact but still substitutes its `collection`.
+    ///
+    /// A quantifier is not symmetric with a lambda: `collection` is compiled in
+    /// the OUTER scope (expr.rs compiles it with `scope` and only `predicate`
+    /// with `quant_scope`), so an all-or-nothing clone would leave the outer
+    /// index unsubstituted inside the collection — the same asymmetry the
+    /// `Match` discriminant test above pins (review esc-5385-3).
+    ///
+    /// Hand-built: the surface grammar admits `forall` only in constraint
+    /// position, but `substitute_index_ident` walks whatever the AST holds and
+    /// must be correct independently of today's grammar.
+    #[test]
+    fn quantifier_rebinding_the_param_still_substitutes_its_collection() {
+        let collection = let_init("slice(xs, i)");
+        let predicate = let_init("i > 0");
+        let span = collection.span;
+        let quant = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Quantifier {
+                kind: reify_ast::QuantifierKind::ForAll,
+                variable: "i".to_string(),
+                variable_span: span,
+                collection: Box::new(collection),
+                predicate: Box::new(predicate),
+            },
+            span,
+        };
+
+        let out = substitute_index_ident(&quant, "i", 7);
+        let reify_ast::ExprKind::Quantifier {
+            variable,
+            collection,
+            predicate,
+            ..
+        } = &out.kind
+        else {
+            panic!("the quantifier shape must be preserved: {out:?}");
+        };
+        assert_eq!(variable, "i", "the binder itself is never rewritten");
+        assert_eq!(
+            ident_uses(collection, "i"),
+            0,
+            "the outer-scoped collection must substitute: {collection:?}"
+        );
+        assert!(
+            format!("{collection:?}").contains("value: 7.0"),
+            "the collection must carry the folded literal: {collection:?}"
+        );
+        assert_eq!(
+            ident_uses(predicate, "i"),
+            1,
+            "the predicate is under the binder and must be left alone: {predicate:?}"
+        );
+    }
+
+    /// Negative control: a quantifier that does NOT rebind the param
+    /// substitutes on both sides, so the arm above is a genuine shadow and not
+    /// a blanket skip.
+    #[test]
+    fn quantifier_not_rebinding_the_param_substitutes_everywhere() {
+        let collection = let_init("slice(xs, i)");
+        let predicate = let_init("i > 0");
+        let span = collection.span;
+        let quant = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Quantifier {
+                kind: reify_ast::QuantifierKind::ForAll,
+                variable: "h".to_string(),
+                variable_span: span,
+                collection: Box::new(collection),
+                predicate: Box::new(predicate),
+            },
+            span,
+        };
+
+        let out = substitute_index_ident(&quant, "i", 7);
+        assert_eq!(
+            ident_uses(&out, "i"),
+            0,
+            "no use of `i` survives when nothing rebinds it: {out:?}"
+        );
     }
 }
