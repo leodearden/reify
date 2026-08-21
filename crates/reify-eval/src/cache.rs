@@ -176,13 +176,35 @@ impl CachedResult {
     ///   [`EvalOutcome::Unchanged`] and dirties no dependents — for every
     ///   target, with no opt-in allowlist gate in the way.
     ///
-    /// The anti-goal is worth recording too. Routing geometry handles through
-    /// the significance filter would have *suppressed* the write and kept the
-    /// prior value to hold the hash bit-identical. Since the hash already
-    /// excludes `kernel_handle`, that buys zero cache benefit while persisting
-    /// a STALE `kernel_handle` — which GHR-ζ (#3608) dereferences for kernel
-    /// dispatch. Storing the fresh handle under a stable key strictly
-    /// dominates.
+    /// # What the early cutoff does *not* refresh
+    ///
+    /// One mechanical consequence is worth recording, because it runs opposite
+    /// to the obvious reading. On hash equality the result write **is**
+    /// suppressed: the early-cutoff branch of
+    /// [`CacheStore::record_evaluation_with_freshness`] (cache.rs:824-836)
+    /// reassigns `basis_version`, `dependency_trace`, `freshness`,
+    /// `warm_state` and `cost_per_byte`, but never reassigns
+    /// `existing.result`. The entry therefore keeps the previously stored
+    /// `CachedResult::Value(Value::GeometryHandle { .. })` verbatim —
+    /// including its older, or still-`None`, `kernel_handle`.
+    /// `tests::geometry_handle_cache_key::geometry_handle_symbolic_to_realized_early_cutoffs`
+    /// pins exactly that: the `None` → `Some(7)` realization transition returns
+    /// [`EvalOutcome::Unchanged`], so the cache still holds `None`.
+    ///
+    /// Handle freshness is consequently **not** carried by the eval-cache
+    /// entry. It is supplied by `Engine::post_process_geometry_handle_cells`
+    /// (engine_build.rs:9479), which on the build success path writes
+    /// `kernel_handle: Some(kernel_handle)` into the `values` `ValueMap` and
+    /// records `realization_handles.insert(realization.id.clone(),
+    /// kernel_handle)` (engine_build.rs:9524) — the GHR-δ §5 read-time
+    /// revalidation oracle.
+    ///
+    /// **Warning for GHR-ζ (#3608), and for any consumer that needs a live
+    /// handle for kernel dispatch: read `values` / `realization_handles`,
+    /// never the eval-cache entry's `kernel_handle`.** Cached results are
+    /// handed back as live values on the production path (e.g.
+    /// `engine_admin.rs:2749`, `CachedResult::Value(v, _) => v.clone()`), so a
+    /// handle read from here can be arbitrarily stale while looking fresh.
     ///
     /// Pinned by `tests::geometry_handle_cache_key`, whose early-cutoff tests
     /// assert this contract through the real `record_evaluation_with_freshness`
