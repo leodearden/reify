@@ -68,6 +68,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | Verify-pipeline admission gates, knobs, clock-stop markers, agent-spawn CPU axis | `docs/notes/verify-pipeline-knobs.md` (operational digest); PRDs `verify-admission-wait-clock-stop.md` (authoritative), `cpu-load-admission-control.md` |
 | Warm-lane CoW pool lifecycle & invariants | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5; sizing, audit & admission: `docs/prds/warm-lane-pool-sizing-lifecycle.md` |
 | Warm-lane audit CLI, output fields & run cadence | `docs/notes/warm-lane-audit-runbook.md` (operational digest); `scripts/warm-lane-audit.sh` header |
+| Dangling/unresolvable `plan.json` done-step commit SHAs: expected, not a defect (patch-id is the discriminator) | `docs/notes/warm-lane-audit-runbook.md` → "…EXPECTED, not a defect" |
 | Orphaned test-binary reaper (two layers + `REIFY_REAPER_*` knobs) | `docs/notes/orphaned-test-binary-reaper.md`; `scripts/lib_proc_reaper.sh` |
 | offline_lane_red task-record corruption: audit + remediation recipe | `docs/notes/offline-lane-red-corruption-remediation.md` |
 | Orchestrator safe-restart modes & knobs | `scripts/orchestrator-redeploy-restart.sh` header |
