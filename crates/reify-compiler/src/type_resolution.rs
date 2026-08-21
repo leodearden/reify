@@ -808,6 +808,11 @@ pub(crate) fn resolve_type_with_params(
 /// where all four namespaces are in scope. Callers that invoke this function
 /// DIRECTLY rather than through `_kinded` (e.g. `functions.rs`'s
 /// `resolve_field_type_name`) do not get that deferral.
+///
+/// Hygiene caveat: that deferral re-resolves the body in an EMPTY type/dim
+/// parameter scope, never the use site's. A type alias is always a top-level
+/// declaration, so a non-parametric one's body cannot name a type or dimension
+/// parameter; resolving it in the caller's scope would be capture.
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
@@ -2076,7 +2081,7 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     // precedence) and before the E_BARE_SCALAR guard (so `type S = Scalar<Q>`
     // used as `S` resolves rather than tripping the bare-`Scalar` error).
     //
-    // Two non-obvious requirements, each pinned by a regression lock in
+    // Three non-obvious requirements, each pinned by a regression lock in
     // `tests/harness_langcore/type_alias_compile_tests.rs`:
     //
     //   * `AliasDeferScope` is MANDATORY, not defensive. `type C1 = C2` /
@@ -2092,6 +2097,23 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     //     site with the caller's real vector would duplicate the error once per
     //     use. Same commit-on-success / discard-on-failure discipline as
     //     `resolve_type_alias_expr`'s `tmp_diags`.
+    //
+    //   * The recursion runs in an EMPTY type/dim parameter scope, NOT the
+    //     caller's. `reify-ast/src/decl.rs:36` documents `Declaration` as "A
+    //     top-level declaration in a module" and `Declaration::TypeAlias` is
+    //     one of its variants — there is no nested-scope alias form anywhere in
+    //     the AST, so a type alias is ALWAYS declared where no type or
+    //     dimension parameter is in scope. Combined with the
+    //     `type_params.is_empty()` guard below, the body of a NON-parametric
+    //     alias can never legitimately name one. An empty set is therefore not
+    //     merely the safer choice — it IS the alias's own declaration-site
+    //     scope, i.e. the correct one. Threading the use site's scope in is
+    //     capture, never a feature: it made `type AL = T` used inside
+    //     `structure def D<T>` lower to `Type::TypeParam("T")` with no
+    //     diagnostic at all, and made `type AD = Q` used in
+    //     `fn k<Q: Dimension>(..)` report `Q`, a name the alias's declaration
+    //     scope never had. Do not "restore" the caller's scope believing it
+    //     usefully threads context through.
     if type_args.is_empty()
         && let Some(alias_entry) = alias_registry.lookup(name)
         && alias_entry.resolved_type.is_none()
@@ -2101,10 +2123,13 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         && let Some(_guard) = AliasDeferScope::new(name)
     {
         let mut tmp_diags = Vec::new();
+        // The alias's own declaration scope — a top-level decl has neither a
+        // type nor a dimension parameter in scope (see the third bullet above).
+        let no_params: HashSet<String> = HashSet::new();
         if let Some(ty) = resolve_type_expr_with_aliases_kinded(
             &body,
-            type_param_names,
-            dim_param_names,
+            &no_params,
+            &no_params,
             alias_registry,
             &mut tmp_diags,
             structure_names,
