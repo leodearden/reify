@@ -508,6 +508,27 @@ fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[u
             scale = scale.max(c.abs());
         }
     }
+
+    // ‖D‖∞ restricted to the FREE rows. A free block touched by neither a
+    // member nor a triangle has every free row identically zero, so `resid`
+    // above is vacuously 0 — not because equilibrium was reached, but because
+    // nothing acts on the node at all. Falling through to `solve_reduced` in
+    // that case lets it report `SingularReducedStiffness` (no path to any
+    // anchor) instead of the fixed point breaking out at iteration 0 and
+    // echoing the caller's unsolved initial guess back as a "converged"
+    // result (task 6119).
+    let mut d_scale = 0.0_f64;
+    for &i in free_indices {
+        let mut row = 0.0_f64;
+        for j in 0..n {
+            row += d[(i, j)].abs();
+        }
+        d_scale = d_scale.max(row);
+    }
+    if !(d_scale > 0.0) {
+        return f64::INFINITY;
+    }
+
     resid / (1.0 + scale)
 }
 
