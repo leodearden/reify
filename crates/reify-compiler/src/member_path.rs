@@ -772,6 +772,7 @@ mod tests {
             id: RealizationNodeId::new(entity, index),
             name: Some(name.to_string()),
             is_aux: false,
+            list_binding: None,
             operations: Vec::new(),
             span: SourceSpan::new(0, 0),
         }

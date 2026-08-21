@@ -1231,6 +1231,23 @@ pub struct CompiledConstraint {
     pub arg_bindings: Vec<(String, CompiledExpr)>,
 }
 
+/// Marks a `RealizationDecl` as one element of a *geometry-list let* —
+/// a `let` whose initializer statically unrolls to a fixed-length sequence of
+/// geometry expressions (`[<geom>, ...]` or `generate(<int literal>, |i|
+/// <geom>)`).
+///
+/// Realizations are compile-time-declared IR nodes that eval hydrates *by
+/// name*, so a list of geometry is represented as N sibling realizations
+/// rather than one realization holding N shapes. This binding is what lets
+/// eval regroup those siblings back into a single `Value::List` cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeometryListBinding {
+    /// The user-facing name of the geometry-list `let` this element belongs to.
+    pub list_name: String,
+    /// This element's 0-based position within the list.
+    pub index: usize,
+}
+
 /// A realization declaration — specifies geometry to produce.
 #[derive(Debug, Clone)]
 pub struct RealizationDecl {
@@ -1255,6 +1272,13 @@ pub struct RealizationDecl {
     /// `TopologyTemplateBuilder` test helpers likewise default to `false`.
     /// Downstream (reify-eval) reads this to set `MeshSurface.default_visible`.
     pub is_aux: bool,
+    /// `Some(..)` iff this realization is element `index` of the geometry-list
+    /// let named `list_name`; its `name` is then the synthetic
+    /// `"{list_name}#{index}"`, which cannot collide with a user identifier
+    /// because `#` is not an identifier character.
+    ///
+    /// `None` for every ordinary (single-geometry) realization.
+    pub list_binding: Option<GeometryListBinding>,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
 }
