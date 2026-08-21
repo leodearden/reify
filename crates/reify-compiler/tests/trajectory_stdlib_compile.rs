@@ -1013,6 +1013,52 @@ fn shaper_trait_exists_with_no_params() {
     );
 }
 
+// ─── task 6096: the duality's dimensional premise, asserted ONCE ─────────────
+
+/// The three `DimensionVector` pairs the per-joint-kind duality rests on are
+/// DISTINCT — the premise that makes every per-half `assert_eq!` below also a
+/// statement that the halves have not collapsed onto one vector.
+///
+/// Asserted once here rather than re-derived as an `assert_ne!` per structure
+/// per param: those per-param guards could not fail independently of the
+/// equality assertion immediately above them (both compare against
+/// compile-time constants), so they were dead test code that widened the
+/// duality tables with `other_*` rows for no signal.
+///
+/// SCOPE NOTE: `VELOCITY != ANGULAR_VELOCITY` is already pinned in
+/// `reify-core/src/dimension.rs`, which is also the canonical home for the
+/// `FORCE != TORQUE` pin — `reify-core` is outside this task's locked file
+/// set, so the pin lives here for now. What separates each pair is the Angle
+/// slot (reify's τ carries an explicit Angle⁻¹, which is also what keeps it
+/// distinct from Energy); a change that dropped that slot would collapse the
+/// duality wholesale and is what this test catches.
+#[test]
+fn per_joint_kind_dimension_vectors_are_distinct() {
+    assert_ne!(
+        DimensionVector::FORCE,
+        DimensionVector::TORQUE,
+        "JointLimit.max_force (Force) and RevoluteJointLimit.max_force \
+         (Torque) would name the SAME vector — the actuator-limit duality \
+         (task 6096) would carry no per-joint-kind signal at all"
+    );
+    assert_ne!(
+        DimensionVector::VELOCITY,
+        DimensionVector::ANGULAR_VELOCITY,
+        "TOTSShaper.velocity_limit (m·s⁻¹) and \
+         RevoluteTOTSShaper.velocity_limit (rad·s⁻¹) would name the SAME \
+         vector — the shaper duality (task 6096) would carry no \
+         per-joint-kind signal"
+    );
+    assert_ne!(
+        DimensionVector::ACCELERATION,
+        angular_acceleration_vector(),
+        "TOTSShaper.acceleration_limit (m·s⁻²) and \
+         RevoluteTOTSShaper.acceleration_limit (rad·s⁻²) would name the SAME \
+         vector — the shaper duality (task 6096) would carry no \
+         per-joint-kind signal"
+    );
+}
+
 // ─── task 6096: the actuator-limit duality — one table, two halves ───────────
 //
 // `JointLimit` (prismatic) and `RevoluteJointLimit` (revolute) are the two
@@ -1037,11 +1083,13 @@ struct ActuatorLimitHalf {
     /// Joint kind this half serves — assertion-message prose only.
     kind: &'static str,
     /// The dimension THIS half declares for `max_force`.
+    ///
+    /// That this is NEVER the other half's vector — the whole point of the
+    /// duality — follows from the two being distinct `DimensionVector`
+    /// constants, pinned once by
+    /// [`per_joint_kind_dimension_vectors_are_distinct`] rather than
+    /// re-derived per structure per param.
     max_force_dim: DimensionVector,
-    /// The OTHER half's dimension. The collapse guard asserts `max_force` is
-    /// NOT this — the two halves must never converge onto one vector, which
-    /// is the whole point of the duality.
-    other_max_force_dim: DimensionVector,
     /// How this half's dimension is spelled in the decl (message prose).
     max_force_spelling: &'static str,
 }
@@ -1052,7 +1100,6 @@ fn prismatic_limit_half() -> ActuatorLimitHalf {
         struct_name: "JointLimit",
         kind: "prismatic/translational",
         max_force_dim: DimensionVector::FORCE,
-        other_max_force_dim: DimensionVector::TORQUE,
         max_force_spelling: "Scalar<Force> (m·kg·s⁻²)",
     }
 }
@@ -1069,7 +1116,6 @@ fn revolute_limit_half() -> ActuatorLimitHalf {
         struct_name: "RevoluteJointLimit",
         kind: "revolute/rotational",
         max_force_dim: DimensionVector::TORQUE,
-        other_max_force_dim: DimensionVector::FORCE,
         max_force_spelling: "Scalar<Torque> (m²·kg·s⁻²·rad⁻¹)",
     }
 }
@@ -1084,17 +1130,18 @@ fn revolute_limit_half() -> ActuatorLimitHalf {
 ///   (b) exactly 2 params, in canonical order `(joint, max_force)`;
 ///   (c) `joint : Real` — the entity-handle placeholder, IDENTICAL across the
 ///       halves (the per-kind variation is confined to `max_force`);
-///   (d) `max_force : Scalar<half.max_force_dim>`;
-///   (e) the collapse guard: `max_force` is NOT the other half's dimension;
-///   (f) neither field has a default — both are caller-supplied (there is no
+///   (d) `max_force : Scalar<half.max_force_dim>` — which, since the two
+///       halves' vectors are distinct constants
+///       ([`per_joint_kind_dimension_vectors_are_distinct`]), is also what
+///       stops the halves collapsing onto one vector;
+///   (e) neither field has a default — both are caller-supplied (there is no
 ///       canonical "default max force"/"default max torque").
 fn assert_actuator_limit_param_shape(half: ActuatorLimitHalf) {
     let ActuatorLimitHalf {
         struct_name,
         kind,
         max_force_dim,
-        other_max_force_dim,
-        max_force_spelling,
+        ..
     } = half;
     let template = find_structure(struct_name);
 
@@ -1154,21 +1201,7 @@ fn assert_actuator_limit_param_shape(half: ActuatorLimitHalf) {
         );
     }
 
-    // (e) collapse guard — the halves must NOT converge onto one vector.
-    let max_force = params
-        .iter()
-        .find(|vc| vc.id.member == "max_force")
-        .expect("checked above");
-    assert_ne!(
-        max_force.cell_type,
-        Type::Scalar {
-            dimension: other_max_force_dim,
-        },
-        "{struct_name}.max_force must NOT carry the OTHER joint kind's \
-         dimension — the {kind} half carries {max_force_spelling} (task 6096)"
-    );
-
-    // (f) both fields are caller-supplied — no canonical defaults.
+    // (e) both fields are caller-supplied — no canonical defaults.
     for cell in &params {
         assert!(
             cell.default_expr.is_none(),
@@ -1274,10 +1307,9 @@ fn assert_actuator_limit_constrains_max_force_positive(half: ActuatorLimitHalf) 
 ///
 /// `joint : Real` is a placeholder for the future kinematic-completion Joint
 /// type; `max_force : Scalar<Force>` was tightened from Real by task 4580.
-/// Refinement, shape, order, per-kind dimension, collapse guard and
-/// default-freeness are all asserted by
-/// [`assert_actuator_limit_param_shape`], shared verbatim with the revolute
-/// half so the two cannot drift.
+/// Refinement, shape, order, per-kind dimension and default-freeness are all
+/// asserted by [`assert_actuator_limit_param_shape`], shared verbatim with the
+/// revolute half so the two cannot drift.
 ///
 /// Mirrors `waypoint_struct_has_correct_param_shape` (step-9) and
 /// `rayleigh_damping_param_shape` in modal_options_validation_tests.rs.
@@ -1458,16 +1490,15 @@ struct TotsShaperHalf {
     kind: &'static str,
     /// Element type of `actuator_limits` for THIS half.
     limit_struct_name: &'static str,
-    /// Element type of `actuator_limits` for the OTHER half (collapse guard).
-    other_limit_struct_name: &'static str,
     /// `velocity_limit`'s declared dimension for THIS half.
+    ///
+    /// That this is NEVER the other half's vector follows from the two being
+    /// distinct constants, pinned once by
+    /// [`per_joint_kind_dimension_vectors_are_distinct`].
     velocity_dim: DimensionVector,
-    /// `acceleration_limit`'s declared dimension for THIS half.
+    /// `acceleration_limit`'s declared dimension for THIS half (same
+    /// distinctness note as `velocity_dim`).
     acceleration_dim: DimensionVector,
-    /// The OTHER half's `velocity_limit` dimension (collapse guard).
-    other_velocity_dim: DimensionVector,
-    /// The OTHER half's `acceleration_limit` dimension (collapse guard).
-    other_acceleration_dim: DimensionVector,
     /// How this half spells `velocity_limit` in the decl (message prose).
     velocity_spelling: &'static str,
     /// How this half spells `acceleration_limit` in the decl (message prose).
@@ -1480,11 +1511,8 @@ fn linear_tots_half() -> TotsShaperHalf {
         struct_name: "TOTSShaper",
         kind: "prismatic/linear",
         limit_struct_name: "JointLimit",
-        other_limit_struct_name: "RevoluteJointLimit",
         velocity_dim: DimensionVector::VELOCITY,
         acceleration_dim: DimensionVector::ACCELERATION,
-        other_velocity_dim: DimensionVector::ANGULAR_VELOCITY,
-        other_acceleration_dim: angular_acceleration_vector(),
         velocity_spelling: "Scalar<Velocity> (m·s⁻¹)",
         acceleration_spelling: "Scalar<Acceleration> (m·s⁻²)",
     }
@@ -1500,11 +1528,8 @@ fn revolute_tots_half() -> TotsShaperHalf {
         struct_name: "RevoluteTOTSShaper",
         kind: "revolute/rotational",
         limit_struct_name: "RevoluteJointLimit",
-        other_limit_struct_name: "JointLimit",
         velocity_dim: DimensionVector::ANGULAR_VELOCITY,
         acceleration_dim: angular_acceleration_vector(),
-        other_velocity_dim: DimensionVector::VELOCITY,
-        other_acceleration_dim: DimensionVector::ACCELERATION,
         velocity_spelling: "Scalar<AngularVelocity> (rad·s⁻¹)",
         acceleration_spelling: "Rate<AngularVelocity> (rad·s⁻²)",
     }
@@ -1523,9 +1548,10 @@ fn revolute_tots_half() -> TotsShaperHalf {
 ///       `Real`-declared params normalize to `Type::dimensionless_scalar()`,
 ///       NOT `Type::Real`;
 ///   (d) the three PER-KIND cells — `actuator_limits`' element type and the
-///       two kinematic-limit dimensions, from the row;
-///   (e) the collapse guards: none of the three per-kind cells may carry the
-///       OTHER half's spelling.
+///       two kinematic-limit dimensions, from the row. Since the two halves'
+///       element types and dimension vectors are distinct
+///       ([`per_joint_kind_dimension_vectors_are_distinct`] pins the latter),
+///       (d) is also what stops the halves collapsing onto one spelling.
 ///
 /// `Mode` resolves via the growing-prelude cross-module mechanism —
 /// std.modal.analysis is loaded at slot 16 BEFORE std.trajectory at slot 17
@@ -1552,21 +1578,20 @@ fn assert_tots_shaper_param_shape(half: TotsShaperHalf) {
         struct_name,
         kind,
         limit_struct_name,
-        other_limit_struct_name,
         velocity_dim,
         acceleration_dim,
-        other_velocity_dim,
-        other_acceleration_dim,
-        velocity_spelling,
-        acceleration_spelling,
+        ..
     } = half;
     let template = find_structure(struct_name);
 
-    // (a) refines exactly the Shaper marker trait.
+    // (a) refines exactly the Shaper marker trait — both halves of the
+    //     duality share it, so no per-kind marker exists (contrast the limit
+    //     half, which gained `trait ActuatorLimit`).
     assert_eq!(
         template.trait_bounds,
         vec!["Shaper".to_string()],
-        "{struct_name} must refine exactly Shaper; got trait_bounds: {:?}",
+        "{struct_name} (the {kind} half) must refine exactly Shaper; got \
+         trait_bounds: {:?}",
         template.trait_bounds
     );
 
@@ -1637,43 +1662,6 @@ fn assert_tots_shaper_param_shape(half: TotsShaperHalf) {
         );
     }
 
-    // (e) collapse guards: the whole point of the duality is that the two
-    //     halves must NOT converge. rad·s⁻¹ ≠ m·s⁻¹ and rad·s⁻² ≠ m·s⁻²
-    //     (the Angle slot is what separates them), and the limit element type
-    //     follows the joint kind.
-    let cell = |member: &str| {
-        params
-            .iter()
-            .find(|vc| vc.id.member == member)
-            .expect("checked above")
-    };
-
-    assert_ne!(
-        cell("actuator_limits").cell_type,
-        Type::List(Box::new(Type::StructureRef(
-            other_limit_struct_name.to_string(),
-        ))),
-        "{struct_name}.actuator_limits must NOT be List<{other_limit_struct_name}> \
-         — that is the OTHER joint kind's limit type; the {kind} half carries \
-         List<{limit_struct_name}> (task 6096)"
-    );
-    assert_ne!(
-        cell("velocity_limit").cell_type,
-        Type::Scalar {
-            dimension: other_velocity_dim,
-        },
-        "{struct_name}.velocity_limit must NOT carry the OTHER joint kind's \
-         dimension; the {kind} half carries {velocity_spelling} (task 6096)"
-    );
-    assert_ne!(
-        cell("acceleration_limit").cell_type,
-        Type::Scalar {
-            dimension: other_acceleration_dim,
-        },
-        "{struct_name}.acceleration_limit must NOT carry the OTHER joint \
-         kind's dimension; the {kind} half carries {acceleration_spelling} \
-         (task 6096)"
-    );
 }
 
 /// Shared param-defaults body for one TOTS-shaper half.
