@@ -185,11 +185,28 @@ fi
 # still pass, but vacuously (exercising the mktemp-succeeds path instead of
 # the fallback this test exists to cover). TMPDIR=/dev/null/nope breaks
 # mktemp itself, so it cannot be bypassed that way.
+#
+# BROKEN_TMPDIR and mktemp_failure_observed are shared with Test (l2) below and
+# the liveness control in Test (l4): ONE definition of each, so the forcing
+# mechanism and the non-vacuity discriminator cannot silently drift out of
+# step with each other across several hand-copied call sites (task 6363
+# amendment).
+BROKEN_TMPDIR=/dev/null/nope
+
+# Reads the captured sub-shell output on stdin. Semantics deliberately
+# unchanged from the pre-amendment inline `grep -qi "mktemp"` for now -- see
+# Test (l4) below, which proves this specific needle is inert (self-matches
+# an assert *description* containing the word "mktemp", not just a genuine
+# mktemp failure). Task 6363 amendment.
+mktemp_failure_observed() {
+    grep -qi 'mktemp'
+}
+
 echo ""
 echo "--- Test l: assert() survives mktemp failure, reaches test_summary (task 6363) ---"
 
 rc=0
-mtf_out=$(TMPDIR=/dev/null/nope bash -c "
+mtf_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
     assert 'first assert under mktemp failure' true
@@ -221,7 +238,7 @@ fi
 # captured above by the outer `2>&1`), so the three checks just above are
 # known to have exercised the fallback path and not a mktemp-succeeded path
 # that happens to look the same.
-if echo "$mtf_out" | grep -qi "mktemp"; then
+if echo "$mtf_out" | mktemp_failure_observed; then
     check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
 else
     check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_out)" "false"
@@ -240,7 +257,7 @@ echo ""
 echo "--- Test l2: assert() FAIL branch survives mktemp failure, dump guard skips cleanly (task 6363) ---"
 
 rc=0
-mtf_fail_out=$(TMPDIR=/dev/null/nope bash -c "
+mtf_fail_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
     assert 'passing assert under mktemp failure' true
@@ -286,7 +303,7 @@ else
     check "assert FAIL under mktemp failure: no captured-output dump is attempted (no tmpfile exists)" "true"
 fi
 
-if echo "$mtf_fail_out" | grep -qi "mktemp"; then
+if echo "$mtf_fail_out" | mktemp_failure_observed; then
     check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
 else
     check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_fail_out)" "false"
@@ -332,6 +349,52 @@ if echo "$rmf_out" | grep -q "Results: 1 passed, 0 failed"; then
     check "assert survives rm failure: test_summary prints the correct Results line" "true"
 else
     check "assert survives rm failure: test_summary prints the correct Results line (got: $rmf_out)" "false"
+fi
+
+# -- Test (l4): mktemp_failure_observed discriminator is live ----------------
+# (task 6363 amendment). The non-vacuity controls in Test (l)/(l2) above can,
+# by construction, only ever report "the fallback path was genuinely
+# exercised" -- indistinguishable from a discriminator that has stopped
+# discriminating anything (e.g. one that would match ANY assert output,
+# broken or not). assert_shared_trash_litter_detector_live
+# (test_helpers.sh:420-459) is the in-repo precedent for closing exactly this
+# gap: prove the checker fires on a synthetic positive AND stays quiet on a
+# clean input, so it cannot silently become a dead instrument. This runs Test
+# (l)'s EXACT sub-shell body twice -- once forced broken via $BROKEN_TMPDIR,
+# once under the ambient (working) TMPDIR where mktemp genuinely succeeds --
+# and checks that mktemp_failure_observed fires on the first and not the
+# second.
+echo ""
+echo "--- Test l4: mktemp_failure_observed discriminator is live, not a dead instrument (task 6363) ---"
+
+_l4_broken_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under mktemp failure' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || true
+
+_l4_ok_out=$(bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under mktemp failure' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || true
+
+if echo "$_l4_broken_out" | mktemp_failure_observed; then
+    check "mktemp_failure_observed: fires on a genuinely mktemp-broken run" "true"
+else
+    check "mktemp_failure_observed: fires on a genuinely mktemp-broken run (got: $_l4_broken_out)" "false"
+fi
+
+if echo "$_l4_ok_out" | mktemp_failure_observed; then
+    check "mktemp_failure_observed: stays quiet on a genuinely mktemp-working run (got: $_l4_ok_out)" "false"
+else
+    check "mktemp_failure_observed: stays quiet on a genuinely mktemp-working run" "true"
 fi
 
 # ==============================================================================
