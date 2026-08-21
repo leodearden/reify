@@ -197,8 +197,72 @@ if [ "${#WRAPPED[@]}" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     exit 64
 fi
 
-# INTERIM (task 6109, TDD): the lifecycle itself lands in the following steps —
-# serve argv, preflight, spawn, readiness, run, teardown. Refusing loudly here
-# keeps this intermediate commit from looking like a successful no-op.
+# ── The serve command ────────────────────────────────────────────────────────
+#
+# The BARE transient-serve form and nothing more. Mirrors α's spawn at
+# `crates/reify-audit/tests/jcodemunch_session_live.rs:156-173`:
+#
+#     uvx --python 3.13 --from jcodemunch-mcp==1.108.54 jcodemunch-mcp serve \
+#         --transport streamable-http --host 127.0.0.1 --port <PORT> --watcher=false
+#
+# `--watcher=false` because the file watcher indexes the whole repo on start and
+# δ needs only the MCP session seam — indexing belongs to β
+# (`scripts/jcodemunch-index-reify.sh`) and to nothing else. NOTHING is ever
+# appended to this array: in particular the `index` subcommand is never used
+# (it is the only subparser accepting `--paths-from`, which DELETEs every
+# previously-indexed file absent from its list — server.py:6505,
+# index_folder.py:1505-1511, sqlite_store.py:1698), and neither is `watch`.
+JC_PIN="jcodemunch-mcp==1.108.54"
+
+# THE INTERPRETER IS PART OF THE PIN (esc-6107-4). `--from jcodemunch-mcp==…`
+# alone is only HALF a pin: it fixes the package and leaves the interpreter
+# floating, and uvx defaults to the newest interpreter uv manages — on this host
+# cpython-3.14.0+freethreaded, against which a transitive dep publishes no
+# compatible wheel ("Failed to download and build
+# `tree-sitter-embedded-template==0.25.0` … not compatible with the current
+# Python 3.14t"), so the bare form does not run at all.
+#
+# 3.13 vs 3.12 — the two siblings measured DIFFERENT values against DIFFERENT
+# subcommands, and this is the reconciliation: α measured `--python 3.12`
+# against `serve` (jcodemunch_session_live.rs:157-159), while β measured 3.13
+# against the heavier `watch` path, which resolves the full dependency closure
+# (a superset of what `serve` needs). 3.13 is chosen here for sibling-
+# consistency with β and because a closure that resolved for `watch` necessarily
+# covers `serve`. Task 6109 step-15 is where 3.13-on-`serve` gets its own
+# first-hand measurement; if it ever fails there, fall back to 3.12 and amend
+# this comment with the measurement rather than deleting it.
+JC_PYTHON="3.13"
+
+# ── THE IDENTITY LEVER IS PART OF THE INVOCATION ─────────────────────────────
+#
+# Carried as an explicit argv PREFIX rather than an `export`, so `--dry-run`
+# prints a command that actually reproduces this behaviour when pasted. The
+# full rationale and the PIN-BUMP CHECKLIST are in this file's header; the one
+# line that matters here is that without it jcodemunch answers for
+# `leodearden/reify` (the empty husk) instead of the per-path
+# `local/reify-4ae45bbd` that β indexes, and the wrapped command then audits
+# nothing while emitting a perfectly well-formed empty findings array.
+JC_IDENTITY_ENV=(env JCODEMUNCH_GIT_ROOT_IDENTITY=0)
+
+SERVE_CMD=(uvx --python "$JC_PYTHON" --from "$JC_PIN" jcodemunch-mcp)
+if [ -n "${REIFY_JC_SERVE_CMD:-}" ]; then
+    # TEST-ONLY SEAM. Replaces the `uvx …` prefix so the guard can drive the
+    # whole spawn/readiness/teardown lifecycle against a stdlib-only stub serve,
+    # with no uvx, no PyPI and no network. Never set in production use;
+    # word-split deliberately, so a caller can pass a multi-word command.
+    # shellcheck disable=SC2206
+    SERVE_CMD=(${REIFY_JC_SERVE_CMD})
+fi
+SERVE_ARGV=("${JC_IDENTITY_ENV[@]}" "${SERVE_CMD[@]}" serve
+    --transport streamable-http --host 127.0.0.1 --port "$PORT" --watcher=false)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "exec  $(printf '%q ' "${SERVE_ARGV[@]}")"
+    exit 0
+fi
+
+# INTERIM (task 6109, TDD): preflight, spawn, readiness, run and teardown land
+# in the following steps. Refusing loudly here keeps this intermediate commit
+# from looking like a successful no-op.
 say "the serve lifecycle is not wired up yet in this commit"
 exit 70
