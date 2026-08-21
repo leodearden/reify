@@ -1345,6 +1345,88 @@ mod alias_to_entity_type_parity {
             errs.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    // ── Hygiene locks: no USE-SITE parameter capture ────────────────────────
+    //
+    // Both PASS on `main` and are regression locks on task #6259's diff, not
+    // new-feature tests. The deferred use-site arm re-resolves the alias body
+    // in the CALLER's scope; a type alias is always a top-level declaration
+    // (`reify-ast/src/decl.rs:36` — `Declaration` is "A top-level declaration
+    // in a module", and there is no nested-scope alias form), so the body of a
+    // NON-parametric alias can never legitimately name a type or dimension
+    // parameter. Threading the use site's parameter scope into the body is
+    // therefore capture, never a feature.
+    //
+    // Note the asymmetry in what each row asserts, and why: `dim_param_names`
+    // is non-empty ONLY at fn-signature callers (`src/functions.rs:64,600` are
+    // the only two places it is ever built from a non-empty source), so row (b)
+    // MUST be spelled as a `fn` — a struct param cannot reproduce it.
+
+    #[test]
+    fn deferred_alias_body_does_not_capture_a_use_site_type_param() {
+        // `T` is `D`'s type parameter, NOT anything the module-scope alias
+        // `AL` can see. Capturing it turns a hard error into a SILENTLY WRONG
+        // type: with the use site's scope threaded in, `D.p` lowers to
+        // `Type::TypeParam("T")` with ZERO diagnostics.
+        //
+        // Assert BOTH halves. A diagnostic-only assertion would not catch the
+        // silent form at all — the same trap documented for the
+        // enum-variant-payload row in
+        // `alias_to_entity_type_private_enum_namespaces`.
+        let source = "type AL = T\n\
+                      structure def D<T> {\n    param p : AL = 1.0\n}\n";
+        let (ty, errs) = param_type_and_errors(source, "D", "p");
+
+        assert!(
+            errs.iter().any(|m| m.contains("unresolved type: AL")),
+            "a module-scope alias whose body names `D`'s type parameter must stay \
+             unresolved; got errors: {errs:?}"
+        );
+        assert_ne!(
+            ty,
+            Type::TypeParam("T".to_string()),
+            "`type AL = T` must NOT capture the use site's type parameter `T`"
+        );
+        assert_eq!(
+            ty,
+            Type::Error,
+            "an unresolvable alias body must leave the poison sentinel; got {ty:?} \
+             with errors {errs:?}"
+        );
+    }
+
+    #[test]
+    fn deferred_alias_body_does_not_capture_a_use_site_dim_param() {
+        // `Q` is `k`'s DIMENSION parameter. Capturing it makes the deferred
+        // arm's recursion re-enter the bare-dim-param intercept in
+        // `type_resolution.rs`, which tests the BODY name `Q` against the
+        // CALLER's `dim_param_names` — so the compiler reports a name the
+        // alias's declaration scope never had.
+        //
+        // Assert on the ERROR SET only: this site surfaces no `value_cell`.
+        // And assert the PROPERTY (which name is mentioned), not the wording —
+        // the fn-signature site has its own message, so a lock written against
+        // the plain-param arm's `unresolved type: AD` would be wrong here and a
+        // substring pin would break on a benign rewording.
+        let source = "type AD = Q\n\
+                      fn k<Q: Dimension>(x: Scalar<Q>, y: AD) -> Real { 1.0 }\n";
+        let module = compile_source_with_stdlib(source);
+        let errs: Vec<String> = errors_only(&module)
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+
+        assert!(
+            !errs.iter().any(|m| m.contains("'Q'")),
+            "no diagnostic may name `Q` — it is `k`'s dimension parameter, invisible \
+             to the module-scope alias `AD`; got: {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|m| m.contains("AD")),
+            "the unresolvable alias `AD` must still be reported at its use site; \
+             got: {errs:?}"
+        );
+    }
 }
 
 // ─── task 6259: the two OTHER `unresolved type` emit sites ──────────────────
