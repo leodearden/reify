@@ -15,10 +15,16 @@ use std::time::Duration;
 use reify_eval::cache::NodeId;
 use reify_ir::NodeTraits;
 use crate::Priority;
-// Re-export the canonical NodeKind from reify-types so all existing call sites
-// (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
-// continue to resolve transparently. The From<&NodeId> bridge impl lives in
-// reify-eval/src/cache.rs (the only orphan-rule-clean host; see PRD §4).
+// Re-export the canonical `NodeKind` from `reify-ir` (it lives in
+// `reify-ir/src/node_traits.rs`; the `reify-types` façade that originally
+// hosted it was retired in 3f3da9f03d, task η) so existing
+// `reify_runtime::commitment::NodeKind` call sites keep resolving
+// transparently. The live witness is this module's
+// `node_kind_reexport_identity` test; the other former beneficiary,
+// `concurrent_eval.rs`, was deleted alongside `concurrent.rs` in
+// c1b8dba3f7 (task ο, #5065). The `From<&NodeId>` bridge impl lives in
+// reify-eval/src/cache.rs (the only orphan-rule-clean host; see
+// docs/prds/v0_3/node-traits-unification.md §4).
 pub use reify_ir::NodeKind;
 
 /// Project-level configuration for the dual-threshold commitment policy.
