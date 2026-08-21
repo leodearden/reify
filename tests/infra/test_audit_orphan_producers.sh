@@ -39,7 +39,15 @@ echo "=== audit-orphan-producers.sh collision-detection tests ==="
 # Build hermetic fixture
 # ---------------------------------------------------------------------------
 FIXTURE="$(mktemp -d)"
-cleanup() { rm -rf "$FIXTURE"; }
+# FIXTURE2 (a second, isolated fixture tree for the genuinely-malformed
+# case below) is declared here but only mktemp'd where it is built, further
+# down. ONE trap covers both dirs -- bash EXIT traps do not stack (see
+# tests/infra/test_helpers.sh's own commentary on this), so a second
+# `trap ... EXIT` here would silently replace this one instead of adding
+# to it. cleanup() reads $FIXTURE2 at EXIT time (not at definition time),
+# so it sees whatever mktemp assigns it later; the `-n` guard skips
+# removal while it is still empty, and while set -u is active.
+cleanup() { rm -rf "$FIXTURE"; [ -n "${FIXTURE2:-}" ] && rm -rf "$FIXTURE2"; }
 trap cleanup EXIT
 
 git -C "$FIXTURE" init -q
@@ -202,6 +210,26 @@ pub fn after_stmt_guard() -> i32 { 4 }
 RUST
 
 # ---------------------------------------------------------------------------
+# Second, isolated fixture: a GENUINELY unbalanced #[cfg(test)] block (a
+# real missing `}` in code, not inside a literal, so no stripper can
+# resolve it). Kept separate from $FIXTURE so the shared fixture -- used
+# by every other assertion in this file -- stays warning-free.
+# ---------------------------------------------------------------------------
+FIXTURE2="$(mktemp -d)"
+git -C "$FIXTURE2" init -q
+mkdir -p "$FIXTURE2/crates/reify-fixture/src"
+
+# unterminated.rs -- the #[cfg(test)] attribute is on line 1; the `mod
+# unterminated {` block it opens never closes.
+cat > "$FIXTURE2/crates/reify-fixture/src/unterminated.rs" <<'RUST'
+#[cfg(test)]
+mod unterminated {
+    #[test]
+    fn t() {}
+// (closing brace deliberately absent — pins the EOF self-check)
+RUST
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -260,6 +288,58 @@ sys.exit(0 if count == 1 else 1)
 PY
 }
 
+# run_audit_capture DIR ERR_FILE [EXTRA_ARGS...] — runs the real audit CLI
+# against DIR (--format json --scope 'crates/reify-*/src', plus any
+# EXTRA_ARGS e.g. --quiet), printing stdout to stdout and writing stderr
+# to ERR_FILE. Separate from audit_json() above, which only captures
+# stdout and discards stderr — the unclosed-mask-warning checks below
+# need both streams, captured separately.
+run_audit_capture() {
+    local dir="$1" err_file="$2"
+    shift 2
+    ( cd "$dir" && bash "$AUDIT" --format json --scope 'crates/reify-*/src' "$@" ) 2>"$err_file"
+}
+
+# assert_stderr_contains DIR SUBSTR [EXTRA_ARGS...] — succeeds iff running
+# the audit against DIR (with any EXTRA_ARGS) emits SUBSTR on stderr.
+assert_stderr_contains() {
+    local dir="$1" substr="$2"
+    shift 2
+    local err rc=0 found=1
+    err="$(mktemp)"
+    run_audit_capture "$dir" "$err" "$@" >/dev/null || rc=$?
+    grep -qF -- "$substr" "$err" && found=0
+    rm -f "$err"
+    return "$found"
+}
+
+# assert_stderr_lacks DIR SUBSTR [EXTRA_ARGS...] — succeeds iff SUBSTR is
+# ABSENT from stderr when the audit runs against DIR.
+assert_stderr_lacks() {
+    local dir="$1" substr="$2"
+    shift 2
+    local err rc=0 absent=1
+    err="$(mktemp)"
+    run_audit_capture "$dir" "$err" "$@" >/dev/null || rc=$?
+    grep -qF -- "$substr" "$err" || absent=0
+    rm -f "$err"
+    return "$absent"
+}
+
+# assert_stdout_valid_json_despite_warning DIR [EXTRA_ARGS...] — succeeds
+# iff stdout still parses as JSON even when a warning fires on stderr.
+# Pins the stdout-purity contract the nine Rust test binaries (via
+# reify_test_support::run_orphan_audit) depend on.
+assert_stdout_valid_json_despite_warning() {
+    local dir="$1"
+    shift
+    local err rc=0 out
+    err="$(mktemp)"
+    out="$(run_audit_capture "$dir" "$err" "$@")" || rc=$?
+    rm -f "$err"
+    printf '%s' "$out" | python3 -c "import json,sys; json.load(sys.stdin)" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # step-1 / step-2: mod-declaration collision
 # ---------------------------------------------------------------------------
@@ -307,6 +387,24 @@ assert "lifetime_wired (genuine caller, lifetime-bearing signature) is not orpha
 
 assert "after_stmt_guard (single-statement cfg(test) item, trailing comment defeats the ';' suffix test) is allow-listed, not swallowed" \
     assert_allowed after_stmt_guard
+
+# ---------------------------------------------------------------------------
+# EOF self-check: a genuinely unclosed cfg(test) mask warns on stderr
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- EOF self-check: unclosed cfg(test) mask warns on stderr ---"
+
+assert "unclosed #[cfg(test)] mask (genuine missing brace) warns on stderr, naming file and line" \
+    assert_stderr_contains "$FIXTURE2" "crates/reify-fixture/src/unterminated.rs:1:"
+
+assert "unclosed-mask warning is still emitted with --quiet" \
+    assert_stderr_contains "$FIXTURE2" "crates/reify-fixture/src/unterminated.rs:1:" --quiet
+
+assert "stdout stays valid JSON even though the unclosed-mask warning fires" \
+    assert_stdout_valid_json_despite_warning "$FIXTURE2"
+
+assert "well-formed shared fixture triggers no unclosed-mask warning (no false positives)" \
+    assert_stderr_lacks "$FIXTURE" "mask never closes"
 
 # ---------------------------------------------------------------------------
 test_summary
