@@ -23,7 +23,7 @@ three different waits:
 |---|---|---|
 | `GitOps.merge_verify_lease` (`git_ops.py`, `_MERGE_VERIFY_LEASE_WAIT_SECS`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
 | `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | **the lock acquire** raises `MergeVerifyLeaseContended` (DF task 3003; fail-CLOSED — tree untouched) → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(category=NONE, escalate_to_human=False, requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → caught by `merge_queue.py` `_run_inflight_verify`'s defer arm, placed **before** its generic `except Exception` → `InflightStatus.REQUEUED` with `req.result` left PENDING → **transient DEFER, not a merge failure**. Two bounds: git faults *inside the method body* still raise plain `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git fault still classifies as blocked"); and continuous contention past `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally resolve `MergeOutcome('blocked')` |
-| `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled from those two constants (currently 30 / 124); no such literal string exists anywhere in DF source | same 30s constant |
+| `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | same 30s constant |
 
 **That asymmetry on one inode WAS the defect**, not speculation about load — and
 it is now HISTORICAL: DF task 3003 closed it upstream (verified at DF HEAD
@@ -156,8 +156,19 @@ detail: `flock -n` returns a bare `1` on contention, indistinguishable from
 "flock itself failed". The guard therefore asks for a distinct conflict status
 via `-E 124` — mirroring the conflict-status value DF's `_seed_warm_lane`
 (`git_ops.py`) assembles from its own `_SEED_WARM_LANE_LOCK_TIMEOUT_RC`
-constant (currently 124; DF builds the whole invocation from constants, not a
-quoted literal — see §3) — and treats every other non-zero as a degradation.
+constant (currently 124; DF's production code assembles the whole invocation as
+an argv list from constants, never a quoted literal — see §1) — and treats every
+other non-zero as a degradation.
+
+The qualifier *production* is load-bearing in both directions. Reify must not
+scrape DF for a quoted `flock -x -w 30 -E 124` string, because production never
+emits one. But the literal is not absent from the repo either:
+`orchestrator/tests/test_ephemeral_worktree.py` pins the **expanded** form
+(`assert cmd[:6] == ['flock', '-x', '-w', '30', '-E', '124']`) rather than
+deriving it from the two constants — so a retune of either constant needs that
+test updated in lockstep. That is precisely the coupling this section warns
+reify not to create on its own side; noted here so the next reader sees the
+grep hit and does not mistake it for a production literal.
 
 **Known divergence from `warm-lane-audit.sh`.** Two scripts now probe the same
 `<mount>/<lane>.lock` inode with the same read-only shared-`flock` technique —
