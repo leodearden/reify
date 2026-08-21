@@ -1040,30 +1040,30 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
     );
 }
 
-/// Step-21 (failing initially; passes once step-22 adds the public
-/// `Engine::clear_realization_cache(&mut self)` mutator on the un-gated
-/// public surface).
+/// Landed contract: `Engine::clear_realization_cache(&mut self)` is a
+/// public, un-gated mutator on `Engine` (engine_admin.rs), giving production
+/// callers a non-destructive realization-cache flush primitive. The
+/// read-side `realization_cache(&self)` accessor stays
+/// `#[cfg(any(test, feature = "test-instrumentation"))]`-gated.
 ///
 /// Pins the public escape hatch the docstring critique demands: production
 /// callers MUST be able to flush the realization cache without enabling
-/// test instrumentation. Today the only `realization_cache(&self)` accessor
-/// is `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
-/// READ-ONLY — there is no mutator on the public surface, so a production
-/// caller that needs to invalidate cached `GeometryHandleId`s outside the
-/// auto-invalidation hook points (`edit_param` / `edit_source`) physically
-/// cannot satisfy that contract without constructing a fresh `Engine`
-/// (which would discard every other piece of engine state: snapshots,
-/// param overrides, registered solvers/kernels, `feature_tag_table`,
-/// `topology_attribute_table`, etc.).
+/// test instrumentation. The READ-side `realization_cache(&self)` accessor
+/// is cfg-gated and READ-ONLY (the cache stores kernel-internal
+/// `GeometryHandleId` values that should not leak into the production
+/// surface), so a production caller that needs to invalidate cached
+/// `GeometryHandleId`s outside the auto-invalidation hook points
+/// (`edit_param` / `edit_source`) needs a WRITE-side primitive that does not
+/// require constructing a fresh `Engine` (which would discard every other
+/// piece of engine state: snapshots, param overrides, registered
+/// solvers/kernels, `feature_tag_table`, `topology_attribute_table`, etc.).
 ///
-/// Step-22 adds `pub fn clear_realization_cache(&mut self)` with no cfg
-/// gate (mirrors `Engine::clear_param_overrides` precedent in
-/// `engine_admin.rs`), giving production callers a non-destructive flush
-/// primitive. The READ-side accessor `realization_cache(&self)` keeps its
-/// cfg gate (the cache stores kernel-internal `GeometryHandleId` values
-/// that should not leak into the production surface), but the WRITE-side
-/// mutator must be public so the docstring's promised mitigation is
-/// actually reachable.
+/// `pub fn clear_realization_cache(&mut self)` carries no cfg gate (mirrors
+/// the `Engine::clear_param_overrides` precedent in `engine_admin.rs`), so
+/// it is that WRITE-side primitive: the READ-side accessor
+/// `realization_cache(&self)` keeps its cfg gate, but the WRITE-side
+/// mutator is public so the docstring's promised mitigation is actually
+/// reachable.
 ///
 /// Setup mirrors step-7 / step-15: STEPOutput(1e-6) + MyDesign with one
 /// Box-primitive realization + manufacturing(1e-6). Sequence:
@@ -1071,10 +1071,6 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
 ///   (b) Call `engine.clear_realization_cache()` directly (no cfg-gated
 ///       accessor; this is a production-surface mutator).
 ///   (c) Assert the cache is empty at `(MyDesign, BRep, 1e-6)`.
-///
-/// The test fails today because `clear_realization_cache` does not exist
-/// on `Engine`. Once step-22 lands the method, the assertion passes
-/// without any wiring change in `engine_build.rs`.
 #[test]
 fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
