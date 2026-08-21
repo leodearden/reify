@@ -919,17 +919,17 @@ pub struct Engine {
     /// and `edit_source` delegate to [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
     /// near function entry, mirroring the established `feature_tag_table` /
     /// `topology_attribute_table` reset-at-hook-point pattern
-    /// (engine_build.rs:531/406). That mutator clears the existing cache in
-    /// place via `RealizationCache::clear()` (task 4152) rather than reseating
-    /// it to a fresh `RealizationCache::new()` — the reseat was the original
-    /// step-18/step-19 shape but was replaced because it zeroes the monotonic
-    /// `realization_entries` counter. After an edit, the next `build()` /
-    /// `build_snapshot()` cold-misses on every realization and re-populates
-    /// the cache from kernel execution. The reset is conservative — the
-    /// engine cannot prove which cached entries survive a given edit without
-    /// per-cell input-cone analysis we do not currently maintain — so the
-    /// entire cache is flushed on every edit regardless of whether the
-    /// edited cell participates in any realization's input cone.
+    /// (engine_build.rs:531/406). That mutator flushes the existing cache in
+    /// place via [`RealizationCache::clear`] (task 4152) rather than
+    /// reseating it to a fresh `RealizationCache::new()` (see that method's
+    /// doc for why an in-place clear rather than a reseat). After an edit,
+    /// the next `build()` / `build_snapshot()` cold-misses on every
+    /// realization and re-populates the cache from kernel execution. The
+    /// reset is conservative — the engine cannot prove which cached entries
+    /// survive a given edit without per-cell input-cone analysis we do not
+    /// currently maintain — so the entire cache is flushed on every edit
+    /// regardless of whether the edited cell participates in any
+    /// realization's input cone.
     ///
     /// **Public escape hatch (task 2874, step-22)**: production callers can
     /// also flush the cache explicitly via
