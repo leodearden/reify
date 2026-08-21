@@ -3711,29 +3711,34 @@ impl Engine {
                         unique,
                     } => {
                         for (id, val) in &solver_values {
-                            values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
-
-                            // Update snapshot values
-                            new_snapshot
-                                .values
-                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update param_overrides so subsequent edits
                             // use the resolved value
                             self.param_overrides.insert(id.clone(), val.clone());
 
-                            // Update cache
-                            let node_id = NodeId::Value(id.clone());
-                            let trace = DependencyTrace::default();
-                            let cached_result =
-                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            self.cache.record_evaluation(
-                                node_id,
-                                cached_result,
+                            // Commit via the cell-commit primitive (task δ
+                            // #5056; kept in sync with edit_param's arm by
+                            // task #6373): atomically writes values/snapshot/
+                            // cache/journal (INV-EVAL-1). DependencyTrace::
+                            // default() matches the pre-migration cache
+                            // entry — a solver-resolved auto has no static
+                            // expr dependency trace.
+                            commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut new_snapshot.values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                id.clone(),
+                                val.clone(),
+                                DeterminacyRule::UnconditionalDetermined,
+                                TraceSource::EditReeval,
+                                DependencyTrace::default(),
                                 VersionId(version_id),
-                                trace,
+                                CacheLeg::Record,
                             );
                         }
                         if !unique {
