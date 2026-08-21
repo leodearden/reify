@@ -1149,7 +1149,11 @@ mod alias_to_entity_type_parity {
     ///
     /// NOTE: params live in `TopologyTemplate.value_cells` — there is no
     /// `.params` field on a template.
-    fn param_type_and_errors(source: &str, entity: &str, member: &str) -> (Type, Vec<String>) {
+    pub(super) fn param_type_and_errors(
+        source: &str,
+        entity: &str,
+        member: &str,
+    ) -> (Type, Vec<String>) {
         let module = compile_source_with_stdlib(source);
         let errors: Vec<String> = errors_only(&module)
             .iter()
@@ -1506,14 +1510,14 @@ mod alias_to_entity_type_private_enum_namespaces {
     /// One of the three declared-type positions that consults a private enum
     /// namespace instead of installing `EnumNameScope`.
     #[derive(Clone, Copy)]
-    enum Position {
+    pub(super) enum Position {
         EnumVariantPayload,
         TraitMemberParam,
         ConstraintDefParam,
     }
 
     impl Position {
-        fn label(self) -> &'static str {
+        pub(super) fn label(self) -> &'static str {
             match self {
                 Position::EnumVariantPayload => "enum variant payload",
                 Position::TraitMemberParam => "trait member param",
@@ -1522,7 +1526,7 @@ mod alias_to_entity_type_private_enum_namespaces {
         }
 
         /// Build a source in which `type_name` occupies this position.
-        fn source(self, decls: &str, type_name: &str) -> String {
+        pub(super) fn source(self, decls: &str, type_name: &str) -> String {
             match self {
                 Position::EnumVariantPayload => format!(
                     "{decls}\nenum Wrap {{\n    W {{ v : {type_name} }},\n    N\n}}\n"
@@ -1544,7 +1548,7 @@ mod alias_to_entity_type_private_enum_namespaces {
         /// `None` means "the position stored no type" — which is the CORRECT
         /// direct-path outcome for a bare enum at the constraint-def position,
         /// and is therefore a legitimate parity target rather than a failure.
-        fn resolved_type_and_errors(self, source: &str) -> (Option<Type>, Vec<String>) {
+        pub(super) fn resolved_type_and_errors(self, source: &str) -> (Option<Type>, Vec<String>) {
             let module = compile_source_with_stdlib(source);
             let errors: Vec<String> = errors_only(&module)
                 .iter()
@@ -1615,7 +1619,7 @@ mod alias_to_entity_type_private_enum_namespaces {
         }
     }
 
-    const POSITIONS: &[Position] = &[
+    pub(super) const POSITIONS: &[Position] = &[
         Position::EnumVariantPayload,
         Position::TraitMemberParam,
         Position::ConstraintDefParam,
@@ -1756,5 +1760,238 @@ mod alias_to_entity_type_private_enum_namespaces {
                 errs.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
         }
+    }
+}
+
+// ─── task 6259: shadow semantics for alias bodies, and the literal reproducer ─
+//
+// DECISION RECORDED HERE (the `enum-shadow-coherence` RATCHET NOTE's explicit
+// ask that this task decide alias-body shadow semantics deliberately rather
+// than inherit them by accident):
+//
+//   Alias bodies get NO separate name-resolution rule. A `type AL = <Body>`
+//   used in a declared-type position resolves its body through the IDENTICAL
+//   `resolve_type_expr_with_aliases_kinded` path the direct spelling goes
+//   through, at the same use site — including under shadowing.
+//
+// Consequence for `docs/prds/v0_6/enum-shadow-coherence.md` §3 D1 / §5 C1:
+// whatever leaf α makes the DIRECT spelling do under `LocalEnumShadowScope`,
+// the alias body does too, automatically. There is no second rule to keep in
+// sync, and α needs no alias-specific clause.
+//
+// WHY THESE ARE PARITY ASSERTIONS AND NOT `assert_eq!(ty, StructureRef(..))`:
+// today's precedence is structure-wins in every shadowed configuration
+// (MEASURED below), but that is exactly the precedence α is chartered to
+// revisit. Freezing the literal variant here would hand α a test to fight;
+// asserting `alias_ty == direct_ty` records the DECISION — the coupling — and
+// tracks α automatically.
+//
+// `LocalEnumShadowScope` does not exist on this branch (grepped: zero hits
+// workspace-wide), so α has not landed and the post-α answer is untestable
+// today. What IS testable, and what these tests pin, is the coupling that
+// determines the answer once α lands.
+//
+// MEASURED on this branch, both shadowed configurations, all four positions
+// (struct param + the three private-enum-namespace ones), direct AND alias:
+// `StructureRef` with zero errors. Parity holds everywhere.
+//
+// `Fit` IS USED DELIBERATELY HERE, unlike everywhere else in this file — the
+// `alias_to_entity_type_parity` fixture constraint bans it precisely because
+// `stdlib/tolerancing.ri` declares `structure def Fit` (:268) and that
+// collision masks an ordinary parity defect. Here the collision IS the case
+// under test: it is the only prelude-vs-local shadow available without a
+// multi-module fixture.
+mod alias_body_shadow_semantics {
+    use super::alias_to_entity_type_parity::param_type_and_errors;
+    use super::alias_to_entity_type_private_enum_namespaces::POSITIONS;
+    use super::*;
+    use reify_test_support::compile_source_with_stdlib;
+
+    /// The literal reproducer from task 6259's description, which no earlier
+    /// test covers because step-1's fixture constraint deliberately avoids the
+    /// name `Fit`. This is the task's acceptance criterion.
+    ///
+    /// A LOCK, not a RED test: measured clean on this branch. It went from
+    /// `unresolved type: F` to zero errors with the deferred use-site arm.
+    #[test]
+    fn task_description_reproducer_compiles_with_zero_errors() {
+        let source = "enum Fit { Close, Medium }\n\
+                      type F = Fit\n\
+                      structure def C {\n    param g : F = Fit.Close\n}\n";
+        let module = compile_source_with_stdlib(source);
+        let errs: Vec<String> = errors_only(&module)
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(
+            !errs.iter().any(|m| m.contains("unresolved type: F")),
+            "the reported defect `unresolved type: F` must be gone; got: {errs:?}"
+        );
+        assert!(
+            errs.is_empty(),
+            "the task-description reproducer must compile with ZERO errors; got: {errs:?}"
+        );
+    }
+
+    /// One shadowed configuration: a name bound BOTH as an enum and as a
+    /// structure def, either across the prelude boundary or inside one module.
+    struct ShadowCase {
+        label: &'static str,
+        decls: &'static str,
+        body: &'static str,
+    }
+
+    const SHADOW_CASES: &[ShadowCase] = &[
+        ShadowCase {
+            // prelude-vs-local: local `enum Fit` collides with
+            // `stdlib/tolerancing.ri`'s `structure def Fit` (:268).
+            label: "prelude-vs-local (local `enum Fit` vs stdlib `structure def Fit`)",
+            decls: "enum Fit { Close, Medium }",
+            body: "Fit",
+        },
+        ShadowCase {
+            // local-vs-local: both bindings declared in the module under test.
+            label: "local-vs-local (`enum Zq` + `structure def Zq`)",
+            decls: "enum Zq { Close, Medium }\n\
+                    structure def Zq {\n    param w : Length = 1.0mm\n}",
+            body: "Zq",
+        },
+    ];
+
+    #[test]
+    fn shadowed_alias_body_resolves_identically_to_the_direct_spelling_in_a_struct_param() {
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in SHADOW_CASES {
+            let direct_src = format!(
+                "{decls}\nstructure def D {{\n    param p : {body}\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+            let alias_src = format!(
+                "{decls}\ntype F = {body}\nstructure def D {{\n    param p : F\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+
+            let (direct_ty, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
+            assert!(
+                direct_errs.is_empty(),
+                "[{}] DIRECT baseline must compile cleanly for the parity oracle to \
+                 mean anything; got: {:?}\n--- source ---\n{}",
+                case.label,
+                direct_errs,
+                direct_src
+            );
+
+            let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+            if !alias_errs.is_empty() {
+                failures.push(format!(
+                    "[{}] alias spelling produced Error diagnostics: {:?}",
+                    case.label, alias_errs
+                ));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{}] `type F = {}` lowered `D.p` to {:?}, but the direct spelling \
+                     lowers it to {:?} — an alias body must not get its own shadowing \
+                     rule",
+                    case.label, case.body, alias_ty, direct_ty
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "alias/direct parity violated under shadowing:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn shadowed_alias_body_resolves_identically_in_the_three_hopped_positions() {
+        // The step-7 hop (`unresolved_alias_body_name`) must NOT fire when the
+        // body already resolved — here it resolves as a STRUCTURE, so the
+        // private-enum-namespace fallback is never reached and the alias must
+        // land on `StructureRef`, not on the shadowed enum. This test is what
+        // catches a hop that started firing too eagerly.
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in SHADOW_CASES {
+            for &pos in POSITIONS {
+                let direct_src = pos.source(case.decls, case.body);
+                let alias_src = pos.source(
+                    &format!("{}\ntype AL = {}", case.decls, case.body),
+                    "AL",
+                );
+
+                let (direct_ty, direct_errs) = pos.resolved_type_and_errors(&direct_src);
+                assert!(
+                    direct_errs.is_empty(),
+                    "[{}/{}] DIRECT baseline must compile cleanly; got: {:?}\n\
+                     --- source ---\n{}",
+                    pos.label(),
+                    case.label,
+                    direct_errs,
+                    direct_src
+                );
+
+                let (alias_ty, alias_errs) = pos.resolved_type_and_errors(&alias_src);
+                if !alias_errs.is_empty() {
+                    failures.push(format!(
+                        "[{}/{}] alias spelling produced Error diagnostics: {:?}",
+                        pos.label(),
+                        case.label,
+                        alias_errs
+                    ));
+                }
+                if alias_ty != direct_ty {
+                    failures.push(format!(
+                        "[{}/{}] `type AL = {}` resolved to {:?}, but the direct \
+                         spelling resolves to {:?} — the step-7 hop must not fire when \
+                         the body already resolved as a structure",
+                        pos.label(),
+                        case.label,
+                        case.body,
+                        alias_ty,
+                        direct_ty
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "alias/direct parity violated under shadowing in a hopped position:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    /// Guard on the claim in this module's doc that α has NOT landed, so the
+    /// coupling — not the post-α answer — is what the tests above pin. When α
+    /// lands, `LocalEnumShadowScope` appears and this test fails, which is the
+    /// prompt to re-read the decision above and confirm the parity assertions
+    /// still express it (they should: they compare the two spellings, not a
+    /// literal variant).
+    #[test]
+    fn structure_still_wins_the_shadow_today_so_the_parity_tests_are_not_vacuous() {
+        // Not a decision — a dated MEASUREMENT, recorded so a future reader can
+        // tell "parity holds because both sides are right" from "parity holds
+        // because both sides are equally broken".
+        let (ty, errs) = param_type_and_errors(
+            "enum Fit { Close, Medium }\nstructure def D {\n    param p : Fit\n}\n",
+            "D",
+            "p",
+        );
+        assert!(errs.is_empty(), "baseline must be clean; got: {errs:?}");
+        assert_eq!(
+            ty,
+            Type::StructureRef("Fit".to_string()),
+            "today the STRUCTURE binding wins a shadowed name in a declared-type \
+             position. If this flips, `enum-shadow-coherence` leaf α has landed (or \
+             precedence changed some other way): the parity tests above stay correct \
+             by construction, but re-read this module's recorded decision before \
+             adjusting anything."
+        );
     }
 }
