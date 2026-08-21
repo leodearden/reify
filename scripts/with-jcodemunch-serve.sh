@@ -359,6 +359,95 @@ serve_output() {
         "$(cat "$SERVE_ERR" 2>/dev/null || echo '<unreadable>')"
 }
 
+# ── Teardown ─────────────────────────────────────────────────────────────────
+#
+# Armed HERE, the moment the pgid is known, so no window exists in which a
+# spawned serve has no reaper. Ported from α's `Drop`
+# (jcodemunch_session_live.rs:344-402).
+#
+# THE `--` IS MANDATORY AND UNCONDITIONAL — do not tidy it away. MEASURED on
+# this host during planning:
+#
+#     bash BUILTIN     kill -TERM -- -PGID   DELIVERED
+#     bash BUILTIN     kill -TERM    -PGID   DELIVERED
+#     /usr/bin/kill    kill -TERM -- -PGID   DELIVERED
+#     /usr/bin/kill    kill -TERM    -PGID   LEAKED — rc=0, silent no-op
+#
+# procps-ng's `kill` swallows the negated pgid as an unknown option cluster and
+# never delivers, while still exiting 0. `--` ends option parsing so the group
+# is read as a target, and it is the only spelling correct under BOTH
+# resolutions. This is α's finding at :277-283, re-measured here for bash.
+#
+# THE VERDICT RESTS ON THE OBSERVED OUTCOME — did the port stop accepting —
+# NEVER on `kill`'s exit status. The buggy bare form returns 0 for a group it
+# never reached, so a status gate would have been blind to the original defect;
+# and once `--` is added, exit 1 (`No such process`) becomes the EXPECTED result
+# of the `-KILL` escalation on the healthy path, where `-TERM` already worked.
+# The statuses are kept only as diagnostic detail for a leak report.
+# ARMED BEFORE THE SPAWN, not after it. Two windows close that way rather
+# than one: the obvious one in which a spawned serve has no reaper, and the
+# narrower one in which $SCRATCH exists with nothing to remove it. Both
+# SERVE_PGID and SERVE_JOB are therefore declared empty here and every use
+# below tolerates that — an empty pgid means "nothing was spawned yet", which
+# is a state the reaper has to handle rather than a state it can assume away.
+SERVE_PGID=""
+SERVE_JOB=""
+TEARDOWN_DONE=0
+TERM_STATUS="not sent"
+KILL_STATUS="not sent"
+
+signal_group() {
+    local sig="$1" rc=0
+    [ -n "$SERVE_PGID" ] || { printf '%s' "not sent"; return 0; }
+    kill "$sig" -- "-$SERVE_PGID" 2>/dev/null || rc=$?
+    printf '%s' "$rc"
+}
+
+# cleanup — idempotent and re-entrancy-safe. bash EXIT traps do not stack, so
+# this one function is the whole reaper, and the INT/TERM handlers call it
+# before exiting rather than installing a second one.
+cleanup() {
+    [ "$TEARDOWN_DONE" -eq 1 ] && return 0
+    TEARDOWN_DONE=1
+
+    TERM_STATUS="$(signal_group -TERM)"
+
+    # Bounded free-wait to a 10 s deadline, escalating ONCE to -KILL at the 5 s
+    # mark — α's Drop constants (:361-362). port_is_free is the same probe
+    # preflight used, so "free" means the same thing at both ends of the run.
+    # The background job is deliberately left unreaped until after this loop: an
+    # unreaped pid cannot be recycled, so the group id stays unambiguously ours
+    # for as long as we are signalling it.
+    local waited=0 escalated=0
+    TEARDOWN_FREED=0
+    while [ "$waited" -lt 100 ]; do
+        if port_is_free "$PORT"; then
+            TEARDOWN_FREED=1
+            break
+        fi
+        if [ "$escalated" -eq 0 ] && [ "$waited" -ge 50 ]; then
+            KILL_STATUS="$(signal_group -KILL)"
+            escalated=1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    [ -n "$SERVE_JOB" ] && { wait "$SERVE_JOB" 2>/dev/null || true; }
+    rm -rf "$SCRATCH" 2>/dev/null || true
+
+    finish_teardown
+}
+
+# finish_teardown — SILENT on success, loud only on a leak. Lands in task 6109
+# step-14; until then the decision is stubbed to silence so this commit's
+# teardown is testable on its own.
+finish_teardown() { :; }
+
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
 # ── Spawn ────────────────────────────────────────────────────────────────────
 #
 # THE PROCESS GROUP IS THE POINT. `uvx` fronts a child python that actually
@@ -382,7 +471,6 @@ setsid bash -c 'echo $$ >"$1"; shift; exec "$@"' _ "$PGID_FILE" "${SERVE_ARGV[@]
     </dev/null >"$SERVE_OUT" 2>"$SERVE_ERR" &
 SERVE_JOB=$!
 
-SERVE_PGID=""
 for _ in $(seq 1 100); do
     if [ -s "$PGID_FILE" ]; then
         SERVE_PGID="$(cat "$PGID_FILE")"
@@ -514,6 +602,5 @@ WRAPPED_RC=0
 # δ signal with it. Teardown (task 6109 step-12) is silent on success and loud
 # only on a leak, for exactly this reason.
 
-# INTERIM (task 6109, TDD): the serve is still running here — teardown lands in
-# the next step.
+# The EXIT trap runs cleanup from here, after the wrapped command's last byte.
 exit "$WRAPPED_RC"

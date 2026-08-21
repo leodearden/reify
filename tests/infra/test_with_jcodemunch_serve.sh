@@ -1095,11 +1095,34 @@ rw_run_bg() {
     mk_stub_serve "$stub" "$mode" || return 1
     RW_OUT="$RW_DIR/stdout"
     RW_ERR="$RW_DIR/stderr"
+    # JOB CONTROL IS LOAD-BEARING HERE, and only for the SIGINT case.
+    #
+    # POSIX: with job control OFF (the default in a script), the shell sets
+    # SIGINT and SIGQUIT to IGNORE in a background command — and a signal
+    # IGNORED on entry to a shell cannot subsequently be trapped or reset. So a
+    # wrapper launched with a bare `&` has an INERT `trap … INT`, and a
+    # `kill -INT` at it does nothing at all. MEASURED on this host with a
+    # reduced fixture (trap INT -> exit 130, trap TERM -> exit 143, backgrounded,
+    # signalled after 0.4s):
+    #
+    #     set +m  INT   rc=0    trap never ran, the script fell through
+    #     set -m  INT   rc=130  trap ran
+    #     set +m  TERM  rc=143  trap ran
+    #     set -m  TERM  rc=143  trap ran
+    #
+    # i.e. without `set -m` the SIGINT assertion would be testing the FIXTURE's
+    # inherited disposition and would fail no matter what the wrapper does. The
+    # real invocation this models is an interactive Ctrl-C, where SIGINT is not
+    # ignored. Monitor mode is scoped to the launch alone and switched straight
+    # back off. The same run also confirms bash defers a trap until the running
+    # FOREGROUND child returns: TRAP-INT printed and FELL-THROUGH did not.
+    set -m
     env REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
         REIFY_JC_SERVE_READY_TIMEOUT="$RW_TIMEOUT" \
         REIFY_JC_SERVE_CMD="$stub" \
         "$JC_SERVE" --port "$RW_PORT" "$@" >"$RW_OUT" 2>"$RW_ERR" &
     RWB_PID=$!
+    set +m
     _BGPIDS+=("$RWB_PID")
     return 0
 }
