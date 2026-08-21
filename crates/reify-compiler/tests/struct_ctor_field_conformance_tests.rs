@@ -2473,6 +2473,62 @@ fn matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch() {
 //   (b) `tensor_param_given_vector_stays_clean` — a `Tensor<1,3,Length>` param
 //       fed `vec3(0m, 0m, 1m)`: dimensions AGREE, so silent.
 
+const SRC_MATRIX_DIMENSIONED_CELL_AT_DIMENSIONLESS: &str = r#"module test.matrix_dimensioned_at_dimensionless
+structure def Jacobian { param jac : Matrix<3, 3, Dimensionless> }
+structure def Root {
+    let a = Jacobian(jac: matrix([[1m, 0, 0], [0, 0, 0], [0, 0, 0]]))
+}
+"#;
+
+/// THE PARAM-SIDE RULING (task 6159), `.ri`/ctor seam at the `Matrix`/`Tensor`
+/// arm — and the end-to-end pin for `matrix(…)` → `matrix_shape` → the rule.
+///
+/// `crates/reify-core/src/ty.rs` asserts a consequence specific to this arm: a
+/// heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param can now be
+/// rejected on cell `[0][0]` alone, where before only a DIMENSIONED param slot
+/// could trip it. Nothing pinned that CHAIN. Its two neighbours each cover a
+/// different half and neither covers this one:
+///
+///   * `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`
+///     (`conformance/mod.rs`) builds a `Type::tensor(2, 3, Length)` directly, so
+///     it exercises the STRICT param-side predicate but bypasses `matrix_shape`
+///     entirely;
+///   * `matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch`
+///     (directly above) routes through `matrix_shape` but is concrete×concrete,
+///     i.e. already green under task 5766's SYMMETRIC rule — it cannot tell the
+///     two param-side predicates apart.
+///
+/// Without this fixture a regression in either `matrix_shape` or this arm's
+/// routing would leave the ty.rs claim documented and every test green.
+///
+/// The literal is deliberately HETEROGENEOUS — cell `[0][0]` is `1m` and every
+/// other cell is dimensionless — so the rejection rests on the first-cell
+/// inference ALONE, which is exactly the instance ty.rs names. That inference
+/// weakness is owned by task 5889: if it lands the preferred fix (detect
+/// heterogeneous cells, degrade the inferred quantity to
+/// `Type::dimensionless_scalar()`), this fixture flips to CLEAN and must be
+/// retargeted at a HOMOGENEOUS dimensioned literal in the same commit.
+#[test]
+fn matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Load-bearing twice over here: a `Matrix<3, 3, Dimensionless>` that failed
+    // to resolve, or a heterogeneous `matrix(…)` literal that failed to compile,
+    // would emit zero ctor-conformance diagnostics and read as a RULE failure.
+    let module = compile_source_with_stdlib(SRC_MATRIX_DIMENSIONED_CELL_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile of the source plus the whole stdlib.
+    assert_single_arg_type_mismatch_warning_in(
+        &module,
+        "jac",
+        "Matrix<3,3,Dimensionless> ← Tensor2x3<Length> (from cell [0][0] alone)",
+    );
+}
+
 const SRC_TENSOR_MATCHING_DIMENSION: &str = r#"module test.tensor_matching_dimension
 structure def Surface {
     param moi : Tensor<2, 3, MomentOfInertia>
