@@ -5,7 +5,7 @@
 //! `reify_test_support::git_env` (the dependency direction); see there for the
 //! failure mode and the evidence. This module adds the `git -C <root>` shape
 //! [`command`] builds, the workspace rule that every repo-targeting invocation
-//! be built through it, and the call-site sweep enforcing that rule.
+//! be built through it, and how to sweep for breaches of that rule.
 //!
 //! # The rule
 //!
@@ -15,56 +15,40 @@
 //! fixture helper that shells `git init` into a tempdir is exactly as
 //! vulnerable as the shipped binary.
 //!
-//! **Carve-outs:** a bare `git --version` availability probe opens no
-//! repository, so no redirect var can affect it and it is exempt; so is a
-//! `Command` that is never spawned at all, built only to be read back through
-//! `get_envs()`/`get_args()`. The line is sharp — anything with `-C`, a
-//! repository path, or an implicit cwd repository is NOT exempt. (The exempt
-//! sites in this workspace are the `git --version` probes in
-//! `tests/g_allow_repo_wide_hard_gate.rs`, `tests/ptodo_baseline.rs` and
-//! `reify-test-support`'s `orphan_audit.rs` and `git_env.rs`, plus two
-//! never-spawned metadata fixtures in `reify-test-support`'s `git_env.rs`
-//! tests — `sanitize_removes_every_repo_redirect_var` and
-//! `sanitize_returns_the_command_for_chaining`.)
+//! **Carve-out:** a bare `git --version` availability probe opens no
+//! repository, so no redirect var can reach it. That is the only exemption,
+//! and it rests on git's own semantics rather than on how a command happens to
+//! be used today — anything carrying `-C`, a repository path, or an implicit
+//! cwd repository is NOT exempt, including a `Command` that nothing currently
+//! spawns. "It is only read back through `get_envs()`" stops being true the
+//! day someone appends a `.status()`, so it is not a line worth drawing.
 //!
-//! **Sites below the dependency edge:** `orphan_audit.rs` reaches
-//! [`reify_test_support::git_env::sanitize`] directly rather than through this
-//! module, because the dependency edge runs `reify-audit` ->
-//! `reify-test-support`. Its two repo-targeting sites — the
-//! `scripts/audit-orphan-producers.sh` spawn, whose first action is
-//! `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and the `child_repo_root`
-//! probe that checks the spawned child resolves the work tree the caller
-//! intended — satisfy the rule above through that one shared sanitizer without
-//! calling into this crate. Each carries its own argument at its own definition;
-//! `child_repo_root`'s doc explains what its probe catches that sanitization
-//! alone cannot (a `repo_root` that was wrong to begin with).
+//! **Sites below the dependency edge:** `reify-test-support` cannot call into
+//! this crate — the edge runs `reify-audit` -> `reify-test-support` — so it
+//! hand-rolls the `-C <root>` shape and routes its own repo-targeting spawns
+//! through [`reify_test_support::git_env::sanitize`] directly. That satisfies
+//! the rule through the same single sanitizer, and each such site carries its
+//! own argument at its own definition. The workspace's one deliberate breach
+//! lives there too: the HAZARD half of that module's real-git proof stays
+//! unsanitized precisely to demonstrate that an ambient redirect var still
+//! overrides `-C`. It is a premise check rather than a call site, and would
+//! have no teeth sanitized.
 //!
-//! ## Sweep status
+//! ## Sweeping for new call sites
 //!
-//! `git grep -n 'Command::new("git")' -- '*.rs'` over the whole workspace
-//! returns, besides this module and prose references to it, only sites the
-//! carve-outs above cover. Every repo-targeting *git* site in this crate — the
-//! three `RealGitOps` methods (`spawn_once`, `is_gitignored`, `is_ancestor`)
-//! and the six fixture helpers in `tests/cli.rs` and `tests/real_git_ops.rs` —
-//! is routed through [`command`].
+//! Two shapes reach git and a sweep must consider both.
+//! `git grep -n 'Command::new("git")' -- '*.rs'` finds direct invocations; it
+//! does NOT find a spawn of a shell script that runs git internally, which is
+//! the shape of `reify-test-support`'s orphan-audit spawn (whose first action
+//! is `REPO_ROOT="$(git rev-parse --show-toplevel)"`). A site of either shape
+//! that is neither the `--version` carve-out nor routed through [`command`] or
+//! the shared sanitizer is a defect.
 //!
-//! Below the edge, in `reify-test-support`, four non-exempt sites are routed
-//! through the shared [`reify_test_support::git_env::sanitize`] instead, for the
-//! dependency-direction reason above: `orphan_audit.rs`'s `child_repo_root`
-//! probe and its `git init` decoy fixture in `wrong_tree_with_real_scope_panics`
-//! ("a fixture helper that shells `git init` into a tempdir" is literally the
-//! example the rule names), plus the `git -C` init loop and the FIX spawn in
-//! `git_env.rs`'s own `sanitize_makes_dash_c_authoritative_against_real_git`.
-//! That test also holds the workspace's ONE deliberately unsanitized site — its
-//! HAZARD half, which exists to prove an ambient redirect var still overrides
-//! `-C`. It is a premise check rather than a call site, and must stay
-//! unsanitized to have any teeth.
-//!
-//! The grep does NOT catch the orphan-audit *script spawn*, because that site
-//! spawns a *shell script* that runs git internally rather than calling `git`
-//! directly; a sweep for new call sites must consider both shapes. Re-run the
-//! grep when adding a git call site: a new hit that is neither carved out above
-//! nor one of the sites named above is a defect.
+//! Re-run that sweep when adding a call site rather than trusting a list here:
+//! an enumerated census of call sites in a doc comment rots the moment one is
+//! renamed, and silently reads as authoritative while it does. Within this
+//! crate the rule currently holds with no exceptions — production `RealGitOps`
+//! and the `tests/` fixture helpers alike build through [`command`].
 
 use std::path::Path;
 use std::process::Command;

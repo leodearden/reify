@@ -11,8 +11,8 @@
 //! This module is the ENTRY POINT: what the sanitizer removes, why, and the
 //! measured evidence are all below, so a reader needs nothing from above the
 //! edge. `reify_audit::git_env` re-exports both items and adds the
-//! `git -C <root>` constructor plus the workspace rule and call-site sweep
-//! enforcing its use — further reading, not a prerequisite.
+//! `git -C <root>` constructor, the workspace rule requiring its use, and how
+//! to sweep for breaches — further reading, not a prerequisite.
 //!
 //! # The failure mode this prevents
 //!
