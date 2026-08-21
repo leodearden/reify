@@ -9093,7 +9093,8 @@ mod tests {
     /// `Value::Scalar`, not a bare `Value::Real` (#6094).
     ///
     /// Why this cannot be folded into the compile-side pin
-    /// (`reify-compiler/tests/modal_analysis_fns_stdlib_compile.rs`): the `.ri`
+    /// (`reify-compiler/tests/modal_mechanism_compile.rs`, nested module
+    /// `modal_analysis_fns_stdlib_compile`): the `.ri`
     /// declared return type and the trampoline's emitted `Value` are checked
     /// NOWHERE against each other. `ComputeNodeData` carries no type slot,
     /// `ComputeOutcome::Completed` carries an untyped `Value`, and no
