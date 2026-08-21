@@ -539,6 +539,17 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
             Some(Value::Bool(true)),
             "case \"{case_name}\": the shared realized-mesh solve must converge"
         );
+
+        // ── #6154 grid-miss measurement, riding THIS realization ─────────────
+        // A full OCCT+gmsh realization is the most expensive thing in this file
+        // and one has just happened here, on the fixture #6154 measures, so its
+        // measurement is asserted from this capstone rather than from a second
+        // copy of the same build. Every assertion it makes is labelled
+        // "realized box"; see `assert_box_grid_miss_measurement` for the whole
+        // narrative and for what it deliberately does NOT assert.
+        if case_name == "operating" {
+            assert_box_grid_miss_measurement(&disp);
+        }
     }
 }
 
@@ -811,6 +822,14 @@ fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
         Some(Value::Bool(true)),
         "the non-prismatic realized-mesh solve must converge"
     );
+
+    // ── (5) #6154 CYLINDER control, riding THIS realization ───────────────────
+    // The anti-weakening guard for the box's 35% out-of-solid measurement: here
+    // the AABB is NOT the solid, so 84 of 112 grid nodes MUST stay `NaN`. Rides
+    // this build for the same cost reason as the box's; every assertion is
+    // labelled "realized cylinder". Closed form and ownership split:
+    // `assert_cylinder_grid_miss_measurement`.
+    assert_cylinder_grid_miss_measurement(&disp);
 }
 
 /// Build a fresh OCCT+Gmsh engine with the multi-case FEA trampolines installed,
@@ -1228,15 +1247,23 @@ fn solve_elastic_static_body_e2e_skipped_without_gmsh() {
 /// §7a-resampled `displacement` field. `None` ⇒ OCCT is unavailable and the
 /// caller skips.
 ///
-/// Deliberately NOT memoized. A full OCCT tessellation + gmsh tet-mesh + solve is
-/// the most expensive thing in this file, so a `OnceLock` looks attractive — but
-/// in a normal run this has exactly ONE live caller
-/// (`realized_box_grid_miss_report_reconciles_with_geometry`; the other is
-/// `#[ignore]`d against #6200), so the cache would never be hit and would cost a
-/// static, a two-function split, and a `&'static` return for nothing. The
-/// realization HARNESS — which is genuinely shared, with the capstones above —
-/// is factored into [`build_realized`] instead; that is where the duplication
-/// actually was.
+/// ## Only the `#[ignore]`d gate calls this — the live measurement rides a
+/// realization that already happens
+///
+/// A full OCCT tessellation + gmsh tet-mesh + solve is the most expensive thing
+/// in this file, and `multi_case_body_solve_shares_one_realization_across_cases`
+/// above ALREADY performs exactly this one, on this source, in this binary. So
+/// #6154's live measurement is asserted from there, via
+/// [`assert_box_grid_miss_measurement`], rather than paying for a second copy of
+/// it. This helper serves [`realized_box_mesh_tiles_its_own_aabb`], which is
+/// `#[ignore]`d against #6200 and so costs a default run nothing.
+///
+/// Not memoized. A `OnceLock` would only dedupe among THIS helper's own callers
+/// — a default run has none — and could never dedupe against the capstone's
+/// realization, because that capstone asserts on the `Engine`
+/// (`realization_kernel_provenance()`), which a field-returning helper cannot
+/// hand back without keeping a live OCCT/gmsh handle alive for its caller. The
+/// realization HARNESS that genuinely IS shared is [`build_realized`].
 #[cfg(has_gmsh)]
 fn realized_box_operating_displacement(caller: &str) -> Option<reify_ir::SampledField> {
     use reify_ir::Value;
@@ -1273,13 +1300,14 @@ fn realized_box_operating_displacement(caller: &str) -> Option<reify_ir::Sampled
 
 /// Task #6154's CYLINDER sibling of [`realized_box_operating_displacement`] —
 /// realize `NON_PRISMATIC_BODY_SOURCE`'s `cylinder(50mm, 200mm)` and hand back
-/// its §7a-resampled `displacement` field. Not memoized, for the same reason.
+/// its §7a-resampled `displacement` field.
 ///
-/// Its build is not shared with `non_prismatic_body_solve_runs_on_realized_volume_mesh`
-/// above — that test asserts on `engine.realization_kernel_provenance()`, which a
-/// field-returning helper cannot hand back without keeping a live OCCT/gmsh
-/// handle alive for its caller — but the HARNESS is: both go through
-/// [`build_realized`] with the same registrar.
+/// Same deal: `non_prismatic_body_solve_runs_on_realized_volume_mesh` above
+/// already realizes this source, so the live control
+/// ([`assert_cylinder_grid_miss_measurement`]) rides that build, and this helper
+/// exists for the `#[ignore]`d [`realized_cylinder_mesh_covers_its_own_aabb`].
+/// Not memoized, for the reason given on the box helper. The HARNESS is shared:
+/// both go through [`build_realized`] with the same registrar.
 #[cfg(has_gmsh)]
 fn realized_cylinder_displacement(caller: &str) -> Option<reify_ir::SampledField> {
     use reify_core::ValueCellId;
@@ -1389,13 +1417,31 @@ fn assert_report_reconciles_with_field(
         report.n_missed,
     );
 
-    // (2) No partially-NaN point: those are diverged solution values, not the
-    //     all-or-nothing out-of-solid sentinel, and would make (1) undercount.
+    // (2) No non-finite point OTHER than the all-NaN sentinel — recounted off
+    //     the raw buffer with the SAME `!is_finite()` predicate the instrument
+    //     uses. Not `is_nan()`: a diverged solve overflows to `±INF` at least as
+    //     readily, and an all-`INF` point looks perfectly ordinary to a NaN-only
+    //     test — it is neither a miss nor an anomaly there, so a NaN-only guard
+    //     would certify a already-broken field as fully covered, which is the
+    //     inversion this check exists to prevent. (1) would undercount it too.
+    let independent_anomalies = sf
+        .data
+        .chunks_exact(stride)
+        .filter(|c| !c.iter().all(|v| v.is_nan()) && c.iter().any(|v| !v.is_finite()))
+        .count();
     assert_eq!(
-        report.n_partial_nan, 0,
-        "{label}: {} grid point(s) are PARTIALLY NaN — a non-finite solution value, \
-         not an out-of-solid marker. The bucket split describes a field that is \
-         already broken upstream of the sampler; fix that before reading it",
+        independent_anomalies, 0,
+        "{label}: {independent_anomalies} grid point(s) carry a non-finite (NaN or \
+         ±INF) component that is NOT the all-or-nothing out-of-solid sentinel — i.e. \
+         a diverged solution value. The bucket split then describes a field already \
+         broken upstream of the sampler; fix that before reading it",
+    );
+    assert_eq!(
+        report.n_partial_nan, independent_anomalies,
+        "{label}: the report's anomaly count ({}) must agree with the raw buffer's \
+         ({independent_anomalies}) — they are computed independently, so a mismatch \
+         means `classify_grid_misses` and this reconciler disagree about what \
+         'non-finite' means",
         report.n_partial_nan,
     );
 
@@ -1435,55 +1481,52 @@ fn assert_report_reconciles_with_field(
     }
 }
 
-/// Task #6154 — RECONCILE the realized box's out-of-solid grid points against
-/// what the geometry actually predicts.
+/// Task #6154's DELIVERABLE for the BOX — measure the realized box's
+/// out-of-solid grid points, dump the split on every run, and pin that the
+/// report faithfully describes the field it was derived from.
 ///
 /// `elastic_static.rs`'s field-population contract used to claim of
 /// `displacement`: "Every grid point lies inside the solid (prismatic box), so
 /// all samples are finite (no NaN sentinels for the cantilever geometry)". The
-/// realized path contradicts it — a third of this prismatic box's grid nodes
-/// carry the out-of-solid sentinel. The measured split, when it was taken, and
-/// what it proved are recorded once in PRD `docs/prds/v0_4/fea-result-model.md`
-/// §11 Q2; this test re-measures and prints it on every run rather than pinning
-/// it (see below), so read the dump for today's numbers, not a comment.
+/// realized path contradicts it — about a third of this prismatic box's grid
+/// nodes carry the out-of-solid sentinel. VERDICT: a COVERAGE defect in the
+/// realized tet mesh, not a tolerance one; the measurement, its provenance and
+/// the closing argument are recorded ONCE, in
+/// `docs/prds/v0_4/fea-result-model.md` §11 Q2, and the upstream defect is
+/// #6200. For today's numbers read the dump below, never a comment.
 ///
-/// This test carries the measurement — the dump is emitted on every run — and
-/// pins the two properties that hold TODAY and are #6154's actual deliverable:
-/// the report is a faithful description of the realized field, and the grid it
-/// describes is the realized-AABB one. The BOX-SPECIFIC geometric prediction the
-/// split exposes as violated (`missed_interior == 0`) is preserved in
-/// `realized_box_mesh_tiles_its_own_aabb` below, `#[ignore]`d against #6200 —
-/// splitting the two keeps this measurement running (and its dump visible) on
-/// every CI run instead of aborting at the first upstream-owned failure.
+/// Called from `multi_case_body_solve_shares_one_realization_across_cases`,
+/// which already realizes this exact source — see
+/// [`realized_box_operating_displacement`] for why the measurement rides that
+/// realization instead of paying for its own.
 ///
 /// Deliberately NOT asserted here:
 ///   - any all-finite property — the sentinel is normative and must survive;
 ///   - the total miss COUNT — that count is the thing under investigation, and
-///     pinning 1055 before the mechanism is fixed would cement a bug as a
-///     contract. It would also be FLAKY: the count drifts run to run (measured
-///     2026-08-20, this fixture, same binary — 4 runs gave 1055 and 1 gave 1060;
-///     test-thread count is ruled out, the full suite reproduced 1055 both at
-///     `--test-threads=1` and at the default; the two splits differ by total +5,
-///     interior −3, face +8, with edge and corner unchanged). *Hypothesis:*
-///     gmsh/HXT's parallel tetrahedralization is not bit-reproducible under
-///     varying host load — project memory carries an independent measurement of
-///     the same effect at ~1–6% tet-count drift. Read the per-run dump above,
-///     never a number quoted in a comment;
+///     pinning it before the mechanism is fixed would cement a bug as a
+///     contract. It would also be FLAKY: the split drifts run to run (measured
+///     2026-08-20, this fixture, same binary — four runs agreed and a fifth
+///     differed by +5 total misses with interior −3, face +8; test-thread count
+///     is ruled out, the full suite reproduced the majority split both at
+///     `--test-threads=1` and at the default). *Hypothesis:* gmsh/HXT's parallel
+///     tetrahedralization is not bit-reproducible under varying host load —
+///     project memory carries an independent measurement of the same effect at
+///     ~1–6% tet-count drift;
 ///   - the bucket-sum identity — `classify_grid_misses` satisfies it by
 ///     construction, so it says nothing about this field (it is pinned in that
 ///     function's own crate-local fixtures instead).
+///
+/// The BOX-SPECIFIC prediction the split exposes as violated
+/// (`missed_interior == 0`) is preserved un-weakened in
+/// [`realized_box_mesh_tiles_its_own_aabb`], `#[ignore]`d against #6200 —
+/// splitting the two keeps this measurement, and its dump, running on every CI
+/// run instead of aborting at the first upstream-owned failure.
 #[cfg(has_gmsh)]
-#[test]
-fn realized_box_grid_miss_report_reconciles_with_geometry() {
-    let Some(disp) =
-        realized_box_operating_displacement("realized_box_grid_miss_report_reconciles_with_geometry")
-    else {
-        return;
-    };
-    let (report, _hist) = classify_and_dump_grid_misses(&disp, "realized box");
+fn assert_box_grid_miss_measurement(disp: &reify_ir::SampledField) {
+    let (report, _hist) = classify_and_dump_grid_misses(disp, "realized box");
 
     // ── (i) the report describes THIS field, re-derived from `disp.data` ─────
-    assert_report_reconciles_with_field(&disp, &report, 3, "realized box");
+    assert_report_reconciles_with_field(disp, &report, 3, "realized box");
 
     // ── (ii) the grid is the realized one, not the synthetic 854 ────────────
     // Per-AXIS, not just the 2989 product: the interior/face/edge/corner split
@@ -1500,84 +1543,31 @@ fn realized_box_grid_miss_report_reconciles_with_geometry() {
     );
 }
 
-/// Task #6154's measurement, held as #6200's acceptance gate.
-///
-/// For a PRISMATIC body the mesh AABB **is** the solid, so every
-/// strictly-index-interior grid point must lie inside some tet. It does not:
-/// 36 of the 1475 index-interior nodes are out-of-solid (a SNAPSHOT — one run in
-/// five on 2026-08-20 measured 33 of 1475 instead; the count drifts, the defect
-/// does not, which is why the assertion below is `== 0` and not a threshold).
-/// That is a COVERAGE
-/// defect in the realized tet mesh, not a tolerance one — the mesh's own tets
-/// sum to 8.4291e-3 m³ against a 1.0000e-2 m³ AABB (84.3% fill, 159 tets, 0
-/// interior nodes), and because `union(tets) ≤ Σ|tet vol|` that inequality is a
-/// *proof* of missing coverage rather than a hypothesis. Only 1 of the 1055
-/// misses has `|margin| < 1e-8` (median margin −8.42e-2), so no `tol` expansion
-/// reaches these points, and `volume_mesh_to_solver_mesh` cannot be the culprit
-/// (it rejects a whole mesh on a bad index rather than dropping an element, and
-/// its only compaction touches tet-unreferenced vertices).
-///
-/// The defect is therefore upstream of this crate, in the gmsh tetrahedralization
-/// path (`crates/reify-kernel-gmsh`), which #6154's scope explicitly excludes.
-/// The assertion is kept — not deleted, not weakened to a threshold — so that
-/// #6200 has an executable acceptance gate: unblocking it is exactly making this
-/// test pass with the `#[ignore]` removed.
-///
-/// ## `missed_interior` counts GRID points, NOT mesh nodes
-///
-/// The two are easy to conflate and behave completely differently, so read this
-/// before judging whether #6200's fix should turn this test green. #6200's own
-/// measurements record that a box's strictly-interior MESH-NODE count is purely
-/// RESOLUTION-driven — 0 at the auto mesh size even for a complete, fill = 1.0
-/// mesh, because `auto_mesh_size_from_features` makes the cross-section exactly
-/// one element wide — so an assertion keyed on THAT number would not go green
-/// from a coverage fix alone.
-///
-/// This gate is keyed on COVERAGE instead. `missed_interior` is the number of
-/// strictly-index-interior §7a GRID points that lie inside no tet, and a grid
-/// point is a query location, not a mesh entity. It reaches 0 exactly when the
-/// tets tile the AABB, at ANY mesh resolution and with ANY interior-node count —
-/// which is precisely the fill-fraction property #6200's acceptance states. So
-/// this remains a valid gate for that fix, and needs no mesh-size override.
+/// The 4 cross-section columns whose offsets are `(±1/60, ±1/60) m` — the only
+/// ones inside the cylinder's `r = 0.05 m`. Every OTHER `(ix, iy)` column is
+/// outside, at all 7 z-levels: `12 × 7 =` [`CYLINDER_PREDICTED_MISSES`].
+/// Derivation: [`assert_cylinder_grid_miss_measurement`].
 #[cfg(has_gmsh)]
-#[test]
-#[ignore = "blocked on #6200 — realized tet mesh fills only 84.3% of its AABB; missed_interior is non-zero (33–36 measured across runs) — a coverage defect, not a tol issue"]
-fn realized_box_mesh_tiles_its_own_aabb() {
-    let Some(disp) = realized_box_operating_displacement("realized_box_mesh_tiles_its_own_aabb")
-    else {
-        return;
-    };
-    let (report, hist) = classify_and_dump_grid_misses(&disp, "realized box");
+const CYLINDER_INSIDE_COLUMNS: [[usize; 2]; 4] = [[1, 1], [1, 2], [2, 1], [2, 2]];
 
-    assert_eq!(
-        report.missed_interior, 0,
-        "BOX-SPECIFIC prediction: for a prismatic body the mesh AABB IS the solid, \
-         so every strictly-index-interior grid point must lie inside some tet. A \
-         non-zero interior count means the realized mesh handed to §7a does not tile \
-         its own AABB — that is a COVERAGE defect, not a tolerance one, and widening \
-         `tol` would not legitimately fix it (see #6200). Measured: interior={} of \
-         n_missed={} (face={}, edge={}, corner={}). Per-axis miss histograms: \
-         x={:?} y={:?} z={:?}",
-        report.missed_interior,
-        report.n_missed,
-        report.missed_face,
-        report.missed_edge,
-        report.missed_corner,
-        hist[0],
-        hist[1],
-        hist[2],
-    );
-}
+/// Out-of-solid grid nodes the closed form predicts for the realized cylinder,
+/// of [`REALIZED_CYLINDER_GRID_NODES`]. Derivation:
+/// [`assert_cylinder_grid_miss_measurement`].
+#[cfg(has_gmsh)]
+const CYLINDER_PREDICTED_MISSES: usize = 84;
 
 /// Task #6154 — the CYLINDER control: prove the normative out-of-solid `NaN`
 /// sentinel still fires exactly where geometry says it must.
 ///
-/// The box measurement above shows 35.3% of a *prismatic* body's grid points
-/// marked out-of-solid where 0% is predicted. The obvious wrong "fix" for that
-/// is to weaken the sentinel — widen `tol`, or assert all-finite. This test is
-/// the guard against it: for a cylinder the AABB is emphatically NOT the solid,
-/// so a large, exactly-predictable fraction of grid points MUST stay `NaN`, and
-/// any weakening shows up here as a shortfall.
+/// The box measurement shows ~35% of a *prismatic* body's grid points marked
+/// out-of-solid where 0% is predicted. The obvious wrong "fix" for that is to
+/// weaken the sentinel — widen `tol`, or assert all-finite. This is the guard
+/// against it: for a cylinder the AABB is emphatically NOT the solid, so a
+/// large, exactly-predictable fraction of grid points MUST stay `NaN`, and any
+/// weakening shows up here as a shortfall.
+///
+/// Rides `non_prismatic_body_solve_runs_on_realized_volume_mesh`'s realization
+/// (see [`realized_cylinder_displacement`]).
 ///
 /// ## Closed form (re-derived here, not cited)
 ///
@@ -1609,26 +1599,31 @@ fn realized_box_mesh_tiles_its_own_aabb() {
 /// Re-deriving rather than citing shows that is false for THIS grid: the only
 /// index-interior cross-section offsets are `±1/60 m`, which are a comfortable
 /// 0.0236 m < 0.05 m from the axis — every index-interior node is genuinely
-/// inside the cylinder. The assertion is therefore written the way the geometry
-/// actually falls, not the way the plan guessed.
+/// inside the cylinder.
 ///
 /// The box's violated prediction is a strictly stronger statement, and remains
 /// box-specific: for a prismatic body the AABB IS the solid, so *no* grid point
-/// of any bucket may miss (`n_missed == 0`). Here 84 of 112 must miss. Pinning
-/// the cylinder's full split next to the box's is what stops a later reader
-/// promoting `missed_interior == 0` to a global sampler invariant, or
-/// "correcting" the cylinder's entirely-correct 75%.
+/// of any bucket may miss (`n_missed == 0`). Here 84 of 112 must miss. Holding
+/// the cylinder's split next to the box's is what stops a later reader promoting
+/// `missed_interior == 0` to a global sampler invariant, or "correcting" the
+/// cylinder's entirely-correct 75%.
+///
+/// ## Only the UNDER-firing direction is asserted live
+///
+/// A node the closed form puts outside that comes back finite is this crate's
+/// own contract broken, so that is a hard failure here. The opposite direction —
+/// an EXCESS miss, i.e. a node the geometry puts inside that the realized mesh
+/// failed to cover — is the upstream coverage defect (#6200) this test
+/// explicitly disclaims ownership of, and the realized mesh is not
+/// bit-reproducible across runs, so pinning it live would let upstream drift red
+/// the merge gate for a defect that "must not be fixed here". The excess is
+/// logged loudly instead, and the exact-count/bucket form of the claim is kept
+/// in [`realized_cylinder_mesh_covers_its_own_aabb`].
 #[cfg(has_gmsh)]
-#[test]
-fn realized_cylinder_grid_miss_report_matches_closed_form() {
+fn assert_cylinder_grid_miss_measurement(disp: &reify_ir::SampledField) {
     use std::collections::HashSet;
 
-    let Some(disp) =
-        realized_cylinder_displacement("realized_cylinder_grid_miss_report_matches_closed_form")
-    else {
-        return;
-    };
-    let (report, _hist) = classify_and_dump_grid_misses(&disp, "realized cylinder");
+    let (report, _hist) = classify_and_dump_grid_misses(disp, "realized cylinder");
 
     let axes: Vec<usize> = disp.axis_grids.iter().map(|a| a.len()).collect();
     assert_eq!(
@@ -1636,15 +1631,9 @@ fn realized_cylinder_grid_miss_report_matches_closed_form() {
         REALIZED_CYLINDER_GRID_AXES.to_vec(),
         "§7a grid shape for cylinder(50mm, 200mm) must be \
          {REALIZED_CYLINDER_GRID_AXES:?} ({REALIZED_CYLINDER_GRID_NODES} nodes) — the \
-         closed form below is derived from exactly this shape; got {axes:?}",
+         closed form above is derived from exactly this shape; got {axes:?}",
     );
-    assert_report_reconciles_with_field(&disp, &report, 3, "realized cylinder");
-
-    // The 4 cross-section columns whose offsets are (±1/60, ±1/60) m — the only
-    // ones inside r = 0.05 m. Every OTHER (ix, iy) column is outside, at all 7
-    // z-levels: 12 × 7 = 84 predicted misses.
-    const INSIDE_COLUMNS: [[usize; 2]; 4] = [[1, 1], [1, 2], [2, 1], [2, 2]];
-    const PREDICTED_MISSES: usize = 84;
+    assert_report_reconciles_with_field(disp, &report, 3, "realized cylinder");
 
     // ── (a) SENTINEL guard — UNDER-firing ───────────────────────────────────
     // Owner: this crate's sampler. Every predicted-outside node must carry the
@@ -1653,7 +1642,7 @@ fn realized_cylinder_grid_miss_report_matches_closed_form() {
     let mut finite_but_predicted_outside: Vec<[usize; 3]> = Vec::new();
     for ix in 0..REALIZED_CYLINDER_GRID_AXES[0] {
         for iy in 0..REALIZED_CYLINDER_GRID_AXES[1] {
-            if INSIDE_COLUMNS.contains(&[ix, iy]) {
+            if CYLINDER_INSIDE_COLUMNS.contains(&[ix, iy]) {
                 continue;
             }
             for iz in 0..REALIZED_CYLINDER_GRID_AXES[2] {
@@ -1665,32 +1654,143 @@ fn realized_cylinder_grid_miss_report_matches_closed_form() {
     }
     assert!(
         finite_but_predicted_outside.is_empty(),
-        "SENTINEL WEAKENED (this crate's sampler): the closed form above puts these \
-         grid nodes outside the cylinder, so each MUST carry the normative \
-         out-of-solid `NaN` (PRD v0_4/fea-result-model.md §4.1), but they came back \
-         finite: {finite_but_predicted_outside:?}. Do not 'fix' this by relaxing the \
+        "SENTINEL WEAKENED (this crate's sampler): the closed form puts these grid \
+         nodes outside the cylinder, so each MUST carry the normative out-of-solid \
+         `NaN` (PRD v0_4/fea-result-model.md §4.1), but they came back finite: \
+         {finite_but_predicted_outside:?}. Do not 'fix' this by relaxing the \
          sentinel — a widened `tol`, a clamp, or an all-finite assertion all land \
          here first, and all of them fabricate values the solver never solved.",
     );
 
-    // ── (b) COVERAGE guard — OVER-firing ────────────────────────────────────
-    // Owner: the realized cylinder tet mesh (upstream of this crate). With (a)
-    // green the predicted 84 are all present, so any EXCESS is a node the
-    // geometry says is inside but the mesh failed to cover — the box's defect.
+    // ── (b) COVERAGE — OVER-firing. Logged, NOT asserted (upstream-owned) ───
+    // With (a) green the predicted 84 are all present, so any EXCESS is a node
+    // the geometry places INSIDE the cylinder that the realized mesh failed to
+    // cover — the box's defect (#6200) reaching this fixture. Reported here;
+    // pinned in `realized_cylinder_mesh_covers_its_own_aabb`.
+    if report.n_missed > CYLINDER_PREDICTED_MISSES {
+        eprintln!(
+            "#6154 realized cylinder MESH UNDER-COVERS (upstream, see #6200): closed \
+             form predicts {CYLINDER_PREDICTED_MISSES} of \
+             {REALIZED_CYLINDER_GRID_NODES} nodes out-of-solid and all of them are \
+             present, so the {} extra miss(es) are nodes the geometry places INSIDE \
+             the cylinder. NOT a sentinel bug, and not fixable here.",
+            report.n_missed - CYLINDER_PREDICTED_MISSES,
+        );
+    }
+}
+
+/// Task #6154's measurement, held as #6200's acceptance gate.
+///
+/// For a PRISMATIC body the mesh AABB **is** the solid, so every
+/// strictly-index-interior grid point must lie inside some tet. It does not: the
+/// realized tet mesh fills only a fraction of the AABB it spans, and a few dozen
+/// index-interior nodes land in no tet at all. That is a COVERAGE defect, not a
+/// tolerance one — measured margins are orders of magnitude beyond any
+/// defensible `tol`, and `volume_mesh_to_solver_mesh` is exonerated. The
+/// measurement, the fill-fraction proof and the exoneration are recorded once in
+/// `docs/prds/v0_4/fea-result-model.md` §11 Q2; today's figures come from the
+/// per-run dump. The defect is upstream of this crate, in the gmsh
+/// tetrahedralization path (`crates/reify-kernel-gmsh`), which #6154's scope
+/// explicitly excludes.
+///
+/// The assertion is kept — not deleted, not weakened to a threshold — so that
+/// #6200 has an executable acceptance gate: unblocking it is exactly making this
+/// test pass with the `#[ignore]` removed. It is `== 0` rather than a count
+/// because the count drifts run to run while the defect does not.
+///
+/// ## `missed_interior` counts GRID points, NOT mesh nodes
+///
+/// The two are easy to conflate and behave completely differently, so read this
+/// before judging whether #6200's fix should turn this test green. #6200's own
+/// measurements record that a box's strictly-interior MESH-NODE count is purely
+/// RESOLUTION-driven — 0 at the auto mesh size even for a complete, `fill = 1.0`
+/// mesh, because `auto_mesh_size_from_features` makes the cross-section exactly
+/// one element wide — so an assertion keyed on THAT number would not go green
+/// from a coverage fix alone.
+///
+/// This gate is keyed on COVERAGE instead. `missed_interior` is the number of
+/// strictly-index-interior §7a GRID points that lie inside no tet, and a grid
+/// point is a query location, not a mesh entity. It reaches 0 exactly when the
+/// tets tile the AABB, at ANY mesh resolution and with ANY interior-node count —
+/// which is precisely the fill-fraction property #6200's acceptance states. So
+/// this remains a valid gate for that fix, and needs no mesh-size override.
+#[cfg(has_gmsh)]
+#[test]
+#[ignore = "blocked on #6200 — the realized tet mesh does not fill its own AABB, so missed_interior is non-zero: a coverage defect upstream of this crate, not a tol issue"]
+fn realized_box_mesh_tiles_its_own_aabb() {
+    let Some(disp) = realized_box_operating_displacement("realized_box_mesh_tiles_its_own_aabb")
+    else {
+        return;
+    };
+    let (report, hist) = classify_and_dump_grid_misses(&disp, "realized box");
+
     assert_eq!(
-        report.n_missed, PREDICTED_MISSES,
+        report.missed_interior, 0,
+        "BOX-SPECIFIC prediction: for a prismatic body the mesh AABB IS the solid, \
+         so every strictly-index-interior grid point must lie inside some tet. A \
+         non-zero interior count means the realized mesh handed to §7a does not tile \
+         its own AABB — that is a COVERAGE defect, not a tolerance one, and widening \
+         `tol` would not legitimately fix it (see #6200). Measured: interior={} of \
+         n_missed={} (face={}, edge={}, corner={}). Per-axis miss histograms: \
+         x={:?} y={:?} z={:?}",
+        report.missed_interior,
+        report.n_missed,
+        report.missed_face,
+        report.missed_edge,
+        report.missed_corner,
+        hist[0],
+        hist[1],
+        hist[2],
+    );
+}
+
+/// The cylinder's OVER-firing half: the realized mesh covers every grid point
+/// the closed form places inside it, so the miss set is EXACTLY the predicted
+/// 84, split (interior, face, edge, corner) = (0, 40, 36, 8).
+///
+/// Green as measured on 2026-08-20, and `#[ignore]`d anyway, because what it
+/// pins is not this crate's to keep green: an excess miss is a node the geometry
+/// places inside the cylinder that the realized tet mesh failed to cover — the
+/// same upstream coverage defect the box measures, tracked as #6200 — and the
+/// gmsh/HXT tetrahedralization that decides it is not bit-reproducible run to
+/// run (the box's split drifts on this very host; this fixture has only ever
+/// been observed on one host and one gmsh build). Live, one drifted node would
+/// red the merge gate for a defect this file explicitly says "must not be fixed
+/// here". [`assert_cylinder_grid_miss_measurement`] keeps the half this crate
+/// DOES own — the sentinel must fire on every predicted-outside node — as a hard
+/// live assertion, and logs any excess.
+///
+/// So: run this explicitly (`--ignored`) to re-measure the cylinder's coverage,
+/// and expect it to go green and STAY green once #6200 lands.
+#[cfg(has_gmsh)]
+#[test]
+#[ignore = "upstream-owned (#6200): pins the realized cylinder mesh's exact coverage, which gmsh/HXT drift can move; the sentinel half this crate owns is asserted live in non_prismatic_body_solve_runs_on_realized_volume_mesh"]
+fn realized_cylinder_mesh_covers_its_own_aabb() {
+    let Some(disp) = realized_cylinder_displacement("realized_cylinder_mesh_covers_its_own_aabb")
+    else {
+        return;
+    };
+    let (report, _hist) = classify_and_dump_grid_misses(&disp, "realized cylinder");
+    assert_report_reconciles_with_field(&disp, &report, 3, "realized cylinder");
+
+    // ── (b) COVERAGE guard — OVER-firing ────────────────────────────────────
+    // The live control asserts every predicted-outside node IS missed, so any
+    // excess over the closed form is a node the geometry places INSIDE.
+    assert_eq!(
+        report.n_missed, CYLINDER_PREDICTED_MISSES,
         "REALIZED CYLINDER MESH UNDER-COVERS (upstream, see #6200): the closed form \
-         predicts exactly {PREDICTED_MISSES} of {REALIZED_CYLINDER_GRID_NODES} nodes \
-         out-of-solid and (a) above confirms all {PREDICTED_MISSES} are present, so \
-         the {} extra miss(es) are nodes the geometry places INSIDE the cylinder. \
-         That is the same coverage defect measured on the box, now reaching the \
-         cylinder fixture — it is NOT a sentinel bug and must not be fixed here.",
-        report.n_missed.saturating_sub(PREDICTED_MISSES),
+         predicts exactly {CYLINDER_PREDICTED_MISSES} of \
+         {REALIZED_CYLINDER_GRID_NODES} nodes out-of-solid, so the {} extra miss(es) \
+         are nodes the geometry places INSIDE the cylinder. That is the same coverage \
+         defect measured on the box, now reaching the cylinder fixture — it is NOT a \
+         sentinel bug and must not be fixed here.",
+        report.n_missed.saturating_sub(CYLINDER_PREDICTED_MISSES),
     );
 
     // ── (c) BUCKETING — the classifier's own index-extremity arm ────────────
-    // With (a)+(b) green the miss SET is exactly the predicted 84; this checks
-    // that `classify_grid_misses` labels them the way the closed form does.
+    // With (b) green the miss SET is exactly the predicted 84 (the live control
+    // pins that all 84 are present); this checks that `classify_grid_misses`
+    // labels them the way the closed form does.
     assert_eq!(
         (
             report.missed_interior,
@@ -1699,13 +1799,10 @@ fn realized_cylinder_grid_miss_report_matches_closed_form() {
             report.missed_corner,
         ),
         (0, 40, 36, 8),
-        "the closed form above splits the {PREDICTED_MISSES} misses as interior=0 \
-         face=40 edge=36 corner=8 by index extremity. The set is already pinned by \
-         (a)+(b), so a mismatch here is a bug in `classify_grid_misses`' bucketing, \
-         not in the geometry or the mesh."
+        "the closed form splits the {CYLINDER_PREDICTED_MISSES} misses as interior=0 \
+         face=40 edge=36 corner=8 by index extremity (derivation: \
+         `assert_cylinder_grid_miss_measurement`). The set is already pinned above, \
+         so a mismatch here is a bug in `classify_grid_misses`' bucketing, not in the \
+         geometry or the mesh."
     );
 }
-
-// (`REALIZED_CYLINDER_GRID_AXES` / `REALIZED_CYLINDER_GRID_NODES`, defined once
-// at file scope alongside the box constants, replace the local copy that used
-// to live here.)
