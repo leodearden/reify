@@ -2099,6 +2099,77 @@ mod tests {
         assert!(eval_builtin("orient_log", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── orient_log rotation-vector DIMENSION tests (#6080) ─────────────────
+    //
+    // The `orient_log_*` tests above assert only magnitudes: they read
+    // components through `assert_vector3_approx!`, which extracts via
+    // `as_f64()` (test_macros.rs) and is therefore dimension-blind — it
+    // passes identically whether a component is `Real` or `Scalar{ANGLE}`.
+    // The tests below destructure the returned `Value::Vector` and assert the
+    // per-component dimension with `assert_scalar_approx!`, which is what
+    // actually pins the `#6080` ruling: log(q) = axis * angle, so the emitted
+    // rotation vector carries ANGLE (slot 7, `rad`), exactly as
+    // `orient_to_axis_angle`'s `angle` field already does.
+
+    /// Destructure a `Value::Vector` of exactly 3 components, panicking otherwise.
+    fn vector3_components(v: Value) -> Vec<Value> {
+        match v {
+            Value::Vector(items) if items.len() == 3 => items,
+            other => panic!("expected Vector(3), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn orient_log_identity_emits_angle_dimensioned_zeros() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let items = vector3_components(eval_builtin("orient_log", &[id]));
+        for comp in items {
+            assert_scalar_approx!(comp, 0.0, DimensionVector::ANGLE);
+        }
+    }
+
+    #[test]
+    fn orient_log_90deg_z_emits_angle_dimensioned_components() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90z = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let items = vector3_components(eval_builtin("orient_log", &[q90z]));
+        assert_scalar_approx!(items[0].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(items[1].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(
+            items[2].clone(),
+            std::f64::consts::FRAC_PI_2,
+            DimensionVector::ANGLE
+        );
+    }
+
+    /// The near-identity Taylor branch (|v| < 1e-12, `orient_log`'s `EPS`
+    /// short-circuit) computes its components separately from the general
+    /// branch; pin that this early path is not left dimensionless either.
+    /// `x = 1e-13` puts |v| strictly below `EPS`, so `log ≈ 2*(x,y,z)`.
+    #[test]
+    fn orient_log_near_identity_emits_angle_dimensioned_components() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 1e-13,
+            y: 0.0,
+            z: 0.0,
+        };
+        let items = vector3_components(eval_builtin("orient_log", &[q]));
+        assert_scalar_approx!(items[0].clone(), 2e-13, DimensionVector::ANGLE);
+        assert_scalar_approx!(items[1].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(items[2].clone(), 0.0, DimensionVector::ANGLE);
+    }
+
     // ── orient_exp tests (step-7) ──────────────────────────────────────────
 
     #[test]

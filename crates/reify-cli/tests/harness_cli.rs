@@ -121,6 +121,8 @@ mod cli_lsp;
 mod cli_lsp_protocol;
 #[path = "harness_cli/cli_module_visibility_example.rs"]
 mod cli_module_visibility_example;
+#[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
+mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]
