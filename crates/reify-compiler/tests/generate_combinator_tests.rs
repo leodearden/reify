@@ -497,3 +497,27 @@ fn mixed_kind_geometry_list_literal_is_a_loud_error() {
         t.realizations,
     );
 }
+
+/// Compile-level companion to `geometry_list_count_is_determinate`: the
+/// `.count` of a geometry-list let types to `Int`, because it is folded to the
+/// statically-known element count at compile time rather than evaluated
+/// against a cell whose Value is authoritative only after hydration.
+#[test]
+fn geometry_list_count_cell_types_to_int() {
+    let source = r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let n = holes.count
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(errors.is_empty(), "compile errors: {errors:?}");
+
+    assert_eq!(
+        cell_result_type(&compiled, "S", "n"),
+        Type::Int,
+        "`holes.count` must compile to an Int-typed expr",
+    );
+}

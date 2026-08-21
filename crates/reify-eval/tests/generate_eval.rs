@@ -326,3 +326,69 @@ fn prd_fixture_silent_undef_generate_geometry_no_longer_undefs() {
     let result = eval_source(&source);
     assert_geometry_handle_list(&result, "P", "holes", 4);
 }
+
+/// The list's LENGTH must be determinate too. Shipping resolved elements while
+/// `.count` stayed `Undef` would trade one silent undef for another — a fresh
+/// instance of exactly the failure class this task exists to kill.
+///
+/// RED today (and still RED after list assembly alone): `holes.count` is
+/// compiled as a plain member access and evaluated in the main value-cell
+/// pass, which runs BEFORE geometry-handle hydration — so it reads the
+/// pre-hydration list and `count`'s `any(is_undef)` guard collapses it to
+/// `Undef`.
+#[test]
+fn geometry_list_count_is_determinate() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let n = holes.count
+        }
+    "#,
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S", "n")),
+        Some(&Value::Int(3)),
+        "`holes.count` must be Int(3), not Undef; got: {:?}",
+        result.values.get(&ValueCellId::new("S", "n")),
+    );
+}
+
+/// Same for the list-literal form.
+#[test]
+fn geometry_list_literal_count_is_determinate() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let parts = [cylinder(5mm, 20mm), box(1mm, 1mm, 1mm)]
+            let n = parts.count
+        }
+    "#,
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S", "n")),
+        Some(&Value::Int(2)),
+        "`parts.count` must be Int(2); got: {:?}",
+        result.values.get(&ValueCellId::new("S", "n")),
+    );
+}
+
+/// An EMPTY geometry list has a determinate count of zero — the empty case
+/// must not fall back into undef either.
+#[test]
+fn empty_geometry_list_count_is_zero() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(0, |i| cylinder(5mm, 20mm))
+            let n = holes.count
+        }
+    "#,
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S", "n")),
+        Some(&Value::Int(0)),
+        "`generate(0, …).count` must be Int(0); got: {:?}",
+        result.values.get(&ValueCellId::new("S", "n")),
+    );
+}
