@@ -679,3 +679,84 @@ trait HasLength {
         &md_str[..md_str.len().min(500)]
     );
 }
+
+// ---------------------------------------------------------------------------
+// task #6342 step-1: parametric type-alias heading (Markdown, end-to-end)
+// ---------------------------------------------------------------------------
+
+/// A parametric `pub type Vel<Q: Dimension> = Q / Time` must render its type
+/// params in the Markdown H2 heading — today they are silently dropped and the
+/// alias documents as an indistinguishable `pub type Vel`.
+///
+/// The fixture line is copied verbatim from
+/// `crates/reify-compiler/tests/fixtures/parametric_alias_def_site_ok.ri:11`,
+/// which `parametric_alias_def_site_validation_tests::valid_pub_parametric_alias_accepted`
+/// pins to ZERO Error diagnostics, so this test does not depend on any open
+/// def-site grammar question.
+///
+/// Three invariants are pinned here:
+///   (a) the heading gains `<Q: Dimension>` INSIDE the backtick code span;
+///   (b) identity is unchanged — `header.name`, the `<a id="…">` anchor and the
+///       TOC bullet all stay the bare `Vel`;
+///   (c) a non-parametric alias emits NO `<>` at all.
+#[test]
+fn parametric_type_alias_renders_type_params_in_markdown_heading() {
+    let source = r#"
+pub type Vel<Q: Dimension> = Q / Time
+type MyLength = Length
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in parametric alias source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // ── (b) identity is unchanged ─────────────────────────────────────────
+    let item = find_item(module, "Vel");
+    assert_eq!(
+        item.header.name, "Vel",
+        "header.name is the join key for anchors / TOC hrefs / split filenames \
+         and must stay the bare identifier"
+    );
+
+    let md_str = match render_markdown(&model, None, &MarkdownOptions::default()) {
+        MarkdownOutput::Single(s) => s,
+        MarkdownOutput::Split(_) => panic!("MarkdownOptions::default() must yield single mode"),
+    };
+
+    // ── (a) RED: type params render in the heading, inside the code span ──
+    assert!(
+        md_str.contains("## `pub type Vel<Q: Dimension>` <a id=\"Vel\"></a>"),
+        "parametric alias heading must render its type params inside the backtick \
+         code span; got markdown:\n{md_str}"
+    );
+
+    // ── (b cont.) anchor and TOC bullet stay name-derived ─────────────────
+    assert!(
+        md_str.contains("<a id=\"Vel\"></a>"),
+        "anchor must remain the bare name `Vel` with no angle brackets; got:\n{md_str}"
+    );
+    assert!(
+        !md_str.contains("<a id=\"Vel<"),
+        "anchor must NOT absorb the type params; got:\n{md_str}"
+    );
+    assert!(
+        md_str.contains("- [`Vel`](#Vel)"),
+        "TOC bullet must link the bare name `Vel`; got:\n{md_str}"
+    );
+
+    // ── (c) no-regression: empty type-param list emits no `<>` ────────────
+    assert!(
+        md_str.contains("## `type MyLength` <a id=\"MyLength\"></a>"),
+        "non-parametric alias heading must be unchanged (no empty `<>`); got:\n{md_str}"
+    );
+}
