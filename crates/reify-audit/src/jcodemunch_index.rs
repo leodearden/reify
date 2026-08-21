@@ -556,10 +556,14 @@ mod tests {
         );
         // The `--jcodemunch-repo` override can carry any slash form, so the
         // flattening must apply there too — otherwise the gate would probe a
-        // different file than the override selects.
+        // different file than the override selects. Spelled with a neutral
+        // `<owner>/<project>` placeholder rather than a real git identity: the
+        // flattening behaviour under test is a property of the SHAPE, and the
+        // capability manifest greps this tree for the concrete legacy default
+        // with `expect: absent`.
         assert_eq!(
-            index_db_path(dir, "leodearden/reify"),
-            dir.join("leodearden-reify.db")
+            index_db_path(dir, "owner/project"),
+            dir.join("owner-project.db")
         );
     }
 
