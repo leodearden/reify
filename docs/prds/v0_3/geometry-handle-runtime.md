@@ -158,22 +158,17 @@ The `upstream_values_hash` discriminates two `RealizationNodeId`-equal handles w
 
 The revalidation cost is amortized: a single `kernel_handle.is_valid()` check per read (atomic load), with the slow path (re-resolution) firing only after a snapshot clone or persistent reload.
 
-**Significance filter integration.** When a `Value::GeometryHandle` is compared for significance (per the policy in §1):
+**Significance filter integration.** When a `Value::GeometryHandle` is compared for significance (per the policy in §1), the comparison is carried by the `Value` layer itself rather than by a dedicated significance helper:
 
-```rust
-fn geometry_handle_significance(old: &Value, new: &Value) -> FilterOutcome {
-    if let (Value::GeometryHandle { realization_ref: r_old, upstream_values_hash: h_old, .. },
-            Value::GeometryHandle { realization_ref: r_new, upstream_values_hash: h_new, .. }) = (old, new) {
-        if r_old == r_new && h_old == h_new {
-            return FilterOutcome::Equivalent;
-        }
-        return FilterOutcome::Different;
-    }
-    /* fall through */
-}
-```
+- **Equality** — `Value::PartialEq`'s `GeometryHandle` arm compares `realization_ref` and `upstream_values_hash` only. (`Value::Ord` and `GeometryHandleRef::PartialEq` agree.)
+- **Keying** — `Value::content_hash`'s `GeometryHandle` arm (tag 28) emits realization entity + realization index + `upstream_values_hash`.
+- **Cache consumption** — `CachedResult::Value(gh, det).content_hash()` delegates straight to that arm, and `CacheStore::record_evaluation_with_freshness` compares the resulting `result_hash` against the stored one, returning `EvalOutcome::Unchanged` — the early cutoff that leaves dependents un-dirtied — when they match.
+
+Both keying functions exclude `kernel_handle`, so this policy is enforced on every evaluation path, for every target, with no opt-in allowlist standing in front of it.
 
 The `kernel_handle` field is **deliberately excluded** from the comparison: re-realization that produces a different handle id for semantically-identical geometry must not trigger downstream invalidation. This is the load-bearing rationale for the `upstream_values_hash` field — it's what distinguishes "semantically same" from "semantically different" handles backing the same realization-ref.
+
+> **Amended by #6372.** This section previously specified the above as a standalone `fn geometry_handle_significance(old, new) -> FilterOutcome` in `crates/reify-eval/src/significance_filter.rs`. That helper was implemented under GHR-ε, never wired to any production caller (wiring was deferred to GHR-ζ / #3608, which landed `done` without it), and deleted by #6372 as subsumed by the `Value`-layer path described above — which computes the identical `realization_ref` + `upstream_values_hash` predicate. **The normative contract stated in this section is unchanged; only the implementation shape is.** The `cache.rs` doc-comment on `CachedResult::content_hash` carries the full rationale, including the anti-goal: routing geometry handles through the significance filter would suppress the write to hold the hash bit-identical, which persists a *stale* `kernel_handle` that GHR-ζ dereferences for kernel dispatch — zero cache benefit (the hash already excludes the field) at the cost of handle freshness.
 
 ## §6 — Cache key composition + persistent cache
 
@@ -322,13 +317,13 @@ Filing happens in a **separate session** after this PRD is committed (per `feedb
 - **Task GHR-ε** — In-session cache-key stability + significance filter arm (esc-3607-59, Leo-ratified).
   - **Observable signal** *(amended per esc-3607-59 relaxation)*:
     - `cache.rs::tests::geometry_handle_cache_key` (5 tests): pins `CachedResult::Value(gh,_).content_hash()` — same rr+hash → same key; different hash/rr → different key; kernel_handle excluded (load-bearing).
-    - `significance_filter.rs::tests::geometry_handle` (5 tests): `geometry_handle_significance()` — rr+hash equality → Equivalent; mismatch or non-GH input → Different; kernel_handle difference → Equivalent (excluded).
+    - ~~`significance_filter.rs::tests::geometry_handle`~~ — **superseded by #6372** (signal delivered by GHR-ε, then retired). These pinned the standalone `geometry_handle_significance()` helper, which #6372 deleted as subsumed by the `Value`-layer path (see §5's "Amended by #6372"). The same contract is carried by pins that remain green: `cache.rs::tests::geometry_handle_cache_key` (above — including the early-cutoff tests #6372 added, which assert rr+hash equality ⇒ `EvalOutcome::Unchanged` through the real `record_evaluation_with_freshness` API, plus a `Changed` negative control and the symbolic→realized transition), and reify-ir `value.rs::tests::geometry_handle` for the equality/hash sensitivity matrix.
     - `crates/reify-eval/tests/harness_geometry/geometry_handle_persistent_cache_round_trip.rs` (2 integration tests, no disk I/O): two fresh Engine instances built from the same source → byte-identical `content_hash()` (= in-session cache key) + `PartialEq`; changed box dimension → different key (invalidation fires).
     - The full disk restart→persist round-trip, `examples/spec-shape-physical.ri`, `PersistentlyCacheable`-for-geometry, and the Engine cache-dir constructor are **re-homed to GHR-ζ** (Phase 6) by esc-3607-59.
   - **Prereqs:** GHR-δ.
   - **Crates touched:**
     - `crates/reify-eval/src/cache.rs` (contract-lock tests + doc-comment on `content_hash`)
-    - `crates/reify-eval/src/significance_filter.rs` (`geometry_handle_significance` fn + tests)
+    - ~~`crates/reify-eval/src/significance_filter.rs`~~ (`geometry_handle_significance` fn + tests) — **removed by #6372**: the fn was never wired to a production caller and was deleted as subsumed by the `Value`-layer path; GHR-ε's contribution to this file no longer exists in the tree. See §5's "Amended by #6372".
     - `crates/reify-eval/tests/harness_geometry/geometry_handle_persistent_cache_round_trip.rs` (new; in-session cross-Engine key stability)
     - `docs/prds/v0_3/geometry-handle-runtime.md` (this file; §8/§9.2 amendments)
     - `persistent_cache.rs` intentionally NOT touched — geometry persistence is GHR-ζ.
