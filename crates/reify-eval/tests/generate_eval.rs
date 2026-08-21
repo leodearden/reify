@@ -392,3 +392,73 @@ fn empty_geometry_list_count_is_zero() {
         result.values.get(&ValueCellId::new("S", "n")),
     );
 }
+
+/// Assert `cell` is a non-`Undef` `Value::GeometryHandle`, returning its ref.
+fn assert_geometry_handle(
+    result: &EvalResult,
+    entity: &str,
+    cell: &str,
+) -> reify_core::identity::RealizationNodeId {
+    let value = result
+        .values
+        .get(&ValueCellId::new(entity, cell))
+        .unwrap_or_else(|| panic!("no value cell `{entity}.{cell}`"));
+    match value {
+        Value::GeometryHandle {
+            realization_ref, ..
+        } => realization_ref.clone(),
+        other => panic!("`{entity}.{cell}` should be a GeometryHandle; got: {other:?}"),
+    }
+}
+
+/// The acceptance criterion end to end: `union_all` over a `List<Geometry>`
+/// evaluates to a real geometry handle, distinct from every element's.
+#[test]
+fn union_all_over_a_geometry_list_evaluates_to_a_handle() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let combined = union_all(holes)
+        }
+    "#,
+    );
+    let element_refs = assert_geometry_handle_list(&result, "S", "holes", 3);
+    let combined = assert_geometry_handle(&result, "S", "combined");
+    assert!(
+        !element_refs.contains(&combined),
+        "`combined` must be its OWN realization, not an alias of an element: \
+         {combined:?} in {element_refs:?}",
+    );
+}
+
+/// The same for a direct list literal, and for `intersection_all`.
+#[test]
+fn boolean_all_over_a_direct_list_literal_evaluates_to_a_handle() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let u = union_all([cylinder(5mm, 20mm), cylinder(6mm, 20mm)])
+            let x = intersection_all([cylinder(5mm, 20mm), cylinder(6mm, 20mm)])
+        }
+    "#,
+    );
+    let u = assert_geometry_handle(&result, "S", "u");
+    let x = assert_geometry_handle(&result, "S", "x");
+    assert_ne!(u, x, "the two folds are distinct realizations");
+}
+
+/// The full motivating idiom from the task's REPRO: the index is substituted
+/// through ARITHMETIC inside the geometry constructor's arguments, not just
+/// into a constant body. Four distinct handles, no undef anywhere.
+#[test]
+fn generate_with_index_arithmetic_in_geometry_args_evaluates() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(4, |i| translate(cylinder(5mm, 20mm), 50mm * cos(i * 90deg), 50mm * sin(i * 90deg), 0mm))
+        }
+    "#,
+    );
+    assert_geometry_handle_list(&result, "S", "holes", 4);
+}
