@@ -1,8 +1,9 @@
 //! Boundary tests for [`NodeTraitsMap<NodeId>`] — PRD §5 B1 / §9 T4 (precedence chain).
 //!
-//! This file is the PRD §9 reserved location for the full T1–T7 boundary test grid.
-//! Task β seeds it with the NodeTraitsMap<NodeId> cases that can be tested without
-//! any additional scheduler wiring. Later tasks (γ/δ/ζ/η/θ) will append T1–T7 here.
+//! This file is the PRD §9 reserved location for the T1–T7 boundary test grid.
+//! T2, T4 (lite), T6, and T7 landed below (T6 under task #3581, B4); T1 and
+//! T3 were never added; T5 landed under task #3579 and was later dropped
+//! under task #5065 along with the `concurrent.rs` scheduler stack it pinned.
 //!
 //! All tests use real `reify_eval::cache::NodeId` values so that the
 //! `impl HasNodeKind for NodeId` bridge in `reify-eval/src/cache.rs` is exercised
