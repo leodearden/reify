@@ -829,7 +829,7 @@ fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
     // this build for the same cost reason as the box's; every assertion is
     // labelled "realized cylinder". Closed form and ownership split:
     // `assert_cylinder_grid_miss_measurement`.
-    assert_cylinder_grid_miss_measurement(&disp);
+    let _report = assert_cylinder_grid_miss_measurement(&disp);
 }
 
 /// Build a fresh OCCT+Gmsh engine with the multi-case FEA trampolines installed,
@@ -1619,8 +1619,14 @@ const CYLINDER_PREDICTED_MISSES: usize = 84;
 /// the merge gate for a defect that "must not be fixed here". The excess is
 /// logged loudly instead, and the exact-count/bucket form of the claim is kept
 /// in [`realized_cylinder_mesh_covers_its_own_aabb`].
+///
+/// Returns the [`GridMissReport`] it dumped, so a caller that wants to add the
+/// upstream-owned claims on the SAME field does not have to re-classify (and
+/// re-print) it.
 #[cfg(has_gmsh)]
-fn assert_cylinder_grid_miss_measurement(disp: &reify_ir::SampledField) {
+fn assert_cylinder_grid_miss_measurement(
+    disp: &reify_ir::SampledField,
+) -> reify_solver_elastic::GridMissReport {
     use std::collections::HashSet;
 
     let (report, _hist) = classify_and_dump_grid_misses(disp, "realized cylinder");
@@ -1677,6 +1683,8 @@ fn assert_cylinder_grid_miss_measurement(disp: &reify_ir::SampledField) {
             report.n_missed - CYLINDER_PREDICTED_MISSES,
         );
     }
+
+    report
 }
 
 /// Task #6154's measurement, held as #6200's acceptance gate.
@@ -1758,7 +1766,9 @@ fn realized_box_mesh_tiles_its_own_aabb() {
 /// red the merge gate for a defect this file explicitly says "must not be fixed
 /// here". [`assert_cylinder_grid_miss_measurement`] keeps the half this crate
 /// DOES own — the sentinel must fire on every predicted-outside node — as a hard
-/// live assertion, and logs any excess.
+/// live assertion, and logs any excess; this test re-runs that half on its own
+/// realization before adding the two upstream-owned claims, so all three are
+/// pinned on one and the same field.
 ///
 /// So: run this explicitly (`--ignored`) to re-measure the cylinder's coverage,
 /// and expect it to go green and STAY green once #6200 lands.
@@ -1770,11 +1780,16 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
     else {
         return;
     };
-    let (report, _hist) = classify_and_dump_grid_misses(&disp, "realized cylinder");
-    assert_report_reconciles_with_field(&disp, &report, 3, "realized cylinder");
+
+    // (a) first, on THIS realization: every predicted-outside node must be
+    // missed. Re-run here rather than leant on from the live capstone — that
+    // capstone measures a DIFFERENT realization of the fixture, and (c) below
+    // needs under- and over-firing pinned on one and the same field to conclude
+    // the miss set is exactly the predicted 84.
+    let report = assert_cylinder_grid_miss_measurement(&disp);
 
     // ── (b) COVERAGE guard — OVER-firing ────────────────────────────────────
-    // The live control asserts every predicted-outside node IS missed, so any
+    // With (a) green above, every predicted-outside node IS missed, so any
     // excess over the closed form is a node the geometry places INSIDE.
     assert_eq!(
         report.n_missed, CYLINDER_PREDICTED_MISSES,
@@ -1788,9 +1803,9 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
     );
 
     // ── (c) BUCKETING — the classifier's own index-extremity arm ────────────
-    // With (b) green the miss SET is exactly the predicted 84 (the live control
-    // pins that all 84 are present); this checks that `classify_grid_misses`
-    // labels them the way the closed form does.
+    // (a) puts all 84 predicted misses in the set and (b) admits no others, so
+    // on this field the miss SET is exactly the predicted 84; this checks that
+    // `classify_grid_misses` labels them the way the closed form does.
     assert_eq!(
         (
             report.missed_interior,
