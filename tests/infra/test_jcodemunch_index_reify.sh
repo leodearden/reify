@@ -993,4 +993,71 @@ else
     fi
 fi
 
+# -- Test 14: the identity SEAM ----------------------------------------------
+#
+# THE HOLE THIS CLOSES (esc-6107-7). Test 9 pins that the lever is CONSTRUCTED
+# into the argv; Test 12 pins that it REACHES THE CHILD's environment. Neither
+# closes the LOOP: nothing yet drives an indexer that actually RESOLVES ITS OWN
+# IDENTITY from that lever, writes where that resolution lands, and is then
+# checked by the script against the identity the script independently predicted.
+# Test 12's hijack half is driven by a STATIC mk_foreign_index_db fixture the
+# suite plants at a slug it chose — an indexer never decided anything. So the
+# seam this whole script exists to hold — "force the per-path identity, then
+# verify the one you actually depend on" — was untested.
+#
+# ONE stub binary takes BOTH branches, decided solely by the lever's value, so
+# the two assertions are mutually non-vacuous by construction: neither can pass
+# for a reason unrelated to identity dispatch.
+#
+# HONEST LIMIT, recorded so a later reader does not overclaim this test: a stub
+# encodes the TESTER'S MODEL of upstream, so it pins the SEAM, not upstream
+# truth. If jcodemunch's own dispatch changes at a pin bump, this test keeps
+# passing against the old model. That hazard is deliberately prose-only — the
+# PIN-BUMP CHECKLIST comment in the script — with no gate.
+echo ""
+echo "--- Test 14: the identity SEAM (the script forces the lever, then verifies the identity it depends on) ---"
+
+SEAM_ROOT="$(mk_origin_repo)"
+SEAM_INDEX="$(mk_tmpdir)"
+# A SECOND, fresh index dir for (b): reusing (a)'s would leave the local-*.db
+# that (a) just wrote sitting at the predicted path, and the DB gate would be
+# satisfied by it no matter where the negative run's indexer landed.
+SEAM_INDEX_2="$(mk_tmpdir)"
+
+if [ -z "$SEAM_ROOT" ] || [ -z "$SEAM_INDEX" ] || [ -z "$SEAM_INDEX_2" ]; then
+    echo "  FAIL: could not create the identity-seam fixtures"
+    FAIL=$((FAIL + 1))
+else
+    mk_stub_indexer "$STUB_DIR/identity-dispatch" identity-dispatch
+
+    # (a) POSITIVE — the loop closes: the script's own lever reaches the
+    # indexer, the indexer resolves the PER-PATH identity from it, writes there,
+    # and the script finds and reports exactly that identity. The expected slug
+    # comes from recompute_repo_name (the independent python3 mirror), never
+    # from the script's own output, so a drift in the script's derivation still
+    # fails this loudly.
+    assert "under the script's own lever the indexer resolves and writes the PER-PATH identity, and the run reaches INDEX-OK" \
+        with_stub "$SEAM_INDEX" "$STUB_DIR/identity-dispatch" \
+            expect_ok_stdout "repo=local/$(recompute_repo_name "$SEAM_ROOT")" \
+                --project-root "$SEAM_ROOT"
+
+    # (b) NEGATIVE — the SAME stub binary, with the lever overridden downstream
+    # of the script's own `env` prefix via its documented word-split seam
+    # (scripts/jcodemunch-index-reify.sh:466-475): INDEXER_ARGV becomes
+    # `env …=0 env …=1 <stub> watch …` and the second env wins. The stub then
+    # takes git_root.py's GIT branch and writes leodearden-reify.db, which is
+    # the real failure mode the script's own hijack_note names —
+    # "JCODEMUNCH_GIT_ROOT_IDENTITY=0 did not reach the indexer".
+    #
+    # This is also the MUTATION GUARD for (a): if the script ever drops its
+    # JC_IDENTITY_ENV prefix, (a) reproduces exactly this refusal and fails.
+    #
+    # expect_refusal_names already asserts non-zero exit, the
+    # E_JC_INDEX_MISSING marker, and the ABSENCE of INDEX-OK.
+    assert "when the lever does not take effect the indexer lands on the git identity and the script refuses E_JC_INDEX_MISSING naming it" \
+        with_stub "$SEAM_INDEX_2" "env JCODEMUNCH_GIT_ROOT_IDENTITY=1 $STUB_DIR/identity-dispatch" \
+            expect_refusal_names "leodearden-reify.db" \
+                --project-root "$SEAM_ROOT"
+fi
+
 test_summary
