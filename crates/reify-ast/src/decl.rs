@@ -1341,3 +1341,110 @@ mod has_test_annotation_tests {
         assert!(has_test_annotation(&anns));
     }
 }
+
+#[cfg(test)]
+mod find_param_default_span_tests {
+    use super::{Expr, LetDecl, MemberDecl, ParamDecl, find_param_default_span};
+    use crate::ast::ExprKind;
+    use reify_core::{ContentHash, SourceSpan};
+
+    /// Build a `MemberDecl::Param` by hand — no parser.
+    ///
+    /// `decl_span` is the whole `param … = …` declaration's span; `default_span`,
+    /// when `Some`, is the span of the default EXPRESSION alone. Keeping the two
+    /// distinct is what makes the §6.1 invariant assertable.
+    fn param(name: &str, decl_span: (u32, u32), default_span: Option<(u32, u32)>) -> MemberDecl {
+        MemberDecl::Param(ParamDecl {
+            name: name.to_string(),
+            doc: None,
+            is_priv: false,
+            type_expr: None,
+            default: default_span.map(|(s, e)| Expr {
+                kind: ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
+                span: SourceSpan::new(s, e),
+            }),
+            where_clause: None,
+            annotations: Vec::new(),
+            span: SourceSpan::new(decl_span.0, decl_span.1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// Build a `MemberDecl::Let` by hand — the sibling variant that
+    /// [`super::find_named_member_span`] matches but this helper deliberately does not.
+    fn let_member(name: &str, decl_span: (u32, u32), value_span: (u32, u32)) -> MemberDecl {
+        MemberDecl::Let(LetDecl {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            is_priv: false,
+            is_aux: false,
+            type_expr: None,
+            value: Expr {
+                kind: ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
+                span: SourceSpan::new(value_span.0, value_span.1),
+            },
+            where_clause: None,
+            annotations: Vec::new(),
+            span: SourceSpan::new(decl_span.0, decl_span.1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    #[test]
+    fn param_with_default_returns_the_default_expression_span() {
+        // `param width: Length = 80mm` — decl spans (0, 30), the default `80mm` spans (22, 27).
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        assert_eq!(
+            find_param_default_span(&members, "width"),
+            Some(SourceSpan::new(22, 27))
+        );
+    }
+
+    #[test]
+    fn returned_span_is_the_default_only_never_the_whole_decl() {
+        // PRD §6.1 invariant, pinned explicitly rather than left implied by the
+        // equality above: the result must NOT be the whole `param … = …` decl span.
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        let found = find_param_default_span(&members, "width").expect("param has a default");
+        assert_ne!(
+            found,
+            SourceSpan::new(0, 30),
+            "must return the default EXPRESSION range, never the whole param decl"
+        );
+    }
+
+    #[test]
+    fn param_without_default_returns_none() {
+        // `param thickness : Length` — real shape, e.g.
+        // examples/auto/bearing_computed_default_unevaluated.ri:57.
+        let members = vec![param("thickness", (0, 24), None)];
+        assert_eq!(find_param_default_span(&members, "thickness"), None);
+    }
+
+    #[test]
+    fn absent_name_returns_none() {
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        assert_eq!(find_param_default_span(&members, "height"), None);
+    }
+
+    #[test]
+    fn empty_member_slice_returns_none() {
+        assert_eq!(find_param_default_span(&[], "width"), None);
+    }
+
+    #[test]
+    fn let_member_with_matching_name_returns_none() {
+        // Deliberate narrowing vs. `find_named_member_span`, which matches BOTH
+        // Param and Let (decl.rs `find_named_member_span_depth`). A `let` has no
+        // rewritable param default, so it must not resolve.
+        let members = vec![let_member("width", (0, 20), (12, 17))];
+        assert_eq!(find_param_default_span(&members, "width"), None);
+    }
+}
