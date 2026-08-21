@@ -3027,9 +3027,11 @@ pub async fn spawn_debug_server(
 mod tests {
     use super::*;
 
-    // Process-global lock for tests that touch the global diagnostics counters.
-    // Acquire this before reset_for_test() + handler call so parallel test
-    // threads do not race on the shared AtomicU64 counters.
+    // Process-global lock for tests that touch either family of process-global
+    // mesh-morph counters — reify_mesh_morph::diagnostics (seven AtomicU64) and
+    // reify_mesh_morph::stats (Mutex<StatsState>). Acquire this before
+    // reset_for_test() + handler call so parallel test threads do not race on
+    // the shared counters.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
@@ -3242,6 +3244,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_morph_stats_returns_morph_stats_shape() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // Precondition: pristine stats. reset_for_test() is exposed via the
         // `testing` feature on reify-mesh-morph (activated by [dev-dependencies]
         // features = ["testing"] in Cargo.toml). This keeps the test correct even
@@ -3282,6 +3286,7 @@ mod tests {
         // by the unwrap. Shape assertions live in
         // handle_morph_stats_returns_morph_stats_shape; here we only verify
         // delegation fidelity.
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reify_mesh_morph::stats::reset_for_test();
 
         let direct = super::handle_morph_stats(serde_json::json!({}))
