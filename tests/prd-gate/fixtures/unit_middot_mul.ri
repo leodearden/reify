@@ -14,13 +14,15 @@
 // grammar or scanner.)
 //
 // CONSUMED BY crates/reify-compiler/tests/harness_units/unit_middot_mul_tests.rs,
-// which reads this file from disk and asserts (i) zero Error diagnostics, (ii)
-// all three value cells PRESENT — the anti-silent-drop lock — and (iii) each
-// cell's (si_value, dimension) equal to its `*`-twin's. Because a tracked `.rs`
+// which reads this file from disk and asserts (i) zero Error diagnostics and
+// (ii) all three value cells PRESENT — the anti-silent-drop lock — each with a
+// (si_value, dimension) equal to its `*`-spelled twin's. Because a tracked `.rs`
 // names this fixture, it is ALSO listed in scripts/verify.sh's
 // `_RUST_COUPLED_RI_FIXTURES`; test_verify_scope.sh's PG-DRIFT scenario derives
 // that set by grepping tracked `.rs` files and goes RED if the two drift apart.
-// Editing the three `let` lines below therefore changes test inputs — don't.
+// Editing a `let` line below therefore changes a test input — don't. That is
+// ENFORCED, not merely asserted: assertion (ii) pins each binding against a
+// `*`-spelled twin string held in the test, so an edit here goes RED there.
 //
 // Why it matters: `Display for DimensionVector` (reify-core/src/dimension.rs)
 // joins base-unit parts with U+00B7, so `reify eval` prints `7850 kg·m^-3` and

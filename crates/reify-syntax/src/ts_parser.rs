@@ -4040,6 +4040,10 @@ impl<'a> Lowering<'a> {
         //    INV-SF-7 `parse-is-value-faithful` failure shape
         //    (`docs/legibility/design-invariants.md`), so the arm is closed
         //    structurally instead of being patched one operator at a time.
+        //
+        //    The classification itself lives in the free `classify_unit_op` so its
+        //    two non-happy-path arms are reachable from a test — see the
+        //    `classify_unit_op_*` tests at the bottom of this file.
         if let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
@@ -4049,10 +4053,19 @@ impl<'a> Lowering<'a> {
             let op_text = self
                 .source
                 .get(left_node.end_byte()..right_node.start_byte())?;
-            return match op_text.trim() {
-                "/" => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
-                "*" | "·" => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
-                other => {
+            return match classify_unit_op(op_text) {
+                UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
+                UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
+                // Operator token MISSING (empty slice) — tree-sitter's error
+                // recovery spliced the operands together, so the tree ALREADY
+                // carries an ERROR/MISSING node and `check_and_lower!` reports the
+                // real syntax error. Adding "unrecognized unit operator ``" on top
+                // of it would be a second, worse-worded diagnostic for one defect,
+                // so this arm drops through silently. That is not the INV-SF-7
+                // silent-drop shape: the drop is loud at the level the user
+                // observes, just not twice.
+                UnitOp::Missing => None,
+                UnitOp::Unrecognized(other) => {
                     self.push_error(
                         format!("unrecognized unit operator `{other}` in unit expression"),
                         self.span(node),
@@ -4600,6 +4613,45 @@ impl<'a> Lowering<'a> {
             },
             span: self.span(node),
         })
+    }
+}
+
+/// Classification of the operator slice between a `unit_expr`'s `left` and
+/// `right` operands — see [`Lowering::lower_unit_expr`], the sole caller.
+///
+/// Split out of the method so the two non-happy-path arms are REACHABLE FROM A
+/// TEST.  Neither can be produced through today's grammar (the external scanner
+/// emits only `*`, `·` and `/` as `_unit_mul_op`/`_unit_div_op`), and defensive
+/// code whose first observation is in production is exactly the shape INV-SF-7
+/// warns about.  The `classify_unit_op_*` tests at the bottom of this file are
+/// therefore the only place `Missing` and `Unrecognized` are pinned.
+#[derive(Debug, PartialEq, Eq)]
+enum UnitOp<'a> {
+    /// `*` or `·` (U+00B7 MIDDLE DOT) — two spellings of ONE operator, both
+    /// yielding [`UnitExpr::Mul`] (task #5784).
+    Mul,
+    /// `/` → [`UnitExpr::Div`].
+    Div,
+    /// The slice is empty or whitespace-only, i.e. the operator token is
+    /// MISSING — spliced away by tree-sitter's error recovery.  The caller must
+    /// NOT diagnose: the tree already carries the ERROR/MISSING node that
+    /// `check_and_lower!` reports.
+    Missing,
+    /// Anything else, carried verbatim (already trimmed) so the caller can name
+    /// it in the diagnostic.  Never dropped silently.
+    Unrecognized(&'a str),
+}
+
+/// Classify the operator slice between a `unit_expr`'s two operands.
+///
+/// Units are contiguous (no whitespace inside a `unit_expr`), so in a
+/// well-formed parse the trimmed slice is exactly `*`, `·` or `/`.
+fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
+    match op_text.trim() {
+        "*" | "·" => UnitOp::Mul,
+        "/" => UnitOp::Div,
+        "" => UnitOp::Missing,
+        other => UnitOp::Unrecognized(other),
     }
 }
 
@@ -6988,5 +7040,45 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // ── `classify_unit_op` — the non-happy-path arms of `lower_unit_expr` ─────
+    //
+    // Task #5784 (angle-units leaf κ).  `UnitOp::Missing` and
+    // `UnitOp::Unrecognized` are unreachable through today's grammar — the
+    // external scanner emits only `*`, `·` and `/` as `_unit_mul_op` /
+    // `_unit_div_op` — so these three tests are the ONLY observation of their
+    // behaviour.  What they pin is the classification and the verbatim operator
+    // text handed to the diagnostic; the message wording itself is built at the
+    // single call site in `lower_unit_expr`.
+
+    #[test]
+    fn classify_unit_op_maps_both_mul_spellings_to_one_operator() {
+        assert_eq!(classify_unit_op("*"), UnitOp::Mul);
+        assert_eq!(
+            classify_unit_op("·"),
+            UnitOp::Mul,
+            "U+00B7 MIDDLE DOT is a second spelling of `*`, not a distinct operator"
+        );
+        assert_eq!(classify_unit_op("/"), UnitOp::Div);
+    }
+
+    #[test]
+    fn classify_unit_op_treats_an_empty_slice_as_a_missing_operator() {
+        // An empty slice means error recovery spliced the operands together, so
+        // the tree already carries the real syntax error.  `Missing` is what tells
+        // `lower_unit_expr` to stay quiet rather than emit a second, confusingly
+        // worded "unrecognized unit operator ``".
+        assert_eq!(classify_unit_op(""), UnitOp::Missing);
+        assert_eq!(classify_unit_op("   "), UnitOp::Missing);
+    }
+
+    #[test]
+    fn classify_unit_op_carries_an_unknown_operator_verbatim() {
+        // Whatever the caller names in its diagnostic must be the operator the
+        // user actually wrote — trimmed, never truncated or normalised.
+        assert_eq!(classify_unit_op("×"), UnitOp::Unrecognized("×"));
+        assert_eq!(classify_unit_op(" ⋅ "), UnitOp::Unrecognized("⋅"));
+        assert_eq!(classify_unit_op("**"), UnitOp::Unrecognized("**"));
     }
 }

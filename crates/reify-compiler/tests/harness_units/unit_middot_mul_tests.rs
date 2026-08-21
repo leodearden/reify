@@ -104,15 +104,25 @@ fn prd_gate_fixture_unit_middot_mul_compiles_clean() {
     );
 }
 
-/// (ii) THE SILENT-DROP LOCK: all three bindings survive lowering.
+/// (ii) THE SILENT-DROP LOCK: all three bindings survive lowering AND evaluate
+/// to their `*`-spelled twins' values.
 ///
 /// A clean compile is NOT sufficient evidence that the fixture works — if
 /// `lower_unit_expr` fails to recognise the `·` operator it returns `None`, which
 /// propagates through `lower_quantity_literal` and `lower_let` as a dropped
 /// member, and `check_and_lower!` stays silent because it keys off a CST error
 /// that no longer exists.  The observable result is a template with zero errors
-/// and zero value cells: assertion (i) would still pass.  This is the assertion
-/// that distinguishes "correct" from "silently wrong".
+/// and zero value cells: assertion (i) would still pass.  The presence half is
+/// the assertion that distinguishes "correct" from "silently wrong".
+///
+/// The value half is what makes the fixture's own three `let` lines LOAD-BEARING
+/// rather than merely present.  Each `*`-spelled string in the table below is the
+/// pinned expectation; the `·` side is read from disk.  Editing a `let` line in
+/// `tests/prd-gate/fixtures/unit_middot_mul.ri` therefore goes RED here — which
+/// is the enforcement that fixture's header ("Editing the three `let` lines below
+/// therefore changes test inputs — don't") previously asserted with nothing
+/// behind it.  Tests (iii)/(iv) below compare `·` against `*` for INLINE strings;
+/// only this test couples the two to the committed artifact.
 #[test]
 fn prd_gate_fixture_all_three_bindings_are_present() {
     let module = compile_fixture();
@@ -121,7 +131,12 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
         .iter()
         .find(|t| t.name == "UnitMiddotMul")
         .expect("UnitMiddotMul template not found in the compiled fixture");
-    for member in ["torque_like", "with_div", "composed"] {
+    // (fixture member name, the `*`-spelled twin of the RHS committed on that line)
+    for (member, star_twin) in [
+        ("torque_like", "5N*m"),
+        ("with_div", "5N*m/rad"),
+        ("composed", "5m^2*kg*s^-2"),
+    ] {
         let cell = template
             .value_cells
             .iter()
@@ -138,26 +153,40 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
                         .collect::<Vec<_>>()
                 )
             });
-        assert!(
-            cell.default_expr.is_some(),
-            "value cell `{member}` exists but has no default_expr"
+        let expr = cell
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("value cell `{member}` exists but has no default_expr"));
+        let (fixture_v, fixture_d) = expect_scalar(expr);
+        let (star_v, star_d) = let_cell_si_value(star_twin);
+        assert_eq_rel(
+            fixture_v,
+            star_v,
+            1e-12,
+            &format!(
+                "fixture binding `{member}` must have the same si_value as its \
+                 `*`-spelled twin `{star_twin}` — if this moved, either the \
+                 fixture's `let` line was edited or `·` stopped meaning `*`"
+            ),
+        );
+        assert_eq!(
+            fixture_d, star_d,
+            "fixture binding `{member}` must have the same dimension as its \
+             `*`-spelled twin `{star_twin}`"
         );
     }
 }
 
-/// (iii) Each `·` binding evaluates identically to its `*` twin.
+/// Compile each `(·-spelled, *-spelled)` pair as a `let` cell and assert the two
+/// evaluate identically.
 ///
-/// This is the literal wording of the task's user-observable signal: "`5N·m`
-/// evaluates identically to `5N*m`".  Comparing against the twin rather than a
-/// hard-coded number keeps the assertion honest if the stdlib's unit factors ever
-/// move — the two spellings must agree whatever they denote.
-#[test]
-fn each_middot_binding_matches_its_star_twin() {
-    for (dot, star) in [
-        ("5N·m", "5N*m"),
-        ("5N·m/rad", "5N*m/rad"),
-        ("5m^2·kg·s^-2", "5m^2*kg*s^-2"),
-    ] {
+/// Comparing against the twin rather than a hard-coded number keeps the assertion
+/// honest if the stdlib's unit factors ever move — the two spellings must agree
+/// whatever they denote.  Shared by (iii) and (iv), which differ only in their
+/// input table; they stay separately named so a failure still reports which class
+/// of literal broke.
+fn assert_twins(pairs: &[(&str, &str)]) {
+    for (dot, star) in pairs {
         let (dot_v, dot_d) = let_cell_si_value(dot);
         let (star_v, star_d) = let_cell_si_value(star);
         assert_eq_rel(
@@ -171,6 +200,19 @@ fn each_middot_binding_matches_its_star_twin() {
             "`{dot}` and `{star}` must have the same dimension"
         );
     }
+}
+
+/// (iii) Each `·` binding evaluates identically to its `*` twin.
+///
+/// This is the literal wording of the task's user-observable signal: "`5N·m`
+/// evaluates identically to `5N*m`".
+#[test]
+fn each_middot_binding_matches_its_star_twin() {
+    assert_twins(&[
+        ("5N·m", "5N*m"),
+        ("5N·m/rad", "5N*m/rad"),
+        ("5m^2·kg·s^-2", "5m^2*kg*s^-2"),
+    ]);
 }
 
 /// (iv) The two shapes `Display for DimensionVector` actually emits are readable.
@@ -179,22 +221,9 @@ fn each_middot_binding_matches_its_star_twin() {
 /// density and torque renderings a user copies out of `reify eval` output.
 #[test]
 fn display_shaped_middot_literals_match_their_star_twins() {
-    for (dot, star) in [
+    assert_twins(&[
         ("7850kg·m^-3", "7850kg*m^-3"),
         ("9.81m·s^-2", "9.81m*s^-2"),
         ("5m^2·kg·s^-2·rad^-1", "5m^2*kg*s^-2*rad^-1"),
-    ] {
-        let (dot_v, dot_d) = let_cell_si_value(dot);
-        let (star_v, star_d) = let_cell_si_value(star);
-        assert_eq_rel(
-            dot_v,
-            star_v,
-            1e-12,
-            &format!("`{dot}` and `{star}` must have the same si_value"),
-        );
-        assert_eq!(
-            dot_d, star_d,
-            "`{dot}` and `{star}` must have the same dimension"
-        );
-    }
+    ]);
 }

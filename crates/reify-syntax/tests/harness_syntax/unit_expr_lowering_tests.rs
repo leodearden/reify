@@ -306,52 +306,63 @@ fn middot_fixture_bindings_all_survive_lowering() {
     );
 }
 
-// ── Negative locks: adjacency, mirroring the `*` fixtures above ──────────────
+// ── Negative locks: adjacency ────────────────────────────────────────────────
 //
-// Each must produce a LOUD failure — a parse diagnostic, or a BinOp that does not
-// collapse into one quantity_literal.  What none of them may produce is a
-// diagnostic-free structure with a missing member.
+// These do NOT mirror the outcome of the `*` negatives above.  `5kg * m` really
+// does stay a BinOp because `*` is a general binary operator; there is no general
+// `·` operator, so each source below is a PARSE ERROR.  The names say so.
+//
+// What each must produce is a LOUD failure: at least one parse diagnostic, plus
+// the binding RECOVERED as a member carrying the error.  What none may produce is
+// a diagnostic-free structure with a missing member.
 
-/// Shared assertion for the adjacency negatives: whatever else happens, the
-/// binding must not vanish without a diagnostic.
-fn assert_not_silently_dropped(source: &str) {
-    let (_, members, errors) = parse_shape(source);
+/// Shared assertion for the adjacency negatives.  Parses `source` ONCE and pins
+/// the full recovered shape.
+///
+/// The `members == 1` half is the part `!errors.is_empty()` does not imply, and
+/// is why this helper exists at all: tree-sitter's recovery keeps the `let`
+/// binding as a member carrying the ERROR node, so the observable outcome is a
+/// loud member — not a vanished one, and not a dropped declaration.  Measured on
+/// this branch: all three sources give `(decls, members) == (1, 1)` with one
+/// `syntax error: …` diagnostic naming the middle dot.
+fn assert_loud_middot_parse_error(source: &str) {
+    let (decls, members, errors) = parse_shape(source);
     assert!(
-        members > 0 || !errors.is_empty(),
-        "`{source}` produced a diagnostic-free structure with no members — a \
-         silent drop, which is never an acceptable outcome"
+        !errors.is_empty(),
+        "`{source}` must produce a parse diagnostic — `·` is not a general \
+         operator, and a diagnostic-free parse here is the INV-SF-7 silent-drop \
+         shape this block exists to forbid"
+    );
+    assert!(
+        errors.iter().any(|e| e.contains('·')),
+        "`{source}`: the diagnostic must point at the middle dot, got {errors:?}"
+    );
+    assert_eq!(decls, 1, "`{source}`: expected exactly one declaration");
+    assert_eq!(
+        members, 1,
+        "`{source}`: the binding must be RECOVERED as a member carrying the \
+         error, not dropped — got {members} members with {errors:?}"
     );
 }
 
 #[test]
-fn space_after_middot_stays_binop() {
+fn space_after_middot_is_a_parse_error() {
     // `5N· m` — whitespace after `·` breaks unit contiguity, so `·` is not a
     // unit-multiply here and there is no general `·` operator to fall back to.
-    assert_not_silently_dropped("structure def S { let x = 5N· m }");
-    let (_, _, errors) = parse_shape("structure def S { let x = 5N· m }");
-    assert!(
-        !errors.is_empty(),
-        "`5N· m` must produce a parse diagnostic — `·` is not a general operator"
-    );
+    assert_loud_middot_parse_error("structure def S { let x = 5N· m }");
 }
 
 #[test]
-fn space_before_middot_stays_binop() {
-    assert_not_silently_dropped("structure def S { let x = 5N ·m }");
-    let (_, _, errors) = parse_shape("structure def S { let x = 5N ·m }");
-    assert!(
-        !errors.is_empty(),
-        "`5N ·m` must produce a parse diagnostic — `·` is not a general operator"
-    );
+fn space_before_middot_is_a_parse_error() {
+    // `5N ·m` — same, on the other side of the operator.
+    assert_loud_middot_parse_error("structure def S { let x = 5N ·m }");
 }
 
 #[test]
-fn digit_after_middot_stays_binop() {
-    // `5N·3` — a digit is not a unit-start character (mirrors `digit_after_slash_stays_binop`).
-    assert_not_silently_dropped("structure def S { let x = 5N·3 }");
-    let (_, _, errors) = parse_shape("structure def S { let x = 5N·3 }");
-    assert!(
-        !errors.is_empty(),
-        "`5N·3` must produce a parse diagnostic — `·` must not bind to a digit"
-    );
+fn digit_after_middot_is_a_parse_error() {
+    // `5N·3` — a digit is not a unit-start character, so the scanner rolls back
+    // (the adjacency condition `digit_after_slash_stays_binop` tests for `/`).
+    // Unlike `/`, there is no general `·` binary operator to recover into, so
+    // this is an error rather than a BinOp.
+    assert_loud_middot_parse_error("structure def S { let x = 5N·3 }");
 }
