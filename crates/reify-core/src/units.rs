@@ -50,6 +50,13 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
     }
 }
 
+/// Ordered `.ri`-emittable unit symbols for a dimension, most-preferred first.
+///
+/// Placeholder — implemented in step-2.
+pub fn ri_emittable_units(_dim: &DimensionVector) -> &'static [&'static str] {
+    &[]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +106,166 @@ mod tests {
     #[test]
     fn bogus_unit_is_unrecognized() {
         assert_eq!(unit_symbol_to_si("bogus"), None);
+    }
+
+    // ─── `ri_emittable_units` — the reverse (emission) table ─────────────────
+    //
+    // Task #5095 (ai-native-editing β). These four tests are the contract the
+    // `.ri` source-literal serializer in `reify-ir::ri_literal` leans on.
+
+    /// (a) Every dimension with a bare built-in symbol has its expected
+    /// ordered ladder. Order is load-bearing: the serializer walks it
+    /// front-to-back and takes the first rung that is bit-exact.
+    #[test]
+    fn ri_emittable_units_lists_the_expected_ordered_ladders() {
+        assert_eq!(
+            ri_emittable_units(&DimensionVector::LENGTH),
+            &["mm", "cm", "m"]
+        );
+        assert_eq!(ri_emittable_units(&DimensionVector::ANGLE), &["deg", "rad"]);
+        assert_eq!(ri_emittable_units(&DimensionVector::MASS), &["kg"]);
+        assert_eq!(ri_emittable_units(&DimensionVector::TIME), &["s"]);
+        assert_eq!(ri_emittable_units(&DimensionVector::TEMPERATURE), &["K"]);
+        assert_eq!(ri_emittable_units(&DimensionVector::CURRENT), &["A"]);
+        assert_eq!(
+            ri_emittable_units(&DimensionVector::AMOUNT_OF_SUBSTANCE),
+            &["mol"]
+        );
+        assert_eq!(
+            ri_emittable_units(&DimensionVector::LUMINOUS_INTENSITY),
+            &["cd"]
+        );
+    }
+
+    /// (b) Dimensionless and every dimension that would need a compound unit
+    /// expression emit nothing. `sr`/`USD` are absent from `unit_symbol_to_si`
+    /// entirely, and compound `UnitExpr`s resolve from the compiler's
+    /// per-module registry only — so neither is round-trip-safe as a bare
+    /// symbol.
+    #[test]
+    fn ri_emittable_units_is_empty_for_dimensionless_and_unsupported_dimensions() {
+        assert!(ri_emittable_units(&DimensionVector::DIMENSIONLESS).is_empty());
+        for dim in [
+            DimensionVector::PRESSURE,
+            DimensionVector::AREA,
+            DimensionVector::VOLUME,
+            DimensionVector::FORCE,
+            DimensionVector::SOLID_ANGLE,
+            DimensionVector::MONEY,
+        ] {
+            assert!(
+                ri_emittable_units(&dim).is_empty(),
+                "dimension {:?} must have no bare-symbol emission ladder",
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// (c) SELF DRIFT-GUARD — load-bearing.
+    ///
+    /// Every symbol on a ladder must resolve through `unit_symbol_to_si` to
+    /// that very dimension, and the LAST rung's factor must be **exactly**
+    /// `1.0`. The serializer accepts a rung only when
+    /// `magnitude * factor == si_value` bit-identically; the factor-1.0
+    /// terminator is what makes that acceptance unconditional (`mag * 1.0 ==
+    /// si_value` by IEEE identity), so the ladder can never exhaust for a
+    /// finite input. Drop the terminator and lossy emission silently returns.
+    #[test]
+    fn ri_emittable_ladders_resolve_to_their_dimension_and_end_at_factor_one() {
+        let dims = [
+            DimensionVector::LENGTH,
+            DimensionVector::ANGLE,
+            DimensionVector::MASS,
+            DimensionVector::TIME,
+            DimensionVector::TEMPERATURE,
+            DimensionVector::CURRENT,
+            DimensionVector::AMOUNT_OF_SUBSTANCE,
+            DimensionVector::LUMINOUS_INTENSITY,
+        ];
+        for dim in dims {
+            let ladder = ri_emittable_units(&dim);
+            assert!(
+                !ladder.is_empty(),
+                "{:?} must have a non-empty emission ladder",
+                dim.canonical_name()
+            );
+            for sym in ladder {
+                let (_factor, sym_dim) = unit_symbol_to_si(sym).unwrap_or_else(|| {
+                    panic!("emitted symbol {sym:?} must be a bare built-in unit")
+                });
+                assert_eq!(
+                    sym_dim,
+                    dim,
+                    "symbol {sym:?} resolves to {:?}, not {:?}",
+                    sym_dim.canonical_name(),
+                    dim.canonical_name()
+                );
+            }
+            let last = ladder[ladder.len() - 1];
+            let (last_factor, _) = unit_symbol_to_si(last).expect("terminator resolves");
+            assert_eq!(
+                last_factor,
+                1.0,
+                "ladder for {:?} must terminate at an exactly-1.0-factor symbol \
+                 (got {last:?} with factor {last_factor}); the serializer's \
+                 exactness fallback is unconditional only because of this",
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// (d) CROSS-TABLE DRIFT-GUARD vs the GUI display ladders.
+    ///
+    /// `display_units::unit_ladders()` is a *display* table and is
+    /// deliberately NOT reused as the emission table (its labels include
+    /// unparseable forms like `mm²`/`L`/`MPa`, its Length rungs end at `in`
+    /// rather than a factor-1.0 terminator, and its dimension coverage
+    /// differs in both directions). This guard therefore asserts neither
+    /// subset nor order — only that where the two tables name the same
+    /// symbol they agree on the physics, exactly.
+    #[test]
+    fn ri_emittable_units_agrees_physically_with_display_ladders() {
+        let ladders = crate::display_units::unit_ladders();
+        let dims = [
+            DimensionVector::LENGTH,
+            DimensionVector::ANGLE,
+            DimensionVector::MASS,
+            DimensionVector::TIME,
+            DimensionVector::TEMPERATURE,
+            DimensionVector::CURRENT,
+            DimensionVector::AMOUNT_OF_SUBSTANCE,
+            DimensionVector::LUMINOUS_INTENSITY,
+            DimensionVector::AREA,
+            DimensionVector::VOLUME,
+            DimensionVector::PRESSURE,
+            DimensionVector::FORCE,
+        ];
+        let mut compared = 0usize;
+        for dim in dims {
+            let Some(name) = dim.canonical_name() else {
+                continue;
+            };
+            let Some(ladder) = ladders.iter().find(|l| l.dimension == name) else {
+                continue;
+            };
+            for sym in ri_emittable_units(&dim) {
+                let Some(rung) = ladder.units.iter().find(|u| u.label == *sym) else {
+                    continue;
+                };
+                let (factor, _) = unit_symbol_to_si(sym).expect("emitted symbol resolves");
+                assert_eq!(
+                    factor, rung.si_scale,
+                    "conversion factor for {sym:?} ({name}) drifted: \
+                     unit_symbol_to_si says {factor}, display ladder says {}",
+                    rung.si_scale
+                );
+                compared += 1;
+            }
+        }
+        assert!(
+            compared >= 6,
+            "expected the two tables to overlap on at least mm/cm/m/deg/rad/kg, \
+             compared only {compared} symbols — did a table lose entries?"
+        );
     }
 }
