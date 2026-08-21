@@ -488,6 +488,17 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     out.push_str(kw);
     out.push(' ');
     escape_into(out, name);
+    // Type parameters (task #6342) go through `escape_into` so `<`/`>` become
+    // `&lt;`/`&gt;` — emitted raw a browser would parse `<Q: Dimension>` as an
+    // unknown tag and swallow it.  Mirrors `fmt_markdown::render_item`, which
+    // instead relies on the heading's backtick code span.
+    //
+    // Deliberately heading-only: the `<section id="…">` above and both TOC
+    // href builders (`render_toc`, `render_toc_for_pages`) stay keyed on the
+    // bare `name`, which is item identity rather than display.
+    if let Some(generics) = crate::util::join_type_params(item.type_params()) {
+        escape_into(out, &generics);
+    }
     out.push_str("</h2>\n");
 
     // Annotation-driven prefix sections, emitted BETWEEN the heading and the
