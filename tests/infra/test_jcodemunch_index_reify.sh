@@ -260,15 +260,22 @@ with_ld_poison() {
 #
 # `grep -qF -- ""` matches EVERY line, so an expected substring that arrives
 # EMPTY does not fail — it silently degrades its assertion to "the command ran",
-# and the test keeps reporting PASS while checking nothing. The exposure is not
-# theoretical: Test 14(a) builds its expected substring at call time from a
-# command substitution — expect_ok_stdout "repo=local/$(recompute_repo_name …)"
-# — so a python3 that is missing, or a resolve() that raises, would collapse it
-# to `grep -qF 'repo=local/'`, which the script prints unconditionally.
+# and the test keeps reporting PASS while checking nothing.
 #
 # Same discipline the argv checkers already apply (argv_lacks / argv_word_absent
 # both refuse an empty argv rather than pass vacuously): a dead instrument must
 # fail loudly, never read green.
+#
+# WHAT THIS DOES NOT COVER, measured rather than assumed. It catches a want that
+# is empty IN FULL. It cannot catch a want built as a literal prefix PLUS a
+# substitution — "repo=local/$(recompute_repo_name …)" stays non-empty as
+# "repo=local/" even when the substitution yields nothing, and the script prints
+# that prefix unconditionally. Forcing recompute_repo_name to echo nothing was
+# measured to leave Test 14(a) PASSING with this guard in place. Any such call
+# site must therefore bind and guard its substituted part separately, which is
+# why Test 14 hoists SEAM_SLUG into its fixture FAIL arm instead of inlining it.
+# It is the only call site of that shape today (checked: it is the only expect_*
+# call embedding a command substitution).
 require_nonempty() {
     if [ -z "$2" ]; then
         printf 'the expected %s is EMPTY — the assertion would be vacuous (an empty substring matches everything)\n' \
@@ -457,7 +464,7 @@ argv_subcommand_is() {
 # :1755) and OMITS "message" entirely on both changed branches (:1456-1466,
 # :1859-1870), so those two lines are the only two real shapes.
 #
-# mk_stub_indexer <path> <no-changes|changed|fail|env-echo>
+# mk_stub_indexer <path> <no-changes|changed|fail|env-echo|identity-dispatch>
 mk_stub_indexer() {
     local path="$1" mode="$2"
     cat > "$path" <<'STUB'
@@ -493,24 +500,70 @@ STUB
 # Resolve the slug in python3 on purpose — the same reason recompute_repo_name
 # exists: the script under test derives with sha1sum, so a sha1sum-based slug
 # here could agree with it while both were wrong.
-slug="$(python3 - "$root" "${JCODEMUNCH_GIT_ROOT_IDENTITY-1}" <<'PY'
-import hashlib, pathlib, subprocess, sys
+#
+# TWO causes reach the same hijack, and the script's own E_JC_INDEX_MISSING NOTE
+# names BOTH. This stub models both, so Test 14 can drive each one:
+#   (a) the lever never reached the indexer   -> the lever's value decides;
+#   (b) a PRE-EXISTING index for this exact source_root short-circuits identity
+#       resolution AHEAD of the configured mode — the lever DOES reach the child
+#       and is overridden anyway. That is the case the script header flags as
+#       "NOT SUFFICIENT ON ITS OWN", and it is the one no fixture drove before:
+#       Test 12's mk_foreign_index_db is a DB the suite plants at a slug it
+#       chose, with no indexer deciding anything.
+slug="$(python3 - "$root" "${JCODEMUNCH_GIT_ROOT_IDENTITY-1}" "$CODE_INDEX_PATH" <<'PY'
+import hashlib, pathlib, sqlite3, subprocess, sys
 
-root, lever = sys.argv[1], sys.argv[2]
+root, lever, store = sys.argv[1], sys.argv[2], sys.argv[3]
 p = pathlib.Path(root).expanduser().resolve()
-if lever == "0":
-    # The LOCAL, per-path branch (git_root.py:55-57) — git is never consulted.
-    print(f"local-{p.name}-{hashlib.sha1(str(p).encode()).hexdigest()[:8]}")
-else:
-    # The GIT branch (git_root.py:256-265) — <owner>-<name> off origin's URL.
-    url = subprocess.run(
-        ["git", "-C", str(p), "config", "--get", "remote.origin.url"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    if url.endswith(".git"):
-        url = url[:-4]
-    parts = [seg for seg in url.replace(":", "/").split("/") if seg]
-    print("-".join(parts[-2:]))
+
+# The LOCAL, per-path branch (git_root.py:55-57) — git is never consulted.
+local_slug = f"local-{p.name}-{hashlib.sha1(str(p).encode()).hexdigest()[:8]}"
+
+# The GIT branch (git_root.py:256-265) — <owner>-<name> off origin's URL.
+url = subprocess.run(
+    ["git", "-C", str(p), "config", "--get", "remote.origin.url"],
+    capture_output=True, text=True,
+).stdout.strip()
+if url.endswith(".git"):
+    url = url[:-4]
+parts = [seg for seg in url.replace(":", "/").split("/") if seg]
+git_slug = "-".join(parts[-2:]) if len(parts) >= 2 else ""
+
+
+def indexes_this_root(slug):
+    """An existing store entry that already claims THIS exact source_root."""
+    if not slug:
+        return False
+    db = pathlib.Path(store) / f"{slug}.db"
+    if not db.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        row = conn.execute(
+            "select value from meta where key='source_root'"
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return False
+    return bool(row) and row[0] == str(p)
+
+
+# (1) THE SHORT-CIRCUIT, verified first-hand against the pinned 1.108.54 wheel.
+# resolve_index_identity's `requested == "config"` arm returns local_existing,
+# then existing_git, and only THEN does `requested = configured` — so an index
+# that already claims this source_root decides the identity before the
+# configured mode (and hence this lever) can take effect at all. `configured` is
+# computed eagerly a few lines earlier, but it is not CONSULTED until that
+# assignment. Local outranks git in that same arm. Both present at once raises
+# IdentityModeAmbiguous upstream; not modelled, because Test 14 never creates it
+# — every assertion uses a fresh index dir carrying at most one planted DB.
+for candidate in (local_slug, git_slug):
+    if indexes_this_root(candidate):
+        print(candidate)
+        raise SystemExit(0)
+
+# (2) Only now does the lever matter.
+print(local_slug if lever == "0" else git_slug)
 PY
 )"
 if [ -z "$slug" ]; then
@@ -1158,8 +1211,23 @@ SEAM_INDEX="$(mk_tmpdir)"
 # that (a) just wrote sitting at the predicted path, and the DB gate would be
 # satisfied by it no matter where the negative run's indexer landed.
 SEAM_INDEX_2="$(mk_tmpdir)"
+# A THIRD for (c), for the same reason, and pre-planted rather than empty.
+SEAM_INDEX_3="$(mk_tmpdir)"
+# The husk's meta.source_root must be the RESOLVED root: the script resolves
+# --project-root with `readlink -f` before comparing (jcodemunch-index-reify.sh
+# :131), and the stub resolves with pathlib. Planting the raw mktemp path would
+# silently miss on any host whose TMPDIR traverses a symlink.
+SEAM_ROOT_REAL="$(readlink -f -- "$SEAM_ROOT")"
+# Bound to a variable, NOT inlined into (a)'s expected substring, so it can be
+# guarded below. require_nonempty cannot catch this one on its own: (a)'s want
+# is a literal prefix PLUS this substitution, so an empty slug still yields the
+# non-empty "repo=local/" — which the script prints unconditionally, silently
+# reducing (a) to a bare expect_ok. Measured: with recompute_repo_name forced to
+# echo nothing, (a) PASSED vacuously until this guard was added.
+SEAM_SLUG="$(recompute_repo_name "$SEAM_ROOT")"
 
-if [ -z "$SEAM_ROOT" ] || [ -z "$SEAM_INDEX" ] || [ -z "$SEAM_INDEX_2" ]; then
+if [ -z "$SEAM_ROOT" ] || [ -z "$SEAM_INDEX" ] || [ -z "$SEAM_INDEX_2" ] \
+   || [ -z "$SEAM_INDEX_3" ] || [ -z "$SEAM_ROOT_REAL" ] || [ -z "$SEAM_SLUG" ]; then
     echo "  FAIL: could not create the identity-seam fixtures"
     FAIL=$((FAIL + 1))
 else
@@ -1173,7 +1241,7 @@ else
     # fails this loudly.
     assert "under the script's own lever the indexer resolves and writes the PER-PATH identity, and the run reaches INDEX-OK" \
         with_stub "$SEAM_INDEX" "$STUB_DIR/identity-dispatch" \
-            expect_ok_stdout "repo=local/$(recompute_repo_name "$SEAM_ROOT")" \
+            expect_ok_stdout "repo=local/$SEAM_SLUG" \
                 --project-root "$SEAM_ROOT"
 
     # (b) NEGATIVE — the SAME stub binary, with the lever overridden downstream
@@ -1193,6 +1261,40 @@ else
         with_stub "$SEAM_INDEX_2" "env JCODEMUNCH_GIT_ROOT_IDENTITY=1 $STUB_DIR/identity-dispatch" \
             expect_refusal_names "leodearden-reify.db" \
                 --project-root "$SEAM_ROOT"
+
+    # (c) THE SECOND DOCUMENTED CAUSE — the one the script header calls out as
+    # "NOT SUFFICIENT ON ITS OWN", and the half (b) cannot reach.
+    #
+    # (b) drives cause (a) of the script's own hijack NOTE: "JCODEMUNCH_GIT_
+    # ROOT_IDENTITY=0 did not reach the indexer". Cause (b) of that same NOTE is
+    # different in kind — the lever DOES reach the child, unmodified, and is
+    # overridden anyway, because resolve_index_identity returns an
+    # ALREADY-EXISTING index for this source_root (git_root.py:174-178) before
+    # the configured mode is ever consulted. Verified first-hand against the
+    # pinned 1.108.54 wheel: the `requested == "config"` arm returns
+    # local_existing, then existing_git, and only then assigns
+    # `requested = configured`.
+    #
+    # So this runs with the script's OWN, UNMODIFIED lever — no `env …=1`
+    # override — and the identity still lands on git, decided by the store's
+    # contents rather than by the lever. Test 12's static mk_foreign_index_db
+    # cannot pin this: there, no indexer resolves anything, so it cannot show a
+    # lever being honoured-and-overridden. Here the same one stub binary that
+    # took the local branch in (a) takes the git branch instead, purely because
+    # a non-inert husk is already sitting in the store.
+    #
+    # The husk must carry meta.source_root — an EMPTY one (no source_root) is
+    # inert and correctly does NOT short-circuit, which is exactly what the
+    # script's "EXPECTED AND BENIGN" paragraph records.
+    if [ -z "$(mk_foreign_index_db "$SEAM_INDEX_3" leodearden-reify "$SEAM_ROOT_REAL")" ]; then
+        echo "  FAIL: could not plant the pre-existing git-identity husk"
+        FAIL=$((FAIL + 1))
+    else
+        assert "a pre-existing git-identity index overrides the lever even when it DOES reach the indexer, and the script still refuses E_JC_INDEX_MISSING naming it" \
+            with_stub "$SEAM_INDEX_3" "$STUB_DIR/identity-dispatch" \
+                expect_refusal_names "leodearden-reify.db" \
+                    --project-root "$SEAM_ROOT"
+    fi
 fi
 
 test_summary
