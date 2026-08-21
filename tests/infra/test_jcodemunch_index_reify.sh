@@ -255,12 +255,36 @@ with_ld_poison() {
     return "$rc"
 }
 
+# require_nonempty <label> <value> — the anti-vacuity guard every substring
+# assertion below runs FIRST.
+#
+# `grep -qF -- ""` matches EVERY line, so an expected substring that arrives
+# EMPTY does not fail — it silently degrades its assertion to "the command ran",
+# and the test keeps reporting PASS while checking nothing. The exposure is not
+# theoretical: Test 14(a) builds its expected substring at call time from a
+# command substitution — expect_ok_stdout "repo=local/$(recompute_repo_name …)"
+# — so a python3 that is missing, or a resolve() that raises, would collapse it
+# to `grep -qF 'repo=local/'`, which the script prints unconditionally.
+#
+# Same discipline the argv checkers already apply (argv_lacks / argv_word_absent
+# both refuse an empty argv rather than pass vacuously): a dead instrument must
+# fail loudly, never read green.
+require_nonempty() {
+    if [ -z "$2" ]; then
+        printf 'the expected %s is EMPTY — the assertion would be vacuous (an empty substring matches everything)\n' \
+            "$1" >&2
+        return 1
+    fi
+    return 0
+}
+
 # expect_refusal <marker> [args...] — the script must exit NON-ZERO, carry
 # <marker> on STDERR, and print NO success summary. All three together: an
 # implementation that printed the marker and still exited 0, or that refused
 # after already claiming success, would satisfy a weaker check.
 expect_refusal() {
     local marker="$1"; shift
+    require_nonempty 'refusal marker' "$marker" || return 1
     local o e rc=0 bad=0
     o="$SCRATCH/refusal.out"; e="$SCRATCH/refusal.err"
     "$JC_INDEX" "$@" >"$o" 2>"$e" || rc=$?
@@ -573,6 +597,7 @@ with_stub() {
 # appear on STDERR (where all of upstream's --once output goes).
 expect_ok_stderr() {
     local want="$1"; shift
+    require_nonempty 'stderr substring' "$want" || return 1
     expect_ok "$@" || return 1
     if ! grep -qF -- "$want" "$SCRATCH/ok.err"; then
         printf 'stderr did not contain %s (the indexer output was swallowed)\n' "$want" >&2
@@ -588,6 +613,7 @@ expect_ok_stderr() {
 # than passing on the marker alone.
 expect_refusal_names() {
     local want="$1"; shift
+    require_nonempty 'substring the refusal must name' "$want" || return 1
     expect_refusal E_JC_INDEX_MISSING "$@" || return 1
     if ! grep -qF -- "$want" "$SCRATCH/refusal.err"; then
         printf 'the refusal did not name %s\n' "$want" >&2
@@ -601,6 +627,7 @@ expect_refusal_names() {
 # above: an E_JC_INDEX_MISSING refusal that must NOT carry <substring>.
 expect_refusal_lacks() {
     local unwanted="$1"; shift
+    require_nonempty 'substring the refusal must NOT carry' "$unwanted" || return 1
     expect_refusal E_JC_INDEX_MISSING "$@" || return 1
     if grep -qF -- "$unwanted" "$SCRATCH/refusal.err"; then
         printf 'the refusal carried %s when it should not have\n' "$unwanted" >&2
@@ -614,6 +641,7 @@ expect_refusal_lacks() {
 # also carry <unwanted>, used to prove a later gate was never reached.
 expect_refusal_absent() {
     local marker="$1" unwanted="$2"; shift 2
+    require_nonempty 'substring the refusal must NOT carry' "$unwanted" || return 1
     expect_refusal "$marker" "$@" || return 1
     if grep -qF -- "$unwanted" "$SCRATCH/refusal.out" "$SCRATCH/refusal.err"; then
         printf 'the run-failure path still reached %s\n' "$unwanted" >&2
@@ -639,6 +667,7 @@ expect_ok() {
 # that must appear on stdout (e.g. the `<N> sym` count).
 expect_ok_stdout() {
     local want="$1"; shift
+    require_nonempty 'stdout substring' "$want" || return 1
     expect_ok "$@" || return 1
     if ! grep -qF -- "$want" "$SCRATCH/ok.out"; then
         printf 'stdout did not contain %q\n' "$want" >&2
