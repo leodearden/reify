@@ -195,9 +195,15 @@ pub(crate) fn expand_geometry_list_elements(
 /// `value`.
 ///
 /// Shadowing-aware: recursion stops at any nested binder that rebinds the same
-/// name (a `Lambda` whose params include it, or a `Quantifier` over it), so an
-/// inner `|i| …` keeps its own `i`. Spans are inherited from the original
-/// nodes throughout.
+/// name, so an inner `|i| …` keeps its own `i`. Spans are inherited from the
+/// original nodes throughout.
+///
+/// `Lambda` (params), `Quantifier` (bound variable) and `Match` arms whose
+/// patterns carry a `VariantBind` local binder are the COMPLETE set of
+/// name-binding `ExprKind` forms — verified by enumerating every variant in
+/// `crates/reify-ast/src/ast.rs`. `Auto { params }` is NOT one: its `name =
+/// value` entries are call arguments whose values evaluate in the enclosing
+/// scope. No other variant introduces a scope.
 fn substitute_index_ident(expr: &reify_ast::Expr, param: &str, value: usize) -> reify_ast::Expr {
     use reify_ast::ExprKind as K;
 
@@ -268,17 +274,40 @@ fn substitute_index_ident(expr: &reify_ast::Expr, param: &str, value: usize) -> 
             object: sub_box(object),
             index: sub_box(index),
         },
-        // Match patterns bind payload names, but those binders are variant
-        // field names — never the lambda index param, which is bound by the
-        // enclosing `generate` lambda — so arm bodies recurse unconditionally.
+        // `MatchPattern::VariantBind` binders are `(field_name,
+        // local_binder_name)` pairs and the LOCAL BINDER is user-chosen, so an
+        // arm like `Circle { radius: i }` rebinds the index param over that
+        // arm's whole body — exactly as a nested `|i| …` does. The shadow is
+        // ARM-SCOPED: sibling arms and the discriminant (which sits outside
+        // every arm) still substitute.
+        //
+        // Conservatism: the `.any()` scans every pattern and every binder, so
+        // if the grammar later permits a `variant_binding_pattern` inside a
+        // pipe-alternation (today `match_pattern` makes it a standalone
+        // choice, so that is unparseable) the whole arm is still skipped.
+        // Under-substitution merely leaves a legitimately-bound name alone;
+        // over-substitution silently corrupts the geometry.
         K::Match { discriminant, arms } => K::Match {
             discriminant: sub_box(discriminant),
             arms: arms
                 .iter()
-                .map(|arm| reify_ast::MatchArm {
-                    patterns: arm.patterns.clone(),
-                    body: sub(&arm.body),
-                    span: arm.span,
+                .map(|arm| {
+                    let rebinds = arm.patterns.iter().any(|p| {
+                        matches!(
+                            p,
+                            reify_ast::MatchPattern::VariantBind { binders, .. }
+                                if binders.iter().any(|(_, local)| local == param)
+                        )
+                    });
+                    if rebinds {
+                        arm.clone()
+                    } else {
+                        reify_ast::MatchArm {
+                            patterns: arm.patterns.clone(),
+                            body: sub(&arm.body),
+                            span: arm.span,
+                        }
+                    }
                 })
                 .collect(),
         },
