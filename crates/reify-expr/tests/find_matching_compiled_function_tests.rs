@@ -530,6 +530,58 @@ fn subject_matching_no_head_falls_through_to_first_wildcard_candidate() {
     );
 }
 
+/// Screening pin: a head match ALONE never selects. A candidate the head
+/// predicate accepts but the wildcard predicate rejects must resolve to `None`.
+///
+/// Sibling of the fall-through pin above; together they pin both directions of
+/// the "head narrows WITHIN the wildcard set" contract. That one covers an
+/// EMPTY head-match set (narrowing must not turn a resolution into `None`);
+/// this one covers the case that makes screening `head` through `wildcard`
+/// LOAD-BEARING — see the comment of that name in
+/// `crates/reify-expr/src/lib.rs`. `heads_unifiable` is NOT a subset of the
+/// wildcard predicate, so a standalone head pass would WIDEN resolution instead
+/// of narrowing it.
+///
+/// `recover<U>(r: Result<Int, String>)` is the witness. Its param's args are
+/// concrete, so it carries no type param, no dim param and no trait object, and
+/// `Applied { name: "Result", .. }` is never `==` an `Enum("Result")` arg — the
+/// wildcard pass rejects it. But the candidate IS generic and
+/// `heads_unifiable(Applied { name: "Result", .. }, Enum("Result"))` is `true`
+/// via the erased-subject arm, so the head predicate accepts it. A refactor to
+/// the more obvious `.find(head).or_else(|| ..find(wildcard))` shape — which
+/// that comment explicitly anticipates and argues against — flips this case
+/// from `None` to `Some`, accepting eval-side a call the compile side does not,
+/// while every other test in this file stays green.
+#[test]
+fn head_match_alone_never_selects_a_wildcard_ineligible_candidate() {
+    let head_only = make_generic_fn(
+        "recover",
+        &["U"],
+        vec![(
+            "r".to_string(),
+            Type::Applied {
+                name: "Result".to_string(),
+                args: vec![Type::Int, Type::String],
+            },
+        )],
+        b"head_only",
+    );
+    let fns = vec![head_only];
+    let args = vec![CompiledExpr::literal(
+        Value::Undef,
+        Type::Enum("Result".to_string()),
+    )];
+
+    let selected = find_matching_compiled_function(&fns, "recover", &args);
+    assert!(
+        selected.is_none(),
+        "a candidate that head-matches but is NOT wildcard-eligible must never \
+         be selected — `head` is a filter over the wildcard set, never a \
+         standalone pass; got params[0] = {:?}",
+        selected.map(|f| f.params[0].1.clone())
+    );
+}
+
 /// Prelude-backed: against the REAL merged stdlib table, an erased
 /// `Enum("Result")` subject selects the `Result` overload for all three shared
 /// combinator names.

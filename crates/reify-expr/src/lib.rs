@@ -1832,7 +1832,12 @@ pub fn find_matching_compiled_function<'a>(
     // SELECT candidates the wildcard pass rejects — widening resolution rather
     // than narrowing it. Filtering through `wildcard` first is what makes this
     // tier a pure narrowing, and what makes it a provable no-op for non-generic
-    // candidates (INV-6).
+    // candidates (INV-6). Pinned by
+    // `head_match_alone_never_selects_a_wildcard_ineligible_candidate` in
+    // tests/find_matching_compiled_function_tests.rs, which uses exactly that
+    // `Applied{"Result",[Int,String]}`-vs-`Enum("Result")` witness and is the
+    // only test in the file that the `.find(head).or_else(..)` shape below
+    // fails.
     //
     // ONE pass, not two chained ones: `first_wildcard` remembers tier 3's answer
     // (the first wildcard-eligible candidate in table order) as the scan goes, so
