@@ -657,10 +657,18 @@ else
     assert "live-corpus drift: sweep found at least one tracked extensionless basename" \
         test -n "$_tracked_extless"
 
+    # `grep -cxF -- "$_name"` — the `--` is load-bearing for the same reason
+    # Cycle 10's copy documents at length: without it a basename beginning with a
+    # dash is parsed by grep as an option bundle rather than as a pattern, so the
+    # assertion errors out instead of answering the question.  Zero such tracked
+    # basenames today (measured -> 0), and extensionless basenames are if anything
+    # MORE likely to acquire one than post-dot extension tokens are, so both
+    # live-corpus alarms carry the hardening rather than one documenting the
+    # hazard and its sibling standing exposed.
     while IFS= read -r _name; do
         [ -z "$_name" ] && continue
         assert "live-corpus drift: '$_name' present in --list-extensionless" \
-            test "$(printf '%s\n' "$_emitted" | grep -cxF "$_name")" -eq 1
+            test "$(printf '%s\n' "$_emitted" | grep -cxF -- "$_name")" -eq 1
     done <<< "$_tracked_extless"
 fi
 
@@ -730,26 +738,52 @@ fi
 # Host-dependence is confined to this block by the rev-parse probe below — see the
 # file header, which scopes the C-P3 pure-string/no-skip promise to Cycles 1-8.
 #
-# A RED HERE means a new tracked reify extension has landed with no allowlist
-# entry.  The fix is the FOUR-part lockstep widening enumerated in Cycle 4's
-# comment above — α's three pins PLUS γ's copies, never _EXTS alone.  That
-# enumeration is stated there once and pointed at from here on purpose, so the
-# next widening has one prose site to keep true instead of three.
+# A RED HERE means a new tracked reify path has landed that the allowlists do not
+# cover.  READ WHICH ASSERTION FIRED FIRST — this block's two halves have
+# DIFFERENT repair procedures, because the backstop classifies both vectors:
+#
+#   * EXTENSION case — the token loop's "'<ext>' present in --list-extensions",
+#     or a backstop REJECT of a path whose final segment is DOTTED.  The fix is
+#     the FOUR-part lockstep widening enumerated in Cycle 4's comment above —
+#     α's three pins PLUS γ's copies, never _EXTS alone.  That enumeration is
+#     stated there once and pointed at from here on purpose, so the next widening
+#     has one prose site to keep true instead of three.
+#
+#   * EXTENSIONLESS case — a backstop REJECT of a path whose final segment is
+#     DOTLESS.  This is NOT an extension miss and Cycle 4's enumeration is the
+#     wrong procedure for it: the fix is the _EXTLESS lockstep documented in
+#     Cycle 9 above (α's _EXTLESS PLUS γ's EXTENSIONLESS_FILENAMES copies), and
+#     Cycle 9's own assertion will normally RED beside this one.
 #
 # Green on arrival (36 swept ⊂ the 59 pinned) — by construction, since a RED on
 # arrival would mean the allowlist was already broken.  Per G6 it was shown to
 # FIRE rather than assumed to: deleting `ri` from _EXTS in a scratch copy of the
-# guard (59 -> 58 entries) turns this block from 39 passed / 0 failed to
-# 37 passed / 2 failed — the block's two halves reporting the same drift from
-# opposite ends:
-#   FAIL: live-corpus ext drift: guard accepts every tracked path
+# guard (59 -> 58 entries) turns this block from 41 passed / 0 failed to
+# 38 passed / 3 failed — the block's two halves reporting the same drift from
+# opposite ends, the backstop in both of its shapes:
+#   FAIL: live-corpus: guard check over the tracked corpus exits 0
+#   FAIL: live-corpus: guard accepts every tracked path
 #   FAIL: live-corpus ext drift: 'ri' present in --list-extensions
-# The first says a tracked path stopped classifying as a file; the second names
-# the allowlist entry whose absence caused it.  Targeted, not vacuous, not
-# over-broad — the other 37 assertions in the block stay green.  (Suite-wide the
-# same mutant is 320 passed / 7 failed: it also REDs Cycle 1's `examples/foo.ri`
-# classify pins and Cycle 4's equality assert, as it should.)
-# Mutant not committed.
+# The first two say a tracked path stopped classifying as a file — by exit code
+# and by stdout, the two shapes that are asserted separately because a regression
+# can produce either without the other; the block also prints the first five
+# offending paths (`REJECT crates/reify-cli/tests/fixtures/affine_algebra.ri` …)
+# so the reader sees WHICH paths broke.  The third names the allowlist entry
+# whose absence caused it.  Targeted, not vacuous, not over-broad — the other 38
+# assertions in the block stay green.  (Suite-wide the same mutant is
+# 321 passed / 8 failed: it also REDs Cycle 1's `examples/foo.ri` classify pins,
+# Cycle 3's two all-file list gates and Cycle 4's equality assert, as it should.
+# The mutant total is 329 rather than the green 330 because Cycle 4's per-entry
+# loop has one fewer entry to iterate over.)
+# Mutant not committed; the guard was restored from a byte-copy and `git diff`
+# re-confirmed empty.
+#
+# The gitlink filter both halves carry was likewise measured rather than argued:
+# feeding a synthetic `ls-files -s -z` stream of
+# `160000 … TAB graphiti`, `100644 … TAB src/a.rs`, `160000 … TAB vendor/mem0`
+# through the awk above emits `src/a.rs` alone, and `classify graphiti` exits 1
+# (REJECT) — i.e. without the filter a vendored submodule would RED the backstop
+# with no legitimate fix.  Synthetic stream not committed.
 #
 # The tab-split parse was likewise shown to matter rather than argued to, and it
 # matters MORE here than in Cycle 9 — the extension side has a failure mode the
@@ -789,23 +823,64 @@ else
     # by injecting `docs/foo.` into this stream (-> `REJECT docs/foo.`, exit 1).
     # Zero such paths today (measured: 0 tracked segments matching /\.$/).
     #
-    # Non-vacuous: `check` ACCEPTs an EMPTY path list (the [] defer-to-architect
-    # value), so a broken pipe would pass silently.  It is fed 3829 paths today,
-    # and injecting a single directory-shaped path (`crates/reify-core/src`) turns
-    # it RED — measured, not assumed.  The token loop below is KEPT alongside it
-    # because the two fail differently and both diagnostics are worth having:
-    # `check` names the offending PATH, the loop names the exact allowlist ENTRY
-    # to add, which is what the G6 mutant evidence above is built on.
+    # VECTOR-NEUTRAL BY CONSTRUCTION, and its label says so: `check` classifies
+    # BOTH vectors, so a RED here is not necessarily an extension miss.  See the
+    # two-branch fix guidance in the block header — a dotless-segment REJECT is
+    # Cycle 9's _EXTLESS repair, not Cycle 4's four-part _EXTS widening.
     #
-    # -z | tr is newline-safe for the git->check hop given zero tracked paths
-    # contain a newline (measured -> 0); `check` itself is newline-delimited.
-    _corpus_rejects="$(
-        git -C "$REPO_ROOT" ls-files -z | tr '\0' '\n' | bash "$SCRIPT" check 2>/dev/null || true
+    # SAME GITLINK-FILTERED SOURCE as the token sweep below, and for the reason
+    # Cycle 9 gives: a submodule mount point is extensionless, so _is_file_path()
+    # REJECTs it and this assertion would go RED with no legitimate fix — the only
+    # green would be adding the submodule's name to _EXTLESS, which that list's
+    # enumerated-exception invariant forbids.  reify tracks zero gitlinks today
+    # (measured -> 0), so like Cycle 9's copy this is hardening against corpus
+    # growth.  The filter is spelled out again here rather than hoisted into one
+    # shared stream because the sweep below is held BYTE-IDENTICAL with Cycle 9's
+    # executable form and the two prose copies (see "DELIBERATE FOURTH VARIANT"
+    # above); hoisting would silently break that invariant to save two lines.
+    #
+    # NON-VACUITY IS ASSERTED, NOT ARGUED.  `check` ACCEPTs an EMPTY path list
+    # (the [] defer-to-architect value), so an empty fed list would pass silently.
+    # The guard against that is the `test -n "$_tracked_paths"` assertion below,
+    # deliberately in place of a prose path count: this block's whole premise is
+    # that the corpus GROWS, so a hardcoded count is stale by the next landing
+    # (an earlier draft claimed 3829 and was wrong at review time).  Injecting a
+    # single directory-shaped path (`crates/reify-core/src`) turns the assertion
+    # RED — measured, not assumed.
+    #
+    # THE EXIT CODE IS ASSERTED ALONGSIDE THE OUTPUT because they fail in
+    # different shapes: a `check` that regressed to exiting non-zero while
+    # printing NOTHING (a parse error, a `set -u` trip inside the check branch, a
+    # usage-error exit 2 on stdin input) satisfies an output-only assertion and
+    # would pass silently.  The `--list-extensions exits 0` assertion above does
+    # not cover it — that catches a script broken for every subcommand, not one
+    # broken for `check` alone.
+    #
+    # The token loop below is KEPT alongside all of this because it fails
+    # differently and both diagnostics are worth having: `check` names the
+    # offending PATH, the loop names the exact allowlist ENTRY to add, which is
+    # what the G6 mutant evidence above is built on.
+    #
+    # -z keeps the git->awk half newline-safe (measured: 0 tracked paths contain a
+    # newline); awk then emits newline-separated paths, which is what `check`
+    # reads.  Fed through run_check_stdin rather than a pipe into `check` so the
+    # EXIT CODE is capturable (GUARD_RC) — a pipeline inside `$( )` would hand
+    # back only stdout.
+    _tracked_paths="$(
+        git -C "$REPO_ROOT" ls-files -s -z \
+            | awk 'BEGIN { RS = "\0"; FS = "\t" }
+                   $1 !~ /^160000 / { print $2 }'
     )"
+    assert "live-corpus: sweep fed at least one tracked path" test -n "$_tracked_paths"
+
+    run_check_stdin "$_tracked_paths"
+    _corpus_rejects="$GUARD_OUT"
     if [ -n "$_corpus_rejects" ]; then
         printf '%s\n' "$_corpus_rejects" | sed -n '1,5s/^/    /p'
     fi
-    assert "live-corpus ext drift: guard accepts every tracked path" \
+    assert "live-corpus: guard check over the tracked corpus exits 0" \
+        test "$GUARD_RC" -eq 0
+    assert "live-corpus: guard accepts every tracked path" \
         test -z "$_corpus_rejects"
 
     # Tracked, non-gitlink, DOTTED final segments, reduced to their post-LAST-dot
