@@ -408,6 +408,13 @@ def mask_cfg_test(lines):
     approximations remain: the `#[cfg(test)]` attribute match itself
     (`CFG_TEST_RE.search` below) still reads raw line text, and no full
     Rust lexing is performed beyond what these two checks need.
+
+    Corpus sweep at introduction (task #6421, base main 3a1219a2d5):
+    classification output is UNCHANGED by the literal-aware counter --
+    2628 pub fns / 580 orphans / 109 allow-listed, identical sets, before
+    and after. What DID change: 10 files whose `#[cfg(test)]` mask
+    previously ran unclosed to EOF now close correctly, so this fix is
+    preventive rather than corrective on today's corpus.
     """
     masked = [False] * len(lines)
     unclosed = []
