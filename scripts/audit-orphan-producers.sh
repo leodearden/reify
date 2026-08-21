@@ -19,6 +19,12 @@
 #
 # Exits 0 always unless --strict is passed (then exits 1 when orphans
 # without `// G-allow:` markers are found).
+#
+# A `#[cfg(test)]` item whose mask never closes (brace-counting runs to
+# EOF without the block balancing back to zero) is reported as a WARNING
+# on stderr naming the file and the attribute's line -- any `pub fn`
+# below such a mask is invisible to this audit. Not gated on --quiet: see
+# usage() below.
 
 set -euo pipefail
 
@@ -30,7 +36,7 @@ Options:
   --format FMT   Output format: markdown (default) or json.
   --scope GLOB   Restrict to files matching GLOB (default: crates/reify-*/src).
                  Multiple --scope flags accumulate.
-  --quiet        Suppress progress messages on stderr.
+  --quiet        Suppress progress messages on stderr (warnings are still printed).
   --strict       Exit 1 if any non-allow-listed orphans are found.
   -h, --help     Show this message.
 USAGE
@@ -404,9 +410,10 @@ def mask_cfg_test(lines):
     Rust lexing is performed beyond what these two checks need.
     """
     masked = [False] * len(lines)
+    unclosed = []
     n = len(lines)
     if not any(CFG_TEST_RE.search(l) for l in lines):
-        return masked
+        return masked, unclosed
     code = strip_literals_and_comments(lines)
     i = 0
     while i < n:
@@ -446,6 +453,7 @@ def mask_cfg_test(lines):
         if is_block:
             depth = 0
             entered = False
+            closed = False
             k = j
             while k < n:
                 masked[k] = True
@@ -457,19 +465,27 @@ def mask_cfg_test(lines):
                         depth = opens - closes
                         if depth <= 0:
                             k += 1
+                            closed = True
                             break
                 else:
                     depth += opens - closes
                     if depth <= 0:
                         k += 1
+                        closed = True
                         break
                 k += 1
+            if not closed:
+                # The while loop exited by exhausting `n`, not via the
+                # depth <= 0 break -- do NOT infer this from `k == n`
+                # alone, since a well-formed block that closes on the
+                # file's last line also ends with k == n.
+                unclosed.append(i + 1)
             i = k
         else:
             # Single-statement item or field/variant. Mask one line.
             masked[j] = True
             i = j + 1
-    return masked
+    return masked, unclosed
 
 
 def name_token_re(name):
@@ -486,7 +502,11 @@ for path in src_files:
         print(f"audit-orphan-producers.sh: skip {path}: {e}", file=sys.stderr)
         continue
     lines = text.splitlines()
-    masked = mask_cfg_test(lines)
+    masked, unclosed = mask_cfg_test(lines)
+    for lineno in unclosed:
+        print(f"audit-orphan-producers.sh: WARNING: {path}:{lineno}: "
+              f"#[cfg(test)] mask never closes and runs to EOF; any `pub fn` "
+              f"below it is hidden from this audit", file=sys.stderr)
     masked_cache[str(path)] = (lines, masked)
     for idx, line in enumerate(lines):
         if masked[idx]:
