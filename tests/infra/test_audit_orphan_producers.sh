@@ -57,6 +57,7 @@ pub mod dangling_raw;
 pub mod dangling_comment;
 pub mod dangling_char;
 pub mod lifetime_wired;
+pub mod stmt_trailing_comment;
 
 // Private driver — provides a genuine bare-call token for `wired`.
 fn drive_wired() -> i32 { wired() }
@@ -182,6 +183,24 @@ cat > "$FIXTURE/crates/reify-fixture/src/lifetime_wired.rs" <<'RUST'
 pub fn lifetime_wired<'a>(s: &'a str) -> &'a str { s }
 RUST
 
+# stmt_trailing_comment.rs — `#[cfg(test)]` above a SINGLE-STATEMENT item
+# whose `;` is followed by a comment.  mask_cfg_test judges the item's
+# shape (BLOCK_KW_RE + the `;`/`,` suffix test) from the raw line, so the
+# trailing comment defeats `endswith(";")`, `mod` makes it look like a
+# block, and the mask misfires.
+#
+# inner_probe.rs is deliberately NOT created: the audit is a pure text
+# scanner and never resolves module paths, so the dangling `mod
+# inner_probe;` declaration below is intentional fixture content, not a
+# bug for a future reader to "fix".
+cat > "$FIXTURE/crates/reify-fixture/src/stmt_trailing_comment.rs" <<'RUST'
+#[cfg(test)]
+mod inner_probe; // sibling test module — declaration only
+
+// G-allow: hermetic fixture for cfg(test) single-statement header shape
+pub fn after_stmt_guard() -> i32 { 4 }
+RUST
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -285,6 +304,9 @@ assert "after_char_guard (dangling { inside a char literal beside a lifetime) is
 
 assert "lifetime_wired (genuine caller, lifetime-bearing signature) is not orphan" \
     assert_not_orphan lifetime_wired
+
+assert "after_stmt_guard (single-statement cfg(test) item, trailing comment defeats the ';' suffix test) is allow-listed, not swallowed" \
+    assert_allowed after_stmt_guard
 
 # ---------------------------------------------------------------------------
 test_summary
