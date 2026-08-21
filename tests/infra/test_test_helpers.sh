@@ -172,17 +172,26 @@ fi
 # test when _f is empty -- i.e. assert() itself returns 1 -- and every
 # caller runs assert as a bare simple command under `set -euo pipefail`, so
 # the shell exits at the very first assertion, before test_summary ever
-# runs. This test stubs a failing mktemp and checks the suite reaches a
-# sentinel between two asserts, calls test_summary, prints a "Results:"
+# runs. This test forces a REAL mktemp failure and checks the suite reaches
+# a sentinel between two asserts, calls test_summary, prints a "Results:"
 # line, and exits 0.
+#
+# Forced via TMPDIR=/dev/null/nope (the same idiom test_portable_timeout.sh
+# Test 10/11 uses), NOT a `mktemp() { return 1; }` shell-function stub: a
+# stub only shadows mktemp for callers that invoke it as a bare `mktemp`, so
+# it silently stops covering anything the moment assert() is hardened to
+# `command mktemp`, `\mktemp`, or an absolute path -- at which point mktemp
+# would quietly succeed, $_f would be non-empty, and every check below would
+# still pass, but vacuously (exercising the mktemp-succeeds path instead of
+# the fallback this test exists to cover). TMPDIR=/dev/null/nope breaks
+# mktemp itself, so it cannot be bypassed that way.
 echo ""
 echo "--- Test l: assert() survives mktemp failure, reaches test_summary (task 6363) ---"
 
 rc=0
-mtf_out=$(bash -c "
+mtf_out=$(TMPDIR=/dev/null/nope bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
-    mktemp() { return 1; }
     assert 'first assert under mktemp failure' true
     echo 'REACHED-SECOND-STATEMENT'
     assert 'second assert' true
@@ -205,6 +214,124 @@ if echo "$mtf_out" | grep -q "Results: 2 passed, 0 failed"; then
     check "assert survives mktemp failure: test_summary prints Results line" "true"
 else
     check "assert survives mktemp failure: test_summary prints Results line (got: $mtf_out)" "false"
+fi
+
+# Non-vacuity control: proves the sub-shell's mktemp genuinely failed (mktemp
+# prints its own "mktemp: failed to create file..." diagnostic to stderr,
+# captured above by the outer `2>&1`), so the three checks just above are
+# known to have exercised the fallback path and not a mktemp-succeeded path
+# that happens to look the same.
+if echo "$mtf_out" | grep -qi "mktemp"; then
+    check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
+else
+    check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_out)" "false"
+fi
+
+# -- Test (l2): assert() FAIL branch survives the same mktemp failure --------
+# (task 6363 amendment). Test (l) only exercises the PASS branch under the
+# mktemp-failure fallback. The FAIL branch has its own branch-specific logic
+# -- the `[ -n "$_f" ] && [ -s "$_f" ]` evidence-dump guard, which must be
+# skipped (not error) when $_f is empty, plus the FAIL counter and
+# test_summary's `exit 1` -- none of which Test (l)'s all-PASS run touches.
+# A regression that made the dump guard fire on an empty $_f would either
+# abort before REACHED-AFTER-FAIL (already caught by the same shape of check
+# as Test (l)) or wrongly print a dump marker with nothing to dump.
+echo ""
+echo "--- Test l2: assert() FAIL branch survives mktemp failure, dump guard skips cleanly (task 6363) ---"
+
+rc=0
+mtf_fail_out=$(TMPDIR=/dev/null/nope bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'passing assert under mktemp failure' true
+    _l2_boom() { printf 'l2 stderr needle\n' >&2; return 1; }
+    assert 'failing assert under mktemp failure' _l2_boom
+    echo 'REACHED-AFTER-FAIL'
+    test_summary
+" 2>&1) || rc=$?
+
+# test_summary exits 1 whenever FAIL>0 -- expected here, since the second
+# assert above is deliberately failing. The regression this closes is dying
+# at the assert call itself (before REACHED-AFTER-FAIL / test_summary), not
+# this expected nonzero exit -- the next check distinguishes the two.
+if [ "$rc" -eq 1 ]; then
+    check "assert FAIL under mktemp failure: test_summary still runs and exits 1 (got rc=$rc)" "true"
+else
+    check "assert FAIL under mktemp failure: test_summary still runs and exits 1 (got rc=$rc, output: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -q "REACHED-AFTER-FAIL"; then
+    check "assert FAIL under mktemp failure: suite reaches the statement after the failing assert" "true"
+else
+    check "assert FAIL under mktemp failure: suite reaches the statement after the failing assert (got: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -qF "  FAIL: failing assert under mktemp failure"; then
+    check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted" "true"
+else
+    check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted (got: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -q "Results: 1 passed, 1 failed"; then
+    check "assert FAIL under mktemp failure: test_summary prints the correct Results line" "true"
+else
+    check "assert FAIL under mktemp failure: test_summary prints the correct Results line (got: $mtf_fail_out)" "false"
+fi
+
+# The dump guard must be FALSE when $_f is empty, so no captured-output dump
+# is attempted (mechanically, none is even possible: there is no tmpfile).
+if echo "$mtf_fail_out" | grep -qF "assert: captured output"; then
+    check "assert FAIL under mktemp failure: no captured-output dump is attempted (no tmpfile exists) (got: $mtf_fail_out)" "false"
+else
+    check "assert FAIL under mktemp failure: no captured-output dump is attempted (no tmpfile exists)" "true"
+fi
+
+if echo "$mtf_fail_out" | grep -qi "mktemp"; then
+    check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
+else
+    check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_fail_out)" "false"
+fi
+
+# -- Test (l3): assert() survives an rm failure on the mktemp-SUCCEEDED path -
+# (task 6363 amendment). Test (l)/(l2) force mktemp itself to fail, so $_f is
+# always empty and `[ -n "$_f" ] && rm -f "$_f"` short-circuits before ever
+# calling rm. A separate failure mode reaches the rm call: mktemp succeeds
+# ($_f is non-empty) but the subsequent `rm -f "$_f"` itself fails -- e.g. a
+# read-only or immutable TMPDIR. `rm -f "$_f"` is the command following the
+# final `&&` in that list, so under `set -e` ITS failure alone used to abort
+# the caller right there, before assert()'s trailing `return 0` was ever
+# reached -- the same class of bug as Test (l), on a different trigger.
+# Stubs `rm` as a shell function (not TMPDIR=/dev/null/nope, which forces
+# mktemp -- not rm -- to fail) to force exactly this path.
+echo ""
+echo "--- Test l3: assert() survives an rm failure after a successful mktemp (task 6363) ---"
+
+rc=0
+rmf_out=$(bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    rm() { return 1; }
+    assert 'first assert with failing rm' true
+    echo 'REACHED-AFTER-RM-FAILURE'
+    test_summary
+" 2>&1) || rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    check "assert survives rm failure: test_summary exits 0 (got rc=$rc)" "true"
+else
+    check "assert survives rm failure: test_summary exits 0 (got rc=$rc, output: $rmf_out)" "false"
+fi
+
+if echo "$rmf_out" | grep -q "REACHED-AFTER-RM-FAILURE"; then
+    check "assert survives rm failure: suite reaches the statement after the assert" "true"
+else
+    check "assert survives rm failure: suite reaches the statement after the assert (got: $rmf_out)" "false"
+fi
+
+if echo "$rmf_out" | grep -q "Results: 1 passed, 0 failed"; then
+    check "assert survives rm failure: test_summary prints the correct Results line" "true"
+else
+    check "assert survives rm failure: test_summary prints the correct Results line (got: $rmf_out)" "false"
 fi
 
 # ==============================================================================

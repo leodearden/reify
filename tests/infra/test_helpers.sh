@@ -89,7 +89,13 @@ assert() {
             echo "  ---- assert: end captured output ----"
         fi
     fi
-    [ -n "$_f" ] && rm -f "$_f"
+    # Grouped with `|| true` so the WHOLE statement is unconditionally
+    # successful: under `set -e`, `rm -f "$_f"` failing (e.g. a read-only or
+    # immutable TMPDIR — mktemp itself can still succeed there) is "the
+    # command following the final &&" in this list, so its failure alone
+    # would abort the caller right here, before the `return 0` below is ever
+    # reached -- the same class of bug this whole block exists to close.
+    { [ -n "$_f" ] && rm -f "$_f"; } || true
     # Always return 0 regardless of PASS/FAIL or whether mktemp succeeded:
     # callers invoke assert as a bare simple command under `set -euo
     # pipefail`, so a non-zero return here (e.g. from `[ -n "$_f" ]` being
