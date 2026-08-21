@@ -231,3 +231,117 @@ fn user_defined_generate_is_not_shadowed_by_builtin() {
          the builtin's `List<body>` — the user `generate` is not shadowed",
     );
 }
+
+// ─── task #5385: generate() over a GEOMETRY body ───
+
+/// Fetch a structure template by name.
+fn template<'a>(
+    compiled: &'a reify_compiler::CompiledModule,
+    structure: &str,
+) -> &'a reify_compiler::TopologyTemplate {
+    compiled
+        .templates
+        .iter()
+        .find(|t| t.name == structure)
+        .unwrap_or_else(|| panic!("{structure} template not found"))
+}
+
+/// The realizations bound to geometry-list let `list_name`, in index order.
+fn list_realizations<'a>(
+    template: &'a reify_compiler::TopologyTemplate,
+    list_name: &str,
+) -> Vec<&'a reify_compiler::RealizationDecl> {
+    let mut out: Vec<_> = template
+        .realizations
+        .iter()
+        .filter(|r| {
+            r.list_binding
+                .as_ref()
+                .is_some_and(|b| b.list_name == list_name)
+        })
+        .collect();
+    out.sort_by_key(|r| r.list_binding.as_ref().map(|b| b.index).unwrap_or(0));
+    out
+}
+
+/// Fetch a value cell by member name.
+fn value_cell<'a>(
+    template: &'a reify_compiler::TopologyTemplate,
+    cell: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == cell)
+        .unwrap_or_else(|| panic!("value cell '{cell}' not found in {}", template.name))
+}
+
+/// `generate(3, |i| cylinder(…))` lowers to THREE sibling realizations — one
+/// per index — each named `holes#k` and tagged with its `GeometryListBinding`,
+/// and the `holes` cell types as `List<Geometry>`.
+///
+/// This is the compile-side half of the headline repro. RED today: `generate`
+/// is not a geometry function, `is_geometry_let` rejects it, zero realizations
+/// are emitted, and `infer_list_helper_return_type` types the cell `List<Real>`
+/// — which is exactly why it evaluates to `[undef, undef, undef]`.
+#[test]
+fn generate_over_geometry_emits_one_realization_per_index() {
+    let source = r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a geometry-producing generate() must compile clean; got: {errors:?}",
+    );
+
+    let t = template(&compiled, "S");
+    let elements = list_realizations(t, "holes");
+    assert_eq!(
+        elements.len(),
+        3,
+        "expected 3 list-bound realizations for `holes`, got {:#?}",
+        t.realizations,
+    );
+
+    for (k, r) in elements.iter().enumerate() {
+        assert_eq!(
+            r.list_binding,
+            Some(reify_compiler::GeometryListBinding {
+                list_name: "holes".to_string(),
+                index: k,
+            }),
+        );
+        assert_eq!(
+            r.name.as_deref(),
+            Some(format!("holes#{k}").as_str()),
+            "element {k} must carry the synthetic per-element name",
+        );
+        assert!(
+            r.operations.iter().any(|op| matches!(
+                op,
+                reify_compiler::CompiledGeometryOp::Primitive {
+                    kind: reify_compiler::PrimitiveKind::Cylinder,
+                    ..
+                }
+            )),
+            "element {k} must carry the cylinder primitive; got {:#?}",
+            r.operations,
+        );
+    }
+
+    // Distinct ids — three separate realizations, not one aliased three times.
+    let ids: std::collections::HashSet<_> = elements.iter().map(|r| &r.id).collect();
+    assert_eq!(ids.len(), 3, "element realizations must have distinct ids");
+
+    // The cell is a LIST of geometry — not a dimensionless scalar (today's lie)
+    // and not a single Geometry.
+    assert_eq!(
+        value_cell(t, "holes").cell_type,
+        Type::List(Box::new(Type::Geometry)),
+    );
+}
