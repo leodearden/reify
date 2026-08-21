@@ -105,7 +105,7 @@ fn half_space_compiles() {
     // the compiler does not unit-check — so they take dimensionless literals,
     // to avoid implying a direction vector carries a length unit. Arity alone
     // does not constrain this split, which is why it is pinned here.
-    // Grounding site: examples/half_space.ri:19.
+    // Grounding site: examples/half_space.ri.
     assert_compiles("half_space", "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
 }
 
@@ -321,12 +321,16 @@ fn isosurface_bare_compiles() {
 
 #[test]
 fn isosurface_with_named_options_compiles() {
-    // geometry.md documents `iso` and `adaptive` as OPTIONAL NAMED arguments,
-    // and 3 args as the maximum (geometry.rs:2670 errors above 3). Both facts
-    // are pinned here: the named spellings `iso:` / `adaptive:` are what the
-    // arm forwards positionally into `args`, and their absence in the bare
-    // form above defers to the eval-lowering defaults (iso_level = 0.0,
-    // adaptive = false) rather than being defaulted at compile time.
+    // geometry.md documents the labelled 3-arg form
+    // `isosurface(grid, iso: level, adaptive: flag)`, and 3 as the maximum
+    // arity (geometry.rs:2680 errors above 3). This test pins that the
+    // labelled spelling COMPILES and that 3 args are accepted — NOT that the
+    // labels are enforced. They are not: like every geometry constructor the
+    // arm binds positionally (2nd arg -> `iso`, 3rd -> `adaptive`), so
+    // `iso:` / `adaptive:` are the recommended spelling for the slot rather
+    // than a checked name. Their absence in the bare form above defers to the
+    // eval-lowering defaults (iso_level = 0.0, adaptive = false) rather than
+    // being defaulted at compile time.
     // Grounding sites: examples/multi_kernel/voxel_to_mesh_iso.ri:32 and the
     // arity/named-arg unit tests at geometry.rs:6326/6367.
     assert_compiles(
