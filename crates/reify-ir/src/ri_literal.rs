@@ -1,8 +1,14 @@
 //! `Value` → `.ri` source-literal serializer (task #5095, ai-native-editing β).
 //!
-//! Placeholder body — implemented in step-4.
+//! Writes a [`Value`] back out as `.ri` source text that **re-parses to that
+//! same value**, so an agent (or the GUI) can rewrite a `param` default in
+//! place without changing its type, its unit, or its last bit.
+//!
+//! Structured rejections and the caller-supplied unit hint arrive in
+//! steps 5-8; the full contract note lands in step-10.
 
 use crate::Value;
+use reify_core::units::{ri_emittable_units, unit_symbol_to_si};
 
 /// Why a [`Value`] cannot be written as a `.ri` source literal.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,13 +20,84 @@ pub enum RiLiteralError {
     },
 }
 
-/// Serialize a [`Value`] as `.ri` source text that re-parses to that same value.
+/// Format an `f64` as the shortest decimal text that parses back to the same
+/// bits, matching the lexer's own `f64::from_str`.
 ///
-/// Placeholder — implemented in step-4.
-pub fn value_to_ri_literal(_value: &Value) -> Result<String, RiLiteralError> {
-    Err(RiLiteralError::UnsupportedValueKind {
-        kind: "unimplemented",
-    })
+/// Rust's `{:?}` for floats is shortest-round-tripping and always contains a
+/// `.` or an `e`, which is exactly the `is_real` predicate the lexer applies
+/// (`text.contains('.'|'e'|'E')`). When `force_decimal_point` is false a
+/// trailing `".0"` is stripped, so a scalar reads `80mm` rather than
+/// `80.0mm` — safe because `lower_quantity_literal` discards `is_real`, and
+/// it keeps the rewritten source idiomatic. `Value::Real` passes `true`,
+/// because there the `is_real` bit is what separates `Real` from `Int`.
+///
+/// Always DECIMAL: the parser's `0x`/`0b` radix branches force
+/// `is_real = false` and are unreachable from this emitter by construction.
+fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
+    let s = format!("{x:?}");
+    if force_decimal_point {
+        return s;
+    }
+    s.strip_suffix(".0").map(str::to_owned).unwrap_or(s)
+}
+
+/// Serialize a [`Value`] as `.ri` source text that re-parses to that same value.
+pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
+    match value {
+        Value::Bool(b) => Ok(if *b {
+            "true".to_owned()
+        } else {
+            "false".to_owned()
+        }),
+        Value::Int(i) => Ok(i.to_string()),
+        Value::Real(r) => Ok(format_f64_shortest(*r, true)),
+        Value::String(s) => Ok(format!("\"{s}\"")),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            // A dimensionless scalar has no unit to write, so it goes out as a
+            // bare real. That re-parses as `Value::Real`, whose `dimension()`
+            // is `DIMENSIONLESS` — dimensionally identical.
+            if dimension.is_dimensionless() {
+                return Ok(format_f64_shortest(*si_value, true));
+            }
+            let ladder = ri_emittable_units(dimension);
+            for sym in ladder {
+                if let Some(magnitude) = exact_magnitude(*si_value, sym) {
+                    return Ok(format!("{}{sym}", format_f64_shortest(magnitude, false)));
+                }
+            }
+            // Unreachable for a finite `si_value` on a non-empty ladder: the
+            // last rung's factor is exactly 1.0 (pinned by reify-core's
+            // `ri_emittable_ladders_resolve_to_their_dimension_and_end_at_factor_one`),
+            // so `mag * 1.0 == si_value` holds by IEEE identity. Empty ladders
+            // and non-finite inputs are rejected in step-6.
+            Err(RiLiteralError::UnsupportedValueKind { kind: "Scalar" })
+        }
+        _ => Err(RiLiteralError::UnsupportedValueKind {
+            kind: "Unsupported",
+        }),
+    }
+}
+
+/// The magnitude that would be written in front of `unit`, but ONLY when it
+/// recovers `si_value` bit-identically.
+///
+/// This reproduces the compiler's own arithmetic rather than approximating it:
+/// the same `f64` factor from the same [`unit_symbol_to_si`] table, applied by
+/// the same single multiply the compiler performs for a bare unit literal
+/// (`unit_to_scalar` delegates to that table). So a `Some` here is a *proof*
+/// that the literal re-parses to the original bits, not an estimate.
+///
+/// Naive `si_value / factor` is emphatically NOT enough — measured over 200k
+/// uniform magnitudes per unit, it fails to round-trip for ~2.1% of `mm`,
+/// ~13% of `cm`, ~14% of `in` and ~9% of `deg` values, while factor-1.0 units
+/// (`m`, `rad`, `kg`) never fail.
+fn exact_magnitude(si_value: f64, unit: &str) -> Option<f64> {
+    let (factor, _dim) = unit_symbol_to_si(unit)?;
+    let magnitude = si_value / factor;
+    (magnitude * factor == si_value).then_some(magnitude)
 }
 
 #[cfg(test)]
