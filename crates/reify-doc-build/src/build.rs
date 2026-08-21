@@ -344,15 +344,31 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
 // CompiledFunction → ItemKind::Function
 // ---------------------------------------------------------------------------
 
+/// Lower a `CompiledFunction`, splicing its type parameters into the rendered
+/// signature as `fn {name}<{generics}>({params}) -> {ret}` (task #6342).
+///
+/// Deliberately NO model change here, unlike `ItemKind::TypeAlias`:
+/// `ItemKind::Function { signature }` is already a single rendered DISPLAY
+/// string, so the generics fold into it with no new variant field and no
+/// literal churn across the doc crates.  `header.name` — the join key for
+/// anchors, TOC hrefs and split-mode filenames — stays the bare identifier,
+/// which is the same identity invariant the alias heading preserves.
 fn lower_function(f: &CompiledFunction) -> ItemDoc {
     let params_str: Vec<String> = f
         .params
         .iter()
         .map(|(name, ty)| format!("{name}: {}", type_to_string(ty)))
         .collect();
+    // Empty for a non-generic fn, so its signature renders byte-identically to
+    // before — no stray `<>`.
+    let generics = match render_type_params(&f.type_params) {
+        params if params.is_empty() => String::new(),
+        params => format!("<{}>", params.join(", ")),
+    };
     let signature = format!(
-        "fn {}({}) -> {}",
+        "fn {}{}({}) -> {}",
         f.name,
+        generics,
         params_str.join(", "),
         type_to_string(&f.return_type)
     );
