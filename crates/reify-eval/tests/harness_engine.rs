@@ -47,3 +47,9 @@ mod nested_sub_derived_let_e2e;
 // anti-re-accretion reason as #5196's, #5045's and #5360's above.
 #[path = "harness_engine/dimensioned_ctor_migration_si_values.rs"]
 mod dimensioned_ctor_migration_si_values;
+// Task #6186's DSL→STEP length-unit-regime round-trip pin lands here for the
+// same anti-re-accretion reason as #5196's, #5045's, #5360's and #5758's above.
+// It is also a topical fit: it drives `Engine::build_outputs`, the engine-level
+// entry point that composes evaluation, kernel realization and export.
+#[path = "harness_engine/export_unit_regime_e2e.rs"]
+mod export_unit_regime_e2e;

@@ -398,7 +398,9 @@ convention changes:
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
-`translate(primitive(...), 0, 0, -h/2)` workaround.
+`translate(primitive(...), 0mm, 0mm, -h/2)` workaround — note the dimensioned zeros: `translate`'s
+components are length-semantic, so a bare `0` is rejected rather than read as 0 SI metres. (`-h/2`
+needs no change; dividing a length by a bare number preserves the length.)
 
 `rounded_box`/`rounded_rect` additionally require `corner_r > 0` and
 `2*corner_r < min(width, depth)`; a statically-known violation (constant literal

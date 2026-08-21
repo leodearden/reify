@@ -91,7 +91,7 @@ mod tests {
     }
 
     /// `PARSE_FN_NAMES` is exactly the two parse names — membership both ways
-    /// plus an exact count (mirrors `math_construction_names_are_exactly_the_six`).
+    /// plus an exact count (mirrors `math_construction_names_are_exactly_the_eight`).
     #[test]
     fn parse_fn_names_are_exactly_the_two() {
         const EXPECTED: [&str; 2] = ["parse_length", "parse_length_r"];

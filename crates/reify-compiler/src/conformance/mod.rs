@@ -9,6 +9,7 @@ use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{
     GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
 };
+use reify_core::BASE_UNIT_SYMBOLS;
 use std::cell::RefCell;
 
 /// Severity knob for struct-constructor field-conformance diagnostics
@@ -1081,21 +1082,166 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
 /// arg type is not `type_compatible` with the declared param type (String←Int,
 /// Bool←String, dimensioned-scalar mismatch, …). No new diagnostic code is minted
 /// — `ArgTypeMismatch` already exists.
+///
+/// A rejection at a DIMENSIONED `Scalar` param additionally carries the D4-6
+/// migration hint (see [`dimensioned_scalar_migration_hint`]); every other
+/// family's message is byte-identical to what it was before task 5627.
 fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
-    ctx.diagnostics.push(
-        diag_at(
-            ctx.severity,
-            format!(
-                "argument '{}' has type '{}' but param '{}' requires type '{}'",
-                ctx.arg_name, arg_ty, ctx.arg_name, param_type,
-            ),
-        )
-        .with_code(DiagnosticCode::ArgTypeMismatch)
-        .with_label(DiagnosticLabel::new(
-            ctx.span,
-            format!("expected '{}', got '{}'", param_type, arg_ty),
-        )),
+    let mut message = format!(
+        "argument '{}' has type '{}' but param '{}' requires type '{}'",
+        ctx.arg_name, arg_ty, ctx.arg_name, param_type,
     );
+    // Gated on the param being a DIMENSIONED scalar, not applied unconditionally:
+    // this emitter is shared with the `Bool` / `Int` / `String` / dimensionless
+    // `Real` families task 5465 promoted, where the clause would be nonsense
+    // ("pass a dimensioned Bool literal") and would silently reword four
+    // already-shipped diagnostics.
+    let dimensioned = match param_type {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(dimension),
+        _ => None,
+    };
+    if let Some(dimension) = dimensioned {
+        message.push_str("; ");
+        message.push_str(&dimensioned_scalar_migration_hint(dimension));
+    }
+    ctx.diagnostics.push(
+        diag_at(ctx.severity, message)
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(
+                ctx.span,
+                format!("expected '{}', got '{}'", param_type, arg_ty),
+            )),
+    );
+}
+
+/// Whether each [`BASE_UNIT_SYMBOLS`] slot is spellable as a unit LITERAL, in
+/// the same slot order.
+///
+/// `BASE_UNIT_SYMBOLS` is the DISPLAY table: it names every slot so a
+/// `DimensionVector` can be rendered. That is a weaker property than being
+/// parseable — `stdlib/units.ri` declares `m`, `kg`, `s`, `K`, `rad` and `USD`
+/// as units, but NOT `A`, `mol`, `cd` or `sr`, so a composed `…/A` literal fails
+/// with `unknown unit: A`. Measured, not assumed: the round-trip guard in
+/// `struct_ctor_field_conformance_tests.rs` caught exactly this on `Voltage`
+/// (`1m^2*kg/s^3/A`).
+///
+/// `[bool; 10]`, same as the symbol table, so an 11th base dimension breaks at
+/// compile time here too. Registering one of the missing symbols in the stdlib
+/// is a one-flag change, and the round-trip guard proves it immediately.
+const BASE_UNIT_SYMBOL_IS_SPELLABLE: [bool; 10] = [
+    true,  // m
+    true,  // kg
+    true,  // s
+    false, // A
+    true,  // K
+    false, // mol
+    false, // cd
+    true,  // rad
+    false, // sr
+    true,  // USD
+];
+
+/// An example unit literal for `dimension`, spelled in reify's compound-unit
+/// grammar — `"1m"`, `"1m/s^2"`, `"1kg/m^3"`, `"1kg*m^2/s^2"`.
+///
+/// Composed from [`BASE_UNIT_SYMBOLS`] rather than looked up in a per-dimension
+/// table, which is what makes the hint unable to rot: every present and future
+/// `NAMED_DIMENSIONS` row is covered uniformly, with no second list to keep in
+/// step. (`si_units.rs`'s `SI_DERIVED_UNITS` was the obvious table and is not
+/// usable: it covers ~25 derived units and misses Length, Mass, Time, Area,
+/// Volume, Density — and Velocity and Acceleration, the two dimensions in this
+/// task's own signal.)
+///
+/// NOT built from [`DimensionVector`]'s `Display`, which joins with `·` and
+/// emits `^-1`; neither is reify syntax. Positive exponents go to a `*`-joined
+/// numerator and negative ones to `/`-prefixed denominator terms, the shape
+/// `compound_unit_resolution_tests.rs` pins as accepted (`5kN*m`, `9.81m/s^2`,
+/// `7850kg/m^3`, `0.001kg/m/s`).
+///
+/// `None` when no clean literal exists — three cases, all measured against the
+/// round-trip guard rather than guessed:
+/// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
+///   has no unit-literal spelling at all;
+/// * an EMPTY numerator (e.g. `Frequency`, s⁻¹) would need a bare `1/s`, which
+///   reify's grammar reads as a division rather than as a quantity literal;
+/// * a slot whose symbol the stdlib does not register as a unit (see
+///   [`BASE_UNIT_SYMBOL_IS_SPELLABLE`]), e.g. `Voltage`'s ampere term.
+///
+/// Declining is deliberate: an example that does not parse is worse than none,
+/// because the reader would paste it. The round-trip guard in
+/// `struct_ctor_field_conformance_tests.rs` walks every `NAMED_DIMENSIONS` row
+/// and fails the build if any offered example stops resolving to its own
+/// dimension.
+fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
+    let mut numerator: Vec<String> = Vec::new();
+    let mut denominator: Vec<String> = Vec::new();
+
+    for (slot, exponent) in dimension.0.iter().enumerate() {
+        if exponent.num() == 0 {
+            continue;
+        }
+        if exponent.den() != 1 {
+            return None;
+        }
+        if !BASE_UNIT_SYMBOL_IS_SPELLABLE[slot] {
+            return None;
+        }
+        let symbol = BASE_UNIT_SYMBOLS[slot];
+        let power = exponent.num();
+        let magnitude = power.abs();
+        let term = if magnitude == 1 {
+            symbol.to_owned()
+        } else {
+            format!("{symbol}^{magnitude}")
+        };
+        if power > 0 {
+            numerator.push(term);
+        } else {
+            denominator.push(term);
+        }
+    }
+
+    // MEASURED, not assumed: `structure def S { param x : Frequency = 1/s }`
+    // fails to compile with `unresolved name: s` — with no numerator term to
+    // anchor it, the leading `1` is parsed as a plain number and `/s` as a
+    // division by an identifier, never as a quantity literal.
+    if numerator.is_empty() {
+        return None;
+    }
+
+    let mut literal = format!("1{}", numerator.join("*"));
+    for term in &denominator {
+        literal.push('/');
+        literal.push_str(term);
+    }
+    Some(literal)
+}
+
+/// The D4-6 migration hint clause appended to a rejection at a DIMENSIONED
+/// `Scalar` ctor slot.
+///
+/// Shape: ``"pass a dimensioned <Dimension> literal such as `<example>`"``,
+/// COPIED from `ArgRejection::message` in `crates/reify-eval/src/arg_acceptance.rs`
+/// so the compile-time and runtime diagnostics for the same authoring mistake
+/// read the same way. Copied and never imported: `reify-eval` depends on
+/// `reify-compiler`, so the reverse edge would be a dependency cycle (D9).
+///
+/// Degrades rather than disappearing, so the hint is present unconditionally at
+/// a dimensioned slot:
+/// * a composite dimension not in `NAMED_DIMENSIONS` has no `canonical_name()`,
+///   and falls back to the `Display` form as the NAME (where `·`/`^-1` are fine
+///   — it is prose, not something the reader pastes);
+/// * a dimension with no clean example literal keeps the clause and drops only
+///   the `such as` tail.
+fn dimensioned_scalar_migration_hint(dimension: &DimensionVector) -> String {
+    let name = dimension
+        .canonical_name()
+        .map(str::to_owned)
+        .unwrap_or_else(|| dimension.to_string());
+    match example_unit_literal(dimension) {
+        Some(example) => format!("pass a dimensioned {name} literal such as `{example}`"),
+        None => format!("pass a dimensioned {name} literal"),
+    }
 }
 
 /// The arg types that every leaf gate in this walker conservatively SKIPS rather
@@ -1152,6 +1298,53 @@ fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
 /// would make `Anchor(origin: "origin")` silent and defeat the value floors.
 fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_))
+}
+
+/// Whether a `Type::ScalarParam(_)` ARG at a `Type::Scalar { .. }` PARAM must be
+/// DEFERRED rather than judged (task 5627 γ, D4-5; PRD invariant I5 / §7.4 B4).
+///
+/// `Type::ScalarParam(Q)` is the unresolved-DIMENSION placeholder a dim-kinded
+/// generic produces: `fn fwd<Q: Dimension>(x: Scalar<Q>)` resolves `x` to
+/// `ScalarParam("Q")` (`type_resolution.rs`), displayed `Scalar<Q>`. Its FAMILY
+/// is known — it is a scalar — and only its DIMENSION is open (see
+/// [`arg_type_is_unverifiable`]'s closing note, which draws the same distinction
+/// against `TypeParam`). At a `Scalar` slot there is therefore no dimension to
+/// compare: `Q` is bound at instantiation, and whether that binding conforms is
+/// decided there. Judging the UNINSTANTIATED body under the strict
+/// `DimensionVector` equality γ routes into this arm can only ever REJECT, so
+/// every such site would be a false positive — one γ's own promotion opens.
+///
+/// # Deliberately narrower than [`is_numeric_placeholder_leaf`]
+///
+/// That predicate also matches `Type::Int` and any CONCRETE `Type::Scalar { .. }`.
+/// Reusing it as the arg-side accept HERE would silence `Scalar<Q> ← Int` (I3)
+/// and `Scalar<Length> ← Scalar<Mass>` (I2) — precisely the two rejections γ
+/// exists to produce — leaving the promotion green, the corpus clean and the
+/// whole task functionally inert. The `Point` / `Matrix` / `Tensor` arms want its
+/// full membership set because a numeric-fallback placeholder is what they
+/// actually receive; this arm wants only the dimension-placeholder half.
+///
+/// It is a PER-ARM guard for the same reason it is not an entry in
+/// [`arg_type_is_unverifiable`]: adding it there would silence
+/// `String ← Scalar<Q>` at every arm at once, which that predicate's own doc
+/// comment already rules out.
+///
+/// # A2 — the INTENDED side effect on the dimensionless half
+///
+/// `Real` is `Type::Scalar { dimension: <dimensionless> }`, so this necessarily
+/// also silences `Real ← Scalar<Q>` — a warning belonging to task 5465's
+/// already-shipped dimensionless family, not to the family γ promotes. That is
+/// intended, not collateral: the argument for silence is identical in both
+/// halves, since `Q` is unbound either way and there is nothing to compare.
+/// Narrowing the guard to `!dimension.is_dimensionless()` to preserve that
+/// warning would assert `Scalar<Q>` is definitely-not-`Real` while
+/// simultaneously accepting it as maybe-`Scalar<Length>`.
+///
+/// All five behaviours above — the accept, the A2 post-state, and the three
+/// narrowness fences — are pinned by name in the γ D4-5 section of
+/// `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`.
+fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> bool {
+    matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
 }
 
 /// The CONCRETE dimension named by a quantity slot, or `None` when that slot
@@ -1722,7 +1915,16 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 // mismatch. Every other family keeps falling through silently,
                 // exactly as before α — see that predicate's doc comment for the
                 // per-family rationale and the sound-by-construction posture.
-                reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
+                //
+                // D4-5 (task 5627 γ): one arg-side accept sits in front of that
+                // gate — an unresolved-DIMENSION placeholder at a `Scalar` slot
+                // is deferred to instantiation rather than judged. See
+                // [`scalar_param_arg_defers_at_scalar_slot`] for why it is
+                // narrower than [`is_numeric_placeholder_leaf`] and why it is not
+                // an [`arg_type_is_unverifiable`] entry.
+                if !scalar_param_arg_defers_at_scalar_slot(param_type, arg_type) {
+                    reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
+                }
             }
         }
     }
@@ -1748,11 +1950,27 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// # Why these families
 ///
 /// `type_compatible` is a *call-site coercion* predicate: it presumes both sides
-/// carry genuinely inferred types. `Bool`, `Int`, `String` and DIMENSIONLESS
-/// `Scalar` (spelled `Real` in source, and by `Display`) are the families for
-/// which that presumption holds unconditionally at a struct-ctor arg position —
-/// the expression compiler infers them precisely, and `type_compat.rs` has real
-/// arms for each.
+/// carry genuinely inferred types. `Bool`, `Int`, `String` and the WHOLE
+/// `Scalar` family — dimensionless (spelled `Real` in source, and by `Display`)
+/// and dimensioned alike — are the families for which that presumption holds
+/// unconditionally at a struct-ctor arg position: the expression compiler infers
+/// them precisely, and `type_compat.rs` has real arms for each.
+///
+/// The dimensioned half is admitted by task 5627 (γ). It was HELD through tasks
+/// 5302/5465 pending a language-semantics ruling on whether a bare dimensionless
+/// arg is legal at a dimensioned slot; the ruling landed (fix the call sites, do
+/// not relax the slot) and its contract table lives in
+/// `docs/prds/v0_6/dimensioned-construction-strictness.md` §0.1 / §4.1 — read it
+/// there rather than here, so the two cannot drift out of lockstep.
+///
+/// Nothing about the dimensioned half is special-cased in this walker: it rides
+/// the same `reject_if_incompatible` → `type_compatible` gate as the other
+/// three. Strict `DimensionVector` equality is what `type_compatible` already
+/// does (`implicitly_converts_to` has no `Scalar`-vs-`Scalar` arm past the
+/// `from == to` short-circuit), and the ONE scalar relaxation it carries
+/// (`type_compat.rs:232-237`, `Int` → `Scalar`) is gated on the PARAM side being
+/// dimensionless — which is simultaneously why `Real ← Int` survives the
+/// promotion and why `Scalar<Q> ← Int` now rejects.
 ///
 /// # Handled by dedicated shape-based arms instead (task 5465)
 ///
@@ -1786,16 +2004,6 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// `docs/legibility/design-invariants.md:126-128`, forbids a blanket escape that
 /// names none):
 ///
-/// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
-///   at a dimensioned slot is idiomatic throughout the corpus. HELD, not
-///   forgotten: whether it should be legal is a language-semantics question
-///   about the dimensionless↔dimensioned slot convention, and today's answer is
-///   position-dependent across six gates (legal at ctor field slots, literal
-///   `param`/`let` defaults and constraint-def args; illegal at user-fn param
-///   slots, fn-param defaults, ambient defaults, compound initializers and all
-///   arithmetic). Owner: task #5627 (filed from this task as ticket
-///   `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`, escalation `agent-followup-5465`), which
-///   carries the four candidate resolutions and their costs.
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
 ///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
 ///   geometry conformance is decided only through the literal walker's op-array
@@ -1804,9 +2012,9 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 ///   decided when the type var is bound at instantiation (mirrors the arg-side
 ///   `TypeParam` skip inside [`reject_if_incompatible`]).
 ///
-/// The last two were the α negative guard's explicit carve-outs; they are
-/// subsumed by simple absence from the allowlist, so the redundant `matches!`
-/// is gone rather than left as dead belt-and-braces.
+/// Both were the α negative guard's explicit carve-outs; they are subsumed by
+/// simple absence from the allowlist, so the redundant `matches!` is gone rather
+/// than left as dead belt-and-braces.
 ///
 /// # Still unexamined
 ///
@@ -1842,11 +2050,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// exactly the class of false positive this allowlist exists to prevent. An
 /// applied generic structure still falls through this predicate silently.
 fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
-    match param_type {
-        Type::Bool | Type::Int | Type::String => true,
-        Type::Scalar { dimension } => dimension.is_dimensionless(),
-        _ => false,
-    }
+    matches!(
+        param_type,
+        Type::Bool | Type::Int | Type::String | Type::Scalar { .. }
+    )
 }
 
 /// RAII guard that pops the top entry from an in-flight Vec when dropped.

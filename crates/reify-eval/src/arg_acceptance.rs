@@ -3,19 +3,51 @@
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
 //! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
-//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350):
-//! `geometry_ops`' `eval_named_arg_length` (pattern spacing, mirror-plane
-//! origin, circular-pattern axis origin, arbitrary-pattern offsets)
-//! and `resolve_length_scalar_arg`
+//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350 and 5623):
+//! `geometry_ops`' `eval_named_arg_length` and `resolve_length_scalar_arg`
 //! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
 //! [`length_spec`] so both emit identical rejection text.
 //!
-//! Contract C is NOT yet exhaustive: `sweep_revolve`'s axis origin
-//! (`geometry_ops`' `ox`/`oy`/`oz`, read via the bare-accepting
-//! `eval_named_arg_f64`) is the nearest un-gated LENGTH-semantic position, and
-//! `transform_translate`/`transform_rotate_around`/`curve_*` carry more. Task
-//! 5623 tracks that residual sweep; until it lands, adding a length-semantic
-//! arg here means adding it to that task's triage list too.
+//! The positions currently routed through `eval_named_arg_length`, by family:
+//!
+//! | family    | builtin / position                                   | task |
+//! |-----------|------------------------------------------------------|------|
+//! | pattern   | linear + 2-D spacing, arbitrary-pattern offsets, mirror-plane origin | 5214 |
+//! | pattern   | circular-pattern axis origin `ox`/`oy`/`oz`          | 5350 |
+//! | transform | `translate` `dx`/`dy`/`dz`; `rotate_around` pivot `px`/`py`/`pz` | 5623 |
+//! | sweep     | `revolve` axis origin `ox`/`oy`/`oz`                 | 5623 |
+//! | curve     | `line_segment` endpoints `x1`…`z2`; `arc` centre `cx`/`cy`/`cz` + `radius`; `helix` `radius`/`pitch`/`height` | 5623 |
+//!
+//! Contract C is NOT yet exhaustive, and this note stays open until the closure
+//! guard of task 5752 replaces it with a pointer. What remains un-gated, and
+//! who owns it:
+//!
+//! - Variadic curve coordinates (`interp`/`bezier`/`nurbs`), which reach f64
+//!   through `eval_all_args_to_f64` rather than a named-arg helper — task 5658.
+//! - `profile_polygon`'s 2-D vertex pairs — task 5661.
+//! - The raw-`Value` primitive/profile chokepoint (box/cylinder/sphere/… dims,
+//!   `half_space` px/py/pz, rectangle/circle/ellipse dims), plus the single
+//!   shared `DiagnosticCode` that every code-less Contract C site still needs —
+//!   task 5743.
+//! - The modify + sweep MAGNITUDES, on that same raw-`Value` chokepoint once
+//!   5743 introduces it: `fillet` radius, `chamfer` distance,
+//!   `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset,
+//!   `offset_solid`/`offset_curve` distance, `extrude`/`extrude_symmetric`
+//!   distance, `pipe` radius, `zone_slab` width — task 5744. These never reach
+//!   a named-arg f64 helper at all: each is stored into its `GeometryOp` field
+//!   as a raw `Value` by the bare-accepting `eval_named_arg` and coerced as SI
+//!   metres at the kernel boundary, so it leaves no `as_f64` fingerprint —
+//!   which is exactly why repeated hand audits missed them, and why they are
+//!   listed here rather than left to be re-derived.
+//!
+//! Deliberately NOT gated, and not a residual: unit-vector DIRECTIONS
+//! (`ax`/`ay`/`az`, `nx`/`ny`/`nz`, and `extrude_infinite`'s `dx`/`dy`/`dz`),
+//! instance COUNTS, dimensionless scale FACTORS, and every ANGLE — angles are
+//! `docs/prds/v0_6/angle-units-surface-convergence.md`'s by seam-table decree,
+//! so gating one here would be a scope violation, not an improvement.
+//!
+//! Until the residual closes, adding a length-semantic arg anywhere means
+//! adding it to the owning task's triage list too.
 //!
 //! The helper is **value-level only**: it operates on an already-resolved
 //! `reify_ir::Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
@@ -91,15 +123,27 @@ pub fn density_spec() -> ArgSpec {
     }
 }
 
-/// Returns the [`ArgSpec`] for a LENGTH-semantic builtin argument — pattern
-/// spacing, mirror-plane origin, circular-pattern axis origin, or
-/// arbitrary-pattern offset: a `Value::Scalar` with `DimensionVector::LENGTH`
-/// (metres). Mirrors [`density_spec`].
+/// Returns the [`ArgSpec`] for a LENGTH-semantic builtin argument: a
+/// `Value::Scalar` with `DimensionVector::LENGTH` (metres). Mirrors
+/// [`density_spec`].
+///
+/// Three kinds of position share this spec, because all three are lengths in
+/// every component:
+///
+/// - a DISPLACEMENT — `translate`'s `dx`/`dy`/`dz`, pattern spacing,
+///   arbitrary-pattern offsets;
+/// - a POINT in space — `rotate_around`'s pivot, `revolve`'s and
+///   `circular_pattern`'s axis origin, the mirror plane's origin,
+///   `line_segment`'s endpoints, `arc`'s centre;
+/// - a standalone EXTENT — `arc`'s radius, `helix`'s radius/pitch/height,
+///   `edges_at_height`'s z/tol.
 ///
 /// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
 /// **metres** by `Value::as_f64` (the `10` vs `10mm` = 1000× hazard); this spec
 /// drives the eval-layer rejection that closes that hole (task 5214; the
-/// circular-pattern axis origin was added by task 5350).
+/// circular-pattern axis origin was added by 5350, and the transform / sweep /
+/// curve families by 5623). See the module doc for the full position table and
+/// for what stays deliberately un-gated.
 pub fn length_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Length",

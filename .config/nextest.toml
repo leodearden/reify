@@ -14,16 +14,20 @@
 #   verify runs to ≤2 (1 task slot at default N=1 + 1 exempt merge); worst case
 #   2 × 24 OCCT × ~2 GiB = 96 GiB < 125 GiB → guaranteed no swap.  See
 #   docs/notes/multi-process-occt-bench.md §d for full evidence.
-#   AMENDMENT (task 5984): the original basis ended "cap 24 stays below
-#   nproc=32 global so it remains a real backstop" — that sentence is now
-#   FALSE.  [profile.default] test-threads (below) bounds the GLOBAL pool at
-#   min(16, nproc), so no more than 16 tests run concurrently overall and a
-#   group cap of 24 can never bind.  This is a strict TIGHTENING (the group's
-#   effective memory bound falls from 24 × ~2 GiB = 48 GiB to 16 × ~2 GiB =
-#   32 GiB), not a loosening.  The group is deliberately KEPT, not deleted: it
-#   becomes a real backstop again the moment the global is raised via
-#   REIFY_NEXTEST_TEST_THREADS — which is exactly when a runaway OCCT pool
-#   would matter most.  Do not remove it as "dead config".
+#   AMENDMENT (task 5984, SUPERSEDED by task 6018): task 5984 recorded that
+#   "cap 24 stays below nproc=32 global so it remains a real backstop" had
+#   become FALSE, because [profile.default] test-threads then bounded the
+#   GLOBAL pool at min(16, nproc) and a group cap of 24 could never bind.
+#   Task 6018 un-narrowed that global: HARD_CAP now DEFAULTS to the resolved
+#   host nproc, so the pool resolves to 32 here — ABOVE the group cap of 24.
+#   The original sentence is therefore TRUE AGAIN and the arithmetic above
+#   stands unmodified: the occt group binds at 24, its effective memory bound
+#   is back to 24 × ~2 GiB = 48 GiB per run, and the ≤2-concurrent-verify
+#   worst case is the 96 GiB < 125 GiB figure computed above — not the 32 GiB
+#   that task 5984's narrowing had produced.  The group is a GENUINE BACKSTOP,
+#   not dead config subsumed by a tighter global; Test 17i in
+#   tests/infra/test_occt_gated_scope.sh pins that ordering (global > group on
+#   this host class) so it cannot silently invert again.  Do not remove it.
 #
 # The OCCT-touching crates (reify-kernel-occt, reify-eval, reify-cli,
 # reify-config — authoritative list: scripts/occt-touching-crates.txt) are
@@ -58,17 +62,35 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 
 # Global test-thread pool cap (task 5984).
 #
-# WHY: cargo-nextest defaults the global pool to the host's logical CPU count
-# (32 here), so before this key EVERY crate outside the `occt` test-group —
-# reify_lsp, reify-syntax, reify-compiler, the GUI Rust tests — ran unbounded.
-# Observed: 23 concurrent reify_lsp test binaries from a SINGLE warm lane
-# during a load-276 spike.  Compounded by REIFY_TEST_SEMAPHORE_CONCURRENCY: 2
-# (two lanes' worth of that at once) plus merge-role verifies, which bypass the
-# semaphore entirely.
+# WHY THIS KEY EXISTS AT ALL: cargo-nextest defaults the global pool to the
+# host's logical CPU count, so without this key every crate outside the `occt`
+# test-group — reify_lsp, reify-syntax, reify-compiler, the GUI Rust tests —
+# runs in a pool nothing in this file bounds.  The key is retained as the
+# CONTROL POINT (with REIFY_NEXTEST_TEST_THREADS and
+# REIFY_NEXTEST_TEST_THREADS_HARD_CAP as its knobs) even though, as of task
+# 6018, its default no longer narrows anything below nproc.
 #
-# THE JUSTIFICATION IS CPU-SHARE SYMMETRY AND RUNQUEUE DEPTH — **NOT** MEMORY.
-# Stated explicitly with its counter-evidence so nobody "helpfully" adds a RAM
-# term here later for consistency with the occt cap above:
+# WHAT IT BOUNDS, HONESTLY: one `cargo nextest run` — never the host.  The
+# host-wide arithmetic, corrected task 6018:
+#   REIFY_TEST_SEMAPHORE_CONCURRENCY is 1, not the 2 an earlier draft of this
+#   paragraph cited (dropped 2 -> 1 in dark-factory commit 712e6230d6 and
+#   hot-reloaded; dark-factory-orchestrator.yaml:331).  With one task slot plus
+#   the merge role's bypass (scripts/lib_test_semaphore.sh:91 — DF_VERIFY_ROLE
+#   = merge skips acquisition entirely), the reachable steady state is
+#   2 × test-threads: ~32 before task 6018, ~64 after.
+#
+# THE OBSERVATION THAT MOTIVATED THE ORIGINAL CAP, kept with its caveat intact:
+# 23 concurrent reify_lsp test binaries from a SINGLE warm lane during a
+# load-276 spike.  ATTRIBUTION WAS NOT MEASURED — that spike was never shown to
+# be caused by the unbounded nextest pool rather than by concurrent compile
+# jobs, and un-narrowing the pool may reintroduce whatever pressure it
+# represented.  If it does, the right response is a MEASUREMENT
+# (scripts/sample-test-binary-concurrency.sh reports the host-wide peak of
+# confirmed test binaries), not a re-guess at a ceiling.
+#
+# ANY BOUND ON THIS KEY IS ABOUT RUNQUEUE DEPTH — **NOT** MEMORY.  Stated
+# explicitly with its counter-evidence so nobody "helpfully" adds a RAM term
+# here later for consistency with the occt cap above:
 #   - orchestrator-reify.service holds 25.3 GiB memory.current against only
 #     3.6 GiB anon — the remainder is reclaimable cargo page cache.
 #   - a live df-verify-reify-*.scope measured 25.4 GiB current / 0.1 GiB anon.
@@ -77,10 +99,49 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # anon each (docs/notes/multi-process-occt-bench.md); ordinary Rust test
 # binaries do not.
 #
-# WHY 16: it matches the dark-factory half (dark_factory:3589, pytest
-# `-n auto` -> `-n 16`).  A fleet's share of a saturated host is roughly
-# proportional to its runnable-thread count, so an ASYMMETRIC pair of caps
-# would merely transfer share from the capped side to the uncapped one.
+# NO SYMMETRY ARGUMENT — DO NOT REINTRODUCE ONE, IN EITHER DIRECTION.
+# This key was set to 16 to match what was then believed to be the
+# dark-factory half's pytest `-n 16`, on the reasoning that a fleet's share of
+# a saturated host is proportional to its runnable-thread count so an
+# asymmetric pair of caps merely transfers share.  Task 6018 deleted that
+# argument as WRONG FOR A CARGO-NEXTEST POOL, and it must not survive in any
+# form — including re-parameterised to a new number, or mirrored as a
+# counter-symmetry claim.
+#
+# AND THE BORROWED NUMBER WAS NEVER EVEN THE SIBLING'S NUMBER — a second,
+# independent reason not to reason from it.  Re-measured first-hand during task
+# 6018's review-amendment pass, against the dark-factory task record and its
+# two pyprojects rather than from memory:
+#   - dark_factory:3589's target is `-n 8`, NOT `-n 16`.  Its own description
+#     records the operator decision (Leo, 2026-08-03) as "supersedes the
+#     original -n 16 proposal", on memory grounds (446 MB RSS per xdist worker)
+#     plus a measured CPU-seconds ladder.  reify's `test-threads = 16` was
+#     authored 2026-08-03 12:12:55 +0100 — i.e. the sibling's value had ALREADY
+#     been corrected away from 16 by the time this file cited it.
+#   - dark-factory is not running 16 today either: 3589 is still `pending` and
+#     both `orchestrator/pyproject.toml` and `fused-memory/pyproject.toml` still
+#     carry `-n auto`, which resolves to 32 on this 32-core host (psutil absent,
+#     so xdist falls back to os.cpu_count()).
+# So a reader must NOT come away believing dark-factory runs at 16.  It runs at
+# 32 and is targeting 8.  Do not "restore symmetry" against any of those three
+# numbers; the mechanism argument below is the whole reason, and the sibling's
+# value is not evidence about this one even when correctly quoted.
+#
+# THE ACTUAL MECHANISM the borrowed number came from: under pytest-xdist EVERY
+# worker RE-COLLECTS the whole suite before running anything — a fixed cost of
+# roughly 19.4 CPU-seconds per worker, so ~620 CPU-seconds of purely redundant
+# collection at 32 workers.  Halving the worker count there deletes half of a
+# real, measured, per-worker overhead.
+#
+# cargo-nextest has NO ANALOGUE.  It executes pre-built test binaries; there is
+# no per-thread collection phase, so a thread costs nothing until it runs a
+# test and narrowing the pool buys none of that saving while costing wall-clock
+# directly.  The CPU-seconds argument simply does not transfer between the two
+# runners, and a shared number was never evidence of a shared mechanism.
+#
+# The two fleets are now explicitly DECOUPLED: the dark-factory side proceeds
+# on its own memory and collection-cost grounds, and reify's pool stands on its
+# own.  Neither should cite the other's number as a reason.
 #
 # KEY-NAME HAZARD — the highest-risk failure mode of this key.  nextest 0.9.136
 # does NOT deny unknown config keys: it emits
@@ -92,17 +153,62 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # while `test-thredz` does.  Same "verified once on 0.9.136" convention this
 # file already uses for the `--config`-is-a-NO-OP-for-test-groups note above.
 #
-# The in-file literal '16' is the sed-template fallback (the HARD_CAP ceiling),
-# mirroring the "in-file literal '24'" convention for the occt cap above:
-# scripts/gen-nextest-config.sh rewrites it to the host-resolved
-# min(HARD_CAP=16, nproc) for verify.sh, and a bare `cargo nextest run` that
-# bypasses verify.sh entirely still gets a bounded pool rather than 32.
+# THE TEMPLATE VALUE IS NEXTEST'S OWN HOST-RELATIVE `"num-cpus"` (task 6374,
+# which replaced the bare integer 32 this line carried under task 6018).  It is
+# NOT a narrowing ceiling: scripts/gen-nextest-config.sh rewrites this LINE to
+# the host-resolved min(HARD_CAP, nproc) for every verify pass (verify.sh passes
+# the generated file as `--config-file`), and HARD_CAP itself defaults to that
+# same resolved nproc, so the generated config is the host-relative one and
+# applies no ceiling below what nextest would pick.  Note this key therefore no
+# longer shares the "in-file literal '24'" convention the occt cap above still
+# uses — that one stays a bare integer and its sed anchor stays integer-only.
+#
+# ON A SMALLER HOST — a bare `cargo nextest run` that bypasses verify.sh gets
+# this value VERBATIM, and `"num-cpus"` is exactly that host's own CPU count,
+# identical to nextest's default with the key ABSENT.  So the manual path is now
+# correct on any host, which is the whole point of the spelling.  What it does
+# NOT give you are the reify-side knobs — the HARD_CAP ceiling, the explicit
+# override, the >=1 clamp — so to apply those on that path still use either
+#   cfg=$(scripts/gen-nextest-config.sh); cargo nextest run --config-file "$cfg"
+# or REIFY_NEXTEST_TEST_THREADS.  Every verify path already does the former.
+#
+# HISTORY, so the change is not re-litigated: the template carried a bare
+# integer until #6374 purely because the TEST SCAFFOLDING assumed one — the
+# generator substituted on `^test-threads = [0-9][0-9]*$`, Test 17k pinned that
+# exactly one line matched it, and Test 17b extracted with match($0,/[0-9]+/) —
+# so a quoted string broke the anchor (the substitution silently no-ops, failing
+# SAFE and therefore invisibly) and emptied the extraction.  That inversion of
+# concerns was #6374's whole subject.  It was resolved by moving the anchor to
+# the alternation `^test-threads = \("num-cpus"\|[0-9][0-9]*\)$` and re-pointing
+# Tests 17a/17b/17k/17l in tests/infra/test_occt_gated_scope.sh in the SAME
+# commit.  A half-done split — template moved, anchor not — already fails loudly
+# rather than silently leaking the string into the config verify.sh consumes:
+# every assert in the 17c-17j family reads a GENERATED config with a digits
+# extractor that returns empty on the leaked string.  Measured on that state:
+# 52 passed / 9 FAILED.  Verified on nextest 0.9.136 that this key accepts the
+# string: a misspelt `"num-cpuz"` is rejected with `invalid value: string
+# "num-cpuz", expected an integer or the string "num-cpus"`, so the accept is a
+# real parse and not another instance of the fail-open hazard above.
+#
+# DELETING THE KEY IS NOT THE CHEAPER FIX — checked, not assumed.  The
+# substitution rewrites this LINE; with the key absent there is nothing to
+# rewrite, so BOTH REIFY_NEXTEST_TEST_THREADS and
+# REIFY_NEXTEST_TEST_THREADS_HARD_CAP go dead and the control point this whole
+# block documents disappears (Test 17b pins that it exists).  Making the manual
+# path inherit nextest's default that way would cost the generator its only
+# writable seam; the generator would have to INSERT the key instead of
+# substituting it.  "num-cpus" keeps the seam and fixes the manual path, which
+# is why #6374 went that way and not this one.
 #
 # CLI PRECEDENCE: nextest's own `--test-threads` beats the config file, so
 # verify.sh's `--test-threads=N` (task 5264, the dark-factory offline deep-test
 # lane) still wins verbatim when passed.  This key changes only the UNSET
-# default.
-test-threads = 16
+# default.  That precedence is also an UNGUARDED DEFEAT PATH — verify.sh
+# forwards TEST_THREADS with nothing asserting the forwarded value against the
+# value gen-nextest-config.sh resolved, so a stray export silently overrides
+# everything documented above.  Inert by default (nothing sets it on the normal
+# paths); deliberately out of scope for task 6018 and tracked as #6360.
+test-threads = "num-cpus"
 
 # Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).
 # Kept in sync with scripts/occt-touching-crates.txt by hand (these are config

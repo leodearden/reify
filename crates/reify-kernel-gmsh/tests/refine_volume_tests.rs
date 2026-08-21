@@ -305,46 +305,62 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
 /// A uniform size field smaller than the baseline produces a mesh with
 /// strictly more tetrahedra.
 ///
-/// Baseline: unit cube meshed at target size 0.5 (via `GmshKernel::mesh_to_volume`).
-/// Refinement: call `refine_volume_with_size_field` with every surface vertex
-/// assigned size 0.25 (half the baseline target). The refined volume mesh must
-/// have strictly more P1 tets than the baseline, and `element_order` must echo
-/// the requested `ElementOrderTag::P1`.
+/// Baseline: unit cube refined with every surface vertex assigned size 0.5.
+/// Refinement: the same call with every vertex assigned 0.25 (half the
+/// baseline). The refined volume mesh must have strictly more P1 tets than the
+/// baseline, and `element_order` must echo the requested `ElementOrderTag::P1`.
 ///
-/// This comparison is CROSS-PIPELINE: the baseline comes from
-/// `GmshKernel::mesh_to_volume` (which classifies at `FRAC_PI_2`) while the
-/// refined mesh comes from `refine_volume_with_size_field` (which classifies at
-/// `PI/12`). It is therefore a sanity check that the two paths agree in
-/// direction — NOT the primary size-field guard. That role belongs to
-/// [`uniform_size_field_refines_monotonically_under_leaked_global_clamp`] above,
-/// which is pipeline-independent and is what actually pins "a smaller size field
-/// produces a finer mesh".
+/// # Why the baseline is `refine_volume_with_size_field`, not `mesh_to_volume`
 ///
-/// The assertion is purely relative, so it carries no calibration to go stale.
-/// What #6211 changed is *why* it holds: before the fix the refined mesh was
-/// clamped to whatever size a sibling entry point had leaked, which the
-/// baseline happened to under-resolve — so the inequality passed while the
-/// size field was entirely inert. It now holds because the size field is
+/// It used to be `GmshKernel::mesh_to_volume(mesh_size = 0.5)`. That control
+/// was invalid in two ways, and #6200 exposed it.
+///
+/// 1. It compared two *different* producers. They do not share sizing
+///    semantics: `mesh_to_volume` applies a global target, while this function
+///    sets per-corner sizes with `Mesh.MeshSizeFromPoints=1` and lets gmsh
+///    interpolate. Measured on this cube at the same nominal 0.25, the two
+///    disagree by ~2x (mesh_to_volume 382 tets, refine 176), so no inequality
+///    between them pins a property of *this* function.
+/// 2. The inequality it asserted was an artefact of a bug. Before #6200
+///    `mesh_to_volume` passed `classify_surfaces` a 90 deg feature angle and
+///    tetrahedralized only part of the solid, so its baseline was tiny: 91 tets
+///    at mesh_size 0.5 (aabb fill 0.862916). With the angle fixed the same call
+///    returns 194 tets (fill 1.000000) and the assertion inverts against an
+///    unchanged refine result. The test was, in effect, pinned to the defect.
+///
+/// Refining against this function's own coarser output tests the property the
+/// name claims — a smaller field yields a denser mesh — with the cross-producer
+/// confound removed. Measured: 141 tets at 0.5, 176 at 0.25, both aabb fill
+/// 1.000000. This path was never affected by #6200 (it has always classified at
+/// PI/12, well below the 90 deg threshold that broke `mesh_to_volume`).
+///
+/// # What #6211 changed, and why this is still not the size-field guard
+///
+/// Task #6211 left this test's body untouched but changed *why* the inequality
+/// holds. Both calls inherit whatever `Mesh.MeshSizeMin`/`MeshSizeMax` an
+/// earlier call left in gmsh's process-global option table, and before #6211
+/// this function wrote neither — so a leaked `Min == Max` from a sibling entry
+/// point (`GmshKernel::mesh_to_volume`, `mesh_profile_2d::mesh_plane_2d`,
+/// `mesh_boundary`'s surface remesh) pinned every element to *that* size and
+/// clamped the per-vertex hints away entirely. The inequality could then hold
+/// for a reason unrelated to the size field. It now holds because the field is
 /// actually honoured.
+///
+/// That history is exactly why this test cannot be the guard for it: it
+/// neither poisons nor reads the clamp, so on unfixed code its outcome depends
+/// on what ran before it in the same binary — in a *fresh* process the unfixed
+/// code already produces the 141-vs-176 split above and this test passes. The
+/// guard is [`uniform_size_field_refines_monotonically_under_leaked_global_clamp`]
+/// above, which establishes the leaked clamp itself and is therefore
+/// order-independent.
 #[test]
 fn uniform_smaller_size_field_produces_more_tets() {
-    use reify_kernel_gmsh::GmshKernel;
-
     let cube = unit_cube_mesh();
-    let kernel = GmshKernel::new();
     let opts = MeshingOptions {
         mesh_size: Some(0.5),
         deterministic: true,
         ..Default::default()
     };
-
-    // Establish the baseline mesh.
-    let vm_baseline = kernel
-        .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
-        .expect("baseline mesh_to_volume must succeed");
-
-    let n_base_tets = vm_baseline.tet_indices().expect("P1 tet mesh must have tet_indices").len() / 4;
-    assert!(n_base_tets > 0, "baseline must have at least one tet");
 
     let n_surface_verts = cube.vertices.len() / 3;
     assert!(
@@ -352,7 +368,16 @@ fn uniform_smaller_size_field_produces_more_tets() {
         "unit cube must have at least one surface vertex"
     );
 
-    // Uniform 0.25 per-vertex hint: half the baseline target.
+    // Establish the baseline mesh: same producer, uniform 0.5 hint.
+    let baseline_sizes = vec![0.5_f64; n_surface_verts];
+    let vm_baseline =
+        refine_volume_with_size_field(&cube, &baseline_sizes, &opts, ElementOrderTag::P1)
+            .expect("baseline refine_volume_with_size_field must succeed");
+
+    let n_base_tets = vm_baseline.tet_indices().expect("P1 tet mesh must have tet_indices").len() / 4;
+    assert!(n_base_tets > 0, "baseline must have at least one tet");
+
+    // Uniform 0.25 per-vertex hint: half the baseline hint.
     let vertex_sizes = vec![0.25_f64; n_surface_verts];
 
     let result = refine_volume_with_size_field(&cube, &vertex_sizes, &opts, ElementOrderTag::P1);

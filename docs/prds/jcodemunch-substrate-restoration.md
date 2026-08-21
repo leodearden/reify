@@ -4,6 +4,17 @@
 **Type:** repair + evidence-contract PRD extending `docs/prds/reify-audit-p1-jcodemunch-substrate.md`.
 **Approach:** B + H (vertical slice + seam contract and two-way boundary tests).
 
+**Code anchors.** Every bare `<name>.py:NNNN` below is **jcodemunch**, not dark-factory, read from
+the on-disk `jcodemunch_mcp` package at the versions named inline (1.108.27 / 1.108.54 / 1.108.74)
+on **2026-08-07**.
+**They are dated evidence from that reading, not live breadcrumbs** — jcodemunch is a third-party
+package reify cannot edit and which has no source repo on this host, so a "go change this line"
+reading is impossible by construction. Do not re-anchor them: refreshing a dated snapshot destroys
+its value as a record (`.claude/skills/prd/project.md`, "Never re-anchor a dated snapshot"). To find
+the code today, grep the symbol named beside each number in the pinned wheel. The main `16cfb015bc`
+in §2 is a **reify** SHA and covers reify-side observations only — never these. The one dark-factory
+anchor in this document (D5) is cited by symbol instead.
+
 ---
 
 ## 1. Goal
@@ -40,6 +51,16 @@ A scan of `meta.source_root` across all ~1400 indexes in `~/.code-index` finds *
 are `.eval-worktrees/`/`.claude/worktrees/` trees created by per-agent stdio servers; the newest dates
 from 2026-05-30. The four legacy git-identity indexes were deleted by hand on 2026-06-11 and reify was
 removed from `jcodemunch-watcher.service`'s `--repos` the same day.
+
+> **CORRECTION 2026-08-20 (esc-6107-7; ruled 2026-08-17 during /unblock of #6107).** Both absence claims above were true on 2026-08-07 and are false now — and the
+> second was never a fact about the world, only about the store on that date. Measured 2026-08-20
+> across all **864** `.db` files in `~/.code-index`: `local-reify-4ae45bbd.db` **exists and is
+> populated** (55,890 symbols, 2,761 files, `meta.git_head=b79cecf5`, written 2026-08-17 18:11 by β's
+> own acceptance run), and `leodearden-reify.db` **also exists** — a 147,456-byte schema-only husk, 0
+> symbols, 0 files, with no `repo`/`source_root`/`git_root` in `meta`. On 2026-08-13 that same file was
+> a *populated* 54.2 MB / 56,004-symbol git-identity index **of this checkout** (esc-6108-2). Do not
+> re-derive "no such index exists" from this section — see the D1 correction for why the git branch is
+> the default. (The "~1400 indexes" figure is also stale; the store holds 864 today.)
 
 ### 2.3 The Rust client cannot complete an MCP handshake — and probably never could
 `crates/reify-audit/src/jcodemunch_client.rs:769` mints its own session id (`random_hex_32()`) and
@@ -96,6 +117,37 @@ strictly worse than zero findings.
 `/home/leo/src/reify` → **`local/reify-4ae45bbd`**, verified by prediction-then-measurement. reify-audit
 derives this rather than hardcoding, with `--jcodemunch-repo` retained as an override.
 
+> **CORRECTION 2026-08-20 (esc-6107-7; ruled 2026-08-17 during /unblock of #6107).** The formula is right; the framing is wrong, and the error was load-bearing.
+> `git_root.py:55-57` `_local_repo_name` is the **local-mode namer**, not the identity rule — a separate
+> *mode dispatch* decides whether it is ever called. At the pinned 1.108.54 `_configured_identity_mode`
+> (`git_root.py:101-111`) reads `git_root_identity`, whose shipped **default is `True`**
+> (`config.py:384`), and `load_config()` seeds `_GLOBAL_CONFIG` with `deepcopy(DEFAULTS)`
+> (`config.py:660`; project configs likewise at `:1025`), so the `False` fallback at the call site never
+> applies. **The default identity for any checkout with a `.git` and a parseable `origin` is therefore
+> its GIT identity** — for `/home/leo/src/reify` that is `leodearden/reify`, resolved from `origin`
+> alone via `git config --get remote.origin.url` (`git_root.py:256-265`; the `leo-laptop` remote is
+> never consulted). The per-path form is the **fallback**, not the primary.
+>
+> **RULING — reify forces the per-path identity deliberately (escalation option B).** β's
+> `scripts/jcodemunch-index-reify.sh` prefixes its invocation with `env JCODEMUNCH_GIT_ROOT_IDENTITY=0`
+> (`config.py:36` → `git_root_identity`), which is upstream's own prescribed lever: `index_folder.py`'s
+> collision error names it verbatim. So `local/reify-4ae45bbd` is a property reify **maintains at every
+> invocation site**, not a fact about jcodemunch — δ's serve and ζ's timer inherit the same obligation,
+> and both task records carry it. Measured 2026-08-17 against a clean store: default →
+> `leodearden/reify`; under the lever → `local/reify-4ae45bbd`. Identity remains **predicted, never
+> discovered** — β's `meta.source_root` probe is a *diagnostic* that sharpens `E_JC_INDEX_MISSING` and is
+> forbidden from retargeting the resolved path.
+>
+> **Two residual hazards, prose-only today.** (1) `JCODEMUNCH_GIT_ROOT_IDENTITY` is deprecated upstream
+> ("removed in v2.0", `config.py:796-800`); a pin bump past 2.0 must re-establish the lever or the
+> identity silently reverts. `"identity_mode": "local"` is **not** a working substitute at 1.108.54 — the
+> key is absent from `CONFIG_TYPES` and discarded silently (`config.py:708`) even though the shipped
+> template advertises it (`config.py:1872-1896`); the working config-file lever is
+> `"git_root_identity": false` (`config.py:474`). (2) The lever **cannot** move a checkout that already
+> has a git-identity index — `resolve_index_identity` returns a pre-existing git identity at
+> `git_root.py:174-178` *before* consulting the configured mode. Today's husk is inert only because its
+> `git_root` is empty.
+
 **D2 — Freshness is ours to enforce.** `staleness_days: 3` is **inert** for this index (the code takes
 a `git_head != HEAD` branch, `get_repo_outline.py:155-175`) and **none of the five detector tools report
 freshness at all** — verified tool by tool. `get_dead_code_v2`'s `confidence` is a dead-code score, not
@@ -109,6 +161,24 @@ whether the timer fired. Measured: full 77.8 s / incremental 24.8 s for 386 `.rs
 ~100; full-repo extrapolation ~5–10 min. Per-path identity is load-bearing here — git-root identity sets
 `_merge_with_existing`, which structurally bypasses the incremental branch (`index_folder.py:1745`).
 
+> **CORRECTION 2026-08-20 (esc-6107-7).** This claim was asserted from source reading and flagged
+> *unmeasured* in esc-6107-7. It is now **verified at the pinned 1.108.54 — and it is stronger than
+> argued**, though the sentence omits the conjunct that makes it true. `index_folder.py:1615-1616` sets
+> `_merge_with_existing` whenever the stored `git_root == source_root`, which holds for an ordinary
+> whole-repo reindex at the git root — so the flag arms on **every** run, not in an edge case; `:1745`
+> then gates the incremental branch on `_merge_with_existing is None`. For a root-level index the merge
+> is a semantic no-op (`walk_prefix == ""` carries nothing over, `:405-416`, `:438-444`) — pure penalty.
+>
+> **The consequence is not "slower" — it is that β's own acceptance signal stops existing.** The
+> zero-change early return lives *inside* the incremental branch (`:1752-1760`), so under a git identity
+> "an immediate second run reports 0 changed files" is **structurally unreachable**, and ζ's premise that
+> a warm index is cheap to keep warm fails with it. That is the decisive argument against accepting the
+> git identity. Bypassing incremental is upstream's deliberate *safety* choice (`:1739-1744` — it would
+> otherwise mis-attribute carryover files as deleted), so there is no correctness or deletion risk; only
+> cost, and the lost signal. Superseding measurement, 2026-08-17 under the lever on the canonical
+> checkout: cold full 114 s / 55,890 symbols; immediate re-run 35.6 s; third consecutive run 24.6 s — all
+> reporting `jc-changed-files=0`.
+
 **D4 — reify is NOT re-added to `jcodemunch-watcher.service`.** Not primarily for CPU: the repos-poller
 parses `git worktree list --porcelain` and **deliberately skips the first entry, the main working copy**
 (`watcher.py:952,978,988,994`). `--repos /home/leo/src/reify` would watch 238 linked worktrees and give
@@ -116,10 +186,23 @@ parses `git worktree list --porcelain` and **deliberately skips the first entry,
 CPU-minutes of initial indexing, for nothing. The 2026-06-11 identity-collision rationale is separately
 *stale* (per-path identity cannot collide), but the conclusion stands on stronger grounds.
 
+> **CORRECTION 2026-08-20 (esc-6107-7).** The parenthetical is **inverted**. Per-path identity indeed
+> cannot collide — but per-path is *not* the default (see D1), so the 2026-06-11 identity-collision
+> rationale is **live, not stale**. `/home/leo/src/reify/.git` is shared by 227 linked worktrees which
+> all read the same `remote.origin.url`, so under the default every one resolves to the same
+> `leodearden/reify` with a *different* `git_root`; `index_folder.py:1601-1612` then hard-refuses all but
+> the first writer, leaving the rest unindexed while the shared index silently reflects that tree's
+> branch rather than main. This is documented production history on this host —
+> `~/.config/systemd/user/jcodemunch-watcher.service:23-34` carries
+> `Environment=JCODEMUNCH_GIT_ROOT_IDENTITY=0` plus a comment describing exactly this failure, dated
+> 2026-06-11. D4's conclusion is unaffected (reify stays out of `--repos`), but it now rests on **both**
+> grounds, not the poller one alone.
+
 **D5 — The persistent serve unit is retired.** Port 8901 has exactly one consumer in the world:
 `reify-audit`. dark-factory launches jcodemunch as a per-agent **stdio** MCP server
-(`mcp_lifecycle.py:1047-1050` — a `command` block, deliberately unlike its `http` siblings for
-fused-memory and escalation) and has zero coupling to 8901. The sweep spawns and tears down its own
+(`mcp_lifecycle.py`'s `JCODEMUNCH_COMMAND` launch contract, injected by `mcp_config_json` as a
+`command` block — deliberately unlike its `http` siblings for fused-memory and escalation)
+and has zero coupling to 8901. The sweep spawns and tears down its own
 serve; `deploy/systemd/jcodemunch-serve.service` and both dangling symlinks are deleted. This
 permanently removes the failure class in §2.1.
 
@@ -156,6 +239,15 @@ Reference implementation of the correct flow already in-repo: `scripts/smoke-jco
 removed — no such index exists or should be created (a git-identity index would collide across reify's
 239 worktrees and is never GC'd).
 
+> **CORRECTION 2026-08-20 (esc-6107-7).** "No such index exists or should be created" is falsified on
+> its first half and mis-stated on its second. A `leodearden/reify` index **does** exist today (an inert
+> empty husk; it was a populated 56,004-symbol index on 2026-08-13 — see the §2.2 correction), and it is
+> the **default** outcome of any unlevered jcodemunch invocation against this checkout, not an anomaly.
+> Removing the legacy default from reify-audit stays correct, but justify it by the **collision hazard**
+> — stated accurately in the clause above, and wrongly called stale by D4 — never by an absence claim.
+> γ must derive `local/reify-4ae45bbd` **and** every invocation site (β, δ, ζ) must carry
+> `JCODEMUNCH_GIT_ROOT_IDENTITY=0` for that derivation to match what is on disk.
+
 ### 4.3 Freshness precondition (evaluated before any detector query)
 ```
 index_head  := meta.git_head       from the resolved index
@@ -168,6 +260,15 @@ REFUSE    otherwise → non-zero exit naming index_head, live_head, symbol_count
 The `symbol_count > 0` conjunct is not redundant: `delete-index` leaves a schema-only husk that
 re-registers as an empty repo, so *presence* of an index proves nothing — an empty index yields zero
 findings silently, the mirror image of the staleness failure.
+
+> **CORRECTION 2026-08-20 (esc-6107-7) — the husk is no longer hypothetical, and it also bites at the
+> identity layer.** `~/.code-index/leodearden-reify.db` is a live schema-only husk (0 symbols, 0 files,
+> no `source_root`) that nonetheless re-registers as `leodearden/reify` reporting `index_present: true,
+> loadable: true`, and it regenerates after deletion as an upstream side effect. A gate must therefore key
+> on `symbol_count > 0` and freshness, **never** on index presence. Note the husk's emptiness is
+> currently load-bearing in reify's favour: because its `git_root` is empty, `_contains_path("")` is
+> False and it cannot match a path, so it neither raises `IdentityModeAmbiguous` nor hijacks resolution.
+> If it ever acquires a `source_root`/`git_root` it becomes a silent hijack — see the §8 correction.
 
 ### 4.4 Indexing invariants
 - The nightly/sweep path runs a **bare** `watch --once <project_root>`.
@@ -216,7 +317,10 @@ C-as-integration-gate leaf that Phase 1's foundation tasks unlock.
   Bare `watch --once`, `--no-ai-summaries`, never `--paths-from`; fails non-zero if the resulting
   symbol count is 0.
   *Signal:* running it prints the resolved identity and `N sym` with N>0; an immediate second run
-  reports `changed: 0`. *Prereqs:* none.
+  reports 0 changed files on β's own summary line — a token β derives and owns, not an upstream
+  stderr literal that can drift between pins. (The upstream `watch --once` stderr shapes are recorded
+  as evidence in the capability manifest's β/`upstream-summary-token` binding, not asserted on here.)
+  *Prereqs:* none.
 
 - **γ — Identity resolution + freshness gate in reify-audit.**
   Implements §4.2 and §4.3.
@@ -286,6 +390,15 @@ C-as-integration-gate leaf that Phase 1's foundation tasks unlock.
   *Signal:* no doc asserts a jcodemunch identifier, unit, or degradation contract that contradicts the
   landed behaviour. *Prereqs:* η.
 
+  > **CORRECTION 2026-08-20 (esc-6107-7) — μ's instruction is defective as written.**
+  > `~/.code-index/leodearden-reify.db` **does** exist, so "a DB file that does not exist" is false and a
+  > blind purge of that identifier would delete a *true* statement. What μ must actually correct is the
+  > claim that `leodearden-reify` is reify's **resolved** identifier: it is the identity jcodemunch
+  > resolves by **default**, which reify deliberately overrides to `local/reify-4ae45bbd` at every
+  > invocation site. Rewrite the identifier table to say that instead of deleting the identifier. The
+  > same defect is mirrored in the capability manifest's μ/`nonexistent-db-claim-removed` binding and its
+  > `expect: absent` grep — μ must re-derive that check rather than satisfy it as written.
+
 ---
 
 ## 7. Cross-PRD relationship (G4)
@@ -300,6 +413,15 @@ C-as-integration-gate leaf that Phase 1's foundation tasks unlock.
 No new cross-repo seam: reify already owns `deploy/systemd/*.timer` and its installer
 (`scripts/install-warm-lane-units.sh`), so ζ needs no dark-factory counterpart. This PRD does not
 introduce a fourth instance of any known contested-ownership pair.
+
+> **CORRECTION 2026-08-20 (esc-6107-7) — D5's "no seam" holds for port 8901 and fails for
+> `~/.code-index`.** dark-factory launches jcodemunch as a per-agent **stdio** MCP server with
+> `JCODEMUNCH_ENV = {'JCODEMUNCH_NO_VERSION_HINT': '1'}` (orchestrator `mcp_lifecycle.py`,
+> `JCODEMUNCH_COMMAND`/`JCODEMUNCH_ENV`) and **no identity lever**. Every DF agent working in a reify
+> warm lane or task worktree therefore resolves in git mode by default, onto `leodearden/reify` — the
+> most likely producer of the regenerating husk. There is no port-8901 coupling (D5 is right about
+> that), but the two repos **do** share one `~/.code-index` store, and that seam is unmodelled here.
+> Reify's own invocation sites are already levered; the dark-factory side is tracked separately.
 
 **Live neighbour:** task **#5830** (in-progress 2026-08-07) touches the same `initialize` path and the
 same `cli.rs` mock while de-flaking `default_sweep_survives_unreachable_jcodemunch`. α must land after
@@ -316,6 +438,17 @@ adjacent response-validation hole — see §4.1 item 5.
 - `~/.code-index` writable; no `leodearden/reify` git-identity index present (there is none — if one
   ever appears, `resolve_index_identity` raises `IdentityModeAmbiguous`, which is a loud, correct
   failure).
+
+  > **CORRECTION 2026-08-20 (esc-6107-7) — both halves of this pre-condition are wrong, and the second
+  > cost task 6107 a cycle.** (1) A `leodearden/reify` index **is** present (an inert empty husk — §2.2
+  > correction). (2) **`IdentityModeAmbiguous` is not a safety net here.** It is raised only when a local
+  > index *and* a git index **both** match the path (`git_root.py:168-172`). With only a git-identity
+  > index on disk, `_existing_git_identity` returns it **silently** at `:174-178`, ahead of the
+  > configured mode — which is exactly how β's gate ended up asserting a path nothing would write. Do not
+  > rely on a loud upstream failure: β's and γ's own `E_JC_INDEX_*` refusals are the only real guard. The
+  > revised pre-condition is — `~/.code-index` writable, **and** no *populated* `leodearden/reify` index
+  > present (delete one by hand if it appears; `delete-index` unlinks the file), **and** every jcodemunch
+  > invocation carries `JCODEMUNCH_GIT_ROOT_IDENTITY=0`.
 - No task in this PRD requires the orchestrator to be stopped.
 
 ---
@@ -345,10 +478,21 @@ adjacent response-validation hole — see §4.1 item 5.
 2. **Timer cadence for ζ.** Daily is the obvious default; hourly is affordable given the measured ~25 s
    incremental cost. **Suggested:** daily with `Persistent=true`, matching `reify-warm-lane-gc.timer`.
    Decide during ζ.
+
+   > **CORRECTION 2026-08-20 (esc-6107-7).** The ~25 s figure is valid **only under the per-path
+   > identity** — under a git identity the incremental branch is bypassed entirely and every tick pays a
+   > full reindex (see the D3 correction). Superseding measurement on the canonical checkout, 2026-08-17
+   > under the lever: cold 114 s, immediate re-run 35.6 s, third run 24.6 s.
 3. **Does ε belong in `tests/infra/` rather than as a `cargo test`?** A `tests/infra/test_*.sh` would
    run under `run_all.sh` on the merge gate but needs its drift-guard registration in
    `tests/infra/run-all-classification.manifest` in the **same diff** (per the overlay's gate-test
    drift-guard rule; the esc-4914-162 precedent). A `cargo test` avoids that but needs an env flag to
    escape `#[ignore]`. Decide during ε.
-4. **`max_folder_files: 10000`** currently exceeds reify's 3,829 tracked files with headroom, but it
-   truncates with a warning rather than erroring if crossed. Worth a guard in β? Decide during β.
+4. **`max_folder_files: 10000`** currently exceeds reify's 3,829 tracked files with headroom, but if
+   crossed, truncation emits a warning into the tool result rather than an error — and that warning
+   never reaches the operator on `watch --once`: `sync_folders()` prints only `message`/symbol_count
+   and drops `result['warnings']` entirely (watcher.py:919-923), so the truncation is invisible on
+   this path. Worth a guard in β? Decide during β. Note: `10000` is host state from
+   `~/.code-index/config.jsonc`, not an intrinsic jcodemunch default — the package default is `2000`
+   (config.py:284). If that host config is ever reset, reify's tracked files would be truncated with
+   no visible signal on `watch --once`.

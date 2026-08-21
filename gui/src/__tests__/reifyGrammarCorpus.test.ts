@@ -4309,6 +4309,102 @@ describe('reifyLanguage — fold and indent coverage', () => {
   );
 
   /**
+   * The raw body text of production `name` in `grammarSrc` — everything
+   * between its own header brace and the matching close, comments stripped,
+   * newlines collapsed to single spaces. Braces inside a quoted token
+   * (`"{"`/`"}"`, the LITERAL tokens the grammar matches) never affect the
+   * depth count; only the bare rule-delimiter braces do, so a production
+   * whose body itself contains several `"{"`/`"}"` pairs (`FieldSource`, say)
+   * still finds the RULE's own close rather than stopping at the first
+   * quoted `"}"`.
+   */
+  function productionBody(grammarSrc: string, name: string): string {
+    const src = grammarSrc.replace(/\/\/.*$/gm, '');
+    const header = new RegExp(`(^|\\n)${name}\\s*\\{`).exec(src);
+    if (!header) throw new Error(`production ${name} not found in reify.grammar`);
+    let depth = 1;
+    const start = header.index + header[0].length;
+    for (let i = start; i < src.length; i++) {
+      if (src.startsWith('"{"', i) || src.startsWith('"}"', i)) {
+        i += 2;
+        continue;
+      }
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') {
+        depth--;
+        if (depth === 0) return src.slice(start, i).replace(/\s+/g, ' ').trim();
+      }
+    }
+    throw new Error(`unbalanced braces in production ${name}`);
+  }
+
+  /**
+   * `body` split on its TOP-LEVEL `|` alternatives — paren-depth aware, so a
+   * NESTED `|` (`PortBody`'s `(ParamDeclaration | LetDeclaration | …)*`, say)
+   * does not fracture one arm into two.
+   */
+  function splitTopLevelArms(body: string): string[] {
+    const arms: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < body.length; i++) {
+      if (body.startsWith('"{"', i) || body.startsWith('"}"', i) || body.startsWith('"|"', i)) {
+        i += 2;
+        continue;
+      }
+      const ch = body[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (ch === '|' && depth === 0) {
+        arms.push(body.slice(start, i));
+        start = i + 1;
+      }
+    }
+    arms.push(body.slice(start));
+    return arms.map((arm) => arm.trim());
+  }
+
+  /**
+   * The BRACE_FIRST_BODIES/KEYWORD_LED_BODIES split is only observable
+   * downstream through the indent prop — `foldBody` above is the SAME
+   * function for both lists (reifyLanguage.ts:115-118), so every fold
+   * assertion in this file passes unchanged even if a node type sits in the
+   * wrong list. What actually differs is `delimitedIndent`'s `align`
+   * (reifyLanguage.ts:119-127): a keyword-led body misfiled into
+   * BRACE_FIRST_BODIES would align its members to the column past the
+   * leading keyword instead of one unit past the statement. This derives the
+   * correct list from the grammar SOURCE directly — the same evidence
+   * `braceDelimitedNodeTypes` above uses for list membership itself, read
+   * positionally instead of just for presence.
+   */
+  describe('BRACE_FIRST_BODIES vs KEYWORD_LED_BODIES matches the grammar', () => {
+    const grammarSrc = readFixture('gui/src/editor/reify.grammar');
+
+    it.each(BRACE_FIRST_BODIES)('%s opens its braced arm with the brace itself', (name) => {
+      const arms = splitTopLevelArms(productionBody(grammarSrc, name));
+      const braceArms = arms.filter((arm) => arm.includes('"{"'));
+      expect(braceArms.length, `${name} has no "{" token in its reify.grammar production at all`).toBeGreaterThan(
+        0,
+      );
+      expect(
+        braceArms.every((arm) => arm.startsWith('"{"')),
+        `${name} is in BRACE_FIRST_BODIES, but at least one of its arms in reify.grammar has ` +
+          `content before the "{" — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
+      ).toBe(true);
+    });
+
+    it.each(KEYWORD_LED_BODIES)('%s never opens an arm with a bare brace', (name) => {
+      const arms = splitTopLevelArms(productionBody(grammarSrc, name));
+      const braceFirstArms = arms.filter((arm) => arm.startsWith('"{"'));
+      expect(
+        braceFirstArms,
+        `${name} is in KEYWORD_LED_BODIES, but reify.grammar opens at least one of its arms ` +
+          `directly with "{" — it belongs in BRACE_FIRST_BODIES instead.`,
+      ).toEqual([]);
+    });
+  });
+
+  /**
    * The behavioural half. `foldInside` — the obvious helper, and the one this
    * file used before the keyword-led bodies were added — keys off the FIRST
    * child, which is the `{` only when the brace opens the node. For
@@ -4327,9 +4423,226 @@ describe('reifyLanguage — fold and indent coverage', () => {
 
     const fold = decl!.type.prop(foldNodeProp)!;
     const range = fold(decl!, EditorState.create({ doc: src }));
-    // The fold must start AFTER the body brace and end at the closing one —
-    // not after `enum`, which would hide the name `Color` too.
-    expect(range).toEqual({ from: src.indexOf('{') + 1, to: src.lastIndexOf('}') });
+    // The exact range is now also covered by the `folds EnumDeclaration to a
+    // non-null range spanning its own brace interior` case in the it.each
+    // below (same node, same call shape), so this test keeps only the claim
+    // that case does not name: the fold must not start at or before the
+    // enum's own NAME — folding from `enum` instead of from `{` (what
+    // `foldInside` would do) would hide `Color` inside the fold arrow.
+    expect(range, 'foldNodeProp returned null').not.toBeNull();
+    expect(range!.from).toBeGreaterThan(src.indexOf('Color'));
+  });
+
+  /**
+   * THE BEHAVIOURAL GUARD task #6325 was filed for. `resolves fold and indent
+   * props on %s` above only checks that `foldNodeProp` is DEFINED on the node
+   * type — a prop that resolves and then returns `null` at CALL time (which is
+   * exactly what `foldBody` does whenever `node.getChild('{')` finds nothing)
+   * passes that check while the fold arrow is dead. Task #5931 measured this
+   * for real: folding `ImportItems`' opener into an anonymous literal token
+   * left `foldBody` returning `null` for `import std.mech.{Bolt, Nut}` while
+   * the whole 428/428 GUI suite stayed green, because nothing called the prop
+   * and looked at what came back.
+   *
+   * `BEHAVIOR_FIXTURES` pins one minimal, corpus-attested-where-possible
+   * snippet per node type in `BRACE_FIRST_BODIES`/`KEYWORD_LED_BODIES`, and the
+   * test below actually invokes `foldNodeProp` on the located node — through
+   * `EditorState.create`, the same call shape the editor makes — and asserts
+   * the range is non-null and spans exactly the body's own brace interior.
+   *
+   * `FnBody` and the `JointDof`/`JointBody` family each have a second,
+   * legitimately brace-less arm (`= expression`; a bare DOF field or a bare
+   * expression body) where `foldBody` returning `null` is the CORRECT answer,
+   * not a gap. This map pins only the BRACED arm for those three, so the
+   * `it.each` below asserts non-null uniformly across every entry; the
+   * brace-less arms get their own explicit expected-null test right after it,
+   * so that half of the contract is pinned too rather than left implicit.
+   */
+  // `FieldDefinition` and `FieldSource` are two node types nested in the SAME
+  // production (`FieldDefinition`'s body is exactly one `source = <FieldSource
+  // arm>`, reify.grammar:36-39) so one fixture string locates both; hoisted to
+  // a shared const rather than duplicated so editing one cannot silently
+  // change which node the OTHER entry targets.
+  const FIELD_DEFINITION_SRC = 'field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }';
+
+  /**
+   * One minimal, corpus-attested-where-possible source snippet per node type.
+   * A plain `Record<string, string>` rather than a one-field wrapper object —
+   * every entry is written and consumed as a bare source string, so a wrapper
+   * would buy nothing over the map itself.
+   */
+  const BEHAVIOR_FIXTURES: Record<string, string> = {
+    // ── BRACE_FIRST_BODIES ──────────────────────────────────────────────
+    Block: 'structure def F { let x = 1mm }',
+    // Corpus-attested VERBATIM: the braced-arm slice above (`fn g() -> Real
+    // { let a = 1.0; a }`).
+    FnBody: 'fn g() -> Real { let a = 1.0; a }',
+    SpecializationBody: 'structure def S { sub x : Foo<T> { bore = 5mm } }',
+    PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
+    ConnectBody:
+      'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
+    // `import a.b {C, D}` — no separator, matching the RULE this port follows
+    // (see the long note on `ImportDeclaration` in reify.grammar).
+    ImportItems: 'import std.mech {Bolt, Nut}',
+    // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
+    KeyedMemberBlock:
+      'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
+    // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:32 — the
+    // braced-record DOF form.
+    JointDof:
+      'joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = concentric(a, b)',
+    // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:26 — the
+    // block-arm JointBody.
+    JointBody:
+      'joint revolute(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) with angle: Angle in 0deg..120deg = { concentric(a, b)  on(p, stop) }',
+    // ── KEYWORD_LED_BODIES ──────────────────────────────────────────────
+    MatchExpression:
+      'structure def F { let code = match grade { Standard => 1, Reinforced => 2, Premium => 3 } }',
+    EnumDeclaration: 'enum Grade { Standard, Reinforced, Premium }',
+    // First EnumVariant in this attested string (`Circle { radius: Length }`)
+    // carries the braced payload; the sibling `Point` variant is bare and is
+    // not what `findFirstNodeNamed` locates here.
+    EnumVariant: 'enum Shape { Circle { radius: Length }, Point }',
+    MetaBlock: 'structure def F { meta { project = "integration-test", version = "0.1" } }',
+    SetLiteral: 'structure def F { let s = set { 1, 2 } }',
+    MapLiteral: 'structure def F { let m = map { 1 => 2 } }',
+    VariantConstruction: 'structure def F { let s = Circle { radius: 5mm } }',
+    // First VariantBindingPattern in this attested string is `Circle { radius: r }`.
+    VariantBindingPattern:
+      'structure def F { let area = match outline { Circle { radius: r } => 3.14159 * r * r, Rect { width: w, height: h } => w * h, Point => 0mm * 0mm } }',
+    FieldDefinition: FIELD_DEFINITION_SRC,
+    FieldSource: FIELD_DEFINITION_SRC,
+    PurposeDeclaration: 'purpose design_review(subject : Structure) { constraint 1mm > 0mm }',
+    RelateBlock: 'structure def F { relate { fasten(a.frame, b.frame) } }',
+    ConstraintDefinition: 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}',
+    SubRelateBlock: 'structure def F { sub s : T at auto where { concentric(a, b) } }',
+    MatchArmDeclBlock:
+      'structure def F { match kind { Hex => sub head : HexHead, Sq => sub head : SqHead } }',
+  };
+
+  it('pins exactly one behavioural fixture per brace-delimited body', () => {
+    // Same drift protection as the two list-vs-grammar checks above, aimed at
+    // THIS map instead: a node type added to either list with no fixture here
+    // would silently skip the behavioural assertion below rather than fail it.
+    expect(Object.keys(BEHAVIOR_FIXTURES).sort()).toEqual(
+      [...BRACE_FIRST_BODIES, ...KEYWORD_LED_BODIES].sort(),
+    );
+  });
+
+  /** First node named `name` in the parse of `src`, or `null` if none. */
+  function findFirstNodeNamed(src: string, name: string): SyntaxNode | null {
+    const cursor = reifyLRLanguage.parser.parse(src).cursor();
+    do {
+      if (cursor.type.name === name) return cursor.node;
+    } while (cursor.next());
+    return null;
+  }
+
+  /**
+   * The brace pair belonging to `node` itself, located by SCANNING THE SOURCE
+   * TEXT within `node`'s own span rather than by reading `node`'s children —
+   * so this is an independent check of what `foldNodeProp` returns, not a
+   * restatement of `foldBody`'s own `getChild('{')` logic against itself.
+   * `node.to - 1` bounds the close search so a NESTED body's closing brace
+   * (an override block inside a keyed entry, say) is never mistaken for
+   * `node`'s own.
+   *
+   * The open is NOT simply "the first `{` at or after `node.from`" — a
+   * keyword-led production's HEADER can itself contain a brace pair before
+   * the body's own: `MatchExpression`'s discriminant is a full `expression`
+   * (reify.grammar:932), so `match set { 1 } { A => 1 }` is legal, and the
+   * naive first-`{` reading would return the scrutinee's `set { 1 }` interior
+   * instead. Scanning forward from `node.from` with a brace-depth counter and
+   * taking the position of the LAST 0→1 transition reached before `close`
+   * finds the brace that actually PAIRS WITH `close` — i.e. `node`'s own —
+   * regardless of how many complete brace pairs precede it in the header.
+   */
+  function ownBraceInterior(src: string, node: SyntaxNode): { from: number; to: number } {
+    const close = src.lastIndexOf('}', node.to - 1);
+    if (close < 0) {
+      throw new Error(`no closing brace inside node span [${node.from}, ${node.to}) of: ${src}`);
+    }
+    let depth = 0;
+    let open = -1;
+    for (let i = node.from; i <= close; i++) {
+      if (src[i] === '{') {
+        if (depth === 0) open = i;
+        depth++;
+      } else if (src[i] === '}') {
+        depth--;
+      }
+    }
+    if (open < 0 || open >= close) {
+      throw new Error(`no brace pair inside node span [${node.from}, ${node.to}) of: ${src}`);
+    }
+    return { from: open + 1, to: close };
+  }
+
+  it.each(Object.entries(BEHAVIOR_FIXTURES))(
+    'folds %s to a non-null range spanning its own brace interior',
+    (name, src) => {
+      expect(countErrorNodes(src), `${name} fixture has error nodes: ${src}`).toBe(0);
+
+      const node = findFirstNodeNamed(src, name);
+      expect(node, `no ${name} node in the parse of: ${src}`).not.toBeNull();
+
+      const fold = node!.type.prop(foldNodeProp)!;
+      const range = fold(node!, EditorState.create({ doc: src }));
+      expect(range, `${name}'s foldNodeProp returned null on: ${src}`).not.toBeNull();
+      expect(range).toEqual(ownBraceInterior(src, node!));
+    },
+  );
+
+  /**
+   * The other half of the contract: the brace-less arms and the empty-body
+   * case, where `null` IS the correct answer, so the non-null assertion above
+   * does not simply invert into a false failure for them. `FnBody`'s
+   * `= expression` sugar (grammar.js:239-246) and `JointDof`/`JointBody`'s
+   * bare-field / bare-expression arms (grammar.js:781-784, 799-802) are the
+   * only three legitimately brace-LESS arms — pinned by the two `it`s below.
+   *
+   * A fourth path returns `null` for a different reason: it HAS a brace pair,
+   * but nothing between them. `foldBody`'s `open.to >= close.from` guard
+   * (reifyLanguage.ts:83) fires for any empty body, braced or not — there is
+   * nothing to fold — and it is corpus-attested, not merely hypothetical:
+   * `port inlet : in Flow {}` (examples/keyed_vents.ri:23) is an empty
+   * `PortBody`. Pinned separately below via `SetLiteral` so the assertion
+   * stays a minimal, self-contained snippet.
+   */
+  describe('legitimately brace-less arms return null', () => {
+    it('FnBody `= expression` sugar', () => {
+      // Corpus-attested VERBATIM: the brace-less-arm slice above.
+      const src = 'fn twice(x : Real) -> Real = x * 2';
+      expect(countErrorNodes(src)).toBe(0);
+      const node = findFirstNodeNamed(src, 'FnBody');
+      expect(node, 'no FnBody in the parse').not.toBeNull();
+      const fold = node!.type.prop(foldNodeProp)!;
+      expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
+    });
+
+    it('JointDof bare field and JointBody bare expression', () => {
+      // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri — the
+      // range-less-DOF slice above. Exercises both node types' brace-less arm
+      // in one snippet: the DOF is a bare `JointDofField`, and the body is the
+      // bare expression `concentric(a, b)`.
+      const src = 'joint prismatic(a: Axis, b: Axis) with travel: Length = concentric(a, b)';
+      expect(countErrorNodes(src)).toBe(0);
+      for (const name of ['JointDof', 'JointBody']) {
+        const node = findFirstNodeNamed(src, name);
+        expect(node, `no ${name} in the parse`).not.toBeNull();
+        const fold = node!.type.prop(foldNodeProp)!;
+        expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
+      }
+    });
+
+    it('empty body — nothing between the braces to fold', () => {
+      const src = 'structure def F { let s = set {} }';
+      expect(countErrorNodes(src)).toBe(0);
+      const node = findFirstNodeNamed(src, 'SetLiteral');
+      expect(node, 'no SetLiteral in the parse').not.toBeNull();
+      const fold = node!.type.prop(foldNodeProp)!;
+      expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
+    });
   });
 });
 
@@ -4828,7 +5141,14 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',
 ];
 
-const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures'];
+// pg-drift-dir:allow — reviewed directory walk (task 6435). This ledger is the
+// one tracked consumer that globs tests/prd-gate/fixtures/ rather than naming
+// leaves. It does NOT void verify.sh's "adding a fixture is inert" premise:
+// the expectation below is asserted only over EXPECTED_CLEAN ∩ on-disk, so an
+// unpinned new fixture shifts diagnostic counters and nothing more. The pinned
+// subset IS gated — see _GUI_COUPLED_RI_FIXTURES in scripts/verify.sh and the
+// PG-DRIFT-GUI scenario in tests/infra/test_verify_scope.sh.
+const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures']; // pg-drift-dir:allow — reviewed, see above
 
 function collectRiFiles(relDir: string): string[] {
   const out: string[] = [];

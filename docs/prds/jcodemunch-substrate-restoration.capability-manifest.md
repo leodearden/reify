@@ -6,7 +6,14 @@ Built at decompose time 2026-08-07 against main `22472828a1`.
 
 Mechanizes G3 + G6 per leaf. Every binding below was resolved by **direct
 observation** (source read, host probe, live sqlite read), not by citation of the
-PRD's own prose.
+PRD's own prose. **Any `<name>.py:NNNN` written below is jcodemunch — dated evidence
+from that 2026-08-07 source read at the package versions named inline (1.108.27 /
+1.108.54 / 1.108.74), not a live breadcrumb.** jcodemunch is third-party, unreadable
+as a repo on this host and uneditable from reify, so those numbers can only ever be a
+record of what was observed; do not re-anchor them — grep the symbol named beside each
+one in the pinned wheel to find the code today. The reify SHA `22472828a1` above dates
+the reify-side evidence (`crates/`, `scripts/`, `bin/`) and covers none of the
+jcodemunch anchors.
 
 ---
 
@@ -44,12 +51,25 @@ check that also removes the count-asserting test name
 | S6 | read-only `sqlite3` on a live index DB | **`meta.git_head` readable** (`git_head\|bafed25c…`); **`select count(*) from symbols` = 54233**. Both §4.3 conjuncts are obtainable with **no MCP session** — γ has an α-free route (OQ1). |
 | S7 | `get_repo_outline.py:155-162` (1.108.74) | **D2 verified** — takes the `current_sha != index.git_head` branch and emits "Index SHA (…) does not match current HEAD". `staleness_days` is not consulted on that path. |
 | S8 | `server.py` argparse scan | **`--once`, `--no-ai-summaries`, `--paths-from` all real flags.** §4.4's ban on `--paths-from` targets a flag that genuinely exists and genuinely deletes (`server.py:6426`, `:7436-7441`). |
-| S9 | `watcher.py:305` (1.108.27 **and** 1.108.74) | **G6 CATCH** — the one-shot summary is `changed={changed} new={new} deleted={deleted} ({duration}s)`. The literal token is **`changed=0`, not `changed: 0`**. See β/`upstream-summary-token`. |
+| S9 | `watcher.py:305` (1.108.27 **and** 1.108.74) vs. `watcher.py:881-936` (1.108.54, `sync_folders()`) | **G6 CATCH, corrected by task 6270** — `watcher.py:305`'s `changed={changed} new={new} deleted={deleted} ({duration}s)` line lives in the **continuous** watch loop's re-index callback, unreachable from `watch --once`. The one-shot path is `sync_folders()`, which prints to **stderr only**: `<folder>: No changes detected (<duration>s)` on a no-op, or `<folder>: <N> symbols (<duration>s)` when changed (`index_folder.py:1303`/`:1372`/`:1755` set `message`; `:1456-1466`/`:1859-1870` omit it). Neither `changed: 0` nor `changed=0` is emitted on `--once`. See β/`upstream-summary-token`. |
 | S10 | PyPI `jcodemunch-mcp` release index | **`1.108.54` present**, `1.108.27` **absent** (only the git tag survives). PRD §8's pin move is required and available. `uvx` present at `/home/leo/.local/bin/uvx`. |
 | S11 | `scripts/install-warm-lane-units.sh` + `deploy/systemd/reify-warm-lane-gc.timer` | **Present** — ζ's reify-side installer precedent is real; no dark-factory counterpart needed (G4). |
 | S12 | `scripts/assert-crate-dag.sh` + `crates/reify-build-utils/tests/crate_dag_assertion.rs` + `.jcodemunch.jsonc` | **All present** — λ's overlap premise has a real comparand. |
 | S13 | `crates/reify-audit/src/bin/reify-audit.rs` grep | **`leodearden/reify` live at `:111`, `:190`, `:215`, `:774`** (the last inside a `#[cfg(test)]` assertion — γ must update it too). |
 | S14 | `docs/prds/reify-audit-p1-jcodemunch-substrate.md` + `docs/architecture-audit/jcodemunch-serve-activation.md` + `.claude/skills/audit/SKILL.md` | **All three drift targets confirmed present verbatim** — "degrades to exit 125 when serve is down", "**Status (2026-05-30):** Active", `leodearden-reify.db`, and the SKILL's serve-prerequisite prose. |
+
+> **CORRECTION 2026-08-20 (esc-6107-7; ruled 2026-08-17 during /unblock of #6107) — S5 is the probe
+> that missed it, and two of its observations have since inverted.** S5 verified the *formula*
+> (`_local_repo_name`) and cross-checked it on a dark-factory **worktree** — a path that takes the
+> local branch — but never exercised the **mode dispatch** that decides whether that function is called
+> at all. At the pinned 1.108.54 the shipped default is `git_root_identity: True` (`config.py:384`,
+> seeded into `_GLOBAL_CONFIG` by `load_config()` at `config.py:660`), so a checkout with a parseable
+> `origin` resolves to its **git** identity by default. Both of S5's on-disk observations are now
+> inverted: `~/.code-index/local-reify-4ae45bbd.db` **does** exist (55,890 symbols, 2,761 files,
+> 2026-08-17 18:11) and `~/.code-index/leodearden-reify.db` **also** exists (147,456-byte empty husk).
+> S5's verdict for D1 stands only as *"the derivation is correct"*, never as *"the derivation is what
+> jcodemunch does by default"*. S14's `leodearden-reify.db` drift target is likewise no longer a
+> "nonexistent DB" — see the μ correction below. See PRD D1/§2.2 corrections for the full ruling.
 
 ---
 
@@ -72,7 +92,7 @@ check that also removes the count-asserting test name
 | `watch-once-flags-exist` | S8 — `--once`, `--no-ai-summaries` real argparse flags in `server.py`. | **PASS** |
 | `paths-from-is-destructive-and-banned` | S8 + §4.4 (`index_folder.py:1505-1511` short-circuit; `sqlite_store.py:1698`, `:1480-1483` DELETE). The flag exists, so the ban is meaningful rather than vacuous. | **PASS** |
 | `symbol-count-is-readable` | S6 — `select count(*) from symbols` on the index DB. β's `N sym`, N>0 guard is producible. | **PASS** |
-| `upstream-summary-token` (**G6 branch-1/4 resolution**) | S9 — upstream emits **`changed=0`**, not `changed: 0`. β's signal token is **β's own stdout** and β owns its format; but no test may bind to the colon form as if it came from the tool. **Resolution recorded**: β prints its own summary line and re-verifies the upstream token against the **pinned 1.108.54** (the probe above read 1.108.27/1.108.74 source). | **PASS (resolved)** |
+| `upstream-summary-token` (**G6 branch-1/4 resolution**) | S9 (corrected by task 6270 against the **pinned 1.108.54** wheel) — `watch --once` runs `sync_folders()`, which prints stderr-only `No changes detected (<duration>s)` on a no-op or `<N> symbols (<duration>s)` when changed; upstream emits **neither** `changed: 0` **nor** `changed=0` on this code path (that token belongs to the continuous watch loop only, `watcher.py:305`). β's signal token is **β's own stdout** and β owns its format; no test may bind to either the colon or equals form as if it came from the tool on `--once`. **Resolution recorded**: β prints its own summary line and does not assume the tool's continuous-loop token appears on `--once`. | **PASS (resolved)** |
 | `max_folder_files-truncation-guard` (**G7 INV-SF-3 resolution**) | `max_folder_files: 10000` truncates **with a warning, not an error** (PRD §10 OQ4). Under `declared-intent-consumed-or-diagnosed`, silently dropping files from the index is declared intent going unconsumed. **Resolution recorded**: OQ4's *whether* is settled to **yes, guard**; the *how* stays tactical. | **PASS (resolved)** |
 
 ### γ — Identity resolution + freshness gate
@@ -86,6 +106,15 @@ check that also removes the count-asserting test name
 | `refusal-mechanism` (G6 branch 4) | γ **is** the producer of the rejection; nothing upstream is required. Bound by construction. | **PASS** |
 | `mcp-route-needs-α` (**G6 branch-3 resolution**) | If OQ1 resolves to the MCP route, `meta.git_head` is read over a live MCP session ⇒ requires α. The PRD lists γ's prereqs as "none". **Resolution recorded**: **γ → α wired as a real `add_dependency` edge**, so both OQ1 answers are safe. The α-free sqlite route (S6) remains available and is noted in γ's task text — prose ordering was explicitly rejected (overlay drift-guard rule). | **PASS (resolved)** |
 | `refusal-carries-a-code` (**G7 INV-SF-6 resolution**) | B4/B5 assertions would otherwise bind to prose. **Resolution recorded**: γ's two refusals carry the stable greppable markers **`E_JC_INDEX_STALE`** and **`E_JC_INDEX_EMPTY`**, so boundary tests bind to code identity, not substrings (INV-SF-6 house pattern: tasks 2255/3416). | **PASS (resolved)** |
+
+> **CORRECTION 2026-08-20 (esc-6107-7) — `per-path-identity-derivable` PASSes on a narrower claim than
+> it reads.** The evidence substantiates that the per-path identity is **derivable**, not that it is
+> **reachable by default**. It is reached only because reify forces `JCODEMUNCH_GIT_ROOT_IDENTITY=0`
+> at every invocation site (β does; δ and ζ carry the same obligation in their task records). The
+> capability as worded is therefore only satisfied *conditional on the lever*, and γ's derived path
+> matches disk only while that holds. The `kind: manual` check is unchanged and still correct — a grep
+> for the literal digest would still pin the wrong thing — but the lever, not the sha1 rule, is what
+> makes the derivation true of this host.
 
 ### δ — `scripts/with-jcodemunch-serve.sh`
 
@@ -169,6 +198,17 @@ check that also removes the count-asserting test name
 | `drift-targets-exist-verbatim` | S14 — all four confirmed present today: `jcodemunch-serve-activation.md:3` "**Status (2026-05-30):** Active"; `:23/:25` `leodearden-reify` / `leodearden-reify.db`; prior PRD's "degrades to exit 125 when serve is down" row; `.claude/skills/audit/SKILL.md` serve-prerequisite prose + `leodearden/reify` default. | **PASS** |
 | `landed-behaviour-to-document` | producers **γ** (identity + refusal), **ζ** (replacement freshness story), **η** (unit retirement) — **all three wired upstream**. The PRD lists η only; γ and ζ added because μ documents *their* landed behaviour. | **PASS (resolved)** |
 | `player-doc-edit-owned-by-λ` | If λ retires PLAYER, the SKILL edit is part of λ's retirement, not μ's. No unordered overlap. | **PASS** |
+
+> **CORRECTION 2026-08-20 (esc-6107-7) — the μ/`nonexistent-db-claim-removed` binding is defective.**
+> It asserts that `leodearden-reify` and `~/.code-index/leodearden-reify.db` are identifiers "neither of
+> which exists". Both exist. The DB is a live (empty) husk that regenerates as an upstream side effect,
+> and `leodearden/reify` is jcodemunch's **default** identity for this checkout — reify overrides it
+> rather than the identity being fictional. Its `delivered_check` (`expect: absent` grep for
+> `leodearden-reify\.db` in `docs/architecture-audit/jcodemunch-serve-activation.md`) would, as written,
+> require deleting a **true** statement. **μ must re-derive that check**: the doc should say
+> `leodearden/reify` is the default identity that reify deliberately overrides to
+> `local/reify-4ae45bbd`, not that it does not exist. Left mechanically unchanged here so the decision
+> stays visible rather than drifting inside an amendment.
 
 ---
 

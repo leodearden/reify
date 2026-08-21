@@ -1,5 +1,7 @@
     use super::*;
-    use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
+    use reify_compiler::{
+        CompiledGeometryOp, CurveKind, GeomRef, PatternKind, SweepKind, TransformKind,
+    };
     use reify_ir::GeometryHandleId;
 
     /// Helper: build a CompiledExpr literal from a constant f64.
@@ -49,6 +51,17 @@
             },
             reify_core::Type::Scalar { dimension },
         )
+    }
+
+    /// Helper: build a `CompiledExpr` literal that evaluates to `Value::Undef`
+    /// — the UNRESOLVED state (an unresolved param, a `ValueMap` cell still
+    /// empty during a partial / fixpoint build, or an expression `reify-expr`
+    /// has no arm for), as distinct from a WRONG one. The declared `Type` is
+    /// `length()` because that is the slot such a cell resolves into; like
+    /// [`literal_scalar`]'s, it is irrelevant to `eval_expr`, which clones the
+    /// `Value`.
+    fn literal_undef() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::length())
     }
 
     /// Helper: wrap a bare `GeometryHandleId` in a `KernelHandle` with the
@@ -1440,9 +1453,11 @@
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
             args: vec![
-                ("px".into(), literal_f64(0.05)),
-                ("py".into(), literal_f64(0.0)),
-                ("pz".into(), literal_f64(0.0)),
+                // Pivot is LENGTH-semantic (task 5623); the axis + angle below
+                // stay bare.
+                ("px".into(), literal_length(0.05)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -1856,9 +1871,11 @@
         // remain present so that f64_arg? short-circuits on (and diagnoses)
         // only the omitted arg under test.
         let full_args: Vec<(&'static str, reify_ir::CompiledExpr)> = vec![
-            ("ox", literal_f64(0.0)),
-            ("oy", literal_f64(0.0)),
-            ("oz", literal_f64(0.0)),
+            // Axis origin is LENGTH-semantic (task 5623); the axis vector
+            // and angle below stay bare. Fans out to all 7 loop iterations.
+            ("ox", literal_length(0.0)),
+            ("oy", literal_length(0.0)),
+            ("oz", literal_length(0.0)),
             ("ax", literal_f64(0.0)),
             ("ay", literal_f64(0.0)),
             ("az", literal_f64(1.0)),
@@ -2045,9 +2062,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(0.0)),
@@ -2090,9 +2107,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(f64::NAN)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(0.0)),
@@ -2133,9 +2150,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -2177,9 +2194,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -2613,11 +2630,13 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // Translate with only dx — missing dy, dz
+        // Translate with only dx — missing dy, dz. `dx` is a dimensioned
+        // Length so the failure under test is the MISSING arg, not the units
+        // gate (task 5623).
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
-            args: vec![("dx".into(), literal_f64(1.0))],
+            args: vec![("dx".into(), literal_length(1.0))],
         };
 
         let result = compile_geometry_op(
@@ -2685,9 +2704,11 @@
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
             args: vec![
-                ("px".into(), literal_f64(0.0)),
-                ("py".into(), literal_f64(0.0)),
-                ("pz".into(), literal_f64(0.0)),
+                // Pivot is LENGTH-semantic (task 5623), so the failure under
+                // test stays the MISSING `az`, not a units rejection.
+                ("px".into(), literal_length(0.0)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(1.0)),
                 // az deliberately omitted
@@ -5259,10 +5280,13 @@
         let translate_op = CompiledGeometryOp::Transform {
             kind: reify_compiler::TransformKind::Translate,
             target: reify_compiler::GeomRef::Step(0),
+            // Translation components are LENGTH-semantic (task 5623); the
+            // `PatternKind::Linear` dx/dy/dz below share the names but are a
+            // dimensionless DIRECTION vector and stay bare.
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dx".into(), literal_length(1.0)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -5342,9 +5366,9 @@
             kind: reify_compiler::SweepKind::Revolve,
             profiles: vec![reify_compiler::GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -5492,11 +5516,13 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // Translate with only dx — missing dy, dz
+        // Translate with only dx — missing dy, dz. `dx` is a dimensioned
+        // Length so neither diagnostic asserted below is a units rejection for
+        // 'dx' (task 5623); both are MISSING-arg warnings.
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: reify_compiler::GeomRef::Step(0),
-            args: vec![("dx".into(), literal_f64(1.0))],
+            args: vec![("dx".into(), literal_length(1.0))],
         };
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -5510,35 +5536,41 @@
             &mut diagnostics,
         );
 
-        // Still returns None (Transform short-circuits on missing f64 args)
+        // Still returns None (Transform drops the op when a component fails)
         assert!(
             result.is_err(),
             "missing dy/dz should still return None, got {:?}",
             result
         );
 
-        // But now exactly one diagnostic warning should be emitted for the first missing arg 'dy'
+        // BOTH missing components are reported in this one build — the
+        // all-failures-at-once contract on `required_length_args` (task 5623
+        // reviewer amendment). Before it, only 'dy' was named and 'dz' surfaced
+        // on the NEXT build; pinning the count is what keeps a regression to
+        // `?`-chained reads visible.
         assert_eq!(
             diagnostics.len(),
-            1,
-            "expected exactly one diagnostic for missing 'dy', got: {:?}",
+            2,
+            "expected one diagnostic per missing component ('dy' and 'dz'), got: {:?}",
             diagnostics
         );
-        assert_eq!(
-            diagnostics[0].severity,
-            reify_core::Severity::Warning,
-            "expected Warning severity"
-        );
-        assert!(
-            diagnostics[0].message.contains("dy"),
-            "diagnostic message should mention 'dy', got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("translate"),
-            "diagnostic message should mention 'translate', got: {}",
-            diagnostics[0].message
-        );
+        for (i, missing) in ["dy", "dz"].iter().enumerate() {
+            assert_eq!(
+                diagnostics[i].severity,
+                reify_core::Severity::Warning,
+                "expected Warning severity for missing '{missing}'"
+            );
+            assert!(
+                diagnostics[i].message.contains(missing),
+                "diagnostic {i} should mention '{missing}', got: {}",
+                diagnostics[i].message
+            );
+            assert!(
+                diagnostics[i].message.contains("translate"),
+                "diagnostic {i} should mention 'translate', got: {}",
+                diagnostics[i].message
+            );
+        }
     }
 
     // ── non-numeric/non-finite diagnostic tests ──────────────────────────────
@@ -5560,8 +5592,8 @@
                         reify_core::Type::String,
                     ),
                 ),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
 
@@ -5581,14 +5613,19 @@
             "wrong-type dx should return None, got {:?}",
             result
         );
+        // WORDING MIGRATION (task 5623): `dx` is now read through the LENGTH
+        // chokepoint, so a `Value::String` is classified by
+        // `arg_acceptance::accept_arg` and worded by `ArgRejection::message`
+        // ("… dx argument expects Length, got …") rather than by
+        // `eval_named_arg_f64`'s generic "non-numeric/non-finite" arm.
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("expects Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
+            "expected a Warning mentioning 'expects Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -5598,14 +5635,14 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // dx is NaN — non-finite, should trigger a diagnostic
+        // dx is a NaN LENGTH — non-finite, should trigger a diagnostic
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(f64::NAN)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dx".into(), literal_length(f64::NAN)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
 
@@ -5625,14 +5662,18 @@
             "NaN dx should return None, got {:?}",
             result
         );
+        // WORDING MIGRATION (task 5623): the value IS a Length, so the LENGTH
+        // chokepoint's dedicated non-finite arm words this as
+        // "non-finite Length" rather than the generic
+        // "non-numeric/non-finite" of `eval_named_arg_f64`.
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("non-finite Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
+            "expected a Warning mentioning 'non-finite Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -5642,14 +5683,14 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // dx is +Infinity — non-finite, should trigger a diagnostic
+        // dx is a +Infinity LENGTH — non-finite, should trigger a diagnostic
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(f64::INFINITY)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dx".into(), literal_length(f64::INFINITY)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
 
@@ -5669,14 +5710,18 @@
             "Infinity dx should return None, got {:?}",
             result
         );
+        // WORDING MIGRATION (task 5623): the value IS a Length, so the LENGTH
+        // chokepoint's dedicated non-finite arm words this as
+        // "non-finite Length" rather than the generic
+        // "non-numeric/non-finite" of `eval_named_arg_f64`.
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("non-finite Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
+            "expected a Warning mentioning 'non-finite Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -5686,14 +5731,15 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // All finite args — should succeed with no non-numeric/non-finite warning
+        // All finite dimensioned-Length args — should succeed with no
+        // non-finite / units warning
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(2.0)),
-                ("dz".into(), literal_f64(3.0)),
+                ("dx".into(), literal_length(1.0)),
+                ("dy".into(), literal_length(2.0)),
+                ("dz".into(), literal_length(3.0)),
             ],
         };
 
@@ -5713,11 +5759,1077 @@
             "finite Translate args should return Some, got None; diagnostics: {:?}",
             diagnostics
         );
+        // Covers BOTH wordings so the no-false-positive check cannot go vacuous
+        // as the chokepoint moves (task 5623 swapped `eval_named_arg_f64`'s
+        // "non-numeric/non-finite" for the LENGTH gate's "non-finite Length" /
+        // "expects Length").
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("non-numeric/non-finite")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("expects Length")
+            }),
+            "no non-finite / units warning expected for finite Length args, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests: the LENGTH-semantic units gate across task 5623's R1 sweep
+    //
+    // Six builtins, 22 gated positions, ONE rejection contract. Each family's
+    // rejection arms were originally written out per builtin; they were
+    // byte-identical modulo the labels, so the contract now lives once in
+    // `assert_length_gated` and each builtin contributes only its data row
+    // (builder + gated position list). Gating the next family — variadic curve
+    // coordinates (task 5658), `profile_polygon` pairs (5661) — is a row, not
+    // another copy of the arms.
+    //
+    // Each family's ACCEPTED test stays hand-written below: those assert
+    // distinct SI values into distinct IR fields (the field-ordering pins) and
+    // genuinely differ per builtin, including the deliberately BARE angle /
+    // direction neighbours that lock this task's scope boundary.
+    // ---------------------------------------------------------------------------
+
+    /// One length-gated builtin, as data: everything the shared rejection
+    /// contract needs in order to exercise it.
+    struct LengthGateCase {
+        /// Builtin name, used in assertion messages.
+        label: &'static str,
+        /// Builds the op from its GATED positions in gate order, supplying its
+        /// own un-gated (bare) neighbours.
+        build: fn(&[reify_ir::CompiledExpr]) -> CompiledGeometryOp,
+        /// The gated positions, in gate order — the single source of truth for
+        /// the per-position sweep, so a position cannot be added to a fixture
+        /// without also being swept.
+        gated: &'static [&'static str],
+        /// SI value used for the positions NOT under test, as a `Length`.
+        /// Non-zero where a zero would make the op degenerate for reasons
+        /// unrelated to units.
+        filler: f64,
+        /// Step handles this op form needs (`Transform` resolves a target;
+        /// `Curve` has none).
+        step_handles: &'static [GeometryHandleId],
+    }
+
+    /// Substrings every WRONG-TYPE rejection must carry, minted by
+    /// `ArgRejection::message` from `length_spec()` — the type name AND the
+    /// migration hint that tells the author what to write instead. Kept
+    /// disjoint from [`NON_FINITE_WORDING`] on purpose (see
+    /// [`assert_length_gated`]).
+    const WRONG_TYPE_WORDING: &[&str] =
+        &["expects Length", "pass a dimensioned length such as `5mm`"];
+
+    /// Substring a NON-FINITE rejection must carry. The value IS a Length here,
+    /// so the wrong-dimension wording would misdescribe it.
+    const NON_FINITE_WORDING: &[&str] = &["non-finite Length"];
+
+    /// The rejection half of the units gate, asserted once per GATED POSITION
+    /// of one builtin — the contract every R1 family shares (task 5623).
+    ///
+    /// Three rejection classes, none of which the others would catch:
+    ///   (a) a BARE `Value::Real` — the 1000× hazard itself (`5` silently read
+    ///       as 5 SI **metres** by `Value::as_f64` instead of 5 mm);
+    ///   (b) a WRONG-DIMENSION `Value::Scalar` — an ANGLE Scalar (a live
+    ///       argument-order slip: `rotate_around` and `revolve` are
+    ///       8-positional-arg signatures ENDING in an angle, and `arc` carries
+    ///       two) and a DIMENSIONLESS Scalar (the likeliest silent-regression
+    ///       path, since eval arithmetic can collapse to a dimensionless
+    ///       `Scalar` rather than a `Real` and would sneak past a `Real`-shaped
+    ///       guard);
+    ///   (c) a LENGTH-dimensioned but NON-FINITE value (NaN / ±inf — e.g. from
+    ///       a divide-by-zero in a parametric expression), which must say
+    ///       `non-finite Length` specifically: the value IS a Length, so the
+    ///       wrong-dimension wording would misdescribe it.
+    ///
+    /// Sweeping EVERY gated position rather than just the first is load-bearing
+    /// — each position is a separate read, so a single-position test would not
+    /// notice the others regressing to the bare-accepting `eval_named_arg_f64`
+    /// path.
+    ///
+    /// Each arm asserts the REASON, not merely that the word `Length` occurs:
+    /// the wrong-type wording (`expects Length`, plus the migration hint) and
+    /// the non-finite wording (`non-finite Length`) are mutually exclusive
+    /// substrings, so an arm cannot be satisfied by the other arm's diagnostic.
+    /// Distinguishing them is the whole point of the table — a regression that
+    /// lost the [`ArgRejection`](crate::arg_acceptance::ArgRejection) path (and
+    /// with it the `5mm` migration hint) by classifying a bare `Real` as
+    /// non-finite would otherwise still pass every arm.
+    fn assert_length_gated(case: LengthGateCase) {
+        let LengthGateCase {
+            label,
+            build,
+            gated,
+            filler,
+            step_handles,
+        } = case;
+        let values = ValueMap::new();
+
+        for (position, &name) in gated.iter().enumerate() {
+            for (arm, bad, expect) in [
+                ("bare Real", literal_f64(filler), WRONG_TYPE_WORDING),
+                (
+                    "ANGLE Scalar",
+                    literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+                    WRONG_TYPE_WORDING,
+                ),
+                (
+                    "dimensionless Scalar",
+                    literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+                    WRONG_TYPE_WORDING,
+                ),
+                ("NaN Length", literal_length(f64::NAN), NON_FINITE_WORDING),
+                (
+                    "+inf Length",
+                    literal_length(f64::INFINITY),
+                    NON_FINITE_WORDING,
+                ),
+                (
+                    "-inf Length",
+                    literal_length(f64::NEG_INFINITY),
+                    NON_FINITE_WORDING,
+                ),
+            ] {
+                // Exactly one position is bad; every other one is a finite
+                // Length, so the diagnostic can only be about this position.
+                let mut components: Vec<reify_ir::CompiledExpr> =
+                    gated.iter().map(|_| literal_length(filler)).collect();
+                components[position] = bad;
+                let op = build(&components);
+
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &op,
+                    &values,
+                    step_handles,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                assert!(
+                    result.is_err(),
+                    "a {arm} in {label}'s '{name}' must drop the op, got: {:?}",
+                    result
+                );
+                assert!(
+                    diagnostics.iter().any(|d| d.message.contains(name)
+                        && expect.iter().all(|want| d.message.contains(want))),
+                    "the diagnostic for a {arm} in {label}'s '{name}' must name the \
+                     arg and carry every one of {expect:?}; got: {:?}",
+                    diagnostics
+                );
+            }
+        }
+    }
+
+    /// ALL FAILURES AT ONCE, asserted on the FULLY BARE group — the case
+    /// `required_length_args` exists for, and the one [`assert_length_gated`]
+    /// structurally cannot see (it makes exactly ONE position bad per
+    /// iteration).
+    ///
+    /// A coordinate group is written as one gesture, so a bare group is usually
+    /// bare in EVERY member: `line_segment(0, 0, 0, 10, 0, 0)` is the headline
+    /// case. Reporting one member per build would cost the author six
+    /// edit-build cycles to fix one line.
+    ///
+    /// The count assertion is the load-bearing half. Splitting a builtin's
+    /// single N-name `required_length_args` call into several chained calls —
+    /// or re-introducing a `?` between them — still names the FIRST group's
+    /// members, so a names-only check would stay green while the reported set
+    /// silently halved. Asserting `== gated.len()` catches that, because the
+    /// all-at-once guarantee holds only WITHIN one call.
+    fn assert_every_bare_position_reported(case: LengthGateCase) {
+        let LengthGateCase {
+            label,
+            build,
+            gated,
+            filler,
+            step_handles,
+        } = case;
+        let values = ValueMap::new();
+
+        // EVERY gated position bare — the un-gated neighbours are supplied by
+        // the builder and stay bare by design.
+        let components: Vec<reify_ir::CompiledExpr> =
+            gated.iter().map(|_| literal_f64(filler)).collect();
+        let op = build(&components);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a fully bare {label} must drop the op, got: {:?}",
+            result
+        );
+
+        for name in gated {
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains(name)
+                    && d.message.contains("expects Length")),
+                "a fully bare {label} must report '{name}' in the SAME build as \
+                 every other bare position; got: {:?}",
+                diagnostics
+            );
+        }
+        let reported = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("expects Length"))
+            .count();
+        assert_eq!(
+            reported,
+            gated.len(),
+            "a fully bare {label} must report each of its {} gated positions \
+             exactly once — no short-circuit, no duplicate; got: {:?}",
+            gated.len(),
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `translate`'s components (task 5623, R1 sweep)
+    //
+    // A translation component is a displacement in space, so a bare `5` would
+    // be silently read as 5 SI **metres** rather than 5 mm — the 1000× hazard
+    // this gate closes. `translate` has no dimensionless neighbour.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `translate` op from its three gated components, in gate order.
+    fn translate_with_components(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), c[0].clone()),
+                ("dy".into(), c[1].clone()),
+                ("dz".into(), c[2].clone()),
+            ],
+        }
+    }
+
+    /// `translate`'s row in the shared gate table.
+    const TRANSLATE_GATE: LengthGateCase = LengthGateCase {
+        label: "translate",
+        build: translate_with_components,
+        gated: &["dx", "dy", "dz"],
+        filler: 0.0,
+        step_handles: &[GeometryHandleId(42)],
+    };
+
+    #[test]
+    fn compile_geometry_op_translate_length_gate_rejects_every_component() {
+        assert_length_gated(TRANSLATE_GATE);
+    }
+
+    /// The MIXED group — the precedence rule `required_length_args` encodes,
+    /// which neither shared-contract helper above can see.
+    ///
+    /// [`assert_length_gated`] makes exactly ONE position bad per iteration
+    /// (every other is a valid Length) and [`assert_every_bare_position_reported`]
+    /// makes every position bad in the SAME way, so both are structurally blind
+    /// to two DIFFERENT failure classes meeting in one group. Here `dx` is
+    /// `Undef` (Unresolved) and `dy` is a bare `Real` (Invalid), pinning both
+    /// halves of the all-at-once behaviour in one case:
+    ///
+    ///   - PRECEDENCE — the FIRST error wins, so the caller-facing `Err` is
+    ///     `dx`'s "unresolved (Undef)" and never `dy`'s "missing or non-Length".
+    ///     A refactor to "last error wins", to `Err`-on-first-`Invalid`, or a
+    ///     reordering of the names array would otherwise flip that wording
+    ///     silently — during solver iteration, where `Undef` cells are expected
+    ///     transient state and mislabelling one as non-Length is exactly the
+    ///     misdiagnosis `required_length_arg` exists to avoid.
+    ///   - NO SHORT-CIRCUIT — `dy` is still diagnosed even though `dx` already
+    ///     failed. Under the old `?`-chain an `Undef` first member suppressed
+    ///     that warning entirely, so this is the diagnostic-COUNT half of the
+    ///     change, which the wording assertions alone would not catch.
+    #[test]
+    fn compile_geometry_op_translate_unresolved_beats_a_later_bare_component() {
+        let values = ValueMap::new();
+
+        // dx unresolved, dy bare (the 1000× hazard), dz a clean Length.
+        let op = translate_with_components(&[
+            literal_undef(),
+            literal_f64(5.0),
+            literal_length(0.056),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &[GeometryHandleId(42)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("an unresolved dx with a bare dy must drop the translate op");
+
+        assert!(
+            err.contains("dx") && err.contains("unresolved (Undef)"),
+            "the FIRST failing member wins, so the error must carry dx's \
+             unresolved-Undef wording; got: {err:?}"
+        );
+        assert!(
+            !err.contains("dy"),
+            "dy's later Invalid must not mask dx's Unresolved in the \
+             caller-facing error; got: {err:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("dy") && d.message.contains("expects Length")),
+            "dy must STILL be diagnosed in the SAME build even though dx failed \
+             first — the all-at-once guarantee, which the old `?`-chain \
+             short-circuited; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("dx")),
+            "an unresolved dx degrades QUIETLY at the value level — its whole \
+             report is the caller-facing Err, with no warning of its own; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The clean path: dimensioned components are accepted and reach the IR in SI
+    /// metres (a `12mm` dx arrives as `0.012`, never `12`).
+    ///
+    /// Every component is DISTINCT so this also pins the dx/dy/dz → `Translate`
+    /// field ordering: a transposed assembly is a live regression that an all-zero
+    /// (or single-non-zero) fixture could not see.
+    #[test]
+    fn compile_geometry_op_translate_length_components_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // 12mm/34mm/56mm — the values the bare form would have read as
+        // 12/34/56 metres.
+        let op = translate_with_components(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Translate {
+                target,
+                dx,
+                dy,
+                dz,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                // Bit-exact: each SI value is an identity pass-through of its
+                // literal, with no arithmetic applied.
+                assert_eq!([dx, dy, dz], [0.012, 0.034, 0.056]);
+            }
+            other => panic!(
+                "expected Ok(Translate) for Length components, got {:?}",
+                other
+            ),
+        }
+        // Assert on CONTENT, not severity: the units gate never emits an `Error`
+        // here — `eval_named_arg_length` pushes `Diagnostic::warning` for every
+        // rejection, and the Error only materialises when the caller maps
+        // `compile_geometry_op`'s `Err(String)`. A severity filter would therefore
+        // pass even if a valid Length component spuriously warned.
+        assert!(
+            diagnostics.is_empty(),
+            "Length translate components are the fully clean path and must emit \
+             NO diagnostic at all (in particular no 'expects Length' / \
+             'non-finite Length' warning); got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `rotate_around`'s PIVOT (task 5623, R1 sweep)
+    //
+    // The pivot is a point in space. The co-located axis (`ax`/`ay`/`az`, a
+    // dimensionless unit vector) and `angle` are NOT gated by this task — all
+    // ANGLE gating belongs to docs/prds/v0_6/angle-units-surface-convergence.md
+    // (PRD 3) by seam-table decree — and the accepted test below is the
+    // executable lock on that boundary.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `rotate_around` op from its three gated PIVOT components, in
+    /// gate order, holding the axis (+Z) and angle fixed and BARE.
+    fn rotate_around_with_point(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("px".into(), c[0].clone()),
+                ("py".into(), c[1].clone()),
+                ("pz".into(), c[2].clone()),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                // ANGLE is PRD 3's, never ours → stays bare.
+                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
+            ],
+        }
+    }
+
+    /// `rotate_around`'s row in the shared gate table — the PIVOT only.
+    const ROTATE_AROUND_GATE: LengthGateCase = LengthGateCase {
+        label: "rotate_around",
+        build: rotate_around_with_point,
+        gated: &["px", "py", "pz"],
+        filler: 0.0,
+        step_handles: &[GeometryHandleId(42)],
+    };
+
+    #[test]
+    fn compile_geometry_op_rotate_around_length_gate_rejects_every_component() {
+        assert_length_gated(ROTATE_AROUND_GATE);
+    }
+
+    /// Locks the split AND the scope boundary: a `Length` pivot with a BARE
+    /// dimensionless axis and a BARE angle is the fully clean path and must
+    /// emit NO diagnostic at all.
+    ///
+    /// The bare-angle half is binding scope protection, not decoration. PRD 1
+    /// gates NO angle position; `rotate_around`'s rotation angle belongs to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3) by
+    /// seam-table decree, and gating it here would be a scope violation. The
+    /// boundary is one careless edit away — it sits immediately beside a gated
+    /// triple — so it is encoded as a passing test rather than a comment.
+    ///
+    /// Distinct components also pin the px/py/pz → `point` ORDERING against a
+    /// transposed assembly.
+    #[test]
+    fn compile_geometry_op_rotate_around_length_point_bare_axis_angle_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = rotate_around_with_point(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::RotateAround {
+                target,
+                point,
+                axis,
+                angle_rad,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(point, [0.012, 0.034, 0.056]);
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+                assert_eq!(angle_rad, std::f64::consts::FRAC_PI_2);
+            }
+            other => panic!(
+                "expected Ok(RotateAround) for a Length pivot with a bare axis and \
+                 a bare angle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Length pivot + dimensionless axis + BARE angle is the fully clean \
+             path and must emit NO diagnostic at all — in particular the angle \
+             must NOT be gated here (that is PRD 3's scope); got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `revolve`'s axis ORIGIN (task 5623, R1 sweep)
+    //
+    // ARG-VECTOR ORDER TRAP: the DSL surface is
+    // `revolve(profile, ox, oy, oz, ax, ay, az, angle)`, but the `args` vector
+    // built by the existing unit tests and by the characterization harness is
+    // `ax, ay, az, angle, ox, oy, oz`. Everything here is keyed on the arg
+    // NAME, which is what `sweep_revolve` reads.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `revolve` op from its three gated axis-ORIGIN components, in
+    /// gate order, holding the axis (+Z) and angle fixed and BARE.
+    fn revolve_with_origin(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), c[0].clone()),
+                ("oy".into(), c[1].clone()),
+                ("oz".into(), c[2].clone()),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                // ANGLE is PRD 3's, never ours → stays bare.
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        }
+    }
+
+    /// `revolve`'s row in the shared gate table — the axis ORIGIN only.
+    const REVOLVE_GATE: LengthGateCase = LengthGateCase {
+        label: "revolve",
+        build: revolve_with_origin,
+        gated: &["ox", "oy", "oz"],
+        filler: 0.0,
+        step_handles: &[GeometryHandleId(42)],
+    };
+
+    #[test]
+    fn compile_geometry_op_revolve_length_gate_rejects_every_component() {
+        assert_length_gated(REVOLVE_GATE);
+    }
+
+    /// Locks the split AND the scope boundary: a `Length` origin with a BARE
+    /// dimensionless axis and a BARE angle is the fully clean path and must
+    /// emit NO diagnostic at all. The bare-angle half is binding scope
+    /// protection — `revolve`'s angle belongs to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3), not here.
+    ///
+    /// Distinct components also pin the ox/oy/oz → `axis_origin` ORDERING.
+    #[test]
+    fn compile_geometry_op_revolve_length_origin_bare_axis_angle_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = revolve_with_origin(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Revolve {
+                axis_origin,
+                axis_dir,
+                angle_rad,
+                ..
+            }) => {
+                assert_eq!(axis_origin, [0.012, 0.034, 0.056]);
+                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
+                assert_eq!(angle_rad, std::f64::consts::PI);
+            }
+            other => panic!(
+                "expected Ok(Revolve) for a Length origin with a bare axis and a \
+                 bare angle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Length origin + dimensionless axis + BARE angle is the fully clean \
+             path and must emit NO diagnostic at all — in particular the angle \
+             must NOT be gated here (that is PRD 3's scope); got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// PRECEDENCE PIN for the one deliberate read-order change in task 5623.
+    ///
+    /// `sweep_revolve` used to read its origin LAST — after the
+    /// degenerate-axis and degenerate-angle checks. The borrow-ordering
+    /// contract on `required_length_args` forces the gated read to happen
+    /// before the `f64_arg` closure is declared, so the origin now goes FIRST
+    /// and an op with BOTH a bare origin AND a degenerate zero axis fails on
+    /// the ORIGIN.
+    ///
+    /// Without this test that shift is invisible behaviour drift. Asserting
+    /// the ABSENCE of the axis diagnostic is the load-bearing half: the axis
+    /// check is downstream of the whole units group, so it is never reached.
+    ///
+    /// The units group itself reports ALL THREE bare components (the
+    /// all-failures-at-once contract on `required_length_args`), which is
+    /// pinned explicitly below — a regression to `?`-chained reads would show
+    /// up here as one diagnostic instead of three.
+    #[test]
+    fn compile_geometry_op_revolve_bare_origin_beats_degenerate_axis() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                // BARE origin — the units gate must fire here …
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                // … BEFORE this zero-magnitude axis is even evaluated.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(0.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a revolve with both a bare origin and a degenerate axis must drop \
+             the op, got: {:?}",
+            result
+        );
+        // ALL THREE bare components are reported in this single build — the
+        // author fixes `ox`, `oy` and `oz` in one edit, not three.
+        for bare in ["ox", "oy", "oz"] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "the units gate runs FIRST and reports every bare component, so a \
+                 diagnostic must name '{bare}' and the Length requirement; got: {:?}",
+                diagnostics
+            );
+        }
         assert!(
             !diagnostics
                 .iter()
-                .any(|d| d.message.contains("non-numeric/non-finite")),
-            "no 'non-numeric/non-finite' warning expected for finite args, got: {:?}",
+                .any(|d| d.message.contains("degenerate magnitude")),
+            "the op must fail FAST on the origin — the degenerate-axis check is \
+             never reached, so no axis diagnostic may be emitted alongside it; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `line_segment`'s two ENDPOINTS (task 5623, R1 sweep)
+    //
+    // `line_segment(x1, y1, z1, x2, y2, z2)` has NO dimensionless neighbour —
+    // every one of its six args is a point coordinate, so all six are gated and
+    // the function's `f64_arg` closure disappears entirely.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `line_segment` op from its six gated endpoint components, in
+    /// gate order.
+    fn line_segment_with_endpoints(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::LineSegment,
+            args: vec![
+                ("x1".into(), c[0].clone()),
+                ("y1".into(), c[1].clone()),
+                ("z1".into(), c[2].clone()),
+                ("x2".into(), c[3].clone()),
+                ("y2".into(), c[4].clone()),
+                ("z2".into(), c[5].clone()),
+            ],
+        }
+    }
+
+    /// `line_segment`'s row in the shared gate table — the WIDEST gated set in
+    /// R1 at six positions, and so the sharpest test of the all-at-once
+    /// contract.
+    const LINE_SEGMENT_GATE: LengthGateCase = LengthGateCase {
+        label: "line_segment",
+        build: line_segment_with_endpoints,
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.0,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_line_segment_length_gate_rejects_every_component() {
+        assert_length_gated(LINE_SEGMENT_GATE);
+    }
+
+    /// Six DISTINCT Length endpoint components are accepted and land in their
+    /// own IR slots. Distinctness is load-bearing twice over: it pins the
+    /// x1/y1/z1 → x2/y2/z2 ORDERING (an all-zero fixture cannot see a swapped
+    /// x1/x2 or a transposed endpoint), and the SI values chosen are exactly
+    /// what the bare form would have misread as 12/34/56/78/90/11 metres.
+    #[test]
+    fn compile_geometry_op_line_segment_length_components_accepted() {
+        let values = ValueMap::new();
+
+        let op = line_segment_with_endpoints(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::LineSegment {
+                x1,
+                y1,
+                z1,
+                x2,
+                y2,
+                z2,
+            }) => {
+                assert_eq!([x1, y1, z1], [0.012, 0.034, 0.056]);
+                assert_eq!([x2, y2, z2], [0.078, 0.090, 0.011]);
+            }
+            other => panic!(
+                "expected Ok(LineSegment) for six Length endpoint components, \
+                 got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "six Length endpoint components are the fully clean path and must \
+             emit NO diagnostic at all; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `helix`'s radius/pitch/height (task 5623, R1 sweep)
+    //
+    // Like `line_segment`, `helix` has NO dimensionless neighbour — a pitch is
+    // a rise per turn (a length) and a height is a length, so all three args
+    // are gated and the `f64_arg` closure disappears.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `helix` op from its three gated length components, in gate order.
+    fn helix_with_components(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::Helix,
+            args: vec![
+                ("radius".into(), c[0].clone()),
+                ("pitch".into(), c[1].clone()),
+                ("height".into(), c[2].clone()),
+            ],
+        }
+    }
+
+    /// `helix`'s row in the shared gate table — three INDEPENDENT extents
+    /// rather than a point, which is why the group helper is
+    /// name-parameterised.
+    const HELIX_GATE: LengthGateCase = LengthGateCase {
+        label: "helix",
+        build: helix_with_components,
+        gated: &["radius", "pitch", "height"],
+        // A non-zero filler: a zero pitch or height is degenerate for reasons
+        // unrelated to units, and would muddy the signal.
+        filler: 1.0,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_helix_length_gate_rejects_every_component() {
+        assert_length_gated(HELIX_GATE);
+    }
+
+    /// Three DISTINCT Length components are accepted into their own IR slots —
+    /// distinctness pins the radius/pitch/height ORDERING, which an all-equal
+    /// fixture cannot see.
+    #[test]
+    fn compile_geometry_op_helix_length_components_accepted() {
+        let values = ValueMap::new();
+
+        let op = helix_with_components(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Helix {
+                radius,
+                pitch,
+                height,
+            }) => {
+                assert_eq!([radius, pitch, height], [0.012, 0.034, 0.056]);
+            }
+            other => panic!(
+                "expected Ok(Helix) for three Length components, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "three Length components are the fully clean path and must emit NO \
+             diagnostic at all; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `arc`'s CENTRE and RADIUS (task 5623, R1 sweep)
+    //
+    // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)` — the
+    // angles come BEFORE the axis. Unlike `line_segment` and `helix`, `arc`
+    // DOES have dimensionless neighbours: the two angles (PRD 3's scope, never
+    // ours) and the `ax`/`ay`/`az` unit vector. Four of its nine args are
+    // gated; the other five keep the bare-accepting `f64_arg` path.
+    //
+    // SCOPE PIN (PRD decision D13): every assertion here is on a rejection
+    // DIAGNOSTIC or on a `GeometryOp::Arc` IR field as returned by
+    // `compile_geometry_op`. Nothing asserts on a kernel-realized arc's
+    // geometry or size — the research flagged, unconfirmed, that `arc` may not
+    // consume its radius downstream, and this task builds no signal on that.
+    // Gating the radius is still correct: the gate is about what the argument
+    // MEANS, not about who currently reads it.
+    // ---------------------------------------------------------------------------
+
+    /// Build an `arc` op from its four gated positions (centre triple, then
+    /// radius) in gate order, holding both angles and the axis fixed and BARE.
+    fn arc_with_center_radius(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::Arc,
+            args: vec![
+                ("cx".into(), c[0].clone()),
+                ("cy".into(), c[1].clone()),
+                ("cz".into(), c[2].clone()),
+                ("radius".into(), c[3].clone()),
+                // ANGLES are PRD 3's, never ours → stay bare.
+                ("start_angle".into(), literal_f64(0.0)),
+                ("end_angle".into(), literal_f64(1.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+            ],
+        }
+    }
+
+    /// `arc`'s row in the shared gate table — a gated POINT plus a gated
+    /// standalone EXTENT, four of nine args.
+    const ARC_GATE: LengthGateCase = LengthGateCase {
+        label: "arc",
+        build: arc_with_center_radius,
+        // Deliberately EXCLUDES `start_angle`/`end_angle`/`ax`/`ay`/`az`.
+        gated: &["cx", "cy", "cz", "radius"],
+        // Non-zero: a zero radius is degenerate independently of units.
+        filler: 1.0,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_arc_length_gate_rejects_every_component() {
+        assert_length_gated(ARC_GATE);
+    }
+
+    /// Locks the split AND the scope boundary: a Length centre + Length radius
+    /// alongside BARE angles and a BARE dimensionless axis is the fully clean
+    /// path and must emit NO diagnostic at all.
+    ///
+    /// The bare-angle half is binding scope protection, not decoration — `arc`
+    /// is the only gated builtin carrying TWO angle args, and both belong to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3). Gating
+    /// either here would be a scope violation this test would catch.
+    ///
+    /// Distinct centre components pin the cx/cy/cz → `center` ORDERING, and the
+    /// radius is distinct from all three so a centre/radius transposition
+    /// cannot pass. Assertions are on IR fields only (PRD D13).
+    #[test]
+    fn compile_geometry_op_arc_length_center_radius_bare_angles_axis_accepted() {
+        let values = ValueMap::new();
+
+        let op = arc_with_center_radius(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+                axis,
+            }) => {
+                assert_eq!(center, [0.012, 0.034, 0.056]);
+                assert_eq!(radius, 0.078);
+                assert_eq!(start_angle, 0.0);
+                assert_eq!(end_angle, 1.0);
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+            }
+            other => panic!(
+                "expected Ok(Arc) for a Length centre and radius with bare angles \
+                 and a bare axis, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Length centre + Length radius + dimensionless axis + BARE angles \
+             is the fully clean path and must emit NO diagnostic at all — in \
+             particular neither angle may be gated here (that is PRD 3's scope); \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test: ALL FAILURES AT ONCE, across every R1 family
+    // ---------------------------------------------------------------------------
+
+    /// Every gate row, driven through the fully-bare case — the whole point of
+    /// `required_length_args` and the one thing the per-position sweep cannot
+    /// see (it makes exactly one position bad at a time).
+    ///
+    /// Running the whole table rather than just `line_segment` is nearly free
+    /// and covers the two widest sets — `line_segment`'s six endpoint
+    /// coordinates and `arc`'s centre-plus-radius four — alongside the triples,
+    /// so no family can be quietly split back into chained reads.
+    #[test]
+    fn compile_geometry_op_length_gate_reports_every_bare_position_in_one_build() {
+        for case in [
+            TRANSLATE_GATE,
+            ROTATE_AROUND_GATE,
+            REVOLVE_GATE,
+            LINE_SEGMENT_GATE,
+            HELIX_GATE,
+            ARC_GATE,
+        ] {
+            assert_every_bare_position_reported(case);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test: the SWEEP BOUNDARY of task 5623's R1 triage
+    // ---------------------------------------------------------------------------
+
+    /// NEGATIVE LOCK on the triage decision that sets this task's position
+    /// count. `extrude_infinite`'s `dx`/`dy`/`dz` look exactly like
+    /// `translate`'s — same names, same neighbourhood, same shape — but they
+    /// are a dimensionless DIRECTION: `sweep_extrude_infinite` magnitude-checks
+    /// them and stores them into `ExtrudeInfinite.axis`, never as a length.
+    /// They MUST stay on the bare-accepting `eval_named_arg_f64` path.
+    ///
+    /// Excluding this triple is precisely what makes R1 land on 22 gated
+    /// positions rather than 25, so it is the triage decision most worth
+    /// executable protection — an over-eager sweep that gated it would make
+    /// every `extrude_infinite` call in the corpus fail. Green before and after
+    /// this task by design.
+    #[test]
+    fn compile_geometry_op_extrude_infinite_bare_direction_still_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let direction_lit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::String("positive".to_string()),
+            reify_core::Type::String,
+        );
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::ExtrudeInfinite,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                // A dimensionless unit vector — bare on purpose.
+                ("dx".into(), literal_f64(0.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(1.0)),
+                ("direction".into(), direction_lit),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::ExtrudeInfinite {
+                profile,
+                axis,
+                both,
+            }) => {
+                assert_eq!(profile, GeometryHandleId(42));
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+                assert!(!both);
+            }
+            other => panic!(
+                "extrude_infinite's dx/dy/dz are a dimensionless DIRECTION and \
+                 must keep accepting bare values — task 5623 gates 22 positions, \
+                 and these three are deliberately not among them; got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a bare dimensionless extrude_infinite direction must emit NO \
+             diagnostic; got: {:?}",
             diagnostics
         );
     }
@@ -6884,8 +7996,8 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),

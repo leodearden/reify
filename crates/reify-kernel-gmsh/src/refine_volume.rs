@@ -203,13 +203,17 @@ pub fn refine_volume_with_size_field(
     // --- Classify and create geometry ---
     //
     // Use a tighter dihedral-angle threshold (PI/12 ≈ 15°) than
-    // `mesh_to_volume`'s PI/2 so that virtually every mesh edge is treated as
-    // a "hard" edge.  For the unit-cube test geometry (90° dihedral angles at
-    // each edge), this ensures all 12 edges become 1D curve entities and all
-    // 8 cube-corner vertices become 0D point entities.  Without this, the
-    // cube corners do NOT become 0D entities under PI/2 threshold (90° is NOT
-    // > PI/2), so we'd only have ~1 corner entity and could not assign
-    // per-vertex size hints.
+    // `mesh_to_volume`'s `CLASSIFY_FEATURE_ANGLE` (PI/4) so that virtually
+    // every mesh edge is treated as a "hard" edge.  For the unit-cube test
+    // geometry (90° dihedral angles at each edge), this ensures all 12 edges
+    // become 1D curve entities and all 8 cube-corner vertices become 0D point
+    // entities.  A PI/2 threshold would emit no corner entities at all (gmsh's
+    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2), leaving
+    // nowhere to attach per-vertex size hints; that is also what broke
+    // `mesh_to_volume` in #6200, which is why it no longer uses PI/2 either.
+    // PI/12 stays deliberately sharper than PI/4 (this path wants every edge
+    // hard, not just the feature edges), so it is NOT folded into the shared
+    // constant.
     //
     // For the `curveAngle` (4th argument) we use the same PI/12 so that
     // vertices at intersections of curves separated by < 15° are still
