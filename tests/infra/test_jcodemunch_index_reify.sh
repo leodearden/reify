@@ -1215,8 +1215,8 @@ SEAM_INDEX_2="$(mk_tmpdir)"
 SEAM_INDEX_3="$(mk_tmpdir)"
 # The husk's meta.source_root must be the RESOLVED root: the script resolves
 # --project-root with `readlink -f` before comparing (jcodemunch-index-reify.sh
-# :131), and the stub resolves with pathlib. Planting the raw mktemp path would
-# silently miss on any host whose TMPDIR traverses a symlink.
+# :130-131), and the stub resolves with pathlib. Planting the raw mktemp path
+# would silently miss on any host whose TMPDIR traverses a symlink.
 SEAM_ROOT_REAL="$(readlink -f -- "$SEAM_ROOT")"
 # Bound to a variable, NOT inlined into (a)'s expected substring, so it can be
 # guarded below. require_nonempty cannot catch this one on its own: (a)'s want
@@ -1246,7 +1246,7 @@ else
 
     # (b) NEGATIVE — the SAME stub binary, with the lever overridden downstream
     # of the script's own `env` prefix via its documented word-split seam
-    # (scripts/jcodemunch-index-reify.sh:475-482): INDEXER_ARGV becomes
+    # (scripts/jcodemunch-index-reify.sh:496-503): INDEXER_ARGV becomes
     # `env …=0 env …=1 <stub> watch …` and the second env wins. The stub then
     # takes git_root.py's GIT branch and writes leodearden-reify.db, which is
     # the real failure mode the script's own hijack_note names —

@@ -443,13 +443,34 @@ JC_PYTHON="3.13"
 # identity silently reverts to `leodearden/reify` and every gate below starts
 # interrogating a path nothing writes.
 #
-# THE KEY IS `"git_root_identity": false` (config.py:474) — NOT
-# `"identity_mode": "local"`. That second spelling is a trap worth naming
-# rather than merely omitting: the shipped config template ADVERTISES it
-# (config.py:1872-1896), yet it is absent from CONFIG_TYPES and is therefore
-# discarded SILENTLY at the pinned 1.108.54 (config.py:708). It fails closed
-# with no error and no log line, so a bump that reached for the advertised key
-# would look configured while the identity had already reverted.
+# THE KEY IS `"git_root_identity": false` — NOT `"identity_mode": "local"`.
+# Two line numbers, because a bumper needs both: `config.py:384` is the shipped
+# DEFAULT that actually has to be flipped (`"git_root_identity": True`, the same
+# line cited above), and `config.py:474` is its CONFIG_TYPES entry
+# (`"git_root_identity": bool`) — the map a key must appear in to survive the
+# load at all. Following :474 alone lands a reader on a type table, not on the
+# lever.
+#
+# `"identity_mode"` is a trap worth naming rather than merely omitting: the
+# shipped config template ADVERTISES it (config.py:1872-1896, where it is even
+# presented as the PREFERRED spelling and `git_root_identity` as its deprecated
+# alias), yet at the pinned 1.108.54 it appears in neither DEFAULTS nor
+# CONFIG_TYPES. So a bump that reached for the advertised key would look
+# configured while the identity had already reverted.
+#
+# It fails closed, but NOT invisibly — the distinction is worth having, because
+# one half of it is a cheap check:
+#   - On the LOAD path it is dropped with no error and no log line
+#     (config.py:708, `# Ignore unknown keys silently`).
+#   - `validate_config` DOES flag it: "Config key 'identity_mode' is not
+#     recognized (unknown key)" (config.py:1194), reachable from the CLI as
+#     `jcodemunch-mcp config --check` (server.py:6042).
+# So ADD `config --check` to this checklist: run it against the config.jsonc a
+# bump introduces, and an unrecognised key is named before it can silently
+# revert the identity. It is the only signal upstream gives here.
+#
+# All of the above re-verified first-hand against the PINNED 1.108.54 wheel, not
+# a neighbouring release.
 #
 # NOT SUFFICIENT ON ITS OWN: `resolve_index_identity` returns an ALREADY-EXISTING
 # git-identity index (git_root.py:174-178) BEFORE it ever consults the configured
