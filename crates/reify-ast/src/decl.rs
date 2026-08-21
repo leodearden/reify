@@ -1677,4 +1677,52 @@ mod find_param_default_span_tests {
         let members = build_nested_guarded_members(33, "unreachable_param", (10, 14));
         assert_eq!(find_param_default_span(&members, "unreachable_param"), None);
     }
+
+    // ── step-5: refuse to guess when the name is declared more than once ─────
+
+    #[test]
+    fn name_declared_in_both_guarded_branches_returns_none() {
+        // `where c { param size = … } else { param size = … }` is LEGAL, not a
+        // duplicate-decl error: shadow_lint.rs states GuardedGroup branch members
+        // are mutually-exclusive SIBLINGS registered into the SAME parent frame.
+        // Nothing in the AST records which branch the condition selects, so
+        // first-match-wins would let a caller splice a literal into the possibly
+        // INACTIVE branch — the user sets a value and the design does not change.
+        let members = vec![guarded(
+            vec![param("size", (0, 40), Some((10, 14)))],
+            vec![param("size", (50, 90), Some((30, 34)))],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "size"),
+            None,
+            "a multiply-declared name must be refused, not resolved to one branch"
+        );
+    }
+
+    #[test]
+    fn name_declared_twice_with_only_one_default_still_returns_none() {
+        // Refusal is driven by the name being multiply-declared, NOT by how many
+        // defaults happen to exist. Otherwise adding a default to the other branch
+        // would silently flip an accepted edit into a rejected one.
+        let members = vec![guarded(
+            vec![param("size", (0, 40), Some((10, 14)))],
+            vec![param("size", (50, 90), None)],
+        )];
+        assert_eq!(find_param_default_span(&members, "size"), None);
+    }
+
+    #[test]
+    fn unambiguous_nesting_still_resolves() {
+        // Regression guard for step-3's reach: exactly examples/m5_guarded_enum.ri:7-11,
+        // where the two branches declare DIFFERENTLY-named params. Step-6 must narrow
+        // only the genuinely ambiguous case.
+        let members = vec![guarded(
+            vec![param("diameter", (0, 40), Some((10, 14)))],
+            vec![param("side_length", (50, 90), Some((60, 64)))],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "diameter"),
+            Some(SourceSpan::new(10, 14))
+        );
+    }
 }
