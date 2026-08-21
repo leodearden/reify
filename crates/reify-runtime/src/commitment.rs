@@ -1053,9 +1053,10 @@ mod tests {
 
     #[test]
     fn node_kind_reexport_identity() {
-        // Asserts that crate::commitment::NodeKind IS reify_types::NodeKind
-        // (the same type, not a wrapper). After step-6, this compiles because
-        // commitment re-exports via `pub use reify_types::NodeKind`.
+        // Asserts that crate::commitment::NodeKind IS reify_ir::NodeKind — the
+        // same type, not a wrapper — which is exactly what the module-head
+        // `pub use reify_ir::NodeKind` buys. This read `reify_types::NodeKind`
+        // until that façade crate was retired in 3f3da9f03d (task η).
         let _: reify_ir::NodeKind = crate::commitment::NodeKind::Value;
     }
 
