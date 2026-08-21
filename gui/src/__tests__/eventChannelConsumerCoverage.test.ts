@@ -22,8 +22,8 @@
  * `bridgeMockCoverage.test.ts` compares bridge.ts against vitest mock factories,
  * not against docs.
  *
- * The live instance this guard exists for is task 6227, which deletes
- * `bridge.ts::onDiagnostics`; the `diagnostics` row names it. The detector is
+ * The live instance this guard exists for was task 6227, which deleted
+ * `bridge.ts::onDiagnostics`; the `diagnostics` row named it. The detector is
  * pinned MECHANICALLY against that exact drift by
  * `eventChannelConsumerContract.test.ts`, not merely claimed here.
  *
@@ -134,14 +134,15 @@ const NON_BRIDGE_CONSUMERS: Record<string, string> = {
  * matters. `staleConsumerlessEntries` deliberately does not flag an entry whose
  * row is not yet `*(none)*`, because the entry suppresses nothing on its own —
  * the doc cell does — and because pre-registering is what keeps this guard
- * decoupled from another task's merge order. Task 6227 deletes
- * `bridge.ts::onDiagnostics` and rewrites that row's Consumer cell; it holds no
- * lock on this file, so requiring the entry only as it lands would turn a
- * cross-task doc edit into a red tree here. The reason is written once, now.
+ * decoupled from another task's merge order. Task 6227 deleted
+ * `bridge.ts::onDiagnostics` and rewrote that row's Consumer cell; it held no
+ * lock on this file, so requiring the entry only as it landed would have
+ * turned a cross-task doc edit into a red tree here. The reason is written
+ * once, now.
  */
 const DELIBERATELY_CONSUMERLESS: Record<string, string> = {
   diagnostics:
-    'Task 6227 deletes bridge.ts::onDiagnostics and sets this row to *(none)*: LSP diagnostics are routed by main.rs::TauriNotificationSink, with no bridge.ts subscriber left. Pre-registered so 6227 lands in either merge order without editing this file. Until it lands the row still names onDiagnostics and is checked normally by (b).',
+    'Task 6227 deleted bridge.ts::onDiagnostics and set this row to *(none)*: LSP diagnostics are routed by main.rs::TauriNotificationSink, with no bridge.ts subscriber left. Pre-registered so 6227 could land in either merge order without editing this file. Landed by 6227; the row now reads `*(none)*` and is accounted for here by check (e) rather than by (b).',
 };
 
 describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
