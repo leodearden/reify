@@ -10,21 +10,22 @@
 //! changes, this test moves with it instead of silently pinning a stale copy.
 //!
 //! LOAD-BEARING — the solver MUST be `SolverRegistry::production()`, never a
-//! bare `DimensionalSolver`. `decompose_into_components` is reached ONLY from
-//! `SolverRegistry::solve_inner`; a bare `DimensionalSolver` never decomposes,
-//! receives both let-indirected constraints via the layer-1 filter that has
-//! already landed on this branch, and folds the dependent cells through
-//! `build_trial_values` — so it would ALREADY resolve a=6/b=4 and the RED
-//! below would be vacuous, pinning nothing. `reify-constraints` is a normal
-//! (non-dev) dependency of `reify-eval`, so `production()` is legal here; this
-//! is simply the first reify-eval test to wire it, which is exactly why the
-//! rationale is written down rather than left as a convention a future
-//! refactor can quietly undo.
+//! bare `DimensionalSolver`, or the RED below is vacuous and pins nothing. That
+//! argument now lives with the code it constrains, on
+//! `underdetermined_support::eval_through_production_registry`, so a future
+//! refactor of the wiring meets it there rather than in a header it may never
+//! open.
 
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
-use reify_eval::{Engine, EvalResult};
-use reify_ir::Value;
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_core::ValueCellId;
+use reify_eval::EvalResult;
+
+// The production-registry eval and the two diagnostic readers are shared with
+// the sibling `instance_path_underdetermined_e2e` module — same test binary,
+// same three helpers (review suggestion 5). `SOLVER_TOL` deliberately stays
+// local: it is derived from THIS fixture's cost surface, below.
+use crate::underdetermined_support::{
+    eval_through_production_registry, scalar_si, underdetermined,
+};
 
 /// Absolute tolerance for the resolved autos.
 ///
@@ -74,17 +75,37 @@ const ALPHA_FIXTURE_PATH: &str = "docs/prds/v0_6/fixtures/discrete_let_cont.ri";
 /// deletion of the `docs/` original, the second a verify-pipeline manifest —
 /// and a half-done relocation that leaves a copy behind is strictly WORSE than
 /// today, because it reintroduces exactly the stale-paraphrase failure the
-/// disk read exists to prevent. Carried as its own low-priority backlog item.
+/// disk read exists to prevent.
+///
+/// The deferral is no longer prose-only: it is FILED as backlog ticket
+/// `tkt_0RSPTRG9VG11ABAA06RJV904VB` (spawned from task #5467), which carries
+/// both sanctioned repairs, the exact file list, and the
+/// do-not-leave-a-copy-behind constraint, so the follow-up is scheduled rather
+/// than left for a reader of this comment to rediscover. Deliberately NOT
+/// written as a `TODO(#NNNN)`: the curator assigns the task id
+/// asynchronously, and the house PTODO grammar requires a cite to resolve to a
+/// LIVE task — a placeholder would land as `malformed-cite` and fail
+/// `reify-audit --pattern PTODO`.
 ///
 /// What IS done here is making the failure self-describing: the panic names the
 /// missing path, the two sanctioned repairs, and the fact that a docs-only
 /// commit is the likely cause, so whoever hits it does not have to re-derive
 /// any of that.
-fn alpha_fixture_source() -> String {
-    let path = workspace_root().join(ALPHA_FIXTURE_PATH);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "the PRD α fixture must be readable at {} ({e}).\n\
+///
+/// # MEMOIZED
+///
+/// Both tests in this module need the source, and the read is a syscall plus a
+/// full file decode. `OnceLock` makes it once per suite run rather than once
+/// per test, and — more usefully — guarantees both tests see the SAME bytes
+/// even if the file is rewritten mid-run, so a fixture edit can never make the
+/// two tests disagree about what they are pinning.
+fn alpha_fixture_source() -> &'static str {
+    static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let path = workspace_root().join(ALPHA_FIXTURE_PATH);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the PRD α fixture must be readable at {} ({e}).\n\
              This test reads `{ALPHA_FIXTURE_PATH}` from disk on purpose, so \
              that it tracks the PRD's literal artifact instead of pinning a \
              stale paraphrase. Nothing in the docs-only landing path runs the \
@@ -95,67 +116,10 @@ fn alpha_fixture_source() -> String {
              location, and update `ALPHA_FIXTURE_PATH`. Do NOT paper over it \
              by inlining a copy of the source: the whole point of this read is \
              that the PRD and the acceptance test cannot diverge.",
-            path.display()
-        )
+                path.display()
+            )
+        })
     })
-}
-
-/// Compile + eval `src` through the REAL `SolverRegistry::production()`, and
-/// assert the eval produced zero `Severity::Error` diagnostics.
-///
-/// The error assertion is load-bearing for B1: a non-converged solve surfaces
-/// as a `constraints could not be satisfied` error, and the value assertions
-/// must not be able to pass while the solve actually failed.
-fn eval_through_production_registry(src: &str, what: &str) -> EvalResult {
-    let compiled = compile_source_with_stdlib(src);
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "the {what} source must compile without errors; got {errors:#?}",
-    );
-
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
-    let result = engine.eval(&compiled);
-
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        eval_errors.is_empty(),
-        "the {what} eval must emit no Severity::Error diagnostics — a \
-         non-converged solve surfaces here, and the value assertions must not \
-         be able to pass while the solve failed; got {eval_errors:#?}",
-    );
-
-    result
-}
-
-/// The SI magnitude of a resolved `Scalar` cell, or a panic naming what was
-/// actually there. An UNRESOLVED auto surfaces as `Value::Undef`, which is
-/// precisely the RED this test must report legibly rather than as a silent
-/// `0.0`.
-fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
-    match result.values.get(id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for {id:?} in the {what} eval; got \
-             {other:?} (an unresolved auto is `Undef` — the decomposition \
-             returned no component for it)",
-        ),
-    }
-}
-
-/// Every `Underdetermined`-coded diagnostic on this eval, matched by CODE
-/// rather than by substring on the rendered `W_UNDERDETERMINED` text.
-fn underdetermined(result: &EvalResult) -> Vec<&reify_core::Diagnostic> {
-    result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect()
 }
 
 /// Assert `DCM5.a == 6` and `DCM5.b == 4` within [`SOLVER_TOL`].

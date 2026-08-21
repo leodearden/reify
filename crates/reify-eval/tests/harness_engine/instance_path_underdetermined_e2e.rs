@@ -52,10 +52,17 @@
 //! defects at once. It is covered, and pinned as the expected baseline, by
 //! `tests/auto_binding_sites_remaining_resolution.rs`.
 
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
-use reify_eval::{Engine, EvalResult};
-use reify_ir::Value;
+use reify_core::ValueCellId;
+use reify_eval::Engine;
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+
+// Shared with the sibling `let_tracing_transitive_e2e` module — same test
+// binary, same three helpers (review suggestion 5). `SOLVER_TOL` deliberately
+// stays local: it is derived from THIS fixture's exact-arithmetic residuals,
+// below.
+use crate::underdetermined_support::{
+    eval_through_production_registry, scalar_si, underdetermined,
+};
 
 /// Both instance-path minting sites side by side, each pinned by a constraint
 /// that reads the SAME instance-path spelling the declaration uses.
@@ -109,11 +116,7 @@ fn no_underdetermined_for_either_instance_path_minting_site() {
     let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&compiled);
 
-    let under: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect();
+    let under = underdetermined(&result);
 
     assert_eq!(
         under.len(),
@@ -170,67 +173,6 @@ structure LetIndirect {
     constraint slack == 9mm
 }
 "#;
-
-/// Compile + eval `src` through the REAL `SolverRegistry::production()`, and
-/// assert the eval produced zero `Severity::Error` diagnostics.
-///
-/// The error assertion is load-bearing: a non-converged solve surfaces as a
-/// `constraints could not be satisfied` error, and the value assertions must
-/// not be able to pass while the solve actually failed.
-fn eval_through_production_registry(src: &str, what: &str) -> EvalResult {
-    let compiled = compile_source_with_stdlib(src);
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "the {what} source must compile without errors; got {errors:#?}",
-    );
-
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
-    let result = engine.eval(&compiled);
-
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        eval_errors.is_empty(),
-        "the {what} eval must emit no Severity::Error diagnostics — a \
-         non-converged solve surfaces here, and the value assertions must not \
-         be able to pass while the solve failed; got {eval_errors:#?}",
-    );
-
-    result
-}
-
-/// The SI magnitude of a resolved `Scalar` cell, or a panic naming what was
-/// actually there. An UNRESOLVED auto surfaces as `Value::Undef`, which is
-/// precisely the silent failure this module must report legibly rather than let
-/// a zero-diagnostic count wave through.
-fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
-    match result.values.get(id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for {id:?} in the {what} eval; got \
-             {other:?}. `Undef` here means the auto was never solved: the \
-             let-indirected constraint that pins it was dropped by layer 1 \
-             because `CellReadIndex::cells_reaching` keyed its reverse map on \
-             the NORMALISED spelling only, while the seed is the compiler's RAW \
-             instance-path declaration id",
-        ),
-    }
-}
-
-/// Every `Underdetermined`-coded diagnostic on this eval, matched by CODE
-/// rather than by substring on the rendered `W_UNDERDETERMINED` text.
-fn underdetermined(result: &EvalResult) -> Vec<&reify_core::Diagnostic> {
-    result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect()
-}
 
 /// THE load-bearing assertion for both instance-path minting sites: the autos
 /// must RESOLVE, not merely stop warning.

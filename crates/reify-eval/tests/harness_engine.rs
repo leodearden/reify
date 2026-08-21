@@ -53,6 +53,12 @@ mod dimensioned_ctor_migration_si_values;
 // entry point that composes evaluation, kernel realization and export.
 #[path = "harness_engine/export_unit_regime_e2e.rs"]
 mod export_unit_regime_e2e;
+// Scaffolding shared by task #5467's two e2e modules below (review suggestion
+// 5). Declared BEFORE them so the `use crate::underdetermined_support::…` in
+// each reads top-down; both are in this same binary, so the helpers were
+// literal copy-paste across one compilation unit before this module existed.
+#[path = "harness_engine/underdetermined_support.rs"]
+mod underdetermined_support;
 // Task #5467's let-tracing transitive closure e2e lands here for the same
 // anti-re-accretion reason as #5196's, #5045's and #5360's above.
 #[path = "harness_engine/let_tracing_transitive_e2e.rs"]
