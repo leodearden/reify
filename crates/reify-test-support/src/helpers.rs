@@ -1728,9 +1728,12 @@ mod tests {
     /// named template, even when the module has multiple templates. Asserts on
     /// wrapper-only fields (`id.member`, `cell_type`) that get_let_expr_in cannot
     /// reach, since exposing those fields is the entire motivation for this helper.
-    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
-    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
-    /// they satisfy `*v == (*v as i64) as f64`.
+    /// Uses distinct non-integer floats (1.5, 2.7) per template so a
+    /// wrong-template resolution is observable. There is no Int/Real
+    /// hazard to dodge here: `classify_number_literal` treats a real-form
+    /// token (any literal containing `.`, `e`, or `E`, per its `is_real`
+    /// flag) as `Type::Real` unconditionally, so a whole-number real
+    /// literal like `1.0` compiles as `Type::Real`, not `Type::Int`.
     #[test]
     fn test_get_value_cell_in_returns_cell_from_named_template() {
         let source = r#"
@@ -1772,9 +1775,12 @@ mod tests {
 
     /// get_let_expr_in should return the default_expr of the named cell in the
     /// named template, even when the module has multiple templates.
-    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
-    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
-    /// they satisfy `*v == (*v as i64) as f64`.
+    /// Uses distinct non-integer floats (1.5, 2.7) per template so a
+    /// wrong-template resolution is observable. There is no Int/Real
+    /// hazard to dodge here: `classify_number_literal` treats a real-form
+    /// token (any literal containing `.`, `e`, or `E`, per its `is_real`
+    /// flag) as `Type::Real` unconditionally, so a whole-number real
+    /// literal like `1.0` compiles as `Type::Real`, not `Type::Int`.
     #[test]
     fn test_get_let_expr_in_finds_named_template() {
         let source = r#"
