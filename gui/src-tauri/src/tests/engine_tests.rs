@@ -17773,3 +17773,25 @@ fn resolve_param_default_span_returns_none_for_param_without_default() {
         .expect("load should succeed");
     assert_eq!(session.resolve_param_default_span("S.t"), None);
 }
+
+#[test]
+fn resolve_param_default_span_resolves_an_occurrence_entity() {
+    // Shape taken from real source (examples/m5_occurrence_process.ri:5-9,
+    // `occurrence def Machining { … param feed_rate : Real = 100 }`), minus the
+    // ports. A cell_id naming an occurrence is a real, reachable input:
+    // OccurrenceDef is field-for-field equivalent to StructureDef for this
+    // purpose (same name/members/span), and the compiled side does not
+    // distinguish the two — reify_eval::source_location::find_parsed_decl_containing_offset,
+    // the walk get_containing_definition already delegates to, matches BOTH.
+    const SRC: &str = "occurrence def Machining { param feed_rate : Real = 100 }";
+
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(SRC, "machining")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Machining.feed_rate")
+        .expect("Machining.feed_rate has a default literal");
+    assert_eq!(&SRC[span.start as usize..span.end as usize], "100");
+}
