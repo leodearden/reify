@@ -133,4 +133,167 @@ assert "the script parses (bash -n)"                        b1_parses
 assert "--help exits 0 and prints a usage block"            b1_help_ok
 assert "--help documents all four refusal markers"          b1_help_names_markers
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared fixtures for every behavioural block below
+# ─────────────────────────────────────────────────────────────────────────────
+
+# pick_free_port — a port nothing is listening on RIGHT NOW.
+#
+# Binds an ephemeral port, reads it back, and releases it. Inherently racy in
+# the abstract — another process can claim it in the window — which is exactly
+# why the wrapper's readiness probe is an IDENTITY check rather than a liveness
+# check (see the script header): a squatter that grabbed the port cannot answer
+# `initialize` as jcodemunch-mcp, so it surfaces as E_JC_SERVE_NOT_READY rather
+# than as a silent wrong-endpoint pass.
+pick_free_port() {
+    python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+# port_is_free <port> — the suite's own probe, deliberately NOT the wrapper's.
+# A shared implementation could agree with the script while both were wrong.
+port_is_free() {
+    local port="$1"
+    ! python3 - "$port" <<'PY'
+import socket, sys
+s = socket.socket()
+s.settimeout(0.5)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+sys.exit(0)
+PY
+}
+
+# argv_has_in_order <haystack> <needle>... — every needle appears, in this
+# order, in the haystack. Order matters here because argv IS ordered: a
+# `--port` that lands before `serve`, or an `env` prefix that lands after the
+# binary, is a different command with different behaviour even though every
+# individual substring is present.
+argv_has_in_order() {
+    local hay="$1"; shift
+    local rest="$hay" needle
+    require_nonempty "argv haystack" "$hay" || return 1
+    for needle in "$@"; do
+        require_nonempty "argv needle" "$needle" || return 1
+        case "$rest" in
+            *"$needle"*)
+                # Consume up to and including this needle so the NEXT needle is
+                # searched only in what follows.
+                rest="${rest#*"$needle"}" ;;
+            *)
+                printf '%s\n' "argv is missing '$needle' (or it appears out of order)" "  argv: $hay"
+                return 1 ;;
+        esac
+    done
+    return 0
+}
+
+argv_lacks() {
+    local hay="$1"; shift
+    local needle
+    require_nonempty "argv haystack" "$hay" || return 1
+    for needle in "$@"; do
+        require_nonempty "argv needle" "$needle" || return 1
+        case "$hay" in
+            *"$needle"*)
+                printf '%s\n' "argv unexpectedly contains '$needle'" "  argv: $hay"
+                return 1 ;;
+        esac
+    done
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 2 — the --dry-run invocation contract
+#
+# Binds the constructed serve argv to the REAL command rather than to a comment
+# about it. This is the same seam β's suite uses, and it is what makes the pin,
+# the transport, the identity lever and the two BANS falsifiable offline.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 2: --dry-run invocation contract ---"
+
+# The dry-run argv, with the script's own `with-jcodemunch-serve: ` prefix left
+# intact — the assertions below are substring tests, and stripping the prefix
+# would need a second parser that could drift from the script's output shape.
+dry_argv() { "$JC_SERVE" --dry-run "$@" 2>&1; }
+
+DRY_DEFAULT="$(dry_argv || true)"
+DRY_PORTED="$(dry_argv --port 8917 || true)"
+
+b2_pin_and_shape() {
+    argv_has_in_order "$DRY_DEFAULT" \
+        "env" "JCODEMUNCH_GIT_ROOT_IDENTITY=0" \
+        "--python" \
+        "--from" "jcodemunch-mcp==1.108.54" \
+        "jcodemunch-mcp" \
+        "serve" \
+        "--transport" "streamable-http" \
+        "--host" "127.0.0.1" \
+        "--port" "8901" \
+        "--watcher=false"
+}
+
+# THE TWO BANS. `--paths-from` short-circuits discovery and then DELETEs every
+# previously-indexed file absent from the list (index_folder.py:1505-1511,
+# sqlite_store.py:1698) — β bans it for that reason and δ must never resurrect
+# it. `watch`/`index` are β's territory: δ owns serve LIFECYCLE only and must
+# never index anything, or two producers would be writing the same index with
+# no coordination.
+b2_bans() {
+    argv_lacks "$DRY_DEFAULT" "--paths-from" " watch " " index " "--once" "--no-ai-summaries"
+}
+
+# `--port` must MOVE the port, not merely be accepted. Both halves asserted:
+# 8917 present and the 8901 default gone — a script that appended rather than
+# replaced would pass the first half alone.
+b2_port_moves() {
+    argv_has_in_order "$DRY_PORTED" "--port" "8917" || return 1
+    argv_lacks "$DRY_PORTED" "8901"
+}
+
+b2_dry_run_exits_zero() { "$JC_SERVE" --dry-run >/dev/null 2>&1; }
+
+# --dry-run must SPAWN NOTHING. Checked on the port it would have used, so a
+# script that printed the argv and then also ran it is caught.
+b2_dry_run_spawns_nothing() {
+    local port
+    port="$(pick_free_port)" || return 1
+    require_nonempty "picked port" "$port" || return 1
+    "$JC_SERVE" --dry-run --port "$port" >/dev/null 2>&1 || return 1
+    port_is_free "$port"
+}
+
+# ...and must NOT run the wrapped command. Witness-file shaped rather than
+# output-shaped: a wrapped command whose output was merely swallowed would still
+# have RUN, and running an arbitrary command under a flag documented as
+# "prints, does not run" is the defect.
+b2_dry_run_skips_wrapped_command() {
+    local d witness
+    d="$(mk_tmpdir)" || return 1
+    witness="$d/wrapped-ran"
+    "$JC_SERVE" --dry-run touch "$witness" >/dev/null 2>&1 || return 1
+    if [ -e "$witness" ]; then
+        echo "--dry-run RAN the wrapped command (witness $witness exists)"
+        return 1
+    fi
+    return 0
+}
+
+assert "the dry-run argv carries the identity lever, pin, transport and port in order" b2_pin_and_shape
+assert "the dry-run argv contains neither --paths-from nor the watch/index subcommands" b2_bans
+assert "--port 8917 moves the port in the argv (and drops the 8901 default)" b2_port_moves
+assert "--dry-run exits 0" b2_dry_run_exits_zero
+assert "--dry-run spawns nothing (its port is still free afterwards)" b2_dry_run_spawns_nothing
+assert "--dry-run does not run the wrapped command" b2_dry_run_skips_wrapped_command
+
 test_summary
