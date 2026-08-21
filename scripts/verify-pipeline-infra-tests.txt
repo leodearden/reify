@@ -262,3 +262,18 @@ scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_w
 # path at all — it is written into index_folder's result dict, which
 # watcher.py::sync_folders never prints).
 scripts/jcodemunch-index-reify.sh    tests/infra/test_jcodemunch_index_reify.sh
+
+# Task 6320: the merge-worker trivial-pass oracle and its static manifest had
+# NO row here at all, so a guard-only or manifest-only task-scope verify
+# selected ZERO infra poles (select_infra_tests() matches artifact paths
+# EXACTLY, and the scripts/verify.sh -> test_verify_*.sh glob row above does
+# not fire on either of these two paths). These rows give the oracle's own
+# drift-guard a hermetic fail-fast pole — no cargo, no git — on exactly the
+# diffs that can break classification.
+#
+# This is the cheap citing-test complement, NOT a substitute for full-gate
+# routing: whether a self-edit to these two files should itself force the full
+# gate remains an open, separately-documented self-protection gap (see the
+# "pre-existing self-protection gap" note in scripts/doc-sync-paths.txt).
+scripts/verify-pipeline-guard.sh     tests/infra/test_verify_pipeline_guard.sh
+scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
