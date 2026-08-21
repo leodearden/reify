@@ -21,7 +21,7 @@ A pragma always validates and either takes effect on the toolchain or emits an a
 
 ### 1. `#no_prelude` — bootstrap-critical
 
-**Status:** wired in `compile_builder/pre_pass.rs::resolve_prelude_with_pragmas`. The prelude itself uses `#no_prelude` to bootstrap (otherwise it would import itself). Tests at `crates/reify-compiler/tests/pragma_compile_tests.rs::no_prelude_simple_structure_compiles_clean` and `constant_compile_tests.rs::pi_works_under_no_prelude` exist.
+**Status:** wired in `compile_builder/pre_pass.rs::resolve_prelude_with_pragmas`. The prelude itself uses `#no_prelude` to bootstrap (otherwise it would import itself). Tests at `crates/reify-compiler/tests/harness_compilation_surface/pragma_compile_tests.rs::no_prelude_simple_structure_compiles_clean` and `constant_compile_tests.rs::pi_works_under_no_prelude` exist.
 
 **Outstanding work in scope of v0.1:**
 - Audit that the prelude `.ri` files in `crates/reify-compiler/stdlib/` all carry `#no_prelude` at the top (they currently rely on the pre-pass list-based bootstrap; making the source explicit makes the convention self-documenting).
