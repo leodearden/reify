@@ -166,6 +166,16 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     }
 }
 
+/// Serialize a [`Value`] as `.ri` source text, preferring `preferred_unit`.
+///
+/// Signature only — hint handling is implemented in step-8.
+pub fn value_to_ri_literal_with_unit(
+    value: &Value,
+    _preferred_unit: Option<&str>,
+) -> Result<String, RiLiteralError> {
+    value_to_ri_literal(value)
+}
+
 /// Whether an `i64` survives the `i64 → f64 → i64` trip the parser forces.
 ///
 /// The magnitude clause is load-bearing on its own: `i as f64 as i64 == i`
@@ -239,6 +249,114 @@ fn exact_magnitude(si_value: f64, unit: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
+
+    // ─── Caller-supplied unit hint (PRD §12 Q2) ──────────────────────────────
+    //
+    // γ reads the unit off the existing default literal and passes it here, so
+    // rewriting `width = 50mm` to 60mm keeps writing `mm` rather than jumping
+    // to whatever the canonical ladder prefers. The hint is ADVISORY: it is
+    // taken only when it resolves, matches the dimension, AND is bit-exact.
+    // It is a plain `&str` resolved through the built-in table — no span, no
+    // registry handle — which is what keeps this independent of sibling α.
+
+    fn lit_with(v: &Value, unit: Option<&str>) -> String {
+        value_to_ri_literal_with_unit(v, unit)
+            .unwrap_or_else(|e| panic!("expected Ok for {v:?} + {unit:?}, got {e:?}"))
+    }
+
+    #[test]
+    fn an_exact_hint_overrides_the_canonical_ladder() {
+        // Canonical would be `50mm` — the hint keeps the edit in centimetres.
+        assert_eq!(lit_with(&Value::length(0.05), Some("cm")), "5cm");
+        // `in` is not on the canonical ladder at all; canonical is `25.4mm`.
+        assert_eq!(lit_with(&Value::length(0.0254), Some("in")), "1in");
+        // Canonical would be `90deg`.
+        assert_eq!(
+            lit_with(&Value::angle(std::f64::consts::FRAC_PI_2), Some("rad")),
+            "1.5707963267948966rad"
+        );
+    }
+
+    /// A hint the built-in table cannot honour is never fatal — it falls back
+    /// to the canonical ladder and still returns `Ok`.
+    ///
+    /// `degC` stands in for the affine units: those live only in the
+    /// compiler's registry and carry an offset `unit_symbol_to_si` has no way
+    /// to represent, so they can never be taken as a hint here.
+    #[test]
+    fn an_unusable_hint_is_advisory_and_falls_back() {
+        for hint in [
+            Some("furlong"), // unresolvable
+            Some("deg"),     // resolvable, but wrong dimension for a Length
+            Some("degC"),    // affine — registry-only, offset-bearing
+            Some(""),        // degenerate
+            None,
+        ] {
+            assert_eq!(
+                lit_with(&Value::length(0.08), hint),
+                "80mm",
+                "hint {hint:?} must fall back to the canonical ladder"
+            );
+        }
+    }
+
+    /// A hint is never allowed to make the write LOSSY. The `mm` rung is
+    /// bit-inexact for this magnitude, so the hint is dropped and the ladder
+    /// picks `cm` — the same answer the unhinted call gives.
+    #[test]
+    fn a_bit_inexact_hint_is_refused() {
+        let v = Value::length(-0.5566166674539299);
+        assert_eq!(lit_with(&v, Some("mm")), "-55.66166674539299cm");
+    }
+
+    #[test]
+    fn the_hint_is_ignored_for_non_scalar_values() {
+        assert_eq!(lit_with(&Value::Int(7), Some("mm")), "7");
+        assert_eq!(lit_with(&Value::Real(1.5), Some("mm")), "1.5");
+        assert_eq!(lit_with(&Value::Bool(true), Some("mm")), "true");
+        assert_eq!(
+            lit_with(&Value::String("PLA".into()), Some("mm")),
+            "\"PLA\""
+        );
+        assert_eq!(
+            lit_with(
+                &Value::Scalar {
+                    si_value: 2.5,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Some("mm")
+            ),
+            "2.5"
+        );
+    }
+
+    /// `value_to_ri_literal(v)` must be exactly `..._with_unit(v, None)`,
+    /// including on the error paths.
+    #[test]
+    fn the_unhinted_entry_point_delegates() {
+        let cases = [
+            Value::Bool(false),
+            Value::Int(-42),
+            Value::Real(80.0),
+            Value::String("M3x0.5".into()),
+            Value::length(0.08),
+            Value::length(-0.5566166674539299),
+            Value::angle(std::f64::consts::FRAC_PI_2),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::PRESSURE,
+            },
+            Value::Real(f64::NAN),
+            Value::Undef,
+        ];
+        for v in cases {
+            assert_eq!(
+                value_to_ri_literal(&v),
+                value_to_ri_literal_with_unit(&v, None),
+                "delegation mismatch for {v:?}"
+            );
+        }
+    }
 
     // ─── Structured rejection contract (PRD §7 B7) ───────────────────────────
     //
