@@ -106,6 +106,12 @@ DEFAULT_PORT=8901
 # stdout belongs entirely to the wrapped command.
 READY_MARKER="JC-SERVE-READY"
 
+# The two markers the teardown report names. Held as variables rather than
+# inline literals so `--help`'s documented set and the emitted text cannot drift
+# apart silently.
+M_LEAKED_MARKER="E_JC_SERVE_LEAKED"
+M_PORT_BUSY_MARKER="E_JC_SERVE_PORT_BUSY"
+
 usage() {
     cat <<'USAGE'
 Usage: scripts/with-jcodemunch-serve.sh [--port N] [--dry-run] [--] <command> [args...]
@@ -436,13 +442,56 @@ cleanup() {
     [ -n "$SERVE_JOB" ] && { wait "$SERVE_JOB" 2>/dev/null || true; }
     rm -rf "$SCRATCH" 2>/dev/null || true
 
+    local before="${WRAPPED_RC:-0}"
     finish_teardown
+
+    # `exit N` inside an EXIT trap REPLACES the status the script was exiting
+    # with, which is the only way a leak can turn an otherwise-successful run
+    # non-zero — by the time this trap runs, `exit "$WRAPPED_RC"` has already
+    # fixed the status. Re-exiting is guarded on the value actually having
+    # changed, so the ordinary path leaves the status exactly as the wrapped
+    # command set it and the INT/TERM handlers' 130/143 survive untouched.
+    if [ "${WRAPPED_RC:-0}" != "$before" ]; then
+        exit "$WRAPPED_RC"
+    fi
 }
 
-# finish_teardown — SILENT on success, loud only on a leak. Lands in task 6109
-# step-14; until then the decision is stubbed to silence so this commit's
-# teardown is testable on its own.
-finish_teardown() { :; }
+# finish_teardown — SILENT on success, loud only on a leak.
+#
+# Inherits α's `finish_teardown` split (jcodemunch_session_live.rs:302-333),
+# including the reason the decision rests on `TEARDOWN_FREED` — the OBSERVED
+# outcome — and never on `kill`'s exit status, which is why TERM_STATUS and
+# KILL_STATUS appear only as diagnostic detail on the line above the verdict.
+#
+# ON THE HEALTHY PATH THIS PRINTS NOTHING AT ALL, to either stream. That is not
+# tidiness: it is what leaves a wrapped command's trailing stderr block — a
+# reify-audit findings array — as the last thing on stderr, so the consumers
+# that extract it (smoke-predone-hook.sh:233's awk, cli.rs's `rfind("\n[")`)
+# still see a well-formed array. See the stderr-discipline block in the header.
+#
+# A LEAK MUST NOT REPORT SUCCESS. A leaked serve keeps holding $PORT, so the
+# very next invocation refuses E_JC_SERVE_PORT_BUSY with nothing in the log to
+# say why. An otherwise-successful run therefore exits non-zero.
+#
+# ...BUT IT MUST NOT MASK A REAL FAILURE EITHER. When the wrapped command has
+# already failed, its status is the one that matters and the leak is reported
+# alongside rather than overwriting it — α's unwinding case at :325-331, which
+# refuses to raise a panic that would swallow the assertion message the reader
+# actually needs.
+finish_teardown() {
+    [ "${TEARDOWN_FREED:-0}" -eq 1 ] && return 0
+
+    printf 'with-jcodemunch-serve: teardown diagnostics for port %s: pgid %s; -TERM: %s; -KILL: %s\n' \
+        "$PORT" "${SERVE_PGID:-<none>}" "$TERM_STATUS" "$KILL_STATUS" >&2
+    printf 'with-jcodemunch-serve: %s: port %s is still accepting after teardown — a jcodemunch serve was LEAKED and will keep holding the port, so the next invocation will refuse %s. Find it with '"'"'ss -ltnp | grep %s'"'"' and reclaim it by hand.\n' \
+        "$M_LEAKED_MARKER" "$PORT" "$M_PORT_BUSY_MARKER" "$PORT" >&2
+
+    # Preserve the wrapped command's status wherever it actually ran; only
+    # promote a leak to a failure when the run would otherwise have succeeded.
+    if [ "${WRAPPED_RC:-0}" -eq 0 ]; then
+        WRAPPED_RC=75
+    fi
+}
 
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT

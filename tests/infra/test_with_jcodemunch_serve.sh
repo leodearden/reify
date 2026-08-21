@@ -26,6 +26,14 @@
 # `capstone-must-not-become-gate-resident` resolution applies to ε, and the same
 # split β's tests/infra/test_jcodemunch_index_reify.sh already makes.
 #
+# COST: ~101 s wall, almost all of it sleeping rather than burning CPU — the
+# readiness poll interval, the two never-ready deadlines and the two leak runs'
+# 10 s teardown free-waits. Measured against siblings in the same bucket:
+# test_warm_lane_audit.sh 143 s, test_jcodemunch_index_reify.sh 37 s. If this
+# needs to come down further, the leak runs are the place to look, and the cost
+# there is real coverage: the -KILL escalation fires at the 5 s mark, so a
+# shortened window would stop exercising it.
+#
 # EVERY PORT THIS SUITE BINDS IS A FREE EPHEMERAL PORT IT PICKS ITSELF. This
 # file is a `pool` member (tests/infra/run-all-classification.manifest), so
 # ~149 siblings run concurrently with it; binding the wrapper's fixed 8901
@@ -831,6 +839,14 @@ assert "a slow-starting serve is waited out, not failed"                   b4_sl
 assert "a slow-starting serve produces no $M_NOT_READY"                    b4_slow_no_refuse
 
 # -- foreign: identity, not liveness ------------------------------------------
+#
+# The never-ready cases are the only ones that burn the WHOLE readiness
+# deadline, so theirs is trimmed from the suite default. 10 s is ~9 polls,
+# ample headroom for a stdlib http.server to bind even with ~150 pool members
+# running concurrently — and if it somehow is not, `b4_foreign_answered` fails
+# loudly rather than letting an unreachable port masquerade as the identity
+# finding.
+RW_TIMEOUT=10
 rw_run foreign true
 B4F_ERR="$RW_ERR"; B4F_WITNESS="$RW_WITNESS"; B4F_RC="$RW_RC"
 
@@ -841,6 +857,7 @@ b4_foreign_answered() { has_line "$B4F_WITNESS" "request-path=[/mcp]"; }
 b4_foreign_refuses()  { has_line "$B4F_ERR" "$M_NOT_READY"; }
 b4_foreign_not_ready(){ lacks_line "$B4F_ERR" "$READY_MARKER"; }
 b4_foreign_nonzero()  { [ "$B4F_RC" -ne 0 ]; }
+RW_TIMEOUT=20
 
 assert "the foreign stub really answered the probe (anti-vacuity)"         b4_foreign_answered
 assert "a serve answering under another name refuses $M_NOT_READY"         b4_foreign_refuses
@@ -1079,8 +1096,10 @@ assert "a missing wrapped command (127) still tears the serve group down"   b6_t
 # to leak, so it cannot distinguish a real teardown from no teardown at all.
 # A live listener that never becomes ready is where teardown actually matters.
 b6_teardown_after_not_ready() {
-    local pgid
-    rw_run foreign true || return 1
+    local pgid rc
+    RW_TIMEOUT=10   # see Block 4's note: only the never-ready cases pay the deadline
+    rw_run foreign true || { RW_TIMEOUT=20; return 1; }
+    RW_TIMEOUT=20
     [ "$RW_RC" -ne 0 ] || { echo "the never-ready run exited 0"; return 1; }
     has_line "$RW_ERR" "$M_NOT_READY" || return 1
     pgid="$(witness_field "$RW_WITNESS" stub-pgid)"
