@@ -1478,6 +1478,22 @@ const BUILD_SURFACE_KNOWN_RESIDUALS: &[(&str, &str, &str)] = &[(
      rather than fixed here.",
 )];
 
+/// Stdlib `@optimized` targets that NO build()-surface case covers.
+///
+/// The third and last disposition a target may have. `build_surface_survey_is_exhaustive`
+/// requires every target in the compiled stdlib to be either credited by a case
+/// in the covering set or listed here — there is no fourth, silent option, which
+/// is the whole point of the const existing rather than the fact living in prose.
+///
+/// Each reason must meet the SAME standard a `BUILD_SURFACE_DROPPED_DUPLICATES`
+/// entry meets: a MEASURED `build()` cost, or a re-verifiable fact about the
+/// tree plus where the target IS guarded instead. Never a bare "unreachable" —
+/// that claim is exactly what rotted here once already (task 5578 review round
+/// 2: the section comment asserted eight targets had no `examples/*.ri` caller;
+/// seven of them did, and the claim had only ever been checked by a
+/// NON-recursive grep).
+const BUILD_SURFACE_UNCOVERED_TARGETS: &[(&str, &str)] = &[];
+
 /// Reports the SELECTION once, and asserts it is internally consistent.
 ///
 /// Separated from the sweeps deliberately (task 5578 review): a per-sweep banner
@@ -1569,6 +1585,249 @@ fn build_surface_selection_is_reported_and_consistent() {
     assert!(
         problems.is_empty(),
         "the build()-surface selection lists contradict each other:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// Every `@optimized` stdlib fn paired with the ComputeNode target its
+/// annotation names, derived AT TEST TIME from the COMPILED stdlib.
+///
+/// `prelude_backed_functions` merges the stdlib `.ri` function table exactly as
+/// `Engine::with_prelude_and_kernels` does, and `CompiledFunction::optimized_target`
+/// is populated by `compile_function` straight from the annotation
+/// (`crates/reify-ir/src/expr.rs`) — so this map is authoritative and
+/// self-updating: a new `@optimized` stdlib fn appears here the moment it lands,
+/// and mechanically fails `build_surface_survey_is_exhaustive` until it is
+/// covered, dropped or explicitly listed uncovered.
+///
+/// Deliberately NOT a literal list and NOT a text-parse of
+/// `crates/reify-compiler/stdlib/*.ri`. Either would be a second copy of the
+/// grammar that can drift from the compiler — which is precisely the rot that
+/// produced this test (the selection lists below came from a hand-run grep whose
+/// conclusions then went stale in prose).
+///
+/// Overloads collapse to one pair each (`displacement_at` x2,
+/// `solve_elastic_static` x3, `solve_load_cases` x2 all name a single target),
+/// so the result is sorted + deduped. 16 distinct targets today.
+fn stdlib_optimized_fns() -> Vec<(String, String)> {
+    let module = reify_test_support::compile_source_with_stdlib("structure def SurveyProbe {}");
+    let mut pairs: Vec<(String, String)> = reify_test_support::prelude_backed_functions(&module)
+        .into_iter()
+        .filter_map(|f| f.optimized_target.map(|target| (f.name, target)))
+        .collect();
+    pairs.sort();
+    pairs.dedup();
+    pairs
+}
+
+/// Does `source` CALL `fn_name`?
+///
+/// `//` line comments are stripped FIRST, so a fn named in a header comment (the
+/// stdlib names its own `@optimized` fns in prose constantly, and examples cite
+/// them too) is not a false positive. A surviving occurrence counts only when
+/// the preceding character is not alphanumeric-or-underscore AND the next
+/// non-whitespace character is `(`.
+///
+/// The `(`-requirement is load-bearing in both directions: it is what stops
+/// `form_find` from matching the CALL `form_find_free(`, and what keeps a bare
+/// mention (a struct field, a string) from counting as a call. The
+/// preceding-character check is what stops `worst_buckling_case` from being read
+/// as a `solve_buckling` call.
+///
+/// Comments are stripped per line but the scan runs over the JOINED text, so a
+/// call whose `(` sits on the next line still matches.
+///
+/// Hand-rolled rather than regex-based: reify-eval has no `regex` dev-dependency
+/// and this one predicate does not justify adding one.
+fn source_calls_fn(source: &str, fn_name: &str) -> bool {
+    let code = source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(fn_name) {
+        let start = from + rel;
+        let end = start + fn_name.len();
+        from = start + 1;
+
+        if let Some(prev) = code[..start].chars().next_back() {
+            if prev.is_alphanumeric() || prev == '_' {
+                continue;
+            }
+        }
+        if code[end..].trim_start().starts_with('(') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Makes the build()-surface SELECTION SURVEY executable instead of prose.
+///
+/// Companion to — deliberately not merged into —
+/// `build_surface_selection_is_reported_and_consistent` (task 5578 review round
+/// 2). That test asserts the selection lists are INTERNALLY consistent (no file
+/// in two buckets, no orphan residual, no case crediting zero targets); every
+/// failure there is fixed by editing a list. This one asserts the lists match
+/// the TREE and the STDLIB — two EXTERNAL facts that change without anyone
+/// touching this file, and whose fix is to MEASURE a new candidate and then
+/// admit, drop or list it. Fusing them would make one assertion message serve
+/// unrelated causes.
+///
+/// Why it exists at all: the covering set was originally derived from a hand-run
+/// grep of `examples/` that was NON-recursive. `examples/` has 147 top-level
+/// `.ri` files but 260 recursively, so 13 caller files in subdirectories were
+/// never surveyed, and the section comment then asserted — falsely, for 7 of 8
+/// targets — that those targets had no example caller at all. Prose cannot fail;
+/// this test can.
+///
+/// TWO assertions:
+///
+/// (b) FILE-LEVEL — every `examples/**/*.ri` that CALLS an `@optimized` stdlib
+///     fn must be in the covering set or in `BUILD_SURFACE_DROPPED_DUPLICATES`.
+///     Uses the same recursive `collect_ri_files` the eval sweep uses, so the
+///     two surfaces can no longer disagree about which files exist.
+/// (c) TARGET-LEVEL — every `@optimized` target in the compiled stdlib must be
+///     credited by a covered case or listed in `BUILD_SURFACE_UNCOVERED_TARGETS`.
+///     ONE-WAY: a credited target absent from the stdlib map does NOT fail —
+///     `shell-extract::extract` is credited by `fea_shell_too_thick_annotated`
+///     but named by no `.ri` fn at all (the engine inserts it upstream of a
+///     shell elastic_static solve), so the credited set is legitimately a
+///     superset. An entry in `BUILD_SURFACE_UNCOVERED_TARGETS` that names no
+///     stdlib target DOES fail, since nothing could ever cover it.
+#[test]
+fn build_surface_survey_is_exhaustive() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+
+    let stdlib_fns = stdlib_optimized_fns();
+    assert!(
+        !stdlib_fns.is_empty(),
+        "the compiled stdlib reported ZERO @optimized functions — the map this \
+         survey is built on came up empty, so both assertions below would pass \
+         vacuously. Either `prelude_backed_functions` stopped merging the stdlib \
+         or `optimized_target` stopped being populated."
+    );
+    let mut stdlib_targets: Vec<&str> = stdlib_fns.iter().map(|(_, t)| t.as_str()).collect();
+    stdlib_targets.sort();
+    stdlib_targets.dedup();
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    collect_ri_files(&examples_dir, &mut files);
+    files.sort();
+
+    // (examples/-relative, extension-stripped path, targets it calls) for every
+    // caller — the same `name` shape `BuildSurfaceCase` and the DROP list use,
+    // so a subdirectory caller is named "modal/transient_step_response".
+    let mut callers: Vec<(String, Vec<&str>)> = Vec::new();
+    for path in &files {
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut targets: Vec<&str> = stdlib_fns
+            .iter()
+            .filter(|(name, _)| source_calls_fn(&source, name))
+            .map(|(_, target)| target.as_str())
+            .collect();
+        targets.sort();
+        targets.dedup();
+        if targets.is_empty() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(&examples_dir)
+            .unwrap_or(path)
+            .with_extension("");
+        callers.push((rel.to_string_lossy().into_owned(), targets));
+    }
+
+    let covered: Vec<&BuildSurfaceCase> = BUILD_SURFACE_OPTIMIZED_EXAMPLES
+        .iter()
+        .chain(BUILD_SURFACE_HEAVY_EXAMPLE.iter())
+        .collect();
+
+    let mut problems: Vec<String> = Vec::new();
+
+    // (d) PRINT the survey — this test carries the honesty purpose too, so a
+    // green run still reports what was scanned and how each target is disposed.
+    eprintln!(
+        "build()-surface survey: {} .ri file(s) under examples/ (RECURSIVE), {} of \
+         them call an @optimized stdlib fn; {} distinct @optimized target(s) in the \
+         compiled stdlib.",
+        files.len(),
+        callers.len(),
+        stdlib_targets.len()
+    );
+
+    for (name, targets) in &callers {
+        let is_covered = covered.iter().any(|c| c.probe.is_none() && c.name == name);
+        let is_dropped = BUILD_SURFACE_DROPPED_DUPLICATES
+            .iter()
+            .any(|(dropped, _)| dropped == name);
+        let disposition = match (is_covered, is_dropped) {
+            (true, _) => "COVERED",
+            (_, true) => "DROPPED",
+            _ => "UNSURVEYED",
+        };
+        eprintln!("  {disposition:<10} examples/{name}.ri {targets:?}");
+        if !is_covered && !is_dropped {
+            problems.push(format!(
+                "examples/{name}.ri calls {targets:?} but is in NEITHER \
+                 BUILD_SURFACE_OPTIMIZED_EXAMPLES/BUILD_SURFACE_HEAVY_EXAMPLE nor \
+                 BUILD_SURFACE_DROPPED_DUPLICATES — an @optimized caller nobody \
+                 surveyed. MEASURE its build() cost, then admit it (if it reaches a \
+                 target the covering set does not) or drop it with that measured \
+                 cost and the target it duplicates."
+            ));
+        }
+    }
+
+    for target in &stdlib_targets {
+        let credited: Vec<&str> = covered
+            .iter()
+            .filter(|c| c.targets.contains(target))
+            .map(|c| c.name)
+            .collect();
+        let uncovered_reason = BUILD_SURFACE_UNCOVERED_TARGETS
+            .iter()
+            .find(|(listed, _)| listed == target);
+        match (credited.is_empty(), uncovered_reason) {
+            (false, _) => eprintln!("  TARGET COVERED   {target} — by {credited:?}"),
+            (true, Some((_, reason))) => eprintln!("  TARGET UNCOVERED {target} — {reason}"),
+            (true, None) => {
+                let callers_of: Vec<&str> = callers
+                    .iter()
+                    .filter(|(_, targets)| targets.contains(target))
+                    .map(|(name, _)| name.as_str())
+                    .collect();
+                eprintln!("  TARGET MISSING   {target} — callers: {callers_of:?}");
+                problems.push(format!(
+                    "@optimized target `{target}` is credited by no covering-set case and is \
+                     not listed in BUILD_SURFACE_UNCOVERED_TARGETS. Example callers: \
+                     {callers_of:?}. Cover it (measure, then admit the cheapest caller) or \
+                     list it uncovered WITH a measured-cost or re-verifiable reason — never \
+                     leave it silently absent."
+                ));
+            }
+        }
+    }
+
+    for (listed, _) in BUILD_SURFACE_UNCOVERED_TARGETS {
+        if !stdlib_targets.contains(listed) {
+            problems.push(format!(
+                "BUILD_SURFACE_UNCOVERED_TARGETS lists `{listed}`, which is not an \
+                 @optimized target in the compiled stdlib — it was renamed or removed, so \
+                 the entry excuses nothing. Delete it."
+            ));
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "the build()-surface selection lists no longer match the tree and the stdlib \
+         (this is the rot the survey exists to catch — do NOT fix it by editing the \
+         section comment):\n  {}",
         problems.join("\n  ")
     );
 }
