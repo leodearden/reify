@@ -958,8 +958,14 @@ fn fold_geometry_args_in_env(
 /// exposes its elements here. `union_all(holes)` naming a geometry-list LET
 /// compiles to a `ValueRef`, and `LetBindingEnv` maps a cell to one
 /// `InferredTraits` rather than to a list of them, so that form still takes the
-/// `all()` default. Narrowing it needs a list-aware `LetBindingEnv` — filed as
-/// a follow-up rather than widened into this task.
+/// `all()` default. Narrowing it needs a list-aware `LetBindingEnv` (a new
+/// per-element accessor plus the conformance-walker env that implements it),
+/// which is why it is a follow-up rather than a widening of this task — filed
+/// as an agent-followup from #5385 (review esc-5385-3, suggestion 5).
+///
+/// Failing CLOSED here instead is NOT an acceptable stopgap: claiming
+/// not-`bounded` for the common all-bounded case would emit spurious errors for
+/// the very idiom this task exists to make legal.
 fn geometry_operand_traits_in_env(
     arg: &CompiledExpr,
     env: &dyn LetBindingEnv,

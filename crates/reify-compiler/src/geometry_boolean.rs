@@ -182,6 +182,20 @@ pub(crate) fn compile_boolean_op(
             // the existing left-fold verbatim — no new fold logic, no IR
             // change. Each element compiles inline exactly as it does today
             // for `union(a, b)` over geometry lets.
+            //
+            // That inline re-compilation means an element's geometry is built
+            // twice: once for its own `<list>#k` realization and once inside
+            // the fold. Reviewed (esc-5385-3) and kept deliberately, because
+            // it is NOT a deviation this task introduced — `compile_geometry_call`'s
+            // `Ident` arm (geometry.rs) recursively compiles a geometry let's
+            // INITIALIZER, so `union(a, b)` over two geometry lets already
+            // duplicates both operands the same way. The zero-op `GeomRef::Sub`
+            // fast path in `resolve_boolean_arg` matches only the cross-sub
+            // `self.<sub>.<member>` shape, never a sibling let. Referencing the
+            // already-emitted `<list>#k` realizations instead is a worthwhile
+            // change to the whole boolean-arg path — and only worthwhile there,
+            // since scoping it to geometry lists alone would leave the identical
+            // duplication in place for every other operand shape.
             let expanded: Vec<reify_ast::Expr>;
             let mut args = args;
             let mut expanded_from_list = false;
