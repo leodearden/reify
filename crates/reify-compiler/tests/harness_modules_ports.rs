@@ -4,27 +4,27 @@
 //! Task #5693 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf CMP-3,
 //! batch 3 of 6): folds 24 former standalone `tests/*.rs` binaries into this single
 //! compile unit to cut the merge-gate link count. Layout-only — no `#[test]` fn is
-//! added or removed. Each former file is included as a stem-named module so its
-//! `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset)
-//! resolves unchanged.
+//! added or removed.
 //!
-//! Explicit `#[path]` is MANDATORY: this harness root is an integration-test crate
-//! root, where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`,
-//! not the `harness_modules_ports/` subdir — and mid-move, while both spellings
-//! exist on disk, it would SILENTLY bind the stale top-level file instead of failing.
+//! The layout contract those `#[path]` lines below obey — why `#[path]` is MANDATORY
+//! in a harness root rather than stylistic, what naming each module for its former
+//! file stem does and does not preserve about a test id, and how an include that
+//! escapes the module dir is charged to EACH including unit — is stated ONCE, in
+//! `tests/infra/test_harness_kloc_cap.sh`'s C1/C2 header, and mechanically enforced
+//! by that guard's §6/§7. Deliberately not restated here: a restated contract is a
+//! copy that can drift from the one the guard actually enforces.
 //!
-//! The shared `common` helper module is declared ONCE here at the harness root (via
-//! `#[path = "common/mod.rs"]` — note no `../`, this root is a sibling of
-//! `tests/common/`); the four former `mod common;`-using members now reach it through
-//! `crate::common`. Declaring it per-file would load the same source several times in
-//! this one compile unit, which `clippy::duplicate_mod` rejects under `-D warnings`.
-//!
-//! The cluster boundary is the §11 architect call: the module/namespace and
-//! ports/entity-composition clusters are merged into ONE unit precisely so that all
-//! four `tests/common/mod.rs` consumers sit here, and the sibling
-//! `harness_compilation_surface` unit pays no external `common` charge at all
-//! (`harness_layout_unit_lines` charges every out-of-module-dir include to EACH
-//! including unit, so a split would pay those 363 lines twice).
+//! Two facts specific to THIS unit:
+//!   * It declares `common`, exactly once, here at the root (`#[path = "common/mod.rs"]`
+//!     — note no `../`: the root is a sibling of `tests/common/`). Its four
+//!     `common`-using members reach it as `crate::common`; a per-file `mod common;`
+//!     would load that source several times within this one compile unit, which
+//!     `clippy::duplicate_mod` rejects under `-D warnings`.
+//!   * Merging the module/namespace and ports/entity-composition clusters into one
+//!     unit is the §11 architect call, made precisely so that all four
+//!     `tests/common/mod.rs` consumers land HERE — which is what lets the sibling
+//!     `harness_compilation_surface` unit carry no external charge at all, paying
+//!     `common`'s 363 lines once instead of twice.
 #[path = "common/mod.rs"]
 mod common;
 
