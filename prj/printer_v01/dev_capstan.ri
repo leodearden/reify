@@ -109,10 +109,14 @@ pub structure IdlerPulley {
 ///
 /// Note the land radius is now a DESIGN CHOICE and no longer forced. With an
 /// oversize arc a whole band of land radii admits the rope,
-/// `|land_r - seat_c| <= sqrt(groove_r^2 - (rope_dia/2)^2)` = 1.055mm wide at the
-/// defaults; the pre-existing claim that a half-round is the ONLY depth that admits
-/// the rope was true of the equal-radii seat and RETIRES here. The two reasons
-/// above are what justify pinning it, not necessity.
+/// `|land_r - seat_c| <= sqrt(groove_r^2 - (rope_dia/2)^2)` — a HALF-width of
+/// 1.055mm at the defaults, so the band is about 2.11mm wide; the pre-existing
+/// claim that a half-round is the ONLY depth that admits the rope was true of the
+/// equal-radii seat and RETIRES here. The two reasons above are what justify
+/// pinning it, not necessity. Choosing a different depth inside that band is a
+/// three-place edit, not a one-place one: the in-file band below, the Rust gate's
+/// volume premise guard, and that gate's mouth assertion (which asserts the
+/// MAXIMISED chord, and so pins the depth too) all have to move together.
 ///
 /// It is the ROPE's centreline, not the arc centre, that stays on `pitch_r`: under
 /// tension the rope bottoms out in its seat, so its centre sits `groove_r -

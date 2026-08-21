@@ -24,16 +24,31 @@
 //! arbitrary mid-band position. #5580 retired the pre-existing `groove_mouth`
 //! captive-channel knob for exactly that reason.
 //!
-//! Note what this assertion no longer does. With an equal-radii seat the arc
-//! centre was the ONLY land radius admitting the rope at all, so the mouth
-//! chord alone pinned the seat depth. An oversize arc opens a whole BAND of
-//! admitting land radii, `|land_r − seat_c| ≤ sqrt(groove_r² − (rope_dia/2)²)`
-//! = 1.055 mm wide at the defaults, so a small re-introduced cut-back now
-//! clears the mouth assertion. What pins the depth instead is the volume
-//! gate's premise guard below (a `groove_r·1e-6` window) together with
-//! `dev_capstan.ri`'s own two-sided `land_r` band, which is deliberately the
-//! same window. #5580's "a half-round is the only depth that admits the rope"
-//! reasoning retires with the oversize arc and must not be reinstated.
+//! Note what MECHANICALLY retires here, and what the assertion nonetheless
+//! still pins. With an equal-radii seat the arc centre was the ONLY land radius
+//! admitting the rope at all. An oversize arc opens a whole BAND of admitting
+//! land radii, `|land_r − seat_c| ≤ sqrt(groove_r² − (rope_dia/2)²)` — a
+//! half-width of 1.055 mm at the defaults, so ≈ 2.11 mm wide — and #5580's "a
+//! half-round is the only depth that admits the rope" reasoning retires with
+//! it: `land_r == seat_c` is now a design CHOICE (for the maximised mouth and
+//! for the closed form's half-seated premise), not a necessity, and the
+//! necessity argument must not be reinstated.
+//!
+//! The assertion does NOT admit that whole band, though, and is not meant to.
+//! It demands the chord's MAXIMUM: `MIN_MOUTH_CLEARANCE_FRAC` is derived from
+//! the same DIN ratio the design multiplies into `groove_r`, so the required
+//! `rope_dia·1.06` is bit-identically `2·groove_r`, attained only at
+//! `land_r == seat_c`. With the 1e-9 relative slack that leaves a window of
+//! `|land_r − seat_c| ≤ groove_r·sqrt(2e-9)` = 4.5e-5·`groove_r` = 0.14 µm —
+//! i.e. the mouth assertion pins the seat depth, via the DIN clearance margin
+//! rather than via a bare `land_r == seat_c`. That is safe rather than brittle
+//! because `dev_capstan.ri` sets `land_r = seat_c` bit-exactly and its own
+//! two-sided band sanctions only a `groove_r·1e-6` window, so no seat depth the
+//! file admits can trip it. The volume gate's premise guard below is the same
+//! `groove_r·1e-6` window and is therefore the TIGHTER, independent restatement
+//! of the same pin (3.18 nm vs 0.14 µm here). A deliberate in-band cut-back —
+//! which the oversize arc now makes mechanically legal — would have to move all
+//! three together: this assertion, that premise guard, and the in-file band.
 //!
 //! **2. The seat removes the right stock
 //! (`capstan_seat_volume_delta_matches_half_pi_r2_l`).** The volume the helical
@@ -188,8 +203,9 @@ const PAPPUS_REL_TOL: f64 = 0.15;
 /// actually gates, at the file's defaults): the kernel reports ΔV =
 /// 2.924801e-5 m³ against a prediction of 2.925740e-5 m³, i.e. the closed form
 /// runs high by 0.0321 %. So 3 % is ≈ 93× the residual it has to cover — and
-/// ≈ 16× even the deliberately pessimistic ≲0.5 % a-priori budget for the
-/// enlarged correction terms.
+/// still ≈ 6× the deliberately pessimistic ≲0.5 % a-priori budget for the
+/// enlarged correction terms, which the measured residual in turn sits ≈ 16×
+/// inside.
 ///
 /// The band was NOT re-sized for #5683's oversize arc; the a-priori basis for
 /// keeping it was that the dominant ignored term — land-surface curvature
@@ -248,8 +264,11 @@ const HALF_ROUND_REL_TOL: f64 = 0.03;
 /// groove_r − 0.3mm`) and re-ran this test: the mesh read `land_max` =
 /// 26.700209 mm against an arc centre of 24 mm — 2.700 mm out, 90 % of
 /// `groove_r`, 9x this band, caught. Nothing in that result depends on the arc
-/// ratio (the equivalent submerged land here would sit at `seat_c + groove_r −
-/// 0.3mm` = 27.06 mm, 2.700 mm out again), so the conclusion carries even
+/// ratio — what carries is the FRACTION of `groove_r` the control is out by,
+/// not the absolute offset, since both this band and the offset scale with
+/// `groove_r` (the equivalent submerged land here would sit at `seat_c +
+/// groove_r − 0.3mm` = 27.06 mm, i.e. 2.880 mm = `groove_r − 0.3mm` out, again
+/// 90 % of `groove_r` and 9x this band) — so the conclusion carries even
 /// though the number was not re-taken. That run is also why both assertions
 /// reference recomputed radii and not `land_r`: against `land_r` the submerged
 /// drum reads 0.2 µm out and sails through, and its `seat_min` is unchanged
@@ -351,9 +370,11 @@ fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVe
 /// the unrolled helix.
 ///
 /// Needed at two different radii by the half-round closed form: at the spine
-/// (`pitch_r`, for the coarse band and the end-lens obliquity factor) and at
-/// the seated half-disc's area centroid (which lies inboard of the spine, and
-/// therefore sweeps a measurably shorter path).
+/// (`seat_c`, the seat's arc centre — see [`seat_arc_centre`] — for the coarse
+/// band, and the radius the end-lens obliquity factor is likewise taken at) and
+/// at the seated half-disc's area centroid (which lies inboard of the spine,
+/// and therefore sweeps a measurably shorter path). `pitch_r` is the ROPE's
+/// centreline and is not the spine of anything the closed form sweeps.
 fn helix_arc_len(rho: f64, turns: f64, rise: f64) -> f64 {
     ((2.0 * PI * rho * turns).powi(2) + rise.powi(2)).sqrt()
 }
@@ -430,8 +451,10 @@ fn finished_drum(result: &TessellateResult) -> &reify_eval::MeshSurface {
 ///      general chord form is used deliberately rather than asserting
 ///      `land_r == seat_c`: it catches a re-introduced depth offset in EITHER
 ///      direction, and it states the mechanical requirement rather than one
-///      particular way of meeting it. It no longer pins the depth on its own,
-///      though — see the module header on the admitting band;
+///      particular way of meeting it. Because `1.06·rope_dia` IS that chord's
+///      maximum `2·groove_r`, it still pins the depth — to 0.14 µm at the
+///      defaults — it just routes the pin through the DIN clearance margin.
+///      See the module header;
 ///   3. the drum the kernel actually produced HAS that seat — read back off
 ///      the finished mesh, not off the scalars. (1) and (2) are arithmetic
 ///      over four scalar cells, and would stay green for a sweep placed at the
@@ -480,12 +503,20 @@ fn capstan_seat_admits_the_rope_radially() {
     // The chord is still maximised at `land_r == seat_c`, but that maximum is no
     // longer merely `rope_dia`: a DIN 15061 arc makes it `2·groove_r =
     // 1.06·rope_dia`, so this asserts a strict 6 % clearance rather than #5580's
-    // bare admission. Note that the admitting band is now WIDE — any land within
+    // bare admission.
+    //
+    // MECHANICALLY the admitting band is now wide — any land within a half-width
     // `sqrt(groove_r² − (rope_dia/2)²) = 1.055 mm` of the arc centre still passes
-    // a rope — so this assertion no longer pins the land radius on its own.
-    // What pins it is the volume gate's premise guard and the design's own
-    // two-sided band; #5580's "a half-round is the ONLY depth that admits the
-    // rope" reasoning retires here, and must not be reinstated.
+    // a rope, so #5580's "a half-round is the ONLY depth that admits the rope"
+    // reasoning retires here and must not be reinstated. This ASSERTION does not
+    // admit that band: `min_mouth` is bit-identically `2·groove_r` (see below),
+    // the chord's maximum, so it holds only within `groove_r·sqrt(2e-9)` =
+    // 0.14 µm of `land_r == seat_c`. That is deliberate — the design pins
+    // `land_r = seat_c` bit-exactly — and it is the LOOSER of the two depth pins
+    // here; the volume gate's premise guard restates it at `groove_r·1e-6`
+    // (3.18 nm). Do not weaken that guard on the belief that this one is
+    // permissive about depth, and do not introduce an in-band cut-back without
+    // moving both plus dev_capstan.ri's own band.
     //
     // The comparison keeps a relative epsilon: the tie MOVED, it did not vanish.
     // `MIN_MOUTH_CLEARANCE_FRAC` is derived from the same DIN ratio the design
