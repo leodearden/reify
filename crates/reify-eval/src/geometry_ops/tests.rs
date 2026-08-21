@@ -6748,7 +6748,7 @@
     // rather than `eval_named_arg_length`, so this row is what proves the two
     // routes mint byte-identical wording. Second the compiler names these args
     // positionally (`c0`…`cN`), which is useless in a diagnostic — the gated
-    // names below are the DISPLAY names `coord_display` mints, and asserting
+    // names below are the DISPLAY names `CoordName` renders, and asserting
     // them is what keeps a rejection reading like every other Contract C one.
     // ---------------------------------------------------------------------------
 
@@ -6838,12 +6838,89 @@
         );
     }
 
+    /// The MIXED group on the VARIADIC route — the mirror of
+    /// [`compile_geometry_op_translate_unresolved_beats_a_later_bare_component`],
+    /// which pins the same precedence on the NAMED-ARG route.
+    ///
+    /// `LengthArg::Unresolved` is the one arm of `accept_variadic_length_args`
+    /// that deliberately pushes NO diagnostic and mints its own distinct
+    /// "unresolved (Undef)" wording (PRD decision D10 / INV-SF-1), and neither
+    /// shared-contract helper can reach it: [`assert_length_gated`] makes exactly
+    /// ONE position bad per iteration and [`assert_every_bare_position_reported`]
+    /// makes every position bad the SAME way, so both are structurally blind to
+    /// two DIFFERENT failure classes meeting in one coordinate stream. Here `x1`
+    /// is `Undef` (Unresolved) and `y1` is a bare `Real` (Invalid):
+    ///
+    ///   - PRECEDENCE — the FIRST error wins, so the caller-facing `Err` is
+    ///     `x1`'s "unresolved (Undef)" and never `y1`'s "missing or non-Length".
+    ///     A regression that reclassified an Undef coordinate as `Invalid` would
+    ///     hand the author a misleading "expects Length" during ordinary solver
+    ///     iteration — where an Undef cell is expected transient state, not an
+    ///     author error — and would stay green under every other variadic test.
+    ///   - NO SHORT-CIRCUIT — `y1` is still diagnosed even though `x1` already
+    ///     failed, which is the diagnostic-COUNT half of the all-at-once
+    ///     guarantee the doc comment on the helper claims.
+    #[test]
+    fn compile_geometry_op_interp_unresolved_beats_a_later_bare_coordinate() {
+        let values = ValueMap::new();
+
+        // x1 unresolved, y1 bare (the 1000× hazard), the rest clean Lengths.
+        let op = interp_with_coords(&[
+            literal_undef(),
+            literal_f64(5.0),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("an unresolved x1 with a bare y1 must drop the interp op");
+
+        assert!(
+            err.contains("x1") && err.contains("unresolved (Undef)"),
+            "the FIRST failing coordinate wins, so the error must carry x1's \
+             unresolved-Undef wording — the variadic route mints the same \
+             distinct message the named-arg route does; got: {err:?}"
+        );
+        assert!(
+            !err.contains("y1"),
+            "y1's later Invalid must not mask x1's Unresolved in the \
+             caller-facing error; got: {err:?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("x1")),
+            "an unresolved coordinate degrades QUIETLY at the value level — its \
+             whole report is the caller-facing Err, with no warning of its own, \
+             because an Undef cell mid-solve is not an author error; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("y1") && d.message.contains("expects Length")),
+            "y1 must STILL be diagnosed in the SAME build even though x1 failed \
+             first — the all-at-once guarantee, which a `?`-chain would have \
+             short-circuited; got: {:?}",
+            diagnostics
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // `bezier`'s VARIADIC control-point triples (task 5658, R2 sweep)
     //
     // Like `interp`, every position is a control-point coordinate and there is
     // no dimensionless neighbour. Carried at THREE control points rather than
-    // two so the row also proves `coord_display` keeps numbering past the first
+    // two so the row also proves `CoordName` keeps numbering past the first
     // point — a `% 3` / `/ 3` slip that produced `x1,y1,z1,x1,y1,z1,…` would
     // pass a two-point fixture's per-position sweep but collapse the count
     // assertion here.
@@ -7185,6 +7262,137 @@
                 diagnostics
             );
         }
+    }
+
+    /// Build a 14-arg degree=1 / n_points=2 nurbs with every position finite and
+    /// well-formed, as a mutable base the non-finite rows below poke a NaN into.
+    ///
+    /// Positions: `c0` degree, `c1` n_points, `c2`…`c7` poles, `c8`/`c9`
+    /// weights, `c10`…`c13` knots (`n_points + degree + 1 = 4`).
+    fn nurbs_clean_args() -> Vec<reify_ir::CompiledExpr> {
+        let mut args = vec![literal_f64(1.0), literal_f64(2.0)];
+        for i in 0..6 {
+            args.push(literal_length(0.001 * (i as f64 + 1.0)));
+        }
+        args.extend([literal_f64(1.0), literal_f64(1.0)]); // weights  c8, c9
+        args.extend([
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+        ]); // knots    c10..c13
+        args
+    }
+
+    /// The UN-GATED branch of `accept_variadic_length_args` — the one that
+    /// reproduces `eval_all_args_to_f64`'s bare read for `nurbs`' dimensionless
+    /// weights and knots.
+    ///
+    /// [`compile_geometry_op_nurbs_dimensionless_neighbours_still_accepted`]
+    /// only ever passes FINITE bare neighbours, so the whole non-finite arm was
+    /// unpinned: a typo in the duplicated `"{label} arg '{name}' is non-finite"`
+    /// format string, or a dropped `Some(...)` on `first_err`, would silently
+    /// let a NaN weight or knot through into `GeometryOp::NurbsCurve`.
+    ///
+    /// The expected name is the POSITIONAL `cN` the compiler mints, NOT a
+    /// coordinate display name — an un-gated position has no `x1`/`y1` reading,
+    /// and asserting that is what keeps the gated and un-gated naming from being
+    /// quietly unified.
+    #[test]
+    fn compile_geometry_op_nurbs_non_finite_weight_and_knot_drop_the_op() {
+        let values = ValueMap::new();
+
+        for (what, idx, name) in [("weight", 8_usize, "c8"), ("knot", 10, "c10")] {
+            let mut args = nurbs_clean_args();
+            args[idx] = literal_f64(f64::NAN);
+            let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+
+            assert!(
+                result.is_err(),
+                "a NaN {what} must DROP the op rather than reach \
+                 GeometryOp::NurbsCurve; got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message == format!("nurbs arg '{name}' is non-finite")),
+                "the un-gated branch must reproduce eval_all_args_to_f64's \
+                 wording verbatim for a NaN {what}, naming the POSITIONAL \
+                 '{name}'; got: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+                "a {what} is legitimately dimensionless — a non-finite one must \
+                 be reported as non-finite, never as a units rejection; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// MULTIPLICITY lock on the second accepted behaviour change in
+    /// `curve_nurbs_curve` (the one the `ONE accepted behaviour change` comment
+    /// used to omit).
+    ///
+    /// `eval_all_args_to_f64` short-circuits via `collect::<Option<_>>()`, so it
+    /// reported only the FIRST non-finite arg. `accept_variadic_length_args`
+    /// loops to completion, so BOTH NaN knots are reported in one build — the
+    /// same all-at-once policy the gated positions follow, now extended to the
+    /// un-gated ones. Pinned because it is a user-visible diagnostic count that
+    /// a re-`?`-chaining refactor would silently halve.
+    #[test]
+    fn compile_geometry_op_nurbs_reports_every_non_finite_knot_in_one_build() {
+        let values = ValueMap::new();
+
+        let mut args = nurbs_clean_args();
+        args[10] = literal_f64(f64::NAN);
+        args[11] = literal_f64(f64::INFINITY);
+        let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "two non-finite knots must drop the op; got: {:?}",
+            result
+        );
+
+        let reported: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("nurbs arg '") && d.message.ends_with("is non-finite"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            reported,
+            vec![
+                "nurbs arg 'c10' is non-finite",
+                "nurbs arg 'c11' is non-finite"
+            ],
+            "EVERY non-finite knot is reported in one build, in arg order — not \
+             just the first, which is what the old `?`-chained read did; got \
+             all diagnostics: {:?}",
+            diagnostics
+        );
     }
 
     // ---------------------------------------------------------------------------

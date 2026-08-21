@@ -269,6 +269,17 @@ fn bezier_bare_coordinate_drops_op_dimensioned_builds() {
 /// lock: `degree`, `n_points`, the weights and the knots are deliberately left
 /// BARE in it, so its zero-units-diagnostic assertion goes red if the gate
 /// over-reaches past the pole span.
+///
+/// That control is also the DOC PIN. Its call is byte-identical to the
+/// fully-dimensioned example task 5658 wrote into the two author- and
+/// agent-facing docs — `crates/reify-mcp/src/tools/chunks/geometry.md` (served
+/// verbatim to the in-GUI assistant) and `docs/reify-stdlib-reference.md` — so
+/// the documented 14-arg form is compile-smoked (`parse_and_compile`, the
+/// STRICT path) and build-smoked here rather than merely asserted in prose. The
+/// sibling `stdlib_geometry_ops_smoke.ri` fixture's nurbs call is a 10-arg,
+/// knot-less form the eval layer rejects outright ("nurbs() requires at least 1
+/// knot value"), so it does NOT cover the documented shape. If you reword either
+/// doc's example, update this literal in the same commit.
 #[test]
 fn nurbs_bare_pole_drops_op_dimensioned_builds() {
     assert_length_gate(
