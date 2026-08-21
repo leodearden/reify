@@ -821,9 +821,10 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
 ///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit.
 ///
 /// Landed contract: `Engine::edit_param` (engine_edit.rs) calls
-/// `self.clear_realization_cache()` near function entry — after the
-/// function-entry guards but before any state mutation that could fail, so a
-/// failed edit can never leave a stale cache behind. `clear_realization_cache`
+/// `self.clear_realization_cache()` before any fallible state mutation, so a
+/// failed edit can never leave a stale cache behind — it clears
+/// unconditionally, even before its own `NotInitialized` guard, since no
+/// guard precedes it in the function body. `clear_realization_cache`
 /// (engine_admin.rs) delegates to `RealizationCache::clear()`
 /// (realization_cache.rs), which empties the cache's buckets IN PLACE rather
 /// than reseating the field to a fresh `RealizationCache::new()`. That
@@ -960,8 +961,11 @@ fn my_design_template_with_box_realization_dims(
 ///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit_source.
 ///
 /// Landed contract: `Engine::edit_source` (engine_edit.rs) calls the same
-/// `self.clear_realization_cache()` hook as `Engine::edit_param`, at the
-/// same near-entry placement, delegating to the same in-place
+/// `self.clear_realization_cache()` hook as `Engine::edit_param` — but after
+/// its own `NotInitialized` guard rather than before it (unlike
+/// `edit_param`, which has no guard preceding the clear). Both placements
+/// still guarantee the flush happens before any other fallible state
+/// mutation. It delegates to the same in-place
 /// `RealizationCache::clear()` (not a reseat to a fresh
 /// `RealizationCache::new()`) described above. Without that shared hook, the
 /// cache entry would persist across the source edit and a subsequent
