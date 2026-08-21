@@ -1,9 +1,14 @@
-//! Boundary tests for [`NodeTraitsMap<NodeId>`] — PRD §5 B1 / §9 T4 (precedence chain).
+//! Boundary tests for [`NodeTraitsMap<NodeId>`] — PRD §5 B1/B3/B4/B6 · §9 T2/T4/T6/T7.
 //!
 //! This file is the PRD §9 reserved location for the T1–T7 boundary test grid.
-//! T2, T4 (lite), T6, and T7 landed below (T6 under task #3581, B4); T1 and
-//! T3 were never added; T5 landed under task #3579 and was later dropped
-//! under task #5065 along with the `concurrent.rs` scheduler stack it pinned.
+//! T2, T4 (lite), T6 (task #3581, B4), and T7 (task #3584) landed below. T1 is
+//! covered instead by the per-kind unit tests in `reify-ir/src/node_traits.rs`
+//! (T1's PRD-assigned crate); T3 was specified against a `concurrent_eval`-style
+//! fixture on the `reify_runtime::concurrent` scheduler stack deleted under
+//! #5065, so it is obsolete as written rather than merely pending. T5 landed
+//! under task #3579 and was dropped under #5065 along with the `concurrent.rs`
+//! scheduler stack it pinned; the WARM_STARTABLE coextension invariant itself
+//! remains covered by `reify-runtime/src/warm_startable_assert.rs`.
 //!
 //! All tests use real `reify_eval::cache::NodeId` values so that the
 //! `impl HasNodeKind for NodeId` bridge in `reify-eval/src/cache.rs` is exercised
