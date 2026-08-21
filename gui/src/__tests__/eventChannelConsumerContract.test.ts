@@ -32,6 +32,7 @@ import {
   staleAllowlistEntries,
   unregisteredConsumerlessRows,
   staleConsumerlessEntries,
+  landedConsumerlessChannels,
   type ClassifiedRow,
   type EventChannelRow,
 } from './eventChannelConsumerContract';
@@ -951,5 +952,79 @@ describe('staleConsumerlessEntries', () => {
     expect(staleConsumerlessEntries([classified('mesh-update', ['onMeshUpdate'], 'named')], {})).toStrictEqual(
       [],
     );
+  });
+});
+
+describe('landedConsumerlessChannels', () => {
+  // Check (f)'s ITERATION SET: register entries whose row has actually landed as
+  // `*(none)*`. The two exclusions below are the whole reason it is not just
+  // `Object.keys(register)` — an entry whose row has not (yet) flipped pins
+  // nothing, so iterating the raw register would re-couple the coverage suite to
+  // another task's merge order, contradicting the pre-registration contract
+  // `staleConsumerlessEntries` documents one describe above.
+
+  const REGISTER = {
+    diagnostics: 'LSP diagnostics are routed by the notification sink, not a bridge subscriber.',
+  };
+
+  it('returns the intersection of register keys and explicit-none rows, sorted', () => {
+    expect(
+      landedConsumerlessChannels(
+        [
+          classified('zulu', [], 'explicit-none'),
+          classified('mesh-update', ['onMeshUpdate'], 'named'),
+          classified('alpha', [], 'explicit-none'),
+        ],
+        { zulu: 'reason', alpha: 'reason' },
+      ),
+    ).toStrictEqual(['alpha', 'zulu']);
+  });
+
+  it('excludes a pre-registered entry whose row is still named — the tolerance the register promises', () => {
+    // The exact regression the review of task 6380 step-1 found: asserting
+    // `kind === 'explicit-none'` over every register key makes a legitimately
+    // pre-registered entry a red tree. Both `staleConsumerlessEntries`' docblock
+    // and `DELIBERATELY_CONSUMERLESS`' say this direction must be tolerated.
+    expect(
+      landedConsumerlessChannels([classified('diagnostics', ['onDiagnostics'], 'named')], REGISTER),
+    ).toStrictEqual([]);
+  });
+
+  it('excludes a pre-registered entry whose row is inherited or needs-allowlist', () => {
+    // The other two non-landed kinds. A `same` row below a named row resolves to
+    // `inherited`; anything this parser cannot resolve is `needs-allowlist`.
+    expect(
+      landedConsumerlessChannels([classified('diagnostics', ['onDiagnostics'], 'inherited')], REGISTER),
+    ).toStrictEqual([]);
+    expect(
+      landedConsumerlessChannels([classified('diagnostics', [], 'needs-allowlist')], REGISTER),
+    ).toStrictEqual([]);
+  });
+
+  it('excludes a register key naming no parsed row at all', () => {
+    // That rot direction is `staleConsumerlessEntries`' to report, so check (f)
+    // never double-reports a renamed or deleted channel.
+    expect(
+      landedConsumerlessChannels([classified('mesh-update', ['onMeshUpdate'], 'named')], REGISTER),
+    ).toStrictEqual([]);
+    expect(staleConsumerlessEntries([classified('mesh-update', ['onMeshUpdate'], 'named')], REGISTER)).toStrictEqual(
+      ['diagnostics'],
+    );
+  });
+
+  it('excludes an explicit-none row that has no register entry', () => {
+    // The helper is defined over REGISTER KEYS, not over rows: an unregistered
+    // `*(none)*` row is `unregisteredConsumerlessRows`' gap to report.
+    expect(
+      landedConsumerlessChannels(
+        [classified('diagnostics', [], 'explicit-none'), classified('kernel-status', [], 'explicit-none')],
+        REGISTER,
+      ),
+    ).toStrictEqual(['diagnostics']);
+  });
+
+  it('returns [] for an empty register', () => {
+    expect(landedConsumerlessChannels([classified('diagnostics', [], 'explicit-none')], {})).toStrictEqual([]);
+    expect(landedConsumerlessChannels([], {})).toStrictEqual([]);
   });
 });
