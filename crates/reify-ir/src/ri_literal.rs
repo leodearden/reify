@@ -98,6 +98,9 @@ fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
 }
 
 /// Serialize a [`Value`] as `.ri` source text that re-parses to that same value.
+///
+/// Every arm checks finiteness and representability BEFORE it formats
+/// anything, so no partially-formed literal can escape on the error path.
 pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     match value {
         Value::Bool(b) => Ok(if *b {
@@ -105,13 +108,31 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
         } else {
             "false".to_owned()
         }),
-        Value::Int(i) => Ok(i.to_string()),
-        Value::Real(r) => Ok(format_f64_shortest(*r, true)),
-        Value::String(s) => Ok(format!("\"{s}\"")),
+        Value::Int(i) => {
+            if !int_is_exactly_f64_representable(*i) {
+                return Err(RiLiteralError::IntNotRepresentable { value: *i });
+            }
+            Ok(i.to_string())
+        }
+        Value::Real(r) => {
+            if !r.is_finite() {
+                return Err(RiLiteralError::NonFiniteNumber);
+            }
+            Ok(format_f64_shortest(*r, true))
+        }
+        Value::String(s) => {
+            if let Some(offending) = first_unrepresentable_char(s) {
+                return Err(RiLiteralError::StringNotRepresentable { offending });
+            }
+            Ok(format!("\"{s}\""))
+        }
         Value::Scalar {
             si_value,
             dimension,
         } => {
+            if !si_value.is_finite() {
+                return Err(RiLiteralError::NonFiniteNumber);
+            }
             // A dimensionless scalar has no unit to write, so it goes out as a
             // bare real. That re-parses as `Value::Real`, whose `dimension()`
             // is `DIMENSIONLESS` — dimensionally identical.
@@ -119,6 +140,11 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
                 return Ok(format_f64_shortest(*si_value, true));
             }
             let ladder = ri_emittable_units(dimension);
+            if ladder.is_empty() {
+                return Err(RiLiteralError::UnrepresentableDimension {
+                    dimension: *dimension,
+                });
+            }
             for sym in ladder {
                 if let Some(magnitude) = exact_magnitude(*si_value, sym) {
                     return Ok(format!("{}{sym}", format_f64_shortest(magnitude, false)));
@@ -127,13 +153,66 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
             // Unreachable for a finite `si_value` on a non-empty ladder: the
             // last rung's factor is exactly 1.0 (pinned by reify-core's
             // `ri_emittable_ladders_resolve_to_their_dimension_and_end_at_factor_one`),
-            // so `mag * 1.0 == si_value` holds by IEEE identity. Empty ladders
-            // and non-finite inputs are rejected in step-6.
-            Err(RiLiteralError::UnsupportedValueKind { kind: "Scalar" })
+            // so `mag * 1.0 == si_value` holds by IEEE identity. Kept as a
+            // structured error rather than an `unreachable!()` so a future
+            // table edit degrades to a refusal, never to a lossy write.
+            Err(RiLiteralError::UnrepresentableDimension {
+                dimension: *dimension,
+            })
         }
-        _ => Err(RiLiteralError::UnsupportedValueKind {
-            kind: "Unsupported",
+        other => Err(RiLiteralError::UnsupportedValueKind {
+            kind: value_kind_name(other),
         }),
+    }
+}
+
+/// Whether an `i64` survives the `i64 → f64 → i64` trip the parser forces.
+///
+/// The magnitude clause is load-bearing on its own: `i as f64 as i64 == i`
+/// is *true* for `i64::MIN`, because the saturating `as` cast lands back on
+/// `i64::MIN` — the equality alone would wave through a value the parser
+/// cannot reproduce.
+fn int_is_exactly_f64_representable(i: i64) -> bool {
+    let as_f64 = i as f64;
+    as_f64 as i64 == i && as_f64.abs() <= (2f64).powi(53)
+}
+
+/// The first character a `.ri` string literal cannot carry verbatim.
+///
+/// `lower_string_literal` strips the outer quotes and performs NO escape
+/// decoding, so `"` and `\` cannot appear at all, and neither can a control
+/// character (a raw newline/tab would not even lex). `{` and `}` are excluded
+/// separately: they fail the `string_literal` token and divert the text to
+/// `interpolated_string`, which DOES decode escapes and treats `{expr}` as a
+/// hole — a brace-bearing string could therefore evaluate source.
+fn first_unrepresentable_char(s: &str) -> Option<char> {
+    s.chars()
+        .find(|c| matches!(c, '"' | '\\' | '{' | '}') || c.is_control())
+}
+
+/// Stable discriminant name for a value kind with no `.ri` literal form.
+///
+/// Deliberately a fixed `&'static str` per variant rather than `{value:?}`:
+/// a `SampledField` or `Matrix` payload could be enormous, and this string
+/// ends up in a user-facing MCP error.
+fn value_kind_name(value: &Value) -> &'static str {
+    match value {
+        Value::Bool(_) => "Bool",
+        Value::Int(_) => "Int",
+        Value::Real(_) => "Real",
+        Value::String(_) => "String",
+        Value::Scalar { .. } => "Scalar",
+        Value::Enum { .. } => "Enum",
+        Value::List(_) => "List",
+        Value::Set(_) => "Set",
+        Value::Map(_) => "Map",
+        Value::Option(_) => "Option",
+        Value::Point(_) => "Point",
+        Value::Vector(_) => "Vector",
+        Value::Tensor(_) => "Tensor",
+        Value::Matrix(_) => "Matrix",
+        Value::Undef => "Undef",
+        _ => "Unsupported",
     }
 }
 
