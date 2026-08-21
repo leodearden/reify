@@ -1145,4 +1145,165 @@ _expect_default_profile_in_child() {
 assert "G17: a child shell that sources the library and never sets a profile keeps the reify-govtest default" \
     _expect_default_profile_in_child
 
+# ---------------------------------------------------------------------------
+# Block H — govtest_legacy_stale: the PIDLESS dash-nesting parent filter
+# (task 6386).
+#
+# WHAT THESE UNITS ARE.  Before the D7/D8 rename,
+# test_cpu_governed_exec_hostexcl.sh named two of its five slices
+# `reify-test-task-<pid>.slice` and `reify-test-merge-<pid>.slice`.  systemd
+# dash-nesting means each of those implies parents `reify-test.slice` and
+# `reify-test-{task,merge}.slice`, vivified automatically and named by nothing
+# — so no teardown stopped them and no pid-keyed sweep could ever recognise
+# them.  Measured on the host on 2026-08-21, all three were present, `loaded
+# active active`, and EMPTY (TasksCurrent=0):
+#
+#   reify-test-merge.slice  loaded active active Slice /reify/test/merge
+#   reify-test-task.slice   loaded active active Slice /reify/test/task
+#   reify-test.slice        loaded active active Slice /reify/test
+#
+# They carry no pid, so govtest_stale_units' liveness oracle has nothing to
+# consult and Block G7 correctly keeps them outside the pid grammar.  This is
+# the separate, explicitly-listed path they need instead — and the safety
+# argument has to be rebuilt from scratch for it, because "the pid is dead" is
+# no longer available as the justification for a stop.  What replaces it is
+# EMPTINESS, read off a fresh enumeration.
+#
+# Runs under the reify-test profile armed by Block G1.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block H: govtest_legacy_stale pidless-parent filter ---"
+
+# The three rows measured on the host, in the order systemctl printed them.
+_H_HOST_LISTING="reify-test-merge.slice  loaded active active Slice /reify/test/merge
+reify-test-task.slice   loaded active active Slice /reify/test/task
+reify-test.slice        loaded active active Slice /reify/test"
+
+# The legacy names test_cpu_governed_exec_hostexcl.sh will pass, in teardown
+# order: the two dash-children first, their shared root last.
+_H_LEGACY_TASK="reify-test-task.slice"
+_H_LEGACY_MERGE="reify-test-merge.slice"
+_H_LEGACY_ROOT="reify-test.slice"
+
+# _expect_legacy_stale <listing> <want> [legacy...]
+#   Exit status is checked as well as output, and not merely as thoroughness:
+#   most assertions here expect EMPTY output, and an absent implementation
+#   produces empty output too.  Requiring rc=0 is what stops those passing
+#   vacuously.
+_expect_legacy_stale() {
+    local listing="$1" want="$2"
+    shift 2
+    local got rc=0
+    got="$(govtest_legacy_stale "$listing" "$@")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "govtest_legacy_stale returned $rc, want 0"
+        return 1
+    fi
+    if [ "$got" != "$want" ]; then
+        printf 'govtest_legacy_stale legacy="%s" =>\n%s\n--- want ---\n%s\n' \
+            "$*" "$got" "$want"
+        return 1
+    fi
+    return 0
+}
+
+# (a) THE EMPTINESS RULE.  A pidless parent may be stopped only when the fresh
+# enumeration shows it has no dash-child left — stopping it otherwise would
+# cascade into whatever that child holds.  On the measured host listing that
+# means the two leaves go and the root stays, because its two legacy children
+# are still listed.
+_H_A_WANT="reify-test-task.slice
+reify-test-merge.slice"
+assert "H1: measured host listing => the two childless leaves, NOT their still-parented root" \
+    _expect_legacy_stale "$_H_HOST_LISTING" "$_H_A_WANT" \
+        "$_H_LEGACY_TASK" "$_H_LEGACY_MERGE" "$_H_LEGACY_ROOT"
+
+# (b) CONVERGENCE.  H1 + H2 together pin the deliberate TWO-PASS convergence
+# to zero: the first post-landing run stops the two leaves, the next run's
+# enumeration holds only the root, and that run stops it.  Nothing in the repo
+# produces these names any more once the rename lands, so the sweep then stays
+# silent forever (H6).  Two passes is acceptable precisely because the
+# consuming suite is host-exclusive on the hot path of every run_all.sh — it
+# is two verify runs, not two weeks — and it is the same fail-safe DIRECTION
+# govtest_stale_units already documents for pid reuse: a false negative costs
+# one more sweep, a false positive stops something live.
+assert "H2: once the children are gone, the root becomes stoppable (two-pass convergence)" \
+    _expect_legacy_stale "$_H_LEGACY_ROOT        loaded active active Slice /reify/test" \
+        "$_H_LEGACY_ROOT" \
+        "$_H_LEGACY_TASK" "$_H_LEGACY_MERGE" "$_H_LEGACY_ROOT"
+
+# (c) LIVE-DESCENDANT BLOCK.  A concurrent lane still running the PRE-rename
+# script would hold reify-test-task-<pid>.slice under reify-test-task.slice.
+# Stopping the parent cascades — measured in task 5930 — so that lane's slice
+# would be pulled out from under a live governance measurement.  The
+# any-dash-child rule blocks it without needing to know it is a pid unit.
+_H_C_LISTING="$_H_HOST_LISTING
+reify-test-task-999.slice loaded active active Slice /reify/test/task/999"
+assert "H3: a live pre-rename descendant suppresses its legacy parent (cascade guard)" \
+    _expect_legacy_stale "$_H_C_LISTING" "$_H_LEGACY_MERGE" \
+        "$_H_LEGACY_TASK" "$_H_LEGACY_MERGE" "$_H_LEGACY_ROOT"
+
+# (d) PID UNITS DO NOT BLOCK.  Measured on the host: reify-test<pid>.slice
+# parents to reify.slice, NOT to reify-test.slice — `reify-test1234` is ONE
+# dash segment, not `reify-test` + `1234` — so no cascade from stopping
+# reify-test.slice can reach a concurrent lane's own hierarchy.  Without this
+# assertion the obvious "starts with the prefix" implementation would look
+# correct while making the legacy sweep permanently blocked by any concurrent
+# run, i.e. never converging.
+_H_D_LISTING="$_H_LEGACY_ROOT        loaded active active Slice /reify/test
+reify-test1234.slice        loaded active active Slice /reify/test1234
+reify-test1234-agents.slice loaded active active Slice /reify/test1234/agents"
+assert "H4: a concurrent run's reify-test<pid>.slice units do NOT block the legacy root" \
+    _expect_legacy_stale "$_H_D_LISTING" "$_H_LEGACY_ROOT" "$_H_LEGACY_ROOT"
+
+# (e) THE REFUSALS — the safety core.  Each of these is passed EXPLICITLY as a
+# legacy arg AND is present in the listing, so only the prefix re-check can
+# keep it out.  reify.slice is the one that matters: it is the shared implicit
+# root of BOTH hierarchies, the production reify-governed.slice /
+# reify-governed-agents.slice nest under it carrying live orchestrator agent
+# placement, and stopping it would cascade into the running fleet.  It is also
+# exactly the name a careless "strip the last dash segment and stop the
+# parent" design would arrive at from reify-test.slice, which is why it is
+# asserted rather than assumed.
+_H_E_LISTING="reify.slice                 loaded active active Slice /reify
+reify-governed.slice        loaded active active Slice /reify/governed
+reify-governed-agents.slice loaded active active Slice /reify/governed/agents
+reify-govtest999.slice      loaded active active Slice /reify/govtest999
+../reify.slice              loaded active active Slice /reify"
+assert "H5: reify.slice, the production slices, the other profile and a traversal string are NEVER emitted" \
+    _expect_legacy_stale "$_H_E_LISTING" "" \
+        "reify.slice" "reify-governed.slice" "reify-governed-agents.slice" \
+        "reify-govtest999.slice" "../reify.slice"
+
+# (f) A name INSIDE the pid grammar is refused here.  Those belong to
+# govtest_reap_stale, which consults the liveness oracle before stopping
+# anything; routing one through this function would stop it on emptiness
+# alone and bypass that check entirely.
+assert "H6: a pid-grammar name passed as a legacy arg is refused (that is reap_stale's job)" \
+    _expect_legacy_stale "reify-test1234.slice loaded active active Slice /reify/test1234" "" \
+        "reify-test1234.slice"
+
+# (g) The quiet cases.  H7 is the STEADY STATE this task converges to and the
+# state every run must be in afterwards, so anything emitted here would mean
+# the sweep reaps on every single run forever.
+assert "H7: a legacy name absent from the listing is not emitted (converged steady state)" \
+    _expect_legacy_stale "reify-test1234.slice loaded active active Slice /reify/test1234" "" \
+        "$_H_LEGACY_TASK" "$_H_LEGACY_MERGE" "$_H_LEGACY_ROOT"
+assert "H8: empty listing => no output, exit 0" \
+    _expect_legacy_stale "" "" "$_H_LEGACY_TASK" "$_H_LEGACY_ROOT"
+assert "H9: whitespace-and-blank-lines-only listing => no output, exit 0" \
+    _expect_legacy_stale "$(printf '\n   \n\t\n\n')" "" "$_H_LEGACY_TASK" "$_H_LEGACY_ROOT"
+assert "H10: no legacy args at all => no output, exit 0" \
+    _expect_legacy_stale "$_H_HOST_LISTING" ""
+
+# (h) Emission follows ARGUMENT order, not listing order — the caller controls
+# teardown order and the two disagree on the measured host listing, where
+# systemctl printed merge before task.  Dedup keeps a doubly-passed name from
+# producing two stops.
+_H_H_WANT="reify-test-merge.slice
+reify-test-task.slice"
+assert "H11: emission is in ARGUMENT order and deduplicated when a name is passed twice" \
+    _expect_legacy_stale "$_H_HOST_LISTING" "$_H_H_WANT" \
+        "$_H_LEGACY_MERGE" "$_H_LEGACY_TASK" "$_H_LEGACY_MERGE"
+
 test_summary
