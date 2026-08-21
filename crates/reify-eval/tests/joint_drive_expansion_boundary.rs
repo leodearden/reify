@@ -1083,6 +1083,29 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // here — see
     // `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
     // (immediately below) / #5835.
+    //
+    // NOT INDEPENDENT SIGNAL, and deliberately so: this is (i) restated at the
+    // Money layer. `Costed.line_cost` == `unit_cost * quantity_produced` and
+    // `unit_cost` is a fixed `param unit_cost : Money = 0.50USD` — identical
+    // in both halves by construction (a literal in the shipped source, which
+    // `strip_inlined_minimize` does not touch), with (iii) below asserting
+    // the fold itself — so `merged_q < frozen_q` from (i) MECHANICALLY
+    // entails the inequality asserted here: (ii) cannot fail while (i)
+    // passes. It stays because the user-observable joint-drive claim is about
+    // MONEY and should be asserted in Money terms rather than left for a
+    // reader to re-derive — but it must not be mistaken for additional
+    // coverage. (Contrast
+    // `mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline`,
+    // whose SUM spans two children and is genuinely not implied by any
+    // single-child claim.)
+    //
+    // The alternative that WOULD be independent — read the objective's own
+    // instance-path spelling `RivetedPanel.rivets.line_cost` in both halves,
+    // exercising the alias write-back — is not available here: that alias
+    // resolves in the MERGED half only (measured: `Some(Undef)` in the frozen
+    // half), because with no `minimize` no cluster forms and
+    // `build_dependent_cells` never emits the alias entry. (iii) below reads
+    // it in the merged half, which is the only half where it exists.
     let line_cost = ValueCellId::new("Rivet", "line_cost");
 
     let merged_cost = scalar_si(merged, &line_cost, "merged");
@@ -1197,11 +1220,12 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
             ),
             "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
              resolved to a usable number in the {what} eval — got {cell:?}. \
-             The engine gap #5835 tracks has apparently closed in this half \
-             (merged and frozen-cascade fail it for different underlying \
-             reasons — see #5835). That needs a reviewed design change \
-             (re-enable the parent aggregate as BT-5(ii)'s preferred cost \
-             cell, update the example header's \"Reading the result\" \
+             The engine gap #5835 tracks has apparently closed. #5835 records \
+             this cell as permanently unresolved in BOTH halves for the SAME \
+             two mechanisms, so a change to either one lands here — do not go \
+             looking for a per-half distinction. That needs a reviewed design \
+             change (re-enable the parent aggregate as BT-5(ii)'s preferred \
+             cost cell, update the example header's \"Reading the result\" \
              section), not a silent edit to this assertion or to #5835's \
              status.",
         );
