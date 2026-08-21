@@ -564,9 +564,17 @@ pub(crate) enum GeometryListArg {
     /// single non-list geometry arg (`union_all(box(…))`) keeps its existing
     /// "expects at least 2 arguments" diagnostic.
     NotAList,
+    /// The argument names a geometry-list let this entity ALREADY rejected with
+    /// its own Error. The caller must fail SILENTLY — a second diagnostic here
+    /// would point at the fold rather than at the real defect (review
+    /// esc-5385-3).
+    AlreadyDiagnosed,
 }
 
 /// Resolve a single boolean-fold argument to a concrete geometry element list.
+///
+/// A name the entity already rejected resolves to
+/// [`GeometryListArg::AlreadyDiagnosed`] so the caller adds nothing.
 ///
 /// Three shapes resolve to [`GeometryListArg::Elements`]:
 ///   * an `Ident` naming a geometry-list let (elements were unrolled once in
@@ -594,6 +602,10 @@ pub(crate) fn resolve_geometry_list_arg(
             && let Some(elements) = scope.geometry_list_elements.get(name.as_str())
         {
             return GeometryListArg::Elements(elements.clone());
+        }
+        // A let whose own classification already failed loudly: stay silent.
+        if scope.geometry_list_was_rejected(name.as_str()) {
+            return GeometryListArg::AlreadyDiagnosed;
         }
         // A List-typed let that is NOT a geometry list — e.g. `[1, 2, 3]`.
         return match scope.resolve(name.as_str()) {

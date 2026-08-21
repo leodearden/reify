@@ -11979,7 +11979,15 @@ impl Engine {
 /// than seeing a silently short list and reporting nothing.
 #[derive(Default)]
 struct GeometryListCellAccumulator {
-    /// `(entity, list_name)` → number of list-bound realizations DECLARED.
+    /// `(entity, list_name)` → the list's COMPILE-TIME element count, read
+    /// from [`reify_compiler::GeometryListBinding::len`].
+    ///
+    /// NOT a running tally of the realizations seen: the compiler's emission
+    /// loop drops an element whenever `compile_geometry_call` returns `None`
+    /// (two of those returns are diagnostic-free), so a tally would make a
+    /// dropped element look like a complete shorter list and silently diverge
+    /// from the `<list>.count` already folded from `geometry_list_lens`
+    /// (review esc-5385-3).
     declared: BTreeMap<(String, String), usize>,
     /// `(entity, list_name)` → `index` → resolved handle value.
     resolved: BTreeMap<(String, String), BTreeMap<usize, reify_ir::Value>>,
@@ -11989,8 +11997,9 @@ impl GeometryListCellAccumulator {
     /// Record that `realization` is declared as a list element.
     ///
     /// MUST be called for every list-bound realization *before* any early
-    /// `continue` that could skip it — otherwise an unresolved element goes
-    /// uncounted and the all-or-nothing check passes on a short list.
+    /// `continue` that could skip it — otherwise a surviving sibling never
+    /// registers the list's expected length and the whole list is dropped
+    /// silently instead of being regrouped.
     ///
     /// Returns `true` iff the realization is list-bound, i.e. iff the caller
     /// must NOT also write it as a scalar geometry cell.
@@ -11998,10 +12007,24 @@ impl GeometryListCellAccumulator {
         let Some(binding) = &realization.list_binding else {
             return false;
         };
-        *self
+        let previous = self
             .declared
-            .entry((realization.id.entity.clone(), binding.list_name.clone()))
-            .or_insert(0) += 1;
+            .insert(
+                (realization.id.entity.clone(), binding.list_name.clone()),
+                binding.len,
+            );
+        // Every sibling of one list carries the same compile-time `len`, so a
+        // repeat insert is idempotent. A disagreement means the compiler
+        // emitted siblings from two different expansions of the same name —
+        // impossible today (entity.rs expands exactly once, in pass 1) and a
+        // silent short/long list if it ever became possible.
+        debug_assert!(
+            previous.is_none_or(|p| p == binding.len),
+            "geometry list '{}' declared with conflicting lengths {:?} vs {}",
+            binding.list_name,
+            previous,
+            binding.len,
+        );
         true
     }
 
@@ -12020,9 +12043,15 @@ impl GeometryListCellAccumulator {
     /// Emit `(list cell, Value::List)` for every list whose elements ALL
     /// resolved, in ascending index order.
     ///
-    /// An empty geometry list (`generate(0, …)`) declares zero elements and so
-    /// never enters `resolved`; it is emitted here as the empty list rather
-    /// than left absent, since "no elements" is a determinate answer.
+    /// An empty geometry list (`generate(0, …)`) never reaches this function at
+    /// all: it emits zero `RealizationDecl`s, so [`Self::declare`] is never
+    /// called for it and its key is absent from `declared`. Its cell keeps the
+    /// value the ordinary value-cell pass computed for `generate(0, …)` —
+    /// `Value::List([])`, since `generate` yields one element per index and
+    /// there are none — which is the determinate answer this pass would have
+    /// produced anyway. `empty_geometry_list_evaluates_to_the_empty_list`
+    /// (reify-eval `tests/generate_eval.rs`) pins that end state so the two
+    /// routes cannot silently disagree (review esc-5385-3).
     fn into_entries(self) -> Vec<(reify_core::identity::ValueCellId, reify_ir::Value)> {
         let mut out = Vec::new();
         for (key, &expected) in &self.declared {

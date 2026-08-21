@@ -86,6 +86,20 @@ pub(crate) struct CompilationScope<'u> {
     /// `geometry_list_elements[n].len() == geometry_list_lens[n]` by
     /// construction.
     pub(crate) geometry_list_elements: HashMap<String, Vec<reify_ast::Expr>>,
+    /// Geometry-LIST let names that were REJECTED at classification time and
+    /// already carry their own Error (task #5385).
+    ///
+    /// Two paths land here: an over-cap expansion, and
+    /// `diagnose_unsupported_geometry_list` (a non-literal `generate` count, a
+    /// mixed-kind list literal). Both leave a name that names no elements, so a
+    /// later `union_all(<name>)` would otherwise emit a SECOND, unrelated Error
+    /// pointing at the fold rather than at the real defect — the very cascade
+    /// entity.rs's registration comment claims to avoid (review esc-5385-3).
+    ///
+    /// Disjoint from `geometry_list_lens` / `geometry_list_elements` by
+    /// construction: a let is either expanded into those maps or rejected into
+    /// this set, never both.
+    pub(crate) geometry_list_rejected: HashSet<String>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -266,6 +280,7 @@ impl<'u> CompilationScope<'u> {
             geometry_realization_names: HashSet::new(),
             geometry_list_lens: HashMap::new(),
             geometry_list_elements: HashMap::new(),
+            geometry_list_rejected: HashSet::new(),
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),
@@ -424,6 +439,25 @@ impl<'u> CompilationScope<'u> {
             }
             _ => false,
         }
+    }
+
+    /// True iff `name` is a geometry-LIST let this entity already rejected with
+    /// its own Error, and has not since been shadowed (task #5385).
+    ///
+    /// Callers use this to stay SILENT rather than pile a second diagnostic on
+    /// a let the user has already been told about.
+    ///
+    /// The two rejection paths differ in whether the name is registered at all:
+    /// `diagnose_unsupported_geometry_list` registers it as `List<Geometry>` so
+    /// downstream reads type-check, while the over-cap path routes the let out
+    /// entirely and registers nothing. Hence the two-case shape — an
+    /// unregistered name cannot have been shadowed, and a registered one must
+    /// still pass the same entity-stamp liveness check
+    /// [`Self::geometry_list_binding_is_live`] applies, so a lambda param that
+    /// happens to reuse a rejected name gets ordinary treatment.
+    pub(crate) fn geometry_list_was_rejected(&self, name: &str) -> bool {
+        self.geometry_list_rejected.contains(name)
+            && (self.resolve(name).is_none() || self.geometry_list_binding_is_live(name))
     }
 
     /// Register a match-arm `GuardedDeclGroup` under its logical name.

@@ -1537,6 +1537,7 @@ pub(crate) fn compile_entity(
                             // is half-lowered (a cell promising elements no
                             // realization will ever produce).
                             rejected_geometry_list_lets.insert(let_decl.name.as_str());
+                            scope.geometry_list_rejected.insert(let_decl.name.clone());
                         }
                     }
                 } else if diagnose_unsupported_geometry_list(
@@ -1549,8 +1550,16 @@ pub(crate) fn compile_entity(
                     // The Error is already reported. Register the name at its
                     // evident intended type so downstream references type-check
                     // rather than cascade a second, unrelated diagnostic.
+                    //
+                    // The type registration alone is NOT enough for the
+                    // boolean folds: `resolve_geometry_list_arg` would find
+                    // `List<…>` with no cached elements and report "not a
+                    // geometry list", pointing at the fold instead of at the
+                    // real defect. `geometry_list_rejected` is what actually
+                    // makes the claim above true (review esc-5385-3).
                     scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
                     rejected_geometry_list_lets.insert(let_decl.name.as_str());
+                    scope.geometry_list_rejected.insert(let_decl.name.clone());
                 } else {
                     // We'll register with a placeholder type; the actual type will
                     // be determined when we compile the expression. For now, use Real.
@@ -4028,6 +4037,12 @@ pub(crate) fn compile_entity(
                             list_binding: Some(GeometryListBinding {
                                 list_name: let_decl.name.clone(),
                                 index: k,
+                                // The COMPILE-TIME count, not the emitted
+                                // count: the `if let Some(ops)` above drops an
+                                // element silently, and eval's all-or-nothing
+                                // check must notice that rather than accept a
+                                // complete-looking shorter list.
+                                len: elements.len(),
                             }),
                             operations: ops,
                             span: let_decl.span,

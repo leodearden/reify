@@ -314,6 +314,9 @@ fn generate_over_geometry_emits_one_realization_per_index() {
             Some(reify_compiler::GeometryListBinding {
                 list_name: "holes".to_string(),
                 index: k,
+                // Every sibling carries the FULL compile-time count, so eval
+                // can tell a dropped element from a genuinely shorter list.
+                len: 3,
             }),
         );
         assert_eq!(
@@ -672,5 +675,98 @@ fn union_all_over_a_single_non_list_geometry_still_reports_arity() {
             .iter()
             .any(|m| m.contains("union_all() expects at least 2 arguments")),
         "a single non-list geometry arg must still hit the arity gate; got: {errors:?}",
+    );
+}
+
+/// S6 (review esc-5385-3): a list that expands to EXACTLY ONE element is the
+/// sole justification for bypassing `union_all`'s `>= 2` arity gate, so pin it.
+///
+/// The fold degenerates to "the element itself, zero Boolean ops", which is
+/// well-defined — but nothing exercised it before, at either level. Its
+/// two-element and three-element siblings are covered above.
+#[test]
+fn union_all_over_a_one_element_geometry_list_compiles_clean() {
+    let source = r#"
+        structure S {
+            let holes = generate(1, |i| cylinder(5mm, 20mm))
+            let combined = union_all(holes)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a one-element geometry list must fold without hitting the arity gate; \
+         got: {errors:?}",
+    );
+    // The fold must still produce its OWN realization rather than silently
+    // aliasing the single element — otherwise "zero Boolean ops" would mean
+    // "no realization at all" and `combined` would have nothing to resolve to.
+    let t = template(&compiled, "S");
+    assert!(
+        t.realizations
+            .iter()
+            .any(|r| r.name.as_deref() == Some("combined")),
+        "`combined` must be its own realization; got: {:#?}",
+        t.realizations.iter().map(|r| &r.name).collect::<Vec<_>>(),
+    );
+}
+
+/// S8 (review esc-5385-3): a geometry-list let that was already rejected with
+/// its own Error must NOT cascade a second one from a fold over it.
+///
+/// entity.rs registers the rejected name as `List<Geometry>` with the comment
+/// "so downstream references type-check rather than cascade a second,
+/// unrelated diagnostic". That was untrue for the boolean folds:
+/// `resolve_geometry_list_arg` found a `List<…>` with no cached elements and
+/// reported "must be a geometry list", pointing the user at the fold instead
+/// of at the non-literal count that is the actual defect.
+#[test]
+fn a_rejected_geometry_list_let_does_not_cascade_into_its_fold() {
+    let source = r#"
+        structure S {
+            param n : Int = 3
+            let holes = generate(n, |i| cylinder(5mm, 20mm))
+            let combined = union_all(holes)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "exactly one Error — the non-literal count — must survive; got: {errors:?}",
+    );
+    assert!(
+        errors[0].contains("literal non-negative Int count"),
+        "the surviving Error must be the declaring let's, not the fold's; \
+         got: {errors:?}",
+    );
+    assert!(
+        !errors.iter().any(|m| m.contains("must be a geometry list")),
+        "the fold must stay silent about a let that already failed loudly; \
+         got: {errors:?}",
+    );
+}
+
+/// Negative control for the suppression above: a genuinely non-geometry list
+/// still gets the fold's own diagnostic, so `AlreadyDiagnosed` is not a
+/// blanket mute on every single-argument fold.
+#[test]
+fn union_all_over_a_scalar_list_still_reports_a_non_geometry_list() {
+    let source = r#"
+        structure S {
+            let xs = [1, 2, 3]
+            let combined = union_all(xs)
+        }
+    "#;
+    let compiled = compile_source(source);
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors.iter().any(|m| m.contains("must be a geometry list")),
+        "a scalar list must still be diagnosed by the fold; got: {errors:?}",
     );
 }

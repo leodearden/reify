@@ -552,3 +552,101 @@ fn quantifier_variable_shadowing_a_geometry_list_let_does_not_inherit_its_count(
          geometry list's length leaking past the shadowing binder; got: {rendered}",
     );
 }
+
+/// S2 (review esc-5385-3): pin the VALUE of an empty geometry list, not just
+/// its folded `.count`.
+///
+/// `GeometryListCellAccumulator::into_entries` used to claim it emitted the
+/// empty list itself. It cannot: `generate(0, …)` emits zero
+/// `RealizationDecl`s, so `declare()` is never called and the key never enters
+/// `declared`. The cell therefore keeps whatever the ordinary value-cell pass
+/// computed — which IS `List([])`, but by a different route than the doc
+/// described. This test pins the end state so the two routes cannot silently
+/// disagree if either changes.
+#[test]
+fn empty_geometry_list_evaluates_to_the_empty_list() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(0, |i| cylinder(5mm, 20mm))
+        }
+    "#,
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S", "holes")),
+        Some(&Value::List(vec![])),
+        "`generate(0, …)` must evaluate to the empty list, not Undef and not \
+         absent; got: {:?}",
+        result.values.get(&ValueCellId::new("S", "holes")),
+    );
+}
+
+/// S6 (review esc-5385-3): the exactly-one-element fold, end to end.
+///
+/// This is the case that justifies bypassing `union_all`'s `>= 2` arity gate —
+/// "a list that expanded to exactly ONE element folds to that element with zero
+/// Boolean ops". Nothing exercised it at either level before.
+#[test]
+fn union_all_over_a_one_element_geometry_list_evaluates_to_a_handle() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(1, |i| cylinder(5mm, 20mm))
+            let combined = union_all(holes)
+        }
+    "#,
+    );
+    let element_refs = assert_geometry_handle_list(&result, "S", "holes", 1);
+    let combined = assert_geometry_handle(&result, "S", "combined");
+    assert!(
+        !element_refs.contains(&combined),
+        "`combined` must be its OWN realization even for a one-element fold: \
+         {combined:?} in {element_refs:?}",
+    );
+}
+
+/// BOUNDARY (review esc-5385-3): a non-`.count` read of a geometry-list let is
+/// resolved by the FULL pipeline but not by `Engine::eval` on its own.
+///
+/// Only `.count` (constant-folded in expr.rs) and the `union_all` /
+/// `intersection_all` folds (expanded in geometry_boolean.rs) read a
+/// geometry-list let at COMPILE time. Every other read — indexing here —
+/// compiles to an ordinary value-cell expression, and those evaluate BEFORE
+/// `post_process_geometry_handle_cells` regroups the sibling handles into the
+/// list cell. `Engine::eval` does not then recompute dependents, so `first`
+/// keeps the `Undef` it read from the pre-hydration placeholder even though
+/// `holes` itself ends up correct.
+///
+/// This is NOT a user-visible silent-undef: the CLI's build/tessellate pass
+/// does recompute, and `reify eval` on this exact source prints
+/// `S.first = <Geometry: S#realization[0]>` (verified against the debug
+/// binary). The gap is confined to the single-pass entry point.
+///
+/// Pinned rather than fixed: closing it means recomputing value cells after
+/// hydration, an evaluation-ordering change well outside a task scoped to
+/// making `generate` yield a `List<Geometry>` and `union_all` accept one. The
+/// assertion is deliberately paired — `holes` correct AND `first` undef — so
+/// the test states where the seam actually is instead of reading as "geometry
+/// lists are not indexable".
+#[test]
+fn indexing_a_geometry_list_reads_the_pre_hydration_placeholder() {
+    let result = eval_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let first = holes[0]
+        }
+    "#,
+    );
+    // The list cell itself IS hydrated — this half must never regress.
+    assert_geometry_handle_list(&result, "S", "holes", 3);
+
+    let first = result.values.get(&ValueCellId::new("S", "first"));
+    assert_eq!(
+        first,
+        Some(&Value::Undef),
+        "under `Engine::eval` alone an indexed read is the pre-hydration \
+         placeholder; if this now resolves, the recompute landed and this test \
+         should assert the handle instead: {first:?}",
+    );
+}

@@ -1246,6 +1246,20 @@ pub struct GeometryListBinding {
     pub list_name: String,
     /// This element's 0-based position within the list.
     pub index: usize,
+    /// The list's COMPILE-TIME element count — i.e. `index < len` for every
+    /// sibling, and every sibling of one list carries the same `len`.
+    ///
+    /// Deliberately not derivable from the emitted siblings. Eval's
+    /// all-or-nothing regrouping must compare what resolved against what the
+    /// compiler *intended*, not against what it managed to emit: the emission
+    /// loop drops an element whenever `compile_geometry_call` returns `None`,
+    /// and two of those returns are diagnostic-free. Counting emitted
+    /// realizations would make a dropped element look like a complete shorter
+    /// list, which would then disagree with the `<list>.count` already
+    /// constant-folded from `geometry_list_lens` — silently, and in exactly
+    /// the silent-wrong-value class task #5385 exists to eliminate (review
+    /// esc-5385-3).
+    pub len: usize,
 }
 
 /// A realization declaration — specifies geometry to produce.

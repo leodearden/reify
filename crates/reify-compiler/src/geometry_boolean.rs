@@ -219,6 +219,10 @@ pub(crate) fn compile_boolean_op(
                         );
                         return None;
                     }
+                    // The declaring let already reported its own Error; a
+                    // second one here would point at the fold rather than at
+                    // the real defect (review esc-5385-3).
+                    GeometryListArg::AlreadyDiagnosed => return None,
                     // Not a collection at all (e.g. `union_all(box(…))`) — fall
                     // through to the unchanged arity diagnostic below.
                     GeometryListArg::NotAList => {}
