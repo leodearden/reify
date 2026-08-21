@@ -3888,6 +3888,28 @@ fn compile_expr_guarded_with_expected_inner(
             }
         }
         reify_ast::ExprKind::MemberAccess { object, member } => {
+            // ── task #5385: constant-fold `<geometry-list let>.count` ──────────
+            //
+            // A geometry-list let (`let holes = generate(3, |i| cylinder(…))`)
+            // has no ordinary evaluable value: it lowers to N sibling
+            // `RealizationDecl`s, and its cell's Value is authoritative only
+            // AFTER `post_process_geometry_handle_cells` regroups their handles
+            // into a list. Ordinary value cells evaluate BEFORE that pass, so a
+            // `MethodCall` node here would read the pre-hydration list and
+            // `count`'s `any(is_undef)` guard would collapse it to `Undef` —
+            // trading one silent undef for another.
+            //
+            // The element count is statically known by construction, so fold it
+            // instead. The folded value is exactly the number of list-bound
+            // realizations emitted for that let (both come from the same
+            // `GeometryListShape`), so the two can never disagree.
+            if member == "count"
+                && let reify_ast::ExprKind::Ident(list_name) = &object.kind
+                && let Some(&len) = scope.geometry_list_lens.get(list_name.as_str())
+            {
+                return CompiledExpr::literal(Value::Int(len as i64), Type::Int);
+            }
+
             // ── compiler-type-hygiene ε1: PART A — name-directed pre-pass ───────
             //
             // Everything from here down to the `compile_expr_guarded` call that

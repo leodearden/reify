@@ -65,6 +65,17 @@ pub(crate) struct CompilationScope<'u> {
     /// `collection_sub_names` / `purpose_param_names` — a dedicated typed set for a
     /// category-specific lookup rather than overloading `names`.
     pub(crate) geometry_realization_names: HashSet<String>,
+    /// Geometry-LIST let name → statically-known element count (task #5385).
+    ///
+    /// A `let holes = generate(3, |i| cylinder(…))` lowers to N sibling
+    /// `RealizationDecl`s rather than a value the ordinary expression compiler
+    /// can see, so `holes.count` is constant-folded from this map instead of
+    /// compiling to a `MethodCall` — see the fold in `expr.rs`'s
+    /// `MemberAccess` name-directed pre-pass for why.
+    ///
+    /// Exactly the names in `known_geometry_list_lets` (entity.rs pass 1),
+    /// each mapped to the number of list-bound realizations emitted for it.
+    pub(crate) geometry_list_lens: HashMap<String, usize>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -243,6 +254,7 @@ impl<'u> CompilationScope<'u> {
             collection_sub_names: HashSet::new(),
             keyed_sub_keys: HashMap::new(),
             geometry_realization_names: HashSet::new(),
+            geometry_list_lens: HashMap::new(),
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),

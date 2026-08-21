@@ -1508,6 +1508,15 @@ pub(crate) fn compile_entity(
                     // constructor call in the body.
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
+                    // Thread the element count into scope so `expr.rs` can
+                    // constant-fold `<list>.count`. Populated HERE, in pass 1,
+                    // because the value-cell pass that compiles that member
+                    // access runs before the realization-emission loop. The
+                    // count is exactly the number of list-bound realizations
+                    // that loop will mint, so fold and IR cannot disagree.
+                    scope
+                        .geometry_list_lens
+                        .insert(let_decl.name.clone(), shape.len());
                     known_geometry_list_lets.insert(let_decl.name.as_str(), shape);
                 } else if diagnose_unsupported_geometry_list(
                     &let_decl.value,
