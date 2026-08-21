@@ -7,6 +7,13 @@
 //! `OcctKernelHandle`) → tessellate pipeline and pins three properties of the
 //! rope seat cut into the drum.
 //!
+//! Properties 1 and 2 read meshes and `volume()` cells, so they need a live
+//! OCCT kernel and skip without one. Property 3 is scalar-only and runs
+//! unguarded off a second, kernel-free evaluation of the same compiled module
+//! ([`dev_capstan_scalars`]) — it is the only slip-fit gate here, and a
+//! stub-degraded OCCT is silent in this repo (CLAUDE.md "Native deps"; #6343),
+//! so it must not skip with the others.
+//!
 //! **1. The seat admits the rope (`capstan_seat_admits_the_rope_radially`).**
 //! The seat is a HALF-ROUND: the swept section's arc centre sits ON the land
 //! surface (`land_r == seat_c`, the arc-centre radius [`seat_arc_centre`]
@@ -81,11 +88,12 @@
 //!
 //! **3. The seat arc conforms to DIN 15061
 //! (`capstan_seat_arc_is_din_15061_oversize`).** `groove_r = 0.53·rope_dia` —
-//! an OVERSIZE arc, not a zero-clearance slip fit — with the SEATED rope's
-//! centreline still on the D/d circle `pitch_r`, per-side anti-pinch clearance
-//! at the rope's widest section, and a seat bottom that lands on the seated
-//! rope's own underside. This is the module's only non-lockstep pin on the arc
-//! ratio itself: see [`DIN_15061_SEAT_RATIO`]. Gates (1) and (2) are both
+//! an OVERSIZE arc, not a zero-clearance slip fit — with per-side anti-pinch
+//! clearance at the rope's widest section, and with the design's own `seat_c`
+//! cell equal to this module's recomputation of it, which is what keeps the
+//! SEATED rope's centreline on the D/d circle `pitch_r` and the seat bottom on
+//! that rope's own underside. This is the module's only non-lockstep pin on the
+//! arc ratio itself: see [`DIN_15061_SEAT_RATIO`]. Gates (1) and (2) are both
 //! parametrized by the file's own `groove_r` and would stay green through a
 //! revert to a slip fit, so this one is not redundant with them.
 //!
@@ -108,7 +116,10 @@
 //! than read back from a design cell of its own: a mesh-vs-design-cell
 //! comparison moves in lockstep with the design and asserts nothing (the same
 //! reason [`MESH_RADIAL_TOL_FRAC`]'s measured negative control gives for not
-//! referencing `land_r`). That is also why the file
+//! referencing `land_r`). The design's `seat_c` cell is read in exactly ONE
+//! place — gate (3)'s claim (2) — and only to be checked AGAINST that
+//! recomputation, which pins the two derivations against each other rather than
+//! moving with either. That is also why the file
 //! exposes `blank_volume` / `body_volume` as `volume()` cells (a legitimate
 //! stock-removal metric on a machined part) rather than having the test
 //! recompute the blank's closed form and thereby hard-code the blank tree's
@@ -132,7 +143,7 @@
 
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::TessellateResult;
-use reify_ir::{Satisfaction, Value};
+use reify_ir::{Satisfaction, Value, ValueMap};
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
@@ -292,10 +303,45 @@ fn dev_capstan() -> &'static TessellateResult {
     R.get_or_init(tessellate_dev_capstan)
 }
 
-/// Load, parse, compile and tessellate `prj/printer_v01/dev_capstan.ri` with a
-/// real OCCT kernel, asserting the pipeline is Error-diagnostic-free at every
-/// stage. Use [`dev_capstan`] rather than calling this directly.
-fn tessellate_dev_capstan() -> TessellateResult {
+/// The design's evaluated cells WITHOUT any geometry kernel, computed once per
+/// test binary.
+///
+/// Everything hanging off [`dev_capstan`] needs a live OCCT kernel and therefore
+/// skips wholesale where OCCT is absent or degraded to stubs — a documented,
+/// silent failure mode in this repo (CLAUDE.md "Native deps"; #6343). That is
+/// the right trade for the gates that read meshes or `volume()` cells, but
+/// [`capstan_seat_arc_is_din_15061_oversize`] is pure scalar arithmetic over
+/// `rope_dia` / `pitch_r` / `groove_r` / `seat_c`, and by
+/// [`DIN_15061_SEAT_RATIO`]'s argument it is the ONLY assertion in this module
+/// that catches a revert to a slip-fit `groove_r = rope_dia/2`. It must not be
+/// the thing that goes quiet on a kernel-less machine, so it reads its cells
+/// from here instead.
+///
+/// `Engine::new(checker, None)` evaluates with no planner at all (the pattern in
+/// `crates/reify-eval/tests/auto_binding_sites_remaining_resolution.rs`). The
+/// geometry and `volume()` cells cannot resolve that way, so eval diagnostics
+/// are deliberately NOT asserted clean here and this map is good for SCALAR
+/// cells only — the OCCT path is what gates the rest. Parse and compile ARE
+/// asserted clean, in the shared [`compile_dev_capstan`].
+fn dev_capstan_scalars() -> &'static ValueMap {
+    static V: OnceLock<ValueMap> = OnceLock::new();
+    V.get_or_init(|| {
+        let compiled = compile_dev_capstan();
+        let mut engine = reify_eval::Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            None,
+        );
+        engine.eval(&compiled).values
+    })
+}
+
+/// Read, parse and compile `prj/printer_v01/dev_capstan.ri`, asserting both
+/// stages are Error-diagnostic-free.
+///
+/// Shared by the two memoized entry points ([`dev_capstan`]'s tessellation and
+/// [`dev_capstan_scalars`]'s kernel-free evaluation) so they cannot drift onto
+/// different sources or different compile entries.
+fn compile_dev_capstan() -> reify_compiler::CompiledModule {
     let source = std::fs::read_to_string(DEV_CAPSTAN)
         .unwrap_or_else(|e| panic!("failed to read design file {DEV_CAPSTAN}: {e}"));
 
@@ -321,6 +367,14 @@ fn tessellate_dev_capstan() -> TessellateResult {
         compile_errors.is_empty(),
         "compile errors in {DEV_CAPSTAN}: {compile_errors:#?}"
     );
+    compiled
+}
+
+/// Tessellate `prj/printer_v01/dev_capstan.ri` with a real OCCT kernel,
+/// asserting the pipeline is Error-diagnostic-free at every stage. Use
+/// [`dev_capstan`] rather than calling this directly.
+fn tessellate_dev_capstan() -> TessellateResult {
+    let compiled = compile_dev_capstan();
 
     // ---- Tessellate with a real OCCT kernel via SingleKernelHolder ----
     let mut planner = reify_geometry::SingleKernelHolder::new();
@@ -343,11 +397,14 @@ fn tessellate_dev_capstan() -> TessellateResult {
     result
 }
 
-/// Read a `Value::Scalar` cell of [`CAPSTAN_ENTITY`] out of the tessellation's
-/// value map, asserting its dimension, and return its SI value (m / m³).
-fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVector) -> f64 {
+/// Read a `Value::Scalar` cell of [`CAPSTAN_ENTITY`] out of an evaluated value
+/// map, asserting its dimension, and return its SI value (m / m³).
+///
+/// Takes the `ValueMap` rather than the `TessellateResult` so the kernel-free
+/// [`dev_capstan_scalars`] map can be read through the same accessor.
+fn capstan_cell(values: &ValueMap, cell: &str, expected_dim: DimensionVector) -> f64 {
     let id = ValueCellId::new(CAPSTAN_ENTITY, cell);
-    match result.values.get(&id) {
+    match values.get(&id) {
         Some(Value::Scalar {
             si_value,
             dimension,
@@ -478,10 +535,10 @@ fn capstan_seat_admits_the_rope_radially() {
 
     let result = dev_capstan();
 
-    let rope_dia = capstan_cell(result, "rope_dia", DimensionVector::LENGTH);
-    let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
-    let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
-    let land_r = capstan_cell(result, "land_r", DimensionVector::LENGTH);
+    let rope_dia = capstan_cell(&result.values, "rope_dia", DimensionVector::LENGTH);
+    let pitch_r = capstan_cell(&result.values, "pitch_r", DimensionVector::LENGTH);
+    let groove_r = capstan_cell(&result.values, "groove_r", DimensionVector::LENGTH);
+    let land_r = capstan_cell(&result.values, "land_r", DimensionVector::LENGTH);
     let seat_c = seat_arc_centre(pitch_r, groove_r, rope_dia);
 
     // ---- (1) The seat breaks through the land ----
@@ -556,8 +613,8 @@ fn capstan_seat_admits_the_rope_radially() {
     );
 
     // ---- (3) The drum the kernel produced really has that seat ----
-    let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
-    let bore_r = capstan_cell(result, "bore_r", DimensionVector::LENGTH);
+    let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
+    let bore_r = capstan_cell(&result.values, "bore_r", DimensionVector::LENGTH);
     let drum = finished_drum(result);
 
     // Read the radial profile only well inside the wrap band: at the band ends
@@ -648,32 +705,42 @@ fn capstan_seat_admits_the_rope_radially() {
 /// green. See [`DIN_15061_SEAT_RATIO`] for why it references the standard's
 /// number rather than the design's `seat_arc_ratio` cell.
 ///
-/// Four claims, from the file's own cells:
+/// Every claim here is scalar arithmetic over four cells — no mesh, no volume,
+/// no geometry — so this gate reads [`dev_capstan_scalars`] and carries NO
+/// `OCCT_AVAILABLE` guard. It is the module's only slip-fit gate, and OCCT
+/// going absent or stub-degraded is silent in this repo, so it deliberately
+/// keeps running where the other three skip.
+///
+/// Three claims, from the file's own cells:
 ///   1. **DIN conformance** — `groove_r == 0.53·rope_dia` (3.180 mm here).
-///   2. **The D/d story is intact** — the SEATED rope's centreline still lands
-///      on `pitch_r`. That is true by construction of [`seat_arc_centre`];
-///      asserting it anyway makes the helper's derivation a claim this module
-///      owns rather than an unexamined identity, so an edit to the helper is
-///      caught here instead of silently shifting the transmission ratio.
+///   2. **The design's own `seat_c` derivation is this module's** — the DSL's
+///      `let seat_c` equals [`seat_arc_centre`]'s recomputation. This is the
+///      one place the two derivations meet, and it is not lockstep: an edit to
+///      either side alone lands here. It subsumes the two identities it
+///      replaced — that the SEATED rope's centreline `seat_c − (groove_r −
+///      rope_dia/2)` is still `pitch_r` (the D/d story), and that the seat
+///      bottom `seat_c − groove_r` is still the seated rope's underside
+///      `pitch_r − rope_dia/2` (what lets the mesh gate reference a figure that
+///      never mentions `groove_r`) — both of which followed algebraically from
+///      the Rust helper alone and so could not fail.
 ///   3. **Anti-pinch clearance** — the actual mechanical reason DIN oversizes.
 ///      At the rope's widest section the seat is wider than the rope, so a
 ///      load-ovalised braid cannot wedge against the seat walls.
-///   4. **The seat bottom is invariant** — the seat bottoms exactly where the
-///      seated rope's underside sits, whatever the arc ratio. That is what lets
-///      the mesh gate reference `pitch_r − rope_dia/2` without mentioning
-///      `groove_r`.
+///
+/// Claims (1) and (2) each carry a **measured negative control**, taken on this
+/// branch with no OCCT tessellation in the run (0.4–0.9 s per run, vs ~9 s for
+/// the kernel path — so these are the kernel-free evaluation's numbers, not the
+/// tessellation's): `seat_arc_ratio = 0.5` fails claim (1) with groove_r =
+/// 3.000 mm against the standard's 3.180 mm, and `let seat_c = pitch_r +
+/// groove_r` (the rope-bottoming term dropped) fails claim (2) with the design
+/// reading 27.180 mm against a recomputed 24.180 mm.
 #[test]
 fn capstan_seat_arc_is_din_15061_oversize() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
+    let cells = dev_capstan_scalars();
 
-    let result = dev_capstan();
-
-    let rope_dia = capstan_cell(result, "rope_dia", DimensionVector::LENGTH);
-    let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
-    let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
+    let rope_dia = capstan_cell(cells, "rope_dia", DimensionVector::LENGTH);
+    let pitch_r = capstan_cell(cells, "pitch_r", DimensionVector::LENGTH);
+    let groove_r = capstan_cell(cells, "groove_r", DimensionVector::LENGTH);
     let seat_c = seat_arc_centre(pitch_r, groove_r, rope_dia);
 
     // ---- (1) DIN conformance ----
@@ -695,23 +762,42 @@ fn capstan_seat_arc_is_din_15061_oversize() {
         rope_dia * 0.5e3
     );
 
-    // ---- (2) The seated rope's centreline is still the D/d circle ----
-    // Under tension the rope bottoms out in its seat, so its centre lies
-    // `groove_r - rope_dia/2` inboard of the arc centre. Oversizing the arc
-    // moves the ARC outboard; the ROPE must not move at all, or drum_d, the
-    // pitch circumference, active_turns and the transmission ratio all shift
-    // without anything in the design saying so.
-    let seated_rope_centre = seat_c - (groove_r - rope_dia / 2.0);
+    // ---- (2) The design's own seat_c derivation is this module's ----
+    // Everything else here hangs off the RECOMPUTED `seat_arc_centre` — the
+    // closed form's spine, the mesh land reference, the volume gate's premise
+    // guard — precisely so no mesh check moves in lockstep with a design cell.
+    // That leaves the DSL's own `let seat_c` unpinned, which is what this reads:
+    // design cell vs. independent Rust recomputation, so an edit to EITHER side
+    // alone lands here rather than being caught only indirectly (and only under
+    // OCCT) by the land premise guard.
+    //
+    // This is the whole content of the two claims it replaced. Under tension the
+    // rope bottoms out in its seat, so its centre lies `groove_r - rope_dia/2`
+    // inboard of the arc centre: oversizing the arc moves the ARC outboard, and
+    // the ROPE must not move at all. Given this equality, the seated centreline
+    // is `pitch_r` and the seat bottom is `pitch_r - rope_dia/2` identically —
+    // asserting those against the recomputed `seat_c` asserted nothing but
+    // `(pitch_r + a) - a == pitch_r`.
+    let design_seat_c = capstan_cell(cells, "seat_c", DimensionVector::LENGTH);
     assert!(
-        (seated_rope_centre - pitch_r).abs() <= pitch_r * 1e-9,
-        "oversizing the seat arc must move the ARC outboard, not the ROPE: the \
-         seated rope's centreline sits at {:.6} mm but the D/d circle pitch_r \
-         is {:.6} mm. The seated centre is seat_c − (groove_r − rope_dia/2), \
-         with seat_c = {:.6} mm; if these part company then drum_d, the pitch \
-         circumference, active_turns, groove_len and the transmission ratio are \
-         all silently off.",
-        seated_rope_centre * 1e3,
+        (design_seat_c - seat_c).abs() <= seat_c * 1e-9,
+        "the design's own seat_c cell must equal this module's recomputation of \
+         it: dev_capstan.ri says {:.6} mm, seat_arc_centre(pitch_r = {:.6} mm, \
+         groove_r = {:.6} mm, rope_dia = {:.6} mm) says {:.6} mm. Both spell \
+         `pitch_r + groove_r − rope_dia/2` — the radius that puts the SEATED \
+         rope's centreline on the D/d circle, the rope having bottomed out \
+         `groove_r − rope_dia/2` inboard of the arc centre. If they part \
+         company, then either the design moved the rope off pitch_r (drum_d, \
+         the pitch circumference, active_turns, groove_len and the transmission \
+         ratio all silently off, and the seat no longer bottoms on the rope's \
+         underside pitch_r − rope_dia/2 that this module's mesh gate \
+         references), or this module's helper drifted from the design and every \
+         radius the closed form and the mesh checks hang off is measured \
+         against the wrong spine.",
+        design_seat_c * 1e3,
         pitch_r * 1e3,
+        groove_r * 1e3,
+        rope_dia * 1e3,
         seat_c * 1e3
     );
 
@@ -740,20 +826,6 @@ fn capstan_seat_arc_is_din_15061_oversize() {
         (seat_half_width - rope_half_width) * 1e3
     );
 
-    // ---- (4) The seat bottoms on the seated rope's underside ----
-    let seat_bottom = seat_c - groove_r;
-    let rope_underside = pitch_r - rope_dia / 2.0;
-    assert!(
-        (seat_bottom - rope_underside).abs() <= rope_underside * 1e-9,
-        "the seat must bottom exactly where the seated rope's underside sits, \
-         whatever the arc ratio: seat_c − groove_r = {:.6} mm but \
-         pitch_r − rope_dia/2 = {:.6} mm. This invariant is what lets the mesh \
-         gate reference the rope's underside — a figure that does not mention \
-         groove_r at all — instead of a groove_r-derived depth that would move \
-         in lockstep with the arc.",
-        seat_bottom * 1e3,
-        rope_underside * 1e3
-    );
 }
 
 // ── PRD §6 row 11: the seat removes 0.5·π·r²·L of stock ──────────────────────
@@ -777,14 +849,14 @@ fn capstan_seat_volume_delta_matches_half_pi_r2_l() {
     let result = dev_capstan();
 
     // ---- Read the design's own cells (SI: m, m³) ----
-    let blank_volume = capstan_cell(result, "blank_volume", DimensionVector::VOLUME);
-    let body_volume = capstan_cell(result, "body_volume", DimensionVector::VOLUME);
-    let rope_dia = capstan_cell(result, "rope_dia", DimensionVector::LENGTH);
-    let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
-    let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
-    let land_r = capstan_cell(result, "land_r", DimensionVector::LENGTH);
-    let lead = capstan_cell(result, "lead", DimensionVector::LENGTH);
-    let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
+    let blank_volume = capstan_cell(&result.values, "blank_volume", DimensionVector::VOLUME);
+    let body_volume = capstan_cell(&result.values, "body_volume", DimensionVector::VOLUME);
+    let rope_dia = capstan_cell(&result.values, "rope_dia", DimensionVector::LENGTH);
+    let pitch_r = capstan_cell(&result.values, "pitch_r", DimensionVector::LENGTH);
+    let groove_r = capstan_cell(&result.values, "groove_r", DimensionVector::LENGTH);
+    let land_r = capstan_cell(&result.values, "land_r", DimensionVector::LENGTH);
+    let lead = capstan_cell(&result.values, "lead", DimensionVector::LENGTH);
+    let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
 
     // ---- Pappus: unroll the helix to get its arc length ----
     // The spine is the seat's ARC CENTRE, which is where the swept section is
