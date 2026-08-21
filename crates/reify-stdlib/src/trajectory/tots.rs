@@ -88,25 +88,78 @@ mod shaper_family_guard {
     /// same path), so the scan below sees exactly the declarations authors get.
     const TRAJECTORY_RI: &str = include_str!("../../../reify-compiler/stdlib/trajectory.ri");
 
-    /// Every `structure def <Name> : Shaper` declared in `source`.
+    /// Every structure declared in `source` that refines `Shaper`.
     ///
     /// Deliberately a dumb line scan rather than a parse: the guard must keep
     /// working without pulling `reify-compiler` into `reify-stdlib`'s
     /// dependency graph (the dependency edge does not exist and must not be
     /// created for a test). Comment lines are skipped so the module-header
     /// bullet list at the top of `trajectory.ri` is not mistaken for a decl.
+    ///
+    /// The scan admits every SINGLE-LINE spelling the grammar accepts
+    /// (`grammar.js` `structure_definition`), because a form it silently
+    /// missed would be a shaper the lockstep gate below never checked:
+    ///
+    /// - `pub` is optional and live in the stdlib (`solver_elastic.ri:660`);
+    /// - `def` is optional too;
+    /// - the bound list is `+`-separated and `Shaper` need not come first
+    ///   (multi-bound refinement is live: `kinematic.ri:145/163`), so this
+    ///   tests MEMBERSHIP rather than the first token;
+    /// - a type-parameter colon (`structure def X<T: B> : Shaper`, cf.
+    ///   `kinematic.ri:214`) must not be mistaken for the bound colon, so the
+    ///   split is on the first `:` at angle-bracket depth ZERO.
+    ///
+    /// A header split across LINES, or carrying an interior comment, is still
+    /// outside a per-line scan's reach — the grammar's `extras` admit both.
+    /// That residue is covered by the exact-set assertion in
+    /// [`every_shipped_shaper_structure_is_recognised`]: any miss, partial or
+    /// total, goes RED naming the name that went missing.
     fn declared_shaper_type_names(source: &str) -> Vec<String> {
         source
             .lines()
             .map(str::trim)
             .filter(|line| !line.starts_with("//"))
-            .filter_map(|line| {
-                let rest = line.strip_prefix("structure def ")?;
-                let (name, bound) = rest.split_once(':')?;
-                (bound.split_whitespace().next()? == "Shaper")
-                    .then(|| name.trim().to_string())
-            })
+            .filter_map(shaper_refiner_name)
             .collect()
+    }
+
+    /// `Name` iff the trimmed `line` opens a structure declaration whose bound
+    /// list contains `Shaper`; `None` otherwise. See
+    /// [`declared_shaper_type_names`] for which spellings this accepts and why.
+    fn shaper_refiner_name(line: &str) -> Option<String> {
+        let rest = line.strip_prefix("pub ").unwrap_or(line);
+        let rest = rest.strip_prefix("structure ")?;
+        let rest = rest.strip_prefix("def ").unwrap_or(rest);
+
+        let (name, bounds) = split_at_bound_colon(rest)?;
+        // Drop any type-parameter list from the name: `X<T: B>` → `X`.
+        let name = name.split('<').next()?.trim();
+        if name.is_empty() {
+            return None;
+        }
+        // Stop at the body brace, then test membership in the `+` list.
+        bounds
+            .split('{')
+            .next()?
+            .split('+')
+            .any(|bound| bound.trim() == "Shaper")
+            .then(|| name.to_string())
+    }
+
+    /// Split `s` at the first `:` that is NOT inside a `<…>` type-parameter
+    /// list — i.e. the trait-bound colon. `None` when there is no such colon
+    /// (a structure that refines nothing).
+    fn split_at_bound_colon(s: &str) -> Option<(&str, &str)> {
+        let mut depth = 0usize;
+        for (idx, ch) in s.char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => depth = depth.saturating_sub(1),
+                ':' if depth == 0 => return Some((&s[..idx], &s[idx + 1..])),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// A field-less `Shaper` instance carrying `type_name`, exactly the shape
@@ -136,22 +189,37 @@ mod shaper_family_guard {
     /// `is_tots_shaper_type_name` for an SQP-family shaper, add a
     /// `build_train_for_shaper` arm for an impulse-family one). Do NOT add it
     /// to an allowlist here.
+    /// The shaper structures shipped in `trajectory.ri`, sorted. Pinned as an
+    /// EXACT set, not a floor: a floor only catches TOTAL scan breakage, while
+    /// the failure this guard exists to prevent is a SILENT PARTIAL miss — a
+    /// declaration form the scan drops while still returning enough names to
+    /// clear any lower bound.
+    const SHIPPED_SHAPER_STRUCTURES: [&str; 6] = [
+        "CascadedShaper",
+        "EIShaper",
+        "RevoluteTOTSShaper",
+        "TOTSShaper",
+        "ZVDShaper",
+        "ZVShaper",
+    ];
+
     #[test]
     fn every_shipped_shaper_structure_is_recognised() {
         let declared = declared_shaper_type_names(TRAJECTORY_RI);
 
-        // Canary on the scan itself: if the `.ri` spelling ever changes so the
-        // line scan stops matching, this guard would silently pass over an
-        // empty set. The six known refiners are TOTSShaper, RevoluteTOTSShaper,
-        // ZVShaper, ZVDShaper, EIShaper, CascadedShaper.
-        assert!(
-            declared.len() >= 6,
-            "scan of trajectory.ri found only {} `structure def <Name> : Shaper` \
-             declarations ({:?}) — expected at least the 6 known refiners. The \
-             scan itself has probably broken (declaration spelling changed); fix \
-             `declared_shaper_type_names` rather than lowering this bound.",
-            declared.len(),
-            declared
+        // Exact-set pin on the scan itself (see SHIPPED_SHAPER_STRUCTURES).
+        let mut sorted: Vec<&str> = declared.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted, SHIPPED_SHAPER_STRUCTURES,
+            "the scan of trajectory.ri no longer yields exactly the shipped \
+             shaper structures. If you ADDED a shaper: add its name to \
+             SHIPPED_SHAPER_STRUCTURES (and make sure an eval-side arm \
+             recognises it — that is what the loop below checks). If you \
+             REMOVED one: drop its name here. If you did NEITHER, the scan \
+             itself has broken on a declaration spelling it does not accept \
+             (a multi-line or comment-interrupted header, say) — fix \
+             `shaper_refiner_name`, do NOT edit this list to match."
         );
 
         for name in &declared {
@@ -165,6 +233,63 @@ mod shaper_family_guard {
                  yield a SILENT Value::Undef (exit 0, zero diagnostics). Widen \
                  `is_tots_shaper_type_name` (SQP family) or add a \
                  `build_train_for_shaper` arm (impulse family)."
+            );
+        }
+    }
+
+    /// Direct coverage of the SCAN, form by form. The lockstep gate above is
+    /// only as good as this parser: a declaration spelling it silently drops
+    /// is a shipped shaper the gate never checks. Every accepted form below
+    /// is one the grammar admits (`grammar.js` `structure_definition`), and
+    /// each rejected form is one that must NOT be mistaken for a shaper decl.
+    #[test]
+    fn shaper_refiner_name_accepts_every_single_line_declaration_form() {
+        for (line, expected) in [
+            // The plain form the stdlib uses today.
+            ("structure def ZVShaper : Shaper {", Some("ZVShaper")),
+            // `def` is optional in the grammar.
+            ("structure ZVShaper : Shaper {", Some("ZVShaper")),
+            // `pub` is optional and live in the stdlib (solver_elastic.ri:660).
+            ("pub structure def PubShaper : Shaper {", Some("PubShaper")),
+            ("pub structure PubShaper : Shaper {", Some("PubShaper")),
+            // Shaper need not be FIRST in a `+`-separated bound list
+            // (multi-bound refinement is live: kinematic.ri:145/163).
+            (
+                "structure def FooShaper : Marker + Shaper {",
+                Some("FooShaper"),
+            ),
+            (
+                "structure def FooShaper : Shaper + Marker {",
+                Some("FooShaper"),
+            ),
+            // The type-parameter colon must not be read as the bound colon
+            // (cf. kinematic.ri:214), and the `<…>` must not reach the name.
+            (
+                "structure def GenShaper<T: Bound> : Shaper {",
+                Some("GenShaper"),
+            ),
+            // Whitespace is `extras`, so spacing must not matter.
+            ("structure def TightShaper:Shaper{", Some("TightShaper")),
+            // ── must NOT match ──
+            // A structure refining nothing.
+            ("structure def Waypoint {", None),
+            // A different marker trait entirely.
+            ("structure def NaturalSpline : BoundaryCondition {", None),
+            // A bound that merely CONTAINS "Shaper" is a different trait.
+            ("structure def X : ShaperLike {", None),
+            ("structure def X : NotAShaper {", None),
+            // Only the type-parameter bound is Shaper — the structure itself
+            // does not refine it.
+            ("structure def X<T: Shaper> {", None),
+            // Not a structure declaration at all.
+            ("occurrence def X : Shaper {", None),
+            ("pub fn input_shape(profile: Profile, shaper: Shaper)", None),
+        ] {
+            assert_eq!(
+                shaper_refiner_name(line).as_deref(),
+                expected,
+                "scan mis-read {line:?} — a form the scan drops is a shipped \
+                 shaper the lockstep gate never checks"
             );
         }
     }
