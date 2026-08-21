@@ -1442,3 +1442,319 @@ mod alias_to_entity_type_other_emit_sites {
         assert_alias_resolves_like_direct(direct_src, alias_src, "port param");
     }
 }
+
+// ─── task 6259: the three positions that own a PRIVATE enum namespace ───────
+//
+// The deferred use-site arm (`resolve_type_expr_with_aliases_kinded`) resolves
+// an unresolved non-parametric alias's body by RECURSING into itself, so the
+// body's ENUM-ness is only visible where the ambient enum set
+// (`RESOLUTION_ENUM_NAMES`, installed by `EnumNameScope`) is live. That scope is
+// installed at exactly two places — struct-param resolution (`entity.rs`) and
+// fn param/return resolution (`functions.rs`).
+//
+// These THREE positions install no such scope. Each instead owns a PRIVATE enum
+// namespace, consulted by a post-hoc `.or_else(..)` fallback keyed on the OUTER
+// name — which is the ALIAS name `AL`, never the body name `Zq` — so the body's
+// enum-ness is structurally unreachable there:
+//
+//   * enum variant payload  — `compile_builder/enums_phase.rs`, the
+//                             `enum_names.contains(name)` arm.
+//   * trait member param    — `traits.rs`, the `resolve_enum_type_with_args`
+//                             fallback in `resolve_trait_member_type_annotation`.
+//   * constraint def param  — `compile_builder/defs_phase.rs`, the
+//                             `resolve_enum_type(name, enum_defs)` clause of the
+//                             unknown-type guard.
+//
+// MEASURED RED on this branch, `enum Zq` body via `type AL = Zq`:
+//
+//   position              | direct        | via alias
+//   ----------------------+---------------+---------------------------------
+//   enum variant payload  | Enum("Zq")    | Error, and NO diagnostic at all
+//   trait member param    | Param(Enum)   | Param(Error) + `unresolved type in
+//                         |               | trait 'Tq': AL`
+//   constraint def param  | ty: None,     | ty: None + spurious `unknown type
+//                         | clean         | 'AL' in param 'g' ...`
+//
+// The variant-payload row is the reason every row asserts the RESOLVED TYPE and
+// not merely the diagnostics: there, the alias spelling is SILENTLY wrong — a
+// diagnostic-only lock would stay green while the payload field carries
+// `Type::Error`.
+//
+// Each row also asserts its DIRECT baseline clean FIRST — the same non-vacuity
+// discipline as `alias_to_entity_type_parity` above — so a parity assertion can
+// never pass with both sides equally broken.
+//
+// STRUCTURE-bodied companion rows pin the already-working half: `structure_names`
+// is threaded into the resolver as a real argument, so `resolve_type_with_aliases`
+// resolves a structure-def body directly and all three positions ALREADY agree
+// (MEASURED `StructureRef("Bq")` on both sides). They are what localises the
+// defect to the enum namespace specifically, and they will catch a fix that
+// regresses the working half.
+//
+// CONSTRAINT-DEF ROW, READ BEFORE "STRENGTHENING": for the ENUM body, `ty` is
+// `None` on BOTH sides. The direct path's `resolve_enum_type` guard only
+// SUPPRESSES the diagnostic — it never populates `ty`. So the parity target
+// there is `ty == None` AND zero errors; do NOT assert `Some(Enum("Zq"))`, which
+// would over-specify beyond parity and demand instantiation-time work this task
+// deliberately leaves out of scope.
+mod alias_to_entity_type_private_enum_namespaces {
+    use super::*;
+    use reify_compiler::RequirementKind;
+    use reify_ir::VariantPayload;
+    use reify_test_support::compile_source_with_stdlib;
+
+    /// One of the three declared-type positions that consults a private enum
+    /// namespace instead of installing `EnumNameScope`.
+    #[derive(Clone, Copy)]
+    enum Position {
+        EnumVariantPayload,
+        TraitMemberParam,
+        ConstraintDefParam,
+    }
+
+    impl Position {
+        fn label(self) -> &'static str {
+            match self {
+                Position::EnumVariantPayload => "enum variant payload",
+                Position::TraitMemberParam => "trait member param",
+                Position::ConstraintDefParam => "constraint def param",
+            }
+        }
+
+        /// Build a source in which `type_name` occupies this position.
+        fn source(self, decls: &str, type_name: &str) -> String {
+            match self {
+                Position::EnumVariantPayload => format!(
+                    "{decls}\nenum Wrap {{\n    W {{ v : {type_name} }},\n    N\n}}\n"
+                ),
+                Position::TraitMemberParam => {
+                    format!("{decls}\ntrait Tq {{\n    param g : {type_name}\n}}\n")
+                }
+                Position::ConstraintDefParam => format!(
+                    "{decls}\nconstraint def K {{\n    param g : {type_name}\n    \
+                     param w : Length\n    w > 0.0mm\n}}\n"
+                ),
+            }
+        }
+
+        /// Compile `source` and read back the declared `Type` this position
+        /// stored for the member named `g` / field named `v`, plus every
+        /// Error-severity message.
+        ///
+        /// `None` means "the position stored no type" — which is the CORRECT
+        /// direct-path outcome for a bare enum at the constraint-def position,
+        /// and is therefore a legitimate parity target rather than a failure.
+        fn resolved_type_and_errors(self, source: &str) -> (Option<Type>, Vec<String>) {
+            let module = compile_source_with_stdlib(source);
+            let errors: Vec<String> = errors_only(&module)
+                .iter()
+                .map(|d| d.message.clone())
+                .collect();
+            let ty = match self {
+                Position::EnumVariantPayload => {
+                    let wrap = module
+                        .enum_defs
+                        .iter()
+                        .find(|e| e.name == "Wrap")
+                        .unwrap_or_else(|| panic!("enum `Wrap` not found; errors: {errors:?}"));
+                    let variant = wrap
+                        .variants
+                        .iter()
+                        .find(|v| v.name == "W")
+                        .unwrap_or_else(|| panic!("variant `Wrap.W` not found; errors: {errors:?}"));
+                    match &variant.payload {
+                        VariantPayload::Named(fields) => fields
+                            .iter()
+                            .find(|(n, _)| n == "v")
+                            .map(|(_, t)| t.clone()),
+                        VariantPayload::Unit => panic!(
+                            "`Wrap.W` lost its named payload entirely; errors: {errors:?}"
+                        ),
+                    }
+                }
+                Position::TraitMemberParam => {
+                    let tq = module
+                        .trait_defs
+                        .iter()
+                        .find(|t| t.name == "Tq")
+                        .unwrap_or_else(|| panic!("trait `Tq` not found; errors: {errors:?}"));
+                    let member = tq
+                        .required_members
+                        .iter()
+                        .find(|m| m.name == "g")
+                        .unwrap_or_else(|| {
+                            panic!("trait member `Tq.g` not found; errors: {errors:?}")
+                        });
+                    match &member.kind {
+                        RequirementKind::Param(t) => Some(t.clone()),
+                        other => panic!(
+                            "`Tq.g` should be a Param requirement, got {other:?}; \
+                             errors: {errors:?}"
+                        ),
+                    }
+                }
+                Position::ConstraintDefParam => {
+                    let k = module
+                        .constraint_defs
+                        .iter()
+                        .find(|c| c.name == "K")
+                        .unwrap_or_else(|| {
+                            panic!("constraint def `K` not found; errors: {errors:?}")
+                        });
+                    k.params
+                        .iter()
+                        .find(|p| p.name == "g")
+                        .unwrap_or_else(|| {
+                            panic!("constraint param `K.g` not found; errors: {errors:?}")
+                        })
+                        .ty
+                        .clone()
+                }
+            };
+            (ty, errors)
+        }
+    }
+
+    const POSITIONS: &[Position] = &[
+        Position::EnumVariantPayload,
+        Position::TraitMemberParam,
+        Position::ConstraintDefParam,
+    ];
+
+    /// Run the direct-vs-alias comparison for one body at every position,
+    /// returning a human-readable failure per violated row.
+    fn parity_failures(body_label: &str, decls: &str, body: &str) -> Vec<String> {
+        let mut failures = Vec::new();
+        for &pos in POSITIONS {
+            let direct_src = pos.source(decls, body);
+            let alias_src = pos.source(&format!("{decls}\ntype AL = {body}"), "AL");
+
+            // The DIRECT spelling is the oracle. If it is not clean the row says
+            // nothing about the alias path, so fail loudly on the fixture rather
+            // than letting the parity assertion pass vacuously.
+            let (direct_ty, direct_errs) = pos.resolved_type_and_errors(&direct_src);
+            assert!(
+                direct_errs.is_empty(),
+                "[{}/{}] DIRECT baseline must compile cleanly for the parity oracle to \
+                 mean anything; got: {:?}\n--- source ---\n{}",
+                pos.label(),
+                body_label,
+                direct_errs,
+                direct_src
+            );
+
+            let (alias_ty, alias_errs) = pos.resolved_type_and_errors(&alias_src);
+            if !alias_errs.is_empty() {
+                failures.push(format!(
+                    "[{}/{}] alias spelling produced Error diagnostics: {:?}",
+                    pos.label(),
+                    body_label,
+                    alias_errs
+                ));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{}/{}] alias `type AL = {}` resolved to {:?}, but the direct \
+                     spelling resolves to {:?}",
+                    pos.label(),
+                    body_label,
+                    body,
+                    alias_ty,
+                    direct_ty
+                ));
+            }
+        }
+        failures
+    }
+
+    #[test]
+    fn alias_to_enum_resolves_identically_to_the_direct_spelling_in_all_three() {
+        let failures = parity_failures("enum", "enum Zq { Close, Medium }", "Zq");
+        assert!(
+            failures.is_empty(),
+            "alias/direct parity violated in a private-enum-namespace position:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn alias_to_structure_def_resolves_identically_to_the_direct_spelling_in_all_three() {
+        // Companion row: `structure_names` is a real resolver argument, so this
+        // half ALREADY works in all three positions. It is here to localise the
+        // defect to the enum namespace and to catch a fix that regresses the
+        // working half.
+        let failures = parity_failures(
+            "structure def",
+            "structure def Bq {\n    param w : Length = 1.0mm\n}",
+            "Bq",
+        );
+        assert!(
+            failures.is_empty(),
+            "the already-working structure-def half regressed:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn transitive_alias_chain_to_enum_resolves_identically_in_all_three() {
+        // `A2 -> A1 -> Zq`: the fix must WALK the unresolved-alias chain, not
+        // just hop one link.
+        let decls = "enum Zq { Close, Medium }";
+        let mut failures = Vec::new();
+        for &pos in POSITIONS {
+            let direct_src = pos.source(decls, "Zq");
+            let alias_src = pos.source(&format!("{decls}\ntype A1 = Zq\ntype A2 = A1"), "A2");
+
+            let (direct_ty, direct_errs) = pos.resolved_type_and_errors(&direct_src);
+            assert!(
+                direct_errs.is_empty(),
+                "[{}] DIRECT baseline must compile cleanly; got: {:?}",
+                pos.label(),
+                direct_errs
+            );
+
+            let (alias_ty, alias_errs) = pos.resolved_type_and_errors(&alias_src);
+            if !alias_errs.is_empty() {
+                failures.push(format!(
+                    "[{}] chain `A2 -> A1 -> Zq` produced Error diagnostics: {:?}",
+                    pos.label(),
+                    alias_errs
+                ));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{}] chain `A2 -> A1 -> Zq` resolved to {:?}, direct `Zq` resolves \
+                     to {:?}",
+                    pos.label(),
+                    alias_ty,
+                    direct_ty
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "transitive alias chain parity violated:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn circular_alias_in_a_private_enum_namespace_position_still_terminates() {
+        // The step-7 walker inherits the SAME cycle hazard the deferred arm
+        // documented: `type C1 = C2` / `type C2 = C1` leaves BOTH entries
+        // unresolved with a bare-`Named` body, so a naive chain walk ping-pongs
+        // until the stack overflows. Compiling at all is the assertion; the
+        // cycle diagnostic must survive.
+        for &pos in POSITIONS {
+            let source = pos.source("type C1 = C2\ntype C2 = C1", "C1");
+            let module = compile_source_with_stdlib(&source);
+            let errs = errors_only(&module);
+            assert!(
+                errs.iter().any(|d| d.message.contains("circular type alias")),
+                "[{}] a circular alias must still report the cycle; got: {:?}",
+                pos.label(),
+                errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+}
