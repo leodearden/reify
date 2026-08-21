@@ -1377,9 +1377,12 @@ mod has_test_annotation_tests {
 
 #[cfg(test)]
 mod find_param_default_span_tests {
-    use super::{Expr, LetDecl, MemberDecl, ParamDecl, find_param_default_span};
+    use super::{
+        Expr, GuardedGroupDecl, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
+        ParamDecl, PortDecl, find_param_default_span,
+    };
     use crate::ast::ExprKind;
-    use reify_core::{ContentHash, SourceSpan};
+    use reify_core::{ContentHash, PortDirection, SourceSpan};
 
     /// Build a `MemberDecl::Param` by hand — no parser.
     ///
@@ -1428,6 +1431,73 @@ mod find_param_default_span_tests {
             span: SourceSpan::new(decl_span.0, decl_span.1),
             content_hash: ContentHash(0),
         })
+    }
+
+    /// A `BoolLiteral(true)` stand-in for a guard condition / match discriminant.
+    fn dummy_expr() -> Expr {
+        Expr {
+            kind: ExprKind::BoolLiteral(true),
+            span: SourceSpan::new(0, 1),
+        }
+    }
+
+    /// `where <cond> { members } else { else_members }`.
+    fn guarded(members: Vec<MemberDecl>, else_members: Vec<MemberDecl>) -> MemberDecl {
+        MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition: dummy_expr(),
+            members,
+            else_members,
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `port <name> : in <T> { members }`.
+    fn port(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
+        MemberDecl::Port(PortDecl {
+            name: name.to_string(),
+            direction: Some(PortDirection::In),
+            type_name: "FluidPort".to_string(),
+            is_priv: false,
+            members,
+            frame_expr: None,
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `match <disc> { P => <member> … }` at decl level.
+    fn match_arm_group(arms: Vec<(&str, MemberDecl)>) -> MemberDecl {
+        MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+            discriminant: dummy_expr(),
+            arms: arms
+                .into_iter()
+                .map(|(pattern, member)| MatchArmDeclArmDecl {
+                    patterns: vec![pattern.to_string()],
+                    member: Box::new(member),
+                    span: SourceSpan::new(0, 1),
+                })
+                .collect(),
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `depth` levels of GuardedGroup nesting wrapping one param that HAS a default.
+    ///
+    /// Same shape as `build_nested_guarded_members` in
+    /// crates/reify-lsp/src/analysis.rs, but with a default attached so the
+    /// depth assertions can name the exact span rather than settling for `is_some`.
+    fn build_nested_guarded_members(
+        depth: usize,
+        target: &str,
+        default_span: (u32, u32),
+    ) -> Vec<MemberDecl> {
+        let mut current = vec![param(target, (0, 40), Some(default_span))];
+        for _ in 0..depth {
+            current = vec![guarded(current, vec![])];
+        }
+        current
     }
 
     #[test]
@@ -1479,5 +1549,80 @@ mod find_param_default_span_tests {
         // rewritable param default, so it must not resolve.
         let members = vec![let_member("width", (0, 20), (12, 17))];
         assert_eq!(find_param_default_span(&members, "width"), None);
+    }
+
+    // ── step-3: nested reach parity with `find_named_member_span` ────────────
+
+    #[test]
+    fn param_inside_guarded_then_branch_resolves() {
+        // examples/m5_guarded_enum.ri:7-9 —
+        //   where shape == Shape.Round { param diameter : Length = size }
+        let members = vec![guarded(
+            vec![param("diameter", (0, 40), Some((10, 14)))],
+            vec![],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "diameter"),
+            Some(SourceSpan::new(10, 14))
+        );
+    }
+
+    #[test]
+    fn param_inside_guarded_else_branch_resolves() {
+        // examples/m5_guarded_enum.ri:9-11 —
+        //   } else { param side_length : Length = size }
+        let members = vec![guarded(
+            vec![],
+            vec![param("side_length", (0, 40), Some((30, 34)))],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "side_length"),
+            Some(SourceSpan::new(30, 34))
+        );
+    }
+
+    #[test]
+    fn param_inside_port_body_resolves() {
+        // examples/m5_connect_chain.ri:6 —
+        //   port inlet : in FluidPort { param diameter : Length = 25mm }
+        // Matches the port recursion `find_named_member_span` already has.
+        let members = vec![port(
+            "inlet",
+            vec![param("diameter", (0, 40), Some((44, 48)))],
+        )];
+        assert_eq!(
+            find_param_default_span(&members, "diameter"),
+            Some(SourceSpan::new(44, 48))
+        );
+    }
+
+    #[test]
+    fn param_inside_match_arm_decl_group_resolves() {
+        // Parity with `find_named_member_span_depth`'s MatchArmDeclGroup arm.
+        let members = vec![match_arm_group(vec![(
+            "Round",
+            param("bore", (0, 40), Some((18, 22))),
+        )])];
+        assert_eq!(
+            find_param_default_span(&members, "bore"),
+            Some(SourceSpan::new(18, 22))
+        );
+    }
+
+    #[test]
+    fn param_within_depth_limit_resolves() {
+        // 5 levels of GuardedGroup nesting — well inside MAX_MEMBER_NESTING_DEPTH (32).
+        let members = build_nested_guarded_members(5, "deep_param", (10, 14));
+        assert_eq!(
+            find_param_default_span(&members, "deep_param"),
+            Some(SourceSpan::new(10, 14))
+        );
+    }
+
+    #[test]
+    fn param_beyond_depth_limit_returns_none() {
+        // 33 levels — past MAX_MEMBER_NESTING_DEPTH (32), so the subtree is cut off.
+        let members = build_nested_guarded_members(33, "unreachable_param", (10, 14));
+        assert_eq!(find_param_default_span(&members, "unreachable_param"), None);
     }
 }
