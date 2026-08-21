@@ -1039,4 +1039,60 @@ assert "gen-nextest-config.sh's documented no-nproc last-resort HARD_CAP constan
         [ -n \"\$script_const\" ] && [ -n \"\$emitted\" ] && [ \"\$script_const\" = \"\$emitted\" ]
     "
 
+# ---------------------------------------------------------------------------
+# Test 17m (task 6374): THE NO-STRING-LEAK CONJUNCT — the template carries
+# nextest's host-relative string AND a real generate still emits an INTEGER.
+#
+# APPENDED as a new letter rather than folded into 17a, following this file's
+# convention for genuinely NEW coverage ("appended rather than interleaved so
+# the existing letters keep their meaning in the commit history and in the S7
+# accounting table"), whereas 17a/17b/17k were re-pointed in place because their
+# property is unchanged and only its spelling moved.
+#
+# WHY THIS IS NOT A RESTATEMENT OF 17a.  The GENERATED config is what verify.sh
+# actually consumes via --config-file, and it must always carry an integer.  17a
+# alone cannot pin that: if the toml moves to `"num-cpus"` but the sed anchor in
+# gen-nextest-config.sh is NOT widened, the substitution silently no-ops — both
+# anchors "fail SAFE" by design, per that script's own comment, which is exactly
+# what makes this breakage invisible — and the generated config inherits the
+# string verbatim.  That state silently replaces the host-resolved pool with
+# nextest's own default AND makes both REIFY_NEXTEST_TEST_THREADS knobs dead,
+# because there is no longer any line for the sed to rewrite.
+#
+# Asserting BOTH conjuncts in ONE assert is what makes it a driver rather than a
+# restatement: RED on the pre-6374 tree (src is the integer), RED on a half-done
+# tree where the toml moved but the anchor did not (gen comes back
+# `"num-cpus"`), and GREEN only when BOTH moved.  It is therefore the mechanical
+# enforcement of this change's one-commit requirement.  That half-done state was
+# not reasoned about abstractly — it was hit by accident when a script patch
+# silently failed, and 17m caught it while 17a/17b/17k all reported green.
+#
+# The RHS-VERBATIM extractor is applied to the GENERATED file here deliberately,
+# unlike everywhere else in 17c-17j.  _DEFAULT_TT_AWK would return empty on a
+# leaked string and the assert would still fail — but for the wrong reason and
+# with an uninformative diagnostic.  The verbatim extractor surfaces the leaked
+# `"num-cpus"` directly.
+#
+# NPROC=8 is chosen so the expected value differs from this host's real nproc
+# (32) and from the `${_nproc:-32}` last resort, so neither a leaked string nor a
+# skipped substitution can coincidentally equal it.  Full env -u hermeticity per
+# the required form above: HARD_CAP is a supported tuning point an operator may
+# legitimately have exported.
+#
+# Compile-free: awk plus one generate, no cargo, no nextest (task 4613).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 17m (task 6374): the template is host-relative AND the generated config still carries an integer ---"
+
+assert "nextest.toml template is test-threads = \"num-cpus\" AND gen-nextest-config.sh REIFY_OCCT_NPROC=8 still emits the INTEGER 8 (the string never leaks into the config verify.sh feeds to --config-file; both conjuncts from real parsed state)" \
+    bash -c "
+        src=\$(awk '${_SOURCE_TT_AWK}' '$NEXTEST_TOML')
+        cfg=\$(REIFY_OCCT_NPROC=8 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              bash '$GEN_CFG')
+        gen=\$(awk '${_SOURCE_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$src\" = '\"num-cpus\"' ] && [ \"\$gen\" = '8' ]
+    "
+
 test_summary
