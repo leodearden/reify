@@ -36,10 +36,43 @@ fn collect_constraint_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
     refs
 }
 
+/// Can this solver actually ENUMERATE a domain for `param`, given `constraints`?
+///
+/// The single authority on CP-SAT's enumeration capability, consulted by
+/// `decompose::domain_of_auto` so the ROUTING decision (which solver slot a
+/// component is handed to) and the CAPABILITY (whether that solver can build a
+/// domain for every auto in it) cannot drift apart. Before this predicate
+/// existed, that caller re-derived the capability from a hand-written type
+/// list in its own doc comment — a list that was already falsified by three
+/// arms of `build_variable_domain` below (the `Type::Int`-without-bounds
+/// rejection, the variant-less `Type::Enum` rejection, and the `other =>`
+/// catch-all that rejects `String`/`List`/`Geometry`/…).
+///
+/// # Why it DELEGATES rather than re-matching
+///
+/// Answering "can it?" by asking "did it?" is the only formulation that cannot
+/// drift: a new accepted or rejected shape in `build_variable_domain` changes
+/// this predicate in the same commit, by construction. The cost is bounded by
+/// `MAX_INT_DOMAIN` (1000 `Value::Int`s in the worst case, discarded
+/// immediately) and is paid once per auto reached THROUGH a dependent cell
+/// during decomposition — never on a direct-only model, where the caller's
+/// `reached` set is empty (PRD2 D1/B2 identity).
+pub(crate) fn can_enumerate(
+    param: &AutoParam,
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+) -> bool {
+    build_variable_domain(param, constraints).is_ok()
+}
+
 /// Build the domain for a single auto param based on its type.
 /// For Bool: {true, false}
 /// For Int: enumerate lo..=hi from bounds (capped at MAX_INT_DOMAIN)
 /// For Enum: extract variant literals from constraints
+///
+/// NOTE: every `Err` arm below is also a routing input — see
+/// [`can_enumerate`], which is this function's `is_ok()` and is what
+/// `decompose::domain_of_auto` consults. Adding or removing a rejection here
+/// changes component routing too, deliberately and in the same edit.
 fn build_variable_domain(
     param: &AutoParam,
     constraints: &[(ConstraintNodeId, CompiledExpr)],

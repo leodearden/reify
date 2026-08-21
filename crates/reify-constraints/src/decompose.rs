@@ -323,44 +323,98 @@ pub(crate) fn dependent_cell_reach_delta(
         .collect()
 }
 
-/// The domain flag a bare auto param of this type contributes when it was
-/// reached only THROUGH a derived cell (`Scalar` → `Dimensional`, `Bool` →
-/// `Logical`, anything else → no contribution).
+/// The domain flag a bare auto param contributes when it was reached only
+/// THROUGH a derived cell.
 ///
 /// `None` means "contributes nothing", which is NOT the same as `Dimensional`:
-/// `Dimensional` doubles as the classifier's empty-default, so folding a
-/// `String`/`Enum`-typed auto in as `Dimensional` would fabricate a numeric flag
-/// the classifier itself never sets.
+/// `Dimensional` doubles as the classifier's empty-default, so folding an auto
+/// in as `Dimensional` fabricates a numeric flag the classifier itself never
+/// set. That is a real cost, so `None` is reserved for the cases where it is
+/// provably harmless.
 ///
-/// # Why the numeric arm is `Scalar` only, and NOT `Type::is_numeric()`
+/// # The routing question this answers, and why it is SAFE-BY-DEFAULT
 ///
-/// This deliberately does NOT mirror `ConstraintClassifier`'s `ValueRef` arm,
-/// which uses `Type::is_numeric()` = `Int | Scalar`. The mirror would be wrong
-/// here because this function answers a ROUTING question, not a
-/// what-does-the-syntax-look-like question: the only reason to widen at all is
-/// that `SolverRegistry::solver_for` routes on `SubProblem.domain`, and a
-/// `Logical` verdict hands the component to `CpSatSolver`. `build_variable_domain`
-/// handles `Type::Bool`, `Type::Int` and `Type::Enum` NATIVELY and rejects only
-/// `Type::Scalar`, so `Scalar` is exactly the set of auto types that make a
-/// `Logical` routing unsafe.
+/// This deliberately does NOT mirror `ConstraintClassifier`'s `ValueRef` arm
+/// (`Type::is_numeric()` = `Int | Scalar`). The mirror would be wrong because
+/// this function answers a ROUTING question, not a what-does-the-syntax-look-like
+/// question: `SolverRegistry::solver_for` routes on `SubProblem.domain`, and a
+/// `Logical` verdict hands the whole component to whatever occupies the
+/// `Logical` slot — `CpSatSolver`, once PRD2 γ wires it. If that solver cannot
+/// build a domain for one of the component's autos, `build_variable_domain`
+/// returns `Err` and `solve_inner` fails the ENTIRE component with
+/// `NoProgress`.
 ///
-/// Folding `Int` in as `Dimensional` would take `let ok = n > 5; constraint ok
-/// == true` over an `Int` auto from `Logical` to `CrossDomain` and route that
-/// purely-discrete component to the FALLBACK slot — a `DimensionalSolver` that
-/// cannot enumerate the `Bool` cell — instead of to the CP-SAT that handles both
-/// sides of it. `Enum` contributes `None` for the same reason (CP-SAT enumerates
-/// it), which is where the `Int` arm now sits too. Pinned by
-/// `an_int_auto_behind_a_bool_cell_stays_logical`.
+/// So the safe default is "contribute the numeric flag", which forces
+/// `CrossDomain` on any `Logical` classification and routes to the FALLBACK
+/// slot. `None` — the answer that lets a component stay `Logical` — is returned
+/// only for autos [`crate::cpsat::can_enumerate`] says CP-SAT can actually
+/// enumerate. Consulting that predicate rather than re-deriving a type list
+/// here is the point: the routing decision and the enumeration capability are
+/// now the same fact, so a new rejection in `build_variable_domain` re-routes
+/// in the same commit (the same G7 no-lockstep-duplication argument
+/// `fold_dependent_cells` and `expand_refs_through_dependent_cells` already
+/// make).
 ///
-/// KNOWN ASYMMETRY, accepted: a SYNTACTICALLY visible `Int` next to a `Bool` still
-/// classifies `CrossDomain` (the classifier's own `is_numeric()` arm, untouched
-/// here and outside this task's lock set). This function governs only the
+/// Concretely, the shapes this now routes to the fallback that the earlier
+/// hand-written `_ => None` catch-all silently routed at a solver that rejects
+/// them:
+///   * `Type::Int` with `bounds: None` — NOT hypothetical: `build_auto_param_list`
+///     (`reify-eval/src/engine_eval.rs`) hard-codes `bounds: None` for EVERY
+///     auto param the engine produces, so an engine-produced `Int` auto is
+///     always exactly the shape `build_variable_domain` rejects.
+///   * `Type::Int` whose bounds are non-finite, out of `i64` range, or span
+///     more than `MAX_INT_DOMAIN` values.
+///   * `Type::Enum` with no variant literal anywhere in `constraints`.
+///   * `Type::String`/`List`/`Set`/`Map`/`Option`/`Geometry`/`Feature`/
+///     `StructureRef`/`TraitObject`/`Field`/… — everything under
+///     `build_variable_domain`'s `other =>` catch-all.
+///
+/// # Why `Type::Bool` is checked BEFORE the predicate
+///
+/// CP-SAT enumerates `Bool` natively, so the predicate alone would answer
+/// `None` for it. But a `Bool` auto reached through a derived cell must still
+/// contribute its LOGICAL flag: a constraint the classifier called
+/// `Dimensional` that reaches a `Bool` auto is genuinely cross-domain, and
+/// leaving it `Dimensional` would route a `Bool` auto at `DimensionalSolver`,
+/// which cannot enumerate it. The `Bool` arm therefore answers the domain
+/// question, not the capability question, and is matched first.
+///
+/// # KNOWN APPROXIMATION, accepted: `Type::Enum` sees the WHOLE problem
+///
+/// `can_enumerate`'s enum arm scans `constraints` for variant literals, and the
+/// slice passed here is the decomposition's FULL input, not the component the
+/// auto will end up in. A variant literal that lands in a DIFFERENT component
+/// therefore still counts as enumerable. This over-approximates in the unsafe
+/// direction — but only relative to a perfect answer, never relative to what
+/// stood here before: the old code contributed `None` for `Type::Enum`
+/// UNCONDITIONALLY, so every enum auto routed `Logical` regardless. Component
+/// membership is not known at this point in the loop (the union-find is still
+/// being built), so a per-component answer would need a second pass.
+///
+/// # KNOWN ASYMMETRY, accepted
+///
+/// A SYNTACTICALLY visible `Int` next to a `Bool` still classifies
+/// `CrossDomain` via the classifier's own `is_numeric()` arm, untouched here
+/// and outside this task's lock set. This function governs only the
 /// invisible-auto delta, where the routing-safety reading is the useful one.
-fn domain_of_auto_type(param_type: &reify_core::Type) -> Option<ConstraintDomain> {
-    match param_type {
-        reify_core::Type::Scalar { .. } => Some(ConstraintDomain::Dimensional),
+///
+/// Pinned by `an_int_auto_behind_a_bool_cell_stays_logical` (the enumerable
+/// case) and its `..._unbounded_...` / `..._a_string_auto_...` /
+/// `..._a_variantless_enum_...` siblings (the rejected cases).
+fn domain_of_auto(
+    param: &AutoParam,
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+) -> Option<ConstraintDomain> {
+    match &param.param_type {
+        // Answers the DOMAIN question, so it precedes the capability probe.
         reify_core::Type::Bool => Some(ConstraintDomain::Logical),
-        _ => None,
+        // CP-SAT can build a domain for this auto, so letting the component
+        // stay `Logical` is safe — contribute nothing.
+        _ if crate::cpsat::can_enumerate(param, constraints) => None,
+        // Everything else: `Dimensional` forces `CrossDomain` on a `Logical`
+        // classification and routes to the fallback slot. A `Scalar` auto lands
+        // here too, which is what the previous explicit `Scalar` arm did.
+        _ => Some(ConstraintDomain::Dimensional),
     }
 }
 
@@ -374,6 +428,18 @@ fn domain_of_auto_type(param_type: &reify_core::Type) -> Option<ConstraintDomain
 /// Kept here rather than in `classifier.rs` because it exists only to widen an
 /// ALREADY-classified constraint with autos the classifier could not see; the
 /// classifier's own single-expression contract is unchanged.
+///
+/// # Why the match is EXHAUSTIVE rather than `_ => Dimensional`
+///
+/// The two equal-pair arms at the bottom are unreachable at runtime (the
+/// `a == b` fast path returns first), and a catch-all would be shorter. But a
+/// catch-all makes a future `ConstraintDomain` variant collapse SILENTLY to
+/// `Dimensional` — the LEAST conservative answer — and route an unrepresentable
+/// component straight at `DimensionalSolver`. That is precisely the
+/// latent-misrouting class the rest of this module exists to close. Spelling
+/// every pair out turns a new variant into a COMPILE ERROR instead. The fast
+/// path is a runtime early-return, so the compiler still requires those arms
+/// and never warns `unreachable_patterns`.
 fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
     use ConstraintDomain::{CrossDomain, Dimensional, Geometric, Logical};
     if a == b {
@@ -386,9 +452,10 @@ fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
         // geometric absorbs numeric (the classifier reports `Geometric` for a
         // geometry call over numeric leaves)
         (Geometric, Dimensional) | (Dimensional, Geometric) => Geometric,
-        // exhaustive: the only remaining pair is (Dimensional, Dimensional),
-        // already returned by the `a == b` fast path above.
-        _ => Dimensional,
+        // Unreachable at runtime via the `a == b` fast path above, but required
+        // for exhaustiveness — see the doc comment.
+        (Dimensional, Dimensional) => Dimensional,
+        (Geometric, Geometric) => Geometric,
     }
 }
 
@@ -544,7 +611,7 @@ pub(crate) fn decompose_into_components_with_reads(
         let mut domain = ConstraintClassifier::classify(expr);
         for id in &reached {
             if let Some(&pi) = param_index.get(id)
-                && let Some(d) = domain_of_auto_type(&auto_params[pi].param_type)
+                && let Some(d) = domain_of_auto(&auto_params[pi], constraints)
             {
                 domain = widen_domain(domain, d);
             }
@@ -1039,21 +1106,27 @@ mod tests {
         );
     }
 
-    /// An `Int` cell over an `Int` auto behind a `Bool` derived cell stays
-    /// `Logical` — `let ok = n > 5; constraint ok == true`.
+    /// A BOUNDED `Int` auto behind a `Bool` derived cell stays `Logical` —
+    /// `let ok = n > 5; constraint ok == true`.
     ///
     /// `Type::is_numeric()` is `Int | Scalar`, so mirroring the classifier's
     /// `ValueRef` arm verbatim would widen this component to `CrossDomain` and
     /// route it to the FALLBACK slot. But the component is PURELY DISCRETE:
-    /// `CpSatSolver::build_variable_domain` enumerates `Type::Int` natively (as
-    /// it does `Bool` and `Enum`) and rejects only `Type::Scalar`, so `Logical`
-    /// is the routing that can actually solve it, while the fallback
-    /// `DimensionalSolver` cannot enumerate the `Bool` cell at all.
+    /// `build_variable_domain` enumerates `0..=10` natively, as it does the
+    /// `Bool` cell, so `Logical` is the routing that can actually solve it
+    /// while `DimensionalSolver` cannot enumerate the `Bool` side at all.
     ///
-    /// This is the discriminator for `domain_of_auto_type`'s `Scalar`-only
-    /// numeric arm: reverting it to `param_type.is_numeric()` turns this red
-    /// while leaving all three sibling domain units green (they use
-    /// `Type::length()` or `Type::Bool` and never exercise `Int`).
+    /// This is the POSITIVE discriminator for `domain_of_auto`'s
+    /// `can_enumerate` probe: it is the only domain unit in this module whose
+    /// auto CP-SAT accepts but whose type is not `Bool`, so an implementation
+    /// that answered the routing question from the type alone
+    /// (`param_type.is_numeric()`, or a blanket `_ => Some(Dimensional)`)
+    /// turns exactly this one red.
+    ///
+    /// Read together with the three NEGATIVE siblings below, which pin that
+    /// every shape `build_variable_domain` REJECTS routes to the fallback.
+    /// Deliberately paired: this test alone would pass on a `_ => None`
+    /// catch-all, and the siblings alone would pass on `_ => Some(Dimensional)`.
     #[test]
     fn an_int_auto_behind_a_bool_cell_stays_logical() {
         let params = vec![AutoParam {
@@ -1098,9 +1171,153 @@ mod tests {
              component and must route to the `Logical` slot, where \
              `CpSatSolver::build_variable_domain` enumerates both the Bool cell \
              and the Int domain natively. Getting `CrossDomain` means \
-             `domain_of_auto_type` widened on `Type::is_numeric()` instead of \
-             `Type::Scalar`, which sends it to the fallback `DimensionalSolver` \
-             — a solver that cannot enumerate the Bool side at all",
+             `domain_of_auto` stopped consulting `cpsat::can_enumerate` and \
+             widened on the type alone, which sends a component CP-SAT could \
+             have solved to the fallback `DimensionalSolver` — a solver that \
+             cannot enumerate the Bool side at all",
+        );
+    }
+
+    /// The three NEGATIVE siblings of `an_int_auto_behind_a_bool_cell_stays_logical`.
+    ///
+    /// Each builds the SAME `let ok = <predicate over the auto>; constraint ok
+    /// == true` shape, differing only in the auto's type/bounds, and each picks
+    /// a shape `CpSatSolver::build_variable_domain` REJECTS. A rejected auto in
+    /// a `Logical` component is `solve_inner` failing the WHOLE component with
+    /// `NoProgress`, so the honest verdict is `CrossDomain` (the fallback slot).
+    ///
+    /// All three go red against a `_ => None` catch-all — the shape that stood
+    /// here before `domain_of_auto` consulted `cpsat::can_enumerate`.
+    fn bool_cell_over(auto: AutoParam, predicate: CompiledExpr) -> Vec<SubProblem> {
+        let auto_id = auto.id.clone();
+        let params = vec![auto];
+        let constraints = vec![(
+            ConstraintNodeId::new("S", 0),
+            eq_true(bool_cell_ref("S", "ok")),
+        )];
+        let dependent_cells = vec![(ValueCellId::new("S", "ok"), predicate)];
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(
+            components.len(),
+            1,
+            "fixture integrity: `constraint ok == true` must reach `{auto_id:?}` \
+             through `let ok = …`, or the domain assertion is vacuous; got \
+             {components:?}",
+        );
+        assert!(
+            components[0].auto_params.contains(&auto_id),
+            "fixture integrity: the component must actually hold the auto \
+             whose routing is under test; got {:?}",
+            components[0].auto_params,
+        );
+        components
+    }
+
+    /// An UNBOUNDED `Int` auto behind a `Bool` cell must route to the FALLBACK.
+    ///
+    /// Not a hypothetical shape: `build_auto_param_list`
+    /// (`reify-eval/src/engine_eval.rs`) hard-codes `bounds: None` for EVERY
+    /// auto param the engine produces, so this — not the bounded sibling above
+    /// — is what an engine-produced `Int` auto actually looks like by the time
+    /// it reaches decomposition. `build_variable_domain` answers
+    /// `Err("integer auto param … has no bounds; cannot enumerate domain")`.
+    #[test]
+    fn an_unbounded_int_auto_behind_a_bool_cell_goes_cross_domain() {
+        let components = bool_cell_over(
+            AutoParam {
+                id: ValueCellId::new("S", "n"),
+                param_type: Type::Int,
+                bounds: None,
+                free: true,
+            },
+            CompiledExpr::binop(
+                BinOp::Gt,
+                CompiledExpr::value_ref(ValueCellId::new("S", "n"), Type::Int),
+                CompiledExpr::literal(Value::Int(5), Type::Int),
+                Type::Bool,
+            ),
+        );
+
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::CrossDomain,
+            "an UNBOUNDED Int auto is exactly the shape `build_variable_domain` \
+             rejects, and it is the ONLY shape the engine ever mints. Getting \
+             `Logical` routes it at a solver that answers `Err(no bounds)` and \
+             fails the whole component with `NoProgress`",
+        );
+    }
+
+    /// A `Type::String` auto behind a `Bool` cell must route to the FALLBACK.
+    ///
+    /// `String` falls under `build_variable_domain`'s `other =>` catch-all
+    /// (`"CpSatSolver does not support param type …"`), together with `List`,
+    /// `Set`, `Map`, `Option`, `Geometry`, `Feature`, `StructureRef`,
+    /// `TraitObject` and `Field`. This case stands in for that whole arm: a
+    /// `domain_of_auto` that enumerated accepted types by hand instead of
+    /// asking `can_enumerate` would have to list every one of them.
+    #[test]
+    fn a_string_auto_behind_a_bool_cell_goes_cross_domain() {
+        let components = bool_cell_over(
+            AutoParam {
+                id: ValueCellId::new("S", "name"),
+                param_type: Type::String,
+                bounds: None,
+                free: true,
+            },
+            CompiledExpr::binop(
+                BinOp::Eq,
+                CompiledExpr::value_ref(ValueCellId::new("S", "name"), Type::String),
+                CompiledExpr::literal(Value::String("m5".to_string()), Type::String),
+                Type::Bool,
+            ),
+        );
+
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::CrossDomain,
+            "`Type::String` is under `build_variable_domain`'s `other =>` \
+             catch-all, so a `Logical` verdict hands CP-SAT a param type it \
+             answers `Err(does not support param type …)` for",
+        );
+    }
+
+    /// A `Type::Enum` auto with NO variant literal in the constraints must
+    /// route to the FALLBACK.
+    ///
+    /// `build_variable_domain` derives an enum's domain by scanning the
+    /// constraint expressions for `Value::Enum` literals of the matching type
+    /// name; with none present it answers `Err("… has no variant literals in
+    /// constraints")`. The fixture's `let ok = fit == fit` compares the auto
+    /// with ITSELF precisely so no literal appears anywhere.
+    ///
+    /// This is also the case that pins the enum half of `domain_of_auto`'s
+    /// documented approximation: the answer depends on the constraint slice,
+    /// not on the type, so it cannot be reached from `param_type` alone.
+    #[test]
+    fn a_variantless_enum_auto_behind_a_bool_cell_goes_cross_domain() {
+        let enum_ref =
+            || CompiledExpr::value_ref(ValueCellId::new("S", "fit"), Type::Enum("Fit".to_string()));
+        let components = bool_cell_over(
+            AutoParam {
+                id: ValueCellId::new("S", "fit"),
+                param_type: Type::Enum("Fit".to_string()),
+                bounds: None,
+                free: true,
+            },
+            CompiledExpr::binop(BinOp::Eq, enum_ref(), enum_ref(), Type::Bool),
+        );
+
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::CrossDomain,
+            "an enum auto whose variants appear NOWHERE in the constraints has \
+             no enumerable domain, so `Logical` routing fails the component \
+             with `NoProgress`. Getting `Logical` means `domain_of_auto` \
+             answered from `Type::Enum` alone instead of asking \
+             `cpsat::can_enumerate`, which needs the constraints to answer",
         );
     }
 
