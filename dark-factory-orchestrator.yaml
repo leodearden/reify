@@ -328,6 +328,25 @@ verify_env:
   # exit-75 (which the clock-stop seam has already made unreachable here).
   # Nothing pins this value: every semaphore test (test_test_run_semaphore.sh,
   # test_verify_semaphore_e2e.sh) sets its own N explicitly rather than reading it.
+  # PARITY REQUIREMENT (task 6393) — these three rows MUST equal the owning
+  # script's :- fallback default, and tests/infra/test_verify_admission_knob_
+  # parity.sh fails if they drift. Retune BOTH sides together, never one alone.
+  #   REIFY_TEST_SEMAPHORE_CONCURRENCY / _WAIT -> scripts/lib_test_semaphore.sh
+  #   REIFY_PSI_GATE_MAX_WAIT                  -> scripts/verify.sh psi_gate()
+  # WHY: this block is injected ONLY by the orchestrator, into the verify
+  # subprocesses IT spawns. A manual `verify.sh` run (the /unblock full gate,
+  # a hand-run gate, a fixture) sees NONE of it and falls back to the in-repo
+  # default -- so a divergence splits the fleet into two populations with
+  # different admission behaviour on ONE host-global lock. Both halves of that
+  # bit us on 2026-08-19: WAIT had been `unlimited` here but 1800 in the lib
+  # since the 2026-06-27 seam deploy, so a manual gate burned a finite deadline
+  # and exited 75 after ~55min of completed compile; and CONCURRENCY was 2 here
+  # but 1 in the lib, so that same manual run polled only <lock>.slot-1 and
+  # could never take .slot-2. N is the slot-file COUNT -- mutual exclusion is
+  # only coherent while every participant agrees on it.
+  # These rows are now REDUNDANT-BUT-CONFIRMING (they restate the in-repo
+  # default). Keep them: the parity guard reads this block as one of its two
+  # sides, and deleting them would make it vacuous on the yaml side.
   REIFY_TEST_SEMAPHORE_CONCURRENCY: "1"
   REIFY_TEST_SEMAPHORE_WAIT: "unlimited"
   REIFY_PSI_GATE_MAX_WAIT: "unlimited"

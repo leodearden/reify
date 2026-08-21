@@ -35,7 +35,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 **Knobs — psi-gate** (`scripts/verify.sh psi_gate()`):
 - **`REIFY_PSI_GATE_THRESHOLD`** — CPU avg10 % ceiling (default `50`)
 - **`REIFY_PSI_GATE_WINDOW`** — minimum inter-dispatch spacing in seconds (default `20`)
-- **`REIFY_PSI_GATE_MAX_WAIT`** — give-up timeout (default `1800`; exits 75 on timeout)
+- **`REIFY_PSI_GATE_MAX_WAIT`** — give-up timeout in seconds, OR `"unlimited"` — **the default since task 6393** (continuous clock-stopped hold, never exit-75). An explicitly FINITE value exits 75 on timeout, which DF does **not** requeue (see the premise correction below).
 - **`REIFY_PSI_GATE_POLL`** — recheck interval in seconds (default `5`)
 - **`REIFY_PSI_GATE_PROC_PATH`** — CPU PSI source (default `/proc/pressure/cpu`; testability knob)
 - **`REIFY_PSI_GATE_DISPATCH_FILE`** — coordination timestamp file (default `/tmp/reify-verify-last-dispatch`)
@@ -46,7 +46,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 
 **Knobs — test semaphore** (`scripts/lib_test_semaphore.sh`):
 - **`REIFY_TEST_SEMAPHORE_CONCURRENCY`** — slot count N (default `1`)
-- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`), OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **ACTIVATED 2026-06-27 (task 4838):** continuous wait live; `dark_factory:1916` deployed; `WAIT=unlimited` in `dark-factory-orchestrator.yaml`; `@@REIFY_CLOCK_*@@` span excluded from `verify_command_timeout_secs`.
+- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot, OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **ACTIVATED 2026-06-27 (task 4838):** continuous wait live; `dark_factory:1916` deployed; `@@REIFY_CLOCK_*@@` span excluded from `verify_command_timeout_secs`. **DEFAULT since task 6393: `unlimited`** — see "Admission-knob parity" below for why the in-repo default, not just the `verify_env` value, has to carry it.
 - **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `/tmp/reify-test-semaphore-$(id -u).lock`; fixed host-global path, independent of TMPDIR — task 5145)
 - **`REIFY_TEST_SEMAPHORE_DISABLE`** — set to `1` for a total bypass (no slot acquired)
 - **`REIFY_CLOCK_HEARTBEAT_SECS`** — interval (s) between `@@REIFY_CLOCK_HEARTBEAT@@` emissions in the semaphore + PSI poll loops (default `30`; reduce in tests for faster runs)
@@ -63,7 +63,16 @@ The verify pipeline is governed by three admission controls that layer in order:
 - **`@@REIFY_CLOCK_HEARTBEAT@@`** `reason=<reason> waited=<secs>` — emitted every `REIFY_CLOCK_HEARTBEAT_SECS` from INSIDE the poll loop (liveness — a wedged loop stops heartbeating)
 - **`@@REIFY_CLOCK_START@@`** `reason=<reason> waited=<secs>` — emitted ONCE on successful acquire (STOP/START are balanced; uncontended fast-path emits nothing)
 - Reason vocabulary: `test_slot_starvation` (semaphore path), `psi_pressure` (PSI gate path)
-- `REIFY_TEST_SEMAPHORE_WAIT=unlimited` / `REIFY_PSI_GATE_MAX_WAIT=unlimited` activate the continuous wait (no deadline, never exit-75); `REIFY_CLOCK_HEARTBEAT_SECS` tunes the heartbeat interval (default 30s)
+- `REIFY_TEST_SEMAPHORE_WAIT=unlimited` / `REIFY_PSI_GATE_MAX_WAIT=unlimited` activate the continuous wait (no deadline, never exit-75) and are **the in-repo defaults** since task 6393; `REIFY_CLOCK_HEARTBEAT_SECS` tunes the heartbeat interval (default 30s)
+
+### Admission-knob parity (task 6393) — the in-repo default IS the contract
+
+`verify_env` in `dark-factory-orchestrator.yaml` is injected **only by the orchestrator**, into the verify subprocesses it spawns. Every other `verify.sh` invocation — the `/unblock` manual full gate (`verify.sh all --scope all --profile both`), a hand-run gate, a fixture — sees none of it and falls back to the in-repo default. So a knob whose `verify_env` value diverges from its script default splits the fleet into two populations with different admission behaviour **on one host-global lock**:
+
+- `REIFY_TEST_SEMAPHORE_WAIT` diverged (yaml `unlimited`, script `1800`) for ~7 weeks after the 2026-06-27 seam deploy. Orchestrator verifies waited gracefully; manual ones burned a finite 1800s deadline and exited 75 — discarding ~55 min of completed compile (2026-08-19 incident). The `@@REIFY_CLOCK_*@@` markers cannot help: they pause dark-factory's **external** `verify_command_timeout_secs`, never the local `_deadline=$(( _start + _wait ))` computed once in `lib_slot_acquire.sh`. A manual run has no external timeout at all, so a finite local deadline buys nothing and costs the run.
+- `REIFY_TEST_SEMAPHORE_CONCURRENCY` diverged the same day (yaml `2`, script `1`). `N` is the slot-file **count**: a participant at `N=1` polls only `<lock>.slot-1` and can never take `.slot-2`, so it starves beside a free slot. Mutual exclusion on a shared lock base is only coherent while every participant agrees on `N`.
+
+**Retune BOTH together, never one alone.** `tests/infra/test_verify_admission_knob_parity.sh` enforces `verify_env` value == owning script's `:-` default for `REIFY_TEST_SEMAPHORE_CONCURRENCY`, `REIFY_TEST_SEMAPHORE_WAIT`, `REIFY_PSI_GATE_MAX_WAIT`, and fails if a fourth `REIFY_{TEST_SEMAPHORE,PSI_GATE}_*` row appears without a parity entry. It is selected on a yaml-only staged diff via a `dark-factory-orchestrator.yaml` row in `scripts/verify-pipeline-infra-tests.txt` — needed because that yaml is **not** in `verify-pipeline-paths.txt`, so a yaml-only edit does not force the full gate and lands directly on main.
 - **ACTIVATED 2026-06-27 (task 4838, PRD §5 D5):** `dark_factory:1916` deployed; WAIT knobs now `"unlimited"` in `dark-factory-orchestrator.yaml`; the `@@REIFY_CLOCK_*@@` span is excluded from `verify_command_timeout_secs` by DF:1916. A genuinely-wedged wait (no heartbeat within `verify_clock_stop_heartbeat_idle_max=600s`, raised 2026-07-08 from 180s per task 5156 — the 180s value false-killed verifies whose clock-stop span was followed by a long silent native-crate compile/link) is still killed by the orchestrator.
 - **The compile-gate still NEVER exits 75** — it now HOLDS until PSI drops on either dimension rather than admitting on a timeout, and it never requeues; task 4920 moved it INTO clock-stop scope (PRD D2 reversed), reusing the `psi_pressure` reason token alongside `psi_gate`'s requeue path. Under permanent host saturation the hold is indefinite by design and heartbeats rather than hangs — the same accepted limitation as the semaphore: forward progress under sustained pressure is a dispatch-admission concern, not a verify-layer one.
 

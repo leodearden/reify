@@ -106,6 +106,28 @@ scripts/lib_slot_acquire.sh          tests/infra/test_slot_*.sh
 # token. Same glob as the lib row -- test_slot_timeout_marker.sh's B0/B2 already
 # pin both tokens behaviourally; these rows are what make them RUN.
 scripts/lib_test_semaphore.sh        tests/infra/test_slot_*.sh
+# Task 6393: admission-knob parity (verify_env value == owning script's :-
+# default) for the host-global test-run semaphore and the PSI gate.
+#
+# The dark-factory-orchestrator.yaml row is the LOAD-BEARING one. That file is
+# NOT in scripts/verify-pipeline-paths.txt, so a yaml-only edit does not force
+# the full --scope all gate (verified: `verify-pipeline-guard.sh
+# requires-full-gate dark-factory-orchestrator.yaml` -> exit 1), and per
+# CLAUDE.md a *.yaml change commits directly on main through hooks/pre-commit
+# -> `verify.sh all --profile debug --scope staged --include-infra`. Without
+# this row that staged scope selects nothing and the plan is empty, so the
+# parity guard would be one-directional: it would catch a SCRIPT-side default
+# change (full gate) but not a YAML-side knob retune -- which is precisely the
+# direction that broke on 2026-08-19 (CONCURRENCY 2->1 and the ~7-week
+# WAIT=unlimited divergence both landed as yaml-only edits). A guard that
+# cannot see the edit direction it was written for is a vacuous guard.
+#
+# scripts/lib_test_semaphore.sh already has a `test_slot_*.sh` row above; that
+# glob does not match this guard, hence the second row. scripts/verify.sh needs
+# no row -- the `scripts/verify.sh -> tests/infra/test_verify_*.sh` glob at the
+# head of this file is self-maintaining for additions and already covers it.
+dark-factory-orchestrator.yaml       tests/infra/test_verify_admission_knob_parity.sh
+scripts/lib_test_semaphore.sh        tests/infra/test_verify_admission_knob_parity.sh
 scripts/cargo-test-occt-gated.sh     tests/infra/test_slot_*.sh
 scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence.sh
 scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_audit.sh

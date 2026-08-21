@@ -1561,11 +1561,21 @@ F_BIND_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*/(lib_test_semaphore|cargo-test
 # and change no member of the derived roster (see SCOPE (4)).
 F_EXEC_RE='(bash|source)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*"?[^"]*/(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock|lib_slot_acquire)\.sh'
 # A bare call to one of the three acquire functions.
-# BIND/EXEC/CALL exist because the wrapper defaults are FINITE
-# (REIFY_TEST_SEMAPHORE_WAIT=1800 at lib_test_semaphore.sh:100,
-# REIFY_OCCT_LOCK_WAIT=1800 at cargo-test-occt-gated.sh:112): a call site
-# carrying no explicit knob at all is still deadline-capable, and that is
-# the only route by which test_slot_event_log.sh is in scope.
+# BIND/EXEC/CALL exist because a call site carrying no explicit knob at
+# all can still be deadline-capable, and that is the only route by which
+# test_slot_event_log.sh is in scope.
+# AMENDED (task 6393): the rationale used to read "because the wrapper
+# defaults are FINITE (REIFY_TEST_SEMAPHORE_WAIT=1800 ...,
+# REIFY_OCCT_LOCK_WAIT=1800 ...)". Only the OCCT half is still true:
+# lib_test_semaphore.sh now defaults to "unlimited", so a knob-less
+# test_semaphore_acquire site is NOT deadline-capable via its default any
+# more. It stays in scope through the OTHER two routes, which is why the
+# derived roster does not move: (a) REIFY_OCCT_LOCK_WAIT still defaults to
+# 1800 at cargo-test-occt-gated.sh, and (b) these EREs derive membership
+# from CALL-SITE SHAPE, never from a default's value -- a knob-less site
+# becomes deadline-capable the moment any caller or ambient env supplies a
+# finite WAIT, which no static scan can rule out. Do not "simplify" this
+# by making the scan value-aware: that would silently shrink the roster.
 F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquire)([[:blank:]]|$)'
 
 # _f_deadline_capable <dir> -> prints one BASENAME per deadline-capable
