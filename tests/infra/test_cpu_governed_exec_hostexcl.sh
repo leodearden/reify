@@ -186,6 +186,17 @@ govtest_reap_stale "$$"
 #     goes permanently silent — nothing in the repo produces these names any
 #     more. See govtest_legacy_stale for why the rule is "blocked by ANY
 #     dash-child" rather than deepest-first-in-one-pass.
+#
+#     TRANSITIONAL NOTE, so a re-reap does not read as a failure to converge.
+#     Convergence is per-HOST, not per-run, and the systemd user session is
+#     shared host-wide. Measured on the dev host 2026-08-21 while this change
+#     was still on its task branch: three consecutive runs drove the residue to
+#     zero, and a later run reaped the two leaves AGAIN — because 68 other warm
+#     lanes still had the pre-rename file checked out and one of them ran it in
+#     between. That is the sweep working, not failing: it re-reaped the leaves
+#     and still correctly left the root alone. Expect re-reaping until this
+#     lands on main and the lanes re-seed; only then does the producer set go
+#     empty and the sweep stay silent.
 govtest_reap_legacy reify-test-task.slice reify-test-merge.slice reify-test.slice
 
 # Lifecycle-only seam (task 6386): exit HERE, after the trap is installed and
