@@ -67,11 +67,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The ONE run-private root every fixture dir is nested under. Registered in
+# _TMPDIRS here, in the MAIN shell, exactly once.
+_RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jc-with-serve-root-XXXXXX")"
+_TMPDIRS+=("$_RUN_ROOT")
+
+# mk_tmpdir — a fixture dir, echoed on stdout.
+#
+# SUBSHELL-SAFE BY CONSTRUCTION, and that is the whole reason it nests under
+# $_RUN_ROOT rather than appending to _TMPDIRS itself. Every call site reads
+# `X="$(mk_tmpdir)"`, so this body runs in a command-substitution SUBSHELL, and
+# a `_TMPDIRS+=("$d")` performed here would be silently DISCARDED when that
+# subshell exits — leaking every fixture dir this suite ever mints. (Measured:
+# the sibling suite tests/infra/test_jcodemunch_index_reify.sh has exactly that
+# shape and had left 1476 dirs in /tmp on this host; filed separately, since it
+# is outside this task's scope.) Anchoring cleanup on the one root means the
+# caller's existing `rm -rf` reclaims everything in one shot — the same
+# reasoning test_helpers.sh's make_isolated_lane documents.
 mk_tmpdir() {
-    local d
-    d="$(mktemp -d "${TMPDIR:-/tmp}/jc-with-serve-XXXXXX")" || return 1
-    _TMPDIRS+=("$d")
-    printf '%s\n' "$d"
+    mktemp -d "$_RUN_ROOT/fixture-XXXXXX"
 }
 
 # require_nonempty <label> <value> — refuse to run a substring assertion whose
