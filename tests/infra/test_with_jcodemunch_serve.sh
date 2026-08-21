@@ -723,8 +723,12 @@ cleanup() {
 # Reads:  RW_SERVE_PREFIX  extra words prepended to the stub inside
 #                          REIFY_JC_SERVE_CMD — the identity negative control.
 #         RW_TIMEOUT       the wrapper's readiness deadline, in seconds.
+#         RW_EXTRA_ENV     extra NAME=VALUE settings placed in the WRAPPER's own
+#                          environment (not the serve's), for the inheritance
+#                          negative controls.
 RW_SERVE_PREFIX=""
 RW_TIMEOUT=20
+RW_EXTRA_ENV=()
 rw_run() {
     local mode="$1"; shift
     local stub t0
@@ -739,9 +743,10 @@ rw_run() {
     RW_ERR="$RW_DIR/stderr"
     RW_RC=0
     t0=$SECONDS
-    REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
-    REIFY_JC_SERVE_READY_TIMEOUT="$RW_TIMEOUT" \
-    REIFY_JC_SERVE_CMD="${RW_SERVE_PREFIX:+$RW_SERVE_PREFIX }$stub" \
+    env ${RW_EXTRA_ENV+"${RW_EXTRA_ENV[@]}"} \
+        REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
+        REIFY_JC_SERVE_READY_TIMEOUT="$RW_TIMEOUT" \
+        REIFY_JC_SERVE_CMD="${RW_SERVE_PREFIX:+$RW_SERVE_PREFIX }$stub" \
         "$JC_SERVE" --port "$RW_PORT" "$@" >"$RW_OUT" 2>"$RW_ERR" || RW_RC=$?
     RW_ELAPSED=$((SECONDS - t0))
     return 0
@@ -857,5 +862,137 @@ assert "the spawn-failure refusal names the child's exit status"           b4_di
 assert "the spawn-failure refusal exits non-zero"                          b4_die_nonzero
 assert "the spawn failure is reported promptly, not at the deadline"       b4_die_prompt
 assert "the spawn-failure refusal never claims $READY_MARKER"              b4_die_not_ready
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 5 — transparency of the wrapped command
+#
+# The wrapper's whole value is that a caller can prefix it onto an existing
+# command and observe NO difference except that a serve now exists. Every way
+# that can silently stop being true is pinned here: status, stdout bytes, argv,
+# and the one variable the wrapped command actually needs.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 5: transparency of the wrapped command ---"
+
+# mk_echo_args <path> — a wrapped command that reports its own argv and the
+# JCODEMUNCH_URL it was handed, one record per line, on STDOUT.
+mk_echo_args() {
+    cat > "$1" <<'ECHOARGS'
+#!/usr/bin/env bash
+set -u
+printf 'url=[%s]\n' "${JCODEMUNCH_URL-<unset>}"
+i=0
+for a in "$@"; do
+    i=$((i + 1))
+    printf 'arg%d=[%s]\n' "$i" "$a"
+done
+printf 'argc=[%d]\n' "$#"
+ECHOARGS
+    chmod +x "$1"
+}
+
+# -- 5(a) exit status is propagated verbatim ----------------------------------
+#
+# Three values, not one: 0 proves the happy path, 3 proves a non-zero status is
+# not flattened to 1, and 42 proves it is not being confused with a signal or a
+# marker of the wrapper's own. 127 for a missing command is the shell's own
+# convention and must survive too.
+b5_status_is() {
+    local want="$1"; shift
+    rw_run healthy "$@" || return 1
+    [ "$RW_RC" = "$want" ] && return 0
+    printf '%s\n' "wrapped command exiting $want produced wrapper status $RW_RC" "stderr: $(cat "$RW_ERR")"
+    return 1
+}
+
+assert "a wrapped command exiting 0 gives wrapper status 0"     b5_status_is 0  bash -c 'exit 0'
+assert "a wrapped command exiting 3 gives wrapper status 3"     b5_status_is 3  bash -c 'exit 3'
+assert "a wrapped command exiting 42 gives wrapper status 42"   b5_status_is 42 bash -c 'exit 42'
+assert "a wrapped command that does not exist gives 127"        b5_status_is 127 /nonexistent/dir/no-such-command
+
+# -- 5(b) stdout purity -------------------------------------------------------
+#
+# BYTE EQUALITY, deliberately: any wrapper chatter that leaked onto stdout — a
+# banner, a readiness line, a teardown note — fails this. That is the property
+# that keeps the wrapper generic rather than reify-audit-specific, and it is
+# the half of the stderr-discipline rule that a `grep -v` could not express.
+b5_stdout_pure() {
+    local want
+    rw_run healthy bash -c 'printf "alpha\nbeta\n"' || return 1
+    want="$(printf 'alpha\nbeta\n')"
+    [ "$(cat "$RW_OUT")" = "$want" ] && return 0
+    printf '%s\n' "wrapper stdout was not byte-identical to the wrapped command's:" \
+        "--- got ---" "$(cat "$RW_OUT")" "--- want ---" "$want"
+    return 1
+}
+# ...and the empty case, where a stray banner is most likely to hide.
+b5_stdout_empty_stays_empty() {
+    rw_run healthy true || return 1
+    [ ! -s "$RW_OUT" ] && return 0
+    printf '%s\n' "a silent wrapped command still produced wrapper stdout:" "$(cat "$RW_OUT")"
+    return 1
+}
+
+assert "wrapper stdout is byte-identical to the wrapped command's"  b5_stdout_pure
+assert "a silent wrapped command leaves wrapper stdout empty"       b5_stdout_empty_stays_empty
+
+# -- 5(c) argv fidelity -------------------------------------------------------
+#
+# One argument containing a SPACE and one containing a GLOB metacharacter: the
+# two ways a naive `$*`/unquoted-`$@` pass-through corrupts an argv. The count
+# is asserted alongside the values, because a split argument still produces the
+# right substrings.
+B5C_DIR="$(mk_tmpdir)"
+b5_argv_fidelity() {
+    local echoer="$B5C_DIR/echo-args"
+    mk_echo_args "$echoer" || return 1
+    rw_run healthy "$echoer" "two words" '*.rs' 'plain' || return 1
+    has_line "$RW_OUT" 'arg1=[two words]' || return 1
+    has_line "$RW_OUT" 'arg2=[*.rs]' || return 1
+    has_line "$RW_OUT" 'arg3=[plain]' || return 1
+    has_line "$RW_OUT" 'argc=[3]'
+}
+assert "the wrapped command's argv survives spaces and glob metacharacters" b5_argv_fidelity
+
+# -- 5(d) JCODEMUNCH_URL ------------------------------------------------------
+#
+# The one thing the wrapped command actually needs: reify-audit reads
+# JCODEMUNCH_URL (reify-audit.rs:213) to learn which endpoint to talk to. It
+# must name THE CHOSEN PORT — not the 8901 default — and carry no trailing
+# slash.
+B5D_DIR="$(mk_tmpdir)"
+b5_url_is_the_chosen_port() {
+    local echoer="$B5D_DIR/echo-args"
+    mk_echo_args "$echoer" || return 1
+    rw_run healthy "$echoer" || return 1
+    has_line "$RW_OUT" "url=[http://127.0.0.1:$RW_PORT/mcp]" || return 1
+    # And not the default, unless the ephemeral port happened to BE the default
+    # — in which case the assertion above already carries the whole claim.
+    [ "$RW_PORT" = "8901" ] && return 0
+    lacks_line "$RW_OUT" "url=[http://127.0.0.1:8901/mcp]"
+}
+b5_url_has_no_trailing_slash() {
+    local echoer="$B5D_DIR/echo-args"
+    mk_echo_args "$echoer" || return 1
+    rw_run healthy "$echoer" || return 1
+    lacks_line "$RW_OUT" "/mcp/]"
+}
+# NEGATIVE CONTROL: the value is PRODUCED, not inherited. A wrapper that merely
+# passed the ambient environment through would hand the wrapped command a
+# foreign endpoint and every assertion above would still pass on a host where
+# JCODEMUNCH_URL happened to be unset.
+b5_url_overrides_ambient() {
+    local echoer="$B5D_DIR/echo-args"
+    mk_echo_args "$echoer" || return 1
+    RW_EXTRA_ENV=(JCODEMUNCH_URL=http://198.51.100.7:1/foreign)
+    rw_run healthy "$echoer" || { RW_EXTRA_ENV=(); return 1; }
+    RW_EXTRA_ENV=()
+    has_line "$RW_OUT" "url=[http://127.0.0.1:$RW_PORT/mcp]" || return 1
+    lacks_line "$RW_OUT" "198.51.100.7"
+}
+
+assert "the wrapped command is handed JCODEMUNCH_URL for the CHOSEN port"   b5_url_is_the_chosen_port
+assert "the exported JCODEMUNCH_URL carries no trailing slash"              b5_url_has_no_trailing_slash
+assert "a pre-set foreign JCODEMUNCH_URL is overridden, not inherited"      b5_url_overrides_ambient
 
 test_summary
