@@ -216,6 +216,9 @@ something you write.
 Omitting them is not the same as passing a default at the call site: they are left unset and
 resolved during evaluation lowering to `iso = 0.0` and `adaptive = false`.
 
+`iso` is a **Length**, not a bare number — write it with a unit, as the worked example does
+(`iso: 3mm`); it is decoded to SI metres for marching cubes. `adaptive` is a **Bool**.
+
 The `iso:`/`adaptive:` labels written above are the **recommended spelling** — they name the slot at
 the call site and keep a bare `true` from reading as a mystery flag — but they are **not checked**.
 Like every geometry constructor, `isosurface` binds its arguments **positionally**, in source order:
@@ -223,8 +226,11 @@ Like every geometry constructor, `isosurface` binds its arguments **positionally
 
 - `isosurface(grid, level)` compiles to exactly the same thing as `isosurface(grid, iso: level)`.
 - **`adaptive` cannot be passed without `iso`.** `isosurface(grid, adaptive: flag)` is accepted, and
-  silently binds `flag` into the **iso** slot. Pass the iso level explicitly —
-  `isosurface(grid, iso: level, adaptive: flag)` — whenever you want the adaptive flag.
+  binds `flag` into the **iso** slot. Compilation is silent about it, but evaluation is not: a Bool
+  is not a Length, so it warns `isosurface: 'iso' argument evaluated to a non-numeric value —
+  defaulting to 0.0`, and `adaptive` stays `false` because nothing reached its slot. Pass the iso
+  level explicitly — `isosurface(grid, iso: level, adaptive: flag)` — whenever you want the adaptive
+  flag.
 
 Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
 `examples/multi_kernel/voxel_to_mesh_iso.ri`.
