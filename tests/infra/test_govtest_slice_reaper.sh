@@ -1447,7 +1447,7 @@ _expect_legacy_announced() {
         fi
     done
     # The root was not stopped, so it must not be announced either.
-    if grep -qE '^[^r]*reify-test\.slice' "$_LEGACY_OUT"; then
+    if grep -qE 'reaped legacy slice: reify-test\.slice$' "$_LEGACY_OUT"; then
         printf 'announced reify-test.slice, which was never stopped:\n'
         cat "$_LEGACY_OUT" 2>/dev/null || true
         return 1
