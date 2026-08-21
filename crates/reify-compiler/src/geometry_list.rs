@@ -13,6 +13,116 @@
 //! precisely what this module computes.
 
 use super::*;
+use std::collections::HashSet;
+
+/// The statically-known shape of a geometry-list let's initializer.
+///
+/// Both variants carry the element count, because that count is the whole
+/// point: it is how many sibling `RealizationDecl`s the let lowers to, and
+/// therefore how long the resulting `List<Geometry>` value is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GeometryListShape {
+    /// `[<geom>, <geom>, ...]` — a non-empty list literal, every element of
+    /// which is a geometry expression.
+    ListLiteral { elements: usize },
+    /// `generate(<count>, |<param>| <geom>)` with a non-negative integer
+    /// literal count.
+    Generate { count: usize, param: String },
+}
+
+/// Classify `expr` as a *geometry-list* let initializer, or `None`.
+///
+/// This classifier is deliberately DISJOINT from `crate::geometry::is_geometry_let`:
+/// a `let` is either a single-geometry let (one `RealizationDecl`), a
+/// geometry-LIST let (N sibling `RealizationDecl`s regrouped into one
+/// `Value::List` cell), or neither. Nothing is both — a bare
+/// `cylinder(5mm, 20mm)` is a single-geometry let and returns `None` here,
+/// and every shape this function accepts (`ListLiteral`, `FunctionCall`
+/// named `generate`) is one `is_geometry_let` rejects.
+///
+/// It is a pure predicate with no diagnostics. A construct that *plainly*
+/// intends geometry-in-a-collection but cannot be unrolled — a non-literal
+/// `generate` count, a mixed-kind list literal — still returns `None` here;
+/// emitting the loud compile-time Error for those is the caller's job (see
+/// `diagnose_unsupported_geometry_list`).
+pub(crate) fn classify_geometry_list_let(
+    expr: &reify_ast::Expr,
+    functions: &[CompiledFunction],
+    known_geometry_lets: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
+) -> Option<GeometryListShape> {
+    match &expr.kind {
+        // (i) `[<geom>, ...]` — non-empty, and EVERY element must be geometry.
+        // An empty literal carries no element kind and stays an ordinary list
+        // let; a mixed literal is rejected here and diagnosed by the caller.
+        reify_ast::ExprKind::ListLiteral(elements) => {
+            if elements.is_empty() {
+                return None;
+            }
+            elements
+                .iter()
+                .all(|e| {
+                    crate::geometry::is_geometry_let(
+                        e,
+                        functions,
+                        known_geometry_lets,
+                        known_selector_lets,
+                    )
+                })
+                .then_some(GeometryListShape::ListLiteral {
+                    elements: elements.len(),
+                })
+        }
+        // (ii) `generate(<int literal>, |p| <geom>)`.
+        reify_ast::ExprKind::FunctionCall { name, args, .. } if name == "generate" => {
+            // A user-defined `fn generate(...)` shadows the builtin — same
+            // guard `is_geometry_let` applies to geometry function names.
+            if functions.iter().any(|f| f.name == *name) {
+                return None;
+            }
+            let [count_expr, lambda_expr] = args.as_slice() else {
+                return None;
+            };
+            let count = non_negative_int_literal(count_expr)?;
+            let reify_ast::ExprKind::Lambda { params, body } = &lambda_expr.kind else {
+                return None;
+            };
+            let [param] = params.as_slice() else {
+                return None;
+            };
+            // The lambda param is an ordinary bound scalar (the loop index).
+            // It is never a geometry name, so `known_geometry_lets` needs no
+            // extra plumbing here: an `Ident(param)` body would fail
+            // `is_geometry_let` anyway, which is exactly right.
+            crate::geometry::is_geometry_let(
+                body,
+                functions,
+                known_geometry_lets,
+                known_selector_lets,
+            )
+            .then(|| GeometryListShape::Generate {
+                count,
+                param: param.name.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// `Some(n)` iff `expr` is a non-negative *integer* literal (`3`, `0`).
+///
+/// `is_real` distinguishes `3` from `3.0` at the token level, so a Real
+/// literal, a quantity (`3mm`) and a negative count are all rejected without
+/// re-inspecting source text.
+fn non_negative_int_literal(expr: &reify_ast::Expr) -> Option<usize> {
+    match &expr.kind {
+        reify_ast::ExprKind::NumberLiteral {
+            value,
+            is_real: false,
+        } if *value >= 0.0 && value.fract() == 0.0 => Some(*value as usize),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
