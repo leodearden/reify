@@ -137,13 +137,28 @@ mod shaper_family_guard {
         if name.is_empty() {
             return None;
         }
-        // Stop at the body brace, then test membership in the `+` list.
+        // Membership in the `+`-separated bound list, comparing each bound's
+        // leading IDENTIFIER. Taking the identifier prefix rather than the
+        // whole trimmed segment is what makes the trailing body brace (and any
+        // trailing comment) fall away without this file having to spell a
+        // brace character — see the brace-balance note on
+        // `shaper_refiner_name_accepts_every_single_line_declaration_form`.
         bounds
-            .split('{')
-            .next()?
             .split('+')
-            .any(|bound| bound.trim() == "Shaper")
+            .any(|bound| leading_identifier(bound) == "Shaper")
             .then(|| name.to_string())
+    }
+
+    /// The leading identifier of `s` after trimming: everything up to the
+    /// first character that cannot appear in a Rust/Reify identifier. So
+    /// `" Shaper "`, `"Shaper{ }"` and `"Shaper // note"` all yield `"Shaper"`,
+    /// while `"ShaperLike"` yields itself and is correctly NOT a match.
+    fn leading_identifier(s: &str) -> &str {
+        let s = s.trim_start();
+        let end = s
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(s.len());
+        &s[..end]
     }
 
     /// Split `s` at the first `:` that is NOT inside a `<…>` type-parameter
@@ -242,47 +257,64 @@ mod shaper_family_guard {
     /// is a shipped shaper the gate never checks. Every accepted form below
     /// is one the grammar admits (`grammar.js` `structure_definition`), and
     /// each rejected form is one that must NOT be mistaken for a shaper decl.
+    ///
+    /// ⚠ BRACE BALANCE — every fixture below closes its brace pair, and no
+    /// line in this module may leave one open. Do NOT "fix" these to end in a
+    /// dangling open brace the way a real decl line does.
+    /// `scripts/audit-orphan-producers.sh` masks `#[cfg(test)]` items by
+    /// counting brace characters per LINE with no string awareness, so an
+    /// unbalanced brace inside a string literal (or inside a comment, this one
+    /// included) extends the mask past the end of this module and silently
+    /// hides the REST of this file from the orphan audit — at which point the
+    /// 14 `// G-allow:` pins over the SQP helpers below drop out of the audit's
+    /// allow-list and `new_orphans_2026_06_02_g_allow.rs` goes red. Measured
+    /// first-hand: 14 fixtures with a dangling brace masked lines 79→EOF.
+    /// The paired form is itself a real spelling — every empty marker
+    /// structure uses it, e.g. `structure def NaturalSpline :
+    /// BoundaryCondition` with an empty body — and the dangling form is
+    /// covered for real by [`every_shipped_shaper_structure_is_recognised`],
+    /// which scans the actual shipped file.
     #[test]
     fn shaper_refiner_name_accepts_every_single_line_declaration_form() {
         for (line, expected) in [
             // The plain form the stdlib uses today.
-            ("structure def ZVShaper : Shaper {", Some("ZVShaper")),
+            ("structure def ZVShaper : Shaper { }", Some("ZVShaper")),
             // `def` is optional in the grammar.
-            ("structure ZVShaper : Shaper {", Some("ZVShaper")),
+            ("structure ZVShaper : Shaper { }", Some("ZVShaper")),
             // `pub` is optional and live in the stdlib (solver_elastic.ri:660).
-            ("pub structure def PubShaper : Shaper {", Some("PubShaper")),
-            ("pub structure PubShaper : Shaper {", Some("PubShaper")),
+            ("pub structure def PubShaper : Shaper { }", Some("PubShaper")),
+            ("pub structure PubShaper : Shaper { }", Some("PubShaper")),
             // Shaper need not be FIRST in a `+`-separated bound list
             // (multi-bound refinement is live: kinematic.ri:145/163).
             (
-                "structure def FooShaper : Marker + Shaper {",
+                "structure def FooShaper : Marker + Shaper { }",
                 Some("FooShaper"),
             ),
             (
-                "structure def FooShaper : Shaper + Marker {",
+                "structure def FooShaper : Shaper + Marker { }",
                 Some("FooShaper"),
             ),
             // The type-parameter colon must not be read as the bound colon
             // (cf. kinematic.ri:214), and the `<…>` must not reach the name.
             (
-                "structure def GenShaper<T: Bound> : Shaper {",
+                "structure def GenShaper<T: Bound> : Shaper { }",
                 Some("GenShaper"),
             ),
             // Whitespace is `extras`, so spacing must not matter.
-            ("structure def TightShaper:Shaper{", Some("TightShaper")),
+            ("structure def TightShaper:Shaper{ }", Some("TightShaper")),
             // ── must NOT match ──
             // A structure refining nothing.
-            ("structure def Waypoint {", None),
+            ("structure def Waypoint { }", None),
             // A different marker trait entirely.
-            ("structure def NaturalSpline : BoundaryCondition {", None),
+            ("structure def NaturalSpline : BoundaryCondition { }", None),
             // A bound that merely CONTAINS "Shaper" is a different trait.
-            ("structure def X : ShaperLike {", None),
-            ("structure def X : NotAShaper {", None),
+            ("structure def X : ShaperLike { }", None),
+            ("structure def X : NotAShaper { }", None),
             // Only the type-parameter bound is Shaper — the structure itself
             // does not refine it.
-            ("structure def X<T: Shaper> {", None),
+            ("structure def X<T: Shaper> { }", None),
             // Not a structure declaration at all.
-            ("occurrence def X : Shaper {", None),
+            ("occurrence def X : Shaper { }", None),
             ("pub fn input_shape(profile: Profile, shaper: Shaper)", None),
         ] {
             assert_eq!(
