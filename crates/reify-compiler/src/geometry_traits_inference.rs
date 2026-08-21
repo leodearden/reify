@@ -937,10 +937,44 @@ fn fold_geometry_args_in_env(
     env: &dyn LetBindingEnv,
 ) -> InferredTraits {
     args.iter()
-        .filter(|a| a.result_type == reify_core::Type::Geometry)
-        .map(|a| infer_traits_for_expr_in_env(a, env))
+        .flat_map(|a| geometry_operand_traits_in_env(a, env))
         .reduce(combine)
         .unwrap_or(InferredTraits::all())
+}
+
+/// The traits of each geometry OPERAND contributed by a single argument.
+///
+/// A `Type::Geometry` argument contributes itself, as the plain
+/// `result_type == Type::Geometry` filter always did.
+///
+/// Task #5385 made a single `List<Geometry>` argument legal for
+/// `union_all`/`intersection_all`, so such an argument contributes each of its
+/// ELEMENTS. Without this the arg is filtered out entirely, the fold sees
+/// nothing, and its defensive `InferredTraits::all()` default silently claims
+/// `bounded` for a list containing an unbounded `half_space` — the exact
+/// failure the `union_all` dispatch arms were added to prevent.
+///
+/// KNOWN RESIDUAL (task #5385): only a syntactically-visible `ListLiteral`
+/// exposes its elements here. `union_all(holes)` naming a geometry-list LET
+/// compiles to a `ValueRef`, and `LetBindingEnv` maps a cell to one
+/// `InferredTraits` rather than to a list of them, so that form still takes the
+/// `all()` default. Narrowing it needs a list-aware `LetBindingEnv` — filed as
+/// a follow-up rather than widened into this task.
+fn geometry_operand_traits_in_env(
+    arg: &CompiledExpr,
+    env: &dyn LetBindingEnv,
+) -> Vec<InferredTraits> {
+    match &arg.result_type {
+        reify_core::Type::Geometry => vec![infer_traits_for_expr_in_env(arg, env)],
+        reify_core::Type::List(inner) if **inner == reify_core::Type::Geometry => match &arg.kind {
+            CompiledExprKind::ListLiteral(elements) => elements
+                .iter()
+                .map(|e| infer_traits_for_expr_in_env(e, env))
+                .collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
 }
 
 /// Find the first two geometry-typed arguments and recurse on each with the
@@ -966,6 +1000,55 @@ fn first_two_geometry_args_in_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- task #5385: union_all over a single List<Geometry> argument ---
+
+    /// Build a geometry-typed `CompiledExpr` for `name()` with no args.
+    fn geom_call(name: &str) -> CompiledExpr {
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args: vec![],
+            },
+            result_type: reify_core::Type::Geometry,
+            content_hash: reify_core::ContentHash(0),
+        }
+    }
+
+    /// `union_all` given ONE `List<Geometry>` argument must fold over the
+    /// list's ELEMENTS, exactly as the multi-argument form folds over its args.
+    ///
+    /// Task #5385 made `union_all(<list>)` legal. Without this, the
+    /// `result_type == Type::Geometry` filter in `fold_geometry_args_in_env`
+    /// drops the single List-typed arg, the fold sees nothing, and the
+    /// defensive `InferredTraits::all()` default silently claims `bounded`
+    /// for a union containing an unbounded `half_space`.
+    #[test]
+    fn union_all_over_a_geometry_list_folds_over_its_elements() {
+        let list_arg = CompiledExpr {
+            kind: CompiledExprKind::ListLiteral(vec![geom_call("half_space"), geom_call("box")]),
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let via_list = try_infer_traits_for_function_call("union_all", &[list_arg])
+            .expect("union_all must be dispatched");
+        let via_args =
+            try_infer_traits_for_function_call("union_all", &[geom_call("half_space"), geom_call("box")])
+                .expect("union_all must be dispatched");
+
+        assert_eq!(
+            via_list, via_args,
+            "union_all over a List<Geometry> must infer exactly what the              equivalent multi-arg call infers",
+        );
+        assert!(
+            !via_list.bounded,
+            "a union containing half_space is NOT bounded; got {via_list:?}",
+        );
+    }
 
     // --- wedge inference (task-4158, step-7 RED) ---
 
