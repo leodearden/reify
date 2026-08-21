@@ -780,8 +780,8 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
     );
 }
 
-/// Step-17 (failing initially; passes once step-18 wires the auto-invalidation
-/// hook into `Engine::edit_param`).
+/// Pins the auto-invalidation contract on `Engine::edit_param`'s
+/// realization-cache hook (task 2874).
 ///
 /// Pins the production-correctness fix for the reviewer's blocking issue
 /// (engine_build.rs:511-516 + engine_admin.rs:218-230 + the field docstring on
@@ -812,20 +812,25 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
 ///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
 ///       "MyDesign")` → `engine.build(&module, ExportFormat::Step)` →
 ///       assert `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_some()` (cache populated by step-6 wiring; pins
-///       the test premise).
+///       1e-6, ContentHash(0)).is_some()` (cache populated by the build-time
+///       wiring; pins the test premise).
 ///   (b) `engine.edit_param(ValueCellId::new("MyDesign", "thickness"),
 ///       Value::Real(<new>)).unwrap()`.
 ///   (c) Without calling `build_snapshot` yet, assert
 ///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
 ///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit.
 ///
-/// Today (pre step-18) `edit_param` does NOT touch `realization_cache`, so
-/// the cache entry persists across the edit and the next `build_snapshot()`
-/// would silently return the stale handle. Step-18 adds
-/// `self.realization_cache = RealizationCache::new();` near the top of
-/// `edit_param` (placed after the function-entry guards but before any state
-/// mutation that could fail), which makes this assertion pass.
+/// Landed contract: `Engine::edit_param` (engine_edit.rs) calls
+/// `self.clear_realization_cache()` near function entry — after the
+/// function-entry guards but before any state mutation that could fail, so a
+/// failed edit can never leave a stale cache behind. `clear_realization_cache`
+/// (engine_admin.rs) delegates to `RealizationCache::clear()`
+/// (realization_cache.rs), which empties the cache's buckets IN PLACE rather
+/// than reseating the field to a fresh `RealizationCache::new()`. That
+/// distinction matters: the in-place clear leaves the `realization_entries`
+/// lifetime counter untouched (task 4152; see
+/// `realization_entries_survives_clear_realization_cache` below), whereas a
+/// reseat would have zeroed it on every edit.
 #[test]
 fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -918,20 +923,23 @@ fn my_design_template_with_box_realization_dims(
         .build()
 }
 
-/// Step-19 (failing initially; passes against the wiring landed by step-18,
-/// which adds the analogous `self.realization_cache = RealizationCache::new()`
-/// reset to `Engine::edit_source` at the same near-entry placement as
-/// `Engine::edit_param`).
+/// Pins the auto-invalidation contract on `Engine::edit_source`'s
+/// realization-cache hook — the source-edit sibling of the `edit_param`
+/// contract pinned by
+/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+/// above.
 ///
 /// Pins the parallel auto-invalidation contract for the source-edit hot
-/// path, mirroring step-17's contract for the parameter-edit hot path. The
-/// plan calls for both resets (in `edit_param` and `edit_source`) to land
-/// in step-18, but a separate test pin guards against a future refactor
-/// that resets in one of the two functions and silently regresses the
-/// other.
+/// path, mirroring the parameter-edit contract above. `edit_param` and
+/// `edit_source` both reset the cache via the same `clear_realization_cache`
+/// call (task 2874 step-22 single-sourced the reset semantics there), but a
+/// separate test pin per function guards against a future refactor that
+/// keeps the reset in only one of the two functions and silently regresses
+/// the other.
 ///
-/// Setup mirrors step-17 but exercises `engine.edit_source(&new_module)`
-/// instead of `engine.edit_param(...)`. The "second module" is built with
+/// Setup mirrors the `edit_param` test above but exercises
+/// `engine.edit_source(&new_module)` instead of `engine.edit_param(...)`.
+/// The "second module" is built with
 /// the same template shape as the first but with different box-primitive
 /// dimensions — a "different parameter defaults, structurally identical
 /// realization graph" content diff that is realistic for a source-edit
@@ -949,12 +957,14 @@ fn my_design_template_with_box_realization_dims(
 ///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
 ///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit_source.
 ///
-/// Today (pre step-18) `edit_source` does NOT touch `realization_cache`, so
-/// the cache entry persists across the source edit and a subsequent
+/// Landed contract: `Engine::edit_source` (engine_edit.rs) calls the same
+/// `self.clear_realization_cache()` hook as `Engine::edit_param`, at the
+/// same near-entry placement, delegating to the same in-place
+/// `RealizationCache::clear()` (not a reseat to a fresh
+/// `RealizationCache::new()`) described above. Without that shared hook, the
+/// cache entry would persist across the source edit and a subsequent
 /// `build()` / `build_snapshot()` would silently return a stale
-/// `GeometryHandleId` pointing at the OLD geometry. After step-18's wiring,
-/// `edit_source` resets the cache near function entry — symmetric with
-/// `edit_param` — and this assertion passes.
+/// `GeometryHandleId` pointing at the OLD geometry.
 #[test]
 fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build() {
     let module1 = CompiledModuleBuilder::new(ModulePath::new(vec![
