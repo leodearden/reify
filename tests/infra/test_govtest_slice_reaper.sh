@@ -1526,6 +1526,94 @@ assert "I8: reify.slice and reify-governed-agents.slice are never stopped, even 
         "reify.slice" "reify-governed.slice" "reify-governed-agents.slice" \
         "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
 
+# (h) — THE RACE BETWEEN THE ENUMERATION AND THE STOP. Block H's filter decides
+# "no dash-child left to cascade into" from a SNAPSHOT. A concurrent lane still
+# running the PRE-rename script can create reify-test-task-<pid>.slice in the
+# window between that enumeration and the stop, and stopping
+# reify-test-task.slice then cascades into that lane's LIVE measurement —
+# exactly the hazard the childlessness rule exists to prevent, arrived at by
+# timing instead of by a bad filter. Not hypothetical: when the rename landed,
+# dozens of lanes still had the old file checked out. The library re-validates
+# each unit against a FRESH enumeration immediately before its own stop, which
+# is what this drives.
+#
+# THE STUB IS DELIBERATELY RACY. It answers the FIRST list-units from the
+# fixture alone and every one after that from the fixture PLUS the new
+# dash-child, so the appearance lands precisely in the window under test.
+# Builtin-only and /bin/bash-shebanged for the same PATH-hygiene reasons
+# bin-ok documents.
+#
+# THE SIBLING IS THE OTHER HALF. A re-check that simply aborted the whole sweep
+# on any change would also pass a task-only assertion, so reify-test-merge
+# .slice — childless in both enumerations — must still be stopped. The
+# re-check is per-unit, not per-sweep.
+_I_RACY_BIN="$_STUB_ROOT/bin-racy"
+_I_RACE_FLAG="$_STUB_ROOT/race.flag"
+_I_RACE_ROW="reify-test-task-999.slice loaded active active Slice /reify/test/task/999"
+mkdir -p "$_I_RACY_BIN"
+cat > "$_I_RACY_BIN/systemctl" <<'STUBEOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GOVTEST_STUB_LOG"
+for _a in "$@"; do
+    if [ "$_a" = "list-units" ]; then
+        if [ -s "${GOVTEST_STUB_LISTING_FILE:-/nonexistent}" ]; then
+            while IFS= read -r _l; do printf '%s\n' "$_l"; done \
+                < "$GOVTEST_STUB_LISTING_FILE"
+        fi
+        if [ -e "${GOVTEST_STUB_RACE_FLAG:-/nonexistent}" ]; then
+            printf '%s\n' "${GOVTEST_STUB_RACE_ROW:-}"
+        else
+            printf '' > "${GOVTEST_STUB_RACE_FLAG:-/dev/null}"
+        fi
+        exit 0
+    fi
+done
+exit 0
+STUBEOF
+chmod +x "$_I_RACY_BIN/systemctl"
+
+# Two childless leaves at enumeration time; only one of them grows a child.
+_I_RACE_LISTING="reify-test-task.slice   loaded active active Slice /reify/test/task
+reify-test-merge.slice  loaded active active Slice /reify/test/merge"
+
+_expect_legacy_race_skip() {
+    local rc=0 got
+    : > "$_REAP_LOG"
+    : > "$_LEGACY_OUT"
+    rm -f "$_I_RACE_FLAG"
+    printf '%s\n' "$_I_RACE_LISTING" > "$_REAP_LISTING"
+    GOVTEST_STUB_LOG="$_REAP_LOG" \
+    GOVTEST_STUB_LISTING_FILE="$_REAP_LISTING" \
+    GOVTEST_STUB_RACE_FLAG="$_I_RACE_FLAG" \
+    GOVTEST_STUB_RACE_ROW="$_I_RACE_ROW" \
+    GOVTEST_DRIVER_LIB="$REAPER_LIB" \
+    PATH="$_I_RACY_BIN" \
+    "$BASH" "$_LEGACY_DRIVER" "reify-test-task.slice" "reify-test-merge.slice" \
+        >"$_LEGACY_OUT" 2>"$_REAP_STDERR" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "govtest_reap_legacy rc=$rc, want 0"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    got="$(_reap_stopped_units)"
+    if [ "$got" != "reify-test-merge.slice" ]; then
+        printf 'stopped:\n%s\n--- want exactly ---\nreify-test-merge.slice\n--- full stub log ---\n' "$got"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    # The skip is announced, not silent — same log-what-you-did discipline the
+    # reap follows, and the only way a transcript can show WHY a legacy name
+    # survived a sweep.
+    if ! grep -qE 'skipped legacy slice[^:]*: reify-test-task\.slice$' "$_LEGACY_OUT"; then
+        printf 'reify-test-task.slice was skipped but never announced on stdout:\n'
+        cat "$_LEGACY_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "I9: a dash-child appearing AFTER the enumeration suppresses that unit's stop, not its sibling's" \
+    _expect_legacy_race_skip
+
 # ---------------------------------------------------------------------------
 # Block J — WIRING. Prove the library is actually used by
 # tests/infra/test_cpu_governed_exec_hostexcl.sh, and that its D7/D8 slices

@@ -32,8 +32,10 @@
 #                                  right now (present, and with no enumerated
 #                                  dash-child left to cascade into)
 #   govtest_reap_legacy <legacy_unit>...
-#                                  enumerate + stop those; no-op when
-#                                  systemctl is absent
+#                                  enumerate + stop those, re-checking each
+#                                  against a FRESH enumeration immediately
+#                                  before its own stop; no-op when systemctl
+#                                  is absent
 #   govtest_slice_teardown <pid>   unconditionally stop this run's own slices,
 #                                  children before parent
 #
@@ -511,6 +513,54 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# _govtest_enumerate
+#   Internal. Echo a fresh `systemctl --user list-units` listing of this
+#   profile's slices, or NOTHING when systemctl is absent or fails. Always
+#   returns 0 — emptiness is the only signal, the same contract every other
+#   function here follows, because callers run under `set -euo pipefail` and a
+#   non-zero return from inside a capture is an abort hazard.
+#
+#   ONE ENUMERATION, THREE CALLERS. Both actuators and govtest_reap_legacy's
+#   pre-stop re-check need exactly this, and the plumbing is subtle enough in
+#   three separate ways that having it written once is worth a function:
+#
+#     * THE GLOB IS THE OUTER BLAST-RADIUS BOUND. The systemd user session is
+#       shared host-wide, so listing every unit and filtering afterwards would
+#       put the production `reify-governed-*` slices — and every other
+#       project's units — inside the candidate set in the first place. The
+#       anchored grammar re-filters each caller applies afterwards are the
+#       INNER bound, kept even though the glob already ran: exactly the
+#       belt-and-braces of dark-factory verify.py:3492 (glob) + :3503
+#       (anchored regex re-check).
+#     * `|| true` INSIDE the capture AND `|| listing=""` OUTSIDE it. The
+#       former covers a non-zero systemctl exit; the latter covers the
+#       assignment itself failing under `set -e`.
+#     * THE `command -v` GUARD. A host without systemctl has nothing to
+#       enumerate, and returning empty here gives every caller its no-op for
+#       free rather than each repeating the guard.
+#
+#   The STOP RULES stay apart in their own actuators deliberately — see
+#   govtest_reap_legacy's header for why folding two differently-justified
+#   stop rules into one body would be the wrong deduplication. This is the
+#   plumbing they share, not the policy they don't: a future fix here (a
+#   `--no-pager`, a changed glob, a systemctl exit-code quirk) now lands in
+#   one place instead of needing to be applied twice and silently being
+#   applied once.
+# ---------------------------------------------------------------------------
+_govtest_enumerate() {
+    local listing=""
+
+    command -v systemctl >/dev/null 2>&1 || return 0
+
+    listing="$(systemctl --user list-units --all --plain --no-legend \
+        "${_GOVTEST_PROFILE_PREFIX}*.slice" 2>/dev/null || true)" || listing=""
+
+    [ -n "$listing" ] || return 0
+    printf '%s\n' "$listing"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # govtest_reap_stale [<self_pid>]
 #   CRASH RECOVERY. Enumerate this profile's slices, and stop the parent of
 #   every run whose pid is dead. Defaults <self_pid> to `$$`.
@@ -527,22 +577,21 @@ EOF
 #   leftover-verify-scope reaper uses (harness.py `_run_leftover_verify_scope
 #   _reaper_pass` -> verify.py `reap_leftover_verify_scopes`).
 #
-#   TWO BOUNDS ON THE BLAST RADIUS, BOTH DELIBERATE. The enumeration glob
-#   `<prefix>*.slice` is the OUTER bound: the systemd user session is
-#   shared host-wide, so listing every unit and filtering afterwards would
-#   put the production `reify-governed-*` slices — and every other project's
-#   units — inside the candidate set in the first place. The anchored
-#   grammar re-filter inside govtest_slice_pid is the INNER bound, applied
-#   even though the glob already ran. Keeping both is exactly the
-#   belt-and-braces of dark-factory verify.py:3492 (glob) + :3503 (anchored
-#   regex re-check), and it means a surprise in systemctl's glob semantics
-#   cannot widen what gets stopped.
+#   TWO BOUNDS ON THE BLAST RADIUS, BOTH DELIBERATE. _govtest_enumerate's
+#   `<prefix>*.slice` glob is the OUTER bound (see its header for why the
+#   shared host-wide session makes that essential); the anchored grammar
+#   re-filter inside govtest_slice_pid is the INNER bound, applied even
+#   though the glob already ran. Keeping both is exactly the belt-and-braces
+#   of dark-factory verify.py:3492 (glob) + :3503 (anchored regex re-check),
+#   and it means a surprise in systemctl's glob semantics cannot widen what
+#   gets stopped.
 #
-#   FAIL-SOFT THROUGHOUT. A missing systemctl returns immediately; a failing
-#   one is swallowed. This function is called at the top of a suite running
-#   under `set -euo pipefail`, so any escaping non-zero status would abort
-#   the whole governance run before a single row executed and surface as a
-#   governance regression that isn't one.
+#   FAIL-SOFT THROUGHOUT. A missing systemctl and a failing one both arrive
+#   as an empty listing from _govtest_enumerate and return immediately; a
+#   failing stop is swallowed. This function is called at the top of a suite
+#   running under `set -euo pipefail`, so any escaping non-zero status would
+#   abort the whole governance run before a single row executed and surface
+#   as a governance regression that isn't one.
 #
 #   Each reap is announced on stdout rather than done silently, so a sweep is
 #   visible in the governance suite's transcript — the same log-what-you-
@@ -552,14 +601,10 @@ govtest_reap_stale() {
     local self_pid="${1:-$$}"
     local listing unit
 
-    command -v systemctl >/dev/null 2>&1 || return 0
-
-    listing=""
-    # `|| true` inside the capture AND a `|| listing=""` outside: the former
-    # covers a non-zero systemctl exit, the latter covers the assignment
-    # itself failing under `set -e`.
-    listing="$(systemctl --user list-units --all --plain --no-legend \
-        "${_GOVTEST_PROFILE_PREFIX}*.slice" 2>/dev/null || true)" || listing=""
+    # Absent systemctl, a failing one and an empty session all arrive here as
+    # an empty listing, which is this function's no-op — see
+    # _govtest_enumerate for the glob bound and the two-layer `|| true`.
+    listing="$(_govtest_enumerate)" || listing=""
 
     [ -n "$listing" ] || return 0
 
@@ -597,11 +642,36 @@ EOF
 #   negligible against a suite that places real cgroup scopes.
 #
 #   Structurally a direct mirror of govtest_reap_stale, deliberately: the same
-#   `command -v systemctl` guard, the same `|| true` inside the capture AND
-#   `|| listing=""` outside (the former covers a non-zero systemctl exit, the
-#   latter the assignment itself failing under `set -e`), the same early return
-#   on an empty listing, the same fail-soft stop, the same announce-what-you-
-#   reaped line, the same unconditional `return 0`.
+#   _govtest_enumerate call for the listing, the same early return when it
+#   comes back empty, the same fail-soft stop, the same announce-what-you-
+#   reaped line, the same unconditional `return 0`. The two STOP RULES are
+#   what stay apart; the enumeration plumbing they share is factored into
+#   _govtest_enumerate so a future fix to it cannot land in only one of them.
+#
+#   THE PRE-STOP RE-CHECK, AND THE RACE IT CLOSES. govtest_legacy_stale decides
+#   "no dash-child left to cascade into" from a SNAPSHOT. Between that
+#   enumeration and the stop, a concurrent lane still running the PRE-rename
+#   script can create `<prefix>-task-<pid>.slice` — and stopping
+#   `<prefix>-task.slice` then cascades straight into that lane's live
+#   measurement, which is the single hazard filter (3) exists to prevent. This
+#   is not hypothetical: when the rename landed, dozens of lanes still had the
+#   old file checked out. So each unit is re-validated against a FRESH
+#   enumeration immediately before its own stop, shrinking the window from the
+#   whole emit loop to systemd's own stop path. It cannot be closed entirely
+#   from here — only systemd could stop-if-empty atomically — but the residual
+#   window is orders of magnitude smaller and the failure mode of the re-check
+#   itself is the safe one: a transiently empty or failing enumeration makes
+#   the re-check emit nothing, so the unit is SKIPPED and left for the next
+#   sweep. The skip is announced, not silent, for the same reason the reap is.
+#
+#   WHY RE-RUN THE WHOLE FILTER RATHER THAN JUST THE CHILD TEST. Passing the
+#   single unit back through govtest_legacy_stale re-applies all three filters
+#   — prefix, presence and childlessness — against the fresh listing, so a unit
+#   that VANISHED between the two enumerations is skipped too (there is nothing
+#   left to stop), and the prefix re-check that keeps `reify.slice` unreachable
+#   is applied on the fresh data as well as the stale. One rule, evaluated
+#   twice, rather than a second hand-written approximation of it that could
+#   drift from the first.
 #
 #   THE `</dev/null` IS STRUCTURAL, not cosmetic — same reason as on the two
 #   loops above. This loop's stdin IS the heredoc carrying the remaining units,
@@ -617,22 +687,30 @@ EOF
 #   govtest_legacy_stale before anything is stopped.
 # ---------------------------------------------------------------------------
 govtest_reap_legacy() {
-    local listing unit
+    local listing unit fresh
 
     # No legacy names to look for means nothing to enumerate FOR — skip the
     # systemctl round-trip rather than listing and then filtering to empty.
     [ "$#" -gt 0 ] || return 0
 
-    command -v systemctl >/dev/null 2>&1 || return 0
-
-    listing=""
-    listing="$(systemctl --user list-units --all --plain --no-legend \
-        "${_GOVTEST_PROFILE_PREFIX}*.slice" 2>/dev/null || true)" || listing=""
+    # Absent systemctl, a failing one and an empty session all arrive here as
+    # an empty listing, which is this function's no-op.
+    listing="$(_govtest_enumerate)" || listing=""
 
     [ -n "$listing" ] || return 0
 
     while IFS= read -r unit; do
         [ -n "$unit" ] || continue
+
+        # RE-CHECK against a fresh enumeration, immediately before this unit's
+        # own stop — see the header. Skipping is the safe direction, so an
+        # enumeration that comes back empty for any reason skips too.
+        fresh="$(_govtest_enumerate)" || fresh=""
+        if [ -z "$(govtest_legacy_stale "$fresh" "$unit")" ]; then
+            echo "  skipped legacy slice (no longer safe to stop): $unit"
+            continue
+        fi
+
         systemctl --user stop "$unit" </dev/null 2>/dev/null || true
         echo "  reaped legacy slice: $unit"
     done <<EOF
