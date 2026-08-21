@@ -1251,13 +1251,14 @@ fn build_surface_probe_is_clean_when_registered() {
 //
 // Selection method, stated so bounded coverage never reads as full coverage:
 //
-//   1. Grep every `@optimized`-annotated stdlib fn name (`as_printed_material`,
-//      `displacement_at`, `fdm_slice`, `form_find`, `form_find_free`,
-//      `input_shape`, `inverse_dynamics`, `mechanism_modal_analysis`,
-//      `membrane_load`, `modal_analysis`, `simulate_trajectory`,
-//      `solve_buckling`, `solve_buckling_load_cases`, `solve_elastic_static`,
-//      `solve_load_cases`, `transient_response`) against `examples/`. That
-//      yields 18 candidate files.
+//   1. Find every `examples/**/*.ri` that CALLS an `@optimized`-annotated stdlib
+//      fn — RECURSIVELY. `examples/` holds 147 top-level `.ri` files but 260 in
+//      all, and 13 of the callers live in subdirectories (dynamics/, flexures/,
+//      modal/, shells/, trajectory/), so a top-level-only grep sees barely half
+//      the surface. 31 caller files today, between them reaching 15 of the
+//      stdlib's 16 `@optimized` targets. The fn names are NOT listed here: they
+//      are read from the compiled stdlib at test time (see step 5), so this
+//      comment cannot fall behind a newly-annotated fn.
 //   2. Reduce to a DISTINCT-TARGET covering set — one file per `@optimized`
 //      dispatch target, choosing the cheapest measured file for each. That is
 //      the cost trim the sweep's own purpose licenses: it guards the dispatch
@@ -1267,28 +1268,53 @@ fn build_surface_probe_is_clean_when_registered() {
 //   3. Where a target's ONLY example is disproportionately expensive, substitute
 //      a hand-written minimal probe for it — but only because assertion (3) in
 //      `run_build_surface_sweep` proves the probe still dispatches that exact
-//      target, so a substitution can never quietly become zero coverage. Exactly
-//      one target needed this (`solver::buckling_multi_case`).
-//   4. All three lists, and which `#[test]` runs which case, are PRINTED once by
+//      target, so a substitution can never quietly become zero coverage. Two
+//      targets needed this (`solver::buckling_multi_case`, `trajectory::simulate`).
+//   4. All four lists, and which `#[test]` runs which case, are PRINTED once by
 //      `build_surface_selection_is_reported_and_consistent` — deliberately in
 //      ONE place rather than by each sweep, so no run ever reports a covering
 //      set larger than the cases it actually built.
+//   5. Step 1 is EXECUTABLE, not a hand-run grep. `build_surface_survey_is_exhaustive`
+//      re-derives the fn -> target map from the COMPILED stdlib and re-walks
+//      `examples/**` on every run, then fails if a caller file is in neither the
+//      covering set nor `BUILD_SURFACE_DROPPED_DUPLICATES`, or if a stdlib target
+//      is neither credited by a covered case nor listed in
+//      `BUILD_SURFACE_UNCOVERED_TARGETS`. It exists because these lists WERE
+//      derived by a hand-run, non-recursive grep, and the conclusions written on
+//      top of it rotted into false prose right here (task 5578 review round 2):
+//      13 caller files never surveyed, and 8 targets declared to have no example
+//      caller when only one of them actually had none. Prose cannot fail; that
+//      test can.
 //
-// Measured (debug profile, `--test-threads=1`) the full 18-file list costs
-// 136.63s. The covering set as selected costs ~15.5s: ~8.5s for the six cheap
-// files plus ~7.0s for the buckling-multi-case probe, which replaced a 78.35s
-// example. The probe keeps its own `#[test]` so it schedules concurrently — the
-// same "independent process with its own PASS/SLOW line" reasoning that made the
-// eval sweep shard into `CORPUS_SHARD_COUNT`.
+// Measured (debug profile, `--test-threads=1`) the full 31-file list costs
+// 532.1s — 136.63s for the 18 top-level files plus 395.5s for the 13
+// subdirectory callers the original grep never saw. The covering set as selected
+// costs 26.4s end-to-end at `--test-threads=1`: 11.54s for the nine cheap files,
+// 10.08s for the buckling-multi-case probe (standing in for a 78.35s example) and
+// 4.73s for the trajectory-simulate probe (standing in for a 303.26s example).
+// Each probe keeps its own `#[test]` so it schedules as an independent process
+// with its own PASS/SLOW line — the same reasoning that sharded the eval sweep
+// into `CORPUS_SHARD_COUNT`. Per-case costs below are single-build measurements
+// and drift with host contention (the trajectory probe measured 4.7-6.2s across
+// runs); they are recorded to justify a RANKING — cheapest caller per target —
+// not as a budget anything asserts against.
 //
-// Out of reach here, and deliberately not faked: `dynamics::inverse_dynamics`,
-// `fdm::slice`, `modal::*` and `trajectory::*` have NO `examples/*.ri` caller,
-// so this sweep cannot cover them. They are guarded by their own crate tests.
+// Exactly one target is genuinely uncovered here — `fdm::slice`, the only one of
+// the 16 that no `examples/**/*.ri` calls. It is listed with its reason, and with
+// where it IS guarded instead, in `BUILD_SURFACE_UNCOVERED_TARGETS`; the survey
+// requires every target the covering set does not credit to be accounted for
+// there, so "uncovered" is now a written, checked disposition rather than an
+// omission.
 
 /// One member of the bounded build()-surface sweep.
 struct BuildSurfaceCase {
     /// Base name of the `examples/<name>.ri` file this case builds — also the
     /// display label and the `BUILD_SURFACE_KNOWN_RESIDUALS` key.
+    ///
+    /// May be subdirectory-relative (`modal/transient_step_response`): that name
+    /// flows unchanged through `examples_dir.join(format!("{name}.ri"))`, the
+    /// printed label, the DROP printer, the residual key and the survey's
+    /// `examples/`-relative comparison, so a subdir caller needs no special case.
     name: &'static str,
     /// The ComputeNode target ids this file is CREDITED with covering.
     ///
@@ -1356,6 +1382,33 @@ const BUILD_SURFACE_OPTIMIZED_EXAMPLES: &[BuildSurfaceCase] = &[
               caller in the same file",
         probe: None,
     },
+    BuildSurfaceCase {
+        name: "flexures/printer_z_compliant_mount",
+        targets: &["dynamics::inverse_dynamics", "modal::mechanism_modal"],
+        why: "17.1ms — cheapest inverse_dynamics caller of four AND the only \
+              mechanism_modal caller, so two targets for less than the \
+              elastic-static case costs",
+        probe: None,
+    },
+    BuildSurfaceCase {
+        name: "modal/transient_step_response",
+        targets: &[
+            "modal::free_vibration",
+            "modal::transient_response",
+            "modal::displacement_at",
+        ],
+        why: "3.20s — three targets in one file, and the cheapest free_vibration \
+              caller of five: it solves at ElementOrder.P1, where \
+              cantilever_beam_modes (37.93s) and simply_supported_beam_modes \
+              (36.06s) are the same target at P2",
+        probe: None,
+    },
+    BuildSurfaceCase {
+        name: "trajectory/zvd_robustness",
+        targets: &["trajectory::input_shape"],
+        why: "12.8ms — cheapest input_shape caller of four",
+        probe: None,
+    },
 ];
 
 /// A hand-written minimal `solver::buckling_multi_case` driver — the same
@@ -1412,6 +1465,78 @@ const BUILD_SURFACE_HEAVY_EXAMPLE: &[BuildSurfaceCase] = &[BuildSurfaceCase {
     probe: Some(BUCKLING_MULTI_CASE_PROBE_SRC),
 }];
 
+/// A hand-written minimal `trajectory::simulate` driver.
+///
+/// `simulate_trajectory(p: Profile, mech: Real, modal: ModalResult)` cannot be
+/// called without a real `ModalResult`, and `ModalResult`'s six params are all
+/// required — hand-constructing one would be the all-Undef sentinel shape this
+/// whole file exists to catch. So the probe pays for one genuine modal solve,
+/// made as cheap as the API allows: the 200x10x2 mm P1 cantilever from
+/// `examples/modal/transient_step_response.ri` at `n_modes: 1` with `NoDamping`.
+/// The profile is the two-waypoint cubic ramp from
+/// `examples/trajectory/zvd_robustness.ri` (12.8ms on its own).
+///
+/// `let samples = track.t_samples` is the consumer, and is load-bearing: it is
+/// the exact FieldAccess-on-a-solver-result shape that made `TPrism.solved` go
+/// stale in task 5578, so a degraded dispatch surfaces here as a stale-Undef
+/// violation rather than as a quietly-empty track.
+const TRAJECTORY_SIMULATE_PROBE_SRC: &str = r#"structure TrajectorySimulateProbe {
+    param length : Length = 200mm
+    param width  : Length = 10mm
+    param height : Length = 2mm
+
+    let material = Steel_AISI_1045()
+    let mi = FEAMaterialInput(material: material)
+    let root = FixedSupport(target: "x_min")
+
+    let modal_opts = ModalOptions(
+        n_modes: 1,
+        boundary_conditions: [root],
+        damping: NoDamping(),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P1
+    )
+    let modal = modal_analysis(mi.material, length, width, height, modal_opts)
+
+    let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
+    let wp1 = Waypoint(t: 1.0s, values: [1.0], vels: none, accels: none)
+    let profile = PiecewisePolynomialProfile(
+        mechanism: 1.0,
+        waypoints: [wp0, wp1],
+        boundary: NaturalSpline(),
+        spline_kind: SplineKind.CubicSpline
+    )
+
+    let track = simulate_trajectory(profile, 1.0, modal)
+    let samples = track.t_samples
+}"#;
+
+/// The second heavy covering-set member, in its own `#[test]` for the same
+/// reason as the first.
+const BUILD_SURFACE_HEAVY_TRAJECTORY: &[BuildSurfaceCase] = &[BuildSurfaceCase {
+    name: "trajectory_simulate_probe",
+    targets: &["trajectory::simulate"],
+    why: "~6s measured (4.7-6.2s across runs), vs 303.26s for \
+          examples/trajectory/printer_print_envelope.ri — the only example that \
+          reaches this target, and on its own 12x the whole \
+          rest of this sweep. That example pays for a 7-mode P2 modal solve on a \
+          500mm gantry and then simulates three shaped variants of a four-waypoint \
+          path; the probe pays for a 1-mode P1 solve on a 200mm beam and one \
+          two-waypoint ramp. Assertion (3) proves it still dispatches \
+          trajectory::simulate, so the substitution cannot silently become zero \
+          coverage. It also dispatches modal::free_vibration as scaffolding (a \
+          ModalResult is a required argument) but is NOT credited with it — that \
+          target is covered by modal/transient_step_response, and crediting \
+          incidental dispatch would overstate what this case is chosen for. The \
+          trajectory solver itself is covered by reify-stdlib's own trajectory \
+          tests; what this case adds is the build()-surface half — no stale Undef \
+          and no trampoline-missing diagnostic.",
+    probe: Some(TRAJECTORY_SIMULATE_PROBE_SRC),
+}];
+
 /// Candidate files dropped from the sweep because they duplicate a target the
 /// covering set already reaches. PRINTED on every run by
 /// `build_surface_selection_is_reported_and_consistent` — never a silent
@@ -1428,11 +1553,43 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
          real caller, this one did not.",
     ),
     ("differential_field_ops", "349ms — solver::elastic_static"),
+    (
+        "dynamics/closed_2prismatic_idyn",
+        "490ms — dynamics::inverse_dynamics, covered by \
+         flexures/printer_z_compliant_mount (17.1ms)",
+    ),
+    (
+        "dynamics/closed_4bar_idyn",
+        "38.1ms — dynamics::inverse_dynamics, covered by \
+         flexures/printer_z_compliant_mount (17.1ms)",
+    ),
+    (
+        "dynamics/toolhead_motor_sizing",
+        "25.7ms — dynamics::inverse_dynamics, covered by \
+         flexures/printer_z_compliant_mount (17.1ms)",
+    ),
     ("fea_cantilever_smoke", "410ms — solver::elastic_static"),
     ("fea_multi_case_smoke", "294ms — solver::elastic_static"),
     ("fea_pressure_smoke", "286ms — solver::elastic_static"),
     ("fea_shell_flexure", "138ms — solver::elastic_static"),
     ("fea_shell_too_thick_auto", "41ms — solver::elastic_static"),
+    (
+        "modal/cantilever_beam_modes",
+        "37.93s — modal::free_vibration at ElementOrder.P2, covered by \
+         modal/transient_step_response (3.20s, P1). The P2 accuracy this fixture \
+         exists for is an eval-surface property its own tests pin; the dispatch \
+         path is identical.",
+    ),
+    (
+        "modal/printer_gantry_modes",
+        "3.99s — modal::free_vibration, covered by modal/transient_step_response \
+         (3.20s)",
+    ),
+    (
+        "modal/simply_supported_beam_modes",
+        "36.06s — modal::free_vibration at ElementOrder.P2, covered by \
+         modal/transient_step_response (3.20s, P1)",
+    ),
     (
         "multi_load_bracket",
         "2.06s — solver::multi_case, covered by fea_multi_case_bracket (1.10s). \
@@ -1440,6 +1597,15 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
          (MultiLoadBracket.critical_case, a worst_case/lambda-dispatch product \
          limitation), so importing it here would add a known-broken case for zero \
          added target coverage.",
+    ),
+    (
+        "shells/thin_walled_bracket",
+        "695ms — solver::elastic_static (plus the engine-inserted \
+         shell-extract::extract), both covered by fea_shell_too_thick_annotated \
+         (15ms). This is the file the task-5578 review found in NEITHER list: the \
+         non-recursive grep never saw it, so the DROP list's own \
+         \"every dropped file is listed\" promise was false until the survey \
+         started walking examples/ recursively.",
     ),
     ("tensegrity_membrane_formfind", "13ms — solver::form_find, covered by tensegrity_cable_net (9.8ms)"),
     (
@@ -1450,6 +1616,27 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
          `optimized_compute_outputs_are_definite_on_build_surface` builds it under \
          BOTH schedulers and asserts TPrism.{solved,forces} are DEFINITE, which a \
          zero-violations sweep cannot.",
+    ),
+    (
+        "trajectory/ei_robustness",
+        "70.4ms — trajectory::input_shape, covered by trajectory/zvd_robustness \
+         (12.8ms)",
+    ),
+    (
+        "trajectory/printer_print_envelope",
+        "303.26s — modal::free_vibration + trajectory::input_shape + \
+         trajectory::simulate, all three covered elsewhere (3.20s / 12.8ms / the \
+         ~6s TRAJECTORY_SIMULATE_PROBE_SRC). It is the ONLY example reaching \
+         trajectory::simulate, and at 12x the rest of the sweep for that one \
+         target it is the second entry in this list dropped in favour of a probe. \
+         Its cost is the 7-mode P2 modal solve on a 500mm gantry plus three \
+         simulated variants — none of which the dispatch assertions need.",
+    ),
+    (
+        "trajectory/tots_optimal_ptp",
+        "9.71s — trajectory::input_shape (the heavy TOTS arm), covered by \
+         trajectory/zvd_robustness (12.8ms). The TOTS solve itself is a \
+         trajectory-crate concern; this sweep guards the dispatch.",
     ),
 ];
 
@@ -1492,41 +1679,32 @@ const BUILD_SURFACE_KNOWN_RESIDUALS: &[(&str, &str, &str)] = &[(
 /// 2: the section comment asserted eight targets had no `examples/*.ri` caller;
 /// seven of them did, and the claim had only ever been checked by a
 /// NON-recursive grep).
-const BUILD_SURFACE_UNCOVERED_TARGETS: &[(&str, &str)] = &[];
+const BUILD_SURFACE_UNCOVERED_TARGETS: &[(&str, &str)] = &[(
+    "fdm::slice",
+    "no `examples/**/*.ri` calls `fdm_slice(` — the ONLY one of the stdlib's 16 \
+     @optimized targets for which that is true, and the only survivor of the \
+     eight targets the section comment once claimed had no example caller. Not a \
+     cost drop: there is nothing here to admit, and `build_surface_survey_is_exhaustive` \
+     re-checks it recursively on every run (printing this target's caller list, so \
+     the entry stops excusing anything the moment an example calls it). The target \
+     IS guarded on THIS surface by crates/reify-eval/tests/fdm_slice_e2e.rs, which \
+     registers the compute fns, runs a real `engine.build(.., ExportFormat::Step)` \
+     and asserts a ComputeNode with `target == \"fdm::slice\"` is in the post-build \
+     graph — the same positive dispatch check assertion (3) makes here.",
+)];
 
-/// Reports the SELECTION once, and asserts it is internally consistent.
+/// Every case the build()-surface sweeps actually build, paired with the
+/// `#[test]` that builds it.
 ///
-/// Separated from the sweeps deliberately (task 5578 review): a per-sweep banner
-/// printed "N of the 18 @optimized-bearing files, reduced to a covering set"
-/// followed by every DROP line, which was wrong for the heavy sweep — it built
-/// one file and reported the whole selection. The selection is one fact about
-/// the suite, so it is printed by one test; each sweep prints only the files it
-/// actually builds.
-///
-/// The assertions keep the three lists from contradicting each other:
-///
-/// - every `BUILD_SURFACE_KNOWN_RESIDUALS` entry names a file that is actually
-///   swept, so a residual cannot rot into a never-exercised exemption by having
-///   its file dropped from the covering set;
-/// - no file sits in two buckets at once (covered AND dropped);
-/// - every case credits at least one target, since the targets are what the
-///   per-file positive assertion keys off.
-#[test]
-fn build_surface_selection_is_reported_and_consistent() {
-    let covered: Vec<&BuildSurfaceCase> = BUILD_SURFACE_OPTIMIZED_EXAMPLES
-        .iter()
-        .chain(BUILD_SURFACE_HEAVY_EXAMPLE.iter())
-        .collect();
-
-    let probes = covered.iter().filter(|c| c.probe.is_some()).count();
-    eprintln!(
-        "build()-surface coverage is BOUNDED: the 18 @optimized-bearing examples/ \
-         files reduced to a distinct-target covering set of {} case(s) — {} \
-         example file(s) + {probes} hand-written probe(s).",
-        covered.len(),
-        covered.len() - probes
-    );
-    for (case, test) in BUILD_SURFACE_OPTIMIZED_EXAMPLES
+/// The covering set is split across three `#[test]`s — one sweep over the cheap
+/// members plus one per heavy probe, so each heavy member schedules as its own
+/// process with its own PASS/SLOW line. This is the ONE place that knows the
+/// split: the selection report prints from it and `build_surface_survey_is_exhaustive`
+/// checks coverage against it, so adding a fourth slice cannot leave either of
+/// them silently reasoning about a subset — which is exactly the rot shape this
+/// section is recovering from.
+fn build_surface_cases() -> Vec<(&'static BuildSurfaceCase, &'static str)> {
+    BUILD_SURFACE_OPTIMIZED_EXAMPLES
         .iter()
         .map(|c| (c, "build_surface_optimized_examples_have_no_stale_undef"))
         .chain(
@@ -1534,59 +1712,12 @@ fn build_surface_selection_is_reported_and_consistent() {
                 .iter()
                 .map(|c| (c, "build_surface_buckling_multi_case_has_no_stale_undef")),
         )
-    {
-        let what = match case.probe {
-            Some(_) => format!("probe:{}", case.name),
-            None => format!("examples/{}.ri", case.name),
-        };
-        eprintln!("  COVER {what} {:?} [{test}] — {}", case.targets, case.why);
-    }
-    for (name, why) in BUILD_SURFACE_DROPPED_DUPLICATES {
-        eprintln!("  DROP  examples/{name}.ri — {why}");
-    }
-    for (name, cell, reason) in BUILD_SURFACE_KNOWN_RESIDUALS {
-        eprintln!("  KNOWN RESIDUAL examples/{name}.ri `{cell}` — {reason}");
-    }
-
-    let mut problems: Vec<String> = Vec::new();
-
-    for (name, cell, _) in BUILD_SURFACE_KNOWN_RESIDUALS {
-        if !covered
-            .iter()
-            .any(|c| c.name == *name && c.probe.is_none())
-        {
-            problems.push(format!(
-                "BUILD_SURFACE_KNOWN_RESIDUALS exempts `{cell}` in examples/{name}.ri, but that \
-                 file is in neither BUILD_SURFACE_OPTIMIZED_EXAMPLES nor \
-                 BUILD_SURFACE_HEAVY_EXAMPLE — the exemption is never exercised and will rot. \
-                 Either sweep the file again or delete the residual entry."
-            ));
-        }
-    }
-    for (name, _) in BUILD_SURFACE_DROPPED_DUPLICATES {
-        if covered.iter().any(|c| c.name == *name) {
-            problems.push(format!(
-                "examples/{name}.ri is listed BOTH as covered and as a dropped duplicate — the \
-                 printed selection would contradict itself."
-            ));
-        }
-    }
-    for case in &covered {
-        if case.targets.is_empty() {
-            problems.push(format!(
-                "examples/{}.ri credits no ComputeNode target — the per-file positive dispatch \
-                 assertion keys off `targets`, so an empty list silently reduces the case to two \
-                 absence-assertions.",
-                case.name
-            ));
-        }
-    }
-
-    assert!(
-        problems.is_empty(),
-        "the build()-surface selection lists contradict each other:\n  {}",
-        problems.join("\n  ")
-    );
+        .chain(
+            BUILD_SURFACE_HEAVY_TRAJECTORY
+                .iter()
+                .map(|c| (c, "build_surface_trajectory_simulate_has_no_stale_undef")),
+        )
+        .collect()
 }
 
 /// Every `@optimized` stdlib fn paired with the ComputeNode target its
@@ -1603,7 +1734,7 @@ fn build_surface_selection_is_reported_and_consistent() {
 /// Deliberately NOT a literal list and NOT a text-parse of
 /// `crates/reify-compiler/stdlib/*.ri`. Either would be a second copy of the
 /// grammar that can drift from the compiler — which is precisely the rot that
-/// produced this test (the selection lists below came from a hand-run grep whose
+/// produced this test (the selection lists above came from a hand-run grep whose
 /// conclusions then went stale in prose).
 ///
 /// Overloads collapse to one pair each (`displacement_at` x2,
@@ -1664,12 +1795,195 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
     false
 }
 
+/// What the build()-surface selection survey sees when it is re-run against the
+/// two EXTERNAL facts the lists above are supposed to match: the `examples/**`
+/// tree and the compiled stdlib.
+///
+/// Computed, never stated. Every count the section comment and the printed
+/// banner quote comes from here, so no number in this file can rot into false
+/// prose the way "that yields 18 candidate files" did.
+struct OptimizedCallerSurvey {
+    /// How many `.ri` files were walked under `examples/` — recursively, via the
+    /// same `collect_ri_files` the eval sweep uses, so the two surfaces cannot
+    /// disagree about which files exist.
+    files_scanned: usize,
+    /// `(examples/-relative extension-stripped name, targets it calls)` for every
+    /// caller file, sorted by name. The name shape matches `BuildSurfaceCase::name`
+    /// and the DROP list exactly, subdirectories included.
+    callers: Vec<(String, Vec<String>)>,
+    /// Distinct `@optimized` targets in the compiled stdlib, sorted.
+    stdlib_targets: Vec<String>,
+}
+
+/// Runs the survey. Cheap enough to call from more than one `#[test]`: one
+/// stdlib compile plus a 260-file read.
+fn survey_optimized_callers() -> OptimizedCallerSurvey {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+
+    let stdlib_fns = stdlib_optimized_fns();
+    assert!(
+        !stdlib_fns.is_empty(),
+        "the compiled stdlib reported ZERO @optimized functions — the map this \
+         survey is built on came up empty, so every check keyed off it would pass \
+         vacuously. Either `prelude_backed_functions` stopped merging the stdlib \
+         or `optimized_target` stopped being populated."
+    );
+    let mut stdlib_targets: Vec<String> = stdlib_fns.iter().map(|(_, t)| t.clone()).collect();
+    stdlib_targets.sort();
+    stdlib_targets.dedup();
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    collect_ri_files(&examples_dir, &mut files);
+    files.sort();
+
+    let mut callers: Vec<(String, Vec<String>)> = Vec::new();
+    for path in &files {
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut targets: Vec<String> = stdlib_fns
+            .iter()
+            .filter(|(name, _)| source_calls_fn(&source, name))
+            .map(|(_, target)| target.clone())
+            .collect();
+        targets.sort();
+        targets.dedup();
+        if targets.is_empty() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(&examples_dir)
+            .unwrap_or(path)
+            .with_extension("");
+        callers.push((rel.to_string_lossy().into_owned(), targets));
+    }
+
+    OptimizedCallerSurvey {
+        files_scanned: files.len(),
+        callers,
+        stdlib_targets,
+    }
+}
+
+/// Reports the SELECTION once, and asserts it is internally consistent.
+///
+/// Separated from the sweeps deliberately (task 5578 review): a per-sweep banner
+/// printed "N of the 18 @optimized-bearing files, reduced to a covering set"
+/// followed by every DROP line, which was wrong for the heavy sweep — it built
+/// one file and reported the whole selection. The selection is one fact about
+/// the suite, so it is printed by one test; each sweep prints only the files it
+/// actually builds.
+///
+/// The assertions keep the four lists from contradicting each other:
+///
+/// - every `BUILD_SURFACE_KNOWN_RESIDUALS` entry names a file that is actually
+///   swept, so a residual cannot rot into a never-exercised exemption by having
+///   its file dropped from the covering set;
+/// - no file sits in two buckets at once (covered AND dropped);
+/// - no target sits in two buckets at once (credited AND listed uncovered);
+/// - every case credits at least one target, since the targets are what the
+///   per-file positive assertion keys off.
+///
+/// Contrast `build_surface_survey_is_exhaustive`, which checks the same lists
+/// against the TREE and the STDLIB. Failures here are fixed by editing a list;
+/// failures there are fixed by measuring a candidate and then admitting or
+/// dropping it.
+#[test]
+fn build_surface_selection_is_reported_and_consistent() {
+    let cases = build_surface_cases();
+    let covered: Vec<&BuildSurfaceCase> = cases.iter().map(|(c, _)| *c).collect();
+    let survey = survey_optimized_callers();
+
+    let probes = covered.iter().filter(|c| c.probe.is_some()).count();
+    eprintln!(
+        "build()-surface coverage is BOUNDED: the {} @optimized-bearing examples/ \
+         file(s) — counted RECURSIVELY at run time by the same survey \
+         `build_surface_survey_is_exhaustive` enforces, never a hardcoded number — \
+         reduced to a distinct-target covering set of {} case(s): {} example file(s) \
+         + {probes} hand-written probe(s).",
+        survey.callers.len(),
+        covered.len(),
+        covered.len() - probes
+    );
+    for (case, test) in &cases {
+        let what = match case.probe {
+            Some(_) => format!("probe:{}", case.name),
+            None => format!("examples/{}.ri", case.name),
+        };
+        eprintln!("  COVER {what} {:?} [{test}] — {}", case.targets, case.why);
+    }
+    for (name, why) in BUILD_SURFACE_DROPPED_DUPLICATES {
+        eprintln!("  DROP  examples/{name}.ri — {why}");
+    }
+    for (target, why) in BUILD_SURFACE_UNCOVERED_TARGETS {
+        eprintln!("  UNCOVERED TARGET {target} — {why}");
+    }
+    for (name, cell, reason) in BUILD_SURFACE_KNOWN_RESIDUALS {
+        eprintln!("  KNOWN RESIDUAL examples/{name}.ri `{cell}` — {reason}");
+    }
+
+    let mut problems: Vec<String> = Vec::new();
+
+    for (name, cell, _) in BUILD_SURFACE_KNOWN_RESIDUALS {
+        if !covered
+            .iter()
+            .any(|c| c.name == *name && c.probe.is_none())
+        {
+            problems.push(format!(
+                "BUILD_SURFACE_KNOWN_RESIDUALS exempts `{cell}` in examples/{name}.ri, but that \
+                 file is in neither BUILD_SURFACE_OPTIMIZED_EXAMPLES nor \
+                 BUILD_SURFACE_HEAVY_EXAMPLE/BUILD_SURFACE_HEAVY_TRAJECTORY — the exemption is \
+                 never exercised and will rot. Either sweep the file again or delete the \
+                 residual entry."
+            ));
+        }
+    }
+    for (name, _) in BUILD_SURFACE_DROPPED_DUPLICATES {
+        if covered.iter().any(|c| c.name == *name) {
+            problems.push(format!(
+                "examples/{name}.ri is listed BOTH as covered and as a dropped duplicate — the \
+                 printed selection would contradict itself."
+            ));
+        }
+    }
+    for (target, _) in BUILD_SURFACE_UNCOVERED_TARGETS {
+        let creditors: Vec<&str> = covered
+            .iter()
+            .filter(|c| c.targets.contains(target))
+            .map(|c| c.name)
+            .collect();
+        if !creditors.is_empty() {
+            problems.push(format!(
+                "`{target}` is listed in BUILD_SURFACE_UNCOVERED_TARGETS but IS credited by \
+                 {creditors:?} — the printed selection claims both that nothing covers it and \
+                 that something does. Delete the uncovered entry (coverage arrived) or the \
+                 credit (it did not)."
+            ));
+        }
+    }
+    for case in &covered {
+        if case.targets.is_empty() {
+            problems.push(format!(
+                "examples/{}.ri credits no ComputeNode target — the per-file positive dispatch \
+                 assertion keys off `targets`, so an empty list silently reduces the case to two \
+                 absence-assertions.",
+                case.name
+            ));
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "the build()-surface selection lists contradict each other:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
 /// Makes the build()-surface SELECTION SURVEY executable instead of prose.
 ///
 /// Companion to — deliberately not merged into —
 /// `build_surface_selection_is_reported_and_consistent` (task 5578 review round
-/// 2). That test asserts the selection lists are INTERNALLY consistent (no file
-/// in two buckets, no orphan residual, no case crediting zero targets); every
+/// 2). That test asserts the selection lists are INTERNALLY consistent; every
 /// failure there is fixed by editing a list. This one asserts the lists match
 /// the TREE and the STDLIB — two EXTERNAL facts that change without anyone
 /// touching this file, and whose fix is to MEASURE a new candidate and then
@@ -1687,8 +2001,6 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
 ///
 /// (b) FILE-LEVEL — every `examples/**/*.ri` that CALLS an `@optimized` stdlib
 ///     fn must be in the covering set or in `BUILD_SURFACE_DROPPED_DUPLICATES`.
-///     Uses the same recursive `collect_ri_files` the eval sweep uses, so the
-///     two surfaces can no longer disagree about which files exist.
 /// (c) TARGET-LEVEL — every `@optimized` target in the compiled stdlib must be
 ///     credited by a covered case or listed in `BUILD_SURFACE_UNCOVERED_TARGETS`.
 ///     ONE-WAY: a credited target absent from the stdlib map does NOT fail —
@@ -1699,53 +2011,9 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
 ///     stdlib target DOES fail, since nothing could ever cover it.
 #[test]
 fn build_surface_survey_is_exhaustive() {
-    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-
-    let stdlib_fns = stdlib_optimized_fns();
-    assert!(
-        !stdlib_fns.is_empty(),
-        "the compiled stdlib reported ZERO @optimized functions — the map this \
-         survey is built on came up empty, so both assertions below would pass \
-         vacuously. Either `prelude_backed_functions` stopped merging the stdlib \
-         or `optimized_target` stopped being populated."
-    );
-    let mut stdlib_targets: Vec<&str> = stdlib_fns.iter().map(|(_, t)| t.as_str()).collect();
-    stdlib_targets.sort();
-    stdlib_targets.dedup();
-
-    let mut files: Vec<std::path::PathBuf> = Vec::new();
-    collect_ri_files(&examples_dir, &mut files);
-    files.sort();
-
-    // (examples/-relative, extension-stripped path, targets it calls) for every
-    // caller — the same `name` shape `BuildSurfaceCase` and the DROP list use,
-    // so a subdirectory caller is named "modal/transient_step_response".
-    let mut callers: Vec<(String, Vec<&str>)> = Vec::new();
-    for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let mut targets: Vec<&str> = stdlib_fns
-            .iter()
-            .filter(|(name, _)| source_calls_fn(&source, name))
-            .map(|(_, target)| target.as_str())
-            .collect();
-        targets.sort();
-        targets.dedup();
-        if targets.is_empty() {
-            continue;
-        }
-        let rel = path
-            .strip_prefix(&examples_dir)
-            .unwrap_or(path)
-            .with_extension("");
-        callers.push((rel.to_string_lossy().into_owned(), targets));
-    }
-
-    let covered: Vec<&BuildSurfaceCase> = BUILD_SURFACE_OPTIMIZED_EXAMPLES
-        .iter()
-        .chain(BUILD_SURFACE_HEAVY_EXAMPLE.iter())
-        .collect();
+    let survey = survey_optimized_callers();
+    let cases = build_surface_cases();
+    let covered: Vec<&BuildSurfaceCase> = cases.iter().map(|(c, _)| *c).collect();
 
     let mut problems: Vec<String> = Vec::new();
 
@@ -1755,12 +2023,12 @@ fn build_surface_survey_is_exhaustive() {
         "build()-surface survey: {} .ri file(s) under examples/ (RECURSIVE), {} of \
          them call an @optimized stdlib fn; {} distinct @optimized target(s) in the \
          compiled stdlib.",
-        files.len(),
-        callers.len(),
-        stdlib_targets.len()
+        survey.files_scanned,
+        survey.callers.len(),
+        survey.stdlib_targets.len()
     );
 
-    for (name, targets) in &callers {
+    for (name, targets) in &survey.callers {
         let is_covered = covered.iter().any(|c| c.probe.is_none() && c.name == name);
         let is_dropped = BUILD_SURFACE_DROPPED_DUPLICATES
             .iter()
@@ -1773,20 +2041,19 @@ fn build_surface_survey_is_exhaustive() {
         eprintln!("  {disposition:<10} examples/{name}.ri {targets:?}");
         if !is_covered && !is_dropped {
             problems.push(format!(
-                "examples/{name}.ri calls {targets:?} but is in NEITHER \
-                 BUILD_SURFACE_OPTIMIZED_EXAMPLES/BUILD_SURFACE_HEAVY_EXAMPLE nor \
-                 BUILD_SURFACE_DROPPED_DUPLICATES — an @optimized caller nobody \
+                "examples/{name}.ri calls {targets:?} but is in NEITHER the covering set \
+                 nor BUILD_SURFACE_DROPPED_DUPLICATES — an @optimized caller nobody \
                  surveyed. MEASURE its build() cost, then admit it (if it reaches a \
-                 target the covering set does not) or drop it with that measured \
-                 cost and the target it duplicates."
+                 target the covering set does not) or drop it with that measured cost and \
+                 the target it duplicates."
             ));
         }
     }
 
-    for target in &stdlib_targets {
+    for target in &survey.stdlib_targets {
         let credited: Vec<&str> = covered
             .iter()
-            .filter(|c| c.targets.contains(target))
+            .filter(|c| c.targets.contains(&target.as_str()))
             .map(|c| c.name)
             .collect();
         let uncovered_reason = BUILD_SURFACE_UNCOVERED_TARGETS
@@ -1796,7 +2063,8 @@ fn build_surface_survey_is_exhaustive() {
             (false, _) => eprintln!("  TARGET COVERED   {target} — by {credited:?}"),
             (true, Some((_, reason))) => eprintln!("  TARGET UNCOVERED {target} — {reason}"),
             (true, None) => {
-                let callers_of: Vec<&str> = callers
+                let callers_of: Vec<&str> = survey
+                    .callers
                     .iter()
                     .filter(|(_, targets)| targets.contains(target))
                     .map(|(name, _)| name.as_str())
@@ -1814,7 +2082,7 @@ fn build_surface_survey_is_exhaustive() {
     }
 
     for (listed, _) in BUILD_SURFACE_UNCOVERED_TARGETS {
-        if !stdlib_targets.contains(listed) {
+        if !survey.stdlib_targets.iter().any(|t| t == listed) {
             problems.push(format!(
                 "BUILD_SURFACE_UNCOVERED_TARGETS lists `{listed}`, which is not an \
                  @optimized target in the compiled stdlib — it was renamed or removed, so \
@@ -2012,9 +2280,10 @@ fn run_build_surface_sweep(label: &str, cases: &[BuildSurfaceCase]) {
 }
 
 /// The build()-surface sweep over the cheap members of the distinct-target
-/// covering set (~8.5s measured). See `run_build_surface_sweep` for the three
-/// per-file assertions and `build_surface_selection_is_reported_and_consistent`
-/// for the selection this slice comes from.
+/// covering set (11.54s measured over nine files at `--test-threads=1`). See `run_build_surface_sweep`
+/// for the three per-file assertions and
+/// `build_surface_selection_is_reported_and_consistent` for the selection this
+/// slice comes from.
 #[test]
 fn build_surface_optimized_examples_have_no_stale_undef() {
     run_build_surface_sweep(
@@ -2035,5 +2304,18 @@ fn build_surface_buckling_multi_case_has_no_stale_undef() {
     run_build_surface_sweep(
         "build_surface_buckling_multi_case_has_no_stale_undef",
         BUILD_SURFACE_HEAVY_EXAMPLE,
+    );
+}
+
+/// The second heavy covering-set member, isolated for the same reason as the
+/// first — see `BUILD_SURFACE_HEAVY_TRAJECTORY` for why a ~6s hand-written probe
+/// stands in for the 303.26s example that is `trajectory::simulate`'s only
+/// other dispatcher, and why the modal solve it pays for along the way is
+/// scaffolding rather than credited coverage.
+#[test]
+fn build_surface_trajectory_simulate_has_no_stale_undef() {
+    run_build_surface_sweep(
+        "build_surface_trajectory_simulate_has_no_stale_undef",
+        BUILD_SURFACE_HEAVY_TRAJECTORY,
     );
 }
