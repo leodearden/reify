@@ -876,4 +876,273 @@ _wire_seam_refused_without_arming() {
 assert "F5: LIFECYCLE_ONLY without REIFY_GOVTEST_TEST_MODE is refused loudly and the suite runs on" \
     _wire_seam_refused_without_arming
 
+# ---------------------------------------------------------------------------
+# Block G — govtest_profile_set: the name-grammar PROFILE (task 6386).
+#
+# WHY THE LIBRARY IS PARAMETERISED AT ALL.  tests/infra/test_cpu_governed_exec_
+# hostexcl.sh creates FIVE per-run systemd units under its own `reify-test`
+# prefix and leaks them in the same two ways task 5930 closed for the govtest
+# prefix.  Copying ~340 lines of reaper to serve it would be a lockstep
+# duplicate of an already-reviewed safety mechanism; instead the two literals
+# this library hardcoded — the prefix and the child-suffix set — become a
+# validated profile and everything else is shared.
+#
+# THE SETTER IS A SAFETY BOUNDARY, NOT A CONVENIENCE.  govtest_slice_pid's
+# anchored grammar is the single chokepoint that makes the production
+# reify-governed-*.slice units unreachable from every stop path in this
+# library, and the profile is interpolated UNQUOTED into that regex (quoted,
+# it would match literally and the grammar would never fire at all).  The
+# charset validation asserted in G8/G9 is therefore the thing standing between
+# a caller and a widened blast radius: a prefix of `reify-.*` would make
+# `reify.slice` a match, and that is the shared implicit ROOT of the LIVE
+# orchestrator hierarchy — stopping it cascades into real agent placement.
+#
+# From G1 on, this FILE runs under the reify-test profile; Blocks H, I and J
+# all target that namespace.  Blocks A-F above are deliberately left untouched
+# and ran under the DEFAULT profile — their staying green is the regression
+# proof that test_cpu_load_governance.sh's behaviour is byte-for-byte
+# preserved.  G12 closes that loop from the other side, in a child shell that
+# sources the library and never calls the setter at all.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block G: govtest_profile_set profile parameterisation ---"
+
+_G_PROFILE_ERR="$_STUB_ROOT/profile.err"
+
+# _profile_is_reify_test — the profile is ambient state rather than a value
+# that can be read back, so "unchanged" is asserted through the two functions
+# it actually drives.  Used by the refusal cases below to prove a rejected
+# call left the previous profile intact rather than half-applying it.
+_profile_is_reify_test() {
+    local pid units
+    pid="$(govtest_slice_pid 'reify-test1234.slice')"
+    if [ "$pid" != "1234" ]; then
+        printf 'profile drifted: govtest_slice_pid reify-test1234.slice => %s, want 1234\n' "$pid"
+        return 1
+    fi
+    units="$(govtest_slice_units 1234 | tr '\n' ',')"
+    if [ "$units" != "reify-test1234-agents.slice,reify-test1234-merge.slice,reify-test1234-taskweight.slice,reify-test1234-mergeweight.slice,reify-test1234.slice," ]; then
+        printf 'profile drifted: govtest_slice_units 1234 => %s\n' "$units"
+        return 1
+    fi
+    return 0
+}
+
+# (a) — G1 ARMS the profile for the remainder of this file.  assert() runs its
+# checker directly in THIS shell (redirect only, no command-substitution
+# subshell), which is what lets an ambient-state mutation like this one
+# survive the call.
+_set_test_profile() {
+    govtest_profile_set reify-test agents merge taskweight mergeweight
+}
+assert "G1: govtest_profile_set reify-test agents merge taskweight mergeweight => rc 0" \
+    _set_test_profile
+
+assert "G2: parent reify-test1234.slice => 1234 under the armed profile" \
+    _expect_pid "reify-test1234.slice" "1234"
+assert "G3: inherited child reify-test1234-agents.slice => 1234" \
+    _expect_pid "reify-test1234-agents.slice" "1234"
+assert "G4: new child reify-test1234-taskweight.slice => 1234" \
+    _expect_pid "reify-test1234-taskweight.slice" "1234"
+assert "G5: new child reify-test1234-mergeweight.slice => 1234" \
+    _expect_pid "reify-test1234-mergeweight.slice" "1234"
+
+# (b) THE SAFETY NEGATIVES.  Grouped by the hazard each one represents rather
+# than one assert per string, so a failure names the class that broke.
+_expect_pid_all_empty() {
+    local unit got rc=0
+    for unit in "$@"; do
+        got="$(govtest_slice_pid "$unit")"
+        if [ -n "$got" ]; then
+            printf "govtest_slice_pid '%s' => '%s', want EMPTY\n" "$unit" "$got"
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
+# G6 is the assertion this whole design turns on.  reify.slice is the shared
+# implicit root of BOTH hierarchies — the production reify-governed.slice and
+# reify-governed-agents.slice nest under it and carry live orchestrator agent
+# placement — so a grammar that matched it would hand every stop path in this
+# library the ability to cascade-kill the running fleet.
+assert "G6: reify.slice and the production reify-governed-* slices => EMPTY (never selectable)" \
+    _expect_pid_all_empty \
+        "reify.slice" \
+        "reify-governed.slice" \
+        "reify-governed-agents.slice" \
+        "reify-governed-merge.slice"
+
+# G7 — the LEGACY pidless dash-nesting parents this task exists to reap are
+# correctly OUTSIDE the pid grammar.  That is not an oversight to be fixed by
+# widening the regex: they carry no pid, so the liveness oracle has nothing to
+# consult, which is exactly why they need the separate explicitly-listed path
+# Blocks H/I add rather than admission here.  reify-test-task-1234.slice is
+# the pre-rename D7 unit — its extra dash segment is what vivified those
+# parents in the first place.
+assert "G7: legacy pidless parents and the pre-rename D7/D8 names => EMPTY" \
+    _expect_pid_all_empty \
+        "reify-test.slice" \
+        "reify-test-task.slice" \
+        "reify-test-merge.slice" \
+        "reify-test-task-1234.slice"
+
+assert "G8: shape violations (non-numeric pid, unknown suffix, wrong unit type, empty) => EMPTY" \
+    _expect_pid_all_empty \
+        "reify-testabc.slice" \
+        "reify-test1234-other.slice" \
+        "reify-test1234-agents.scope" \
+        ""
+
+# G9 — the two prefixes are disjoint namespaces.  A sweep armed for one
+# profile must never reach the other's units: test_cpu_load_governance.sh and
+# test_cpu_governed_exec_hostexcl.sh can run in the same shared per-user
+# systemd session, and each owns its own liveness bookkeeping.
+assert "G9: cross-profile isolation — reify-govtest1234.slice => EMPTY under the reify-test profile" \
+    _expect_pid_all_empty "reify-govtest1234.slice"
+
+# (c)/(d) THE REFUSALS.  A rejected profile must leave the previous one fully
+# intact: half-applying a prefix while keeping the old suffixes would produce a
+# grammar nobody reviewed.
+_expect_profile_refused() {
+    local rc=0
+    : > "$_G_PROFILE_ERR"
+    govtest_profile_set "$@" >/dev/null 2>"$_G_PROFILE_ERR" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        printf 'govtest_profile_set %s returned 0, want non-zero\n' "$*"
+        return 1
+    fi
+    if [ ! -s "$_G_PROFILE_ERR" ]; then
+        printf 'govtest_profile_set %s refused SILENTLY — want a message on stderr\n' "$*"
+        return 1
+    fi
+    _profile_is_reify_test || return 1
+    return 0
+}
+
+# G10 — regex metacharacters are the dangerous shape, because the prefix is
+# interpolated unquoted into the [[ =~ ]] pattern.  `reify-.*` would match
+# reify.slice (see G6); `reify-test$` and `[a-z]+` are the same class of
+# widening reached by different metacharacters.  `reify_test` and "" are the
+# conservative-charset backstop: nothing outside [a-z0-9-] gets in, so no
+# future metacharacter needs its own case here.
+_g10() {
+    _expect_profile_refused 'reify-.*' agents merge || return 1
+    _expect_profile_refused 'reify-test$' agents merge || return 1
+    _expect_profile_refused '[a-z]+' agents merge || return 1
+    _expect_profile_refused 'reify_test' agents merge || return 1
+    _expect_profile_refused '' agents merge || return 1
+    return 0
+}
+
+# G11 — the DASH refusal is load-bearing, not tidiness.  systemd dash-nesting
+# means a child suffix of `d7-task` would name reify-test1234-d7-task.slice,
+# which vivifies a NEW implicit parent reify-test1234-d7.slice that nothing
+# names, tears down, or sweeps — recreating the exact leak class this task
+# exists to close.  The dot and empty cases keep the emitted name inside the
+# grammar the pid regex will later have to re-recognise.
+_g11() {
+    _expect_profile_refused reify-test agents 'd7-task' || return 1
+    _expect_profile_refused reify-test 'task.weight' merge || return 1
+    _expect_profile_refused reify-test agents '' || return 1
+    _expect_profile_refused reify-test 'Agents' merge || return 1
+    return 0
+}
+
+assert "G10: prefixes with regex metacharacters or an off-charset shape are REFUSED, profile left intact" \
+    _g10
+assert "G11: child suffixes carrying a DASH, a dot, an uppercase char or nothing are REFUSED, profile left intact" \
+    _g11
+
+# (e) — govtest_slice_name: the single-name accessor.  The hostexcl suite needs
+# each of its five names individually (they go into five separate
+# REIFY_CPU_GOVERN_SLICE_* overrides), so it cannot consume the newline-
+# separated teardown list govtest_slice_units emits.
+_expect_slice_name() {
+    local want="$1"
+    shift
+    local got
+    got="$(govtest_slice_name "$@")"
+    if [ "$got" != "$want" ]; then
+        printf "govtest_slice_name %s => '%s', want '%s'\n" "$*" "$got" "$want"
+        return 1
+    fi
+    return 0
+}
+
+assert "G12: govtest_slice_name 1234 => reify-test1234.slice (bare parent)" \
+    _expect_slice_name "reify-test1234.slice" 1234
+assert "G13: govtest_slice_name 1234 taskweight => reify-test1234-taskweight.slice" \
+    _expect_slice_name "reify-test1234-taskweight.slice" 1234 taskweight
+assert "G14: govtest_slice_name 1234 agents => reify-test1234-agents.slice" \
+    _expect_slice_name "reify-test1234-agents.slice" 1234 agents
+
+# (f) — emission order is TEARDOWN order: every declared child in DECLARED
+# order, then the bare parent LAST.  The parent must stay last for the same
+# reason task 5930 documented — never leave a quota'd empty parent behind — and
+# the children must stay in declared order so the hostexcl suite's five names
+# and this list cannot disagree about which suffix is which.
+_G_UNITS_WANT="reify-test1234-agents.slice
+reify-test1234-merge.slice
+reify-test1234-taskweight.slice
+reify-test1234-mergeweight.slice
+reify-test1234.slice"
+
+assert "G15: govtest_slice_units 1234 emits four children in declared order, bare parent LAST" \
+    _expect_units 1234 "$_G_UNITS_WANT"
+
+# G16 re-runs Block B2's anti-drift discipline under the new profile: an
+# emitter that produced a name the grammar does not accept would make teardown
+# stop units the startup sweep could never recognise as its own residue —
+# precisely the leak this task is closing, reintroduced one level up.
+assert "G16: every emitted unit name round-trips back to pid 1234 via govtest_slice_pid" \
+    _units_roundtrip 1234
+
+# (g) DEFAULT-PROFILE REGRESSION — a child shell that sources the library and
+# never calls the setter.  Blocks A-F above prove the default is preserved for
+# a process that sourced the library BEFORE any setter call existed; this
+# proves it for a fresh process, which is what test_cpu_load_governance.sh
+# actually is.  Driven as a child rather than checked here because this file's
+# own profile is now armed and cannot be un-armed without a second setter call
+# that would itself be the thing under test.
+_G_DEFAULT_DRIVER="$_STUB_ROOT/default-profile.sh"
+cat > "$_G_DEFAULT_DRIVER" <<'DRIVEREOF'
+#!/bin/bash
+set -euo pipefail
+# shellcheck source=tests/infra/govtest_slice_reaper_lib.sh
+source "$GOVTEST_DRIVER_LIB"
+# govtest_profile_set is deliberately NOT called: the profile applied at
+# SOURCE time is the whole subject of this drive.
+printf 'PID_PARENT=%s\n' "$(govtest_slice_pid 'reify-govtest1285669.slice')"
+printf 'PID_AGENTS=%s\n' "$(govtest_slice_pid 'reify-govtest1285669-agents.slice')"
+printf 'PID_MERGE=%s\n' "$(govtest_slice_pid 'reify-govtest1285669-merge.slice')"
+printf 'PID_OTHER=%s\n' "$(govtest_slice_pid 'reify-test1234.slice')"
+printf 'PID_PROD=%s\n' "$(govtest_slice_pid 'reify-governed-agents.slice')"
+printf 'UNITS=%s\n' "$(govtest_slice_units 4242 | tr '\n' ',')"
+DRIVEREOF
+chmod +x "$_G_DEFAULT_DRIVER"
+
+_G_DEFAULT_WANT="PID_PARENT=1285669
+PID_AGENTS=1285669
+PID_MERGE=1285669
+PID_OTHER=
+PID_PROD=
+UNITS=reify-govtest4242-agents.slice,reify-govtest4242-merge.slice,reify-govtest4242.slice,"
+
+_expect_default_profile_in_child() {
+    local got rc=0
+    got="$(GOVTEST_DRIVER_LIB="$REAPER_LIB" "$BASH" "$_G_DEFAULT_DRIVER" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf 'default-profile driver rc=%s, want 0:\n%s\n' "$rc" "$got"
+        return 1
+    fi
+    if [ "$got" != "$_G_DEFAULT_WANT" ]; then
+        printf 'default-profile driver =>\n%s\n--- want ---\n%s\n' "$got" "$_G_DEFAULT_WANT"
+        return 1
+    fi
+    return 0
+}
+assert "G17: a child shell that sources the library and never sets a profile keeps the reify-govtest default" \
+    _expect_default_profile_in_child
+
 test_summary
