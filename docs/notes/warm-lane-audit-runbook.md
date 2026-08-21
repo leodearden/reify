@@ -527,7 +527,9 @@ timer unit is wired by this task**; a follow-up may implement one.
 | Full design (α pillar, invariants, boundary tests B1/B2) | `docs/prds/warm-lane-pool-sizing-lifecycle.md` §9.1, §10 |
 | Sizing/budget formula consuming this script's `free_gib`/`budget_gib` | `docs/prds/warm-lane-pool-sizing-lifecycle.md` §9.2 |
 | The landed script (authoritative CLI/behavior) | `scripts/warm-lane-audit.sh` |
+| Provenance of the `plan_sync` / `plan_task` detector | reify task 5876 (esc-5866-8) |
 | Hard/soft-floor admission gating (the script that actually blocks dispatch) | `scripts/warm-lane-disk-guard.sh` |
 | Reclaim primitives this script's classification informs | `scripts/warm-lane-gc.sh`, `scripts/thin-warm-lane.sh` |
 | Pool lifecycle & invariants (acquire/reset/release) | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5 |
+| Corpus-wide ruling: an unresolvable done-step SHA is expected, never a defect signal | dark-factory task 4032 §4 (D6/INV-5); corpus measured by dark-factory task 3157's 2026-08-05 addendum |
 | The shared-stash guard `stash_entries` backstops (measured reach, push-direction-only) | `hooks/reference-transaction` header, `tests/infra/test_stash_guard.sh` |
