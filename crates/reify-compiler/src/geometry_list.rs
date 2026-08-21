@@ -12,6 +12,10 @@
 //! list of geometry needs N such nodes with N known at compile time. That is
 //! precisely what this module computes.
 
+// Removed once entity.rs wires this module in (task #5385 step-6): until then
+// every item here is exercised only by the inline tests below.
+#![allow(dead_code)]
+
 use super::*;
 use std::collections::HashSet;
 
@@ -106,6 +110,258 @@ pub(crate) fn classify_geometry_list_let(
             })
         }
         _ => None,
+    }
+}
+
+/// Upper bound on the element count of a geometry-list let.
+///
+/// Each element becomes a distinct `RealizationDecl` and hence a distinct
+/// kernel build step, so an unbounded count would explode the realization
+/// graph (and, downstream, the mesh/boolean workload) from a single short
+/// source line. 256 is far above any hand-authored pattern while still
+/// bounding the blow-up. Exceeding it is a loud compile-time Error, never a
+/// silent truncation.
+pub(crate) const GEOMETRY_LIST_MAX_ELEMENTS: usize = 256;
+
+/// Statically unroll a geometry-list let into its element expressions.
+///
+/// Returns the elements in index order — one per `RealizationDecl` the let
+/// will emit. `generate` bodies are cloned once per index with the loop param
+/// substituted by that index's integer literal; list-literal elements are
+/// returned verbatim.
+///
+/// Returns `None` (after pushing exactly one labelled Error) when the count
+/// exceeds [`GEOMETRY_LIST_MAX_ELEMENTS`]. An empty list (`generate(0, …)`)
+/// is a *successful* expansion to zero elements, not a failure.
+///
+/// Spans on substituted nodes are inherited from the original lambda body, so
+/// a diagnostic raised while compiling element `k` still points at the single
+/// source location the user actually wrote.
+pub(crate) fn expand_geometry_list_elements(
+    expr: &reify_ast::Expr,
+    shape: &GeometryListShape,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<reify_ast::Expr>> {
+    match shape {
+        GeometryListShape::ListLiteral { elements } => {
+            let reify_ast::ExprKind::ListLiteral(items) = &expr.kind else {
+                // Shape and expr always come from the same `classify_…` call.
+                return None;
+            };
+            debug_assert_eq!(*elements, items.len());
+            Some(items.clone())
+        }
+        GeometryListShape::Generate { count, param } => {
+            if *count > GEOMETRY_LIST_MAX_ELEMENTS {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "generate() with a geometry-producing lambda is limited to \
+                         {GEOMETRY_LIST_MAX_ELEMENTS} elements, but the count is {count}"
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!(
+                            "each element becomes its own realization; \
+                             reduce the count to at most {GEOMETRY_LIST_MAX_ELEMENTS}"
+                        ),
+                    )),
+                );
+                return None;
+            }
+            let reify_ast::ExprKind::FunctionCall { args, .. } = &expr.kind else {
+                return None;
+            };
+            let reify_ast::ExprKind::Lambda { body, .. } = &args.get(1)?.kind else {
+                return None;
+            };
+            Some(
+                (0..*count)
+                    .map(|k| substitute_index_ident(body, param, k))
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// Clone `expr`, rewriting every *use* of `param` into the integer literal
+/// `value`.
+///
+/// Shadowing-aware: recursion stops at any nested binder that rebinds the same
+/// name (a `Lambda` whose params include it, or a `Quantifier` over it), so an
+/// inner `|i| …` keeps its own `i`. Spans are inherited from the original
+/// nodes throughout.
+fn substitute_index_ident(expr: &reify_ast::Expr, param: &str, value: usize) -> reify_ast::Expr {
+    use reify_ast::ExprKind as K;
+
+    // Recurse helpers, all inheriting the original spans.
+    let sub = |e: &reify_ast::Expr| substitute_index_ident(e, param, value);
+    let sub_box = |e: &reify_ast::Expr| Box::new(substitute_index_ident(e, param, value));
+    let sub_vec =
+        |es: &[reify_ast::Expr]| -> Vec<reify_ast::Expr> { es.iter().map(&sub).collect() };
+
+    let kind = match &expr.kind {
+        // ── the substitution site ────────────────────────────────────────
+        K::Ident(name) if name == param => K::NumberLiteral {
+            value: value as f64,
+            is_real: false,
+        },
+
+        // ── binders that SHADOW `param`: stop, keeping the subtree intact ─
+        K::Lambda { params, .. } if params.iter().any(|p| p.name == param) => expr.kind.clone(),
+        K::Quantifier { variable, .. } if variable == param => expr.kind.clone(),
+
+        // ── leaves ───────────────────────────────────────────────────────
+        K::Ident(_)
+        | K::NumberLiteral { .. }
+        | K::QuantityLiteral { .. }
+        | K::StringLiteral(_)
+        | K::BoolLiteral(_)
+        | K::EnumAccess { .. }
+        | K::Undef => expr.kind.clone(),
+
+        // ── structural recursion ─────────────────────────────────────────
+        K::BinOp { op, left, right } => K::BinOp {
+            op: op.clone(),
+            left: sub_box(left),
+            right: sub_box(right),
+        },
+        K::UnOp { op, operand } => K::UnOp {
+            op: op.clone(),
+            operand: sub_box(operand),
+        },
+        K::FunctionCall {
+            name,
+            args,
+            arg_names,
+        } => K::FunctionCall {
+            name: name.clone(),
+            args: sub_vec(args),
+            arg_names: arg_names.clone(),
+        },
+        K::MemberAccess { object, member } => K::MemberAccess {
+            object: sub_box(object),
+            member: member.clone(),
+        },
+        K::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => K::Conditional {
+            condition: sub_box(condition),
+            then_branch: sub_box(then_branch),
+            else_branch: sub_box(else_branch),
+        },
+        K::ListLiteral(items) => K::ListLiteral(sub_vec(items)),
+        K::SetLiteral(items) => K::SetLiteral(sub_vec(items)),
+        K::MapLiteral(entries) => {
+            K::MapLiteral(entries.iter().map(|(k, v)| (sub(k), sub(v))).collect())
+        }
+        K::IndexAccess { object, index } => K::IndexAccess {
+            object: sub_box(object),
+            index: sub_box(index),
+        },
+        // Match patterns bind payload names, but those binders are variant
+        // field names — never the lambda index param, which is bound by the
+        // enclosing `generate` lambda — so arm bodies recurse unconditionally.
+        K::Match { discriminant, arms } => K::Match {
+            discriminant: sub_box(discriminant),
+            arms: arms
+                .iter()
+                .map(|arm| reify_ast::MatchArm {
+                    patterns: arm.patterns.clone(),
+                    body: sub(&arm.body),
+                    span: arm.span,
+                })
+                .collect(),
+        },
+        K::Auto { free, params } => K::Auto {
+            free: *free,
+            params: params.iter().map(|(n, e)| (n.clone(), sub(e))).collect(),
+        },
+        K::Lambda { params, body } => K::Lambda {
+            params: params.clone(),
+            body: sub_box(body),
+        },
+        K::Quantifier {
+            kind,
+            variable,
+            variable_span,
+            collection,
+            predicate,
+        } => K::Quantifier {
+            kind: *kind,
+            variable: variable.clone(),
+            variable_span: *variable_span,
+            collection: sub_box(collection),
+            predicate: sub_box(predicate),
+        },
+        K::AdHocSelector {
+            base,
+            selector,
+            args,
+        } => K::AdHocSelector {
+            base: sub_box(base),
+            selector: selector.clone(),
+            args: sub_vec(args),
+        },
+        K::QualifiedAccess { qualifier, member } => K::QualifiedAccess {
+            qualifier: sub_box(qualifier),
+            member: member.clone(),
+        },
+        K::InstanceQualifiedAccess { object, qualified } => K::InstanceQualifiedAccess {
+            object: sub_box(object),
+            qualified: sub_box(qualified),
+        },
+        K::Range {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => K::Range {
+            lower: lower.as_ref().map(|e| sub_box(e)),
+            upper: upper.as_ref().map(|e| sub_box(e)),
+            lower_inclusive: *lower_inclusive,
+            upper_inclusive: *upper_inclusive,
+        },
+        K::TraitMethodCall {
+            object,
+            trait_name,
+            method,
+            args,
+        } => K::TraitMethodCall {
+            object: sub_box(object),
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: sub_vec(args),
+        },
+        K::TraitStaticCall {
+            trait_name,
+            method,
+            args,
+        } => K::TraitStaticCall {
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: sub_vec(args),
+        },
+        K::VariantConstruct { name, fields } => K::VariantConstruct {
+            name: name.clone(),
+            fields: fields.iter().map(|(n, e)| (n.clone(), sub(e))).collect(),
+        },
+        K::InterpolatedString(parts) => K::InterpolatedString(
+            parts
+                .iter()
+                .map(|part| match part {
+                    reify_ast::StringPart::Literal(t) => reify_ast::StringPart::Literal(t.clone()),
+                    reify_ast::StringPart::Hole(e) => reify_ast::StringPart::Hole(sub_box(e)),
+                })
+                .collect(),
+        ),
+    };
+
+    reify_ast::Expr {
+        kind,
+        span: expr.span,
     }
 }
 
@@ -281,13 +537,9 @@ mod expand_tests {
         let expr = let_init(src);
         let functions: Vec<CompiledFunction> = Vec::new();
         let known_geometry_lets: HashSet<&str> = known.iter().copied().collect();
-        let shape = classify_geometry_list_let(
-            &expr,
-            &functions,
-            &known_geometry_lets,
-            &HashSet::new(),
-        )
-        .unwrap_or_else(|| panic!("`{src}` should classify as a geometry-list let"));
+        let shape =
+            classify_geometry_list_let(&expr, &functions, &known_geometry_lets, &HashSet::new())
+                .unwrap_or_else(|| panic!("`{src}` should classify as a geometry-list let"));
         let mut diagnostics = Vec::new();
         let out = expand_geometry_list_elements(&expr, &shape, expr.span, &mut diagnostics);
         (out, diagnostics)
