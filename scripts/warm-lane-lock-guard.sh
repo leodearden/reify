@@ -14,8 +14,12 @@
 #     docs/design/merge-verify-lane-dispatch-seam.md
 #
 # In brief (task 5608; escalation esc-5363-5): `<worktree_base>/<lane>.lock` is
-# ONE inode with THREE dark-factory acquirers on THREE different waits, so a
-# lease held for the length of a verify (1–2h) starves a 30s waiter every time.
+# ONE inode per lane, and dark-factory has FOUR acquirers of that inode family
+# on four independently-tuned waits (seam doc §1) — three that can target
+# `_merge-verify`, plus a task-lane consumer-hold that never does. So a dispatch
+# that lands while a verify-length lease (1–2h) is held burns the full bounded
+# wait before deferring. On an idle lane it costs nothing: the value this guard
+# adds is in the contended case, not on every dispatch.
 # How dark-factory CLASSIFIES that timeout is DF-owned and changes as DF
 # changes; it is stated once, in the seam doc's §1 acquirer table. Do not
 # restate it here — this header carried a copy that went stale when DF task
@@ -117,11 +121,14 @@ FLOCK_BIN="${REIFY_WARM_LANE_LOCK_GUARD_FLOCK:-flock}"
 # The would-block exit status asked of flock via -E. `flock -n` returns a bare 1
 # on contention, which is indistinguishable from "flock itself failed" — and
 # reading a tool fault as contention is exactly the false BUSY this guard must
-# never emit. A distinct code separates the two. 124 mirrors dark-factory's own
-# conflict-status value: git_ops.py's _seed_warm_lane assembles its flock
-# invocation from _SEED_WARM_LANE_LOCK_WAIT_SECS / _SEED_WARM_LANE_LOCK_TIMEOUT_RC
-# (currently 30 / 124) rather than a literal string, so the two repos speak one
-# dialect about this lock via those constants' current values.
+# never emit. A distinct code separates the two; 124 is chosen only to be
+# DISTINGUISHABLE FROM THAT BARE 1, and it is consumed EXCLUSIVELY here — passed
+# to this script's own `flock -n -s -E` below, and compared against this same
+# variable a few lines further down. It matches dark-factory's current
+# _SEED_WARM_LANE_LOCK_TIMEOUT_RC by CONVENTION (both echo timeout(1)'s 124),
+# NOT by coupling: DF never observes this guard's exit codes and this guard
+# never observes DF's flock rc, so a DF retune of that constant leaves this
+# value entirely correct and must NOT be chased here. Reasoning: seam doc §3.
 FLOCK_CONFLICT_RC=124
 
 # ── arg parsing ────────────────────────────────────────────────────────────────

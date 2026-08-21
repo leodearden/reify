@@ -16,14 +16,15 @@ through dark-factory.
 `<worktree_base>/<lane>.lock` is **one inode** — `verify_cancel.py`'s
 `def lane_lock_path(lane_dir: Path) -> Path:` returns
 `lane_dir.with_name(lane_dir.name + '.lock')`, i.e. a *sibling* of the lane
-directory. Three dark-factory call sites acquire it, on
-three different waits:
+directory. Four dark-factory call sites acquire it, each on its own
+independently-tunable wait constant:
 
 | Acquirer | Wait | On timeout |
 |---|---|---|
 | `GitOps.merge_verify_lease` (`git_ops.py`, `_MERGE_VERIFY_LEASE_WAIT_SECS`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
 | `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | **the lock acquire** raises `MergeVerifyLeaseContended` (DF task 3003; fail-CLOSED — tree untouched) → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(category=NONE, escalate_to_human=False, requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → caught by `merge_queue.py` `_run_inflight_verify`'s defer arm, placed **before** its generic `except Exception` → `InflightStatus.REQUEUED` with `req.result` left PENDING → **transient DEFER, not a merge failure**. Two bounds: git faults *inside the method body* still raise plain `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git fault still classifies as blocked"); and continuous contention past `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally resolve `MergeOutcome('blocked')` |
-| `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | same 30s constant |
+| `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | fail-CLOSED at the lock: `rc == _SEED_WARM_LANE_LOCK_TIMEOUT_RC` is logged as a distinct diagnosable timeout ("failing closed rather than risk a torn target/") and returned to callers, which read any non-zero as a seed fault and degrade to a **cold** worktree — fail-soft, the lane is never removed and the scheduler never blocks. No retry inside the method. Same VALUE as the reset row (30) but a **separate** constant since DF 3003 |
+| `GitOps.task_verify_lease` (`git_ops.py`, `async def task_verify_lease(`) — DF task 3027 | 300s (`_TASK_VERIFY_LEASE_WAIT_SECS`), then **holds for the whole task-lane verify** | **fail-OPEN**: logs a WARNING and yields *without* the hold rather than raising. A task verify must never be aborted by its own lane lease, and proceeding unheld is exactly the pre-3027 baseline, so fail-open is non-regressive. No merge-queue disposition is involved on this path at all |
 
 **That asymmetry on one inode WAS the defect**, not speculation about load — and
 it is now HISTORICAL: DF task 3003 closed it upstream (verified at DF HEAD
@@ -46,6 +47,37 @@ Note the base class was never the discriminator: `MergeVerifyLeaseContended`
 **is-a** `RuntimeError`. "Plain `RuntimeError`" above had the base class right
 and the classification wrong, which is precisely how a reader mis-derives this
 seam — read the disposition table and the handler order, not the type's ancestry.
+
+`task_verify_lease` is on the table for inode completeness, but it never touches
+`_merge-verify`: its call sites (`workflow.py`, `async with
+self.git_ops.task_verify_lease(self.worktree)`) always pass the *task's own*
+worktree, so it contends only with reify's per-lane `warm-lane-gc.sh` /
+`thin-warm-lane.sh` on a task lane. It is on a different lane from the three
+rows above, not a fourth competitor for the merge lane, and the guard's
+`--lane` default of `_merge-verify` is what keeps the two populations apart.
+
+A second ancestry-style trap lives in that row, and it is worth naming because a
+review of this very document fell into it. `task_verify_lease`'s docstring reads
+"Holds the SHARED `<lane_dir>.lock`" — **`SHARED` there means the shared per-lane
+*inode*** (the one reify's scripts and DF both serialize on), **not** a `LOCK_SH`
+flock mode. Both leases acquire through
+`GitOps._acquire_lane_flock_off_thread` → `verify_cancel.py`
+`acquire_merge_verify_flock`, which polls `fcntl.flock(fd, fcntl.LOCK_EX |
+fcntl.LOCK_NB)` and takes no lock-mode parameter at all; `LOCK_SH` has zero hits
+across `orchestrator/src/`. So A2's premise (§3) is exact as written — every
+real consumer holds an **exclusive** flock while live, and this guard's shared
+`flock -n -s` probe therefore *does* observe a live `task_verify_lease` hold.
+Read the flock mode at the acquire helper, not the adjective in the docstring.
+
+Two neighbouring facts are what make that trap easy to fall into, so pin them
+here. First, there **is** a real `flock -s` in this subsystem — but on a
+*different inode*: `_seed_warm_lane` nests `flock -x <lane_dir>.lock` around
+`flock -s <gen_dir>.lock`, a reader-refcount hold on the per-**gen** lock that
+lets a concurrent reify GC rewrite defer instead of tearing the `cp`. Grepping
+DF for `flock -s` hits that, not a shared hold on the lane lock. Second, on
+`task_verify_lease`'s fail-open path nothing is held *at all* (`fd is None`), so
+a probe then reads IDLE correctly — that is the documented fail-open, not a
+shared-lock blind spot.
 
 Both bounded waits now classify an acquire timeout the same way, so the
 disagreement is gone. What survives is **the wait itself**: a starved dispatch
@@ -154,15 +186,24 @@ the copy to amend when one of them changes.
 Telling *would-block* from *tool error* is the load-bearing implementation
 detail: `flock -n` returns a bare `1` on contention, indistinguishable from
 "flock itself failed". The guard therefore asks for a distinct conflict status
-via `-E 124` — mirroring the conflict-status value DF's `_seed_warm_lane`
-(`git_ops.py`) assembles from its own `_SEED_WARM_LANE_LOCK_TIMEOUT_RC`
-constant (currently 124; DF's production code assembles the whole invocation as
-an argv list from constants, never a quoted literal — see §1) — and treats every
-other non-zero as a degradation.
+via `-E 124`, and treats every other non-zero as a degradation.
 
-The qualifier *production* is load-bearing in both directions. Reify must not
-scrape DF for a quoted `flock -x -w 30 -E 124` string, because production never
-emits one. But the literal is not absent from the repo either:
+That 124 is chosen only to be *distinguishable from flock's bare 1*, and it is
+consumed exclusively by this script's own probe: the guard passes it to its own
+`flock -n -s -E "$FLOCK_CONFLICT_RC"` and compares the result against that same
+shell variable. It matches DF's current `_SEED_WARM_LANE_LOCK_TIMEOUT_RC` by
+**convention** — both echo `timeout(1)`'s 124 — and that is the whole of the
+relationship. There is no coupling in either direction: DF never observes this
+guard's exit codes (it is unwired — §4(a)), and the guard never observes DF's
+flock rc. **A DF retune of that constant would leave this guard entirely
+correct, and must not be chased here** — chasing it would add exactly the
+cross-repo pin the rest of this section tells reify not to create.
+
+DF's side of that convention is assembled, in *production*, as an argv list from
+`_SEED_WARM_LANE_LOCK_WAIT_SECS` / `_SEED_WARM_LANE_LOCK_TIMEOUT_RC` — never a
+quoted literal (§1). That qualifier is load-bearing in both directions. Reify
+must not scrape DF for a quoted `flock -x -w 30 -E 124` string, because
+production never emits one. But the literal is not absent from the repo either:
 `orchestrator/tests/test_ephemeral_worktree.py` pins the **expanded** form
 (`assert cmd[:6] == ['flock', '-x', '-w', '30', '-E', '124']`) rather than
 deriving it from the two constants — so a retune of either constant needs that
@@ -189,8 +230,8 @@ task 5608's lock set, so it is filed as follow-up rather than done here.
 
 There is deliberately **no** `--wait N` mode and **no** holder-PID attribution.
 Waiting policy is the contended half of the seam and belongs to DF, which
-already owns three waits on this inode; a fourth would recreate the very
-asymmetry described in §1. Attribution would need `fuser` / `/proc` scraping,
+already owns four waits on this inode family (§1); a fifth would recreate the
+very asymmetry described there. Attribution would need `fuser` / `/proc` scraping,
 and DF already writes its own holder pgid.
 
 ## 4. Dark-factory wiring still required
