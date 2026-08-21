@@ -14,10 +14,24 @@ hand-built `GeometryOp::Draft` fixtures, and published this ledger.
 
 ## Read this first — the numbers below are a snapshot, not the source of truth
 
-**Measured 2026-08-01 at `50bc85d168`** (an in-branch ancestor of `task/5777`'s
-tip — the merge-base at measurement time, before the branch was rebased onto a
-newer `main`; bucket 2 and the `.ri` corpus are unchanged by α except where
-marked).
+**Measured 2026-08-01 at `50bc85d168`** ("Merge task/5907 into main" — the
+merge-base at measurement time; bucket 2 and the `.ri` corpus are unchanged by α
+except where marked). §3 is stamped later, at `975cbfc301`; see that section.
+
+### Stamp measurements onto a commit that is ON MAIN, never a branch-local one
+
+`main` grows by merge and is append-only, so a SHA on it stays reachable
+forever. A task-branch SHA does not: a rebase rewrites every branch-local commit,
+and each rewrite silently invalidates any stamp citing the old identity — the
+number stays right while the coordinate that lets a reader reproduce it stops
+resolving. Cite a merge-base or a `main` merge commit.
+
+This file is the worked example. §3 was first stamped at a branch-local SHA;
+a rebase rewrote it, so a follow-up commit re-stamped it — onto the *rebased*
+branch-local SHA, which the very next rebase rewrote in turn, leaving that
+commit's own "verified with `git merge-base --is-ancestor`" claim false at the
+tip it created. §§1–2's stamp sat on `50bc85d168`, a `main` merge commit, and
+survived both rebases untouched. §3 now sits on `975cbfc301`, likewise on `main`.
 
 Nothing in this repository validates a `file:line` citation, and line numbers rot
 on the first edit to the cited file. This is not hypothetical: the site list α
@@ -211,14 +225,16 @@ Already dimensioned — these are **NOT** bucket 2, do not "migrate" them:
 
 ## 3. Bucket 3 — bare angles in `.ri` source text embedded in Rust tests
 
-**20 sites across 7 files.** *(Measured at `cc6a903a9d`, later than §§1–2's
-`50bc85d168` — re-derive before acting.)*
+**20 sites across 7 files.** *(Measured at `975cbfc301` — "Merge task/6391 into
+main", `task/5777`'s merge-base and therefore ON MAIN, later than §§1–2's
+`50bc85d168`. Re-derive before acting.)*
 
-Originally measured at `8e2d63be17` as **14 across 6**. That is the pre-rebase
-identity of `cc6a903a9d` (same patch-id, now a dangling object that no longer
-resolves from this branch); re-measuring at the in-branch SHA added 6
-eval-chokepoint sites, all in one file that task 5623's LENGTH-gate leaf signal
-landed on `main` in between.
+An earlier revision of this section reported **14 across 6**, measured on a tree
+predating task 5623's LENGTH-gate leaf signal — the same bucket-3 content
+`50bc85d168` still carries, where the §"Derivation commands" greps return 18 raw
+`let … = builtin(…)` hits and 0 `arc` hits, i.e. (18 − 5) + 0 + 1 = 14. The
+current stamp is later and includes that file, which adds 6 eval-chokepoint
+sites and the 2 bare `arc` slots, giving 22 + 2 and hence 20 (§3.4).
 
 Buckets 1 and 2 are both about angles written as **Rust values**. This third
 class is angles written as **DSL text** inside a Rust string literal, which the
@@ -257,7 +273,7 @@ because a reader who greps for bare angles will find them and needs to know
 which leaf owns them.
 
 By builtin the 20 split γ 15 / ε 5 / **δ 0** — `draft` has no inline `.ri` test
-source at all. Bare inline **`arc`** sites: **2** (was zero at `8e2d63be17`) —
+source at all. Bare inline **`arc`** sites: **2** (still zero at `50bc85d168`) —
 both arms of `geometry_length_args_units_e2e.rs`'s `arc` case, each bare in the
 start-angle *and* end-angle slot; every other inline `arc` writes `rad` or `deg`.
 Nothing outside `crates/` matched.
