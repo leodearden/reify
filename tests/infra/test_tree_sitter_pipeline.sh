@@ -189,6 +189,26 @@ test_auto_generation_rebuilds_parser() {
     local parser="$TS_DIR/src/parser.c"
     local backup="$TS_DIR/src/parser.c.bak"
 
+    # parser.c is a gitignored generated artifact. In a freshly-seeded warm
+    # lane (tracked-files-only + git clean -xfd) it does not exist until
+    # something generates it — under scripts/verify.sh that's always the
+    # tree-sitter-generate.sh plan leaf running first, but a standalone
+    # invocation of this test file has no such guarantee. Self-provision it
+    # here rather than assume it, so the failure mode (if any) is a legible
+    # SKIP/assertion instead of a bare `cp: cannot stat`.
+    if [ ! -f "$parser" ]; then
+        if ! command -v tree-sitter >/dev/null 2>&1; then
+            echo "  SKIP: parser.c absent and tree-sitter CLI not on PATH to regenerate it (install via: cargo install tree-sitter-cli)"
+            return 0
+        fi
+        "$REPO_ROOT/scripts/tree-sitter-generate.sh" >/dev/null 2>&1 || true
+        if [ ! -f "$parser" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: parser.c does not exist and scripts/tree-sitter-generate.sh did not produce it"
+            return 1
+        fi
+    fi
+
     # Backup original parser.c
     cp "$parser" "$backup"
     CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'")
