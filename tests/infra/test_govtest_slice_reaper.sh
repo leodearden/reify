@@ -1526,4 +1526,320 @@ assert "I8: reify.slice and reify-governed-agents.slice are never stopped, even 
         "reify.slice" "reify-governed.slice" "reify-governed-agents.slice" \
         "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
 
+# ---------------------------------------------------------------------------
+# Block J — WIRING. Prove the library is actually used by
+# tests/infra/test_cpu_governed_exec_hostexcl.sh, and that its D7/D8 slices
+# were renamed into the $$-scoped hierarchy (task 6386).
+#
+# Follows Block F's precedent exactly: DRIVE that script as a child process.
+# No source-grepping — that is the documentation-meta-test shape this repo's
+# TDD rules prohibit, and it could distinguish neither a call placed before the
+# EXIT trap from one placed after it, nor a live call from one stranded in a
+# dead branch.
+#
+# COST, and why the seam is what makes this affordable from the pool. The real
+# D block places FIVE systemd-run --user scopes on a governance-capable host,
+# and the stub `systemctl` cannot intercept those — the wrapper shells out to
+# `systemd-run`, a different binary. So without
+# REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY the drive would create real units and
+# pay real placement time. REIFY_CPU_GOVERN_DISABLE=1 rides along as a second,
+# independent backstop: should the seam ever regress, host_supports_governance
+# returns false and the child SKIPs D rather than placing anything, so this
+# block degrades to a fast no-op instead of littering the host.
+#
+# PATH here PREPENDS the stub rather than replacing PATH (as Block D does),
+# because the script legitimately needs mktemp and friends before it reaches
+# the sweep. Prepending is enough: the stub shadows the real systemctl, so no
+# real unit is ever touched.
+#
+# NOTE ON THE FIXTURE. The stub answers EVERY `list-units` from the same file
+# regardless of the glob it was handed, which is deliberate here: it means
+# reify.slice and reify-governed-agents.slice reach the filters even though the
+# real enumeration glob would have excluded them, so J6 exercises the INNER of
+# the two belt-and-braces bounds rather than resting on the outer one.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block J: library wired into test_cpu_governed_exec_hostexcl.sh ---"
+
+_J_STALE_PID=111
+_J_LOG="$_STUB_ROOT/wire-j.log"
+_J_OUT="$_STUB_ROOT/wire-j.out"
+_J_LISTING_FILE="$_STUB_ROOT/wire-j-listing.txt"
+_J_RC=0
+_J_CHILD_PID=""
+
+# A dead predecessor's residue, the three measured legacy pidless parents
+# (host, 2026-08-21), and the two names that must never be touched.
+_J_LISTING="reify-test${_J_STALE_PID}-agents.slice loaded active active Slice /reify/test${_J_STALE_PID}/agents
+reify-test${_J_STALE_PID}-merge.slice  loaded active active Slice /reify/test${_J_STALE_PID}/merge
+reify-test${_J_STALE_PID}.slice        loaded active active Slice /reify/test${_J_STALE_PID}
+reify-test-merge.slice                 loaded active active Slice /reify/test/merge
+reify-test-task.slice                  loaded active active Slice /reify/test/task
+reify-test.slice                       loaded active active Slice /reify/test
+reify.slice                            loaded active active Slice /reify
+reify-governed-agents.slice            loaded active active Slice /reify/governed/agents"
+
+# Drive the real script ONCE; every assertion below reads the captured log.
+printf '%s\n' "$_J_LISTING" > "$_J_LISTING_FILE"
+: > "$_J_LOG"
+timeout 60 env \
+    PATH="$_STUB_ROOT/bin-ok:$PATH" \
+    GOVTEST_STUB_LOG="$_J_LOG" \
+    GOVTEST_STUB_LISTING_FILE="$_J_LISTING_FILE" \
+    REIFY_GOVTEST_TEST_MODE=1 \
+    REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$_ALIVE_NONE" \
+    REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY=1 \
+    REIFY_CPU_GOVERN_DISABLE=1 \
+    bash "$SCRIPT_DIR/test_cpu_governed_exec_hostexcl.sh" \
+    > "$_J_OUT" 2>&1 || _J_RC=$?
+
+# Every unit name the stub was asked to stop, one per line. Flattened to WORDS
+# because a stop may legitimately carry several units in one invocation, and
+# because the point of J4 is to count what was torn down without first
+# assuming it parses.
+_j_stopped_words() {
+    sed -n 's/^--user stop //p' "$_J_LOG" 2>/dev/null | tr ' ' '\n' | sed '/^$/d'
+}
+
+_j_word_present() {
+    _j_stopped_words | grep -qxF -- "$1"
+}
+
+_j_exit0() {
+    if [ "$_J_RC" -ne 0 ]; then
+        echo "child test_cpu_governed_exec_hostexcl.sh rc=$_J_RC (124 = timeout), want 0"
+        tail -n 30 "$_J_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "J1: driven test_cpu_governed_exec_hostexcl.sh exits 0 under the armed lifecycle-only seam" \
+    _j_exit0
+
+# J2 — the startup sweep is wired, and collapses the dead predecessor's whole
+# residue to ONE stop of the PARENT. Stopping a parent cascades (measured in
+# task 5930), so a sweep that also stopped the children would be issuing
+# redundant stops plus an ordering hazard.
+_j_stale_reaped() {
+    local got
+    got="$(_j_stopped_words | grep -E "^reify-test${_J_STALE_PID}" || true)"
+    if [ "$got" != "reify-test${_J_STALE_PID}.slice" ]; then
+        printf 'stops touching pid %s were:\n%s\n--- want exactly ---\nreify-test%s.slice\n--- full stub log ---\n' \
+            "$_J_STALE_PID" "$got" "$_J_STALE_PID"
+        cat "$_J_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "J2: the startup sweep is wired — the canned dead predecessor's PARENT slice was stopped, once" \
+    _j_stale_reaped
+
+# J3 — teardown is unconditional and wired. The child created NOTHING (it exits
+# at the seam), so these stops can only come from an unconditional teardown.
+# The child's pid is RECOVERED from the log rather than assumed, since $$
+# inside the child differs from this script's own pid — same discipline as F3.
+_J_LEGACY_NAMES=" reify-test-task.slice reify-test-merge.slice reify-test.slice reify-test${_J_STALE_PID}.slice "
+
+# Everything the child tore down for ITS OWN run: the stop log minus the names
+# we already know belong to the sweeps. Derived WITHOUT consulting the grammar,
+# which is what lets J4 be a real assertion about the rename rather than a
+# tautology over whatever happens to parse.
+_j_child_own_units() {
+    local unit
+    while IFS= read -r unit; do
+        case "$_J_LEGACY_NAMES" in
+            *" $unit "*) continue ;;
+        esac
+        printf '%s\n' "$unit"
+    done < <(_j_stopped_words)
+}
+
+_j_own_parent_stopped() {
+    local unit pid pids="" n=0
+    while IFS= read -r unit; do
+        pid="$(govtest_slice_pid "$unit")"
+        [ -n "$pid" ] || continue
+        case " $pids " in
+            *" $pid "*) ;;
+            *) pids="$pids $pid"; n=$((n + 1)) ;;
+        esac
+    done < <(_j_child_own_units)
+
+    if [ "$n" -ne 1 ]; then
+        printf 'expected exactly ONE own-run pid in the stop log, found %s (%s). Own-run stops were:\n' "$n" "$pids"
+        _j_child_own_units
+        return 1
+    fi
+    _J_CHILD_PID="${pids# }"
+    if ! _j_word_present "reify-test${_J_CHILD_PID}.slice"; then
+        printf 'child pid %s appears in the log but its PARENT slice was never stopped:\n' "$_J_CHILD_PID"
+        cat "$_J_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "J3: teardown is unconditional — child stopped its OWN parent slice having created nothing" \
+    _j_own_parent_stopped
+
+# J4 — THE RENAME, end-to-end. RED today for a STRUCTURAL reason, not a
+# cosmetic one: the pre-rename script tears down reify-test-task-<pid>.slice
+# and reify-test-merge-<pid>.slice, which do NOT parse under this grammar
+# precisely because they carry the extra dash segment that vivifies the
+# implicit parents Block H exists to reap. Requiring all five own-run stops to
+# parse to the child's pid is therefore the same assertion as "every unit this
+# run creates has at most one dash segment after the pid".
+#
+# PAIRWISE DISTINCTNESS guards a suffix collision. cgroup_set_slice_weight sets
+# the SLICE's own CPUWeight (scripts/lib_cgroup.sh), so D5's
+# REIFY_CPU_GOVERN_W_TASK=250 leaves the D1 task slice at 250; if D7 reused
+# that same slice its SLICE_WEIGHT==100 assertion would go red. The five must
+# stay five distinct units, merely re-parented.
+_j_rename_five_distinct() {
+    local unit pid seen=" " n=0
+    if [ -z "$_J_CHILD_PID" ]; then
+        echo "J3 did not recover a child pid — cannot evaluate the rename"
+        return 1
+    fi
+    while IFS= read -r unit; do
+        pid="$(govtest_slice_pid "$unit")"
+        if [ "$pid" != "$_J_CHILD_PID" ]; then
+            printf "own-run stop '%s' does not parse to the child pid %s under the reify-test grammar (got '%s')\n" \
+                "$unit" "$_J_CHILD_PID" "$pid"
+            return 1
+        fi
+        case "$seen" in
+            *" $unit "*)
+                printf "own-run stop '%s' issued more than once — the five slices are not distinct\n" "$unit"
+                return 1
+                ;;
+        esac
+        seen="$seen$unit "
+        n=$((n + 1))
+    done < <(_j_child_own_units)
+
+    if [ "$n" -ne 5 ]; then
+        printf 'expected exactly 5 own-run stops, got %s:\n' "$n"
+        _j_child_own_units
+        return 1
+    fi
+    return 0
+}
+assert "J4: THE RENAME — all five own-run slices parse to the child pid and are pairwise distinct" \
+    _j_rename_five_distinct
+
+# J5 — the legacy sweep is wired, with its emptiness rule intact: the two
+# childless leaves go, their still-parented root does not.
+_j_legacy_reaped() {
+    local unit
+    for unit in reify-test-task.slice reify-test-merge.slice; do
+        if ! _j_word_present "$unit"; then
+            printf 'the legacy sweep never stopped %s:\n' "$unit"
+            cat "$_J_LOG" 2>/dev/null || true
+            return 1
+        fi
+    done
+    if _j_word_present "reify-test.slice"; then
+        printf 'stopped reify-test.slice while its legacy children were still listed (cascade hazard):\n'
+        cat "$_J_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "J5: the legacy sweep is wired — the two leaves stopped, their still-parented root left alone" \
+    _j_legacy_reaped
+
+# J6 — the assertion that stands between a bug anywhere in this wiring and
+# killing live orchestrator agent placement. Both names are in the listing the
+# child's sweeps actually saw (see the fixture note above), so only the
+# grammar and prefix re-checks keep them out.
+_j_production_untouched() {
+    local unit
+    for unit in reify.slice reify-governed-agents.slice; do
+        if _j_word_present "$unit"; then
+            printf 'STOPPED %s — this would cascade into live orchestrator agent placement:\n' "$unit"
+            cat "$_J_LOG" 2>/dev/null || true
+            return 1
+        fi
+    done
+    return 0
+}
+assert "J6: reify.slice and reify-governed-agents.slice were never stopped by any code path in the drive" \
+    _j_production_untouched
+
+# J7 — pins the seam itself, and with it this block's pool cost. A full run
+# ends by printing test_helpers.sh's "Results: N passed, M failed"; the
+# lifecycle-only path exits before the D block, so that line and every D label
+# must be ABSENT. Asserted on output rather than elapsed time, which would be
+# flaky under concurrent pool load.
+_j_exited_at_seam() {
+    local pat
+    for pat in '^Results:' '^--- D: governed cgroup placement' 'D1a:' 'D3a:' 'D8:' 'SKIP D:'; do
+        if grep -qE -- "$pat" "$_J_OUT"; then
+            printf 'child ran past the seam — matched %s:\n' "$pat"
+            tail -n 20 "$_J_OUT" 2>/dev/null || true
+            return 1
+        fi
+    done
+    return 0
+}
+assert "J7: the lifecycle-only seam short-circuits before the D block (keeps this a pool-cheap drive)" \
+    _j_exited_at_seam
+
+# --- J8: the lifecycle-only seam must be ARMING-GATED ---------------------
+#
+# J1-J7 pass REIFY_GOVTEST_TEST_MODE=1. J8 is the counterweight: this seam is
+# the one knob in that file able to exit 0 having run ZERO placement rows, and
+# run_all.sh judges a member by EXIT CODE alone — it parses no "Results:" line
+# — so a single stray export would silently turn a host-exclusive gate into a
+# no-op that still reports success. A comment saying "never set this" is not a
+# guard; this asserts the code is.
+#
+# Two things are required, and the second is what makes it non-vacuous: the
+# refusal must be LOUD (a silent ignore would be its own trap for whoever set
+# the var deliberately) and the suite must actually CONTINUE. "Continued" is
+# proven POSITIVELY, by the first post-seam output line, never by absence.
+#
+# Unlike F5 this drive is allowed to run to COMPLETION rather than being killed
+# once the evidence appears: REIFY_CPU_GOVERN_DISABLE=1 makes
+# host_supports_governance false, so past the seam the child SKIPs D, places
+# nothing, and finishes immediately. That removes F5's kill race entirely
+# while keeping the same positive evidence.
+_J_DISARM_OUT="$_STUB_ROOT/wire-j-disarm.out"
+_J_DISARM_LOG="$_STUB_ROOT/wire-j-disarm.log"
+_J_DISARM_RC=0
+
+_j_seam_refused_without_arming() {
+    : > "$_J_DISARM_OUT"
+    : > "$_J_DISARM_LOG"
+    _J_DISARM_RC=0
+    # NOTE: no REIFY_GOVTEST_TEST_MODE here — that omission IS the test.
+    timeout 120 env \
+        PATH="$_STUB_ROOT/bin-ok:$PATH" \
+        GOVTEST_STUB_LOG="$_J_DISARM_LOG" \
+        GOVTEST_STUB_LISTING_FILE="$_J_LISTING_FILE" \
+        REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY=1 \
+        REIFY_CPU_GOVERN_DISABLE=1 \
+        bash "$SCRIPT_DIR/test_cpu_governed_exec_hostexcl.sh" \
+        > "$_J_DISARM_OUT" 2>&1 || _J_DISARM_RC=$?
+
+    if [ "$_J_DISARM_RC" -ne 0 ]; then
+        echo "unarmed drive rc=$_J_DISARM_RC (124 = timeout), want 0"
+        tail -n 20 "$_J_DISARM_OUT" 2>/dev/null || true
+        return 1
+    fi
+    if ! grep -q 'LIFECYCLE_ONLY=1 IGNORED' "$_J_DISARM_OUT" 2>/dev/null; then
+        echo "unarmed LIFECYCLE_ONLY was not refused loudly:"
+        head -n 20 "$_J_DISARM_OUT" 2>/dev/null || true
+        return 1
+    fi
+    if ! grep -q -- '--- D: governed cgroup placement' "$_J_DISARM_OUT" 2>/dev/null; then
+        echo "unarmed LIFECYCLE_ONLY short-circuited anyway — the suite never reached the D block:"
+        head -n 20 "$_J_DISARM_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "J8: LIFECYCLE_ONLY without REIFY_GOVTEST_TEST_MODE is refused loudly and the suite runs on" \
+    _j_seam_refused_without_arming
+
 test_summary
