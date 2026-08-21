@@ -1183,6 +1183,74 @@ _g18() {
 assert "G18: a prefix ending in a DIGIT is REFUSED (the prefix/pid boundary must be unambiguous), profile left intact" \
     _g18
 
+# (i) THE CHILDLESS PROFILE. govtest_slice_pid carries a SECOND branch for a
+# profile that declares no children — `^<prefix>([0-9]+)\.slice$`, spelled out
+# rather than letting the alternation collapse to `()?`, which is undefined in
+# POSIX ERE. Both consumers declare children, so nothing else in the repo
+# reaches that branch; it is nonetheless live code inside the single chokepoint
+# deciding whether a unit may be STOPPED, and a regression in it (a dropped
+# anchor, say) would ship green behind the four-suffix reify-test profile G2-G9
+# exercise and the two-suffix default G17 does. So it gets its own coverage
+# rather than being left to be discovered by whoever next needs a childless
+# profile.
+#
+# DRIVEN IN A CHILD SHELL, like G17 and for the same reason: this file's
+# profile is armed from G1 and Blocks H, I and J all depend on it, so a
+# third profile must not be set in this process.
+#
+# The negatives are chosen to be the ones a BROKEN branch would leak, not a
+# generic sample: `reify.slice` (the live production root — the assertion this
+# library's whole safety argument turns on), a suffixed child that this profile
+# never declared, and the two anchor probes — a prefixed and a suffixed string
+# that only `^` and `$` respectively keep out.
+_G_CHILDLESS_DRIVER="$_STUB_ROOT/childless-profile.sh"
+cat > "$_G_CHILDLESS_DRIVER" <<'DRIVEREOF'
+#!/bin/bash
+set -euo pipefail
+# shellcheck source=tests/infra/govtest_slice_reaper_lib.sh
+source "$GOVTEST_DRIVER_LIB"
+_rc=0
+govtest_profile_set reify-solo || _rc=$?
+printf 'SET_RC=%s\n' "$_rc"
+printf 'PID_PARENT=%s\n' "$(govtest_slice_pid 'reify-solo55.slice')"
+printf 'PID_UNDECLARED_CHILD=%s\n' "$(govtest_slice_pid 'reify-solo55-agents.slice')"
+printf 'PID_ROOT=%s\n' "$(govtest_slice_pid 'reify.slice')"
+printf 'PID_BARE=%s\n' "$(govtest_slice_pid 'reify-solo.slice')"
+printf 'PID_PROD=%s\n' "$(govtest_slice_pid 'reify-governed-agents.slice')"
+printf 'PID_LEFT_ANCHOR=%s\n' "$(govtest_slice_pid 'xreify-solo55.slice')"
+printf 'PID_RIGHT_ANCHOR=%s\n' "$(govtest_slice_pid 'reify-solo55.slicex')"
+printf 'UNITS=%s\n' "$(govtest_slice_units 55 | tr '\n' ',')"
+DRIVEREOF
+chmod +x "$_G_CHILDLESS_DRIVER"
+
+# UNITS is the round-trip half: with no children declared, a run owns exactly
+# one unit and it is the one PID_PARENT just parsed back.
+_G_CHILDLESS_WANT="SET_RC=0
+PID_PARENT=55
+PID_UNDECLARED_CHILD=
+PID_ROOT=
+PID_BARE=
+PID_PROD=
+PID_LEFT_ANCHOR=
+PID_RIGHT_ANCHOR=
+UNITS=reify-solo55.slice,"
+
+_expect_childless_profile_in_child() {
+    local got rc=0
+    got="$(GOVTEST_DRIVER_LIB="$REAPER_LIB" "$BASH" "$_G_CHILDLESS_DRIVER" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf 'childless-profile driver rc=%s, want 0:\n%s\n' "$rc" "$got"
+        return 1
+    fi
+    if [ "$got" != "$_G_CHILDLESS_WANT" ]; then
+        printf 'childless-profile driver =>\n%s\n--- want ---\n%s\n' "$got" "$_G_CHILDLESS_WANT"
+        return 1
+    fi
+    return 0
+}
+assert "G19: a profile declaring NO children parses its bare parent and nothing else" \
+    _expect_childless_profile_in_child
+
 # ---------------------------------------------------------------------------
 # Block H — govtest_legacy_stale: the PIDLESS dash-nesting parent filter
 # (task 6386).
