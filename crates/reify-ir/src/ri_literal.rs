@@ -8,17 +8,73 @@
 //! steps 5-8; the full contract note lands in step-10.
 
 use crate::Value;
+use reify_core::DimensionVector;
 use reify_core::units::{ri_emittable_units, unit_symbol_to_si};
+use std::fmt;
 
 /// Why a [`Value`] cannot be written as a `.ri` source literal.
+///
+/// Every rejection is structured rather than a best-effort string, because
+/// the alternative — emitting something *close* — silently corrupts a user's
+/// design file (PRD §7 B7).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RiLiteralError {
+    /// NaN or ±∞. The grammar has no `inf`/`nan` token, and
+    /// `classify_number_literal` guards `value.is_finite()`.
+    NonFiniteNumber,
+    /// An `i64` outside the exactly-`f64`-representable range (±2^53). Every
+    /// decimal `.ri` number literal is lowered through `f64::from_str`, so a
+    /// larger integer would come back narrowed.
+    IntNotRepresentable {
+        /// The integer that could not round-trip.
+        value: i64,
+    },
+    /// A string carrying a character `.ri` string literals cannot hold
+    /// verbatim — `"`, `\`, `{`, `}`, or any control character.
+    StringNotRepresentable {
+        /// The first offending character.
+        offending: char,
+    },
+    /// A dimension with no bare built-in unit symbol, so it would need a
+    /// compound `UnitExpr` that only a seeded per-module registry can
+    /// resolve.
+    UnrepresentableDimension {
+        /// The dimension that has no emittable bare symbol.
+        dimension: DimensionVector,
+    },
     /// The value is a kind that has no `.ri` literal form at all.
     UnsupportedValueKind {
         /// Stable discriminant name (e.g. `"List"`), safe to show a user.
         kind: &'static str,
     },
 }
+
+impl fmt::Display for RiLiteralError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RiLiteralError::NonFiniteNumber => {
+                write!(f, "non-finite number has no .ri literal form")
+            }
+            RiLiteralError::IntNotRepresentable { value } => write!(
+                f,
+                "integer {value} is outside the exactly-f64-representable range (±2^53)"
+            ),
+            RiLiteralError::StringNotRepresentable { offending } => write!(
+                f,
+                "string contains {offending:?}, which a .ri string literal cannot carry verbatim"
+            ),
+            RiLiteralError::UnrepresentableDimension { dimension } => write!(
+                f,
+                "dimension {dimension} has no bare built-in unit symbol to emit"
+            ),
+            RiLiteralError::UnsupportedValueKind { kind } => {
+                write!(f, "value kind `{kind}` has no .ri literal form")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RiLiteralError {}
 
 /// Format an `f64` as the shortest decimal text that parses back to the same
 /// bits, matching the lexer's own `f64::from_str`.
@@ -104,6 +160,168 @@ fn exact_magnitude(si_value: f64, unit: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
+
+    // ─── Structured rejection contract (PRD §7 B7) ───────────────────────────
+    //
+    // The serializer must never emit a lossy or unparseable literal. Every
+    // value it cannot write back EXACTLY is a structured `Err` a caller can
+    // render, never a best-effort string.
+
+    fn err(v: &Value) -> RiLiteralError {
+        value_to_ri_literal(v).expect_err(&format!("expected Err for {v:?}"))
+    }
+
+    /// The grammar has no `inf`/`nan` token, and `classify_number_literal`
+    /// explicitly guards `value.is_finite()`.
+    #[test]
+    fn non_finite_numbers_are_rejected() {
+        for v in [
+            Value::Real(f64::NAN),
+            Value::Real(f64::INFINITY),
+            Value::Real(f64::NEG_INFINITY),
+            Value::length(f64::NAN),
+            Value::length(f64::INFINITY),
+        ] {
+            assert!(
+                matches!(err(&v), RiLiteralError::NonFiniteNumber),
+                "{v:?} must be rejected as non-finite"
+            );
+        }
+    }
+
+    /// Every DECIMAL `.ri` number literal is lowered through `f64::from_str`,
+    /// and `parse_number_literal_text`'s own doc-comment states that values
+    /// beyond 2^53 are stored as a lossy `(n as f64)`. So an `i64` outside the
+    /// exactly-f64-representable range cannot round-trip and must be rejected
+    /// rather than silently narrowed.
+    #[test]
+    fn ints_outside_the_exact_f64_range_are_rejected() {
+        for i in [i64::MAX, i64::MIN, (1i64 << 53) + 1, -((1i64 << 53) + 1)] {
+            assert!(
+                matches!(
+                    err(&Value::Int(i)),
+                    RiLiteralError::IntNotRepresentable { .. }
+                ),
+                "Int({i}) must be rejected as not exactly f64-representable"
+            );
+        }
+    }
+
+    #[test]
+    fn ints_inside_the_exact_f64_range_are_accepted() {
+        assert_eq!(lit(&Value::Int(1i64 << 53)), "9007199254740992");
+        assert_eq!(lit(&Value::Int(-(1i64 << 53))), "-9007199254740992");
+        assert_eq!(lit(&Value::Int(9007199254740991)), "9007199254740991");
+    }
+
+    /// `lower_string_literal` strips the outer quotes and performs NO escape
+    /// decoding, so an emitted `\"` comes back as a literal backslash-quote.
+    /// Separately, a bare `{`/`}` makes the `string_literal` token fail and
+    /// diverts the text to `interpolated_string`, which DOES decode escapes
+    /// and treats `{expr}` as a hole — so a brace could evaluate source.
+    #[test]
+    fn strings_outside_the_verbatim_safe_charset_are_rejected() {
+        for s in [
+            "say \"hi\"",
+            "back\\slash",
+            "hole {x}",
+            "open {",
+            "close }",
+            "two\nlines",
+            "tab\there",
+            "bell\u{0007}",
+            "nul\u{0000}",
+        ] {
+            let v = Value::String(s.to_owned());
+            assert!(
+                matches!(err(&v), RiLiteralError::StringNotRepresentable { .. }),
+                "{s:?} must be rejected as not verbatim-safe"
+            );
+        }
+    }
+
+    #[test]
+    fn verbatim_safe_strings_are_accepted() {
+        assert_eq!(lit(&Value::String("PLA".into())), "\"PLA\"");
+        assert_eq!(lit(&Value::String("M3x0.5".into())), "\"M3x0.5\"");
+        assert_eq!(lit(&Value::String(String::new())), "\"\"");
+        assert_eq!(lit(&Value::String("naïve—Ω".into())), "\"naïve—Ω\"");
+    }
+
+    /// Dimensions with no bare built-in symbol are rejected outright. Several
+    /// of these DO have `display_units` ladders — the GUI can still *show* a
+    /// pressure — which is the clearest demonstration that the display table
+    /// and the emission table answer different questions.
+    #[test]
+    fn dimensions_needing_a_compound_unit_are_rejected() {
+        for dim in [
+            DimensionVector::AREA,
+            DimensionVector::VOLUME,
+            DimensionVector::PRESSURE,
+            DimensionVector::FORCE,
+            DimensionVector::SOLID_ANGLE,
+            DimensionVector::MONEY,
+        ] {
+            let v = Value::Scalar {
+                si_value: 1.5,
+                dimension: dim,
+            };
+            assert!(
+                matches!(err(&v), RiLiteralError::UnrepresentableDimension { .. }),
+                "{:?} must be rejected — no bare built-in symbol",
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// The catch-all must name the kind so γ can render a useful MCP error,
+    /// and must NOT embed a `{value:?}` dump (a `SampledField` payload could
+    /// be enormous).
+    #[test]
+    fn unsupported_value_kinds_are_rejected_with_a_stable_kind_name() {
+        let cases = [
+            (Value::Undef, "Undef"),
+            (Value::List(vec![]), "List"),
+            (Value::Point(vec![]), "Point"),
+            (Value::Option(None), "Option"),
+            (Value::enum_unit("Fit", "Loose"), "Enum"),
+        ];
+        for (v, expected) in cases {
+            match err(&v) {
+                RiLiteralError::UnsupportedValueKind { kind } => {
+                    assert_eq!(kind, expected, "kind name for {v:?}")
+                }
+                other => panic!("expected UnsupportedValueKind for {v:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn error_is_a_standard_error() {
+        fn assert_error<E: std::error::Error>(e: &E) -> String {
+            e.to_string()
+        }
+        let e = err(&Value::Real(f64::NAN));
+        let rendered = assert_error(&e);
+        assert!(
+            !rendered.is_empty(),
+            "Display for RiLiteralError must render something"
+        );
+        // Every variant renders non-empty and mentions nothing enormous.
+        for v in [
+            Value::Int(i64::MAX),
+            Value::String("{".into()),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::PRESSURE,
+            },
+            Value::Undef,
+        ] {
+            let text = err(&v).to_string();
+            assert!(!text.is_empty(), "empty Display for {v:?}");
+            assert!(text.len() < 200, "Display for {v:?} is too verbose: {text}");
+        }
+    }
 
     fn lit(v: &Value) -> String {
         value_to_ri_literal(v).unwrap_or_else(|e| panic!("expected Ok for {v:?}, got {e:?}"))
