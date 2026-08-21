@@ -154,7 +154,9 @@ The merge worker's **trivial-pass** fast-path (scope=config, diff touches only n
 The canonical source of truth for the load-bearing set is:
 - `scripts/verify-pipeline-paths.txt` — static manifest of non-`source`-derivable deps
 - verify.sh's live `source "$SCRIPT_DIR/..."` lines — auto-derived, self-healing for future additions
+- verify.sh's **emitted plan lines** — every `scripts/*.sh` path invoked by an `add()` / `add_tool()` argument (task 6320). These lint/gate scripts are never `source`d, so the clause above cannot see them, and a gate-script-only diff was fast-path eligible: the gate landed green without having been run. Auto-derived and self-healing on the same terms as the `source` clause — a newly wired gate script needs **no** `verify-pipeline-paths.txt` row, and adding one is discouraged (see that file's EMITTED GATE SCRIPTS note).
 - `scripts/doc-sync-paths.txt` — static manifest of doc-sync docs (task 4955); see that file's header for the per-entry citing-test rationale
+- **any `tests/infra/*.sh` path** — an open-ended glob matched in the guard's code, not a manifest line (task 5256; recurrence prevention for the 2026-07-19 5247/5249 incident, PRD `docs/prds/merge-gate-health.md` W3a). A literal-per-file manifest cannot cover an infra test that does not exist yet, and a new/renamed infra test changes the merge-gate suite itself, so it is definitionally never config-only. Being code-matched rather than enumerated, it does **not** appear in `--list` output.
 
 The consultable oracle is `scripts/verify-pipeline-guard.sh`:
 ```

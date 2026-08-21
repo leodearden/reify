@@ -3,10 +3,12 @@
 #
 # Purpose:
 #   Lists repo-relative paths that load-bear the --scope all verify pipeline
-#   but are NOT derivable from verify.sh's 'source "$SCRIPT_DIR/..."' lines
-#   (those are auto-derived live by scripts/verify-pipeline-guard.sh).
-#   Together, this manifest + the live source derivation form the canonical
-#   load-bearing set consulted by the drift-guard oracle.
+#   but are NOT derivable from verify.sh itself — neither from its
+#   'source "$SCRIPT_DIR/..."' lines nor from the scripts/*.sh paths its
+#   add() / add_tool() plan lines invoke (both of those are auto-derived live
+#   by scripts/verify-pipeline-guard.sh).
+#   This manifest is ONE clause of the canonical load-bearing set consulted by
+#   the drift-guard oracle; see that script's header for the full union.
 #
 # Format:
 #   One repo-relative path per line.
@@ -29,6 +31,20 @@
 # here — they are auto-derived live from verify.sh's 'source "$SCRIPT_DIR/..."'
 # lines by scripts/verify-pipeline-guard.sh, and auto-coverage is self-healing
 # for future additions.  Listing them here too would be harmless but redundant.
+#
+# NOTE: The EMITTED GATE SCRIPTS are likewise NOT listed here (task 6320).
+# Any scripts/*.sh path invoked by an add() / add_tool() plan line in verify.sh
+# — check-manifold-deps.sh, check-infra-classification-manifest.sh,
+# check-harness-baseline-registration.sh, tree-sitter-generate.sh,
+# ensure-gui-sidecar-placeholder.sh, check_event_inventory.sh,
+# test_pm_standardization.sh, and the two below — is auto-derived live by
+# scripts/verify-pipeline-guard.sh's emitted-gate clause, exactly as the
+# sourced libs are by its source-line clause. A NEW lint/gate script wired
+# into the plan therefore needs NO row here: do not add one. This is the
+# self-healing property the per-script alternative lacks — task 6243's
+# hand-registration approach covered 2 of the 9 emitted gates, its follow-up
+# ticket named 6 more, and a 7th (test_pm_standardization.sh) was in neither
+# list.
 #
 # cpu-admit.sh (task α, #4630) is intentionally omitted: verify.sh sources it
 # directly (`source "$SCRIPT_DIR/cpu-admit.sh"`), so verify-pipeline-guard.sh
@@ -95,33 +111,26 @@ tests/infra/run_all.sh
 tests/infra/run-all-ambient-vars.manifest
 #
 # scripts/check-nan-safe-ordering.sh / scripts/check-compute-trampoline-
-#   registration.sh (task 6243): the two INV-FEA lint gates. Both are
-#   emitted-not-sourced by verify.sh's lint plan — the same SHAPE as
-#   scripts/check-manifold-deps.sh / scripts/check-infra-classification-
-#   manifest.sh (which are NOT registered in this manifest and remain
-#   fast-path eligible today; see the task-6243-followup entry below), so
-#   verify-pipeline-guard.sh's live 'source' derivation misses them. Without
-#   these entries an edit to either gate script is fast-path eligible instead
-#   of routing through the full --scope all gate (measured via
-#   `requires-full-gate` at HEAD 19f0307f30 — both exited 1, fast-path
-#   eligible, before this fix). Per-task fail-fast coverage for each is
-#   separately wired via scripts/verify-pipeline-infra-tests.txt.
+#   registration.sh (task 6243): the two INV-FEA lint gates, hand-registered
+#   here before the emitted-gate clause existed. Both are emitted-not-sourced
+#   by verify.sh's lint plan, so the guard's live 'source' derivation misses
+#   them and, without a row, an edit to either was fast-path eligible rather
+#   than routed through the full --scope all gate (measured via
+#   `requires-full-gate` at HEAD 19f0307f30 — both exited 1).
+#
+#   As of task 6320 these two rows are REDUNDANT: the guard's emitted-gate
+#   clause auto-derives them along with their seven siblings. They are KEPT
+#   deliberately as belt-and-braces for the two INV-FEA gates specifically —
+#   if a future verify.sh plan-emission refactor breaks the derivation, these
+#   two stay covered by the static manifest while the rest go RED in
+#   tests/infra/test_verify_pipeline_guard.sh Pair E. The redundancy is
+#   intentional and bounded: do NOT add rows for further emitted gates (see
+#   the EMITTED GATE SCRIPTS note in the header). Per-task fail-fast coverage
+#   for each is separately wired via scripts/verify-pipeline-infra-tests.txt.
 scripts/check-nan-safe-ordering.sh
 scripts/check-compute-trampoline-registration.sh
 #
-# task-6243-followup (tkt_0RSKSDAK6WDWWR3N29RQ804T1B): the same
-#   emitted-not-sourced gap is open for OTHER verify.sh lint-plan gate
-#   scripts too — scripts/check-manifold-deps.sh (verify.sh:2271),
-#   scripts/check-infra-classification-manifest.sh (verify.sh:2247; see its
-#   documented task-5252 exclusion rationale in
-#   scripts/verify-pipeline-infra-tests.txt before assuming it needs this
-#   fix), scripts/check-harness-baseline-registration.sh (verify.sh:2263),
-#   scripts/tree-sitter-generate.sh (verify.sh:2276),
-#   scripts/ensure-gui-sidecar-placeholder.sh (verify.sh:2227), and
-#   scripts/check_event_inventory.sh (verify.sh:2499) all measured
-#   fast-path eligible via `requires-full-gate`. Deliberately left open here
-#   because task 6243's plan and title scope to "both INV-FEA lint gates"
-#   only. See the follow-up ticket for the fix (either register each
-#   remaining script the same way as the two above, or make
-#   verify-pipeline-guard.sh self-healing by auto-deriving load-bearing
-#   paths from verify.sh's emitted plan lines).
+# task-6243-followup (tkt_0RSKSDAK6WDWWR3N29RQ804T1B): CLOSED by task 6320 via
+#   auto-derivation (see the EMITTED GATE SCRIPTS note in the header) — all six
+#   gate scripts the ticket enumerated are now load-bearing, as is a seventh
+#   sibling it did not list, scripts/test_pm_standardization.sh.

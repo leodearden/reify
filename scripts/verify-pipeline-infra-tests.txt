@@ -161,8 +161,14 @@ tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classifi
 # a tests/infra/test_*.sh has no run-all-classification.manifest row (or a row
 # has no file). scripts/check-infra-classification-manifest.sh is
 # emitted-not-sourced by verify.sh (like scripts/check-manifold-deps.sh), so it
-# is intentionally absent from scripts/verify-pipeline-paths.txt; per-task
-# fail-fast coverage comes from these rows (one-artifact-multiple-rows pattern,
+# still has no manual row in scripts/verify-pipeline-paths.txt — but as of task
+# 6320 that is no longer a coverage gap: the guard's emitted-gate clause
+# auto-derives every scripts/*.sh path invoked by an add()/add_tool() plan
+# line, so this script IS load-bearing and an edit to it routes through the
+# full --scope all gate. It needs no manual row precisely BECAUSE it is
+# auto-derived (the same reason the sourced libs have none).
+# These rows are therefore the cheap per-task fail-fast complement to that
+# full-gate route, not a substitute for it (one-artifact-multiple-rows pattern,
 # like scripts/seed-warm-lane.sh above): the lib row guards the accessors, and
 # the scripts/verify.sh row runs the (e) plan-shape assertion as a per-task
 # pole whenever build_plan()'s gate emission is edited.
