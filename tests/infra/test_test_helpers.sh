@@ -193,13 +193,18 @@ fi
 # amendment).
 BROKEN_TMPDIR=/dev/null/nope
 
-# Reads the captured sub-shell output on stdin. Semantics deliberately
-# unchanged from the pre-amendment inline `grep -qi "mktemp"` for now -- see
-# Test (l4) below, which proves this specific needle is inert (self-matches
-# an assert *description* containing the word "mktemp", not just a genuine
-# mktemp failure). Task 6363 amendment.
+# Reads the captured sub-shell output on stdin. Matches the forced template
+# PATH ($BROKEN_TMPDIR), not the bare word "mktemp" and not mktemp's English
+# message text ("failed to create file..."): Test (l4) below proved the bare
+# word is inert -- it self-matches an assert *description* that merely
+# mentions "mktemp", not just a genuine mktemp failure. The path beats the
+# message text too: it is interpolated by mktemp and never translated, while
+# the message is a translatable coreutils string that a locale probe
+# (LC_ALL=C / en_US.UTF-8 / de_DE.UTF-8) showed varying in its surrounding
+# quote glyphs. Tying the needle to $BROKEN_TMPDIR also keeps needle and
+# forcing-mechanism in lockstep. Task 6363 amendment.
 mktemp_failure_observed() {
-    grep -qi 'mktemp'
+    grep -qF -- "$BROKEN_TMPDIR"
 }
 
 echo ""
@@ -209,7 +214,7 @@ rc=0
 mtf_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
-    assert 'first assert under mktemp failure' true
+    assert 'first assert under tmpfile fallback' true
     echo 'REACHED-SECOND-STATEMENT'
     assert 'second assert' true
     test_summary
@@ -260,9 +265,9 @@ rc=0
 mtf_fail_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
-    assert 'passing assert under mktemp failure' true
+    assert 'passing assert under tmpfile fallback' true
     _l2_boom() { printf 'l2 stderr needle\n' >&2; return 1; }
-    assert 'failing assert under mktemp failure' _l2_boom
+    assert 'failing assert under tmpfile fallback' _l2_boom
     echo 'REACHED-AFTER-FAIL'
     test_summary
 " 2>&1) || rc=$?
@@ -283,7 +288,7 @@ else
     check "assert FAIL under mktemp failure: suite reaches the statement after the failing assert (got: $mtf_fail_out)" "false"
 fi
 
-if echo "$mtf_fail_out" | grep -qF "  FAIL: failing assert under mktemp failure"; then
+if echo "$mtf_fail_out" | grep -qF "  FAIL: failing assert under tmpfile fallback"; then
     check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted" "true"
 else
     check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted (got: $mtf_fail_out)" "false"
@@ -370,7 +375,7 @@ echo "--- Test l4: mktemp_failure_observed discriminator is live, not a dead ins
 _l4_broken_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
-    assert 'first assert under mktemp failure' true
+    assert 'first assert under tmpfile fallback' true
     echo 'REACHED-SECOND-STATEMENT'
     assert 'second assert' true
     test_summary
@@ -379,7 +384,7 @@ _l4_broken_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
 _l4_ok_out=$(bash -c "
     set -euo pipefail
     source '$HELPER_FILE'
-    assert 'first assert under mktemp failure' true
+    assert 'first assert under tmpfile fallback' true
     echo 'REACHED-SECOND-STATEMENT'
     assert 'second assert' true
     test_summary
