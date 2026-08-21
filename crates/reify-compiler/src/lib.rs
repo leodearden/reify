@@ -34,6 +34,7 @@ mod functions;
 mod geometry;
 mod geometry_boolean;
 mod geometry_curve;
+mod geometry_list;
 mod geometry_modify;
 pub mod geometry_traits;
 pub mod geometry_traits_inference;
@@ -94,6 +95,8 @@ pub(crate) use functions::*;
 pub(crate) use geometry::*;
 pub(crate) use geometry_boolean::*;
 pub(crate) use geometry_curve::*;
+#[allow(unused_imports)]
+pub(crate) use geometry_list::*;
 pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
