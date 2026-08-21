@@ -459,6 +459,80 @@ pub(crate) fn diagnose_unsupported_geometry_list(
     }
 }
 
+/// How a single `union_all`/`intersection_all` argument resolves as a geometry
+/// list (task #5385).
+#[derive(Debug)]
+pub(crate) enum GeometryListArg {
+    /// Statically unrolled to these element expressions (possibly empty).
+    Elements(Vec<reify_ast::Expr>),
+    /// The argument IS a collection, but not one whose elements are geometry
+    /// (or not one that can be unrolled at compile time). The caller reports
+    /// this specifically rather than falling through to the arity message.
+    NotGeometry,
+    /// Not a collection at all — the caller falls through unchanged, so a
+    /// single non-list geometry arg (`union_all(box(…))`) keeps its existing
+    /// "expects at least 2 arguments" diagnostic.
+    NotAList,
+}
+
+/// Resolve a single boolean-fold argument to a concrete geometry element list.
+///
+/// Three shapes resolve to [`GeometryListArg::Elements`]:
+///   * an `Ident` naming a geometry-list let (elements were unrolled once in
+///     entity.rs pass 1 and cached on the scope);
+///   * an inline geometry list literal;
+///   * an inline `generate(<literal>, |i| <geom>)`.
+///
+/// Diagnostics are the CALLER's to emit — this function only classifies, so
+/// the caller can phrase "empty fold" and "not a geometry list" in terms of
+/// the operator name it knows.
+pub(crate) fn resolve_geometry_list_arg(
+    arg: &reify_ast::Expr,
+    scope: &CompilationScope,
+    functions: &[CompiledFunction],
+) -> GeometryListArg {
+    if let reify_ast::ExprKind::Ident(name) = &arg.kind {
+        if let Some(elements) = scope.geometry_list_elements.get(name.as_str()) {
+            return GeometryListArg::Elements(elements.clone());
+        }
+        // A List-typed let that is NOT a geometry list — e.g. `[1, 2, 3]`.
+        return match scope.resolve(name.as_str()) {
+            Some((_, Type::List(_))) => GeometryListArg::NotGeometry,
+            _ => GeometryListArg::NotAList,
+        };
+    }
+
+    // Inline list expressions. `known_geometry_lets` is approximated by the
+    // realization names already registered in scope — exactly the names that
+    // lower to a `RealizationDecl`, which is what `is_geometry_let`'s Ident arm
+    // is asking about.
+    let is_inline_list = match &arg.kind {
+        reify_ast::ExprKind::ListLiteral(_) => true,
+        reify_ast::ExprKind::FunctionCall { name, .. } => name == "generate",
+        _ => false,
+    };
+    if !is_inline_list {
+        return GeometryListArg::NotAList;
+    }
+
+    let known: HashSet<&str> = scope
+        .geometry_realization_names
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let Some(shape) = classify_geometry_list_let(arg, functions, &known, &HashSet::new()) else {
+        return GeometryListArg::NotGeometry;
+    };
+    // The cap diagnostic belongs to the declaring let, not to every fold over
+    // it, so an over-cap inline list is reported as "not a geometry list"
+    // rather than re-emitting the cap error here.
+    let mut throwaway = Vec::new();
+    match expand_geometry_list_elements(arg, &shape, arg.span, &mut throwaway) {
+        Some(elements) => GeometryListArg::Elements(elements),
+        None => GeometryListArg::NotGeometry,
+    }
+}
+
 /// `Some(n)` iff `expr` is a non-negative *integer* literal (`3`, `0`).
 ///
 /// `is_real` distinguishes `3` from `3.0` at the token level, so a Real

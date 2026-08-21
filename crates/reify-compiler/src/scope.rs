@@ -76,6 +76,16 @@ pub(crate) struct CompilationScope<'u> {
     /// Exactly the names in `known_geometry_list_lets` (entity.rs pass 1),
     /// each mapped to the number of list-bound realizations emitted for it.
     pub(crate) geometry_list_lens: HashMap<String, usize>,
+    /// Geometry-LIST let name → its statically-unrolled element expressions
+    /// (task #5385), owned so no AST lifetime is threaded through the ~40
+    /// `compile_geometry_call` call sites.
+    ///
+    /// Expanded exactly ONCE, in entity.rs pass 1, so the element-cap
+    /// diagnostic fires once and the realization-emission loop and
+    /// `union_all`/`intersection_all` list expansion read the same elements.
+    /// `geometry_list_elements[n].len() == geometry_list_lens[n]` by
+    /// construction.
+    pub(crate) geometry_list_elements: HashMap<String, Vec<reify_ast::Expr>>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -255,6 +265,7 @@ impl<'u> CompilationScope<'u> {
             keyed_sub_keys: HashMap::new(),
             geometry_realization_names: HashSet::new(),
             geometry_list_lens: HashMap::new(),
+            geometry_list_elements: HashMap::new(),
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),

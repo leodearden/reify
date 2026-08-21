@@ -177,7 +177,57 @@ pub(crate) fn compile_boolean_op(
             Some(all_ops)
         }
         "union_all" | "intersection_all" => {
-            if !check_arg_count_at_least(name, args.len(), 2, expr_span, diagnostics) {
+            // Task #5385: a SINGLE `List<Geometry>` argument expands to its
+            // element expressions here, BEFORE the arity gate, and then runs
+            // the existing left-fold verbatim — no new fold logic, no IR
+            // change. Each element compiles inline exactly as it does today
+            // for `union(a, b)` over geometry lets.
+            let expanded: Vec<reify_ast::Expr>;
+            let mut args = args;
+            let mut expanded_from_list = false;
+            if args.len() == 1 {
+                match resolve_geometry_list_arg(&args[0], scope, functions) {
+                    GeometryListArg::Elements(elements) => {
+                        if elements.is_empty() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "{name}() over an empty geometry list has nothing to                                      fold; it needs at least one element"
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    args[0].span,
+                                    "this geometry list is empty",
+                                )),
+                            );
+                            return None;
+                        }
+                        expanded = elements;
+                        args = &expanded;
+                        expanded_from_list = true;
+                    }
+                    GeometryListArg::NotGeometry => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "{name}()'s single argument must be a geometry list                                  (a list literal of geometry, or generate(<literal>,                                  |i| <geometry>))"
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                args[0].span,
+                                "this collection's elements are not geometry",
+                            )),
+                        );
+                        return None;
+                    }
+                    // Not a collection at all (e.g. `union_all(box(…))`) — fall
+                    // through to the unchanged arity diagnostic below.
+                    GeometryListArg::NotAList => {}
+                }
+            }
+            // A list that expanded to exactly ONE element folds to that element
+            // with zero Boolean ops, which is well-defined — so the >= 2 gate
+            // applies only to a literally-written argument list. The empty case
+            // was already rejected above with its own specific message.
+            if !expanded_from_list
+                && !check_arg_count_at_least(name, args.len(), 2, expr_span, diagnostics)
+            {
                 return None;
             }
             let bool_op = match name {

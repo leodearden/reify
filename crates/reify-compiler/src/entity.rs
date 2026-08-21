@@ -1508,16 +1508,37 @@ pub(crate) fn compile_entity(
                     // constructor call in the body.
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::List(Box::new(Type::Geometry)));
-                    // Thread the element count into scope so `expr.rs` can
-                    // constant-fold `<list>.count`. Populated HERE, in pass 1,
-                    // because the value-cell pass that compiles that member
-                    // access runs before the realization-emission loop. The
-                    // count is exactly the number of list-bound realizations
-                    // that loop will mint, so fold and IR cannot disagree.
-                    scope
-                        .geometry_list_lens
-                        .insert(let_decl.name.clone(), shape.len());
-                    known_geometry_list_lets.insert(let_decl.name.as_str(), shape);
+                    // Unroll ONCE, here, and cache the elements on the scope.
+                    // Three consumers read them — the realization-emission
+                    // loop, `expr.rs`'s `.count` fold, and `union_all`'s list
+                    // expansion — so expanding once keeps them in lockstep AND
+                    // fires the element-cap diagnostic exactly once.
+                    //
+                    // Pass 1 is the right home because the value-cell pass that
+                    // compiles `<list>.count` runs BEFORE the emission loop.
+                    match expand_geometry_list_elements(
+                        &let_decl.value,
+                        &shape,
+                        let_decl.span,
+                        diagnostics,
+                    ) {
+                        Some(elements) => {
+                            scope
+                                .geometry_list_lens
+                                .insert(let_decl.name.clone(), elements.len());
+                            scope
+                                .geometry_list_elements
+                                .insert(let_decl.name.clone(), elements);
+                            known_geometry_list_lets.insert(let_decl.name.as_str(), shape);
+                        }
+                        None => {
+                            // Over the element cap — the Error is already
+                            // reported. Route the let out entirely so nothing
+                            // is half-lowered (a cell promising elements no
+                            // realization will ever produce).
+                            rejected_geometry_list_lets.insert(let_decl.name.as_str());
+                        }
+                    }
                 } else if diagnose_unsupported_geometry_list(
                     &let_decl.value,
                     functions,
@@ -3981,37 +4002,37 @@ pub(crate) fn compile_entity(
             reify_ast::MemberDecl::Let(let_decl)
                 if known_geometry_list_lets.contains_key(let_decl.name.as_str()) =>
             {
-                let shape = &known_geometry_list_lets[let_decl.name.as_str()];
-                if let Some(elements) = expand_geometry_list_elements(
-                    &let_decl.value,
-                    shape,
-                    let_decl.span,
-                    diagnostics,
-                ) {
-                    for (k, element) in elements.iter().enumerate() {
-                        if let Some(ops) = compile_geometry_call(
-                            element,
-                            &scope,
-                            enum_defs,
-                            functions,
-                            diagnostics,
-                            0,
-                            &geometry_lets,
-                            &mut HashSet::new(),
-                        ) {
-                            realizations.push(RealizationDecl {
-                                id: RealizationNodeId::new(entity_name, realization_index),
-                                name: Some(format!("{}#{}", let_decl.name, k)),
-                                is_aux: let_decl.is_aux,
-                                list_binding: Some(GeometryListBinding {
-                                    list_name: let_decl.name.clone(),
-                                    index: k,
-                                }),
-                                operations: ops,
-                                span: let_decl.span,
-                            });
-                            realization_index += 1;
-                        }
+                // Elements were unrolled once in pass 1 and cached on the
+                // scope; cloned here only to release the `&scope` borrow that
+                // `compile_geometry_call` needs mutably-adjacent below.
+                let elements = scope
+                    .geometry_list_elements
+                    .get(let_decl.name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                for (k, element) in elements.iter().enumerate() {
+                    if let Some(ops) = compile_geometry_call(
+                        element,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        0,
+                        &geometry_lets,
+                        &mut HashSet::new(),
+                    ) {
+                        realizations.push(RealizationDecl {
+                            id: RealizationNodeId::new(entity_name, realization_index),
+                            name: Some(format!("{}#{}", let_decl.name, k)),
+                            is_aux: let_decl.is_aux,
+                            list_binding: Some(GeometryListBinding {
+                                list_name: let_decl.name.clone(),
+                                index: k,
+                            }),
+                            operations: ops,
+                            span: let_decl.span,
+                        });
+                        realization_index += 1;
                     }
                 }
             }
