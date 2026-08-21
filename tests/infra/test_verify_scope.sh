@@ -317,30 +317,73 @@ while IFS= read -r _pg_path; do
 done <<< "$_PG_COUPLED"
 
 echo ""
-echo "--- Scenario PG-DRIFT-DIR: no tracked *.rs walks the fixtures DIRECTORY (the carve-out's load-bearing premise) ---"
+echo "--- Scenario PG-DRIFT-DIR: no tracked *.rs/*.ts walks the fixtures DIRECTORY unreviewed (the carve-out's load-bearing premise) ---"
 # A directory-level use materializes the directory path and then appends the
 # leaf separately, so the character where a `<name>.ri` leaf should be is a
-# string terminator (`"`), a format placeholder (`{`) or a glob (`*`).
-_PG_DIR_PAT='tests/prd-gate/fixtures/?["{*]'
-_PG_DIRREF="$(git -C "$REPO_ROOT" grep -n -E "$_PG_DIR_PAT" -- '*.rs' || true)"
-assert "PG-DRIFT-DIR: no *.rs names the fixtures directory itself (would void 'adding a fixture is inert' — re-examine verify.sh's arm, do NOT just extend _RUST_COUPLED_RI_FIXTURES). Found: ${_PG_DIRREF:-none}" \
+# string terminator (`"` in Rust, `'` in TS), a format placeholder (`{` for
+# Rust's format!, `$` for a TS template literal) or a glob (`*`).
+# The class carries `'` as well as `"` because this now sweeps *.ts, where
+# single-quoted string literals are the house style (task 6435).
+_PG_DIR_PAT='tests/prd-gate/fixtures/?["'"'"'{*$]'
+# A directory walk that has been REVIEWED and deliberately accepted carries a
+# `pg-drift-dir:allow` marker on its own line, on the PTODO `ptodo:allow` model.
+# The marker is required to name a reason, and the grep below drops only lines
+# that carry it — so an unreviewed walk still goes RED.
+_PG_DIRREF="$(git -C "$REPO_ROOT" grep -n -E "$_PG_DIR_PAT" -- '*.rs' '*.ts' \
+    | grep -v 'pg-drift-dir:allow' || true)"
+assert "PG-DRIFT-DIR: no *.rs/*.ts names the fixtures directory itself without a reviewed 'pg-drift-dir:allow' marker (an unreviewed walk voids 'adding a fixture is inert' — re-examine verify.sh's arm, do NOT just extend _RUST_COUPLED_RI_FIXTURES). Found: ${_PG_DIRREF:-none}" \
     test -z "$_PG_DIRREF"
+# The allow-marker must not be a blanket mute: assert the ONE known reviewed
+# walk is still present and still marked, so silently deleting the ledger (or
+# the marker's reason) is itself a change this guard notices.
+_PG_ALLOWED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_DIR_PAT" -- '*.ts' | wc -l)"
+assert "PG-DRIFT-DIR: exactly one reviewed *.ts directory walk is expected (the reifyGrammarCorpus ledger); found $_PG_ALLOWED" \
+    test "$_PG_ALLOWED" -eq 1
 # Non-vacuity for a MUST-BE-EMPTY assertion: an empty result is also exactly
 # what a typo'd pattern or pathspec produces. Self-test the pattern against
 # synthetic lines — the four directory-level idioms must match, and the two
 # benign forms (a well-formed leaf reference, a prose mention) must not.
-assert "PG-DRIFT-DIR: pattern self-test — all 4 directory-walk idioms match (guard is not vacuous)" \
+assert "PG-DRIFT-DIR: pattern self-test — all 7 directory-walk idioms match, Rust and TS (guard is not vacuous)" \
     test "$(printf '%s\n' \
         'let d = Path::new("tests/prd-gate/fixtures");' \
         'let p = base.join("../../tests/prd-gate/fixtures/");' \
         'let p = format!("{}/tests/prd-gate/fixtures/{}", root, name);' \
         'for e in glob("tests/prd-gate/fixtures/*.ri") {}' \
-        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 4
-assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf and a prose mention do NOT match (no nuisance RED)" \
+        "const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures'];" \
+        "readdirSync(join(REPO_ROOT, 'tests/prd-gate/fixtures'))" \
+        'const d = `${repoRoot}/tests/prd-gate/fixtures/${name}`;' \
+        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 7
+assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf (Rust or TS) and a prose mention do NOT match (no nuisance RED)" \
     test "$(printf '%s\n' \
         'let p = root.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri");' \
         '/// see tests/prd-gate/fixtures/stdlib_ns_mode_member.ri).' \
+        "  'tests/prd-gate/fixtures/arrow_type.ri'," \
+        '// the tests/prd-gate/fixtures directory holds probe data' \
         | grep -c -E "$_PG_DIR_PAT" || true)" -eq 0
+
+echo ""
+echo "--- Scenario PG-DRIFT-GUI: every EXPECTED_CLEAN-pinned prd-gate fixture classifies RUN_GUI=1 ---"
+# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpus.test.ts)
+# asserts that each pinned path still parses with zero ERROR nodes. Editing a
+# pinned fixture into an unparseable state regresses a committed signal, but the
+# prd-gate arm leaves gui=0 for a fixture that is not RUST-coupled — so under
+# --scope staged/branch the suite that reads it would never run, and on the
+# hook-gated docs commit on `main` there is no later gate. verify.sh's
+# _GUI_COUPLED_RI_FIXTURES closes that; this scenario is what keeps the list
+# honest, exactly as PG-DRIFT does for the Rust side (task 6435).
+_PG_GUI_PINS="$(sed -n '/^const EXPECTED_CLEAN = \[/,/^\];/p' \
+    "$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.test.ts" \
+    | grep -o 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]*\.ri' | sort -u || true)"
+# Non-empty FIRST: a renamed ledger file, a changed EXPECTED_CLEAN spelling or a
+# broken sed range must fail loudly here rather than pass an empty loop.
+assert "PG-DRIFT-GUI: derived EXPECTED_CLEAN pin set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_PG_GUI_PINS"
+while IFS= read -r _pg_gui_path; do
+    [ -n "$_pg_gui_path" ] || continue
+    plan_for staged "$_pg_gui_path"
+    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.test.ts EXPECTED_CLEAN; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
+        plan_has 'RUN_GUI=1'
+done <<< "$_PG_GUI_PINS"
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo

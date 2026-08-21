@@ -5141,7 +5141,14 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',
 ];
 
-const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures'];
+// pg-drift-dir:allow — reviewed directory walk (task 6435). This ledger is the
+// one tracked consumer that globs tests/prd-gate/fixtures/ rather than naming
+// leaves. It does NOT void verify.sh's "adding a fixture is inert" premise:
+// the expectation below is asserted only over EXPECTED_CLEAN ∩ on-disk, so an
+// unpinned new fixture shifts diagnostic counters and nothing more. The pinned
+// subset IS gated — see _GUI_COUPLED_RI_FIXTURES in scripts/verify.sh and the
+// PG-DRIFT-GUI scenario in tests/infra/test_verify_scope.sh.
+const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures']; // pg-drift-dir:allow — reviewed, see above
 
 function collectRiFiles(relDir: string): string[] {
   const out: string[] = [];
