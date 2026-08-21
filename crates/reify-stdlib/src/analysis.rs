@@ -213,10 +213,25 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     // INV-FEA-3 / task #6376 — FAIL CLOSED on a non-finite window.
     //
     // Guards exactly the SIX entries this function reads (d[0], d[1], d[2],
-    // d[4], d[5], d[8]).  Deliberately NOT `d.iter().take(9).all(is_finite)`:
-    // the UNREAD lower triangle (d[3], d[6], d[7]) may legitimately be NaN
-    // while the read six are finite, and rejecting that case would change
-    // existing behaviour.
+    // d[4], d[5], d[8]), deliberately NOT all nine.  What that scoping buys is
+    // narrower than "the unread lower triangle may be NaN" would suggest,
+    // because the symmetry `debug_assert!` above already rejects most mixed
+    // windows.  Split by what the unread entry actually is:
+    //
+    //   - NaN (e.g. d[1] finite, d[3] = NaN): `tol` is false, so a DEBUG build
+    //     panics in that assert BEFORE reaching this guard.  Six-vs-nine is
+    //     unobservable there, and no test can pin it — it only changes
+    //     RELEASE-build behaviour.
+    //
+    //   - ±Inf (e.g. d[1] = 1.0, d[3] = +Inf): `tol` evaluates
+    //     `inf <= 1e-10 * (1.0 + inf)`, i.e. `inf <= inf`, which is TRUE — the
+    //     assert PASSES, and this guard admits the window in BOTH profiles
+    //     where a nine-entry guard would return None.  That is the live
+    //     behavioural difference, and it is pinned by
+    //     `compute_eigenvalues_3x3_infinite_unread_lower_triangle_is_admitted`.
+    //
+    // So widening this to `d[..9].iter().all(f64::is_finite)` is a behaviour
+    // change, not a simplification — the test above fails if you try.
     //
     // Placement is also deliberate — AFTER the symmetry `debug_assert!` above,
     // so that assert keeps its explicit NaN tolerance for the unread entries.
@@ -279,7 +294,14 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
 
 /// Compute principal stresses (eigenvalues) of a 3×3 stress tensor.
 ///
-/// Returns a sorted `Value::List` of 3 scalars (ascending order).
+/// Returns a sorted `Value::List` of 3 scalars (ascending order) for a finite
+/// 3×3 matrix argument.
+///
+/// Returns `Value::Undef` — the value ITSELF, not a list of `Undef` — when the
+/// argument is not a 3×3 matrix, and when [`compute_eigenvalues_3x3`] fails
+/// closed because an entry it reads is non-finite (INV-FEA-3, task #6376).
+/// Before that guard the non-finite case produced `List([Undef, Undef, Undef])`;
+/// `principal_stresses_all_nan_tensor_returns_undef` pins the current contract.
 fn principal_stresses(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
@@ -878,6 +900,39 @@ mod tests {
             compute_eigenvalues_3x3(&partial_nan).is_none(),
             "single-NaN symmetric window must return None, got {:?}",
             compute_eigenvalues_3x3(&partial_nan)
+        );
+    }
+
+    /// Pins the SIX-entry SCOPE of the fail-closed guard against a future
+    /// "simplification" to `d[..9].iter().all(f64::is_finite)`.
+    ///
+    /// The window below has every READ entry finite (d[0], d[1], d[2], d[4],
+    /// d[5], d[8]) and `+inf` in the UNREAD lower triangle (d[3]).  It gets
+    /// PAST the symmetry `debug_assert!` — `tol(1.0, inf)` evaluates
+    /// `inf <= 1e-10 * (1.0 + inf)`, i.e. `inf <= inf`, which is true — so
+    /// this exercises the guard itself, in debug and release alike.  A
+    /// nine-entry guard returns `None` here, so widening the guard fails this
+    /// test rather than passing silently.
+    ///
+    /// The NaN-in-the-lower-triangle shape is deliberately NOT tested: `tol`
+    /// is false there, so a debug build panics in the symmetry assert before
+    /// the guard runs, and no test can distinguish six-entry from nine-entry.
+    #[test]
+    fn compute_eigenvalues_3x3_infinite_unread_lower_triangle_is_admitted() {
+        //       d0   d1   d2   d3(unread)     d4   d5   d6   d7   d8
+        let w = [2.0, 1.0, 0.0, f64::INFINITY, 3.0, 0.0, 0.0, 0.0, 4.0];
+        let eigs = compute_eigenvalues_3x3(&w).expect(
+            "an unread lower-triangle +inf must NOT be rejected by the six-entry guard",
+        );
+        assert!(
+            eigs.iter().all(|e| e.is_finite()),
+            "a finite READ window must decompose to finite eigenvalues, got {:?}",
+            eigs
+        );
+        assert!(
+            eigs[0] <= eigs[1] && eigs[1] <= eigs[2],
+            "eigenvalues must be ascending, got {:?}",
+            eigs
         );
     }
 
