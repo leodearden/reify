@@ -1662,12 +1662,16 @@ struct CellReadIndex<'t> {
     /// [`Self::cells_reaching`] call and reused by every later one.
     ///
     /// It is a pure function of `cell_map` + `path_map` and does NOT depend on
-    /// the `auto_ids` argument, so rebuilding it per call is pure waste on a
-    /// path that runs per scope per eval (including `eval_cached`, i.e. the LSP
-    /// keystroke path). `OnceCell` rather than a `build`-time field because the
-    /// FORWARD-only consumers (`detect_underdetermined`,
-    /// [`build_dependent_cells`]'s closure stage) must not pay for a reverse
-    /// graph they never read.
+    /// the `auto_ids` argument, so rebuilding it per call is pure waste.
+    /// `OnceCell` rather than a `build`-time field because the FORWARD-only
+    /// consumers (`detect_underdetermined`, [`build_dependent_cells`]'s
+    /// closure stage) must not pay for a reverse graph they never read.
+    ///
+    /// This memoization is now the INNER of two: the index itself is built
+    /// once per `ro.order` loop rather than once per scope (task #5467
+    /// amendment — see [`build_solver_problem`]'s `read_index` note), so one
+    /// eval performs at most ONE reverse-graph sweep in total, where before the
+    /// hoist it performed one per scope holding autos.
     reverse: std::cell::OnceCell<HashMap<ValueCellId, Vec<ValueCellId>>>,
     /// The templates this index was built over, and the budgets it was built
     /// at, retained so a consumer that needs a SECOND walk of the same shape —
@@ -1895,16 +1899,17 @@ impl<'t> CellReadIndex<'t> {
 ///
 /// * `seed_exprs` — the ALREADY-EXPANDED objective term exprs + constraint exprs
 ///   (so `cost(self.descendants)` is already `[ValueRef(line_cost) ...].sum`).
-/// * `index` — the CALLER'S already-built [`CellReadIndex`]. Passed IN rather
+/// * `index` — the CALLER'S already-resolved [`CellReadIndex`]. Passed IN rather
 ///   than built here (task #5467 amendment) because both callers —
 ///   [`build_solver_problem`] and [`build_merged_solver_problem`] — already
-///   build one for LAYER 1's `cells_reaching`, and building a second doubles the
-///   per-scope cost of the `value_cells` sweep AND the budgeted
-///   [`crate::resolve_order::build_instance_path_structure_map`] unfold on a
-///   path that runs per scope per eval, `eval_cached` included. It also supplies
-///   the templates and unfold budgets for stage (g)'s alias walk, so that walk
-///   provably sees the same slice at the same budgets as the closure it
-///   annotates.
+///   hold one for LAYER 1's `cells_reaching`, and building a second would
+///   duplicate the `value_cells` sweep AND the budgeted
+///   [`crate::resolve_order::build_instance_path_structure_map`] unfold. Since
+///   the amendment for review suggestion 4 that index is itself shared across
+///   the whole `ro.order` loop, so an eval builds ONE regardless of scope
+///   count. It also supplies the templates and unfold budgets for stage (g)'s
+///   alias walk, so that walk provably sees the same slice at the same budgets
+///   as the closure it annotates.
 /// * `auto_ids` — the problem's `auto_param` ids (this scope's regular autos for
 ///   the single-scope builder; the cluster-wide union for the merged builder);
 ///   the reachability target for membership rule (b).
@@ -2357,17 +2362,18 @@ fn materialize_dependent_cells(
 /// from strict-uniqueness verification) and must be written as `Determined` by the
 /// caller alongside the solver-resolved autos.
 #[allow(clippy::too_many_arguments)]
-fn build_solver_problem(
+fn build_solver_problem<'t>(
     template: &reify_compiler::TopologyTemplate,
     objective: Option<&ObjectiveSet>,
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
-    all_templates: &[reify_compiler::TopologyTemplate],
+    all_templates: &'t [reify_compiler::TopologyTemplate],
     snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
     trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
+    read_index: &'t std::cell::OnceCell<CellReadIndex<'t>>,
 ) -> Option<(ResolutionProblem, Vec<(ValueCellId, Value)>)> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
@@ -2438,26 +2444,37 @@ fn build_solver_problem(
 
     // LAYER 1 (task #5467 / PRD2 α): the auto-reaching non-auto cells for THIS
     // scope's autos, so a constraint reading an auto only through a `let` is
-    // still admitted. Built ONCE per problem build and genuinely shared with the
-    // `build_dependent_cells` call below, which takes `&read_index` rather than
-    // building a second one — `CellReadIndex::build` sweeps every template's
-    // `value_cells` AND runs the budgeted `build_instance_path_structure_map`
-    // unfold, and this function runs per scope in `ro.order` on both `eval` and
-    // `eval_cached` (the LSP keystroke path). `owned_auto_ids` is likewise built
-    // once and reused as `build_dependent_cells`' reachability target — the two
-    // sets were literally the same `map(|c| c.id.clone())` over
-    // `regular_auto_cells`.
-    let read_index = CellReadIndex::build(all_templates, max_unfold_depth, max_unfold_nodes);
+    // still admitted. Genuinely shared with the `build_dependent_cells` call
+    // below, which takes the same `read_index` rather than building a second
+    // one. `owned_auto_ids` is likewise built once and reused as
+    // `build_dependent_cells`' reachability target — the two sets were literally
+    // the same `map(|c| c.id.clone())` over `regular_auto_cells`.
+    //
+    // HOISTED, and LAZY (task #5467 amendment, review suggestion 4). The index
+    // is a pure function of `(all_templates, max_unfold_depth,
+    // max_unfold_nodes)` — all three loop-invariant — but building it sweeps
+    // every template's `value_cells`, runs the budgeted
+    // `build_instance_path_structure_map` unfold, and (on first
+    // `cells_reaching`) an `extract_value_deps` pass over the whole `cell_map`.
+    // This function runs PER SCOPE in `ro.order`, on both `eval` and
+    // `eval_cached` (the LSP keystroke path), so paying that per scope was
+    // pure waste. The caller now owns ONE cell per `ro.order` loop and every
+    // scope shares its contents.
+    //
+    // The `OnceCell` — rather than a `&CellReadIndex` the caller eagerly
+    // builds — is what keeps the hoist strictly non-regressive: this function
+    // returns `None` above when a scope has no auto cells, and a module with
+    // NO autos anywhere must keep paying ZERO, exactly as it did when the
+    // build sat below that early return. `get_or_init` fires only on the first
+    // scope that actually reaches this line.
+    let read_index = read_index
+        .get_or_init(|| CellReadIndex::build(all_templates, max_unfold_depth, max_unfold_nodes));
     let owned_auto_ids: HashSet<ValueCellId> =
         regular_auto_cells.iter().map(|cell| cell.id.clone()).collect();
     let reaching = read_index.cells_reaching(&owned_auto_ids);
 
-    let mut filtered_constraints = filter_constraints_reading_autos(
-        &template.constraints,
-        &auto_ids,
-        &reaching,
-        &read_index,
-    );
+    let mut filtered_constraints =
+        filter_constraints_reading_autos(&template.constraints, &auto_ids, &reaching, read_index);
     let auto_param_list = build_auto_param_list(&regular_auto_cells);
 
     // α (task #5188): expand objective/constraint-position structural queries
@@ -2509,7 +2526,7 @@ fn build_solver_problem(
         }
         build_dependent_cells(
             &seed_exprs,
-            &read_index,
+            read_index,
             &owned_auto_ids,
             &functions,
             diagnostics,
@@ -2603,9 +2620,9 @@ fn build_solver_problem(
 /// size is capped at `WHOLE_MODEL_CLUSTER_DIM_CAP` (12), so the constant
 /// factor stays small; memoize the trace if profiling ever shows otherwise.
 #[allow(clippy::too_many_arguments)]
-fn build_merged_solver_problem(
+fn build_merged_solver_problem<'t>(
     cluster: &crate::resolve_order::Cluster,
-    templates: &[TopologyTemplate],
+    templates: &'t [TopologyTemplate],
     governance: &[GoverningObjective],
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
@@ -2613,6 +2630,7 @@ fn build_merged_solver_problem(
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
     trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+    read_index: &'t std::cell::OnceCell<CellReadIndex<'t>>,
 ) -> ResolutionProblem {
     // Union each member's auto cells, in cluster.scopes (ascending source
     // index) × value_cells declaration order — a pure function of stable Vec
@@ -2656,15 +2674,21 @@ fn build_merged_solver_problem(
     // ordering (that stays on the Vec built above).
     let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
 
-    // LAYER 1 (task #5467 / PRD2 α): built ONCE outside the per-member loop
+    // LAYER 1 (task #5467 / PRD2 α): resolved ONCE outside the per-member loop
     // below, over the CLUSTER-WIDE auto union — the same #5014 semantics the
     // `auto_ids` set carries, so a member's constraint reading a co-solved
     // sibling's auto THROUGH a `let` is picked up too. Shared with the
-    // `build_dependent_cells` call at the tail (which takes `&read_index`), so a
-    // merged problem build pays for the template sweep + budgeted
-    // instance-path unfold once, not twice — same reuse, same reason, as
-    // `build_solver_problem`.
-    let read_index = CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes);
+    // `build_dependent_cells` call at the tail, so a merged problem build pays
+    // for the template sweep + budgeted instance-path unfold once, not twice —
+    // same reuse, same reason, as `build_solver_problem`.
+    //
+    // The cell itself is the CALLER's, shared with every per-template
+    // `build_solver_problem` in the same `ro.order` loop — see that function's
+    // note for why the hoist is lazy rather than eager. A cluster always has
+    // at least one auto (an auto-free scope never forms one), so this
+    // `get_or_init` does fire; the laziness is inherited, not needed here.
+    let read_index = read_index
+        .get_or_init(|| CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes));
     let owned_auto_ids: HashSet<ValueCellId> =
         auto_cells.iter().map(|cell| cell.id.clone()).collect();
     let reaching = read_index.cells_reaching(&owned_auto_ids);
@@ -2679,7 +2703,7 @@ fn build_merged_solver_problem(
             &templates[idx].constraints,
             &auto_ids,
             &reaching,
-            &read_index,
+            read_index,
         );
         // α (task #5188): expand each member's constraint-position structural
         // queries against its OWN template (`self.descendants`/`.members` is
@@ -2867,7 +2891,7 @@ fn build_merged_solver_problem(
         }
         build_dependent_cells(
             &seed_exprs,
-            &read_index,
+            read_index,
             &owned_auto_ids,
             &functions,
             diagnostics,
@@ -5316,6 +5340,28 @@ impl Engine {
                 .collect();
             let mut cluster_dispatched = vec![false; ro.clusters.len()];
 
+            // LAYER 1/3 shared read index (task #5467 amendment, review
+            // suggestion 4). `CellReadIndex` is a pure function of
+            // `(module.templates, max_unfold_depth, max_unfold_nodes)` — every
+            // one of which is invariant across this loop — but building it
+            // sweeps every template's `value_cells`, runs the budgeted
+            // `build_instance_path_structure_map` unfold, and (on the first
+            // `cells_reaching`) an `extract_value_deps` pass over the whole
+            // `cell_map`. Built per scope, that is O(#scopes × #cells) of pure
+            // repetition on a path that runs on every eval.
+            //
+            // Hoisted here, LAZILY: `OnceCell` rather than an eager build so a
+            // module with no auto cells anywhere — which never reaches the
+            // `get_or_init` inside `build_solver_problem` — keeps paying
+            // exactly ZERO, as it did when the build sat below that function's
+            // `auto_cells.is_empty()` early return.
+            //
+            // It borrows `module`, never `self`, so it does not collide with
+            // the `&mut self` calls in this loop body; the same immutable
+            // borrow of `module.templates` is already live across the loop via
+            // `let template = &module.templates[idx]` below.
+            let read_index = std::cell::OnceCell::new();
+
             for &idx in &ro.order {
                 if let Some(&cluster_idx) = cluster_of_scope.get(&idx) {
                     if cluster_dispatched[cluster_idx] {
@@ -5339,6 +5385,7 @@ impl Engine {
                         &mut diagnostics,
                         &mut structured_detail,
                         &runtime_sink,
+                        &read_index,
                     );
                     continue;
                 }
@@ -5377,6 +5424,7 @@ impl Engine {
                     self.max_unfold_nodes,
                     &sq_trait_registry,
                     &mut diagnostics,
+                    &read_index,
                 ) else {
                     continue;
                 };
@@ -6677,11 +6725,11 @@ impl Engine {
     ///   `W_SOLVER_OPTIMALITY_UNPROVEN` fires under the same condition.
     ///   Objective-less clusters keep the plain `.solve()` call.
     #[allow(clippy::too_many_arguments)]
-    fn dispatch_merged_cluster_solve(
+    fn dispatch_merged_cluster_solve<'t>(
         &mut self,
         cluster: &crate::resolve_order::Cluster,
         idx: usize,
-        module: &CompiledModule,
+        module: &'t CompiledModule,
         governance: &[GoverningObjective],
         values: &mut ValueMap,
         snapshot: &mut Snapshot,
@@ -6692,6 +6740,10 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
         structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
         runtime_sink: &RefCell<Vec<Diagnostic>>,
+        // Shared with every per-template `build_solver_problem` in the SAME
+        // `ro.order` loop (task #5467 amendment) — see that function's
+        // `read_index` note.
+        read_index: &'t std::cell::OnceCell<CellReadIndex<'t>>,
     ) {
         // α (task #5188): trait registry for objective/constraint-position
         // structural-query expansion inside build_merged_solver_problem.
@@ -6713,6 +6765,7 @@ impl Engine {
             self.max_unfold_depth,
             self.max_unfold_nodes,
             &expansion_trait_registry,
+            read_index,
         );
 
         // Amendment, task #5014: mirror `build_solver_problem`'s `None`-means-
@@ -7922,6 +7975,28 @@ impl Engine {
                 .collect();
             let mut cluster_dispatched = vec![false; ro.clusters.len()];
 
+            // LAYER 1/3 shared read index (task #5467 amendment, review
+            // suggestion 4). `CellReadIndex` is a pure function of
+            // `(module.templates, max_unfold_depth, max_unfold_nodes)` — every
+            // one of which is invariant across this loop — but building it
+            // sweeps every template's `value_cells`, runs the budgeted
+            // `build_instance_path_structure_map` unfold, and (on the first
+            // `cells_reaching`) an `extract_value_deps` pass over the whole
+            // `cell_map`. Built per scope, that is O(#scopes × #cells) of pure
+            // repetition on a path that runs on every eval.
+            //
+            // Hoisted here, LAZILY: `OnceCell` rather than an eager build so a
+            // module with no auto cells anywhere — which never reaches the
+            // `get_or_init` inside `build_solver_problem` — keeps paying
+            // exactly ZERO, as it did when the build sat below that function's
+            // `auto_cells.is_empty()` early return.
+            //
+            // It borrows `module`, never `self`, so it does not collide with
+            // the `&mut self` calls in this loop body; the same immutable
+            // borrow of `module.templates` is already live across the loop via
+            // `let template = &module.templates[idx]` below.
+            let read_index = std::cell::OnceCell::new();
+
             for &idx in &ro.order {
                 if let Some(&cluster_idx) = cluster_of_scope.get(&idx) {
                     if cluster_dispatched[cluster_idx] {
@@ -7941,6 +8016,7 @@ impl Engine {
                         &mut diagnostics,
                         version,
                         &runtime_sink,
+                        &read_index,
                     );
                     continue;
                 }
@@ -7966,6 +8042,7 @@ impl Engine {
                     self.max_unfold_nodes,
                     &expansion_trait_registry,
                     &mut diagnostics,
+                    &read_index,
                 ) {
                     // Per-iteration cost of `lookup_solver_for_module`: one
                     // `solver_pragma.as_ref()` match plus at most one
@@ -8458,17 +8535,21 @@ impl Engine {
     /// the warm per-template arm — this dispatch needs no
     /// write_solved/unsolved_pinned_connector_autos handling.
     #[allow(clippy::too_many_arguments)]
-    fn dispatch_merged_cluster_solve_cached(
+    fn dispatch_merged_cluster_solve_cached<'t>(
         &mut self,
         cluster: &crate::resolve_order::Cluster,
         idx: usize,
-        module: &CompiledModule,
+        module: &'t CompiledModule,
         governance: &[GoverningObjective],
         values: &mut ValueMap,
         snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
         diagnostics: &mut Vec<Diagnostic>,
         version: VersionId,
         runtime_sink: &RefCell<Vec<Diagnostic>>,
+        // Shared with every per-template `build_solver_problem` in the SAME
+        // `ro.order` loop (task #5467 amendment) — see that function's
+        // `read_index` note.
+        read_index: &'t std::cell::OnceCell<CellReadIndex<'t>>,
     ) {
         // Same shared, free-fn `build_merged_solver_problem` that cold
         // `dispatch_merged_cluster_solve` calls, with IDENTICAL arguments
@@ -8505,6 +8586,7 @@ impl Engine {
             self.max_unfold_depth,
             self.max_unfold_nodes,
             &expansion_trait_registry,
+            read_index,
         );
 
         // Mirrors cold `dispatch_merged_cluster_solve`'s empty-auto_params

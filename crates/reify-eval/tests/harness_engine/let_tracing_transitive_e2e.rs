@@ -151,7 +151,7 @@ fn assert_resolves_to_six_and_four(result: &EvalResult, what: &str) {
 /// `Undef`.
 #[test]
 fn discrete_let_cont_fixture_resolves_both_autos_through_the_lets() {
-    let result = eval_through_production_registry(&alpha_fixture_source(), "discrete_let_cont.ri");
+    let result = eval_through_production_registry(alpha_fixture_source(), "discrete_let_cont.ri");
 
     assert_resolves_to_six_and_four(&result, "discrete_let_cont.ri");
 }
@@ -166,7 +166,7 @@ fn discrete_let_cont_fixture_resolves_both_autos_through_the_lets() {
 /// be half the leaf signal, silently.
 #[test]
 fn discrete_let_cont_fixture_emits_no_underdetermined_warning() {
-    let result = eval_through_production_registry(&alpha_fixture_source(), "discrete_let_cont.ri");
+    let result = eval_through_production_registry(alpha_fixture_source(), "discrete_let_cont.ri");
 
     let flagged = underdetermined(&result);
     assert!(
