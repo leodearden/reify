@@ -6737,6 +6737,665 @@
     }
 
     // ---------------------------------------------------------------------------
+    // `interp`'s VARIADIC coordinate triples (task 5658, R2 sweep)
+    //
+    // `interp(x1, y1, z1, x2, y2, z2, …)` is arity-open: every position is a
+    // coordinate of a point in space, so EVERY position is gated and there is
+    // no dimensionless neighbour at all.
+    //
+    // Two things distinguish this family from R1's named-arg rows. First it
+    // reaches the Contract C chokepoint through `accept_variadic_length_args`
+    // rather than `eval_named_arg_length`, so this row is what proves the two
+    // routes mint byte-identical wording. Second the compiler names these args
+    // positionally (`c0`…`cN`), which is useless in a diagnostic — the gated
+    // names below are the DISPLAY names `CoordName` renders, and asserting
+    // them is what keeps a rejection reading like every other Contract C one.
+    // ---------------------------------------------------------------------------
+
+    /// Build a variadic `Curve` op of `kind` from a flat coordinate stream,
+    /// under the positional `c0`…`cN` names the compiler actually mints.
+    fn variadic_curve(
+        kind: CurveKind,
+        c: &[reify_ir::CompiledExpr],
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind,
+            args: c
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (format!("c{i}"), e.clone()))
+                .collect(),
+        }
+    }
+
+    /// Build an `interp` op from its six gated coordinates (2 points), in gate
+    /// order.
+    fn interp_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        variadic_curve(CurveKind::InterpCurve, c)
+    }
+
+    /// `interp`'s row in the shared gate table.
+    const INTERP_GATE: LengthGateCase = LengthGateCase {
+        label: "interp",
+        build: interp_with_coords,
+        // DISPLAY names, not the inert `c0`…`c5` the compiler mints.
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_interp_length_gate_rejects_every_coordinate() {
+        assert_length_gated(INTERP_GATE);
+    }
+
+    /// Six DISTINCT Length coordinates are accepted and land in their own IR
+    /// slots, in order. Distinctness pins the flat-stream → `chunks_exact(3)`
+    /// grouping (an all-equal fixture could not see a transposed triple), and
+    /// the SI values are exactly what the bare form would have misread as
+    /// 12/34/56/78/90/11 **metres**.
+    #[test]
+    fn compile_geometry_op_interp_length_coordinates_accepted() {
+        let values = ValueMap::new();
+
+        let op = interp_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::InterpCurve { points }) => {
+                assert_eq!(points, vec![[0.012, 0.034, 0.056], [0.078, 0.090, 0.011]]);
+            }
+            other => panic!(
+                "expected Ok(InterpCurve) for six Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length coordinates are the fully clean path and must emit \
+             no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The MIXED group on the VARIADIC route — the mirror of
+    /// [`compile_geometry_op_translate_unresolved_beats_a_later_bare_component`],
+    /// which pins the same precedence on the NAMED-ARG route.
+    ///
+    /// `LengthArg::Unresolved` is the one arm of `accept_variadic_length_args`
+    /// that deliberately pushes NO diagnostic and mints its own distinct
+    /// "unresolved (Undef)" wording (PRD decision D10 / INV-SF-1), and neither
+    /// shared-contract helper can reach it: [`assert_length_gated`] makes exactly
+    /// ONE position bad per iteration and [`assert_every_bare_position_reported`]
+    /// makes every position bad the SAME way, so both are structurally blind to
+    /// two DIFFERENT failure classes meeting in one coordinate stream. Here `x1`
+    /// is `Undef` (Unresolved) and `y1` is a bare `Real` (Invalid):
+    ///
+    ///   - PRECEDENCE — the FIRST error wins, so the caller-facing `Err` is
+    ///     `x1`'s "unresolved (Undef)" and never `y1`'s "missing or non-Length".
+    ///     A regression that reclassified an Undef coordinate as `Invalid` would
+    ///     hand the author a misleading "expects Length" during ordinary solver
+    ///     iteration — where an Undef cell is expected transient state, not an
+    ///     author error — and would stay green under every other variadic test.
+    ///   - NO SHORT-CIRCUIT — `y1` is still diagnosed even though `x1` already
+    ///     failed, which is the diagnostic-COUNT half of the all-at-once
+    ///     guarantee the doc comment on the helper claims.
+    #[test]
+    fn compile_geometry_op_interp_unresolved_beats_a_later_bare_coordinate() {
+        let values = ValueMap::new();
+
+        // x1 unresolved, y1 bare (the 1000× hazard), the rest clean Lengths.
+        let op = interp_with_coords(&[
+            literal_undef(),
+            literal_f64(5.0),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("an unresolved x1 with a bare y1 must drop the interp op");
+
+        assert!(
+            err.contains("x1") && err.contains("unresolved (Undef)"),
+            "the FIRST failing coordinate wins, so the error must carry x1's \
+             unresolved-Undef wording — the variadic route mints the same \
+             distinct message the named-arg route does; got: {err:?}"
+        );
+        assert!(
+            !err.contains("y1"),
+            "y1's later Invalid must not mask x1's Unresolved in the \
+             caller-facing error; got: {err:?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("x1")),
+            "an unresolved coordinate degrades QUIETLY at the value level — its \
+             whole report is the caller-facing Err, with no warning of its own, \
+             because an Undef cell mid-solve is not an author error; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("y1") && d.message.contains("expects Length")),
+            "y1 must STILL be diagnosed in the SAME build even though x1 failed \
+             first — the all-at-once guarantee, which a `?`-chain would have \
+             short-circuited; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `bezier`'s VARIADIC control-point triples (task 5658, R2 sweep)
+    //
+    // Like `interp`, every position is a control-point coordinate and there is
+    // no dimensionless neighbour. Carried at THREE control points rather than
+    // two so the row also proves `CoordName` keeps numbering past the first
+    // point — a `% 3` / `/ 3` slip that produced `x1,y1,z1,x1,y1,z1,…` would
+    // pass a two-point fixture's per-position sweep but collapse the count
+    // assertion here.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `bezier` op from its nine gated coordinates (3 control points),
+    /// in gate order.
+    fn bezier_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        variadic_curve(CurveKind::BezierCurve, c)
+    }
+
+    /// `bezier`'s row in the shared gate table — the WIDEST gated set in the
+    /// whole Contract C table at nine positions.
+    const BEZIER_GATE: LengthGateCase = LengthGateCase {
+        label: "bezier",
+        build: bezier_with_coords,
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2", "x3", "y3", "z3"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_bezier_length_gate_rejects_every_coordinate() {
+        assert_length_gated(BEZIER_GATE);
+    }
+
+    /// Nine DISTINCT Length coordinates land in their own IR slots, in order —
+    /// pinning the flat-stream → `chunks_exact(3)` grouping across three
+    /// control points.
+    #[test]
+    fn compile_geometry_op_bezier_length_coordinates_accepted() {
+        let values = ValueMap::new();
+
+        let op = bezier_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+            literal_length(0.023),
+            literal_length(0.045),
+            literal_length(0.067),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::BezierCurve { control_points }) => {
+                assert_eq!(
+                    control_points,
+                    vec![
+                        [0.012, 0.034, 0.056],
+                        [0.078, 0.090, 0.011],
+                        [0.023, 0.045, 0.067],
+                    ]
+                );
+            }
+            other => panic!(
+                "expected Ok(BezierCurve) for nine Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "nine finite Length coordinates are the fully clean path and must \
+             emit no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `nurbs`' POLE coordinates (task 5658, R2 sweep) — and the dimensionless
+    // tail it must NOT reach
+    //
+    // `nurbs(degree, n_points, poles…, weights…, knots…)` is the only variadic
+    // curve constructor with dimensionless neighbours, and they sit on BOTH
+    // sides of the gated span. Its per-arg triage:
+    //
+    //   degree    — a polynomial degree, i.e. a count      → dimensionless
+    //   n_points  — a count                                → dimensionless
+    //   poles     — coordinates of control points          → **LENGTH**
+    //   weights   — rational blending factors              → dimensionless
+    //   knots     — parameter-space values                 → dimensionless
+    //
+    // The gated span `2 .. 2 + n_points * 3` is a function of `n_points`, which
+    // is itself an argument — so it cannot be known before evaluation, which is
+    // why the production read is two-phase (structure first, then units) and
+    // why the tests below lock BOTH the gate and its boundary.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `nurbs` op from its six gated POLE coordinates, supplying its own
+    /// BARE degree / n_points / weights / knots.
+    ///
+    /// degree=1, n_points=2 → 6 poles at `c2..c7`, 2 weights, and
+    /// `n_points + degree + 1 = 4` knots: 14 positional args in all.
+    ///
+    /// Supplying the un-gated neighbours HERE is what turns
+    /// [`assert_every_bare_position_reported`]'s `reported == gated.len()` count
+    /// into a genuine SCOPE LOCK — they stay bare, so the count goes red if the
+    /// gate over-reaches onto a weight, a knot, the degree or n_points.
+    fn nurbs_with_poles(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        let mut args = vec![literal_f64(1.0), literal_f64(2.0)];
+        args.extend(c.iter().cloned());
+        args.extend([
+            literal_f64(1.0),
+            literal_f64(1.0), // weights
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0), // knots
+        ]);
+        variadic_curve(CurveKind::NurbsCurve, &args)
+    }
+
+    /// `nurbs`' row in the shared gate table — the only variadic row with
+    /// un-gated neighbours, hence the only one whose count assertion is also a
+    /// scope lock.
+    const NURBS_GATE: LengthGateCase = LengthGateCase {
+        label: "nurbs",
+        build: nurbs_with_poles,
+        // Numbered from the POLE span, not from the flat arg index: `c2` is the
+        // first control point's x, so it must read `x1`.
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_nurbs_length_gate_rejects_every_pole_coordinate() {
+        assert_length_gated(NURBS_GATE);
+    }
+
+    /// NEGATIVE LOCK on the triage, at a SECOND arity.
+    ///
+    /// degree=2 / n_points=3 → 9 poles at `c2..c10`, 3 weights, 6 knots. Run at
+    /// an arity different from every other nurbs fixture on purpose: the pole
+    /// span is COMPUTED from `n_points`, and a hardcoded `2..8` would pass the
+    /// whole degree-1 table and fail only here.
+    ///
+    /// The gate must not demand a dimension where a count, a rational blending
+    /// weight or a parameter-space knot legitimately has none — so a fully
+    /// valid nurbs with LENGTH poles and BARE everything else must build with
+    /// no units diagnostic at all.
+    #[test]
+    fn compile_geometry_op_nurbs_dimensionless_neighbours_still_accepted() {
+        let values = ValueMap::new();
+
+        let mut args = vec![literal_f64(2.0), literal_f64(3.0)];
+        // 9 pole coordinates, all dimensioned.
+        for i in 0..9 {
+            args.push(literal_length(0.001 * (i as f64 + 1.0)));
+        }
+        // 3 weights + 6 knots, all deliberately BARE.
+        args.extend([literal_f64(1.0), literal_f64(0.5), literal_f64(1.0)]);
+        args.extend([
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+        ]);
+        let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsCurve {
+                control_points,
+                weights,
+                knots,
+                degree,
+            }) => {
+                assert_eq!(control_points.len(), 3);
+                assert_eq!(weights, vec![1.0, 0.5, 1.0]);
+                assert_eq!(knots, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+                assert_eq!(degree, 2);
+            }
+            other => panic!(
+                "expected Ok(NurbsCurve) for LENGTH poles with BARE degree / \
+                 n_points / weights / knots at degree=2, n_points=3 — the gated \
+                 span must be COMPUTED from n_points, not hardcoded; got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+            "a nurbs degree, n_points, weight or knot is legitimately \
+             dimensionless and must NOT be gated; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Six DISTINCT Length poles land in `control_points` in order, AND the
+    /// dimensionless tail lands verbatim.
+    ///
+    /// Pinning `weights` / `knots` / `degree` to the bare values that were
+    /// passed is the half that matters: a future refactor that widened the
+    /// gated span would start SI-converting them, and an assertion on
+    /// `control_points` alone could not see it.
+    #[test]
+    fn compile_geometry_op_nurbs_length_poles_accepted() {
+        let values = ValueMap::new();
+
+        let op = nurbs_with_poles(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsCurve {
+                control_points,
+                weights,
+                knots,
+                degree,
+            }) => {
+                assert_eq!(
+                    control_points,
+                    vec![[0.012, 0.034, 0.056], [0.078, 0.090, 0.011]]
+                );
+                assert_eq!(weights, vec![1.0, 1.0]);
+                assert_eq!(knots, vec![0.0, 0.0, 1.0, 1.0]);
+                assert_eq!(degree, 1);
+            }
+            other => panic!(
+                "expected Ok(NurbsCurve) for six Length poles, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length poles with a bare tail are the fully clean path \
+             and must emit no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// ERROR-PRECEDENCE lock — the reason `nurbs`' production read is
+    /// two-phase.
+    ///
+    /// Both shapes pass DIMENSIONLESS scalars in what would become pole
+    /// positions, reproducing `curve_constructors_e2e.rs`'s two negative tests
+    /// (`nurbs_fewer_than_2_args_emits_diagnostic`,
+    /// `nurbs_insufficient_coordinate_args_emits_diagnostic`). If the units gate
+    /// ran before structural validation, the author would be told to dimension a
+    /// coordinate of a curve that does not have enough arguments to HAVE that
+    /// coordinate — so the ARITY diagnostic must still win.
+    #[test]
+    fn compile_geometry_op_nurbs_arity_diagnostics_precede_the_length_gate() {
+        let values = ValueMap::new();
+        let dimensionless =
+            |v: f64| literal_scalar(v, reify_core::DimensionVector::DIMENSIONLESS);
+
+        for (shape, args, want) in [
+            (
+                "only degree",
+                vec![dimensionless(3.0)],
+                "nurbs() requires at least degree and n_points arguments",
+            ),
+            (
+                "degree=3, n_points=4, 3 trailing args",
+                vec![
+                    dimensionless(3.0),
+                    dimensionless(4.0),
+                    dimensionless(0.0),
+                    dimensionless(0.0),
+                    dimensionless(0.0),
+                ],
+                "nurbs() got fewer arguments than expected",
+            ),
+        ] {
+            let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a structurally invalid nurbs ({shape}) must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains(want)),
+                "the ARITY diagnostic {want:?} must still fire for {shape} — \
+                 structural validation runs BEFORE the units gate; got: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+                "a structurally invalid nurbs ({shape}) must not also demand a \
+                 dimension on a coordinate it does not have enough arguments to \
+                 have; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Build a 14-arg degree=1 / n_points=2 nurbs with every position finite and
+    /// well-formed, as a mutable base the non-finite rows below poke a NaN into.
+    ///
+    /// Positions: `c0` degree, `c1` n_points, `c2`…`c7` poles, `c8`/`c9`
+    /// weights, `c10`…`c13` knots (`n_points + degree + 1 = 4`).
+    fn nurbs_clean_args() -> Vec<reify_ir::CompiledExpr> {
+        let mut args = vec![literal_f64(1.0), literal_f64(2.0)];
+        for i in 0..6 {
+            args.push(literal_length(0.001 * (i as f64 + 1.0)));
+        }
+        args.extend([literal_f64(1.0), literal_f64(1.0)]); // weights  c8, c9
+        args.extend([
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+        ]); // knots    c10..c13
+        args
+    }
+
+    /// The UN-GATED branch of `accept_variadic_length_args` — the one that
+    /// reproduces `eval_all_args_to_f64`'s bare read for `nurbs`' dimensionless
+    /// weights and knots.
+    ///
+    /// [`compile_geometry_op_nurbs_dimensionless_neighbours_still_accepted`]
+    /// only ever passes FINITE bare neighbours, so the whole non-finite arm was
+    /// unpinned: a typo in the duplicated `"{label} arg '{name}' is non-finite"`
+    /// format string, or a dropped `Some(...)` on `first_err`, would silently
+    /// let a NaN weight or knot through into `GeometryOp::NurbsCurve`.
+    ///
+    /// The expected name is the POSITIONAL `cN` the compiler mints, NOT a
+    /// coordinate display name — an un-gated position has no `x1`/`y1` reading,
+    /// and asserting that is what keeps the gated and un-gated naming from being
+    /// quietly unified.
+    #[test]
+    fn compile_geometry_op_nurbs_non_finite_weight_and_knot_drop_the_op() {
+        let values = ValueMap::new();
+
+        for (what, idx, name) in [("weight", 8_usize, "c8"), ("knot", 10, "c10")] {
+            let mut args = nurbs_clean_args();
+            args[idx] = literal_f64(f64::NAN);
+            let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+
+            assert!(
+                result.is_err(),
+                "a NaN {what} must DROP the op rather than reach \
+                 GeometryOp::NurbsCurve; got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message == format!("nurbs arg '{name}' is non-finite")),
+                "the un-gated branch must reproduce eval_all_args_to_f64's \
+                 wording verbatim for a NaN {what}, naming the POSITIONAL \
+                 '{name}'; got: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+                "a {what} is legitimately dimensionless — a non-finite one must \
+                 be reported as non-finite, never as a units rejection; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// MULTIPLICITY lock on the second accepted behaviour change in
+    /// `curve_nurbs_curve` (the one the `ONE accepted behaviour change` comment
+    /// used to omit).
+    ///
+    /// `eval_all_args_to_f64` short-circuits via `collect::<Option<_>>()`, so it
+    /// reported only the FIRST non-finite arg. `accept_variadic_length_args`
+    /// loops to completion, so BOTH NaN knots are reported in one build — the
+    /// same all-at-once policy the gated positions follow, now extended to the
+    /// un-gated ones. Pinned because it is a user-visible diagnostic count that
+    /// a re-`?`-chaining refactor would silently halve.
+    #[test]
+    fn compile_geometry_op_nurbs_reports_every_non_finite_knot_in_one_build() {
+        let values = ValueMap::new();
+
+        let mut args = nurbs_clean_args();
+        args[10] = literal_f64(f64::NAN);
+        args[11] = literal_f64(f64::INFINITY);
+        let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "two non-finite knots must drop the op; got: {:?}",
+            result
+        );
+
+        let reported: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("nurbs arg '") && d.message.ends_with("is non-finite"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            reported,
+            vec![
+                "nurbs arg 'c10' is non-finite",
+                "nurbs arg 'c11' is non-finite"
+            ],
+            "EVERY non-finite knot is reported in one build, in arg order — not \
+             just the first, which is what the old `?`-chained read did; got \
+             all diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Test: ALL FAILURES AT ONCE, across every R1 family
     // ---------------------------------------------------------------------------
 
@@ -6748,6 +7407,11 @@
     /// and covers the two widest sets — `line_segment`'s six endpoint
     /// coordinates and `arc`'s centre-plus-radius four — alongside the triples,
     /// so no family can be quietly split back into chained reads.
+    ///
+    /// R2's variadic rows (task 5658) ride the same loop, and for them the
+    /// count assertion is doing a second job: their builders supply their own
+    /// un-gated neighbours, so `reported == gated.len()` also goes red if the
+    /// variadic gate OVER-reaches past its coordinate span.
     #[test]
     fn compile_geometry_op_length_gate_reports_every_bare_position_in_one_build() {
         for case in [
@@ -6757,6 +7421,9 @@
             LINE_SEGMENT_GATE,
             HELIX_GATE,
             ARC_GATE,
+            INTERP_GATE,
+            BEZIER_GATE,
+            NURBS_GATE,
         ] {
             assert_every_bare_position_reported(case);
         }

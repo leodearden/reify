@@ -224,6 +224,78 @@ fn helix_bare_radius_drops_op_dimensioned_builds() {
 }
 
 // ---------------------------------------------------------------------------
+// The VARIADIC curve constructors (task 5658, R2) — same leaf signal, one
+// layer further out
+//
+// `interp` / `bezier` / `nurbs` take an arity-open flat coordinate stream that
+// the compiler names positionally (`c0`…`cN`). Only this file can show that the
+// DISPLAY names the gate mints (`x1`, `y1`, …) are what a `.ri` author actually
+// sees, because the unit tests hand-build the `CompiledGeometryOp` and so never
+// exercise parse → compile → build agreement on an arity-open signature.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn interp_bare_coordinate_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "interp",
+        "x1",
+        r#"structure def BareInterp {
+            let w = interp(0, 0, 0, 10, 0, 0, 20, 0, 0)
+        }"#,
+        r#"structure def DimInterp {
+            let w = interp(0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 20mm, 0mm, 0mm)
+        }"#,
+        |op| matches!(op, GeometryOp::InterpCurve { .. }),
+    );
+}
+
+#[test]
+fn bezier_bare_coordinate_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "bezier",
+        "x1",
+        r#"structure def BareBezier {
+            let w = bezier(0, 0, 0, 5, 10, 0, 10, 0, 0)
+        }"#,
+        r#"structure def DimBezier {
+            let w = bezier(0mm, 0mm, 0mm, 5mm, 10mm, 0mm, 10mm, 0mm, 0mm)
+        }"#,
+        |op| matches!(op, GeometryOp::BezierCurve { .. }),
+    );
+}
+
+/// `nurbs` is the one variadic curve constructor with dimensionless
+/// neighbours, and the DIMENSIONED control here is the e2e half of the scope
+/// lock: `degree`, `n_points`, the weights and the knots are deliberately left
+/// BARE in it, so its zero-units-diagnostic assertion goes red if the gate
+/// over-reaches past the pole span.
+///
+/// That control is also the DOC PIN. Its call is byte-identical to the
+/// fully-dimensioned example task 5658 wrote into the two author- and
+/// agent-facing docs — `crates/reify-mcp/src/tools/chunks/geometry.md` (served
+/// verbatim to the in-GUI assistant) and `docs/reify-stdlib-reference.md` — so
+/// the documented 14-arg form is compile-smoked (`parse_and_compile`, the
+/// STRICT path) and build-smoked here rather than merely asserted in prose. The
+/// sibling `stdlib_geometry_ops_smoke.ri` fixture's nurbs call is a 10-arg,
+/// knot-less form the eval layer rejects outright ("nurbs() requires at least 1
+/// knot value"), so it does NOT cover the documented shape. If you reword either
+/// doc's example, update this literal in the same commit.
+#[test]
+fn nurbs_bare_pole_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "nurbs",
+        "x1",
+        r#"structure def BareNurbs {
+            let w = nurbs(1, 2, 0, 0, 0, 10, 0, 0, 1, 1, 0, 0, 1, 1)
+        }"#,
+        r#"structure def DimNurbs {
+            let w = nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
+        }"#,
+        |op| matches!(op, GeometryOp::NurbsCurve { .. }),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The desugaring cross-check — the highest-risk unknown in task 5623
 // ---------------------------------------------------------------------------
 
