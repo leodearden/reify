@@ -744,9 +744,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       // The editorStore snapshot (file?.content) is stale-by-design on every
       // keystroke — Editor.tsx's docChanged handler deliberately never calls
-      // updateFileContent (the "anti-loop invariant", Editor.tsx:493-497) so
-      // that typing does not re-fire the store→view sync and compile-diagnostics
-      // effects on each keystroke.  The live buffer lives on ctx.editorView,
+      // updateFileContent (the "anti-loop invariant" — Editor.tsx's
+      // `EditorView.updateListener` docChanged arm) so that typing does not
+      // re-fire the store→view sync and compile-diagnostics effects on each
+      // keystroke.  The live buffer lives on ctx.editorView,
       // the same handle the `type_in_editor` handler in `buildHandlers` reads.
       // Guard: substitute live content only when an active file is open AND
       // the EditorView is present; otherwise fall back to the store snapshot.
