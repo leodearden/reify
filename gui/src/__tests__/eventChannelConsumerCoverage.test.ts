@@ -45,6 +45,8 @@
  * into a rubber stamp.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // These three mocks make bridge.ts importable at collection time without a
 // Tauri runtime. Reused verbatim from bridgeMockCoverage.test.ts, where the same
@@ -76,6 +78,7 @@ import {
   staleAllowlistEntries,
   unregisteredConsumerlessRows,
   staleConsumerlessEntries,
+  channelRegistrationsIn,
 } from './eventChannelConsumerContract';
 
 /**
@@ -144,6 +147,14 @@ const DELIBERATELY_CONSUMERLESS: Record<string, string> = {
   diagnostics:
     'Task 6227 deleted bridge.ts::onDiagnostics and set this row to *(none)*: LSP diagnostics are routed by main.rs::TauriNotificationSink, with no bridge.ts subscriber left. Pre-registered so 6227 could land in either merge order without editing this file. Landed by 6227; the row now reads `*(none)*` and is accounted for here by check (e) rather than by (b).',
 };
+
+/**
+ * bridge.ts source, read from disk so check (f) can assert the absence of a
+ * registration SITE for each deliberately-consumer-less channel, rather than
+ * the absence of one export name. Precedent for reading a target's source in a
+ * guard: `bridgeMockCoverage.test.ts`.
+ */
+const BRIDGE_SOURCE = readFileSync(join(__dirname, '..', 'bridge.ts'), 'utf-8');
 
 describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
   it('(a) extraction sanity — neither side is vacuously empty or over-captured', () => {
@@ -250,5 +261,68 @@ describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
     // nothing. See the constant's docblock for why the other rot direction is
     // deliberately tolerated.
     expect(staleConsumerlessEntries(CLASSIFIED, DELIBERATELY_CONSUMERLESS)).toStrictEqual([]);
+  });
+
+  /**
+   * (f) is the code↔doc pin for EVERY registered consumer-less channel, not
+   * just `diagnostics`. It started life (task 6227) as a bespoke assertion
+   * hardcoded to `diagnostics` in bridge.test.ts; task 6380 generalized it here
+   * and deleted that bespoke block, so a second `DELIBERATELY_CONSUMERLESS`
+   * entry is protected automatically instead of needing its own hand-written
+   * pin one file away from the register that explains why it exists.
+   *
+   * NOT redundant with check (b) (`unknownConsumers`). That check enforces only
+   * doc→code: a consumer NAMED in the Consumer column must be a real runtime
+   * export of bridge.ts. Nothing above enforces code→doc. An `explicit-none`
+   * row asserts an ABSENCE and `DELIBERATELY_CONSUMERLESS` records why — but
+   * bridge.ts re-growing a subscriber for that channel would silently falsify
+   * both while every check above stayed green: an EXTRA export or an EXTRA
+   * `listen(...)` call is never compared against the doc, `uncoveredRows` /
+   * `staleConsumerlessEntries` read only rows, and `bridgeMockCoverage`'s
+   * `notExports` looks the other way (factory key → export).
+   *
+   * The row itself must stay in the inventory even though it is consumer-less:
+   * `scripts/check_event_inventory.sh` keys on column 1 only, so a channel that
+   * still emits (as `diagnostics` does, from `main.rs::TauriNotificationSink`)
+   * would report as an orphan channel if its row were deleted. Only the
+   * Consumer cell moves to `*(none)*`.
+   *
+   * The code side asserts the CHANNEL, not an export name: a subscriber
+   * re-added under any name, or folded into an already-exported helper, would
+   * satisfy an `Object.keys` check while still contradicting `*(none)*`.
+   * `channelRegistrationsIn` matches both registration shapes bridge.ts uses —
+   * a direct `listen<T>('<channel>', ...)` call and the `['<channel>', mapper]`
+   * tuple entries `subscribeToClaudeEvents` feeds to its `listen(name, mapper)`
+   * loop (bridge.ts:457) — so a bare `listen('` match could not miss the second.
+   */
+  it('(f) every deliberately-consumer-less channel has no bridge.ts registration site', () => {
+    // Non-vacuity for the source matcher, one live channel per registration
+    // shape: a mis-typed pattern that matched nothing would make every
+    // assertion below vacuously green rather than actually checking anything.
+    expect(
+      channelRegistrationsIn(BRIDGE_SOURCE, 'file-changed'),
+      'channel matcher found no direct `listen<T>(...)` registration in bridge.ts',
+    ).not.toStrictEqual([]);
+    expect(
+      channelRegistrationsIn(BRIDGE_SOURCE, 'claude-text-delta'),
+      'channel matcher found no tuple-entry registration in bridge.ts',
+    ).not.toStrictEqual([]);
+
+    for (const channel of Object.keys(DELIBERATELY_CONSUMERLESS)) {
+      const row = CLASSIFIED.find((c) => c.channel === channel);
+
+      // Non-vacuity: a find() that silently returned undefined would make the
+      // kind assertion below unreachable rather than failing.
+      expect(row, `no \`${channel}\` row in docs/gui-event-channels.md §1/§2`).toBeDefined();
+      expect(
+        row!.kind,
+        `docs/gui-event-channels.md \`${channel}\` Consumer cell must be \`*(none)*\``,
+      ).toBe('explicit-none');
+
+      expect(
+        channelRegistrationsIn(BRIDGE_SOURCE, channel),
+        `bridge.ts must not subscribe to the '${channel}' channel while its doc row says \`*(none)*\``,
+      ).toStrictEqual([]);
+    }
   });
 });

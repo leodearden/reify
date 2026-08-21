@@ -628,3 +628,26 @@ export function staleConsumerlessEntries(
     .filter((channel) => !parsed.has(channel))
     .sort();
 }
+
+/**
+ * Every place `source` names `channel` in a registration position, covering
+ * both shapes `gui/src/bridge.ts` uses: the direct `listen<T>('<channel>', ...)`
+ * call (~30 sites) and the `['<channel>', mapper]` tuple entries
+ * `subscribeToClaudeEvents` feeds to a loop over `listen(name, mapper)`
+ * (bridge.ts:457) — a bare `listen('` match would miss the second entirely.
+ * Requiring a `(` or `[` immediately before the quote keeps prose and bare
+ * identifiers out.
+ *
+ * Pure over a caller-supplied `source` string, like the rest of this module —
+ * it does not itself read bridge.ts off disk, so a caller can pass any source
+ * text (real or synthetic-for-a-unit-test).
+ *
+ * Originated as a bespoke helper in `bridge.test.ts` (task 6227, pinning the
+ * `diagnostics` channel only); lifted here (task 6380) so
+ * `eventChannelConsumerCoverage.test.ts` can run the same matcher over every
+ * channel in `DELIBERATELY_CONSUMERLESS`, not just one hardcoded name.
+ */
+export function channelRegistrationsIn(source: string, channel: string): string[] {
+  const pattern = new RegExp(`[([]\\s*(['"\`])${channel}\\1`, 'g');
+  return [...source.matchAll(pattern)].map((m) => m[0]);
+}
