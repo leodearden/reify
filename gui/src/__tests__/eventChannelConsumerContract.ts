@@ -630,6 +630,41 @@ export function staleConsumerlessEntries(
 }
 
 /**
+ * THE CODE→DOC PIN'S ITERATION SET: the register entries whose row has actually
+ * LANDED as `*(none)*` — `Object.keys(register)` ∩ the channels of every
+ * `explicit-none` row — sorted. This is the set check (f) of
+ * `eventChannelConsumerCoverage.test.ts` iterates.
+ *
+ * The INTERSECTION, not the register itself, and that is the point. An entry
+ * whose row has not yet flipped to `*(none)*` pins nothing and suppresses
+ * nothing: the doc cell is what asserts the absence, so until it lands there is
+ * no documented absence for bridge.ts to contradict. Asserting against such an
+ * entry anyway would re-couple this suite to another task's merge order —
+ * precisely what the pre-registration contract documented twice here
+ * (`staleConsumerlessEntries` above, and `DELIBERATELY_CONSUMERLESS`'s docblock
+ * in the coverage suite) exists to prevent. Defined over register KEYS rather
+ * than over rows for the same reason (f) is: an entry is what carries the
+ * reviewed reason that makes a code→doc pin owed in the first place.
+ *
+ * Third member of the register/row trio, and it owns only the intersection —
+ * both rot directions belong to its neighbours, so (f) never re-reports what
+ * check (e) already covers:
+ *
+ *  - `unregisteredConsumerlessRows` — row with no entry.
+ *  - `staleConsumerlessEntries`     — entry with no row.
+ *  - `landedConsumerlessChannels`   — entry whose row landed. THIS ONE.
+ */
+export function landedConsumerlessChannels(
+  rows: ClassifiedRow[],
+  register: Record<string, string>,
+): string[] {
+  const landed = new Set(rows.filter((r) => r.kind === 'explicit-none').map((r) => r.channel));
+  return Object.keys(register)
+    .filter((channel) => landed.has(channel))
+    .sort();
+}
+
+/**
  * Every place `source` names `channel` in a registration position, covering
  * both shapes `gui/src/bridge.ts` uses: the direct `listen<T>('<channel>', ...)`
  * call (~30 sites) and the `['<channel>', mapper]` tuple entries
