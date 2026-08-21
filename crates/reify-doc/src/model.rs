@@ -266,6 +266,19 @@ pub enum ItemKind {
         /// Strings, not typed nodes: `reify-doc` is pure-data and must stay
         /// free of any dependency on `reify-ir`/`reify-types`, so the bound
         /// and default syntax is rendered upstream by the lowering pass.
+        ///
+        /// # Serde note
+        ///
+        /// The per-FIELD `#[serde(default)]` is a deliberate deviation:
+        /// `ItemKind` carries no serde attributes on any other field, because
+        /// every struct in this module (and `cross_refs.rs`) expresses
+        /// forward-compat with a struct-level `#[serde(default)]` instead.
+        /// An internally-tagged enum has no struct-level slot to put one in,
+        /// so the additive field must carry its own or legacy payloads fail
+        /// with `missing field "type_params"`.  No `skip_serializing_if`:
+        /// the crate never uses one, and the shape stays uniform — an empty
+        /// list still serializes as `"type_params": []`.
+        #[serde(default)]
         type_params: Vec<String>,
         /// Rendered right-hand-side type (e.g. `"f64"`).
         type_repr: String,
