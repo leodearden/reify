@@ -90,6 +90,12 @@ assert() {
         fi
     fi
     [ -n "$_f" ] && rm -f "$_f"
+    # Always return 0 regardless of PASS/FAIL or whether mktemp succeeded:
+    # callers invoke assert as a bare simple command under `set -euo
+    # pipefail`, so a non-zero return here (e.g. from `[ -n "$_f" ]` being
+    # false when mktemp failed above) would kill the whole suite at the
+    # first assertion, before test_summary ever runs (task 6363).
+    return 0
 }
 
 test_summary() {

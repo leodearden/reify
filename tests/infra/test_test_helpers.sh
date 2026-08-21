@@ -164,6 +164,49 @@ else
     check "test_summary prints results line (got: $summary_output)" "false"
 fi
 
+# -- Test (l): assert() survives a mktemp failure and reaches test_summary ----
+# (task 6363). assert()'s fallback path (mktemp fails -> _f="" -> /dev/null
+# redirect) exists so a suite doesn't spuriously die when TMPDIR is
+# unwritable/full. But assert()'s last statement,
+# `[ -n "$_f" ] && rm -f "$_f"`, returns the exit status of that `[ -n ]`
+# test when _f is empty -- i.e. assert() itself returns 1 -- and every
+# caller runs assert as a bare simple command under `set -euo pipefail`, so
+# the shell exits at the very first assertion, before test_summary ever
+# runs. This test stubs a failing mktemp and checks the suite reaches a
+# sentinel between two asserts, calls test_summary, prints a "Results:"
+# line, and exits 0.
+echo ""
+echo "--- Test l: assert() survives mktemp failure, reaches test_summary (task 6363) ---"
+
+rc=0
+mtf_out=$(bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    mktemp() { return 1; }
+    assert 'first assert under mktemp failure' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    check "assert survives mktemp failure: test_summary exits 0 (got rc=$rc)" "true"
+else
+    check "assert survives mktemp failure: test_summary exits 0 (got rc=$rc, output: $mtf_out)" "false"
+fi
+
+if echo "$mtf_out" | grep -q "REACHED-SECOND-STATEMENT"; then
+    check "assert survives mktemp failure: suite reaches the statement after the first assert" "true"
+else
+    check "assert survives mktemp failure: suite reaches the statement after the first assert (got: $mtf_out)" "false"
+fi
+
+if echo "$mtf_out" | grep -q "Results: 2 passed, 0 failed"; then
+    check "assert survives mktemp failure: test_summary prints Results line" "true"
+else
+    check "assert survives mktemp failure: test_summary prints Results line (got: $mtf_out)" "false"
+fi
+
 # ==============================================================================
 # Test: assert dumps captured output on FAIL (evidence preservation)
 # esc-4959-57: assert() historically discarded the asserted command's
