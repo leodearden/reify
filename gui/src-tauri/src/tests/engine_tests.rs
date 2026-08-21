@@ -17656,7 +17656,6 @@ mod gui_feature_tests {
     }
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // task 5094 α — EngineSession::resolve_param_default_span (INV-GUI-3 substrate)
 //
@@ -17684,7 +17683,10 @@ fn resolve_param_default_span_slices_the_default_literal_only() {
         .expect("Bracket.width has a default literal");
     let slice = slice_bracket(span);
 
-    assert_eq!(slice, "80mm", "span must cover the default expression exactly");
+    assert_eq!(
+        slice, "80mm",
+        "span must cover the default expression exactly"
+    );
     // §6.1 invariant, from the observable side: expression range ONLY.
     assert!(
         !slice.contains("param"),
@@ -17759,7 +17761,10 @@ fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
-    assert_eq!(session.resolve_param_default_span("Bracket.sub.width"), None);
+    assert_eq!(
+        session.resolve_param_default_span("Bracket.sub.width"),
+        None
+    );
 }
 
 #[test]

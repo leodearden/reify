@@ -3662,7 +3662,8 @@ impl EngineSession {
     ///
     /// * the cell id is malformed (no `.`),
     /// * no module is loaded, so there is no parse to read,
-    /// * the entity is not a `structure def` in the loaded module,
+    /// * the entity is neither a `structure def` nor an `occurrence def` in the
+    ///   loaded module,
     /// * the member is not a param, has no default, or is declared more than
     ///   once (see [`reify_ast::find_param_default_span`] for the refusal rule),
     /// * the cell id names an INSTANCE path (`Parent.childinst.member`).
@@ -3673,6 +3674,17 @@ impl EngineSession {
     /// name never contains a `.`. That `None` is correct rather than a gap — a
     /// shared structure's default literal is not one instance's value, and
     /// rewriting it would change every instance.
+    ///
+    /// The entity-bearing variant set — `Structure` and `Occurrence` — is
+    /// deliberately identical to
+    /// `reify_eval::source_location::find_parsed_decl_containing_offset`, whose
+    /// own doc calls out that a single shared variant list is what keeps these
+    /// traversals from drifting when a new `Declaration` variant is added. The
+    /// OTHER two member-bearing top-level declarations, `TraitDecl` and
+    /// `PurposeDef` (which additionally nests `structures: Vec<StructureDef>`),
+    /// are deliberately out of reach, matching that same helper: neither is an
+    /// entity a `cell_id` names, so reaching into them could only produce a span
+    /// belonging to a different declaration than the caller asked about.
     ///
     /// Unlike [`Self::get_containing_definition`] and
     /// [`Self::get_entity_at_source_location`], this method does NOT gate on
@@ -3689,6 +3701,9 @@ impl EngineSession {
         parsed.declarations.iter().find_map(|decl| match decl {
             reify_ast::Declaration::Structure(s) if s.name == cell.entity => {
                 reify_ast::find_param_default_span(&s.members, &cell.member)
+            }
+            reify_ast::Declaration::Occurrence(o) if o.name == cell.entity => {
+                reify_ast::find_param_default_span(&o.members, &cell.member)
             }
             _ => None,
         })
