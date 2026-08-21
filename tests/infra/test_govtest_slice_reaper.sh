@@ -1306,4 +1306,224 @@ assert "H11: emission is in ARGUMENT order and deduplicated when a name is passe
     _expect_legacy_stale "$_H_HOST_LISTING" "$_H_H_WANT" \
         "$_H_LEGACY_MERGE" "$_H_LEGACY_TASK" "$_H_LEGACY_MERGE"
 
+# ---------------------------------------------------------------------------
+# Block I — govtest_reap_legacy: the ACTUATOR for Block H's filter.
+#
+# Reuses Block D's stubbed-systemctl harness verbatim — the same bin-ok /
+# bin-fail / bin-none directories under $_STUB_ROOT, the same absolute-"$BASH"
+# child-shell driver, the same _reap_stopped_units log reader — so nothing here
+# contacts the real systemd user session or stops a real unit.
+#
+# The driver arms the reify-test profile itself rather than inheriting it,
+# because it is a separate PROCESS: this is what the consuming suite will do
+# too, so the drive exercises the real ordering (source, set profile, sweep).
+# It runs under `set -euo pipefail`, the discipline that suite runs under, so a
+# non-zero status escaping the sweep is caught here rather than in production
+# as a host-exclusive gate aborted before a single row ran.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block I: govtest_reap_legacy actuator (stubbed systemctl) ---"
+
+_LEGACY_DRIVER="$_STUB_ROOT/legacy-driver.sh"
+_LEGACY_OUT="$_STUB_ROOT/legacy.out"
+_LEGACY_RC=0
+
+cat > "$_LEGACY_DRIVER" <<'DRIVEREOF'
+#!/bin/bash
+set -euo pipefail
+# shellcheck source=tests/infra/govtest_slice_reaper_lib.sh
+source "$GOVTEST_DRIVER_LIB"
+govtest_profile_set reify-test agents merge taskweight mergeweight
+_rc=0
+govtest_reap_legacy "$@" || _rc=$?
+exit "$_rc"
+DRIVEREOF
+chmod +x "$_LEGACY_DRIVER"
+
+# _stub_reap_legacy <bindir> <listing> [legacy...]
+#   Truncate log + stdout capture, seed the listing fixture, run the driver.
+#   Sets _LEGACY_RC.
+_stub_reap_legacy() {
+    local bindir="$1" listing="$2"
+    shift 2
+    : > "$_REAP_LOG"
+    : > "$_LEGACY_OUT"
+    printf '%s\n' "$listing" > "$_REAP_LISTING"
+    _LEGACY_RC=0
+    GOVTEST_STUB_LOG="$_REAP_LOG" \
+    GOVTEST_STUB_LISTING_FILE="$_REAP_LISTING" \
+    GOVTEST_DRIVER_LIB="$REAPER_LIB" \
+    PATH="$bindir" \
+    "$BASH" "$_LEGACY_DRIVER" "$@" >"$_LEGACY_OUT" 2>"$_REAP_STDERR" || _LEGACY_RC=$?
+    return 0
+}
+
+# _expect_legacy_stops <bindir> <listing> <want> [legacy...]
+_expect_legacy_stops() {
+    local bindir="$1" listing="$2" want="$3"
+    shift 3
+    _stub_reap_legacy "$bindir" "$listing" "$@"
+    if [ "$_LEGACY_RC" -ne 0 ]; then
+        echo "govtest_reap_legacy rc=$_LEGACY_RC, want 0"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    local got
+    got="$(_reap_stopped_units)"
+    if [ "$got" != "$want" ]; then
+        printf 'stopped:\n%s\n--- want ---\n%s\n--- full stub log ---\n' "$got" "$want"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+# The measured host state (2026-08-21) and the three names the consuming suite
+# will pass, in teardown order.
+_I_HOST_LISTING="reify-test-merge.slice  loaded active active Slice /reify/test/merge
+reify-test-task.slice   loaded active active Slice /reify/test/task
+reify-test.slice        loaded active active Slice /reify/test"
+_I_WANT="reify-test-task.slice
+reify-test-merge.slice"
+
+# (a) — the first post-landing run: the two childless leaves are stopped, in
+# argument order, and their still-parented root is NOT.
+assert "I1: measured host listing => exactly the two leaves stopped, root left for the next pass" \
+    _expect_legacy_stops "$_STUB_ROOT/bin-ok" "$_I_HOST_LISTING" "$_I_WANT" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
+
+# (b) — GLOB-SCOPED ENUMERATION. The per-user systemd session is shared
+# host-wide, so a sweep that listed every unit and filtered afterwards would
+# have a blast radius bounded only by the name grammar. The glob is the OUTER
+# of the two belt-and-braces bounds; govtest_legacy_stale's prefix re-check is
+# the inner. Same verify.py:3492/3503 pairing task 5930 mirrors.
+_expect_legacy_glob_scoped() {
+    _stub_reap_legacy "$_STUB_ROOT/bin-ok" "$_I_HOST_LISTING" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
+    if ! grep -qF -- 'list-units --all --plain --no-legend reify-test*.slice' "$_REAP_LOG"; then
+        echo "no glob-scoped list-units invocation in stub log:"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    # ...and no OTHER list-units invocation of any shape.
+    if grep -- 'list-units' "$_REAP_LOG" \
+        | grep -qvF -- 'list-units --all --plain --no-legend reify-test*.slice'; then
+        echo "stub log contains an UNSCOPED (or differently scoped) list-units invocation:"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "I2: enumeration is glob-scoped to reify-test*.slice, and nothing else is ever listed" \
+    _expect_legacy_glob_scoped
+
+# (c) — THE LOOP ITSELF. The loop's stdin IS the heredoc carrying the remaining
+# units, so a stdin-consuming callee would swallow them and truncate the sweep
+# to its first unit; the library detaches stdin on the stop for exactly that
+# reason, and this is what would notice if that regressed. Three stoppable
+# leaves rather than I1's two, so no first-plus-last accident can pass it.
+_I_LOOP_LISTING="reify-test-task.slice   loaded active active Slice /reify/test/task
+reify-test-merge.slice  loaded active active Slice /reify/test/merge
+reify-test-extra.slice  loaded active active Slice /reify/test/extra"
+_I_LOOP_WANT="reify-test-task.slice
+reify-test-merge.slice
+reify-test-extra.slice"
+assert "I3: THREE emitted units => three stops (the loop is not truncated by a stdin-consuming stop)" \
+    _expect_legacy_stops "$_STUB_ROOT/bin-ok" "$_I_LOOP_LISTING" "$_I_LOOP_WANT" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test-extra.slice"
+
+# (d) — each reap is announced on stdout, the same log-what-you-reaped
+# discipline govtest_reap_stale follows, so a sweep is visible in the
+# host-exclusive suite's transcript instead of happening silently.
+_expect_legacy_announced() {
+    _stub_reap_legacy "$_STUB_ROOT/bin-ok" "$_I_HOST_LISTING" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
+    local unit
+    for unit in reify-test-task.slice reify-test-merge.slice; do
+        if ! grep -qF -- "$unit" "$_LEGACY_OUT"; then
+            printf 'stopped %s but never announced it on stdout:\n' "$unit"
+            cat "$_LEGACY_OUT" 2>/dev/null || true
+            return 1
+        fi
+    done
+    # The root was not stopped, so it must not be announced either.
+    if grep -qE '^[^r]*reify-test\.slice' "$_LEGACY_OUT"; then
+        printf 'announced reify-test.slice, which was never stopped:\n'
+        cat "$_LEGACY_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "I4: every unit reaped is announced on stdout, and nothing else is" \
+    _expect_legacy_announced
+
+# (e) — THE STEADY STATE. Once this task has converged, no legacy name exists
+# and the listing holds only live per-run units. Anything stopped here would
+# mean the sweep reaps on EVERY run, forever.
+_I_STEADY_LISTING="reify-test1234.slice         loaded active active Slice /reify/test1234
+reify-test1234-agents.slice  loaded active active Slice /reify/test1234/agents
+reify-test1234-taskweight.slice loaded active active Slice /reify/test1234/taskweight"
+_expect_legacy_steady_state() {
+    _expect_legacy_stops "$_STUB_ROOT/bin-ok" "$_I_STEADY_LISTING" "" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice" || return 1
+    # Enumerated, though — the sweep still runs, it just finds nothing.
+    if ! grep -qF -- 'list-units' "$_REAP_LOG"; then
+        echo "the sweep did not even enumerate:"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "I5: converged steady state — enumerated, but nothing stopped" \
+    _expect_legacy_steady_state
+
+# (f) — FAIL-SOFT, both directions. This runs at the TOP of a suite under
+# `set -euo pipefail`, so an escaping non-zero status would abort a
+# host-exclusive gate before a single row ran and read as a governance
+# regression that isn't one.
+_expect_legacy_noop_without_systemctl() {
+    _stub_reap_legacy "$_STUB_ROOT/bin-none" "$_I_HOST_LISTING" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
+    if [ "$_LEGACY_RC" -ne 0 ]; then
+        echo "rc=$_LEGACY_RC, want 0"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    if [ -s "$_REAP_LOG" ]; then
+        printf 'expected an empty stub log, got:\n'
+        cat "$_REAP_LOG"
+        return 1
+    fi
+    return 0
+}
+assert "I6: systemctl absent from PATH => exit 0, nothing attempted" \
+    _expect_legacy_noop_without_systemctl
+
+_expect_legacy_survives_failing_systemctl() {
+    _stub_reap_legacy "$_STUB_ROOT/bin-fail" "$_I_HOST_LISTING" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
+    if [ "$_LEGACY_RC" -ne 0 ]; then
+        echo "rc=$_LEGACY_RC, want 0 (a failing systemctl must be swallowed)"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "I7: systemctl failing every call => still exit 0 (fail-soft)" \
+    _expect_legacy_survives_failing_systemctl
+
+# (g) — the assertion that stands between a bug in this actuator and killing
+# live orchestrator agent placement. reify.slice is the shared implicit root
+# of BOTH hierarchies; reify-governed-agents.slice carries real agent
+# placement. Both are present in the listing AND passed explicitly as legacy
+# args here, so only govtest_legacy_stale's prefix re-check keeps them out.
+_I_PROD_LISTING="reify.slice                 loaded active active Slice /reify
+reify-governed.slice        loaded active active Slice /reify/governed
+reify-governed-agents.slice loaded active active Slice /reify/governed/agents
+$_I_HOST_LISTING"
+assert "I8: reify.slice and reify-governed-agents.slice are never stopped, even when passed as legacy args" \
+    _expect_legacy_stops "$_STUB_ROOT/bin-ok" "$_I_PROD_LISTING" "$_I_WANT" \
+        "reify.slice" "reify-governed.slice" "reify-governed-agents.slice" \
+        "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
+
 test_summary
