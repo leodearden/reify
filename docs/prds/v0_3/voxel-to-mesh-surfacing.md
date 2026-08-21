@@ -25,19 +25,22 @@ structure VoxelToMesh {
 ```
 $ reify build examples/multi_kernel/voxel_to_mesh.ri /tmp/shell.stl
 …
-Triangles: 50700           # a positive triangle count, printed by the CLI
+Triangles: 50700           # with task 6308's fix; pristine HEAD prints 2 — see #6308
 Wrote /tmp/shell.stl
 ```
 
+and viewport-debug-MCP `mesh_stats` reports `vertex_count > 0` for the surfaced body.
+
 Measured 2026-08-20 at main HEAD `2fc6dfd715` (task 6308's fix applied as a scratch patch):
 50,700 triangles / 25,352 vertices, exported STL 2,535,084 bytes, bbox `[-0.0100001,
-+0.0100001]` m on all three axes. The exact count is **not** a stable contract — it is a
-function of `VOXELS_PER_LONGEST_AXIS`
-(`crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs:69`), so tests should assert a
-triangle-count floor plus a bounding-box-extent anti-degeneracy check, not an exact-count
-equality.
-
-and viewport-debug-MCP `mesh_stats` reports `vertex_count > 0` for the surfaced body.
++0.0100001]` m on all three axes (supersedes the stale `936` figure formerly cited here and
+in task 6308). The exact count is **not** a stable contract — it is a function of the
+voxelization and surfacing parameters: `VOXELS_PER_LONGEST_AXIS`
+(`crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs:69`) and `MarchingCubesOptions {
+iso_level, adaptive }` (`crates/reify-kernel-openvdb/src/marching_cubes_options.rs:36-47`),
+where `adaptive = true` alone would collapse the count by orders of magnitude on this
+planar-faced box. So tests should assert a triangle-count floor plus a bounding-box-extent
+anti-degeneracy check, not an exact-count equality.
 
 The load-bearing property: the terminal Mesh is produced by **marching cubes on a Voxel grid**
 (`realize_mesh_from_voxel_with_options`, #3440), *not* by direct `BRep→Mesh` tessellation and
