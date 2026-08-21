@@ -3027,11 +3027,16 @@ pub async fn spawn_debug_server(
 mod tests {
     use super::*;
 
-    // Process-global lock for tests that touch either family of process-global
-    // mesh-morph counters — reify_mesh_morph::diagnostics (seven AtomicU64) and
+    // Process-global lock serializing the tests IN THIS MODULE against each
+    // other when they touch process-global mesh-morph counters —
+    // reify_mesh_morph::diagnostics (seven AtomicU64) and
     // reify_mesh_morph::stats (Mutex<StatsState>). Acquire this before
-    // reset_for_test() + handler call so parallel test threads do not race on
-    // the shared counters.
+    // reset_for_test() + handler call. Scope: private to `debug_server::tests`,
+    // so it does NOT serialize against OTHER tests in this binary (e.g.
+    // engine.rs tests) that build an Engine and evaluate a morphing design —
+    // those reach `reify_mesh_morph::compose_morph` directly via the producer
+    // `EngineSession::from_engine` registers, and can still perturb the
+    // diagnostics counters mid-assertion.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
