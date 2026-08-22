@@ -36,7 +36,9 @@ use std::sync::Mutex;
 
 use reify_ir::ElementOrderTag;
 use reify_kernel_gmsh::mesh_size_clamp::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
-use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init, mesh_plane_2d};
+use reify_kernel_gmsh::{
+    GmshKernel, MeshingOptions, ffi, init, mesh_plane_2d, refine_volume_with_size_field,
+};
 
 /// Whole-test-body serialisation, layered *above* `init::GMSH_LOCK`.
 ///
@@ -212,5 +214,117 @@ fn mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_c
          mesh_to_volume left its clamp behind and pinned an unrelated downstream mesh to a \
          size nobody requested — the producer half of task #6298, guarded by \
          `mesh_size_clamp::MeshSizeClampReset` armed in kernel_real.rs::mesh_to_volume",
+    );
+}
+
+/// #6298's TITLE symptom, end to end: a `mesh_to_volume`-then-refine sequence
+/// must respond to the refine's own size field.
+///
+/// `refine(uniform 0.125)` after `mesh_to_volume(0.5)` must yield strictly
+/// more tets than `refine(uniform 0.5)` after the same seed. If the seed's
+/// global clamp — not the requested field — decides the density, the two come
+/// back equal (and, as #6211 measured, bit-identical).
+///
+/// # This test is GREEN ON ARRIVAL, and that is expected
+///
+/// Do not "fix" anything when it passes. Task #6211 already landed the INBOUND
+/// half: `refine_volume_with_size_field` writes `Mesh.MeshSizeMin`/`MeshSizeMax`
+/// itself on entry, overwriting whatever the seed left behind, so the sequence
+/// already responds to the field. #6298 closed the OUTBOUND half at the other
+/// end (the seed no longer leaks in the first place).
+///
+/// It is kept because it is the only guard that drives the real
+/// producer→consumer sequence #6298's title names. The four in
+/// `refine_volume_tests.rs` poison the clamp *synthetically*, by writing the
+/// option table directly, and so pin what the consumer does with a hostile
+/// table rather than what the two functions do to each other; the sibling
+/// above runs a real `mesh_to_volume` but reads its aftermath through a 2D
+/// probe, never through a refine. Neither shape would notice if the two
+/// entry points started disagreeing about the clamp in some way the synthetic
+/// poison does not model.
+///
+/// # Falsifiability, measured rather than assumed
+///
+/// A green-on-arrival guard that cannot fail is worthless, so all four
+/// combinations of the two halves were actually run against this test. The
+/// probed halves are the two `ffi::option_set_number("Mesh.MeshSizeMin"` /
+/// `"Mesh.MeshSizeMax", …)` calls in `refine_volume.rs` (INBOUND, #6211) and
+/// the `MeshSizeClampReset::armed(&_guard)` binding in
+/// `kernel_real.rs::mesh_to_volume` (OUTBOUND, #6298):
+///
+/// | inbound (#6211) | outbound (#6298) | coarse | fine | this test |
+/// |-----------------|------------------|--------|------|-----------|
+/// | on              | on   (today)     |    181 | 2420 | PASS      |
+/// | off             | on               |    141 |  367 | PASS      |
+/// | on              | off  (pre-#6298) |    181 | 2420 | PASS      |
+/// | off             | off  (pre-both)  |    181 |  181 | **FAIL**  |
+///
+/// So the test is genuinely falsifiable, and precisely at the point that
+/// matters: it goes red exactly when BOTH halves are gone, which is the state
+/// the codebase was in when #6298 was filed. Either half alone suffices for
+/// this particular sequence, which is why removing just one leaves it green —
+/// that redundancy is the fix working, not the test failing to measure.
+///
+/// The two failing counts are `181 == 181`, matching #6211's measured
+/// `mesh_to_volume(0.5) → refine(any field) = 181` row exactly. The passing
+/// margin is 13x on a strict inequality, no tolerance.
+///
+/// The row-2 numbers (141 / 367) are worth naming because they are the ones
+/// #6211's table records for `refine(uniform 0.5)` / `refine(uniform 0.125)`
+/// *alone*: with the inbound writes gone, refine runs under gmsh's default
+/// clamp and the per-corner size field alone drives the mesh. Today's 181 /
+/// 2420 are denser because the inbound `MeshSizeMax = max(vertex_sizes)` write
+/// caps interior growth that `Mesh.MeshSizeExtendFromBoundary = 0` would
+/// otherwise leave unbounded — the effect its own inline rationale in
+/// `refine_volume.rs` claims, here observed.
+#[test]
+fn refine_after_mesh_to_volume_honours_its_own_size_field() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    /// The size the seeding `mesh_to_volume` requests, and therefore the
+    /// `[SEED, SEED]` clamp it used to leave behind.
+    const SEED: f64 = 0.5;
+
+    let cube = common::unit_cube_mesh();
+    let n_surface_verts = cube.vertices.len() / 3;
+
+    // Seed through the real producer, then refine with a uniform field.
+    //
+    // `refine_volume_with_size_field` never reads `options.mesh_size` — the
+    // per-vertex field is what decides element size — so `opts` deliberately
+    // leaves it `None`. Passing a size there would imply a dependency that
+    // does not exist.
+    let refine_after_seed = |field: f64| -> usize {
+        mesh_to_volume_tet_count(SEED);
+        let opts = MeshingOptions {
+            deterministic: true,
+            ..Default::default()
+        };
+        refine_volume_with_size_field(
+            &cube,
+            &vec![field; n_surface_verts],
+            &opts,
+            ElementOrderTag::P1,
+        )
+        .unwrap_or_else(|e| panic!("refine_volume_with_size_field({field}) must succeed: {e:?}"))
+        .tet_indices()
+        .expect("P1 tet mesh")
+        .len()
+            / 4
+    };
+
+    let coarse = refine_after_seed(0.5);
+    let fine = refine_after_seed(0.125);
+
+    assert!(
+        fine > coarse,
+        "a refine after a mesh_to_volume seed must honour its own size field: \
+         refine(uniform 0.125) gave {fine} tets and refine(uniform 0.5) gave {coarse}, \
+         both seeded by mesh_to_volume({SEED}). Equal counts mean the seed's global \
+         Mesh.MeshSizeMin/Max clamp — not the requested field — decided the density, \
+         i.e. the leak of tasks #6298 / #6211 is back. Check both halves of the clamp \
+         discipline: refine_volume.rs's inbound writes at the \"Mesh-size clamp: set \
+         explicitly, never inherited\" block, and \
+         mesh_size_clamp::MeshSizeClampReset armed in kernel_real.rs::mesh_to_volume",
     );
 }
