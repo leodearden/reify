@@ -17612,6 +17612,113 @@ fn rigid_mass_props_survive_an_fea_case_switch() {
     assert_rigid_mass_props_determined(&state, "after the FEA case switch");
 }
 
+/// Task #5338 amendment round 3 (reviewer suggestion 7) — the debug full-scene
+/// projection must not leave FULL-SCENE meshes in `tess_mesh_cache`, where the
+/// next `set_active_fea_case` would serve them.
+///
+/// `build_gui_state_full_scene` brackets `demand_is_full_scope` and
+/// `geometry_derived_cache`, and its doc claims the read is "READ-ONLY with
+/// respect to the production posture". The inner full-scope `build_gui_state`
+/// also ASSIGNS `tess_mesh_cache` / `tess_diag_cache`, and `set_active_fea_case`
+/// clones the mesh cache verbatim to re-source per-case channels without
+/// re-tessellating — so without those two in the bracket, a debug-MCP read
+/// followed by a case switch hands back meshes for realizations the user hid.
+///
+/// The scene is made FEA-bearing via `inject_check_for_test` +
+/// `make_multi_case_value_map` (the established pattern in this file) because
+/// `tess_mesh_cache` is deliberately populated only for FEA scenes; a non-FEA
+/// scene sets it to `None` and the leak has no carrier.
+///
+/// Sequence: full-scope load of a TWO-body module → FEA rebuild (cache holds both)
+/// → `sync_demand` naming only body `a` + rebuild (production posture: cache holds
+/// one) → `build_gui_state_full_scene` (the debug read, which internally sees both)
+/// → `set_active_fea_case`. The case switch must still see ONE body.
+#[test]
+fn full_scene_debug_read_does_not_leak_hidden_meshes_into_the_fea_case_switch() {
+    use reify_eval::CheckResult;
+
+    const TWO_BODY_SRC: &str = r#"pub structure LeakTwoBody {
+    let a = box(30mm, 30mm, 30mm)
+    let b = box(20mm, 20mm, 20mm)
+}"#;
+
+    let mut session = rigid_mass_props_session();
+    session
+        .load_from_source(TWO_BODY_SRC, "leak_two_body")
+        .expect("load_from_source must succeed");
+
+    // Make the scene FEA-bearing so `build_gui_state` populates `tess_mesh_cache`.
+    session.inject_check_for_test(CheckResult {
+        values: make_multi_case_value_map(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    });
+    let full = session
+        .build_gui_state()
+        .expect("the FEA-bearing full-scope rebuild must succeed");
+    let all_keys = visible_realization_keys(&full);
+    assert_eq!(
+        all_keys.len(),
+        2,
+        "the fixture must realize TWO bodies — with one body there is no hidden \
+         mesh to leak and this test is vacuous; got {all_keys:?}"
+    );
+
+    // Production posture: hide body `b`, keep `a`.
+    let kept: Vec<String> = all_keys
+        .iter()
+        .filter(|k| k.contains("realization[0]"))
+        .cloned()
+        .collect();
+    assert_eq!(kept.len(), 1, "expected exactly one kept key; got {kept:?}");
+    session.sync_demand(&kept);
+    let selective = session
+        .build_gui_state()
+        .expect("the selective rebuild must succeed");
+    assert_eq!(
+        selective.meshes.len(),
+        1,
+        "the selective rebuild must dispatch only the visible body — this is the \
+         posture the debug read must not disturb; got {:?}",
+        selective
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // The debug-MCP read. Internally full-scope, so it SEES both bodies…
+    let debug_state = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene must succeed");
+    assert_eq!(
+        debug_state.meshes.len(),
+        2,
+        "the debug projection is supposed to return the complete realized scene — \
+         if it does not, this test can no longer detect the leak it exists for"
+    );
+
+    // …and must leave nothing of that behind for the case switch.
+    let switched = session
+        .set_active_fea_case("overload")
+        .expect("set_active_fea_case must succeed");
+    assert_eq!(
+        switched.meshes.len(),
+        1,
+        "a case switch after a debug full-scene read must serve the PRODUCTION \
+         mesh set, not the full scene — `set_active_fea_case` clones \
+         `tess_mesh_cache` verbatim, so an unbracketed debug read hands the user \
+         meshes for realizations they hid; got {:?}",
+        switched
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
 // ── Task 5074 step-1: from_engine must delegate to the canonical A1
 // production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
 // task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.

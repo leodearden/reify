@@ -3427,7 +3427,8 @@ impl EngineSession {
     /// `resume_unwind` restores both and re-raises the original panic unchanged, so
     /// the failure still surfaces exactly where it did before.
     ///
-    /// ## Task #5338: `geometry_derived_cache` is bracketed too
+    /// ## Task #5338: `geometry_derived_cache` and the tessellation caches are
+    /// bracketed too
     ///
     /// Forcing full scope makes `tessellate_snapshot` dispatch EVERY realization,
     /// including HIDDEN ones, so the inner `build_gui_state` would write a hidden
@@ -3441,21 +3442,45 @@ impl EngineSession {
     /// this debug projection READ-ONLY with respect to the production posture, in
     /// exactly the way the `full_scope` flag already is. The cache holds a handful
     /// of entries (four per `: Rigid` body), and this path is REIFY_DEBUG-only.
+    ///
+    /// ## …and so are `tess_mesh_cache` / `tess_diag_cache`
+    ///
+    /// Same leak, second surface, and it is NOT hypothetical: the inner full-scope
+    /// `build_gui_state` overwrites both tessellation caches with FULL-SCENE
+    /// meshes and diagnostics, and [`Self::set_active_fea_case`] clones
+    /// `tess_mesh_cache` verbatim to re-source per-case channels without
+    /// re-tessellating. Left unbracketed, a debug-MCP `engine_state` / `mesh_stats`
+    /// read followed by a case switch hands the user meshes for realizations they
+    /// have HIDDEN. That predates task #5338, but #5338 is what added the
+    /// "READ-ONLY with respect to the production posture" claim and the
+    /// `set_active_fea_case` → `surface_geometry_derived_cells` coupling that makes
+    /// the case-switch path load-bearing, so the claim is made true here rather
+    /// than narrowed.
+    ///
+    /// Saved by MOVE, not by clone — `build_gui_state` ASSIGNS both fields
+    /// unconditionally on every path (the FEA-gated `Some(..)`/`None` branch and
+    /// the no-tessellation branch) and never reads them, so handing the inner call
+    /// an empty pair costs nothing and the restore is free even for large OCCT
+    /// meshes.
     pub fn build_gui_state_full_scene(&mut self) -> Result<GuiState, String> {
         let prev = self.core.engine().demand_is_full_scope();
         let prev_cache = self.geometry_derived_cache.clone();
+        let prev_tess_meshes = self.tess_mesh_cache.take();
+        let prev_tess_diags = std::mem::take(&mut self.tess_diag_cache);
         self.core.engine_mut().set_demand_full_scope(true);
         // `AssertUnwindSafe`: the only state this closure mutates across the unwind
-        // boundary is restored on the very next two lines, which is exactly the
+        // boundary is restored on the very next four lines, which is exactly the
         // obligation the marker asserts.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.build_gui_state()
         }));
         self.core.engine_mut().set_demand_full_scope(prev);
         self.geometry_derived_cache = prev_cache;
+        self.tess_mesh_cache = prev_tess_meshes;
+        self.tess_diag_cache = prev_tess_diags;
         match outcome {
             Ok(result) => result,
-            // Re-raise the original payload: this bracket exists to restore the two
+            // Re-raise the original payload: this bracket exists to restore the four
             // fields, never to swallow a panic.
             Err(payload) => std::panic::resume_unwind(payload),
         }
