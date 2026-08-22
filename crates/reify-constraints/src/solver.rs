@@ -6200,19 +6200,7 @@ mod tests {
         let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::dimensionless_scalar());
         let else_branch = x_ref;
 
-        let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
-            .combine(condition.content_hash)
-            .combine(then_branch.content_hash)
-            .combine(else_branch.content_hash);
-        let objective_expr = CompiledExpr {
-            kind: CompiledExprKind::Conditional {
-                condition: Box::new(condition),
-                then_branch: Box::new(then_branch),
-                else_branch: Box::new(else_branch),
-            },
-            result_type: Type::dimensionless_scalar(),
-            content_hash: cond_hash,
-        };
+        let objective_expr = conditional_expr(condition, then_branch, else_branch);
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
         // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
@@ -6943,15 +6931,15 @@ mod tests {
              makes the incumbent suboptimal rather than the constraints underdetermined"
         );
 
-        let verdict = classify_uniqueness(
-            &problem.auto_params,
-            &solved,
-            &perturbed_values,
-            Some((incumbent_score, perturbed_score)),
-        );
+        let verdict = classify_uniqueness(&problem.auto_params, &solved, &perturbed_values, || {
+            Some((incumbent_score, perturbed_score))
+        });
         assert_eq!(
             verdict,
-            UniquenessVerdict::IncumbentSuboptimal,
+            UniquenessVerdict::IncumbentSuboptimal {
+                incumbent: incumbent_score,
+                perturbed: perturbed_score,
+            },
             "params differ and the perturbed point scores strictly better — this MUST \
              classify as IncumbentSuboptimal, not NonUnique: the incumbent is not the \
              argmin, so this is an optimality finding, not evidence the constraints are \
