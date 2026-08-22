@@ -303,11 +303,12 @@ load-ovalised braid cannot pinch at the seat bottom. One DSL constraint,
 `groove_r > rope_dia/2`, carries both: it is algebraically exactly the anti-pinch
 condition. What **retires** is #5580's claim above that a half-round is "the only depth
 that admits the rope at all" — with an oversize arc the admitting land radii form a band
-`|land_r − seat_c| ≤ sqrt(groove_r² − (rope_dia/2)²)`, 1.055 mm wide at the defaults, so
-pinning `land_r = seat_c` is now a design *choice*, justified by maximising the mouth and
-by keeping exactly half the swept section seated — the premise this row's closed form
-rests on. The ±15% band width here and the ±3% band of the Rust gate's centroid-Pappus
-refinement are both unchanged — only the reference moved.
+`|land_r − seat_c| ≤ sqrt(groove_r² − (rope_dia/2)²)`, a HALF-width of 1.055 mm at the
+defaults, so the band is ~2.11 mm wide. Pinning `land_r = seat_c` is therefore now a
+design *choice*, justified by maximising the mouth and by keeping exactly half the swept
+section seated — the premise this row's closed form rests on. The ±15% band width here
+and the ±3% band of the Rust gate's centroid-Pappus refinement are both unchanged — only
+the reference moved.
 
 ## 7. Pre-conditions for activating
 

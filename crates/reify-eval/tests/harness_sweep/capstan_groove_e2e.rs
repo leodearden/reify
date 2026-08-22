@@ -88,14 +88,15 @@
 //!
 //! **3. The seat arc conforms to DIN 15061
 //! (`capstan_seat_arc_is_din_15061_oversize`).** `groove_r = 0.53·rope_dia` —
-//! an OVERSIZE arc, not a zero-clearance slip fit — with per-side anti-pinch
-//! clearance at the rope's widest section, and with the design's own `seat_c`
-//! cell equal to this module's recomputation of it, which is what keeps the
-//! SEATED rope's centreline on the D/d circle `pitch_r` and the seat bottom on
-//! that rope's own underside. This is the module's only non-lockstep pin on the
-//! arc ratio itself: see [`DIN_15061_SEAT_RATIO`]. Gates (1) and (2) are both
-//! parametrized by the file's own `groove_r` and would stay green through a
-//! revert to a slip fit, so this one is not redundant with them.
+//! an OVERSIZE arc, not a zero-clearance slip fit, which is what buys the
+//! per-side anti-pinch clearance at the rope's widest section — and with the
+//! design's own `seat_c` cell equal to this module's recomputation of it,
+//! which is what keeps the SEATED rope's centreline on the D/d circle
+//! `pitch_r` and the seat bottom on that rope's own underside. This is the
+//! module's only non-lockstep pin on the arc ratio itself: see
+//! [`DIN_15061_SEAT_RATIO`]. Gates (1) and (2) are both parametrized by the
+//! file's own `groove_r` and would stay green through a revert to a slip fit,
+//! so this one is not redundant with them.
 //!
 //! Why band (2) is ±3 % and not the ±2 % this module carried before #5580: the
 //! old budget was written for a correction term worth ~2 % of the swept
@@ -711,8 +712,16 @@ fn capstan_seat_admits_the_rope_radially() {
 /// going absent or stub-degraded is silent in this repo, so it deliberately
 /// keeps running where the other three skip.
 ///
-/// Three claims, from the file's own cells:
+/// Two claims, from the file's own cells:
 ///   1. **DIN conformance** — `groove_r == 0.53·rope_dia` (3.180 mm here).
+///      That one ratio also carries DIN's mechanical reason for oversizing:
+///      `groove_r > rope_dia/2` is exactly "the seat is wider than the rope at
+///      the rope's widest section" (0.175 mm per side here), so a load-ovalised
+///      braid cannot wedge against the seat walls. Asserting that width
+///      inequality separately would add no coverage — it follows algebraically
+///      from this claim for any positive `rope_dia` — and it is anyway gated
+///      independently as `dev_capstan.ri`'s own constraint, which
+///      [`capstan_surfaces_only_the_finished_drum`] requires to be satisfied.
 ///   2. **The design's own `seat_c` derivation is this module's** — the DSL's
 ///      `let seat_c` equals [`seat_arc_centre`]'s recomputation. This is the
 ///      one place the two derivations meet, and it is not lockstep: an edit to
@@ -723,13 +732,10 @@ fn capstan_seat_admits_the_rope_radially() {
 ///      `pitch_r − rope_dia/2` (what lets the mesh gate reference a figure that
 ///      never mentions `groove_r`) — both of which followed algebraically from
 ///      the Rust helper alone and so could not fail.
-///   3. **Anti-pinch clearance** — the actual mechanical reason DIN oversizes.
-///      At the rope's widest section the seat is wider than the rope, so a
-///      load-ovalised braid cannot wedge against the seat walls.
 ///
-/// Claims (1) and (2) each carry a **measured negative control**, taken on this
-/// branch with no OCCT tessellation in the run (0.4–0.9 s per run, vs ~9 s for
-/// the kernel path — so these are the kernel-free evaluation's numbers, not the
+/// Both claims carry a **measured negative control**, taken on this branch with
+/// no OCCT tessellation in the run (0.4–0.9 s per run, vs ~9 s for the kernel
+/// path — so these are the kernel-free evaluation's numbers, not the
 /// tessellation's): `seat_arc_ratio = 0.5` fails claim (1) with groove_r =
 /// 3.000 mm against the standard's 3.180 mm, and `let seat_c = pitch_r +
 /// groove_r` (the rope-bottoming term dropped) fails claim (2) with the design
@@ -800,32 +806,6 @@ fn capstan_seat_arc_is_din_15061_oversize() {
         rope_dia * 1e3,
         seat_c * 1e3
     );
-
-    // ---- (3) Anti-pinch: the seat is wider than the rope where the rope is widest ----
-    // The rope's widest section is the plane through its centre, at radius
-    // pitch_r. Half-width of the seat there is sqrt(groove_r² − (pitch_r −
-    // seat_c)²); the rope's own half-width is rope_dia/2. Algebraically the
-    // former exceeds the latter exactly when groove_r > rope_dia/2, which is
-    // why `dev_capstan.ri` carries that single inequality as its whole
-    // clearance statement rather than a separate ratio bound.
-    let seat_half_width = (groove_r.powi(2) - (pitch_r - seat_c).powi(2))
-        .max(0.0)
-        .sqrt();
-    let rope_half_width = rope_dia / 2.0;
-    assert!(
-        seat_half_width > rope_half_width,
-        "the seat must clear the rope at the rope's WIDEST section (radius \
-         pitch_r), or a load-ovalised braid wedges against the seat walls: seat \
-         half-width = {:.6} mm but the rope's is {:.6} mm ({:.4} mm of \
-         per-side clearance, which must be strictly positive). This is \
-         algebraically exactly `groove_r > rope_dia/2` — the anti-pinch \
-         condition and the mouth-clearance condition are one inequality, and it \
-         is the constraint dev_capstan.ri states.",
-        seat_half_width * 1e3,
-        rope_half_width * 1e3,
-        (seat_half_width - rope_half_width) * 1e3
-    );
-
 }
 
 // ── PRD §6 row 11: the seat removes 0.5·π·r²·L of stock ──────────────────────
@@ -901,9 +881,9 @@ fn capstan_seat_volume_delta_matches_half_pi_r2_l() {
     //
     // The window is `groove_r * 1e-6`, which is the SAME window `dev_capstan.ri`
     // sanctions in its own two-sided `land_r` band — deliberately, so that the
-    // DSL and this gate agree on what counts as "land_r == pitch_r" and there is
+    // DSL and this gate agree on what counts as "land_r == seat_c" and there is
     // no band of seat depths that `reify check` passes but this test panics on.
-    // Both are pure fp slack: `let land_r = pitch_r` is a bit-exact assignment,
+    // Both are pure fp slack: `let land_r = seat_c` is a bit-exact assignment,
     // so the measured difference is 0.0 and the width only has to be positive.
     let half_round_premise_tol = groove_r * 1e-6;
     assert!(
