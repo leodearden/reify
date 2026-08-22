@@ -57,6 +57,19 @@ _REIFY_HEAVY_TEST_FILTER_LIB_SOURCED=1
 # relieve one. The atom's binary()/test() targets a `#[path]`-declared
 # submodule of the harness_fea_solver_e2e binary (crates/reify-eval/tests/
 # harness_fea_solver_e2e/fea_in_the_loop_producer.rs) that does not exist on
-# main yet (stranded task 4880) -- the atom is inert until that binary lands
-# and then auto-applies; it is safe to land now regardless.
+# main yet -- the atom is INERT until that submodule lands and then
+# auto-applies; it is safe to land now regardless.
+#
+# TODO(#4880): when that task lands, confirm its submodule stem is EXACTLY
+# `fea_in_the_loop_producer`. The `test(/^<stem>::/)` clause fails OPEN, not
+# closed: a near-miss stem (`..._producer_e2e`, or the tests landing nested
+# under some other stem) makes the regex match nothing, and the ~490s test
+# silently returns to the merge gate with every drift-guard still green --
+# the exact silent-coverage-hole class those guards exist to prevent.
+# tests/infra/test_heavy_filter_atoms.sh Assertion F is the announce-or-assert
+# tripwire for that: while the stem is absent it PRINTS an explicit INERT
+# banner on every run, and the moment the file exists it upgrades to a hard
+# `mod <stem>;` assertion against the harness root. This cite going orphaned
+# under `reify-audit --pattern PTODO` when #4880 completes is the intended
+# forcing function -- resolve it by re-checking the stem, not by deleting it.
 export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval-fea-tests) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)) | (package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/))'
