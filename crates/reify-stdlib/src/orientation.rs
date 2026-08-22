@@ -543,9 +543,22 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 Some(c) if c.0.len() == 3 => c,
                 _ => return Some(Value::Undef),
             };
-            if dim != DimensionVector::DIMENSIONLESS {
+            // The rotation vector is axis * angle, so it carries ANGLE (#6080) —
+            // the exact dimension `orient_log` emits, which is what keeps
+            // exp(log(q)) == q well-typed.
+            //
+            // DIMENSIONLESS is NOT accepted as a tolerant alias: it is a
+            // SPECIFIC dimension (the zero exponent vector), not a wildcard, so
+            // admitting it would re-open the hole PRD #5747 decision D11 closed
+            // for this family. A bare radian rotation vector is spelled
+            // `1.5708rad` / `90deg`, not `1.5708`.
+            if dim != DimensionVector::ANGLE {
                 return Some(Value::Undef);
             }
+            // Below this gate the arithmetic is unchanged: `Value::angle`'s SI
+            // contract is radians, which is exactly what the sqrt / sin / cos
+            // of the half-angle already assume. This is a type gate, not a
+            // numerics change.
             let vx = comps[0];
             let vy = comps[1];
             let vz = comps[2];
