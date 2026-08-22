@@ -32,8 +32,12 @@
 // So only a DEFINED subject exercises the misattribution this fixture gates.
 //
 // Under `reify build` (either kernel mode): nothing measures → RepresentationWithin
-// → Indeterminate, explained by an Info naming the surface and pointing at
-// `reify check` → exit 0. Indeterminate is not a failure.
+// → Indeterminate, explained by an Info naming the surface → exit 0.
+// Indeterminate is not a failure. The REMEDY that Info offers is terminal-first
+// and so differs by kernel mode: with OCCT it points at `reify check` (which
+// registers a kernel and measures); on a stub binary `reify check` cannot
+// measure either, so it names the geometry kernel directly rather than sending
+// the user on a two-hop dead end.
 //
 // Under `reify check` + OCCT: tessellate_realizations populates
 // achieved_repr_tol["Sphere#realization[0]"] below the 1mm bound → Satisfied →

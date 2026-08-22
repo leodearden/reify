@@ -421,11 +421,11 @@ impl Engine {
                     // Engine-side result from the achieved-repr-tol map.
                     let mut messages: Vec<Diagnostic> = diag_opt.into_iter().collect();
 
-                    // C-SURFACE (1): say *why* we cannot answer, and point at the
-                    // surface that can (INV-SF-4), with a machine-readable code
-                    // (INV-SF-6).  Severity is Info, not Warning or Error — this
-                    // is the routine outcome of running `reify build` on any
-                    // bounded module, and nothing is wrong with the design.
+                    // C-SURFACE (1): say *why* we cannot answer, and point at
+                    // the surface that can (INV-SF-4), with a machine-readable
+                    // code (INV-SF-6).  Severity is Info, not Warning or Error
+                    // — this is the routine outcome of running `reify build` on
+                    // any bounded module, and nothing is wrong with the design.
                     //
                     // The `is_empty()` gate is load-bearing: it is exactly the
                     // condition the old fast-path guard tested, so this is a
@@ -436,69 +436,27 @@ impl Engine {
                     // silent Indeterminate, which is what keeps `reify check`
                     // output unchanged.
                     //
-                    // Neither `capture_repr_tol` nor `default_kernel_name`
-                    // widens or narrows that gate — together they select only
-                    // the *remedy*, because an empty map has THREE distinct
-                    // causes and each has a different fix:
-                    //   (1) capture OFF: nobody ever asked for a measurement on
-                    //       this surface (`reify build`, `reify eval`) → the
-                    //       remedy is `reify check`.
-                    //   (2) capture ON, no kernel registered: a measurement WAS
-                    //       asked for, but this binary has no geometry kernel to
-                    //       tessellate with (stub-mode `reify check`) → telling
-                    //       that user to "run `reify check`" is a dead end; the
-                    //       remedy is a kernel.
-                    //   (3) capture ON, kernel present, still nothing measured:
-                    //       tessellation ran (or would have) but produced no
-                    //       achieved deviation for THIS subject.
-                    // Emitting the capture-OFF remedy unconditionally would also
-                    // put "run `reify check`" into the diagnostics of the
-                    // pre-`check()` pass inside `tessellate_realizations`
-                    // (engine_build.rs), which runs before the map is populated
-                    // and is therefore precisely a surface that DOES measure.
+                    // That gate is MODULE-wide rather than per-subject, so a
+                    // module which measures at least one subject still leaves an
+                    // unmeasurable sibling with a bare Indeterminate.  Narrowing
+                    // it to "this subject's key did not resolve" needs a new
+                    // signal out of `eval_representation_within` and inverts the
+                    // regression guard
+                    // `measuring_surface_indeterminate_carries_no_attribution_diagnostic`,
+                    // so it is deliberately out of scope here and filed as
+                    // follow-up ticket tkt_0RSR81KF1TYDY8PDANNHQZCFV2.
                     //
-                    // Arm (3) is deliberately CAUSE-NEUTRAL and mentions neither
-                    // `kernel` nor `OCCT`.  Blaming the kernel here would be a
-                    // false statement — a kernel is demonstrably registered —
-                    // and it is exactly the INV-SF-4 misattribution this task
-                    // exists to remove, merely relocated from the operand kinds
-                    // to the kernel.  With a kernel present the engine genuinely
-                    // cannot tell whether the subject declares no realization at
-                    // all, or declares one whose type-name scan key could not be
-                    // resolved, so it states the observable fact and points at
-                    // the actionable check rather than asserting a cause it has
-                    // not established.
-                    //
-                    // `default_kernel_name.is_none()` is an exact discriminator
-                    // for "no geometry kernel": `with_prelude` maps `None` →
-                    // `None` (engine_admin.rs), and `with_registered_kernels`
-                    // derives it from `pick_lexmin_brep_kernel`, whose helper
-                    // ends in `.or_else(|| registered.values().next())` and so
-                    // yields `None` iff the registry is empty — which is the
-                    // documented stub-mode shape, so stub-mode builds land in
-                    // arm (2) and keep the kernel remedy they deserve.
-                    //
-                    // `id` is embedded in the text so `labeled_diagnostics` can
-                    // substitute a user-facing label, exactly as the
-                    // language-level checker's message does.
+                    // Which REMEDY the reason names is a pure function of two
+                    // engine fields with no loop-local input — see
+                    // [`Engine::unmeasured_reason`] for the three-cause taxonomy
+                    // and why the arms are ordered as they are.  `id` is embedded
+                    // in the text so `labeled_diagnostics` can substitute a
+                    // user-facing label, exactly as the language-level checker's
+                    // message does.
                     if matches!(satisfaction, Satisfaction::Indeterminate)
                         && self.achieved_repr_tol.is_empty()
                     {
-                        let reason = if !self.capture_repr_tol {
-                            "this evaluation surface does not measure representation tolerance \
-                             (no tessellation ran, so no achieved deviation exists for the \
-                             subject); run `reify check` to evaluate this RepresentationWithin \
-                             bound"
-                        } else if self.default_kernel_name.is_none() {
-                            "this run does not measure representation tolerance because no \
-                             geometry kernel is registered; a geometry kernel is required — \
-                             build with OCCT to evaluate this RepresentationWithin bound"
-                        } else {
-                            "no realization of the subject was tessellated on this run, so no \
-                             achieved deviation exists for it and this run does not measure \
-                             representation tolerance; check that the subject declares a \
-                             realization"
-                        };
+                        let reason = self.unmeasured_reason();
                         messages.push(
                             Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
                                 .with_code(DiagnosticCode::ConstraintIndeterminate),
@@ -711,6 +669,71 @@ impl Engine {
             .map(|r| r.expect("dispatch_constraints: every slot must be filled"))
             .collect();
         (constraint_results, dispatch_diagnostics)
+    }
+    /// The reason clause for a `RepresentationWithin` Indeterminate on a run
+    /// whose `achieved_repr_tol` is empty (task-6169 ζ, C-SURFACE 1).
+    ///
+    /// A pure function of two engine fields, because an empty map has THREE
+    /// distinct causes and each has a different fix:
+    ///   1. **No geometry kernel is registered** — this run cannot tessellate
+    ///      anything at all (a stub-mode binary, whichever subcommand asked) →
+    ///      the remedy is a kernel.
+    ///   2. **Kernel present, capture OFF** — nobody ever asked for a
+    ///      measurement on this surface (`reify build`, `reify eval`) → the
+    ///      remedy is `reify check`.
+    ///   3. **Kernel present, capture ON, still nothing measured** —
+    ///      tessellation ran (or would have) but produced no achieved deviation
+    ///      for THIS subject.
+    ///
+    /// Kernel presence is tested FIRST, ahead of `capture_repr_tol`, so the
+    /// remedy handed to the user is always TERMINAL.  Testing capture first
+    /// sent a stub-mode `reify build` into arm 2 — "run `reify check`" — whose
+    /// only answer on that same binary is arm 1's "build with OCCT": a two-hop
+    /// dead end, and a milder instance of the very defect class C-SURFACE 1
+    /// exists to remove.
+    ///
+    /// `default_kernel_name.is_none()` is an exact discriminator for "no
+    /// geometry kernel": `with_prelude` maps `None` → `None` (engine_admin.rs),
+    /// and `with_registered_kernels` derives it from `pick_lexmin_brep_kernel`,
+    /// whose helper ends in `.or_else(|| registered.values().next())` and so
+    /// yields `None` iff the registry is empty — the documented stub-mode
+    /// shape.  Kernel-absence is read as a fact about the BINARY rather than
+    /// merely this engine because every surface that both dispatches
+    /// constraints and can carry a `RepresentationWithin` builds its engine
+    /// with `Engine::with_registered_kernel` (`cmd_check`'s assertion branch,
+    /// `cmd_build`, the GUI session); `eval()` never dispatches constraints, so
+    /// the CLI's deliberately kernel-free `eval` engines cannot reach here.
+    ///
+    /// Emitting arm 2's remedy unconditionally would also put "run `reify
+    /// check`" into the diagnostics of the pre-`check()` pass inside
+    /// `tessellate_realizations` (engine_build.rs), which runs before the map is
+    /// populated and is therefore precisely a surface that DOES measure.
+    ///
+    /// Arm 3 is deliberately CAUSE-NEUTRAL and mentions neither `kernel` nor
+    /// `OCCT`.  Blaming the kernel there would be a false statement — one is
+    /// demonstrably registered — and exactly the INV-SF-4 misattribution this
+    /// task exists to remove, merely relocated from the operand kinds to the
+    /// kernel.  With a kernel present the engine genuinely cannot tell whether
+    /// the subject declares no realization at all, or declares one whose
+    /// type-name scan key could not be resolved, so it states the observable
+    /// fact and points at the actionable check rather than asserting a cause it
+    /// has not established.
+    fn unmeasured_reason(&self) -> &'static str {
+        if self.default_kernel_name.is_none() {
+            "this run does not measure representation tolerance because no \
+             geometry kernel is registered; a geometry kernel is required — \
+             build with OCCT to evaluate this RepresentationWithin bound"
+        } else if !self.capture_repr_tol {
+            "this evaluation surface does not measure representation tolerance \
+             (no tessellation ran, so no achieved deviation exists for the \
+             subject); run `reify check` to evaluate this RepresentationWithin \
+             bound"
+        } else {
+            "no realization of the subject was tessellated on this run, so no \
+             achieved deviation exists for it and this run does not measure \
+             representation tolerance; check that the subject declares a \
+             realization"
+        }
     }
 
     /// Replace occurrences of the raw ConstraintNodeId string in diagnostic

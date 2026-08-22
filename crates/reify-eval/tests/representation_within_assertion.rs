@@ -161,12 +161,29 @@ fn non_measuring_surface_does_not_reach_language_checker() {
 /// ("does not measure", "reify check") rather than the full sentence, so a
 /// later rewording pass does not break this gate.
 ///
+/// A KERNEL-PRESENT engine, deliberately: `reify build` on a real binary is
+/// `Engine::with_registered_kernel` (main.rs), so this is the faithful shape of
+/// the surface under test, and it is the only shape for which `reify check` is
+/// the terminal remedy. The kernel-ABSENT half of the capture-OFF branch — a
+/// stub-mode `reify build`, where the remedy must jump straight to the kernel —
+/// is the complementary
+/// [`non_measuring_surface_without_a_kernel_names_the_kernel_not_check`].
+///
+/// The stub kernel is never invoked: [`NON_MEASURING_SURFACE_SOURCE`] declares
+/// no realization, so no geometry op is ever dispatched.
+///
 /// RED after the guard reorder: nothing yet pushes a diagnostic onto the peel's
 /// Indeterminate result.
 #[test]
 fn non_measuring_surface_yields_attributable_indeterminate() {
     let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
-    let mut engine = make_simple_engine();
+    // `Some(..)` ⇒ `default_kernel_name = Some(DEFAULT_KERNEL_NAME)`: a kernel
+    // IS registered, exactly as on a `reify build` run. `capture_repr_tol`
+    // stays false — nobody asked for a measurement on this surface.
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        Some(Box::new(NoRealizationStubKernel)),
+    );
 
     let result = engine.check(&compiled);
 
@@ -238,25 +255,114 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
     );
 }
 
+/// INV-SF-4, dead-end corollary: on a binary with NO geometry kernel, the
+/// non-measuring surface must name the kernel straight away — even though
+/// nobody asked for a measurement.
+///
+/// This is the kernel-ABSENT half of the capture-OFF branch, and the reason
+/// kernel presence is tested BEFORE `capture_repr_tol` in
+/// `Engine::unmeasured_reason`. With the arms in the other order a stub-mode
+/// `reify build` was told to "run `reify check`", and that same binary's
+/// `reify check` then answered "build with OCCT": two hops, the first of them a
+/// dead end. Handing a user a remedy that cannot work on their binary is a
+/// milder instance of the very defect class C-SURFACE (1) exists to remove, so
+/// the remedy the engine gives must always be TERMINAL.
+///
+/// Uses [`OCCT_SOURCE_COARSE`] rather than [`NON_MEASURING_SURFACE_SOURCE`] for
+/// the same reason its capture-ON sibling does: a realization must genuinely
+/// exist, so that the absent kernel is the only remaining reason the map is
+/// empty and the test cannot pass for the wrong reason.
+///
+/// OCCT-INDEPENDENT: `make_simple_engine()` is `Engine::new(checker, None)`, so
+/// the kernel is absent whatever the binary was built with.
+#[test]
+fn non_measuring_surface_without_a_kernel_names_the_kernel_not_check() {
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "build_surface_kernel_absent");
+    // `Engine::new(checker, None)` ⇒ `default_kernel_name` is `None`, and
+    // `capture_repr_tol` stays false: the stub-mode `reify build` surface.
+    let mut engine = make_simple_engine();
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "SphereCheck" && e.id.index == 0)
+        .expect("must have SphereCheck#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "C1: nothing measured this subject ⇒ Indeterminate, never a false Violated"
+    );
+
+    let attributions: Vec<&reify_core::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("SphereCheck#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one diagnostic must name the constraint. Got: {:#?}",
+        result.diagnostics
+    );
+    let attribution = attributions[0];
+
+    assert_eq!(
+        attribution.severity,
+        Severity::Info,
+        "severity is unaffected by which remedy applies. Got: {attribution:#?}"
+    );
+    assert_eq!(
+        attribution.code,
+        Some(DiagnosticCode::ConstraintIndeterminate),
+        "INV-SF-6: coded on this branch too. Got: {attribution:#?}"
+    );
+    assert!(
+        attribution.message.contains("does not measure"),
+        "the surface is still the reason — that token is stable across every \
+         remedy. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        attribution.message.contains("geometry kernel"),
+        "INV-SF-4: with no kernel on this binary, the kernel is what is actually \
+         missing and must be named. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        !attribution.message.contains("reify check"),
+        "the whole point of testing kernel presence first: `reify check` cannot \
+         answer on a binary with no kernel, so offering it here is the dead-end \
+         remedy under test. Got: {:?}",
+        attribution.message
+    );
+}
+
 /// INV-SF-4: when a measurement *was* requested and no geometry kernel exists
 /// to make it, the remedy must be the kernel — NOT "run `reify check`".
 ///
 /// An empty `achieved_repr_tol` has THREE causes, and the engine already
-/// carries a discriminator for each:
-/// - capture OFF — nobody asked (`reify build` / `reify eval`); remedy is
-///   `reify check` (pinned by
+/// carries a discriminator for each — tested in this order (see
+/// `Engine::unmeasured_reason`):
+/// - `default_kernel_name` is `None` — this binary registered no geometry
+///   kernel at all, so nothing can be measured on ANY surface of it and the
+///   remedy is the kernel, whether or not a measurement was asked for. This
+///   test isolates that arm with capture ON (stub-mode `reify check`, which
+///   sets the flag whenever the module carries a `RepresentationWithin`);
+///   [`non_measuring_surface_without_a_kernel_names_the_kernel_not_check`]
+///   isolates it with capture OFF (stub-mode `reify build`).
+/// - kernel present, capture OFF — nobody asked (`reify build` / `reify
+///   eval`); remedy is `reify check` (pinned by
 ///   [`non_measuring_surface_yields_attributable_indeterminate`]).
-/// - capture ON, `default_kernel_name` is `None` — `cmd_check` asked (it sets
-///   the flag whenever the module carries a `RepresentationWithin`) but this
-///   binary registered no geometry kernel at all (stub-mode `reify check`).
-///   Telling *that* user to run `reify check` is a dead end, so the remedy
-///   names the kernel instead. **That is the arm this test isolates.**
-/// - capture ON, a kernel IS registered, still nothing measured — the remedy
-///   must not blame the kernel; pinned by the complementary
+/// - kernel present, capture ON, still nothing measured — the remedy must not
+///   blame the kernel; pinned by the complementary
 ///   [`kernel_present_but_nothing_tessellated_does_not_blame_the_kernel`].
 ///
-/// The two kernel-arm tests bracket the discriminator: same capture flag, same
-/// empty map, opposite kernel presence, opposite remedy.
+/// This test and
+/// [`kernel_present_but_nothing_tessellated_does_not_blame_the_kernel`] bracket
+/// the discriminator: same capture flag, same empty map, opposite kernel
+/// presence, opposite remedy.
 ///
 /// The source must genuinely REALIZE geometry so that the absent kernel is the
 /// ONLY reason the map is empty. [`NON_MEASURING_SURFACE_SOURCE`] cannot serve
@@ -273,7 +379,7 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
 /// "run `reify check`" diagnostic.
 ///
 /// The emission *gate* is unchanged: still `Indeterminate && map.is_empty()`.
-/// `capture_repr_tol` and `default_kernel_name` select only the remedy clause.
+/// `default_kernel_name` and `capture_repr_tol` select only the remedy clause.
 #[test]
 fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
     // Geometry-bearing source: a realization exists to tessellate, so the
