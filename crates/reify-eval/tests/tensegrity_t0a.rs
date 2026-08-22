@@ -1108,6 +1108,18 @@ fn cli_reify_eval_prints_membrane_patch() {
 // `_HL_OVERRIDE_STEMS`, and the cap applies ONLY to `harness_*.rs` units, so the
 // fold costs zero cap pressure AND adds zero compile units (the C1/C2 contract's
 // actual objective, which a fresh single-module harness root would defeat).
+//
+// KNOWN DEVIATION, recorded so the next author need not re-derive it: the C2 contract's
+// own stated remedy for a harness AT its cap is to SPLIT it into a second
+// `harness_<subsystem2>.rs`, not to spill into an override binary — using an override stem
+// as an overflow destination is not something `tests/infra/harness-layout-lib.sh` sanctions
+// in so many words, and it does cost single-focus semantics here (a form-find trampoline
+// gauge suite has no relation to `tensegrity_t0a`'s T0a-constructor / `tensegrity_wires`
+// focus, so readers filtering `tensegrity_t0a::` will not expect to find it). The deviation
+// is taken deliberately because the alternative — splitting a 19.8-kLOC shared commons —
+// is far outside this task's locked scope. Two follow-ups therefore stand: relocate this
+// module to `harness_fea_solver_e2e/tensegrity_force_density_gauge.rs` once that unit is
+// split, and record the overflow rule (or refuse it) beside `_HL_OVERRIDE_STEMS`.
 mod tensegrity_force_density_gauge {
     //! Runtime lock on the tensegrity force-density **dimensional bridge** (task
     //! #6095). NORMATIVE statement: the "Dimensional bridge" paragraph in
@@ -1133,11 +1145,11 @@ mod tensegrity_force_density_gauge {
     use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
     use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
-    /// A 3-component `Value::Point` of SI-metre coordinates — how `point3` lowers.
-    fn node(x: f64, y: f64, z: f64) -> Value {
-        let m = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
-        Value::Point(vec![m(x), m(y), m(z)])
-    }
+    // A 3-component `Value::Point` of SI-metre coordinates — how `point3` lowers.
+    // The file's shared `make_node`/`make_length` pair already builds exactly this, and
+    // this module is nested in the SAME compile unit, so `super::` resolves it directly —
+    // no private copy needed (unlike the `#[path]` siblings across unit boundaries).
+    use super::make_node as node;
 
     /// Struts-then-cables member order — the one index space `force_densities` and
     /// `member_forces` share: 3 struts, then top / bottom / vertical cable triples.
@@ -1145,6 +1157,11 @@ mod tensegrity_force_density_gauge {
         (0, 4), (1, 5), (2, 3), (0, 1), (1, 2), (2, 0),
         (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5),
     ];
+
+    /// `MEMBERS[..STRUTS]` are the struts (compression, q < 0); the rest are cables
+    /// (tension, q > 0). That split is what lets `assert_bridge_holds` re-assert the
+    /// documented sign contract instead of merely checking finiteness.
+    const STRUTS: usize = 3;
 
     /// Bottom triangle {3,4,5} anchored; top triangle {0,1,2} free.
     const ANCHORS: [i64; 3] = [3, 4, 5];
@@ -1188,12 +1205,23 @@ mod tensegrity_force_density_gauge {
         Value::List(rows.iter().map(row).collect())
     }
 
-    /// The line-only triplex prism (no surfaces), built from `MEMBERS`.
-    fn prism_tensegrity() -> Value {
+    /// The triplex prism built from `MEMBERS`, carrying the given `surfaces` field.
+    fn prism_tensegrity_with(surfaces: Value) -> Value {
         let pair = |&(j, k): &(usize, usize)| [j as i64, k as i64];
-        let struts: Vec<[i64; 2]> = MEMBERS[..3].iter().map(pair).collect();
-        let cables: Vec<[i64; 2]> = MEMBERS[3..].iter().map(pair).collect();
-        tensegrity(prism_nodes(), index_lists(&struts), index_lists(&cables), Value::List(vec![]))
+        let struts: Vec<[i64; 2]> = MEMBERS[..STRUTS].iter().map(pair).collect();
+        let cables: Vec<[i64; 2]> = MEMBERS[STRUTS..].iter().map(pair).collect();
+        tensegrity(prism_nodes(), index_lists(&struts), index_lists(&cables), surfaces)
+    }
+
+    /// The line-only triplex prism (no surfaces).
+    fn prism_tensegrity() -> Value {
+        prism_tensegrity_with(Value::List(vec![]))
+    }
+
+    /// Both membrane caps of the prism. The top cap spans the three FREE nodes, so it
+    /// genuinely enters `D_ff` rather than sitting inertly on the anchored side.
+    fn caps() -> Value {
+        index_lists(&[[0, 1, 2], [3, 4, 5]])
     }
 
     /// "Tent" membrane: 4 anchored corners plus one free off-plane interior node,
@@ -1250,6 +1278,18 @@ mod tensegrity_force_density_gauge {
     /// (no struts/cables ⇒ an empty `force_densities`).
     fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
         let inputs = [membrane_tensegrity(), reals(&[]), ints(1..=4), reals(&[sigma; 4])];
+        solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
+    }
+
+    /// Anchored COMBINED solve — the prism PLUS both membrane caps, at one isotropic σ per
+    /// cap. This is the only fixture that reaches the anchored-SURFACES emission path with
+    /// a NON-EMPTY member set: `solve_membrane` has zero struts and zero cables, so
+    /// `member_forces` comes back empty there and neither `force_si` nor the Nᵢ = qᵢ·Lᵢ
+    /// pairing is exercised on that path. Shape mirrors the combined struts+cables+membrane
+    /// fixture of `harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs`.
+    fn solve_combined(q: &[f64], sigma: f64) -> PersistentMap<String, Value> {
+        let inputs =
+            [prism_tensegrity_with(caps()), reals(q), ints(ANCHORS), reals(&[sigma; 2])];
         solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
     }
 
@@ -1334,9 +1374,23 @@ mod tensegrity_force_density_gauge {
             let q = bare_real("force_densities", &force_densities[i]);
             let n = force_si(&member_forces[i]);
             let (l, expected) = { let l = member_length(nodes, m); (l, q * l) };
+            // NON-DEGENERACY, via the sign contract rather than mere finiteness: without a
+            // magnitude floor, `|N − q·L| ≤ 1e-12·|q·L|` is satisfied VACUOUSLY by N=0, q=0.
+            // That is a real hole on the free-standing path, where q is solver-DERIVED by
+            // the GroupRatios search: a regression collapsing every searched density to zero
+            // would still satisfy 0 == 0·L for every member. Signing it also pins the
+            // tension/compression half of the contract for free.
+            let (sign, kind) =
+                if i < STRUTS { (-1.0, "strut (compression, q < 0)") } else { (1.0, "cable (tension, q > 0)") };
             assert!(
                 n.is_finite() && q.is_finite() && l > 1e-6,
                 "{site}: entry {i} {m:?} must be finite and non-degenerate: N={n} q={q} L={l}"
+            );
+            assert!(
+                q * sign > 1e-9 && n * sign > 1e-9,
+                "{site}: entry {i} {m:?} is a {kind}, so BOTH q and N must carry that sign \
+                 with magnitude > 1e-9; got q={q} N={n}. A zero/flipped density makes the \
+                 Nᵢ = qᵢ·Lᵢ·q_ref identity below vacuous (task #6095)"
             );
             assert!(
                 (n - expected).abs() <= 1e-12 * expected.abs(),
@@ -1346,10 +1400,34 @@ mod tensegrity_force_density_gauge {
         }
     }
 
-    /// The anchored line-only emission site (`build_result`).
+    /// The anchored emission site (`build_result`), on BOTH of its solve paths: line-only,
+    /// and surfaces carrying a non-empty member set. The surfaces path needs its own
+    /// fixture because `membrane_tensegrity` has zero struts and zero cables — there
+    /// `member_forces` is empty, so `force_si` and the qᵢ·Lᵢ pairing never run on it. One
+    /// solve each, no gauge rescale, so this stays clear of the #6119/#6124 scope-out.
     #[test]
     fn member_force_is_q_times_solved_length_in_the_unit_gauge() {
-        assert_bridge_holds(&solve_at(&BASE_Q), "anchored line-only");
+        let line_only = solve_at(&BASE_Q);
+        assert_bridge_holds(&line_only, "anchored line-only");
+
+        let combined = solve_combined(&BASE_Q, 0.5);
+        // NON-VACUITY: prove this really is the surfaces path and not a silent
+        // fall-through to the line-only solve — one σ echo per cap, and a top cap
+        // spanning the three FREE nodes that measurably moves them.
+        assert_eq!(
+            list_field(&combined, "surface_stresses").len(),
+            2,
+            "the combined fixture must reach the surfaces path (one σ echo per cap)"
+        );
+        let moved = list_field(&line_only, "nodes")
+            .iter()
+            .zip(list_field(&combined, "nodes"))
+            .any(|(a, b)| {
+                point_xyz(a).iter().zip(point_xyz(b)).any(|(p, q)| (p - q).abs() > 1e-9)
+            });
+        assert!(moved, "σ on the free-node top cap must enter D_ff and move the solution");
+
+        assert_bridge_holds(&combined, "anchored surfaces");
     }
 
     /// Both echoes are strictly bare `Value::Real`s — a dimensioned Scalar is the
