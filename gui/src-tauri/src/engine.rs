@@ -2669,13 +2669,31 @@ impl EngineSession {
         // cache from a complete delta; only the SECOND and later ones can be
         // hash-exempt, and no `commit_state` runs between them.
         //
-        // Narrowing to `Set` would, by contrast, be actively unsafe:
+        // The reason it stays unconditional rather than narrowing to `Set`:
         // `load_from_source` also commits with `Preserve` (it has no file on
         // disk) and can carry an entirely DIFFERENT module, whose entities may
         // collide with the previous module's on `ValueCellId` (`entity+member`) —
-        // two files each declaring a `Body : Rigid` both key `Body.mass`. The
-        // unconditional clear is what stops one module's mass from being
-        // re-surfaced onto another's.
+        // two sources each declaring a `Body : Rigid` both key `Body.mass`.
+        //
+        // MEASURED, so the next reader does not over-trust this line: removing it
+        // does NOT by itself make that collision observable through the session
+        // API. `a_colliding_second_module_does_not_replay_the_first_modules_mass_props`
+        // (commands_tests.rs) drives exactly the two-module sequence, and with this
+        // clear deleted it — and all six `rigid_mass_props*` tests — stay GREEN.
+        // The reason is the second guard: a recompile resets every
+        // `input_cone_hash`, so the first pass after a load dispatches every
+        // demanded realization, and `surface_geometry_derived_cells`' dispatched-
+        // entity discriminator then DROPS the colliding entry instead of replaying
+        // it.
+        //
+        // So this clear is defence in depth, not the sole guard — and it is
+        // load-bearing exactly where that discriminator's own documented limit
+        // bites: a colliding realization that dispatches but emits no mesh (a
+        // kernel OP failure) reads as a delta gap, and the retained entry from the
+        // PREVIOUS module would be replayed as `determined` / `final`. It is also
+        // the only guard here that does not depend on the mesh-side dispatch proxy
+        // at all. Keeping it costs one `clear()` on a path that has just recompiled
+        // a module; narrowing it buys nothing and removes the outer guard.
         self.geometry_derived_cache.clear();
     }
 

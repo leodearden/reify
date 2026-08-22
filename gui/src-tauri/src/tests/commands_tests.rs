@@ -3397,3 +3397,129 @@ fn contained_rigid_sub_part_retention_works_once_the_demand_key_resolves() {
         );
     }
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment round 3 — the CROSS-MODULE collision `commit_state`'s
+// unconditional clear is documented as guarding against.
+//
+// `commit_state` clears `geometry_derived_cache` on EVERY recompile, and its doc
+// argues that narrowing that to `FilePathUpdate::Set` would be actively unsafe
+// because `load_from_source` also commits with `Preserve` and can carry a
+// DIFFERENT module whose entities collide on `ValueCellId` (entity+member) — two
+// sources each declaring a `Body : Rigid` both key `Body.mass`. Nothing in the
+// suite exercised that, so the argument was prose a maintainer could not check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Module A's `Body : Rigid`: density 7850kg/m^3, the value
+/// `with_inertia_tensor_result` is seeded on (test_helpers.rs), so ALL FOUR
+/// mass-prop cells resolve and enter the retention cache.
+const COLLIDING_BODY_SRC_A: &str = r#"structure def Body : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}"#;
+
+/// Module B's `Body : Rigid` — same entity name, hence the same `ValueCellId`s,
+/// but a different body: half the density, so its `mass` differs from module A's
+/// by construction, and its inertia query is UNANSWERED (the mock keys the
+/// inertia tensor on a bits-exact 7850.0), so its `moment_of_inertia` /
+/// `moi_principal` resolve to `Undef`.
+///
+/// Both halves matter: the first catches a stale `mass` value being replayed, the
+/// second catches a stale tensor being served where module B has no value at all.
+const COLLIDING_BODY_SRC_B: &str = r#"structure def Body : Rigid {
+    param geometry : Solid = box(50mm, 50mm, 50mm)
+    param material : Material = Material(name: "alu", density: 3925kg/m^3, youngs_modulus: 70GPa)
+}"#;
+
+/// The formatted `Body.mass` cell, or a panic naming what was there instead.
+fn mass_value_of(state: &crate::types::GuiState, entity: &str, ctx: &str) -> String {
+    state
+        .values
+        .iter()
+        .find(|v| v.entity_path == entity && v.name == "mass")
+        .unwrap_or_else(|| panic!("[{ctx}] expected a `{entity}.mass` cell"))
+        .value
+        .clone()
+}
+
+/// Task #5338 amendment round 3 (reviewer suggestion 6) — loading a second module
+/// whose entities collide on `ValueCellId` must not replay the first module's
+/// mass-property values.
+///
+/// This is the executable form of the collision `commit_state`'s unconditional
+/// `geometry_derived_cache.clear()` is documented against: `load_from_source`
+/// commits with `Preserve`, so a clear narrowed to `FilePathUpdate::Set` would
+/// carry module A's `Body.mass` / `Body.moment_of_inertia` into module B's panel,
+/// where both cells key identically.
+///
+/// Read what it pins accurately: it locks the OUTCOME (no cross-module replay),
+/// not the clear specifically. MEASURED on this branch — with that `clear()`
+/// deleted this test still passes, because a recompile resets every
+/// `input_cone_hash`, so module B's colliding realization dispatches on the pass
+/// right after the load and the dispatched-entity discriminator drops the retained
+/// entry. The clear is the outer guard for the case the discriminator cannot see
+/// (a colliding realization that dispatches but emits no mesh); that case is not
+/// reachable through this crate's API with the mock kernel, which is why this test
+/// stops where it does. See the `commit_state` comment for the full division of
+/// labour before narrowing anything there.
+#[test]
+fn a_colliding_second_module_does_not_replay_the_first_modules_mass_props() {
+    let mut session = rigid_mass_props_session();
+
+    // (1) Module A, driven all the way into the retention cache: cold load, then
+    //     the selective rebuild that is the only thing that populates it.
+    let state = session
+        .load_from_source(COLLIDING_BODY_SRC_A, "module_a")
+        .expect("load_from_source should succeed for module A");
+    assert_rigid_mass_props_final(&state, "Body", "module A cold load");
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session
+        .build_gui_state()
+        .expect("module A's selective rebuild should succeed");
+    assert_rigid_mass_props_final(&state, "Body", "module A selective rebuild");
+    let mass_a = mass_value_of(&state, "Body", "module A selective rebuild");
+
+    // (2) Module B, same entity name, different body.
+    let state = session
+        .load_from_source(COLLIDING_BODY_SRC_B, "module_b")
+        .expect("load_from_source should succeed for module B");
+
+    let mass_b = mass_value_of(&state, "Body", "module B cold load");
+    assert_ne!(
+        mass_b, mass_a,
+        "module B's `Body.mass` must be its OWN value, not module A's replayed \
+         through the colliding `ValueCellId` — module B is half the density, so an \
+         equal reading means one module's mass was surfaced onto another's panel"
+    );
+
+    // Module B's inertia query is unanswered, so it HAS no tensor this pass. The
+    // cells must degrade rather than serve module A's.
+    for name in ["moment_of_inertia", "moi_principal"] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.entity_path == "Body" && v.name == name)
+            .unwrap_or_else(|| panic!("expected a `Body.{name}` cell after module B's load"));
+        assert!(
+            !(cell.determinacy == "determined" && cell.freshness == "final"),
+            "`Body.{name}` must not be served as a fresh Final value under module B, \
+             which has no tensor for it; got determinacy={:?}, freshness={:?}, \
+             value={:?}",
+            cell.determinacy,
+            cell.freshness,
+            cell.value
+        );
+    }
+
+    // (3) …and the following rebuild must not resurrect them either.
+    let state = session
+        .build_gui_state()
+        .expect("the rebuild after module B's load should succeed");
+    assert_eq!(
+        mass_value_of(&state, "Body", "module B rebuild"),
+        mass_b,
+        "module B's `Body.mass` must be stable across the next rebuild rather than \
+         drifting back toward module A's retained value"
+    );
+}
