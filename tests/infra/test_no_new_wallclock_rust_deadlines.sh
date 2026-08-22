@@ -39,18 +39,46 @@
 # ---------------------------------------------------------------------------
 #
 # THE TWO RULES (both single-physical-line; see the detector for rationale):
-#   Rule A -- `Instant::now()` immediately followed by `+`: a real-clock
-#             deadline built by hand instead of taken through the WaitClock
-#             seam that watcher_tests.rs already provides.
-#   Rule B -- `<` compared against a `Duration`: an UPPER bound on elapsed
-#             time, which inverts under descheduling. `>=` / `>` lower bounds
-#             are deliberately NOT matched -- they are monotone-safe.
+#   Rule A -- `Instant::now()` immediately followed by `+` or by
+#             `.checked_add`: a real-clock deadline built by hand instead of
+#             taken through the WaitClock seam that watcher_tests.rs provides.
+#   Rule B -- an UPPER bound compared against a `Duration`, in any of its
+#             three natural spellings: `x < Duration::..`, `x <= Duration::..`,
+#             and the reversed `Duration::.. > x` / `>= x`. An upper bound on
+#             elapsed time inverts under descheduling. LOWER bounds
+#             (`x >= Duration::..`, `x > Duration::..`) are deliberately NOT
+#             matched -- they are monotone-safe.
 #
-# Escape: `wallclock:allow` on the same physical line, mirroring the sibling
-# guard's `# wallclock:allow` and the PTODO detector's `// ptodo:allow`.
+# Escape: a same-line comment carrying the token `wallclock` immediately
+# followed by `:allow`. It is written apart HERE on purpose -- see SELF-MATCH
+# SAFETY below -- and appears contiguously only on the line it actually
+# annotates, so `grep -rn` for it counts real escapes and nothing else. (The
+# shipped header spelled it out twice in this paragraph, which quietly
+# falsified the no-contiguous-copy claim four lines down and put two
+# non-escapes into every such audit; fixed in the #6438 review pass.) The form
+# mirrors the sibling guard's `#`-comment escape and the PTODO detector's
+# `// ptodo:allow`.
 #
-# EMPTY ALLOWLIST: this guard landed with ZERO escapes in tree, so the first
-# one added is a deliberate, reviewable act rather than pre-existing noise.
+# ALLOWLIST: exactly ONE escape exists in tree -- `far_future_stamp()` in
+# watcher_tests.rs, the single legitimate real-`Instant` offset in the
+# directory, argued at the site in its own doc comment. (An earlier draft of
+# this guard spelled that site with `checked_add` specifically BECAUSE Rule A
+# did not match it. That was a documented bypass masquerading as house style:
+# it made the one site invisible AND blessed an undetectable spelling for
+# every future one. Rule A now matches both spellings and the site takes the
+# escape instead.) A second escape should be argued for on its own merits, in
+# a review, not added quietly.
+#
+# KNOWN LIMITS, stated rather than hidden -- this is a lexical guard, not a
+# type-aware one, so two shapes get past it by construction:
+#   * A named constant: `assert!(elapsed < TIMEOUT_BUDGET)` has no `Duration::`
+#     token on the line, so Rule B cannot see it. Chasing it would need type
+#     resolution (or a const-name index), which is out of proportion to a grep.
+#   * A construct split across physical lines, since neither rule joins lines
+#     (see the detector for why that is deliberate). rustfmt keeps both shapes
+#     on one line at any realistic width, so this bites a hand-wrapped site.
+# Neither gap is silent: the REAL-CLOCK LEDGER in watcher_tests.rs is the prose
+# half that covers what a grep cannot, and review is the backstop for both.
 #
 # SELF-MATCH SAFETY (two directions, do not conflate them):
 #   * This guard never scans .sh files, so the Rust fixture strings below can
@@ -117,28 +145,42 @@ _fixture() {
 # elapsed-time upper bounds. A PHYSICAL line is a violation iff it matches
 # Rule A or Rule B and does NOT carry the escape comment.
 #
-#   Rule A  Instant::now\(\)[[:space:]]*\+
-#           A real-clock deadline built by hand. Keys on `Instant::now()`
-#           IMMEDIATELY followed by `+`, i.e. reading the raw clock and
-#           adding to it, instead of going through the WaitClock seam.
-#           It deliberately spares:
+#   Rule A  Instant::now\(\)[[:space:]]*(\+|\.checked_add)
+#           A real-clock deadline built by hand: reading the raw clock and
+#           offsetting from it, instead of going through the WaitClock seam.
+#           BOTH spellings are matched. `checked_add` was originally left out
+#           on the theory that it signals deliberate intent -- but intent is
+#           not the property being guarded, and leaving it out meant
+#           `Instant::now().checked_add(Duration::from_secs(5)).unwrap()` was
+#           a completely invisible way to write the very deadline this rule
+#           exists to catch. It is now matched, and the one legitimate site in
+#           tree (far_future_stamp in watcher_tests.rs) carries an escape that
+#           argues its case at the site -- which is the reviewable outcome, and
+#           strictly better than a spelling nobody can see.
+#           The rule deliberately spares:
 #             * `let t0 = Instant::now();`          -- a synthetic-clock seed
 #             * `VirtualClock::new(Instant::now())` -- likewise
 #             * `clock.now() + timeout`             -- the blessed seam itself
 #             * `t0 + Duration::from_millis(150)`   -- synthetic arithmetic
-#           Where a genuine real-clock offset IS wanted, `checked_add` says so
-#           without tripping this (see far_future_stamp in watcher_tests.rs).
 #
-#   Rule B  <[[:space:]]*Duration::
+#   Rule B  (<=?[[:space:]]*Duration::)|(Duration::[a-z_]*\([^)]*\)[[:space:]]*>)
 #           An UPPER bound against a Duration -- what a Rust upper bound on
 #           elapsed time looks like, whether the left operand is `x.elapsed()`
 #           or a bound variable holding it. That is exactly why the rule does
 #           not key on `.elapsed()`: the bound deleted from
-#           watcher_drop_joins_worker_promptly_even_with_a_pending_event
+#           watcher_drop_joins_worker_without_hanging_even_with_a_pending_event
 #           compared a bound variable, and an .elapsed()-keyed rule would have
-#           missed it. `>=` / `>` are NOT matched: per watcher_tests.rs's own
-#           invariant note, lower bounds are monotone under descheduling and
-#           are the safe form.
+#           missed it.
+#           THREE spellings, because an upper bound has three natural ones and
+#           a guard that caught only the first would pass while the flake
+#           landed: `elapsed < Duration::..`, `elapsed <= Duration::..`, and the
+#           reversed `Duration::.. > elapsed` / `Duration::.. >= elapsed`.
+#           `elapsed >= Duration::..` / `elapsed > Duration::..` are NOT matched:
+#           per watcher_tests.rs's own invariant note, LOWER bounds are monotone
+#           under descheduling and are the safe form. Note the two halves of the
+#           rule are mirror images on purpose -- the operand order decides which
+#           direction a comparison bounds, so `Duration::` on the left with `>`
+#           means the same thing as `Duration::` on the right with `<`.
 #
 # NO LINE JOINER, deliberately -- and this is the sharpest difference from the
 # sibling guard, which needs a bash quote-state machine. Both rules here are
@@ -163,8 +205,8 @@ _detect_rust_wallclock_deadline() {
     # this source file holds no contiguous copy of it (see SELF-MATCH SAFETY
     # in the header).
     local _esc_re; _esc_re='wallcl''ock:allow'
-    local _rule_a; _rule_a='Instant::now\(\)[[:space:]]*\+'
-    local _rule_b; _rule_b='<[[:space:]]*Duration::'
+    local _rule_a; _rule_a='Instant::now\(\)[[:space:]]*(\+|\.checked_add)'
+    local _rule_b; _rule_b='(<=?[[:space:]]*Duration::)|(Duration::[a-z_]*\([^)]*\)[[:space:]]*>)'
 
     local _found=0
     local f
@@ -202,8 +244,9 @@ _detect_rust_wallclock_deadline() {
         echo "  2. Delete the upper bound outright and let nextest's slow-timeout / terminate-after" >&2
         echo "     catch a genuine hang -- that is what the two tombstones in watcher_tests.rs do." >&2
         echo "  3. Only if the site is genuinely legitimate, annotate it on the same line with" >&2
-        echo "     '// ${_esc_re} -- <reason>'. The guard landed with an EMPTY allowlist, so" >&2
-        echo "     yours would be the first and should be argued for on its merits." >&2
+        echo "     '// ${_esc_re} -- <reason>'. Exactly ONE escape exists in tree today" >&2
+        echo "     (far_future_stamp in watcher_tests.rs, argued at the site); yours would be" >&2
+        echo "     the second, so state the argument where the next reader will find it." >&2
         return 1
     fi
     return 0
@@ -314,10 +357,11 @@ assert "2e: upper bound on .elapsed() against a Duration is flagged (returns 1)"
 
 # ---------------------------------------------------------------------------
 # 2f: Rule B positive, BOUND-VARIABLE form -- also flagged. This fixture is
-#     why Rule B keys on `<` against a `Duration` rather than on `.elapsed()`:
-#     the deleted bound in watcher_drop_joins_worker_promptly_even_with_a_
-#     pending_event compared a `let elapsed = start.elapsed();` variable, and
-#     an `.elapsed()`-keyed rule would have missed it entirely.
+#     why Rule B keys on the comparison against a `Duration` rather than on
+#     `.elapsed()`: the deleted bound in watcher_drop_joins_worker_without_
+#     hanging_even_with_a_pending_event compared a `let elapsed =
+#     start.elapsed();` variable, and an `.elapsed()`-keyed rule would have
+#     missed it entirely.
 # ---------------------------------------------------------------------------
 _s2f_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2f_tmpdir")
 _fixture "$_s2f_tmpdir" "fixture.rs" \
@@ -430,15 +474,97 @@ _detect_rust_wallclock_deadline "$_s2m_tmpdir" 2>/dev/null || _s2m_rc=$?
 assert "2m: a directory with no .rs files is clean, not an error (returns 0)" \
     test "$_s2m_rc" -eq 0
 
+# ---------------------------------------------------------------------------
+# 2n: Rule A positive, CHECKED_ADD form -- also flagged. `checked_add` is an
+#     equally natural spelling of "build a deadline off the raw clock", and it
+#     was a false negative until this fixture existed: the reviewer of #6438
+#     verified `Instant::now().checked_add(Duration::from_secs(5)).unwrap()`
+#     returned rc 0 from the shipped detector, i.e. the guard's headline claim
+#     ("the fifth instance cannot land silently") was false for anyone who
+#     happened to write it this way.
+# ---------------------------------------------------------------------------
+_s2n_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2n_tmpdir")
+_fixture "$_s2n_tmpdir" "fixture.rs" \
+    '    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();'
+
+_s2n_rc=0
+_detect_rust_wallclock_deadline "$_s2n_tmpdir" 2>/dev/null || _s2n_rc=$?
+assert "2n: Instant::now().checked_add(..) deadline is flagged too (returns 1)" \
+    test "$_s2n_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2o: Rule A escape on the CHECKED_ADD form -- NOT flagged. Asserted alongside
+#     2i/2j for the same reason 2j exists: the escape must apply uniformly to
+#     every alternative, not just the one it was first written against. This
+#     is the shape the single in-tree escape (far_future_stamp) uses.
+# ---------------------------------------------------------------------------
+_s2o_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2o_tmpdir")
+_fixture "$_s2o_tmpdir" "fixture.rs" \
+    "    let stamp = Instant::now().checked_add(Duration::from_secs(3600)); // $_ESC_TOKEN -- reason"
+
+_s2o_rc=0
+_detect_rust_wallclock_deadline "$_s2o_tmpdir" 2>/dev/null || _s2o_rc=$?
+assert "2o: same-line escape opts a Rule A checked_add site out (returns 0)" \
+    test "$_s2o_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2p: Rule B positive, `<=` form -- also flagged. Same false-negative story as
+#     2n: `<=` is an equally natural spelling of an elapsed-time upper bound,
+#     and a rule matching only a bare `<` passes exactly when it should fail.
+# ---------------------------------------------------------------------------
+_s2p_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2p_tmpdir")
+_fixture "$_s2p_tmpdir" "fixture.rs" \
+    '    assert!(elapsed <= Duration::from_secs(2), "should join promptly");'
+
+_s2p_rc=0
+_detect_rust_wallclock_deadline "$_s2p_tmpdir" 2>/dev/null || _s2p_rc=$?
+assert "2p: <= upper bound against a Duration is flagged (returns 1)" \
+    test "$_s2p_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2q: Rule B positive, REVERSED-OPERAND form -- also flagged. `Duration > x`
+#     bounds x from ABOVE just as surely as `x < Duration` does; operand order
+#     is a style choice, not a semantic one, so the guard must be symmetric or
+#     it merely dictates which way to write the flake.
+# ---------------------------------------------------------------------------
+_s2q_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2q_tmpdir")
+_fixture "$_s2q_tmpdir" "fixture.rs" \
+    '    assert!(Duration::from_secs(2) > elapsed, "should join promptly");'
+
+_s2q_rc=0
+_detect_rust_wallclock_deadline "$_s2q_tmpdir" 2>/dev/null || _s2q_rc=$?
+assert "2q: reversed-operand upper bound (Duration > elapsed) is flagged (returns 1)" \
+    test "$_s2q_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2r: Rule B negative, the MIRROR of 2q -- a `Duration::` to the RIGHT of `>`
+#     is a LOWER bound and must stay clean. This is the false positive the
+#     reversed-operand alternative could most easily introduce, and the pair
+#     2q/2r is what pins that the rule keys on operand ORDER rather than on
+#     "a Duration appears near a comparison".
+# ---------------------------------------------------------------------------
+_s2r_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2r_tmpdir")
+_fixture "$_s2r_tmpdir" "fixture.rs" \
+    '    assert!(start.elapsed() > Duration::from_millis(150), "should block");' \
+    '    fn next_wait(&self) -> Option<Duration> { self.remaining }'
+
+_s2r_rc=0
+_detect_rust_wallclock_deadline "$_s2r_tmpdir" 2>/dev/null || _s2r_rc=$?
+assert "2r: lower bound with Duration on the right, and a -> return type, stay clean (returns 0)" \
+    test "$_s2r_rc" -eq 0
+
 # ===========================================================================
 # Section 3: LIVE guard -- scan the real gui/src-tauri/src/tests for
 #             un-escaped hand-rolled deadlines and elapsed upper bounds.
 #
-# This lands GREEN with an EMPTY allowlist. Before task #6438 the live scan
-# would have reported exactly three violations, all in watcher_tests.rs: one
-# Rule A (the 5s hand-rolled poll deadline) and two Rule B (the 1s and 2s
-# elapsed upper bounds). That task deleted all three, so there is nothing to
-# annotate and no escape anywhere in the directory.
+# This lands GREEN. Before task #6438 the live scan would have reported
+# exactly three violations, all in watcher_tests.rs: one Rule A (the 5s
+# hand-rolled poll deadline) and two Rule B (the 1s and 2s elapsed upper
+# bounds). That task deleted all three, so every remaining Rule A/B match in
+# the directory is the single escaped site, `far_future_stamp()` -- which this
+# scan therefore proves is still the ONLY one. If this assertion ever fails,
+# read the reported lines before reaching for an escape: the three sanctioned
+# fixes in the detector's remediation hint come first, in that order.
 # ===========================================================================
 echo ""
 echo "--- Section 3: live scan of gui/src-tauri/src/tests ---"

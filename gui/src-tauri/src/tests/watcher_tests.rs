@@ -551,8 +551,9 @@ fn debouncer_paths_are_coalesced_and_drained_independently() {
 
 /// PREMISE PIN for the far-future-stamp idiom used by the two `Drop` tests
 /// below (`watcher_drop_discards_a_pending_event_rather_than_delivering_it`
-/// and `watcher_drop_joins_worker_promptly_even_with_a_pending_event`), which
-/// inject via `FileWatcher::record_pending_for_test` at the stamp returned by
+/// and
+/// `watcher_drop_joins_worker_without_hanging_even_with_a_pending_event`),
+/// which inject via `FileWatcher::record_pending_for_test` at the stamp from
 /// `far_future_stamp()` below, and then assert against a debouncer entry that
 /// must STILL be pending.
 ///
@@ -624,115 +625,104 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 // at all. See #5709.
 //
 // ---------------------------------------------------------------------
-// REAL-CLOCK LEDGER for this file, as of #6438. EXTENDS the invariant
-// above; does not restate it.
+// REAL-CLOCK LEDGER for this file. EXTENDS the invariant above; does not
+// restate it.
 //
 // This file has now produced FOUR separate merge-blocking flakes of one
 // class (#5143, #5422, #5709, #6438). Each earlier round fixed the line
 // that happened to fail and left every other real-clock site implicit,
 // which is exactly how instances two, three and four each survived the
-// round before them. So this ledger enumerates EVERY remaining
-// real-clock site in the file, including -- especially -- the ones
-// judged safe, with the reason. Sites are named by test function, not
-// only by line, so the ledger survives line drift. If you add a
-// real-clock site, add a row here.
+// round before them. So this ledger enumerates the real-clock sites in
+// the file, including -- especially -- the ones judged safe, with the
+// reason, and names them by test function so it survives line drift.
 //
-// FIXED BY #6438 (all three deleted, none widened):
+// READ THIS AS A SNAPSHOT, NOT AS A CHECKED INVARIANT. It was accurate
+// when written (#6438) and nothing verifies it since; the enforced half
+// is the guard named at the bottom of this block. Where the two ever
+// disagree, the guard is right. Deliberately count-free: a ledger that
+// says "the six barriered polls" is wrong the first time a test is added
+// or renamed, and a stale ledger that sounds precise is worse than none,
+// because the next maintainer trusts it instead of re-deriving. If you
+// add a real-clock site, add its row -- and if a row here no longer
+// matches the code, fix the row rather than trusting it.
+//
+// FIXED BY #6438 (all three deleted, none widened). These rows are
+// anchored to deletions, so they cannot drift:
 //   * watcher_drop_discards_a_pending_event_rather_than_delivering_it --
 //     a hand-rolled 5s deadline off the raw clock, polled every 2ms,
 //     hunting for a pending entry that is only observable during its
 //     100ms debounce window. Descheduling past that window hard-failed a
 //     watcher that had behaved perfectly. Now injects the entry via
 //     `FileWatcher::record_pending_for_test` at `far_future_stamp()`.
-//   * watcher_drop_joins_worker_promptly_even_with_a_pending_event --
-//     an upper bound on real elapsed time around `drop`, plus a
+//   * watcher_drop_joins_worker_without_hanging_even_with_a_pending_event
+//     -- an upper bound on real elapsed time around `drop`, plus a
 //     `sleep(10ms)` that was its only (and never-confirmed) "an entry is
 //     pending" precondition. Both replaced; see the tombstone in its body.
 //   * wait_for_returns_true_promptly_when_condition_already_satisfied --
 //     an upper bound on `start.elapsed()`; see the tombstone just below.
 //
-// JUDGED SAFE, and why (each verified against the current file):
-//   * 500ms fixed sleeps gating NEGATIVE assertions, in
-//     watcher_ignores_non_ri_file_changes ("no .txt event") and
-//     watcher_with_target_file_only_fires_for_that_file ("no other.ri
-//     Changed event"). Descheduling makes a negative assertion MORE
-//     likely to hold, never less, so these cannot invert. They carry a
-//     VACUITY risk instead -- a different class, deliberately out of
-//     scope here; note both are already barriered by a positive
-//     registration confirmation, which is what stops the vacuous case.
-//   * the 40ms sub-debounce-window sleep in
-//     watcher_rereads_final_content_after_nonatomic_truncate_then_append.
-//     If load stretches it past DEBOUNCE_DURATION (100ms) the two writes
-//     merely split into separate debounce cycles; the ASSERTED claim
-//     (terminal content) still holds either way, and the coalescing
-//     -fidelity claim is already `eprintln!`-downgraded rather than
-//     asserted, precisely so this cannot fail on load.
-//   * the 25ms sleep in that same test's bounded watcher-construction
-//     retry loop: retry-with-cap terminating in an environment skip. No
-//     timing assertion rides on it at all.
-//   * the LOWER bounds on `start.elapsed()` in
-//     wait_for_returns_false_after_timeout_when_never_satisfied (150ms)
-//     and
-//     wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied
-//     (200ms). Monotone under descheduling, i.e. the safe direction, by
-//     the invariant above. These are load-bearing in the other
-//     direction: they are what proves `WallClock::sleep` really blocks.
-//   * the 1s budget in
-//     wait_for_watch_registration_via_removal_confirms_a_watch_behind_a_target_file_filter,
-//     spent on a NEGATIVE claim (no Changed event behind the filter) --
-//     safe direction, as above.
-//   * the 5s budget over a 50ms in-process producer thread in
-//     wait_for_detects_value_set_by_another_thread: 100x margin, no
-//     filesystem and no inotify involved.
-//   * the SIX registration-barriered condition-polls that pair a
-//     `Duration::from_secs(10)` budget with a hard POSITIVE assert --
-//     watcher_detects_ri_file_modification,
-//     watcher_with_target_file_only_fires_for_that_file,
-//     watcher_detects_ri_file_removal,
-//     watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files,
-//     watcher_rereads_final_content_after_nonatomic_truncate_then_append,
-//     watcher_survives_a_panicking_callback_and_keeps_delivering_later_events
-//     (the last via `wait_until_with_retry`, 300ms cadence). This IS the
-//     shape #5143 blessed: a condition-poll standing behind a positively
-//     confirmed live watch, so the budget is slack rather than a claim.
-//     Kept as-is. NOTE the count is six, not the five named in this
-//     task's plan -- watcher_with_target_file_only_fires_for_that_file
-//     carries both a negative 500ms sleep and a positive 10s poll, and
-//     appears in two rows above for that reason.
-//   * the shared helpers those polls run on: `wait_until_on`'s 20ms poll
+// JUDGED SAFE, and why:
+//   * Fixed sleeps gating NEGATIVE assertions (watcher_ignores_non_ri_
+//     file_changes, watcher_with_target_file_only_fires_for_that_file).
+//     Descheduling makes a negative assertion MORE likely to hold, never
+//     less, so these cannot invert. They carry a VACUITY risk instead --
+//     a different class, out of scope here; both are already barriered by
+//     a positive registration confirmation, which is what stops it.
+//   * The sub-debounce-window sleep in watcher_rereads_final_content_
+//     after_nonatomic_truncate_then_append. If load stretches it past
+//     DEBOUNCE_DURATION the two writes merely split into separate
+//     debounce cycles; the ASSERTED claim (terminal content) holds either
+//     way, and the coalescing-fidelity claim is `eprintln!`-downgraded
+//     rather than asserted, precisely so this cannot fail on load.
+//   * The sleep in that same test's bounded watcher-construction retry
+//     loop: retry-with-cap terminating in an environment skip, with no
+//     timing assertion riding on it at all.
+//   * The LOWER bounds on `start.elapsed()` in wait_for_returns_false_
+//     after_timeout_when_never_satisfied and wait_until_with_retry_
+//     returns_false_after_the_timeout_when_never_satisfied. Monotone
+//     under descheduling, i.e. the safe direction, by the invariant
+//     above -- and load-bearing in the other: they are what proves
+//     `WallClock::sleep` really blocks.
+//   * The budget in wait_for_watch_registration_via_removal_confirms_a_
+//     watch_behind_a_target_file_filter, spent on a NEGATIVE claim (no
+//     Changed event behind the filter) -- safe direction, as above.
+//   * The budget over an in-process producer thread in
+//     wait_for_detects_value_set_by_another_thread: two orders of
+//     magnitude of margin, no filesystem and no inotify involved.
+//   * The registration-barriered condition-polls that pair a generous
+//     `wait_for` / `wait_until_with_retry` budget with a hard POSITIVE
+//     assert (the watcher_detects_*, watcher_emits_*, watcher_rereads_*,
+//     watcher_survives_* and watcher_with_target_file_* tests). This IS
+//     the shape #5143 blessed: a condition-poll standing behind a
+//     positively confirmed live watch, so the budget is slack rather
+//     than a claim. Kept as-is.
+//   * The shared helpers those polls run on: `wait_until_on`'s poll
 //     interval (clamped to `remaining`) and
-//     `wait_for_watch_registration_inner`'s 150ms retry cadence / 10s
-//     budget. Both are driven through the `WaitClock` seam, and the
-//     cadence exceeding DEBOUNCE_DURATION is deliberate -- see that
-//     helper's doc comment.
-//   * all THIRTEEN debouncer_* / VirtualClock tests. `Instant::now()`
-//     there is only a seed for synthetic arithmetic; no real time is
-//     consumed and none is asserted on.
+//     `wait_for_watch_registration_inner`'s retry cadence and budget.
+//     Both are driven through the `WaitClock` seam, and the cadence
+//     exceeding DEBOUNCE_DURATION is deliberate -- see that helper's doc.
+//   * The debouncer_* / VirtualClock tests. `Instant::now()` there is
+//     only a seed for synthetic arithmetic; no real time is consumed and
+//     none is asserted on.
 //   * watcher_construct_and_drop_in_a_loop_never_hangs -- no timing
 //     construct of any kind.
 //
-// MACHINE-CHECKED HALF. Prose rots, so the two mechanical rules are now
-// enforced by tests/infra/test_no_new_wallclock_rust_deadlines.sh, which
-// scans every .rs file in this directory:
-//   Rule A -- a real-clock deadline built by hand (`Instant::now()`
-//             immediately followed by `+`) instead of taken through the
-//             `WaitClock` seam. Use `clock.now()` / `VirtualClock`, or
-//             `checked_add` where a genuine offset is wanted (see
-//             `far_future_stamp` below).
-//   Rule B -- an UPPER bound compared against a `Duration`. `>=`/`>`
-//             lower bounds are NOT matched: they are monotone-safe, per
-//             the invariant above.
-// Both are single-physical-line rules with a same-line escape comment,
-// spelled in that script's header. That guard landed with an EMPTY
-// allowlist -- zero escapes anywhere in this directory -- so any escape
-// you find here is a deliberate, reviewable act rather than pre-existing
-// noise, and the first one should be argued for on its merits.
+// MACHINE-CHECKED HALF -- the part that does NOT rot, and the reason
+// this prose can stay a snapshot. Two mechanical rules are enforced over
+// every .rs file in this directory by
+// tests/infra/test_no_new_wallclock_rust_deadlines.sh: a real-clock
+// deadline built by hand off `Instant::now()`, and an UPPER bound
+// compared against a `Duration` (lower bounds are monotone-safe and are
+// not matched). That script's header is the canonical statement of the
+// rules, of the same-line escape comment, of the two shapes a lexical
+// guard cannot see (an upper bound against a named constant, and a
+// construct hand-wrapped across lines), and of the three sanctioned
+// fixes to try before reaching for an escape. Do not restate them here
+// -- read them there, so there is one copy to keep true.
 //
-// Before reaching for an escape, try the three sanctioned fixes in order:
-// drive the budget through the `WaitClock` seam so no real time is
-// consumed; or delete the upper bound and let nextest's
-// `slow-timeout`/`terminate-after` catch a genuine hang, as the two
-// tombstones in this file already do; or, only then, annotate the site.
+// Exactly ONE escape exists in tree: `far_future_stamp()` below, argued
+// at the site. A second one is a deliberate, reviewable act rather than
+// pre-existing noise.
 // ---------------------------------------------------------------------
 
 // The upper-bound half of the test below -- `start.elapsed()` compared
@@ -1701,18 +1691,34 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
 /// above -- if it ever stops holding, that test goes red at the identity
 /// instead of these two going flaky again.
 ///
-/// Deliberately built with `checked_add` rather than by adding a `Duration`
-/// to `Instant::now()` with `+`: that latter shape is precisely what
-/// `tests/infra/test_no_new_wallclock_rust_deadlines.sh` (Rule A) rejects --
-/// a real-clock deadline rolled by hand instead of taken through the
-/// `WaitClock` seam. This file carries zero of that guard's escape
-/// annotations by design, so the one legitimate real-`Instant` offset in it
-/// is written in a form the guard has no reason to flag. Behaviour is
-/// identical; `checked_add` also states the no-overflow intent outright.
+/// THIS FILE'S ONE ESCAPE, and why it is argued rather than dodged (#6438
+/// review). The line below is the only real-`Instant` offset in the file, and
+/// `tests/infra/test_no_new_wallclock_rust_deadlines.sh` (Rule A) matches it:
+/// a deadline built off the raw clock instead of taken through the
+/// `WaitClock` seam. Being matched is the CORRECT outcome -- the rule keys on
+/// the shape, and this line genuinely has that shape. What makes the site
+/// legitimate is its DIRECTION, which no lexical rule can see: the offset
+/// exists to take real time OUT of the two `Drop` tests below, not to hand
+/// them a budget a loaded host can blow. Nothing here can expire; a LARGER
+/// offset is strictly more un-drainable, never flakier. So the site carries
+/// the guard's same-line escape annotation, with that reason attached. (The
+/// token itself is written only on the line it annotates: a second contiguous
+/// copy in prose would silently mark THAT line escaped too, and would inflate
+/// any "count the escapes in tree" audit.)
+///
+/// An earlier draft of this task dodged the rule instead of arguing with it:
+/// it spelled the offset `checked_add` precisely BECAUSE Rule A then keyed on
+/// `+` alone, and said so here. That was a bypass documented as house style
+/// -- it hid this site from the guard and, worse, advertised an undetectable
+/// spelling to every future author of a real deadline. Rule A now matches
+/// `Instant::now()` followed by `+` OR by `.checked_add`. `checked_add`
+/// survives here on its own merits (it states the no-overflow intent
+/// outright), and the escape does the arguing.
 fn far_future_stamp() -> Instant {
-    Instant::now()
-        .checked_add(Duration::from_secs(3600))
-        .expect("an hour past now is representable as an Instant")
+    // The offset is bound on one line so the escape sits on the matched line:
+    // both of the guard's rules are single-physical-line by design.
+    let stamp = Instant::now().checked_add(Duration::from_secs(3600)); // wallclock:allow -- see above
+    stamp.expect("an hour past now is representable as an Instant")
 }
 
 /// `Drop` must cleanly shut down and join the worker thread even while a
@@ -1727,6 +1733,15 @@ fn far_future_stamp() -> Instant {
 /// RETURNING AT ALL IS THE ASSERTION. That is the honest statement of the
 /// contract -- "`Drop` must not hang" -- and it is what the deleted
 /// `elapsed < 2s` bound was really guarding (see the tombstone in the body).
+///
+/// THE NAME LOST "PROMPTLY" TO MATCH (#6438 review), exactly as
+/// `wait_for_returns_true_when_the_condition_is_already_satisfied` did in the
+/// same change. A name that claims promptness over a body that has no
+/// promptness assertion is an open invitation to "fix" the discrepancy by
+/// restoring the bound -- i.e. to reintroduce the flake this test was
+/// de-flaked to remove. Promptness is not a property this test can hold
+/// honestly: the only load-independent statement available here is that
+/// `Drop` terminates, and that is what the name now says.
 ///
 /// THE PENDING ENTRY IS NOW GUARANTEED, NOT MERELY LIKELY (#6438). This test
 /// used to write a real file and `sleep(10ms)`, hoping to land inside the
@@ -1744,7 +1759,7 @@ fn far_future_stamp() -> Instant {
 /// was live enough for that write to produce an event, and nothing is written
 /// to disk here any more.
 #[test]
-fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
+fn watcher_drop_joins_worker_without_hanging_even_with_a_pending_event() {
     let dir = tempfile::tempdir().unwrap();
 
     let Some(watcher) = try_watcher(dir.path(), None, |_event| {}) else {
@@ -1812,10 +1827,33 @@ fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
 /// `FileWatcher::record_pending_for_test`, stamped at `far_future_stamp()`.
 /// A future-stamped entry is structurally un-drainable, so "an entry is
 /// pending when `Drop` runs" is an invariant rather than a race, and the
-/// discard assertion below is UNCONDITIONAL. That is strictly stronger than
-/// the pre-fix form, which gated the same assertion on a re-snapshot and
-/// silently degraded to an `eprintln!` skip whenever the confirmation went
-/// stale.
+/// discard assertion below is UNCONDITIONAL.
+///
+/// WHAT THAT IS, AND IS NOT, STRONGER THAN (#6438 review). On the axis that
+/// produced the flake it is strictly stronger: the precondition is checked
+/// rather than raced, and the assertion can no longer degrade to the pre-fix
+/// form's `eprintln!` skip when its re-snapshot went stale. On REGRESSION
+/// COVERAGE it is narrower, and saying otherwise would mislead the next
+/// reader into thinking this test owns more than it does:
+///   * A `Drop` that delivered pending entries unconditionally, ignoring the
+///     debounce window, still fails here. That is the shape the contract
+///     forbids most directly, and it is the shape this test owns.
+///   * A `Drop` that flushed via `drain_ready(Instant::now())` before joining
+///     would find a future-stamped entry NOT ready, deliver nothing, and pass
+///     this test unchanged. The load-bearing half of that shape does have an
+///     owner, just not here:
+///     `debouncer_lone_record_becomes_ready_only_after_the_window_elapses`
+///     pins that a drain at a `now` inside the quiet window returns nothing,
+///     so a `drain_ready` that began handing back not-yet-ready entries goes
+///     red there, deterministically. What is genuinely uncovered is only the
+///     WIRING -- a shutdown path that calls a flush at all -- and no test in
+///     this file can cover that without re-introducing the 100ms real-time
+///     race this task exists to remove.
+///   * A `Drop` that WAITED for the debouncer to drain would hang rather than
+///     fail with the message below. That is reported by the harness, not by
+///     this thread: `.config/nextest.toml` sets `slow-timeout` with
+///     `terminate-after`, the same backstop the two tombstones in this file
+///     rely on in place of their deleted upper bounds.
 ///
 /// The contract exercised is still exactly the real one: `Drop` never reads
 /// `last_seen`. It sets `shutdown` under the mutex, notifies the condvar and
