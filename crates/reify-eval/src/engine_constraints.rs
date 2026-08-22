@@ -436,22 +436,47 @@ impl Engine {
                     // silent Indeterminate, which is what keeps `reify check`
                     // output unchanged.
                     //
-                    // `capture_repr_tol` does NOT widen or narrow that gate — it
-                    // only selects the *remedy*, because an empty map has two
-                    // distinct causes and each has a different fix:
-                    //   - capture OFF: nobody ever asked for a measurement on
-                    //     this surface (`reify build`, `reify eval`) → the
-                    //     remedy is `reify check`.
-                    //   - capture ON but map still empty: a measurement WAS
-                    //     asked for and tessellation produced none — the
-                    //     dominant cause being a binary with no geometry kernel
-                    //     (stub-mode `reify check`) → telling that user to "run
-                    //     `reify check`" is a dead end; the remedy is a kernel.
+                    // Neither `capture_repr_tol` nor `default_kernel_name`
+                    // widens or narrows that gate — together they select only
+                    // the *remedy*, because an empty map has THREE distinct
+                    // causes and each has a different fix:
+                    //   (1) capture OFF: nobody ever asked for a measurement on
+                    //       this surface (`reify build`, `reify eval`) → the
+                    //       remedy is `reify check`.
+                    //   (2) capture ON, no kernel registered: a measurement WAS
+                    //       asked for, but this binary has no geometry kernel to
+                    //       tessellate with (stub-mode `reify check`) → telling
+                    //       that user to "run `reify check`" is a dead end; the
+                    //       remedy is a kernel.
+                    //   (3) capture ON, kernel present, still nothing measured:
+                    //       tessellation ran (or would have) but produced no
+                    //       achieved deviation for THIS subject.
                     // Emitting the capture-OFF remedy unconditionally would also
                     // put "run `reify check`" into the diagnostics of the
                     // pre-`check()` pass inside `tessellate_realizations`
                     // (engine_build.rs), which runs before the map is populated
                     // and is therefore precisely a surface that DOES measure.
+                    //
+                    // Arm (3) is deliberately CAUSE-NEUTRAL and mentions neither
+                    // `kernel` nor `OCCT`.  Blaming the kernel here would be a
+                    // false statement — a kernel is demonstrably registered —
+                    // and it is exactly the INV-SF-4 misattribution this task
+                    // exists to remove, merely relocated from the operand kinds
+                    // to the kernel.  With a kernel present the engine genuinely
+                    // cannot tell whether the subject declares no realization at
+                    // all, or declares one whose type-name scan key could not be
+                    // resolved, so it states the observable fact and points at
+                    // the actionable check rather than asserting a cause it has
+                    // not established.
+                    //
+                    // `default_kernel_name.is_none()` is an exact discriminator
+                    // for "no geometry kernel": `with_prelude` maps `None` →
+                    // `None` (engine_admin.rs), and `with_registered_kernels`
+                    // derives it from `pick_lexmin_brep_kernel`, whose helper
+                    // ends in `.or_else(|| registered.values().next())` and so
+                    // yields `None` iff the registry is empty — which is the
+                    // documented stub-mode shape, so stub-mode builds land in
+                    // arm (2) and keep the kernel remedy they deserve.
                     //
                     // `id` is embedded in the text so `labeled_diagnostics` can
                     // substitute a user-facing label, exactly as the
@@ -459,16 +484,20 @@ impl Engine {
                     if matches!(satisfaction, Satisfaction::Indeterminate)
                         && self.achieved_repr_tol.is_empty()
                     {
-                        let reason = if self.capture_repr_tol {
-                            "tessellation produced no achieved deviation for the subject, so \
-                             this run does not measure representation tolerance; a geometry \
-                             kernel is required — build with OCCT to evaluate this \
-                             RepresentationWithin bound"
-                        } else {
+                        let reason = if !self.capture_repr_tol {
                             "this evaluation surface does not measure representation tolerance \
                              (no tessellation ran, so no achieved deviation exists for the \
                              subject); run `reify check` to evaluate this RepresentationWithin \
                              bound"
+                        } else if self.default_kernel_name.is_none() {
+                            "this run does not measure representation tolerance because no \
+                             geometry kernel is registered; a geometry kernel is required — \
+                             build with OCCT to evaluate this RepresentationWithin bound"
+                        } else {
+                            "no realization of the subject was tessellated on this run, so no \
+                             achieved deviation exists for it and this run does not measure \
+                             representation tolerance; check that the subject declares a \
+                             realization"
                         };
                         messages.push(
                             Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
