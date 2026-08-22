@@ -91,19 +91,48 @@ fn insert_completed_event(db_path: &Path, task_id: &str) {
 /// This keeps tests robust to git failures in temp dirs (which aren't real
 /// git repositories).
 fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
-    let json_start = stderr
-        .rfind("\n[")
-        .map(|pos| pos + 1) // skip the '\n', keep the '['
-        .or_else(|| {
-            // Fallback: JSON starts at position 0 (no preceding diagnostic lines).
-            if stderr.starts_with('[') { Some(0) } else { None }
-        })
+    let json_start = find_findings_array_start(stderr)
         .unwrap_or_else(|| panic!("no JSON array found in stderr; full stderr:\n{stderr}"));
     serde_json::from_str(&stderr[json_start..]).unwrap_or_else(|e| {
         panic!(
             "stderr does not contain valid JSON after '[': {e}\nstderr:\n{stderr}"
         )
     })
+}
+
+/// Byte offset where the findings array begins, or `None` if there is none.
+///
+/// Factored out of [`parse_findings_from_stderr`] so the positive direction
+/// ("an array was emitted") and the negative direction
+/// ([`stderr_has_parseable_findings_array`], "no array was emitted") share ONE
+/// definition of the parse boundary and cannot drift apart.
+fn find_findings_array_start(stderr: &str) -> Option<usize> {
+    stderr
+        .rfind("\n[")
+        .map(|pos| pos + 1) // skip the '\n', keep the '['
+        .or_else(|| {
+            // Fallback: JSON starts at position 0 (no preceding diagnostic lines).
+            if stderr.starts_with('[') { Some(0) } else { None }
+        })
+}
+
+/// Whether stderr carries a parseable findings array — non-panicking, for
+/// asserting the ABSENCE of one.
+///
+/// This models the `/audit` skill's exit-125 disambiguator, which separates an
+/// infrastructure error from "125 High-severity findings" on exactly this
+/// property: successful runs always emit a JSON array on stderr, while error
+/// paths emit human-readable text and never produce parseable JSON. Tests that
+/// assert a refusal emits no array must therefore ask the same question the
+/// skill asks, rather than assuming a panic means absence.
+#[allow(dead_code)]
+fn stderr_has_parseable_findings_array(stderr: &str) -> bool {
+    match find_findings_array_start(stderr) {
+        Some(start) => {
+            serde_json::from_str::<Vec<serde_json::Value>>(&stderr[start..]).is_ok()
+        }
+        None => false,
+    }
 }
 
 /// Recursively copy the directory tree at `src` into `dst` (creating `dst`).
@@ -1240,6 +1269,21 @@ mod cli {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
+        // PLAYER is jcodemunch-backed, so this run now passes through the §4.3
+        // freshness gate. Give it a real one-commit repo and a fresh index so
+        // the precondition holds and the dispatch path under test is actually
+        // reached — a bare non-git tempdir leaves `live_head` unverifiable,
+        // which the gate refuses. Making the project root real is a strict
+        // improvement to this test rather than an accommodation.
+        let live_head = common::index_fixture::init_git_repo_with_one_commit(dir);
+        let index_dir = tmp.path().join("code-index");
+        common::index_fixture::write_index_db(
+            &index_dir,
+            &common::index_fixture::expected_repo_id(dir),
+            Some(&live_head),
+            2,
+        );
+
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
@@ -1269,6 +1313,8 @@ mod cli {
                 runs_db.to_str().unwrap(),
                 "--project-root",
                 dir.to_str().unwrap(),
+                "--jcodemunch-index-dir",
+                index_dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit --pattern PLAYER with mock jcodemunch");
@@ -2690,5 +2736,844 @@ mod http_loader {
             stderr.contains("get_tasks") && stderr.contains("tasks"),
             "stderr should breadcrumb the malformed-tasks reason; got: {stderr}"
         );
+    }
+}
+
+// -----------------------------------------------------------------------
+// §4.3 freshness gate — end-to-end boundary scenarios
+// -----------------------------------------------------------------------
+
+/// The freshness gate refuses to query a stale or empty jcodemunch corpus.
+///
+/// Every test here is HERMETIC and gate-resident: no serve, no network, no
+/// `uvx`, no `#[ignore]`. The degenerate corpus shapes are manufactured on
+/// disk by `common::index_fixture`, and `spawn_mock_mcp` stands in for the
+/// serve so `RealJCodemunchOps::new` succeeds — the precondition for the gate
+/// firing at all. That matters beyond convenience: a live-only test for this
+/// gate would be a PASS-shaped skip on every machine without a serve, which is
+/// exactly the "looks green, proves nothing" failure the gate exists to
+/// eliminate. Making this task's own evidence vacuous would be self-defeating.
+mod freshness_gate {
+    use super::*;
+    use crate::common::index_fixture::{
+        expected_repo_id, index_db_path, init_git_repo_with_one_commit, write_index_db,
+    };
+
+    const BOGUS_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// A jcodemunch-shaped mock that answers the handshake and returns an
+    /// empty result for any `tools/call`.
+    ///
+    /// The gate must fire BEFORE any detector query, so on the refusal paths
+    /// this responder should never be consulted for anything but `initialize`.
+    fn spawn_jcodemunch_mock() -> MockServer {
+        spawn_mock_mcp(|_args| Some(serde_json::json!({})))
+    }
+
+    /// The common scaffolding: a real one-commit git repo (so `live_head` is a
+    /// genuine sha), an empty tasks fixture, an empty runs.db, and a separate
+    /// tempdir standing in for `~/.code-index`.
+    struct Scenario {
+        _tmp: tempfile::TempDir,
+        repo: std::path::PathBuf,
+        index_dir: std::path::PathBuf,
+        tasks_file: std::path::PathBuf,
+        runs_db: std::path::PathBuf,
+        live_head: String,
+        repo_id: String,
+    }
+
+    fn scenario() -> Scenario {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+        let index_dir = tmp.path().join("code-index");
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+
+        let live_head = init_git_repo_with_one_commit(&repo);
+        let repo_id = expected_repo_id(&repo);
+        let tasks_file = write_tasks_json(tmp.path(), &[]);
+        let runs_db = write_empty_runs_db(tmp.path());
+
+        Scenario { _tmp: tmp, repo, index_dir, tasks_file, runs_db, live_head, repo_id }
+    }
+
+    impl Scenario {
+        /// Invoke the binary with the given pattern and extra flags.
+        fn run(&self, pattern: &str, extra: &[&str]) -> std::process::Output {
+            self.run_raw(&["--pattern", pattern], extra)
+        }
+
+        /// Invoke the binary with NO `--pattern` — the default all-detector
+        /// sweep, whose run set is mixed (P1 alongside P2/P5/PTODO/…).
+        fn run_default_sweep(&self, extra: &[&str]) -> std::process::Output {
+            self.run_raw(&[], extra)
+        }
+
+        fn run_raw(&self, pattern: &[&str], extra: &[&str]) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args(pattern);
+            cmd.args([
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+                "--jcodemunch-index-dir", self.index_dir.to_str().unwrap(),
+            ]);
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+
+        /// Invoke WITHOUT `--jcodemunch-index-dir`, so the binary must resolve
+        /// the index directory from the environment. `env` entries are applied
+        /// verbatim; `None` removes the variable.
+        ///
+        /// Every env-precedence assertion must go through this helper rather
+        /// than `run_raw`: with the flag present, the production default is
+        /// never exercised at all, so a wrong default stays green. That gap is
+        /// exactly what let the `CODE_INDEX_PATH` divergence through review.
+        fn run_env(
+            &self,
+            pattern: &str,
+            env: &[(&str, Option<&str>)],
+            extra: &[&str],
+        ) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args(["--pattern", pattern]);
+            cmd.args([
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+            ]);
+            // Clear both index-dir variables first so an inherited value from
+            // the developer's shell cannot decide the outcome.
+            cmd.env_remove("JCODEMUNCH_INDEX_DIR");
+            cmd.env_remove("CODE_INDEX_PATH");
+            for (k, v) in env {
+                match v {
+                    Some(val) => cmd.env(k, val),
+                    None => cmd.env_remove(k),
+                };
+            }
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+    }
+
+    /// With no `--jcodemunch-index-dir`, the gate must probe `CODE_INDEX_PATH`.
+    ///
+    /// `CODE_INDEX_PATH` is jcodemunch's own index-directory variable and the
+    /// supported redirection across this substrate:
+    /// `scripts/jcodemunch-index-reify.sh` resolves the DB as
+    /// `${CODE_INDEX_PATH:-$HOME/.code-index}/local-<name>.db`, and
+    /// `tests/infra/test_jcodemunch_index_reify.sh` drives its whole suite
+    /// through a temp one. If the gate ignored it, then on any host or CI job
+    /// that sets it the indexer would write a healthy corpus to
+    /// `$CODE_INDEX_PATH` while the gate probed `$HOME/.code-index`, found
+    /// nothing, and hard-refused `E_JC_INDEX_EMPTY` against a fully-indexed
+    /// tree — the phantom-reindex failure the identity half already forbids.
+    ///
+    /// The assertion is deliberately `E_JC_INDEX_STALE`, not merely "non-zero":
+    /// STALE is reachable ONLY by opening the DB written at `index_dir` and
+    /// reading its `git_head`. `E_JC_INDEX_EMPTY` is what a wrong directory
+    /// produces, so the two markers cleanly separate "probed the right place"
+    /// from "probed nothing".
+    #[test]
+    fn index_dir_defaults_to_code_index_path_env() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[("CODE_INDEX_PATH", Some(s.index_dir.to_str().unwrap()))],
+            &["--jcodemunch-url", mock.url()],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "the gate must refuse using the CODE_INDEX_PATH store; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "STALE proves the DB under CODE_INDEX_PATH was actually opened and \
+             its git_head read; EMPTY would mean the gate probed elsewhere. \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(BOGUS_SHA),
+            "refusal must name the index head read from CODE_INDEX_PATH; \
+             stderr:\n{stderr}"
+        );
+    }
+
+    /// `JCODEMUNCH_INDEX_DIR` is the audit-local override and must outrank
+    /// `CODE_INDEX_PATH`. Both are set to REAL but DIFFERENT stores: the
+    /// override holds a stale DB, `CODE_INDEX_PATH` holds a fresh one. Only a
+    /// gate that honours the documented precedence refuses; one that silently
+    /// preferred `CODE_INDEX_PATH` would proceed to the detector instead.
+    #[test]
+    fn jcodemunch_index_dir_env_outranks_code_index_path() {
+        let s = scenario();
+        let other = s._tmp.path().join("other-index");
+        std::fs::create_dir_all(&other).expect("create second index dir");
+        // Override store: stale. CODE_INDEX_PATH store: fresh and populated.
+        write_index_db(&other, &s.repo_id, Some(BOGUS_SHA), 12);
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[
+                ("JCODEMUNCH_INDEX_DIR", Some(other.to_str().unwrap())),
+                ("CODE_INDEX_PATH", Some(s.index_dir.to_str().unwrap())),
+            ],
+            &["--jcodemunch-url", mock.url()],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE") && stderr.contains(BOGUS_SHA),
+            "JCODEMUNCH_INDEX_DIR must win: the refusal has to name the stale \
+             head from the override store, not the fresh CODE_INDEX_PATH one. \
+             stderr:\n{stderr}"
+        );
+    }
+
+    /// The `--jcodemunch-index-dir` flag outranks both variables. Guards the
+    /// top of the documented precedence chain, so a future refactor cannot
+    /// quietly let an inherited `CODE_INDEX_PATH` capture an explicit flag.
+    #[test]
+    fn jcodemunch_index_dir_flag_outranks_both_env_vars() {
+        let s = scenario();
+        let decoy = s._tmp.path().join("decoy-index");
+        std::fs::create_dir_all(&decoy).expect("create decoy index dir");
+        // Both env stores are fresh; only the flagged store is stale.
+        write_index_db(&decoy, &s.repo_id, Some(&s.live_head), 7);
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[
+                ("JCODEMUNCH_INDEX_DIR", Some(decoy.to_str().unwrap())),
+                ("CODE_INDEX_PATH", Some(decoy.to_str().unwrap())),
+            ],
+            &[
+                "--jcodemunch-url", mock.url(),
+                "--jcodemunch-index-dir", s.index_dir.to_str().unwrap(),
+            ],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE") && stderr.contains(BOGUS_SHA),
+            "the explicit flag must win over both env vars; stderr:\n{stderr}"
+        );
+    }
+
+    /// B4 — a corpus indexed at a DIFFERENT commit must be refused.
+    ///
+    /// This is the harm §4.3 exists to prevent: queries answer about another
+    /// commit's code, so P1 reports symbols as orphaned that the current tree
+    /// references — a fabricated High-severity finding, indistinguishable at
+    /// the CLI surface from a real one.
+    #[test]
+    fn b4_stale_index_refuses_with_e_jc_index_stale() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "a stale index must refuse the run; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "refusal must carry the machine-readable marker; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(BOGUS_SHA),
+            "refusal must name the index head; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&s.live_head),
+            "refusal must name the live head; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("symbol_count=12"),
+            "refusal must name the symbol count; stderr:\n{stderr}"
+        );
+        // The one field that says WHICH index to rebuild. Without this
+        // assertion, dropping `with_repo_id` leaves the whole suite green
+        // while the operator loses the only actionable identifier — the
+        // §4.2-derived id is not something they can reconstruct by hand.
+        assert!(
+            stderr.contains(&s.repo_id),
+            "refusal must name the probed repo id {}; stderr:\n{stderr}",
+            s.repo_id
+        );
+
+        // Load-bearing, not cosmetic. The `/audit` skill disambiguates
+        // exit-125-as-infra-error from exit-125-as-125-High-findings by
+        // parsing stderr for a JSON array. Because the refusal returns before
+        // any findings are serialized, it emits no array and the EXISTING
+        // disambiguator classifies it correctly with no skill-side change.
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// B5 — an index at the right commit but carrying zero symbols must be
+    /// refused. The mirror-image failure: a head comparison alone says "all
+    /// good" while every query returns nothing, so every producer looks
+    /// orphaned. This is the shape `delete-index` leaves behind.
+    #[test]
+    fn b5_empty_husk_index_refuses_with_e_jc_index_empty() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 0);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an empty-husk index must refuse the run; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_EMPTY"),
+            "refusal must carry the machine-readable marker; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("symbol_count=0"),
+            "refusal must name the symbol count; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&s.repo_id),
+            "refusal must name the probed repo id {}; stderr:\n{stderr}",
+            s.repo_id
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// B5b — no index at all is the limiting case of an empty one, and gets
+    /// the same refusal. Also the end-to-end proof of the read-only open:
+    /// `Connection::open` CREATES a missing file, so a run against an absent
+    /// index must not litter a phantom zero-symbol DB that jcodemunch would
+    /// then register as an empty repo — the gate must not manufacture the very
+    /// condition it detects.
+    #[test]
+    fn b5b_absent_index_refuses_without_creating_the_db() {
+        let s = scenario();
+        let expected_db = index_db_path(&s.index_dir, &s.repo_id);
+        assert!(!expected_db.exists(), "precondition: no index db");
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an absent index must refuse the run; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_EMPTY"),
+            "refusal must carry the machine-readable marker; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+        assert!(
+            !expected_db.exists(),
+            "the gate must NOT create the index db it fails to find, at {}",
+            expected_db.display()
+        );
+    }
+
+    /// B6 — a fresh, populated index lets the run PROCEED.
+    ///
+    /// Per the manifest's `no-finding-count-assertion` guardrail this asserts
+    /// only that a well-formed findings array was emitted, never that it is
+    /// non-empty: the corpus here is a synthetic two-symbol index, so a
+    /// specific finding count would pin an artifact of the fixture rather than
+    /// any behaviour of the gate.
+    #[test]
+    fn b6_fresh_index_admits_the_run() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 2);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a fresh populated index must admit the run; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "an admitted run must emit NEITHER marker; stderr:\n{stderr}"
+        );
+        // The same predicate the /audit skill's exit-125 disambiguator
+        // applies, and the exact inverse of what B4/B5/B5b assert. A bare
+        // `contains('[')` would be satisfied by any incidental diagnostic
+        // line — `git check-ignore exited Some(..)`, a PTODO
+        // `tasks.db unreachable at ...` breadcrumb — so it would still pass
+        // if the findings array were never serialized at all.
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "an admitted run must emit a well-formed findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// B7 — detectors that never touch jcodemunch must be unaffected by a
+    /// stale index. `needs_jcodemunch` is false for a P2/P5-only run, so no
+    /// client is constructed and the gate is unreachable. A gate that fired
+    /// here would turn every P2/P5 sweep red on any machine with a stale
+    /// corpus it never consults.
+    #[test]
+    fn b7_non_jcodemunch_patterns_ignore_a_stale_index() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+
+        let out = s.run("P2,P5", &[]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "the gate must be unreachable for non-jcodemunch patterns; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "the run must still emit its findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// SERVE-DOWN PRECEDENCE — with no serve there is no stale corpus to be
+    /// misled by, so there is nothing to refuse.
+    ///
+    /// This is the regression lock on where the gate fires. The existing
+    /// unreachable-serve fail-soft (P1 degrades to zero findings, exit 0, one
+    /// breadcrumb) is a documented healthy path: jcodemunch is legitimately
+    /// absent in a task worktree. Gating before the connection attempt would
+    /// convert that into a hard exit 125 on every such machine — turning a
+    /// fail-soft into an outage, and breaking the pre-existing contract that
+    /// an optional substrate never fails a run.
+    #[test]
+    fn serve_down_fail_soft_takes_precedence_over_a_stale_index() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+
+        let unreachable = common::net::unreachable_mcp_url();
+        let out = s.run("P1", &["--jcodemunch-url", &unreachable]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "an unreachable serve must still fail-soft, not refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("jcodemunch unreachable"),
+            "the existing fail-soft breadcrumb must survive; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "the gate must not fire when no serve was reached; stderr:\n{stderr}"
+        );
+    }
+
+    /// `--no-jcodemunch` PRECEDENCE — the explicit escape hatch bypasses the
+    /// seam entirely, so it must bypass the gate too. An escape hatch that
+    /// still hard-failed on index state would not be an escape hatch.
+    #[test]
+    fn no_jcodemunch_bypasses_the_gate_entirely() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+
+        let out = s.run("P1", &["--no-jcodemunch"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "--no-jcodemunch must bypass the gate; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("jcodemunch unreachable"),
+            "--no-jcodemunch must not even attempt a connection; stderr:\n{stderr}"
+        );
+    }
+
+    /// BLAST RADIUS — a mixed run set must NOT be killed by an unusable
+    /// corpus.
+    ///
+    /// The default sweep runs P2, P5, PTODO and PDSSENTINEL alongside P1, and
+    /// none of those four consult jcodemunch at all. Refusing the process here
+    /// would delete four working detectors' output over one stale index — and
+    /// §4.2 makes that the EXPECTED case, not an anomaly: identity is now
+    /// per-checkout, so every task worktree derives an id nothing has indexed.
+    /// A default `reify-audit --since <date>` from any warm lane with the
+    /// serve up would exit 125 with zero findings.
+    ///
+    /// So the corpus is still never queried (the Noop seam answers every
+    /// jcodemunch call with nothing), but the run completes and emits its
+    /// findings array, exactly as the unreachable-serve fail-soft does.
+    #[test]
+    fn default_sweep_degrades_rather_than_refusing_on_a_stale_index() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_default_sweep(&["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "a mixed run set must not be refused wholesale; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "the non-jcodemunch detectors must still emit their findings; stderr:\n{stderr}"
+        );
+        // Degraded, not silent: the marker keeps the condition machine-
+        // detectable, and the breadcrumb names what was lost.
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "the degraded sweep must still carry the marker; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("degraded to zero findings"),
+            "the breadcrumb must name what was lost; stderr:\n{stderr}"
+        );
+    }
+
+    /// The same stale corpus, selected by an ALL-jcodemunch pattern, is still
+    /// a hard refusal — nothing in that run set could have survived it. Pins
+    /// the boundary from the other side, so a future widening of the
+    /// degrade path cannot silently swallow §4.3.
+    #[test]
+    fn all_jcodemunch_pattern_still_refuses_hard() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1,PDEAD", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an all-jcodemunch run set must refuse; stderr:\n{stderr}"
+        );
+        assert!(stderr.contains("E_JC_INDEX_STALE"), "stderr:\n{stderr}");
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// A valid SQLite file carrying the WRONG SCHEMA is neither stale nor
+    /// empty: the file exists, and what is behind it is unknown. It gets its
+    /// own code and its own remedy, because "re-index this checkout" is the
+    /// wrong instruction for a corpus that may be perfectly intact.
+    ///
+    /// The reader-level version of this is pinned in the library's unit tests;
+    /// what is pinned HERE is that the diagnostic survives all the way into
+    /// the rendered CLI message, which no reader-level test can show.
+    #[test]
+    fn schema_drifted_index_refuses_with_its_own_code_and_diagnostic() {
+        let s = scenario();
+        let db = index_db_path(&s.index_dir, &s.repo_id);
+        let conn = rusqlite::Connection::open(&db).expect("open drifted db");
+        conn.execute_batch("CREATE TABLE something_else (x INTEGER);")
+            .expect("create unrelated table");
+        drop(conn);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(out.status.code(), Some(125), "stderr:\n{stderr}");
+        assert!(
+            stderr.contains("E_JC_INDEX_UNREADABLE"),
+            "schema drift must carry its own marker, not be collapsed into \
+             EMPTY; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("index unreadable:"),
+            "the reader's diagnostic must reach the operator; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("re-index this checkout before querying"),
+            "the empty/stale remedy points at the wrong artifact here; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// A freshness claim that cannot be VERIFIED gets a third message,
+    /// carrying no marker token at all.
+    ///
+    /// `--project-root` outside any git repo makes `git rev-parse HEAD` fail,
+    /// so there is no live head to compare against. Neither staleness nor
+    /// emptiness nor unreadability of the INDEX has been established, and
+    /// labelling this as any of them would send the operator to re-index when
+    /// the real fault is the git invocation.
+    #[test]
+    fn unverifiable_head_refuses_without_naming_an_index_fault() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 2);
+        let non_git = s.repo.parent().expect("tempdir parent").join("not-a-repo");
+        std::fs::create_dir_all(&non_git).expect("create non-git root");
+        let mock = spawn_jcodemunch_mock();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern", "P1",
+                "--tasks-file", s.tasks_file.to_str().unwrap(),
+                "--runs-db", s.runs_db.to_str().unwrap(),
+                "--project-root", non_git.to_str().unwrap(),
+                "--jcodemunch-index-dir", s.index_dir.to_str().unwrap(),
+                "--jcodemunch-url", mock.url(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an unverifiable head must refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("cannot verify jcodemunch index freshness"),
+            "the third message must be distinct from the index refusals; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "no index fault has been established, so no index marker may be \
+             emitted; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// §4.2 — the derived identity must reach the wire
+// -----------------------------------------------------------------------
+
+/// Close the loop between §4.2 and the detector query.
+///
+/// It is not enough that `resolve_repo_id` returns the right string in a unit
+/// test: the id the detector actually SENDS as `"repo"` must be that same
+/// derived value, and the id the gate PROBES must be that same value too. A
+/// plausible wiring slip is for an override to reach the ops constructor while
+/// the gate silently keeps checking the derived path — which would gate one
+/// index and query another, re-opening exactly the vacuity the gate closes.
+mod wire_identity {
+    use super::*;
+    use crate::common::index_fixture::{
+        expected_repo_id, index_db_path, init_git_repo_with_one_commit, write_index_db,
+    };
+
+    /// Spawn a jcodemunch mock that RECORDS every `tools/call` arguments
+    /// object it is handed, returning the shared log alongside the server.
+    ///
+    /// `spawn_mock_mcp`'s responder is bounded `Fn(&Value) -> Option<Value> +
+    /// Send + Sync + 'static`, so it can close over shared state. There is no
+    /// existing recorder helper in this file to reuse — the other mock call
+    /// sites merely INSPECT their args — so the capture is written here.
+    fn spawn_recording_mock() -> (MockServer, Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+        let calls: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&calls);
+        let mock = spawn_mock_mcp(move |args| {
+            sink.lock().expect("record call args").push(args.clone());
+            // A canned layer violation keeps PLAYER's dispatch path alive, so
+            // the wire call this test observes is a real detector query.
+            Some(serde_json::json!({
+                "violations": [{
+                    "from": "crates/reify-cli",
+                    "to": "crates/reify-kernel",
+                    "from_symbol": "reify_cli::main",
+                    "to_symbol": "reify_kernel::solver::Solver::solve",
+                    "allowed": false,
+                    "rule_index": 0
+                }]
+            }))
+        });
+        (mock, calls)
+    }
+
+    /// Every recorded call that carries a `repo` field, as strings.
+    fn recorded_repos(calls: &Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Vec<String> {
+        calls
+            .lock()
+            .expect("read recorded calls")
+            .iter()
+            .filter_map(|args| args.get("repo").and_then(|r| r.as_str()).map(str::to_string))
+            .collect()
+    }
+
+    struct Fixture {
+        _tmp: tempfile::TempDir,
+        repo: std::path::PathBuf,
+        index_dir: std::path::PathBuf,
+        tasks_file: std::path::PathBuf,
+        runs_db: std::path::PathBuf,
+        live_head: String,
+    }
+
+    fn fixture() -> Fixture {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+        let index_dir = tmp.path().join("code-index");
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+        let live_head = init_git_repo_with_one_commit(&repo);
+        let tasks_file = write_tasks_json(tmp.path(), &[]);
+        let runs_db = write_empty_runs_db(tmp.path());
+        Fixture { _tmp: tmp, repo, index_dir, tasks_file, runs_db, live_head }
+    }
+
+    impl Fixture {
+        fn run(&self, url: &str, extra: &[&str]) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args([
+                "--pattern", "PLAYER",
+                "--jcodemunch-url", url,
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+                "--jcodemunch-index-dir", self.index_dir.to_str().unwrap(),
+            ]);
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+    }
+
+    /// With no `--jcodemunch-repo`, the id on the wire must be the §4.2 derived
+    /// identity for the project root — and specifically NOT the legacy
+    /// git-identity default this task removed.
+    #[test]
+    fn derived_repo_id_reaches_the_wire() {
+        let f = fixture();
+        let derived = expected_repo_id(&f.repo);
+        write_index_db(&f.index_dir, &derived, Some(&f.live_head), 2);
+
+        let (mock, calls) = spawn_recording_mock();
+        let out = f.run(mock.url(), &[]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "fresh index must admit the run; stderr:\n{stderr}"
+        );
+
+        let repos = recorded_repos(&calls);
+        assert!(
+            !repos.is_empty(),
+            "no jcodemunch call carrying a `repo` was observed — the detector \
+             never queried, so this test would be vacuous; stderr:\n{stderr}"
+        );
+        for repo in &repos {
+            assert_eq!(
+                repo, &derived,
+                "the wire must carry the §4.2 derived identity; recorded {repos:?}"
+            );
+            assert_ne!(
+                repo, "leodearden/reify",
+                "the removed legacy git-identity default must never reach the wire"
+            );
+        }
+    }
+
+    /// `--jcodemunch-repo` must reach BOTH consumers: the wire AND the gate.
+    ///
+    /// The index is written ONLY at the override's flattened filename and
+    /// deliberately NOT at the derived path, so admission is itself the proof
+    /// that the gate probed the override — had it kept checking the derived
+    /// path it would have found no index and refused with E_JC_INDEX_EMPTY.
+    #[test]
+    fn override_repo_id_reaches_both_the_wire_and_the_gate() {
+        let f = fixture();
+        let override_id = "my/custom-repo";
+        let override_db = index_db_path(&f.index_dir, override_id);
+        write_index_db(&f.index_dir, override_id, Some(&f.live_head), 2);
+        assert_eq!(
+            override_db.file_name().unwrap().to_str().unwrap(),
+            "my-custom-repo.db",
+            "the override's slash must be flattened for the on-disk filename"
+        );
+        assert!(
+            !index_db_path(&f.index_dir, &expected_repo_id(&f.repo)).exists(),
+            "no index at the DERIVED path: admission must be attributable to \
+             the gate probing the override"
+        );
+
+        let (mock, calls) = spawn_recording_mock();
+        let out = f.run(mock.url(), &["--jcodemunch-repo", override_id]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the gate must probe the OVERRIDE's index, not the derived path; \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_EMPTY") && !stderr.contains("E_JC_INDEX_STALE"),
+            "the override's index is fresh, so neither marker may appear; \
+             stderr:\n{stderr}"
+        );
+
+        let repos = recorded_repos(&calls);
+        assert!(!repos.is_empty(), "the detector never queried; stderr:\n{stderr}");
+        for repo in &repos {
+            assert_eq!(
+                repo, override_id,
+                "the override must reach the wire verbatim; recorded {repos:?}"
+            );
+        }
     }
 }
