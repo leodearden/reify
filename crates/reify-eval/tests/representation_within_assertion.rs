@@ -448,6 +448,189 @@ fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
     );
 }
 
+/// INV-SF-4, shipped-binary corollary: a REGISTERED kernel that cannot produce
+/// the measurement must not count as one that can.
+///
+/// This is the shape the `Engine::new(_, None)` gates above cannot reach, and
+/// the reason `unmeasured_reason`'s arm 1 asks about CAPABILITY rather than
+/// about `default_kernel_name.is_none()`.  On a stub-mode (no-OCCT) CLI binary
+/// the registry is NOT empty — `reify-kernel-manifold`'s `inventory::submit!`
+/// is unconditional and `reify-cli`'s `extern crate reify_kernel_manifold as _;`
+/// keeps the `"manifold"` key present — so `pick_lexmin_brep_kernel`'s
+/// `.or_else(|| registered.values().next())` fallback hands the engine a
+/// Mesh-only default and `default_kernel_name.is_none()` is false.  Under the
+/// old discriminator that sent stub-mode `reify build` into arm 2 ("run `reify
+/// check`") and stub-mode `reify check` into arm 3 ("check that the subject
+/// declares a realization") — the first a dead end on that binary, the second a
+/// fresh INV-SF-4 misattribution against a subject that demonstrably DOES
+/// declare a realization.
+///
+/// OpenVDB stands in for that Mesh-only default: it is a REAL inventory
+/// registration (reify-eval normal-deps `reify-kernel-openvdb`, so its
+/// `inventory::submit!` fires in this binary without a linker anchor) whose
+/// descriptor claims only `Voxel`/`Mesh` pairs — never `(_, ReprKind::BRep)`.
+/// It is therefore exactly "a registered adapter that has declared it cannot
+/// tessellate the subject", which is what arm 1 must now recognise.
+///
+/// Deliberately NOT `reify_kernel_manifold::*`: reify-eval's `Cargo.toml`
+/// documents a dead-strip invariant forbidding other test binaries from
+/// referencing a manifold symbol, since doing so would pull its
+/// `inventory::submit!` in and shift registry-size / default-kernel assertions
+/// elsewhere in this crate.  `ensure_openvdb_kernel()` reaches its adapter
+/// through the registry by name, anchoring nothing.
+///
+/// Skips cleanly when OpenVDB is not registered (`cfg(not(has_openvdb))` and no
+/// `stub_register`), matching the OCCT-gated tests further down this file.
+#[test]
+fn registered_kernel_that_cannot_tessellate_is_not_measurement_capable() {
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "registered_mesh_only_kernel");
+    let mut engine = make_simple_engine();
+    if !engine.ensure_openvdb_kernel() {
+        eprintln!(
+            "skipping registered-but-incapable-kernel gate: OpenVDB is not in \
+             this binary's inventory registry (cfg(not(has_openvdb)))"
+        );
+        return;
+    }
+
+    // Capture ON, so `capture_repr_tol` cannot be what selects the arm: this
+    // isolates the capability discriminator exactly as
+    // `measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check`
+    // isolates it for the empty-registry shape.
+    engine.set_capture_repr_tol(true);
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "SphereCheck" && e.id.index == 0)
+        .expect("must have SphereCheck#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "C1: a kernel that cannot tessellate the subject measures nothing ⇒ \
+         Indeterminate, never a false Violated"
+    );
+
+    let attributions: Vec<&reify_core::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("SphereCheck#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one diagnostic must name the constraint. Got: {:#?}",
+        result.diagnostics
+    );
+    let attribution = attributions[0];
+
+    assert_eq!(
+        attribution.severity,
+        Severity::Info,
+        "severity is unaffected by which remedy applies. Got: {attribution:#?}"
+    );
+    assert_eq!(
+        attribution.code,
+        Some(DiagnosticCode::ConstraintIndeterminate),
+        "INV-SF-6: coded on this branch too. Got: {attribution:#?}"
+    );
+    assert!(
+        attribution.message.contains("geometry kernel"),
+        "INV-SF-4: the registered kernel has DECLARED it cannot produce a BRep \
+         tessellation, so the missing capability is what must be named. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        !attribution.message.contains("reify check"),
+        "the dead end this arm exists to prevent: `reify check` on the same \
+         binary has no capable kernel either. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        !attribution
+            .message
+            .contains("check that the subject declares a realization"),
+        "arm 3's wording would be a fresh INV-SF-4 misattribution here — \
+         OCCT_SOURCE_COARSE demonstrably DOES declare a realization; what is \
+         missing is a kernel able to tessellate it. Got: {:?}",
+        attribution.message
+    );
+}
+
+/// The shipped-binary shape at engine level: the remedy `reify build` /
+/// `reify check` / the GUI actually hand a user must match what THIS binary's
+/// inventory registry can do.
+///
+/// `Engine::with_registered_kernel` is the constructor every constraint-
+/// dispatching production surface uses (`cmd_build`, `cmd_check`'s assertion
+/// branch, the GUI session), so this is the one gate that runs the real
+/// selection path rather than a hand-assembled kernel map.  Expected arm is
+/// DERIVED from the registry rather than hardcoded, because the answer legitimately
+/// differs by build mode and pinning either wording unconditionally would
+/// assert something false in the other:
+/// - OCCT build → a BRep-capable adapter is registered → the terminal remedy is
+///   `reify check`, which will register that kernel and measure.
+/// - stub build → no adapter claims any `(_, ReprKind::BRep)` pair, yet the
+///   registry is NOT empty (openvdb here; `"manifold"` on the CLI binary), so
+///   `pick_lexmin_brep_kernel`'s `.or_else(|| registered.values().next())`
+///   fallback still yields `Some(..)`.  RED against the pre-fix
+///   `default_kernel_name.is_none()` discriminator, which read that `Some` as
+///   "a kernel can measure" and offered `reify check` — a remedy that cannot
+///   answer on that binary.
+#[test]
+fn registered_kernel_shape_names_a_remedy_this_binary_can_honour() {
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "registered_kernel_shape");
+    let binary_can_tessellate_brep = reify_eval::kernel_registry::registry()
+        .values()
+        .any(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep));
+
+    // The `reify build` surface: registered kernels, capture never enabled.
+    let mut engine =
+        reify_eval::Engine::with_registered_kernel(Box::new(reify_constraints::SimpleConstraintChecker));
+    let result = engine.check(&compiled);
+
+    let attributions: Vec<&reify_core::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("SphereCheck#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one diagnostic must name the constraint. Got: {:#?}",
+        result.diagnostics
+    );
+    let message = &attributions[0].message;
+
+    assert!(
+        message.contains("does not measure"),
+        "the surface is the reason under every remedy. Got: {message:?}"
+    );
+    if binary_can_tessellate_brep {
+        assert!(
+            message.contains("reify check"),
+            "a BRep-capable adapter is registered on this binary, so `reify check` \
+             really can answer and must be named. Got: {message:?}"
+        );
+    } else {
+        assert!(
+            message.contains("geometry kernel"),
+            "no registered adapter claims a BRep pair on this binary, so nothing \
+             here can measure and the remedy must be the kernel — not a second \
+             subcommand that is equally unable to answer. Got: {message:?}"
+        );
+        assert!(
+            !message.contains("reify check"),
+            "the two-hop dead end this task exists to remove: stub-mode `reify \
+             build` sent to `reify check`, whose only answer is `build with \
+             OCCT`. Got: {message:?}"
+        );
+    }
+}
+
+
 /// Minimal stub `GeometryKernel` whose only job is to make
 /// `default_kernel_name` be `Some(..)` — i.e. "a geometry kernel IS
 /// registered" — without requiring OCCT.

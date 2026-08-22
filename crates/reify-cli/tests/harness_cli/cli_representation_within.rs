@@ -133,13 +133,25 @@ fn check_representation_within_violated_under_occt() {
 ///
 /// The VERDICT and the surface attribution are OCCT-independent: the map is
 /// empty on the build surface in both kernel modes. The REMEDY is not, and is
-/// gated accordingly — `Engine::unmeasured_reason` tests kernel presence before
-/// `capture_repr_tol` so that whatever it offers can actually work on the
-/// binary in hand. With OCCT the terminal remedy is `reify check` (it will
+/// gated accordingly — `Engine::unmeasured_reason` tests kernel CAPABILITY
+/// before `capture_repr_tol` so that whatever it offers can actually work on
+/// the binary in hand. With OCCT the terminal remedy is `reify check` (it will
 /// register the kernel and measure); in stub mode `reify check` is a dead end,
 /// so the remedy jumps straight to the kernel. Asserting the `reify check`
 /// token unconditionally would pass in stub mode while recommending something
 /// that cannot answer there — exactly the defect class this test guards.
+///
+/// CAPABILITY, not presence: this binary's registry is never empty in either
+/// mode. `reify-kernel-manifold`'s `inventory::submit!` is unconditional and
+/// `main.rs`'s `extern crate reify_kernel_manifold as _;` states verbatim that
+/// the `"manifold"` key is always present, so a stub-mode binary still gets
+/// `default_kernel_name == Some("manifold")` via `pick_lexmin_brep_kernel`'s
+/// lex-min fallback. An earlier revision keyed arm 1 on
+/// `default_kernel_name.is_none()`, which is therefore false on EVERY shipped
+/// binary — the stub-mode branch below would have failed (arm 2 fires, naming
+/// `reify check`), and it passed only because the local build has OCCT. The
+/// discriminator now asks whether any registered adapter claims a
+/// `(_, ReprKind::BRep)` pair, which OCCT alone does.
 ///
 /// `--verbose` is deliberately not passed — plain `reify build` already prints
 /// both the status line and the reason.

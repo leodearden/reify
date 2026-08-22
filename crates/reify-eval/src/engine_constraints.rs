@@ -14,7 +14,8 @@ use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
     ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
-    PersistentMap, Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
+    PersistentMap, ReprKind, Satisfaction, StructureInstanceData, StructureTypeId, Value,
+    ValueMap,
 };
 
 use crate::topology_selectors;
@@ -673,34 +674,57 @@ impl Engine {
     /// The reason clause for a `RepresentationWithin` Indeterminate on a run
     /// whose `achieved_repr_tol` is empty (task-6169 ζ, C-SURFACE 1).
     ///
-    /// A pure function of two engine fields, because an empty map has THREE
+    /// A pure function of two engine properties, because an empty map has THREE
     /// distinct causes and each has a different fix:
-    ///   1. **No geometry kernel is registered** — this run cannot tessellate
-    ///      anything at all (a stub-mode binary, whichever subcommand asked) →
-    ///      the remedy is a kernel.
-    ///   2. **Kernel present, capture OFF** — nobody ever asked for a
+    ///   1. **No kernel able to tessellate the subject is registered** — this
+    ///      run cannot measure anything at all (a stub-mode binary, whichever
+    ///      subcommand asked) → the remedy is a kernel.
+    ///   2. **Capable kernel present, capture OFF** — nobody ever asked for a
     ///      measurement on this surface (`reify build`, `reify eval`) → the
     ///      remedy is `reify check`.
-    ///   3. **Kernel present, capture ON, still nothing measured** —
+    ///   3. **Capable kernel present, capture ON, still nothing measured** —
     ///      tessellation ran (or would have) but produced no achieved deviation
     ///      for THIS subject.
     ///
-    /// Kernel presence is tested FIRST, ahead of `capture_repr_tol`, so the
+    /// Kernel capability is tested FIRST, ahead of `capture_repr_tol`, so the
     /// remedy handed to the user is always TERMINAL.  Testing capture first
     /// sent a stub-mode `reify build` into arm 2 — "run `reify check`" — whose
     /// only answer on that same binary is arm 1's "build with OCCT": a two-hop
     /// dead end, and a milder instance of the very defect class C-SURFACE 1
     /// exists to remove.
     ///
-    /// `default_kernel_name.is_none()` is an exact discriminator for "no
-    /// geometry kernel": `with_prelude` maps `None` → `None` (engine_admin.rs),
-    /// and `with_registered_kernels` derives it from `pick_lexmin_brep_kernel`,
-    /// whose helper ends in `.or_else(|| registered.values().next())` and so
-    /// yields `None` iff the registry is empty — the documented stub-mode
-    /// shape.  Kernel-absence is read as a fact about the BINARY rather than
-    /// merely this engine because every surface that both dispatches
-    /// constraints and can carry a `RepresentationWithin` builds its engine
-    /// with `Engine::with_registered_kernel` (`cmd_check`'s assertion branch,
+    /// ## Why capability, not `default_kernel_name.is_none()`
+    ///
+    /// An earlier revision discriminated on `default_kernel_name.is_none()`.
+    /// That is **never true on any shipped binary**, so arm 1 was dead code on
+    /// exactly the surfaces it was written for.  `reify-kernel-manifold`'s
+    /// `inventory::submit!` is UNCONDITIONAL (no `cfg` gate — its `manifold3d`
+    /// dep compiles its own C++ tree, so there is no "manifold absent" case),
+    /// and `crates/reify-cli/src/main.rs`'s `extern crate reify_kernel_manifold
+    /// as _;` states verbatim that the `"manifold"` key is always present in
+    /// the binary's registry.  `pick_lexmin_brep_kernel` ends in
+    /// `.or_else(|| registered.values().next())`, so a stub-mode (no-OCCT)
+    /// binary still gets `default_kernel_name == Some("manifold")` — a
+    /// Mesh-only kernel that cannot tessellate the B-rep subject.  The old test
+    /// coverage passed only because `Engine::new(checker, None)` (unit tests)
+    /// is the sole shape that reaches an empty registry.
+    ///
+    /// So the question arm 1 must actually ask is not "is *a* kernel
+    /// registered" but "is a kernel that can produce the measurement
+    /// registered".  OCCT is the only BRep producer in the workspace
+    /// (`reify-kernel-occt`'s submit is `cfg(has_occt)`-gated; manifold claims
+    /// Mesh only, openvdb Voxel/Mesh), so `supports_any_repr(ReprKind::BRep)`
+    /// over this engine's own kernels is an exact test for "this binary was
+    /// built with OCCT".
+    ///
+    /// Capability is read off the static registry keyed by this engine's own
+    /// `geometry_kernels` names, because `GeometryKernel` is a behavioural
+    /// trait with no descriptor accessor — see
+    /// [`Engine::has_repr_capable_kernel`].  Kernel-absence is still read as a
+    /// fact about the BINARY rather than merely this engine because every
+    /// surface that both dispatches constraints and can carry a
+    /// `RepresentationWithin` builds its engine with
+    /// `Engine::with_registered_kernel` (`cmd_check`'s assertion branch,
     /// `cmd_build`, the GUI session); `eval()` never dispatches constraints, so
     /// the CLI's deliberately kernel-free `eval` engines cannot reach here.
     ///
@@ -719,10 +743,11 @@ impl Engine {
     /// fact and points at the actionable check rather than asserting a cause it
     /// has not established.
     fn unmeasured_reason(&self) -> &'static str {
-        if self.default_kernel_name.is_none() {
+        if !self.has_repr_capable_kernel() {
             "this run does not measure representation tolerance because no \
-             geometry kernel is registered; a geometry kernel is required — \
-             build with OCCT to evaluate this RepresentationWithin bound"
+             geometry kernel able to tessellate the subject is registered; \
+             such a geometry kernel is required — build with OCCT to evaluate \
+             this RepresentationWithin bound"
         } else if !self.capture_repr_tol {
             "this evaluation surface does not measure representation tolerance \
              (no tessellation ran, so no achieved deviation exists for the \
@@ -734,6 +759,65 @@ impl Engine {
              representation tolerance; check that the subject declares a \
              realization"
         }
+    }
+
+    /// Whether this engine holds a geometry kernel that can produce the
+    /// representation measurement a `RepresentationWithin` bound needs — i.e.
+    /// one claiming at least one `(_, ReprKind::BRep)` pair.
+    ///
+    /// This is the arm-1 discriminator of [`Engine::unmeasured_reason`]; see
+    /// that method's "Why capability, not `default_kernel_name.is_none()`"
+    /// section for why kernel PRESENCE is the wrong question (manifold
+    /// registers unconditionally, so no shipped binary has an empty registry).
+    ///
+    /// ## Why the descriptor is fetched from the static registry
+    ///
+    /// `self.geometry_kernels` is a `BTreeMap<String, Box<dyn GeometryKernel>>`
+    /// and [`reify_ir::GeometryKernel`] is a purely behavioural trait
+    /// (`execute` / `execute_with_history` / `query`) with no capability
+    /// accessor — the descriptor lives on the `KernelRegistration` record, not
+    /// on the kernel object.  Keying the memoized registry by this engine's own
+    /// kernel NAMES therefore asks the capability question about the kernels
+    /// THIS engine actually holds, while still reading the answer from the one
+    /// place adapters declare it.  Adding a descriptor field to `Engine` would
+    /// say the same thing at the cost of a construction-site change in every
+    /// `Engine::with_*` constructor.
+    ///
+    /// ## An unregistered kernel is not evidence of INcapacity
+    ///
+    /// A kernel whose name is absent from the static registry counts as
+    /// capable.  The only shape that produces one is `Engine::new` /
+    /// `with_prelude` with a caller-supplied `Some(kernel)`, which inserts
+    /// under the synthetic `Engine::DEFAULT_KERNEL_NAME` key documented to
+    /// collide with no real adapter name — a unit-test seam, never a CLI or
+    /// GUI surface (both build via `with_registered_kernel`).  Such an adapter
+    /// has DECLARED nothing, so reading it as incapable would have the engine
+    /// assert a fact it has not established — the same INV-SF-4 sin ζ removes.
+    /// The rule is therefore: judge a kernel by the capabilities it declared,
+    /// and give one that declared none the benefit of the doubt.  Concretely
+    /// this keeps `Engine::new(checker, Some(stub))` standing in for a
+    /// measurement-capable `reify build` engine in tests that must run in both
+    /// kernel modes.
+    ///
+    /// An EMPTY `geometry_kernels` still yields `false` — there is no adapter
+    /// to extend any benefit to — preserving the stub-mode semantics the
+    /// previous discriminator had for `Engine::new(checker, None)`.
+    ///
+    /// ## Cost
+    ///
+    /// `(reg.descriptor)()` allocates a fresh `CapabilityDescriptor` per
+    /// examined kernel, exactly as `pick_lexmin_brep_kernel` does.  That is
+    /// acceptable here for the same reason it is there — and more so: this runs
+    /// only on the cold path where a `RepresentationWithin` already came back
+    /// Indeterminate with an empty map, never on the C2 hot path, which returns
+    /// before any of this.
+    fn has_repr_capable_kernel(&self) -> bool {
+        let registry = crate::kernel_registry::registry();
+        self.geometry_kernels.keys().any(|name| {
+            registry
+                .get(name.as_str())
+                .is_none_or(|reg| (reg.descriptor)().supports_any_repr(ReprKind::BRep))
+        })
     }
 
     /// Replace occurrences of the raw ConstraintNodeId string in diagnostic
