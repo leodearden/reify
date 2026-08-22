@@ -23,7 +23,7 @@
 //! values converge on the same point, failing every assertion below.
 
 use reify_constraints::{DimensionalSolver, build_centrality_objective};
-use reify_core::{DimensionVector, Type, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSet, ResolutionProblem,
     SolveResult, Value, ValueMap,
@@ -232,4 +232,146 @@ fn lambda_half_strictly_between_anchors() {
         t_lambda_half,
         t_lambda0,
     );
+}
+
+// ── γ + STRICT auto (task #5711 amendment 2) ──────────────────────────────
+//
+// COVERAGE GAP, verified before writing these: γ + a STRICT auto had ZERO
+// coverage anywhere in the workspace. `examples/cost_robustness_tradeoff.ri`,
+// `examples/continuous_cost_min.ri`,
+// `crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs` and this
+// file's own `base_problem` ALL set `free: true`, which skips
+// `finalise_uniqueness` — and therefore `verify_uniqueness` — entirely; a grep
+// over `crates/reify-eval` finds no eval-level γ + strict-auto test either. The
+// only tracked γ + strict-auto artifact is
+// `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`, and nothing
+// asserts on its eval output (it is pinned only in verify.sh's grammar-corpus
+// list and as a historical pre-γ capability-manifest row). The two tests below
+// close that gap at the solver level, for BOTH interval shapes.
+
+/// `base_problem`'s shape with the two differences that matter for
+/// `verify_uniqueness`: `free: false` (so `finalise_uniqueness` actually runs
+/// the uniqueness check) and `bounds: None` (the PRODUCTION shape — no `.ri`
+/// surface ever sets `AutoParam.bounds`; `engine_eval.rs` always emits `None`,
+/// which is exactly why the pre-#5711 `effective_bounds` anchor sat at 9m for a
+/// mm-scale part).
+///
+/// `upper` supplies the optional `t < upper` constraint: `Some(0.004)` gives the
+/// two-sided `1mm < t < 4mm` bracket, `None` the one-sided `t > 1mm` shape.
+fn strict_problem(t_id: &ValueCellId, lambda: f64, upper: Option<f64>) -> ResolutionProblem {
+    let mut constraints = vec![(constraint_id("CostRobustnessTradeoff", 0), gt_expr(t_id, 0.001))];
+    if let Some(hi) = upper {
+        constraints.push((constraint_id("CostRobustnessTradeoff", 1), lt_expr(t_id, hi)));
+    }
+    ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: t_id.clone(),
+            param_type: Type::Scalar { dimension: DimensionVector::LENGTH },
+            bounds: None,
+            free: false,
+        }],
+        constraints,
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::cost_robustness_tradeoff(
+            money_expr_x_per_mm(t_id),
+            lambda,
+        )),
+        functions: vec![].into(),
+    }
+}
+
+/// A STRICT auto bracketed on BOTH sides by the user's own constraints
+/// (`1mm < t < 4mm`) must solve `unique: true` under γ, for EVERY λ.
+///
+/// Asserted across λ ∈ {0.0, 0.5, 1.0} rather than one value: MEASURED, all
+/// three regress identically, and λ=1 regressing is what identifies the
+/// mechanism. At λ=1 the blend is a positive-affine transform of cost alone, so
+/// "λ<1 pulls the blend off the min-cost point" cannot explain it; the real
+/// cause is that `solve_cost_robustness_tradeoff` is SEED-DEPENDENT by
+/// construction (all three of its solves share one deterministic seed for
+/// reproducibility, never seed-invariance, and a floor-free cost-minimise whose
+/// optimum sits infinitesimally past the boundary hits
+/// `solve_core_with_sd_tolerance`'s drift-fallback and returns THE SEED). A
+/// perturbation-based uniqueness check therefore compares f(seed_A) against
+/// f(seed_B) for a seed-dependent f — structurally inapplicable on this path.
+///
+/// RED today: all three λ return `Infeasible` carrying
+/// `ConstraintNonUnique` ("strict auto parameter resolution is not uniquely
+/// determined"). On main all three return `Solved { unique: true }` with
+/// t = 2.5mm.
+///
+/// The assertion pins the Solved/unique/in-bracket CONTRACT rather than 2.5mm
+/// exactly: the precise point is a blend/seed artifact, not a PRD invariant.
+#[test]
+fn gamma_strict_auto_two_sided_bracket_is_solved() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+
+    for lambda in [0.0_f64, 0.5, 1.0] {
+        let problem = strict_problem(&t_id, lambda, Some(0.004));
+        match DimensionalSolver.solve(&problem) {
+            SolveResult::Solved { values, unique } => {
+                assert!(
+                    unique,
+                    "λ={lambda}: a both-sides-bracketed strict auto is well-determined under \
+                     §11.6 test (2) — the blend's argmin over the user's own interval — so it \
+                     must report unique: true"
+                );
+                let t_si = values
+                    .get(&t_id)
+                    .and_then(|v| v.as_f64())
+                    .expect("solved value for t missing or non-numeric");
+                assert!(
+                    (0.001..=0.004).contains(&t_si),
+                    "λ={lambda}: t must land inside the 1mm..4mm bracket, got {t_si:.6e} m"
+                );
+            }
+            SolveResult::Infeasible { diagnostics } => {
+                panic!(
+                    "λ={lambda}: expected Solved for a both-sides-bracketed strict auto under γ \
+                     (main returns Solved{{unique:true, t=2.5mm}}); the perturbation re-solve is \
+                     structurally inapplicable to a seed-dependent dispatch and must not \
+                     manufacture a non-uniqueness verdict. diagnostics: {diagnostics:?}"
+                );
+            }
+            other => panic!("λ={lambda}: expected Solved, got {other:?}"),
+        }
+    }
+}
+
+/// The SAME γ + strict shape with the upper bound REMOVED (`t > 1mm` only,
+/// mirroring `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`) must
+/// KEEP reporting `ConstraintNonUnique`.
+///
+/// This test is GREEN today and must STAY green — its already-green status is
+/// DELIBERATE, not accidental. It is the guard that stops a future maintainer
+/// "simplifying" `strict_autos_constraint_bracketed` into a blanket
+/// `return true` for γ: that was MEASURED on the prd-gate fixture above to
+/// convert an existing loud `error: strict auto parameter resolution is not
+/// uniquely determined` into a silent `thickness = 10 m` — 10 m being
+/// `default_bounds_for(Length)`'s ceiling, i.e. a value pinned by a
+/// SOLVER-INTERNAL default the user never authored, which is precisely the
+/// non-determinedness §11.6 exists to catch.
+#[test]
+fn gamma_strict_auto_one_sided_stays_non_unique() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let problem = strict_problem(&t_id, 0.5, None);
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+                "a one-sided strict auto's upper side comes from default_bounds_for, not the \
+                 user's model, so the resolved value is default-bounds-determined and must \
+                 stay ConstraintNonUnique; got: {diagnostics:?}"
+            );
+        }
+        other => panic!(
+            "expected Infeasible{{ConstraintNonUnique}} for a ONE-SIDED strict auto under γ \
+             (byte-identical to main); got {other:?}. If this is Solved, the bracketed \
+             predicate has been weakened into a blanket γ abstention."
+        ),
+    }
 }
