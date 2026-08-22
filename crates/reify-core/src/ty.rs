@@ -125,14 +125,53 @@
 //! because the measurement is over constructor-ARG sites and this param has
 //! none: no `.ri` file constructs a `Bead` today (the `Toolpath` / `Bead` values
 //! are built Rust-side by `toolpath_to_value`, which no conformance walk sees).
-//! Even a literal `.ri` arg stays silent under the ARG-side erasure premise
-//! recorded below — `point3(…)` carries no quantity slot to compare — so only a
-//! `List<Point3<Length>>`-typed value REF trips it today.  THAT PREMISE IS
-//! EXPIRING: task 5344 landed on `main` in `3c4ee5e9ac`, claiming `point3` /
-//! `point2` into the math construction family, which gives `math_fn_result_type`
-//! a real `Type::Point` to return for them.  When that merges, this reach — and
-//! every "no `.ri` source can produce a dimensioned `Type::Point` arg" rationale
-//! in `conformance/mod.rs` — must be RE-MEASURED, not re-asserted (esc-6159-3).
+//! If one ever did, it would NOT stay silent.  An earlier revision of this
+//! paragraph said a literal `.ri` arg could not reach the rule at all, because
+//! `point3(…)` carried no quantity slot to compare, leaving only a
+//! `List<Point3<Length>>`-typed value REF able to trip it.  THAT PREMISE HAS
+//! EXPIRED.  Task 5344 (`3c4ee5e9ac`) claimed `point3` / `point2` into the math
+//! construction family and is now in this branch's BASE, so
+//! `compile_expr_guarded_with_expected_inner` routes those calls through
+//! `math_fn_result_type`, whose collapsed `"vec3" | "vec2" | "point3" | "point2"`
+//! arm returns a real `Type::Point { n, quantity }` — the quantity recovered from
+//! the FIRST argument, i.e. via the same first-element weakness task 5889 owns
+//! (`math_signatures.rs`; see the note there).
+//!
+//! MEASURED at this HEAD, ctor path, every cell at `Severity::Warning`:
+//! `point3(1kg, 0kg, 0kg)` at `param origin : Point3<Length>` emits exactly ONE
+//! `ArgTypeMismatch` — "argument 'origin' has quantity 'Scalar[kg]' but param
+//! 'origin' requires quantity 'Scalar[m]'".  `point3(1m, 0m, 0m)` at
+//! `Point3<Dimensionless>` — and identically at `Point3<Real>`, the
+//! `fdm_slice.ri` spelling — emits exactly ONE `ArgTypeMismatch` requiring
+//! quantity 'Real': a live `.ri`-level instance of the param-side tightening
+//! ruled above, and the same-cell claim for `Real` exercised end to end.
+//! `point3(0m, 0m, 0m)` at `Point3<Length>` stays CLEAN.
+//!
+//! So the zero-new-diagnostics reach claim SURVIVES the expiry — the corpus gate
+//! was re-run green at this HEAD after the rebase — but its former JUSTIFICATION
+//! ("no `.ri` source can produce a dimensioned `Type::Point` arg") does NOT, and
+//! must not be re-asserted anywhere.  It is still written, and still false, at
+//! every OTHER site task 6436 enumerates.  Three of them, so a reader arriving
+//! here is not misled by them:
+//!
+//!   * the "Why the ARG side is tolerant rather than strict" paragraph BELOW in
+//!     this file, which still leads with `point3(…)` as one of three erasure
+//!     routes.  Only that ONE route is retired; the other two — a
+//!     `Matrix<3,3,MomentOfInertia>` spelled `List<List<Real>>` at every corpus
+//!     site, and a `Field`'s slots erasing to `Field<Real, Real>` — are
+//!     untouched by task 5344, so the arg-side tolerance RULING stands and it is
+//!     only its stated basis that needs re-arguing;
+//!   * the Point-arm "why this is an in-module unit test and not a `.ri` fixture"
+//!     rationales in `conformance/mod.rs`;
+//!   * the Point-family fixture notes in `struct_ctor_field_conformance_tests.rs`.
+//!
+//! Reconciling all of those — and converting the Point-arm probes to `.ri`
+//! fixtures, which the cells above show is now possible for the first time — is
+//! OWNED BY TASK 6436, filed from esc-6159-3 for exactly that purpose.  This
+//! section is deliberately the ONLY site task 6159 corrects, because it is the
+//! only one 6159 itself authored: the point is that a stale claim is FLAGGED
+//! rather than carried silently, not that it is fixed everywhere here.
+//!
 //! The `Real` quantity slots in `stdlib/solver_elastic.ri:536/547` are out of
 //! reach for a different and durable reason: they sit inside `Field<…>`, and the
 //! `Field` arm below does not recurse into its `domain` / `codomain`.
