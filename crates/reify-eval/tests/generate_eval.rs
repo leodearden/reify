@@ -379,11 +379,11 @@ fn geometry_list_element_k_is_the_realization_unrolled_at_index_k() {
     let mut expected: Vec<Option<reify_core::identity::RealizationNodeId>> = vec![None; 3];
     for template in &compiled.templates {
         for realization in &template.realizations {
-            if let Some(binding) = &realization.list_binding {
-                if binding.list_name == "holes" {
-                    assert_eq!(binding.len, 3, "fixture drift: holes should have len 3");
-                    expected[binding.index] = Some(realization.id.clone());
-                }
+            if let Some(binding) = &realization.list_binding
+                && binding.list_name == "holes"
+            {
+                assert_eq!(binding.len, 3, "fixture drift: holes should have len 3");
+                expected[binding.index] = Some(realization.id.clone());
             }
         }
     }
