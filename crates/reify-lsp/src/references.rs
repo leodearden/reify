@@ -3324,6 +3324,84 @@ structure S {
         );
     }
 
+    // --- task #5579 step-3: member-access .field segment refuses inside an
+    // indexed-sub domain expression ---
+
+    #[test]
+    fn member_access_field_segment_refuses_in_indexed_sub_domain() {
+        // Fixture: `param count` collides in name with the `.count` member-access
+        // segment inside the indexed-sub's domain expression `0..cfg.count`. The
+        // cursor on that `.count` segment must refuse (None) on all four
+        // producers — the identical wrong-rename vector as
+        // `member_access_field_segment_refuses_when_colliding_with_local`, just
+        // reached through `SubDecl::index_domain` instead of a plain `let` value.
+        let source = "\
+structure S {
+    param count: Int = 4
+    sub cfg = Cfg()
+    sub xs[i in 0..cfg.count] = Hole(bore: 3mm)
+    let other: Int = count
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("indexdom"));
+        // Indexed subs always carry exactly the interim #5482 diagnostic (see
+        // `collect_references_reaches_indexed_sub_domain_use` above) — not a
+        // parse failure, just a "not yet elaborated" marker.
+        assert_eq!(
+            parsed.errors.len(),
+            1,
+            "expected exactly the interim #5482 indexed-sub diagnostic: {:?}",
+            parsed.errors
+        );
+        assert!(
+            parsed.errors[0].message.contains("#5482"),
+            "expected the interim #5482 indexed-sub diagnostic, got: {:?}",
+            parsed.errors
+        );
+
+        // d[0] = `param count` decl, d[1] = `.count` segment in `cfg.count`,
+        // d[2] = the unrelated `let other` use.
+        let d = occurrences(source, "count");
+        assert_eq!(
+            d.len(),
+            3,
+            "1 param decl + 1 member-access segment + 1 unrelated use"
+        );
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+        let uri = Url::parse("file:///indexdom.ri").unwrap();
+
+        // All four producers must refuse the `.count` segment inside the domain.
+        assert!(
+            prepare_rename(source, &parsed, member_pos).is_none(),
+            "prepare_rename must refuse .field segment inside indexed-sub domain"
+        );
+        assert!(
+            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
+            "compute_rename must refuse .field segment inside indexed-sub domain"
+        );
+        assert!(
+            compute_document_highlights(source, &parsed, member_pos).is_none(),
+            "compute_document_highlights must refuse .field segment inside indexed-sub domain"
+        );
+        assert!(
+            collect_references(source, &parsed, member_pos, true).is_none(),
+            "collect_references must refuse .field segment inside indexed-sub domain"
+        );
+
+        // Over-refusal guard: the BASE `cfg` (start of `cfg.count`) must still
+        // resolve as a Sub binding — the guard clause must refuse only the
+        // `.count` segment, not the whole domain expression.
+        let cfg_off = source.find("cfg.count").expect("cfg.count present");
+        let cfg_pos = offset_to_position(source, cfg_off as u32);
+        let cfg_set = collect_references(source, &parsed, cfg_pos, false)
+            .expect("cursor on base `cfg` must resolve to a ReferenceSet");
+        assert_eq!(
+            cfg_set.kind,
+            RefSymbolKind::Sub,
+            "base `cfg` resolves as Sub binding"
+        );
+    }
+
     // --- step-1 (β, task 4202): compute_references maps a ReferenceSet to LSP Locations ---
 
     #[test]
