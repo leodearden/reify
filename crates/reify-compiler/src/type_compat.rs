@@ -4688,6 +4688,72 @@ mod tests {
         }
     }
 
+    /// Compile-side pin for the mixed generic / non-generic overload set that
+    /// eval-side
+    /// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`
+    /// (crates/reify-expr/tests/find_matching_compiled_function_tests.rs)
+    /// asserts against. That test claims its promotion "is what compile-side
+    /// `resolve_function_overload` resolves to"; since the whole point of #5685
+    /// is compile/eval agreement, the claim is pinned here rather than left as
+    /// prose. `resolve_function_overload` is `pub(crate)` in a private module,
+    /// so this half can only live compiler-side.
+    ///
+    /// Both candidates land in `matches` (the generic one via
+    /// `type_carries_type_param`, the non-generic one via its trait object), so
+    /// table order alone would hand this to the generic candidate declared
+    /// FIRST. `head_matches` drops it — `Option<T>` is not head-compatible with
+    /// `List<PointLoad>` — leaving exactly one candidate, which is what makes
+    /// this `Resolved` rather than `Ambiguous`.
+    #[test]
+    fn overload_mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object() {
+        let generic_first = make_generic_fn(
+            "f",
+            vec![("x", Type::Option(Box::new(tp("T"))))],
+            &["T"],
+            tp("T"),
+        );
+        let non_generic_second = make_fn(
+            "f",
+            vec![(
+                "x",
+                Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+            )],
+        );
+        let fns = vec![generic_first, non_generic_second];
+        let arg = Type::List(Box::new(Type::StructureRef("PointLoad".to_string())));
+
+        match resolve_function_overload("f", &[arg], &fns) {
+            OverloadResolution::Resolved(matched) => {
+                assert!(
+                    matched.type_params.is_empty(),
+                    "a List<PointLoad> arg must select the NON-generic List<Load> \
+                     candidate even though a wildcard-eligible generic Option<T> \
+                     candidate is declared first — only the former head-matches; \
+                     got a candidate with {} type params",
+                    matched.type_params.len()
+                );
+                assert!(
+                    matches!(&matched.params[0].1, Type::List(inner)
+                        if matches!(**inner, Type::TraitObject(_))),
+                    "expected the List<Load> candidate; got params[0] = {:?}",
+                    matched.params[0].1
+                );
+            }
+            OverloadResolution::Ambiguous(candidates) => panic!(
+                "expected Resolved(f(List<Load>)), got Ambiguous({} candidates) — \
+                 the head tier failed to drop the head-mismatched generic candidate, \
+                 so eval-side head narrowing would disagree with compile-side",
+                candidates.len()
+            ),
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(f(List<Load>)), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(f(List<Load>)), got NoUserFunctions")
+            }
+        }
+    }
+
     /// D4 preservation (task-4232 γ): a BARE `TypeParam` arg (a generic fn body
     /// passing a `T`-typed value to a concrete-param overload) must STILL
     /// resolve after the head-exact-tier narrowing — the narrowing only strips
@@ -5689,9 +5755,10 @@ mod tests {
 
     // ── heads_unifiable: canonical-copy / eval-mirror drift guard (#5685) ────
 
-    /// The shared corpus behind both `sync_drift_check_heads_unifiable_*` tests
-    /// below: `(param, arg, expected, label)`, with at least one case per match
-    /// arm of [`heads_unifiable`].
+    /// The corpus behind
+    /// [`sync_drift_check_heads_unifiable_matches_eval_mirror`] below:
+    /// `(param, arg, expected, label)`, with at least one case per match arm of
+    /// [`heads_unifiable`].
     ///
     /// Each arm's MATCH case is deliberately paired with a NEAR-MISS that must
     /// fall to the `_ => param == arg` catch-all, so an implementation that
@@ -5708,8 +5775,9 @@ mod tests {
     /// erased `Enum` and silently re-introduce the #5685 Option/Result
     /// mis-selection — `expected` is what fails in that case.
     ///
-    /// Extracted as a function rather than inlined so the non-degeneracy canary
-    /// asserts over the REAL corpus instead of over ad-hoc pairs of its own.
+    /// Keep both verdicts represented: a corpus edited down to all-`true` (or
+    /// all-`false`) rows would agree under implementations that had drifted on
+    /// the arms it no longer covers.
     fn heads_unifiable_corpus() -> Vec<(Type, Type, bool, &'static str)> {
         let t = || Type::TypeParam("T".to_string());
         let q = || Type::ScalarParam("Q".to_string());
@@ -6120,31 +6188,5 @@ mod tests {
                  call to different overloads."
             );
         }
-    }
-
-    /// The differential above is only worth its length if the corpus actually
-    /// splits — a corpus edited down to all-`true` (or all-`false`) rows would
-    /// agree under many implementations that had drifted on the arms it no
-    /// longer covers. This asserts both verdicts are represented IN THE REAL
-    /// CORPUS, so the guard cannot silently degenerate into a tautology as the
-    /// corpus is edited.
-    ///
-    /// Only the pinned `expected` column is checked, not either
-    /// implementation's measured verdicts. The differential above already
-    /// asserts `heads_unifiable(param, arg) == expected` for EVERY row, so once
-    /// it passes, "some row is pinned true" and "some row measures true" are
-    /// the same statement — a measured assertion here could only fire in a
-    /// state the differential has already rejected, with a worse message.
-    #[test]
-    fn sync_drift_check_heads_unifiable_corpus_exercises_both_verdicts() {
-        let corpus = heads_unifiable_corpus();
-        assert!(
-            corpus.iter().any(|(_, _, expected, _)| *expected),
-            "corpus must pin at least one head-MATCH pair"
-        );
-        assert!(
-            corpus.iter().any(|(_, _, expected, _)| !*expected),
-            "corpus must pin at least one head-MISMATCH pair"
-        );
     }
 }

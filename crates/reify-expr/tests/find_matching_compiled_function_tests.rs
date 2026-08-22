@@ -643,10 +643,15 @@ fn prelude_option_subject_selects_option_overload() {
 /// narrowing existed first-match-wins handed this to the generic one.
 ///
 /// The promotion is the intended answer, not a tolerated side effect: it is
-/// what compile-side `resolve_function_overload` resolves to. Recorded as a
-/// test so the behaviour is pinned rather than rediscovered from a future
-/// escalation — it sits directly adjacent to the esc-4093-152 trait-object
-/// path.
+/// what compile-side `resolve_function_overload` resolves to — pinned, not
+/// merely asserted in prose, by
+/// `overload_mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`
+/// in `crates/reify-compiler/src/type_compat.rs`, which runs the same two
+/// candidates through the compiler's own ladder. (That half must live
+/// compiler-side: `resolve_function_overload` is `pub(crate)` in a private
+/// module.) Recorded as a test so the behaviour is pinned rather than
+/// rediscovered from a future escalation — it sits directly adjacent to the
+/// esc-4093-152 trait-object path.
 #[test]
 fn mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object() {
     let generic_first = make_generic_fn(
