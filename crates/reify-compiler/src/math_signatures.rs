@@ -177,25 +177,17 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // first variadic scalar component.
         //
         // Component [0] decides the WHOLE vector's/point's quantity — the same
-        // weakness `list_shape` / `matrix_shape` carry, but reached INLINE here
-        // rather than through either, so a fix to those two would not cover this
-        // arm.
+        // first-element inference `list_shape` / `matrix_shape` carry, but
+        // reached INLINE here rather than through either, so a fix to those two
+        // would not cover this arm. Concretely: `vec3(1m, 0, 0)` at a
+        // `Vec3<Dimensionless>` param is REJECTED while `vec3(0, 1m, 0)` at the
+        // same param stays SILENT.
         //
-        // This is the busiest route into the quantity-slot conformance rule:
-        // `vec3(…)` is how the corpus spells a direction at a dimensionless
-        // vector param — 33 `axis`/`direction`-family sites across `stdlib/` and
-        // `examples/` (grepped for `<name>: vec3(`; `prj/` and `designs/` not
-        // measured) — and it is the arm the rule's flagship fixture
-        // `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
-        // is decided by. So `vec3(1m, 0, 0)` at a `Vec3<Dimensionless>` param is
-        // REJECTED while `vec3(0, 1m, 0)` at the same param stays SILENT.
-        //
-        // Load-bearing for a REJECTION diagnostic since task 5766, and more so
-        // since 6159 widened which params can trip it — not cosmetic. The
-        // residual it leaves and the fix are stated normatively in the "Point /
-        // Vector quantity-slot convention" section of `crates/reify-core/src/ty.rs`
-        // and owned by task 5889, whose scope covers this inline arm alongside
-        // the two shape helpers — not restated here.
+        // First-element quantity inference; load-bearing for a REJECTION
+        // diagnostic since tasks 5766/6159. Rule, residual and fix: the "Point /
+        // Vector quantity-slot convention" section of
+        // `crates/reify-core/src/ty.rs`, owned by task 5889 — whose scope covers
+        // this inline arm alongside the two shape helpers.
         //
         // The point twins also make the VALUE constructor agree with the
         // same-named TYPE constructor: `Type::point3(q)` is an established
@@ -548,11 +540,10 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
 /// Element `[0]` decides the WHOLE literal's quantity — the same weakness as
 /// [`matrix_shape`] one rank down, here feeding `vec` / `diag`.
 ///
-/// That inference is load-bearing for a REJECTION diagnostic (since task 5766 it
-/// is the ARG-side input to the quantity-slot conformance rule), not cosmetic.
-/// The residual it leaves and the fix are stated normatively in the "Point /
-/// Vector quantity-slot convention" section of `crates/reify-core/src/ty.rs` and
-/// owned by task 5889 — not restated here.
+/// First-element quantity inference; load-bearing for a REJECTION diagnostic
+/// since tasks 5766/6159. Rule, residual and fix: the "Point / Vector
+/// quantity-slot convention" section of `crates/reify-core/src/ty.rs`, owned by
+/// task 5889.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
         let quantity = elems
@@ -575,12 +566,9 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 /// Cell `[0][0]` decides the WHOLE matrix's quantity, so the inference is sound
 /// only for dimension-HOMOGENEOUS literals.
 ///
-/// That inference is load-bearing for a REJECTION diagnostic (since task 5766 it
-/// is the ARG-side input to the quantity-slot conformance rule; task 6159's
-/// param-side tightening widened which params can trip it), not cosmetic. The
-/// residual it leaves, in both directions, and the fix are stated normatively in
-/// the "Point / Vector quantity-slot convention" section of
-/// `crates/reify-core/src/ty.rs` and owned by task 5889 — not restated here.
+/// First-cell quantity inference; load-bearing for a REJECTION diagnostic since
+/// tasks 5766/6159. Rule, residual and fix: the "Point / Vector quantity-slot
+/// convention" section of `crates/reify-core/src/ty.rs`, owned by task 5889.
 fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(rows) = &arg.kind
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
