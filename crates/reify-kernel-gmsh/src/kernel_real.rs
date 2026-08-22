@@ -588,9 +588,9 @@ impl GeometryKernel for GmshKernel {
     /// discussion on [`crate::mesh_surface_to_volume_with_attribution`]
     /// for the full argument. A surface with a genuine open boundary
     /// still fails the post-weld watertightness check and returns
-    /// `Err`, and this call site degrades to the plain
-    /// [`Self::mesh_surface_to_volume`] path (boundary `None`) on any
-    /// error here.
+    /// `Err`, which the engine realization edge (task 4092 step-18,
+    /// `reify-eval`'s `engine_build.rs`) degrades to the plain
+    /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
     #[cfg(feature = "mesh-morph")]
     fn mesh_surface_to_volume_attributed(
         &self,
