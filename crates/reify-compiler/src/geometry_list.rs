@@ -153,7 +153,7 @@ pub(crate) fn classify_geometry_list_let(
 /// specific to lists (`union(a, b)` over two geometry lets duplicates both
 /// operands identically — see the note at the fold site); referencing the
 /// already-emitted `<list>#k` realizations instead is a change to the whole
-/// boolean-arg path, filed as a follow-up. Until then, read this cap as
+/// boolean-arg path, filed as task #6449. Until then, read this cap as
 /// bounding ~2 x 256 kernel steps per folded list.
 pub(crate) const GEOMETRY_LIST_MAX_ELEMENTS: usize = 256;
 

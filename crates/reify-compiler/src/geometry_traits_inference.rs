@@ -978,7 +978,7 @@ fn fold_geometry_args_in_env(
 /// `all()` default. Narrowing it needs a list-aware `LetBindingEnv` (a new
 /// per-element accessor plus the conformance-walker env that implements it),
 /// which is why it is a follow-up rather than a widening of this task — filed
-/// as an agent-followup from #5385 (review esc-5385-3, suggestion 5).
+/// as task #6418 (review esc-5385-3, suggestion 5).
 ///
 /// That residual is PINNED, not merely described, by
 /// `union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap` in this

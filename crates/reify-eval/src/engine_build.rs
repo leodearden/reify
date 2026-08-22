@@ -11746,6 +11746,12 @@ impl Engine {
                 // `[Undef; n]` where the first returned live handles, while full
                 // scope returns live handles both times — is filed separately
                 // (esc-5385-5) and is NOT addressed by anything at this line.
+                //
+                // NOTE: `SELECTIVE_DEMAND_GEOM_LIST_SRC`'s rustdoc in
+                // crates/reify-eval/tests/common/differential.rs still describes
+                // the removed guard as if it were in effect. Correcting it needs
+                // a file outside #5385's module locks, so it is filed as an
+                // agent-followup ticket from #5385 rather than fixed here.
                 if !new_val.is_undef() {
                     // Preserve existing DeterminacyState from snapshot.values.
                     let det = existing
