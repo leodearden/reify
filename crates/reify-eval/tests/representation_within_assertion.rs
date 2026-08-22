@@ -100,6 +100,31 @@ structure Checker {
 }
 "#;
 
+/// The MIXED-batch counterpart of [`NON_MEASURING_SURFACE_SOURCE`]: a
+/// `RepresentationWithin` (constraint index 0) alongside an ordinary predicate
+/// (index 1) in ONE template, with the subject param carrying a **default**.
+///
+/// Shape-identical to [`INTERCEPTION_SOURCE`] except for that default, and the
+/// default is exactly what makes it the right fixture for the surface-attribution
+/// mixed-batch test: with every operand DEFINED, the engine's Indeterminate is a
+/// property of the *surface* and nothing else, so the batch must gain exactly one
+/// surface attribution.  `INTERCEPTION_SOURCE` cannot serve that purpose — its
+/// unbound `subject` has a better-attributed cause of its own (`undefined inputs:
+/// Checker.subject`) which the peel must NOT displace, and which
+/// [`unbound_subject_keeps_the_undefined_input_attribution`] pins instead.
+const NON_MEASURING_MIXED_SOURCE: &str = r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom = MyGeom()
+    param w : Real = 5.0
+    constraint RepresentationWithin(subject, 1mm)
+    constraint w > 0.0
+}
+"#;
+
 // ── ζ / C-SURFACE 1: non-measuring surface ───────────────────────────────────
 
 /// C-SURFACE (1): a `RepresentationWithin` shape must never fall through to the
@@ -268,16 +293,20 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
 /// milder instance of the very defect class C-SURFACE (1) exists to remove, so
 /// the remedy the engine gives must always be TERMINAL.
 ///
-/// Uses [`OCCT_SOURCE_COARSE`] rather than [`NON_MEASURING_SURFACE_SOURCE`] for
-/// the same reason its capture-ON sibling does: a realization must genuinely
+/// Uses [`OCCT_SOURCE_COARSE_BOUND`] rather than [`NON_MEASURING_SURFACE_SOURCE`]
+/// for the same reason its capture-ON sibling does: a realization must genuinely
 /// exist, so that the absent kernel is the only remaining reason the map is
-/// empty and the test cannot pass for the wrong reason.
+/// empty and the test cannot pass for the wrong reason.  The `_BOUND` variant
+/// (subject defaulted, hence DEFINED) is required for the same class of reason:
+/// with an unbound subject the peel rightly declines the entry and the
+/// language-level checker answers `undefined inputs` instead, so the kernel arm
+/// would never be reached.
 ///
 /// OCCT-INDEPENDENT: `make_simple_engine()` is `Engine::new(checker, None)`, so
 /// the kernel is absent whatever the binary was built with.
 #[test]
 fn non_measuring_surface_without_a_kernel_names_the_kernel_not_check() {
-    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "build_surface_kernel_absent");
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE_BOUND, "build_surface_kernel_absent");
     // `Engine::new(checker, None)` ⇒ `default_kernel_name` is `None`, and
     // `capture_repr_tol` stays false: the stub-mode `reify build` surface.
     let mut engine = make_simple_engine();
@@ -370,8 +399,9 @@ fn non_measuring_surface_without_a_kernel_names_the_kernel_not_check() {
 /// `Engine::new(checker, None)` — no kernel) BOTH causes hold at once and the
 /// test could not discriminate between them, which is precisely why an earlier
 /// revision of this gate passed for the wrong reason and locked the kernel
-/// wording in rather than gating it. [`OCCT_SOURCE_COARSE`] realizes a sphere,
-/// so with no kernel behind it only the missing-kernel cause remains.
+/// wording in rather than gating it. [`OCCT_SOURCE_COARSE_BOUND`] realizes a
+/// sphere AND binds the subject, so with no kernel behind it only the
+/// missing-kernel cause remains.
 ///
 /// The kernel branch also keeps the pre-`check()` pass inside
 /// `tessellate_realizations` — which runs before the map is populated, on a
@@ -384,7 +414,7 @@ fn non_measuring_surface_without_a_kernel_names_the_kernel_not_check() {
 fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
     // Geometry-bearing source: a realization exists to tessellate, so the
     // absent kernel is the only remaining reason the map stays empty.
-    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "kernel_absent");
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE_BOUND, "kernel_absent");
     // `Engine::new(checker, None)` ⇒ `default_kernel_name` is `None`.
     let mut engine = make_simple_engine();
 
@@ -483,7 +513,7 @@ fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
 /// `stub_register`), matching the OCCT-gated tests further down this file.
 #[test]
 fn registered_kernel_that_cannot_tessellate_is_not_measurement_capable() {
-    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "registered_mesh_only_kernel");
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE_BOUND, "registered_mesh_only_kernel");
     let mut engine = make_simple_engine();
     if !engine.ensure_openvdb_kernel() {
         eprintln!(
@@ -553,7 +583,7 @@ fn registered_kernel_that_cannot_tessellate_is_not_measurement_capable() {
             .message
             .contains("check that the subject declares a realization"),
         "arm 3's wording would be a fresh INV-SF-4 misattribution here — \
-         OCCT_SOURCE_COARSE demonstrably DOES declare a realization; what is \
+         OCCT_SOURCE_COARSE_BOUND demonstrably DOES declare a realization; what is \
          missing is a kernel able to tessellate it. Got: {:?}",
         attribution.message
     );
@@ -581,7 +611,7 @@ fn registered_kernel_that_cannot_tessellate_is_not_measurement_capable() {
 ///   answer on that binary.
 #[test]
 fn registered_kernel_shape_names_a_remedy_this_binary_can_honour() {
-    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "registered_kernel_shape");
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE_BOUND, "registered_kernel_shape");
     let binary_can_tessellate_brep = reify_eval::kernel_registry::registry()
         .values()
         .any(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep));
@@ -914,12 +944,17 @@ fn non_assertion_module_hot_path_is_unchanged() {
 /// batch must gain exactly ONE attribution — for the assertion that could not be
 /// evaluated, not for its blameless neighbour.
 ///
-/// [`INTERCEPTION_SOURCE`] is used precisely because its `subject` has no
-/// default: the peel must claim the constraint on shape alone, without waiting
-/// for the operands to be defined.
+/// [`NON_MEASURING_MIXED_SOURCE`] is used — not [`INTERCEPTION_SOURCE`] —
+/// because its `subject` carries a DEFAULT.  With every operand defined, the
+/// surface is the only possible reason the assertion cannot be answered, so
+/// "exactly one attribution" is a statement about the batch rather than an
+/// accident of the fixture.  The unbound-subject shape is deliberately excluded
+/// here: it has a better-attributed cause of its own that the peel must decline
+/// to displace, pinned by
+/// [`unbound_subject_keeps_the_undefined_input_attribution`].
 #[test]
 fn non_measuring_mixed_batch_preserves_order_and_attributes_once() {
-    let compiled = parse_and_compile(INTERCEPTION_SOURCE);
+    let compiled = parse_and_compile(NON_MEASURING_MIXED_SOURCE);
     // Fresh engine: empty `achieved_repr_tol`, `capture_repr_tol: false` — the
     // `reify build` surface, and deliberately no injection.
     let mut engine = make_simple_engine();
@@ -993,6 +1028,79 @@ fn non_measuring_mixed_batch_preserves_order_and_attributes_once() {
         offenders.is_empty(),
         "C-SURFACE 1 holds for the mixed batch too. Offending diagnostics: {offenders:#?}"
     );
+}
+
+/// REGRESSION (review of ζ): the peel must NOT displace a correctly-attributed
+/// cause with a surface-level one.
+///
+/// [`INTERCEPTION_SOURCE`]'s `subject` param has NO default, so the operand is
+/// genuinely `Undef`.  Before ζ the language-level checker answered
+/// `undefined inputs: Checker.subject` — the exactly-right cause, naming the
+/// very cell the user must bind.  ζ's first cut peeled EVERY RepresentationWithin
+/// shape engine-side and replaced that with "this evaluation surface does not
+/// measure … run `reify check`", which on `reify check` then became "check that
+/// the subject declares a realization".  Both are FALSE here (`MyGeom`'s
+/// realization is irrelevant; the param was never bound) and together form a
+/// two-hop dead end — the same INV-SF-4 misattribution class ζ exists to remove,
+/// merely relocated from the operand kinds to the subject's realization.
+///
+/// So: the reason must name the undefined input, and must mention neither
+/// `reify check`, nor a realization, nor the kernel — and, of course, must still
+/// never be the `operator undefined for these operand kinds` message ζ removes.
+///
+/// A fresh `make_simple_engine()` is the `reify build` surface (empty
+/// `achieved_repr_tol`, `capture_repr_tol: false`) — the exact surface the
+/// reviewer reproduced on.
+#[test]
+fn unbound_subject_keeps_the_undefined_input_attribution() {
+    let compiled = parse_and_compile(INTERCEPTION_SOURCE);
+    let mut engine = make_simple_engine();
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "an unbound subject cannot be decided either way → Indeterminate"
+    );
+
+    let messages: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("undefined inputs") && m.contains("Checker.subject")),
+        "the language-level checker's correctly-attributed reason must survive \
+         the peel — expected a diagnostic naming `undefined inputs: \
+         Checker.subject`. Got: {messages:#?}"
+    );
+
+    // The surface-level remedies, and the misattribution ζ removes, are all
+    // wrong answers for THIS module. Pin every one of them absent.
+    for forbidden in [
+        "reify check",
+        "does not measure",
+        "declares a realization",
+        "build with OCCT",
+        "operator undefined for these operand kinds",
+    ] {
+        let offenders: Vec<&&str> = messages.iter().filter(|m| m.contains(forbidden)).collect();
+        assert!(
+            offenders.is_empty(),
+            "an UNBOUND subject must not be blamed on the surface, the kernel or \
+             the operand kinds — the cause is the unbound param itself. \
+             Diagnostics containing {forbidden:?}: {offenders:#?}"
+        );
+    }
 }
 
 // ── BT1: over-bound → Violated ────────────────────────────────────────────────
@@ -1122,9 +1230,16 @@ fn dispatch_interception_under_bound_yields_satisfied() {
 /// The map is deliberately non-empty but non-matching: this test is about a
 /// MEASURING surface that simply holds no entry for *this* subject. An empty map
 /// is a different fact — "this surface never measured at all" — and since
-/// task-6169 ζ it routes through the surface-attribution branch instead; that
-/// case is covered by
+/// task-6169 ζ a DEFINED-operand assertion routes through the surface-attribution
+/// branch instead; that case is covered by
 /// [`non_measuring_mixed_batch_preserves_order_and_attributes_once`].
+///
+/// `INTERCEPTION_SOURCE`'s `subject` is UNBOUND, so the engine's Indeterminate is
+/// declined by the peel (ζ's operand-definedness rule) and the verdict asserted
+/// below is the language-level checker's — which is the point: the verdict is
+/// `Indeterminate` either way, so C1 ("absent key ⇒ never a false Violated")
+/// still holds regardless of which path answered.  Which REASON accompanies it
+/// is pinned by [`unbound_subject_keeps_the_undefined_input_attribution`].
 ///
 /// RED until step-6.
 #[test]
@@ -1213,6 +1328,33 @@ structure Sphere {
 }
 structure SphereCheck {
     param subject : Sphere
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#;
+
+/// [`OCCT_SOURCE_COARSE`] with the subject param given a **default**, so the
+/// operand is DEFINED at check time.
+///
+/// The four remedy-taxonomy tests below need a module that (a) genuinely
+/// declares a realization — so "the subject declares no realization" is not a
+/// confound — and (b) whose operand is defined, so the engine's Indeterminate is
+/// a property of the SURFACE and nothing else.  `OCCT_SOURCE_COARSE` gives (a)
+/// but not (b): its `subject` is unbound, and ζ's operand-definedness rule
+/// (see `Engine::dispatch_constraints`) rightly declines such an entry so the
+/// language-level checker can name the unbound cell instead.  Adding the default
+/// is the minimal edit that supplies (b) without disturbing the measured
+/// deviation values pinned on `OCCT_SOURCE_COARSE` itself, which the BT tests
+/// depend on and which are deliberately left untouched here.
+///
+/// Mirrors `crates/reify-cli/tests/fixtures/representation_within_build_surface.ri`,
+/// which carries the same `= Sphere()` default for the same reason.
+const OCCT_SOURCE_COARSE_BOUND: &str = r#"
+#precision(50mm)
+structure Sphere {
+    let r = sphere(1000mm)
+}
+structure SphereCheck {
+    param subject : Sphere = Sphere()
     constraint RepresentationWithin(subject, 1mm)
 }
 "#;

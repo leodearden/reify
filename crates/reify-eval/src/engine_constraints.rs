@@ -284,6 +284,29 @@ pub struct GdtCallout {
     pub zone_shape: Option<String>,
 }
 
+/// Does any leaf operand of `expr` resolve to `Undef` in `values`?
+///
+/// This is deliberately the SAME predicate the language-level
+/// `SimpleConstraintChecker` uses to choose between its two Indeterminate
+/// reasons (`classify_undef`, crates/reify-constraints/src/lib.rs): collect
+/// every leaf `ValueRef` and ask whether any of them is undefined.  Keeping it
+/// identical is what makes the peel's "decline this entry" decision in
+/// [`Engine::dispatch_constraints`] exact rather than approximate — an entry is
+/// declined precisely when the checker will answer `undefined inputs: <cell>`,
+/// never when it would answer `operator undefined for these operand kinds`
+/// (the misattribution task 6169 ζ exists to eliminate).
+///
+/// Cost note (C2): only ever called on an entry that already matched the
+/// `RepresentationWithin` shape AND evaluated to `Indeterminate`, so the
+/// `collect_value_refs` allocation is off both hot paths — a non-assertion
+/// module never reaches it, and a measuring surface reaches it only for a
+/// subject it could not resolve.
+fn has_undefined_operand(expr: &CompiledExpr, values: &ValueMap) -> bool {
+    expr.collect_value_refs()
+        .iter()
+        .any(|id| values.get_or_undef(id).is_undef())
+}
+
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -418,6 +441,40 @@ impl Engine {
                 values,
                 &self.achieved_repr_tol,
             ) {
+                // ── Operand-definedness outranks surface attribution ──────────
+                //
+                // The peel claims a RepresentationWithin on SHAPE alone, but an
+                // `Indeterminate` engine answer carries no information about the
+                // constraint — it only says "this surface produced no achieved
+                // deviation for the subject".  When a leaf operand is *genuinely
+                // undefined*, that is not the reason the user needs: the
+                // language-level checker already has a strictly better-attributed
+                // one — `undefined inputs: <cell>` — naming the very cell that
+                // must be bound.  Speaking about the surface instead would
+                // discard a correct cause and hand the user a two-hop dead end
+                // (`reify build` → "run `reify check`" → "check that the subject
+                // declares a realization", when the subject was never bound at
+                // all), which is the same INV-SF-4 misattribution class ζ exists
+                // to remove, merely relocated a third time.
+                //
+                // So decline the entry: push it to `rest` and let it reach the
+                // checker exactly as it did before ζ.  The definedness predicate
+                // is the same one the checker itself uses (`classify_undef`'s
+                // has-undef branch: any leaf `ValueRef` that is `Undef` in
+                // `values`), so "declined here" ⇔ "the checker will say
+                // `undefined inputs`" by construction — this can never route an
+                // entry into the `operator undefined for these operand kinds`
+                // branch that ζ eliminates.
+                //
+                // Only the `Indeterminate` arm is declined.  A `Satisfied` /
+                // `Violated` engine answer is a real measurement (reached via
+                // `resolve_repr_tol_key`'s deliberately hydration-INDEPENDENT
+                // type-name scan, which resolves without the subject cell being
+                // populated), and must not be thrown away just because the cell
+                // is unhydrated.
+                Some((Satisfaction::Indeterminate, _)) if has_undefined_operand(expr, values) => {
+                    rest.push((i, id, expr, target));
+                }
                 Some((satisfaction, diag_opt)) => {
                     // Engine-side result from the achieved-repr-tol map.
                     let mut messages: Vec<Diagnostic> = diag_opt.into_iter().collect();
