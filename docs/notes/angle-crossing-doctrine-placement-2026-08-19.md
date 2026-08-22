@@ -7,7 +7,7 @@
 | PRD | `docs/prds/v0_6/angle-dimension-completion.md` (leaf γ, docs-truth four-pack — the same leaf #6181/#6267 landed into) |
 | Task | #6290 |
 | Spun out of | esc-6267-1 / esc-6267-2 on #6267, which itself compressed the section #6181 (leaf γ) wrote |
-| Branch | `task/6290` — measured at `5df2f9f172a5933e3042aeddfa88237416e65d` (prerequisite P1); re-verified byte-identical at `94aaecff43a458d1ce6a3fe8bdcc88d2e0f5588d` (after S1–S4 landed) |
+| Branch | `task/6290`, anchored to merge-base `2e3f228d2d` ("Merge task/5982 into main") — the branch was rebased after both the P1 and the post-S1–S4 measurement passes, so neither pass's branch-tip SHA resolves post-rebase; branch-tip SHAs are the wrong thing to cite here for exactly that reason. See §5 for the pass that replaces both, re-run at this merge-base. |
 | Date | 2026-08-19 |
 | Instrument | Byte census: `wc -c`/`wc -l` over `crates/reify-mcp/src/tools/chunks/*.md`, plus `sed -n` slices of `units.md`. Discoverability walk's instrument, unchanged from `docs/notes/angle-crossing-discoverability-2026-08-10.md`: `grep -rn <term> crates/reify-mcp/src/tools/chunks examples/best_practices/INDEX.md .claude/skills/reify-design/SKILL.md`, plus `grep -rnwE "gradient|divergence|curl|laplacian" crates/reify-mcp/src/tools/chunks/`. |
 
@@ -19,11 +19,27 @@ the enforcement mechanism should go straight to
 `crates/reify-mcp/src/tools/language_chunks.rs`'s test module; this note is
 for the reader who wants to know why no lever was pulled.
 
-## 1. Measurements (prerequisite P1, at `5df2f9f172a5933e3042aeddfa88237416e65d`)
+## 1. Measurements (prerequisite P1; re-run at merge-base `2e3f228d2d`, post-rebase)
 
 **This was executed, not asserted** — every number below is real stdout,
-re-run twice (P1, and again after S1–S4 landed; see §5) and found identical
-both times.
+re-run at the current merge-base `2e3f228d2d` after the branch was rebased.
+The original P1 stdout and the post-S1–S4 re-verification stdout are
+superseded by this pass; both were genuine at the time, but their
+branch-tip provenance SHAs do not resolve post-rebase (see the Branch row
+above), so citing their numbers instead of re-running would have been
+unverifiable, not merely stale.
+
+`units.md`'s own four numbers — 6117 bytes, 98 lines, 4514-byte section,
+1042-byte L58 — and its "3rd largest of 17" rank are the load-bearing
+figures this decision rests on, and they reproduce exactly across every
+pass, including this one. The *other* chunks' byte counts are not
+load-bearing and do drift as unrelated sibling tasks land documentation on
+`main` between passes: two rows moved between the original P1 pass and this
+one (`stdlib.md` 4606 → 5022, `geometry.md` 7200 → 8243, via `21991bb8a6`
+and `e88dbdf1b4` landing on `main`). A future re-run that finds a
+*non-`units.md`* row mismatched against this block is expected drift, not a
+falsified record; a mismatch on one of `units.md`'s own four numbers would
+be the thing to investigate.
 
 ### Byte census — all 17 chunks
 
@@ -42,14 +58,17 @@ $ for f in crates/reify-mcp/src/tools/chunks/*.md; do wc -c "$f"; done | sort -n
 1758 crates/reify-mcp/src/tools/chunks/structures.md
 2111 crates/reify-mcp/src/tools/chunks/syntax.md
 3232 crates/reify-mcp/src/tools/chunks/traits.md
-4606 crates/reify-mcp/src/tools/chunks/stdlib.md
+5022 crates/reify-mcp/src/tools/chunks/stdlib.md
 6117 crates/reify-mcp/src/tools/chunks/units.md
-7200 crates/reify-mcp/src/tools/chunks/geometry.md
 7227 crates/reify-mcp/src/tools/chunks/enums.md
+8243 crates/reify-mcp/src/tools/chunks/geometry.md
 ```
 
-`units.md` is the **3rd largest of 17** — below `enums.md` (7227) and
-`geometry.md` (7200) — against a corpus mean of 47803 / 17 ≈ **2812 bytes**.
+`units.md` is the **3rd largest of 17** — below `geometry.md` (8243) and
+`enums.md` (7227) — against a corpus mean of 49262 / 17 ≈ **2898 bytes**.
+`geometry.md` and `enums.md` have swapped rank since P1 (`geometry.md` was
+7200, now the corpus's largest chunk at 8243), but `units.md`'s own rank —
+3rd of 17 — is unaffected either way.
 
 ### `units.md` internal split
 
@@ -95,8 +114,12 @@ crates/reify-mcp/src/tools/chunks/units.md:92:No field or tensor operator manufa
 ```
 
 Exactly **one** word-boundary hit across all 17 chunks, at `units.md:92`.
-These four names are `FIELD_OP_NAMES` at
-`crates/reify-compiler/src/units.rs:1041`. `crates/reify-audit/pdoccover-baseline.txt`
+These four names are the derivative-operator subset (four of the nine
+members) of `FIELD_OP_NAMES` in `crates/reify-compiler/src/units.rs` —
+cited by symbol, not line number: a line number into another crate drifts
+on any unrelated edit there, which is how the previous `:1041` cite went
+stale (the const actually lives at `:1077`, and was already wrong when
+that cite was written, not merely drifted since). `crates/reify-audit/pdoccover-baseline.txt`
 does not exist, so PDOCCOVER runs un-baselined; losing this line would add
 four High `undocumented-name:` findings, and PDOCCOVER is opt-in (not part
 of the default sweep), so the merge gate alone would not catch it.
@@ -118,8 +141,8 @@ chunk corpus is byte-identical to `main` before and after S1–S4 landed.
 ## 3. Why no change
 
 **(i) Absolute size is not an outlier.** `units.md` at 6117 bytes is the 3rd
-largest of 17 chunks, below `enums.md` (7227) and `geometry.md` (7200);
-corpus mean 2812. No per-topic size policy exists anywhere in `docs/prds/`
+largest of 17 chunks, below `geometry.md` (8243) and `enums.md` (7227);
+corpus mean ~2898. No per-topic size policy exists anywhere in `docs/prds/`
 or `docs/legibility/` (grepped, zero hits). The MCP tool serves one topic
 per call (`reference.rs` → `get_chunk`), so a large chunk costs only the
 author who asked for that topic. No consumer-side budget complaint exists.
@@ -206,17 +229,29 @@ chunk alone, so a future task may legitimately relocate this vocabulary to
 another chunk (were lever (a) ever taken) without tripping either guard —
 only an outright drop from the corpus fails them.
 
-## 5. Re-verification after S1–S4 (at `94aaecff43a458d1ce6a3fe8bdcc88d2e0f5588d`)
+## 5. Re-verification (S6/S7, at merge-base `2e3f228d2d`)
 
-Every instrument in §1 was re-run after S1–S4 landed. All outputs are
-byte-for-byte identical to the P1 blocks above (re-run stdout omitted here
-since it is a verbatim duplicate — see the commit history if a
-side-by-side is needed). The PDOCCOVER suite is also unchanged:
+The original post-S1–S4 re-verification pass was genuine but, like P1, was
+measured before the branch was rebased onto `2e3f228d2d`; its branch-tip
+SHA does not resolve post-rebase (see the Branch row in Provenance) so it
+is not cited here. This section is the pass that replaces it — S6's
+comment fix and S7's refresh of this note are docs/comment-only, so §1's
+numbers, measured at this same merge-base, apply unchanged; this section
+records the non-byte-census checks alongside them.
+
+The `Hz`/`rad/s` and PDOCCOVER-name grep instruments reproduce
+byte-for-byte against the §1 blocks above (same hits, same lines —
+`units.md:94` and `units.md:92` respectively, nothing in `INDEX.md` or
+`SKILL.md`). The PDOCCOVER suite:
 
 ```
 $ cargo test -p reify-audit --test pdoccover
 PASS: 22 | FAIL: 0 | SKIP: 0
 ```
+
+`cargo test -p reify-mcp` is green at 113/113 — the same count S1–S4
+established; S6's comment-only fix adds no test, and this note's own
+docs-only refresh (S7) cannot affect it.
 
 And directly, rather than inferred from unchanged instrument output — the
 chunk corpus itself has zero diff against `main`:
@@ -230,5 +265,6 @@ $ git diff --stat -- crates/reify-mcp/src/tools/chunks/
 
 This is what discharges hard constraints 1, 3 and 4, and keeps #5790 (ξ)'s
 L1–53 seam untouched: this task's entire diff is
-`crates/reify-mcp/src/tools/language_chunks.rs` plus this note — no chunk
-`.md` file, and in particular not `units.md`, was touched.
+`crates/reify-mcp/src/tools/language_chunks.rs` (S1–S4's guards, plus S6's
+comment fix) plus this note (S5, refreshed by S7) — no chunk `.md` file,
+and in particular not `units.md`, was touched.
