@@ -2823,6 +2823,159 @@ mod freshness_gate {
             cmd.args(extra);
             cmd.output().expect("invoke reify-audit")
         }
+
+        /// Invoke WITHOUT `--jcodemunch-index-dir`, so the binary must resolve
+        /// the index directory from the environment. `env` entries are applied
+        /// verbatim; `None` removes the variable.
+        ///
+        /// Every env-precedence assertion must go through this helper rather
+        /// than `run_raw`: with the flag present, the production default is
+        /// never exercised at all, so a wrong default stays green. That gap is
+        /// exactly what let the `CODE_INDEX_PATH` divergence through review.
+        fn run_env(
+            &self,
+            pattern: &str,
+            env: &[(&str, Option<&str>)],
+            extra: &[&str],
+        ) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args(["--pattern", pattern]);
+            cmd.args([
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+            ]);
+            // Clear both index-dir variables first so an inherited value from
+            // the developer's shell cannot decide the outcome.
+            cmd.env_remove("JCODEMUNCH_INDEX_DIR");
+            cmd.env_remove("CODE_INDEX_PATH");
+            for (k, v) in env {
+                match v {
+                    Some(val) => cmd.env(k, val),
+                    None => cmd.env_remove(k),
+                };
+            }
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+    }
+
+    /// With no `--jcodemunch-index-dir`, the gate must probe `CODE_INDEX_PATH`.
+    ///
+    /// `CODE_INDEX_PATH` is jcodemunch's own index-directory variable and the
+    /// supported redirection across this substrate:
+    /// `scripts/jcodemunch-index-reify.sh` resolves the DB as
+    /// `${CODE_INDEX_PATH:-$HOME/.code-index}/local-<name>.db`, and
+    /// `tests/infra/test_jcodemunch_index_reify.sh` drives its whole suite
+    /// through a temp one. If the gate ignored it, then on any host or CI job
+    /// that sets it the indexer would write a healthy corpus to
+    /// `$CODE_INDEX_PATH` while the gate probed `$HOME/.code-index`, found
+    /// nothing, and hard-refused `E_JC_INDEX_EMPTY` against a fully-indexed
+    /// tree — the phantom-reindex failure the identity half already forbids.
+    ///
+    /// The assertion is deliberately `E_JC_INDEX_STALE`, not merely "non-zero":
+    /// STALE is reachable ONLY by opening the DB written at `index_dir` and
+    /// reading its `git_head`. `E_JC_INDEX_EMPTY` is what a wrong directory
+    /// produces, so the two markers cleanly separate "probed the right place"
+    /// from "probed nothing".
+    #[test]
+    fn index_dir_defaults_to_code_index_path_env() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[("CODE_INDEX_PATH", Some(s.index_dir.to_str().unwrap()))],
+            &["--jcodemunch-url", mock.url()],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "the gate must refuse using the CODE_INDEX_PATH store; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "STALE proves the DB under CODE_INDEX_PATH was actually opened and \
+             its git_head read; EMPTY would mean the gate probed elsewhere. \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(BOGUS_SHA),
+            "refusal must name the index head read from CODE_INDEX_PATH; \
+             stderr:\n{stderr}"
+        );
+    }
+
+    /// `JCODEMUNCH_INDEX_DIR` is the audit-local override and must outrank
+    /// `CODE_INDEX_PATH`. Both are set to REAL but DIFFERENT stores: the
+    /// override holds a stale DB, `CODE_INDEX_PATH` holds a fresh one. Only a
+    /// gate that honours the documented precedence refuses; one that silently
+    /// preferred `CODE_INDEX_PATH` would proceed to the detector instead.
+    #[test]
+    fn jcodemunch_index_dir_env_outranks_code_index_path() {
+        let s = scenario();
+        let other = s._tmp.path().join("other-index");
+        std::fs::create_dir_all(&other).expect("create second index dir");
+        // Override store: stale. CODE_INDEX_PATH store: fresh and populated.
+        write_index_db(&other, &s.repo_id, Some(BOGUS_SHA), 12);
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[
+                ("JCODEMUNCH_INDEX_DIR", Some(other.to_str().unwrap())),
+                ("CODE_INDEX_PATH", Some(s.index_dir.to_str().unwrap())),
+            ],
+            &["--jcodemunch-url", mock.url()],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE") && stderr.contains(BOGUS_SHA),
+            "JCODEMUNCH_INDEX_DIR must win: the refusal has to name the stale \
+             head from the override store, not the fresh CODE_INDEX_PATH one. \
+             stderr:\n{stderr}"
+        );
+    }
+
+    /// The `--jcodemunch-index-dir` flag outranks both variables. Guards the
+    /// top of the documented precedence chain, so a future refactor cannot
+    /// quietly let an inherited `CODE_INDEX_PATH` capture an explicit flag.
+    #[test]
+    fn jcodemunch_index_dir_flag_outranks_both_env_vars() {
+        let s = scenario();
+        let decoy = s._tmp.path().join("decoy-index");
+        std::fs::create_dir_all(&decoy).expect("create decoy index dir");
+        // Both env stores are fresh; only the flagged store is stale.
+        write_index_db(&decoy, &s.repo_id, Some(&s.live_head), 7);
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[
+                ("JCODEMUNCH_INDEX_DIR", Some(decoy.to_str().unwrap())),
+                ("CODE_INDEX_PATH", Some(decoy.to_str().unwrap())),
+            ],
+            &[
+                "--jcodemunch-url", mock.url(),
+                "--jcodemunch-index-dir", s.index_dir.to_str().unwrap(),
+            ],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE") && stderr.contains(BOGUS_SHA),
+            "the explicit flag must win over both env vars; stderr:\n{stderr}"
+        );
     }
 
     /// B4 — a corpus indexed at a DIFFERENT commit must be refused.

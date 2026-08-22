@@ -110,7 +110,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
     let _ = writeln!(out, "  --jcodemunch-url <url>   jcodemunch MCP endpoint for P1 (default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp)");
     let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: derived per-path, e.g. local/<basename>-<sha1[..8]>)");
-    let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR or $HOME/.code-index)");
+    let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR, else $CODE_INDEX_PATH, else $HOME/.code-index)");
     let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
@@ -248,9 +248,25 @@ struct Args {
     /// §4.3 freshness comparison meaningful at all.
     jcodemunch_repo: Option<String>,
     /// Directory holding jcodemunch's per-repo index databases, probed by the
-    /// §4.3 freshness gate. Falls back to `JCODEMUNCH_INDEX_DIR` env then
-    /// `$HOME/.code-index` — the same flag+env+default shape as
-    /// `jcodemunch_url`, so there is one CLI convention rather than two.
+    /// §4.3 freshness gate. Resolution order: this flag, then
+    /// `JCODEMUNCH_INDEX_DIR`, then `CODE_INDEX_PATH`, then
+    /// `$HOME/.code-index`.
+    ///
+    /// `CODE_INDEX_PATH` is load-bearing, not a courtesy: it is jcodemunch's
+    /// OWN index-directory variable and the one the rest of this substrate
+    /// already honours — `scripts/jcodemunch-index-reify.sh` resolves the DB
+    /// as `${CODE_INDEX_PATH:-$HOME/.code-index}/local-<name>.db`, and
+    /// `tests/infra/test_jcodemunch_index_reify.sh` drives its whole suite
+    /// through a temp `CODE_INDEX_PATH`. Ignoring it would reopen, on the
+    /// DIRECTORY axis, exactly the failure `resolve_repo_id` forbids on the
+    /// IDENTITY axis: the indexer writes a healthy corpus to
+    /// `$CODE_INDEX_PATH/…`, the gate probes `$HOME/.code-index/…`, finds
+    /// nothing, and refuses `E_JC_INDEX_EMPTY` against a fully-indexed tree —
+    /// sending the operator to re-index a phantom.
+    ///
+    /// `JCODEMUNCH_INDEX_DIR` is retained ahead of it as an audit-local
+    /// override, so the gate can be pointed at a different store than the
+    /// indexer without disturbing `CODE_INDEX_PATH` for co-running tools.
     jcodemunch_index_dir: String,
     /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
     /// hermetic test behaviour and provides an offline escape hatch.
@@ -279,15 +295,28 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     // `Args::jcodemunch_repo` doc for why a hardcoded git-identity default is
     // wrong rather than merely unnecessary.
     let mut jcodemunch_repo: Option<String> = None;
-    let mut jcodemunch_index_dir = std::env::var("JCODEMUNCH_INDEX_DIR").unwrap_or_else(|_| {
-        // $HOME is present in every sanctioned invocation; the bare relative
-        // fallback keeps parse_args infallible rather than adding a second
-        // failure mode to arg parsing.
-        match std::env::var("HOME") {
-            Ok(home) => format!("{home}/.code-index"),
-            Err(_) => ".code-index".to_string(),
-        }
-    });
+    // Precedence: JCODEMUNCH_INDEX_DIR (audit-local override) > CODE_INDEX_PATH
+    // (jcodemunch's own variable, honoured by scripts/jcodemunch-index-reify.sh
+    // and tests/infra/test_jcodemunch_index_reify.sh) > $HOME/.code-index.
+    // See the `Args::jcodemunch_index_dir` doc for why skipping CODE_INDEX_PATH
+    // would make the gate refuse a healthy corpus.
+    let mut jcodemunch_index_dir = std::env::var("JCODEMUNCH_INDEX_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("CODE_INDEX_PATH")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| {
+            // $HOME is present in every sanctioned invocation; the bare relative
+            // fallback keeps parse_args infallible rather than adding a second
+            // failure mode to arg parsing.
+            match std::env::var("HOME") {
+                Ok(home) => format!("{home}/.code-index"),
+                Err(_) => ".code-index".to_string(),
+            }
+        });
     let mut no_jcodemunch = false;
 
     // NOTE: Last-wins semantics for duplicate flags.
