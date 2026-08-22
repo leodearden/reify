@@ -10,7 +10,7 @@ on **2026-08-07**.
 **They are dated evidence from that reading, not live breadcrumbs** — jcodemunch is a third-party
 package reify cannot edit and which has no source repo on this host, so a "go change this line"
 reading is impossible by construction. Do not re-anchor them: refreshing a dated snapshot destroys
-its value as a record (`.claude/skills/prd/project.md`, "Never re-anchor a dated snapshot"). To find
+its value as a record (shared /prd skill, `references/author-mode.md` → "Code anchors in PRD prose" → *Never re-anchor a dated snapshot*). To find
 the code today, grep the symbol named beside each number in the pinned wheel. The main `16cfb015bc`
 in §2 is a **reify** SHA and covers reify-side observations only — never these. The one dark-factory
 anchor in this document (D5) is cited by symbol instead.
