@@ -816,3 +816,55 @@ fn end_to_end_eval_runs_the_head_matched_overload_body() {
         "an Option<Length> subject must run the Option overload's body"
     );
 }
+
+/// Characterization pin for the ONE tier that is not a mirror: tier 3
+/// (`wildcard`) is an APPROXIMATION of compile-side `matches`.
+///
+/// Compile-side `matches` treats a type-param-carrying ARG as a resolution
+/// wildcard (D4 / task-4232 γ) so a generic fn body can pass a `T`-typed value
+/// to a concrete-param function; the eval-side `wildcard` closure has never
+/// carried that disjunct. This is PRE-EXISTING — the head tier (#5685) neither
+/// introduced nor widened it — but it is a compile/eval disagreement of exactly
+/// the class the ladder exists to close, so it is pinned here rather than left
+/// as prose in a doc comment.
+///
+/// The witness is deliberately the same shape as the compile-side pin
+/// `overload_bare_type_param_arg_still_resolves` in
+/// `crates/reify-compiler/src/type_compat.rs` — non-generic
+/// `g(x: Scalar<dimensionless>)`, one bare `TypeParam` arg — so the two tests
+/// read as the two halves of one measurement: compile side `Resolved`, eval
+/// side `None`.
+///
+/// Tier 2 cannot rescue it. `head` carries its own `matches!(arg,
+/// Type::TypeParam(_))` disjunct, but it is screened through `wildcard`, so a
+/// candidate tier 3 rejects never reaches tier 2 at all. (That disjunct stays
+/// live for candidates tier 3 admits on other grounds — a GENERIC candidate,
+/// admitted via `type_carries_type_param` on the PARAM side, whose head does
+/// not unify with a bare-`TypeParam` arg.)
+///
+/// EXPECTED TO FLIP: task #5689 hoists the ladder into reify-core and must
+/// decide this asymmetry deliberately. If it unifies the two sides, this test
+/// goes RED and its assertion — not the ladder's behaviour — is what should be
+/// updated, with the compile-side pin above as the reference answer.
+#[test]
+fn bare_type_param_arg_does_not_resolve_a_non_generic_concrete_candidate() {
+    let concrete = make_fn("g", Type::dimensionless_scalar());
+    let fns = vec![concrete];
+    let args = vec![CompiledExpr::literal(
+        Value::Undef,
+        Type::TypeParam("U".to_string()),
+    )];
+
+    let selected = find_matching_compiled_function(&fns, "g", &args);
+    assert!(
+        selected.is_none(),
+        "eval-side tier 3 omits compile-side `matches`'s \
+         `type_carries_type_param(arg_ty)` disjunct, so a bare-`TypeParam` arg \
+         must NOT resolve a non-generic concrete-param candidate here (it does \
+         resolve compile-side — see the doc comment). If this now selects a \
+         candidate, the ladder was unified: update this pin and the \
+         \"# Known divergence\" section of `find_matching_compiled_function`. \
+         Got params[0] = {:?}",
+        selected.map(|f| f.params[0].1.clone())
+    );
+}

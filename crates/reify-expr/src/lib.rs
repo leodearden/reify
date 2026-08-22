@@ -1709,8 +1709,9 @@ pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// # Three tie-break tiers
 ///
 /// Mirroring compile-side `resolve_function_overload`'s
-/// `exact_matches` → `head_matches` → `matches` ladder, each tier is a FILTER
-/// over the next-broader one and an empty tier falls through to it:
+/// `exact_matches` → `head_matches` → `matches` ladder — tiers 1 and 2 arm for
+/// arm, tier 3 only approximately (see "# Known divergence" below) — each tier
+/// is a FILTER over the next-broader one and an empty tier falls through to it:
 ///
 /// 1. **exact** — every param equal to its arg's `result_type`.
 /// 2. **head-narrowed** — among the wildcard-eligible candidates of tier 3,
@@ -1747,6 +1748,35 @@ pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// narrowing the same set the same way. Pinned by
 /// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`.
 ///
+/// # Known divergence: tier 3 APPROXIMATES compile-side `matches`
+///
+/// Tier 3 is not the mirror tiers 1 and 2 are. Compile-side `matches` carries a
+/// disjunct `wildcard` below has never had — `type_carries_type_param(arg_ty)`
+/// (D4 / task-4232 γ: a type-param-carrying ARG is itself a resolution
+/// wildcard, so a generic fn body can pass a `T`-typed value to a
+/// concrete-param function). The gap predates the head tier; tier 2 neither
+/// introduced nor widened it.
+///
+/// MEASURED consequence: non-generic `g(x: Scalar<dimensionless>)` called with
+/// a bare `TypeParam("U")` arg RESOLVES compile-side (pinned by
+/// `overload_bare_type_param_arg_still_resolves` in
+/// `crates/reify-compiler/src/type_compat.rs`) and returns `None` here — a
+/// compile/eval disagreement of exactly the class this ladder exists to close.
+/// Tier 2's own bare-`TypeParam`-arg disjunct cannot rescue it: `head` is
+/// screened through `wildcard`, so a candidate tier 3 rejects never reaches
+/// tier 2. That disjunct stays live only for candidates tier 3 admits on other
+/// grounds — e.g. a generic candidate whose param head does not unify with a
+/// bare-`TypeParam` arg, which tier 3 admits via `type_carries_type_param` on
+/// the PARAM side.
+///
+/// Deliberately not closed here: adding the disjunct WIDENS eval-side
+/// resolution, a behaviour change needing its own RED tests and outside this
+/// task's plan. Pinned meanwhile by
+/// `bare_type_param_arg_does_not_resolve_a_non_generic_concrete_candidate` in
+/// tests/find_matching_compiled_function_tests.rs, so the gap is characterized
+/// rather than merely described, and recorded on #5689 — the ladder hoist must
+/// decide this asymmetry deliberately rather than erase it.
+///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
 /// operator-overloading nuance), update only this function; both call sites
 /// will inherit the fix automatically.
@@ -1771,6 +1801,10 @@ pub fn find_matching_compiled_function<'a>(
     //     `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
     //     resolves at compile time but the eval-side resolver returns None →
     //     the `@optimized` ComputeNode dispatch never fires (esc-4093-152).
+    //
+    // NOT a full mirror of compile-side `matches`, which also treats a
+    // type-param-carrying ARG as a wildcard (D4). See "# Known divergence" in
+    // the doc comment above before assuming this list is complete; #5689.
     let wildcard = |f: &&CompiledFunction| {
         let is_generic = !f.type_params.is_empty();
         f.params
