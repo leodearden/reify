@@ -44,11 +44,9 @@ const MIN_EXERCISED_RI_FILES: usize = 200;
 /// Entries here are files that cannot yet reach a clean `compile_with_stdlib`
 /// run, or are covered instead by a dedicated gated test elsewhere; every
 /// other file discovered under `examples/` is expected to compile clean.
-/// Deliberately does not pin a corpus count or set size here — the previous
-/// version of this comment ("all 43 example files ... merged on 2026-04-26")
-/// went stale exactly that way. The live corpus size is enforced by
-/// [`discovery_floors_track_the_live_corpus`], whose failure message reports
-/// the current count — not pinned here, to avoid the same drift.
+/// Deliberately does not pin a corpus count or set size here: the live
+/// corpus size is enforced by [`discovery_floors_track_the_live_corpus`],
+/// whose failure message reports the current count.
 const SKIP_SET: &[(&str, &str)] = &[
     (
         "topology_selectors/fillet_top_edges.ri",
@@ -155,9 +153,6 @@ const SKIP_SET: &[(&str, &str)] = &[
 /// at the first one.  Files listed in `SKIP_SET` are excluded from the walk.
 #[test]
 fn all_examples_parse_and_compile_with_stdlib() {
-    use std::collections::HashSet;
-
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
     let mut failures: Vec<(String, String)> = Vec::new();
 
     let paths = discover_ri_files();
@@ -171,14 +166,10 @@ fn all_examples_parse_and_compile_with_stdlib() {
         MIN_DISCOVERED_RI_FILES
     );
 
-    let mut exercised = 0usize;
-    for path in &paths {
-        let rel_key = relative_to_examples_dir(path);
-        if skip.contains(rel_key.as_str()) {
-            continue;
-        }
-        exercised += 1;
-        smoke_one(path, &rel_key, &mut failures);
+    let exercised_list = exercised_paths(&paths);
+    let exercised = exercised_list.len();
+    for (path, rel_key) in &exercised_list {
+        smoke_one(path, rel_key, &mut failures);
     }
 
     if !failures.is_empty() {
@@ -224,20 +215,13 @@ fn all_examples_parse_and_compile_with_stdlib() {
 /// false positive is never that.
 #[test]
 fn no_example_emits_ctor_field_conformance_diagnostics() {
-    use std::collections::HashSet;
-
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
     let mut violations: Vec<(String, String, String)> = Vec::new();
 
     let paths = discover_ri_files();
-    let mut exercised = 0usize;
-    for path in &paths {
-        let rel_key = relative_to_examples_dir(path);
-        if skip.contains(rel_key.as_str()) {
-            continue;
-        }
-        exercised += 1;
-        ctor_conformance_one(path, &rel_key, &mut violations);
+    let exercised_list = exercised_paths(&paths);
+    let exercised = exercised_list.len();
+    for (path, rel_key) in &exercised_list {
+        ctor_conformance_one(path, rel_key, &mut violations);
     }
 
     assert!(
@@ -248,7 +232,7 @@ fn no_example_emits_ctor_field_conformance_diagnostics() {
          stop recursing, or did SKIP_SET grow unexpectedly?",
         exercised,
         MIN_EXERCISED_RI_FILES,
-        skip.len()
+        SKIP_SET.len()
     );
 
     if !violations.is_empty() {
@@ -351,6 +335,30 @@ fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The subset of `paths` not present in [`SKIP_SET`] (keyed by
+/// [`relative_to_examples_dir`]), each paired with its precomputed relative
+/// key. The single source of the SKIP_SET-filtered "exercised" quantity —
+/// every consumer (both corpus-walking `#[test]`s and
+/// [`discovery_floors_track_the_live_corpus`]) calls this instead of
+/// re-deriving the filter, so they can never disagree about what "exercised"
+/// means.
+fn exercised_paths(paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    use std::collections::HashSet;
+
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
+    paths
+        .iter()
+        .filter_map(|p| {
+            let rel = relative_to_examples_dir(p);
+            if skip.contains(rel.as_str()) {
+                None
+            } else {
+                Some((p.clone(), rel))
+            }
+        })
+        .collect()
+}
+
 /// Verify that `relative_to_examples_dir` strips the `EXAMPLES_DIR` prefix and
 /// returns a portable forward-slash-separated relative path for both top-level
 /// and nested `.ri` files.
@@ -411,24 +419,18 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 /// when the corpus grows past 2x the floor, which is exactly the
 /// maintenance signal that the floor needs raising.
 ///
-/// Measures the same `exercised` quantity as that gate (SKIP_SET-filtered
-/// via the same `HashSet`, not `total - SKIP_SET.len()`, which would
-/// silently disagree if `SKIP_SET` ever grew a duplicate entry and would
-/// underflow-panic under a severe discovery regression), so this test can
-/// never disagree with the gate it ratchets. Directory walk only — no
-/// compile, no check — so it stays as cheap as the other sanity guards
-/// here.
+/// Measures `exercised` via the same [`exercised_paths`] helper that gate
+/// calls, rather than a hand-rederived filter (e.g. `total -
+/// SKIP_SET.len()`, which would silently disagree if `SKIP_SET` ever grew a
+/// duplicate entry and would underflow-panic under a severe discovery
+/// regression), so this test can never disagree with the gate it ratchets.
+/// Directory walk only — no compile, no check — so it stays as cheap as the
+/// other sanity guards here.
 #[test]
 fn discovery_floors_track_the_live_corpus() {
-    use std::collections::HashSet;
-
     let paths = discover_ri_files();
     let total = paths.len();
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
-    let exercised = paths
-        .iter()
-        .filter(|p| !skip.contains(relative_to_examples_dir(p).as_str()))
-        .count();
+    let exercised = exercised_paths(&paths).len();
 
     assert!(
         MIN_EXERCISED_RI_FILES * 2 >= exercised,
@@ -440,7 +442,7 @@ fn discovery_floors_track_the_live_corpus() {
         MIN_EXERCISED_RI_FILES,
         exercised,
         total,
-        skip.len(),
+        SKIP_SET.len(),
         exercised * 4 / 5
     );
 }
