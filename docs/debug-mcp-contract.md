@@ -246,15 +246,19 @@ Decoder-author checklist:
 - `screenshot` and `screenshot_window` never emit the trailing block. Only
   `element_screenshot` does.
 
-Everything else about this envelope is deliberately NOT restated here — the
+Two further facts about this envelope are deliberately NOT restated here — the
 GATING RULE (the exact condition under which the trailing block is emitted, and
-why that condition rather than another), the invariant that the trailing block
-never carries a top-level string `error`, and the positional-vs-search split
-between the two JS decoders. Each lives with the code it constrains, and a
-second synchronized copy here would be precisely the drift surface §0 warns
-about. Read them there: `mcp_content_blocks` in
-`gui/src-tauri/src/debug_server.rs`, branch 3 of `gui/test/visual/rpc.ts`, and
-branch 3 of `gui/test/visual/rpcEnvelope.mjs`.
+why that condition rather than another), and the invariant that the trailing
+block never carries a top-level string `error`. Each lives with the code it
+constrains, and a second synchronized copy here would be precisely the drift
+surface §0 warns about. Read them there: `mcp_content_blocks` in
+`gui/src-tauri/src/debug_server.rs` and branch 3 of
+`gui/test/visual/rpcEnvelope.mjs`.
+
+The positional-vs-search split between the two JS decoders is the one §2d fact
+this doc DOES own, stated once under "JS-side decoders" below. It is a contract
+*between* two decoders and so belongs with neither of them alone; the four code
+sites that depend on it point here instead of restating it.
 
 ### JS-side decoders
 
@@ -277,11 +281,44 @@ module above, but deliberately keeps its own branch table — it collapses every
 failure into `{ok: false, error}` where `normalizeRpcEnvelope` preserves the
 in-band shape.
 
-The two decoders diverge on §2d's image envelope as well, and again on purpose:
-`normalizeRpcEnvelope` SEARCHES the content array, `parseRpcResponse` stays
-POSITIONAL on `content[0]`. The rationale for each lives with the branch that
-enforces it — branch 3 of `gui/test/visual/rpc.ts` and branch 3 of
-`gui/test/visual/rpcEnvelope.mjs`.
+#### The §2d divergence — canonical statement
+
+The two decoders diverge on §2d's image envelope as well, and again on purpose.
+**This section is the single home of that rationale.** Branch 3 of
+`gui/test/visual/rpc.ts`, branch 3 of `gui/test/visual/rpcEnvelope.mjs`, case 4b
+of `gui/test/visual/rpc.test.ts` and the branch-3 case of
+`gui/test/visual/rpcEnvelope.test.ts` each point HERE rather than restating it,
+so there is exactly one copy to keep true.
+
+`normalizeRpcEnvelope` SEARCHES the content array for its text block;
+`parseRpcResponse` stays POSITIONAL on `content[0]`. Each is right for its own
+caller: `run.ts` feeds `value.data` straight into `Buffer.from(…, "base64")`, so
+the typed harness must take the IMAGE at `content[0]`; no driver reads image
+data, so the normaliser searches past it and hands back the diagnostics a driver
+can actually branch on.
+
+Do NOT reconcile them. Rewriting `parseRpcResponse`'s branch 3 to search for the
+TEXT block the way `normalizeRpcEnvelope` does — `content.find(c => c.type ===
+"text") ?? content[0]`, where the `?? content[0]` fallback is needed here and
+not in `normalizeRpcEnvelope`, to keep the image check reachable when no text
+block exists — lets branch 4 win ahead of branch 3 for a multi-match
+`element_screenshot`. Branch 4 JSON-parses the diagnostics text into
+`{viewportId, matchCount}`, which has no `data` field, so `value.data` goes
+missing: a `{path: "data", op: "exists"}` assertion (`assertions.ts`'s
+`element_screenshot` scenario) fails outright, and a consumer piping
+`value.data` into `Buffer.from` gets a TypeError on `undefined`. `run.ts`'s own
+`Buffer.from` call reads the `screenshot` tool, whose envelope never carries a
+trailing block, so it is untouched either way — which is why, before case 4b
+existed, this rewrite passed the entire JS suite and surfaced only as corrupt
+PNG bytes.
+
+An IMAGE-targeted `.find` is a different matter and the suite does not object:
+`content.find(c => c.type === "image") ?? content[0]` agrees with the positional
+read on every envelope this contract admits, because §2d fixes the image at
+`content[0]` — an ordering pinned by the Rust test
+`mcp_content_blocks_appends_pane_diagnostics_beside_the_image`. Branch 3 stays
+positional to keep branch PRECEDENCE explicit at the point of reading, not
+because a test would catch that rewrite.
 
 Coverage: §2d is pinned on both sides. EMISSION by `debug_server.rs`'s
 `mcp_content_blocks_*` tests; DECODE by one *success* two-block envelope fed
@@ -289,22 +326,10 @@ through both decoders — case 4b of `gui/test/visual/rpc.test.ts`'s "the
 documented divergence" suite, which asserts the two verdicts side by side, and
 the branch-3 fall-through case in `gui/test/visual/rpcEnvelope.test.ts`. The
 error-envelope divergences are pinned case-by-case in those same two files.
-
-That decode pair is what makes the split above load-bearing rather than
-advisory — against the collapse that actually corrupts, which is worth naming
-precisely. Rewriting `parseRpcResponse`'s branch 3 to search for the TEXT block
-the way `normalizeRpcEnvelope` does (`content.find(c => c.type === "text") ??
-content[0]`) lets branch 4 win ahead of branch 3, and fails case 4b — measured
-on the suite as 1 failed | 20 passed, so case 4b and only case 4b catches it.
-Before the pair existed that same rewrite passed the entire JS suite and
-surfaced only as corrupt PNG bytes in `run.ts`'s `Buffer.from(…, "base64")`.
-
-An IMAGE-targeted `.find` is a different matter and the suite does not object:
-`content.find(c => c.type === "image") ?? content[0]` passes all 21, because
-§2d fixes the image at `content[0]`, so searching for it and indexing to it
-agree on every envelope this contract admits. Branch 3 stays positional to keep
-branch PRECEDENCE explicit at the point of reading, not because a test would
-catch that rewrite. Consult these tests before collapsing the two decoders.
+Under the TEXT-targeted rewrite above, case 4b is the SOLE failure. No absolute
+pass count is quoted anywhere in this section on purpose: a count goes stale the
+next time a case is added to either suite, and a stale count is how the earlier
+drift in this doc started.
 
 ---
 
