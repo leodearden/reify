@@ -1551,6 +1551,14 @@ fn type_carries_dim_param(t: &Type) -> bool {
 /// hoisting it and the three `type_carries_*` helpers into `reify-core` — a
 /// real, non-dev dependency of both crates — which is outside this task's file
 /// locks. Filed as task #5689.
+///
+/// `#[doc(hidden)]` marks the export for what it is — test-only reachability,
+/// not reify-expr API. It keeps the symbol linkable from that separate-crate
+/// differential while removing it from rendered rustdoc and IDE autocomplete,
+/// so the widening is not ADVERTISED as public surface for the interval before
+/// #5689 reverts it. Same convention, same reason as
+/// `reify_audit::p5_phantom_done::PRODUCTION_QUERY`.
+#[doc(hidden)]
 pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
