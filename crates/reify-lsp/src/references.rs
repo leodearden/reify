@@ -243,13 +243,16 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 // the two scanners symmetric ensures the detection scan never drifts from the
 // use-collection scan.
 //
-// The `MemberDecl::Sub` arm's field set is the symmetry-critical part: it must
-// be updated whenever `SubDecl` gains a new expression-bearing field walked by
-// `collect_uses_in_sub` (crates/reify-lsp/src/references.rs `collect_uses_in_sub`
-// doc comment). This has already been missed twice — `relate_relations` (task δ
-// 4384) and `index_domain` (task #5481/#5579) — both silently letting a
-// `.member` segment mis-resolve to an unrelated same-named binding instead of
-// refusing.
+// The `MemberDecl::Sub` arm's field set was the symmetry-critical part: it had
+// to be updated whenever `SubDecl` gained a new expression-bearing field
+// walked by `collect_uses_in_sub`, and had already been missed twice —
+// `relate_relations` (task δ 4384) and `index_domain` (task #5481/#5579) —
+// both silently letting a `.member` segment mis-resolve to an unrelated
+// same-named binding instead of refusing. Both the Sub arm and
+// `collect_uses_in_sub` now consume the single, exhaustively-destructured
+// `sub_direct_exprs` enumeration instead of re-listing `SubDecl`'s fields
+// themselves, so a newly added field is a compile error there rather than a
+// silent drift (task #5579 amendment).
 
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
 /// segment of a `MemberAccess` node anywhere in `expr`.
@@ -354,6 +357,63 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
     }
 }
 
+/// Exhaustively enumerate every direct (non-nested-scope) expression carried
+/// by a `SubDecl` — constructor args, specialization param overrides, the
+/// `at` placement pose, the indexer clause's domain expression (task #5481/
+/// #5579), the inline `at … where { }` relate-block relations (task δ 4384),
+/// and the `where` guard condition.
+///
+/// Both `collect_uses_in_sub` (use-collection) and the `MemberDecl::Sub` arm
+/// of `cursor_on_member_segment` (`.member`-segment refusal) consume this
+/// instead of re-listing `SubDecl`'s fields themselves, so the two scanners
+/// cannot drift apart the way they already have twice — `relate_relations`
+/// (task δ 4384) and `index_domain` (#5481/#5579) were each added to
+/// `collect_uses_in_sub` without a matching guard clause in
+/// `cursor_on_member_segment`, silently letting a `.member` segment on that
+/// field mis-resolve to an unrelated same-named binding instead of refusing.
+///
+/// The `let SubDecl { .. } = s` pattern below names every field with no `..`,
+/// so adding a new field to `SubDecl` is a compile error here, forcing a
+/// deliberate choice: fold it into the returned chain if it is a use-bearing
+/// expression, or extend the `_`-bound list with a one-line reason if it
+/// isn't — as `index_binder` already is (it mirrors the existing
+/// `ExprKind::Quantifier` `variable`/`variable_span` precedent: a
+/// binder-introducing field is deliberately not itself a use site here; see
+/// the "Known limitation" doc comment on `collect_idents_in_expr`).
+///
+/// Excludes `body` and `keyed_members`: both consumers recurse into those
+/// separately, at `depth + 1`/nested-scope depth, since they open a nested
+/// member scope rather than being a direct expression of this `sub`.
+fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
+    let SubDecl {
+        name: _,
+        structure_name: _,
+        type_args: _,
+        args,
+        is_collection: _,
+        where_clause,
+        body: _,
+        spec_param_overrides,
+        keyed_members: _,
+        is_aux: _,
+        is_priv: _,
+        pose_expr,
+        index_binder: _,
+        index_domain,
+        relate_relations,
+        span: _,
+        content_hash: _,
+    } = s;
+
+    args.iter()
+        .map(|(_, e)| e)
+        .chain(spec_param_overrides.iter().map(|(_, e)| e))
+        .chain(pose_expr.iter())
+        .chain(index_domain.iter())
+        .chain(relate_relations.iter())
+        .chain(where_clause.iter().map(|w| &w.condition))
+}
+
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
 /// segment of a `MemberAccess` expression anywhere within `members` at any
 /// nesting depth up to `MAX_MEMBER_NESTING_DEPTH`.
@@ -398,24 +458,7 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
                         .as_ref()
                         .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
             }
-            MemberDecl::Sub(s) => {
-                s.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
-                    || s.spec_param_overrides
-                        .iter()
-                        .any(|(_, o)| expr_member_segment_hit(o, off))
-                    || s.pose_expr
-                        .as_ref()
-                        .is_some_and(|p| expr_member_segment_hit(p, off))
-                    || s.index_domain
-                        .as_ref()
-                        .is_some_and(|d| expr_member_segment_hit(d, off))
-                    || s.relate_relations
-                        .iter()
-                        .any(|r| expr_member_segment_hit(r, off))
-                    || s.where_clause
-                        .as_ref()
-                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
-            }
+            MemberDecl::Sub(s) => sub_direct_exprs(s).any(|e| expr_member_segment_hit(e, off)),
             MemberDecl::Minimize(m) => {
                 expr_member_segment_hit(&m.expr, off)
                     || m.where_clause
@@ -920,40 +963,20 @@ fn collect_uses_in_connect(c: &ConnectDecl, name: &str, out: &mut Vec<SourceSpan
     }
 }
 
-/// Collect uses inside a `sub` declaration: constructor args, specialization
-/// param overrides, the `at` placement pose, the indexer clause's domain
-/// expression, the `where` guard, and any nested specialization-body /
-/// keyed-block members (depth-bounded).
+/// Collect uses inside a `sub` declaration: every direct expression
+/// `sub_direct_exprs` enumerates (constructor args, specialization param
+/// overrides, the `at` placement pose, the indexer clause's domain
+/// expression, the inline relate-block relations, and the `where` guard),
+/// plus any nested specialization-body / keyed-block members (depth-bounded).
 ///
 /// `index_binder` (the `i` in `sub xs[i in 0..4] = …`, task #5481 α) is
-/// deliberately NOT registered as a new local binding site here, mirroring
-/// the existing `ExprKind::Quantifier` precedent: its `variable`/
-/// `variable_span` fields are likewise never walked as a binding by
-/// `collect_idents_in_expr` below (only `collection`/`predicate` are) — see
-/// the "Known limitation" doc comment on that function. `index_domain` IS an
-/// ordinary expression in the enclosing scope (task #5579), so — like
-/// `pose_expr` — it is walked here AND guarded by the `.member`-segment
-/// refusal in `cursor_on_member_segment`'s `MemberDecl::Sub` arm (~:393-407),
-/// keeping the two scanners symmetric.
+/// deliberately NOT registered as a new local binding site here — see the
+/// doc comment on `sub_direct_exprs` for the rationale (mirrors the existing
+/// `ExprKind::Quantifier` precedent).
 fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<SourceSpan>) {
-    for (_, arg) in &s.args {
-        collect_idents_in_expr(arg, name, out);
+    for expr in sub_direct_exprs(s) {
+        collect_idents_in_expr(expr, name, out);
     }
-    for (_, ov) in &s.spec_param_overrides {
-        collect_idents_in_expr(ov, name, out);
-    }
-    if let Some(pose) = &s.pose_expr {
-        collect_idents_in_expr(pose, name, out);
-    }
-    if let Some(domain) = &s.index_domain {
-        collect_idents_in_expr(domain, name, out);
-    }
-    // Inline `at … where { … }` relate-block relations (task δ 4384): collect
-    // uses in each, the same as a member-level `relate { }` block.
-    for rel in &s.relate_relations {
-        collect_idents_in_expr(rel, name, out);
-    }
-    collect_uses_in_where(&s.where_clause, name, out);
     if let Some(body) = &s.body {
         collect_uses(body, name, depth + 1, out);
     }
@@ -1853,6 +1876,25 @@ mod tests {
         (span.start as usize) >= lo && (span.end as usize) <= hi
     }
 
+    /// Locate the `MemberDecl::Sub` named `sub_name` among the parsed
+    /// module's top-level structure members. Used to assert directly on an
+    /// AST field (e.g. `index_domain.is_some()`) instead of on an interim
+    /// parser diagnostic's wording, which is not the behavior under test and
+    /// would break for an unrelated reason once that diagnostic is retired.
+    fn find_sub<'a>(parsed: &'a ParsedModule, sub_name: &str) -> &'a SubDecl {
+        parsed
+            .declarations
+            .iter()
+            .find_map(|decl| match decl {
+                Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                    MemberDecl::Sub(sub) if sub.name == sub_name => Some(sub),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no `sub {sub_name}` found in parsed module"))
+    }
+
     // ─── κ (task 4210): cross-file references + rename scaffolding ────────────
     //
     // The CANONICAL SIGNAL (PRD boundary row 8): a `Hole` structure declared in
@@ -2025,22 +2067,17 @@ structure S {
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("indexed_sub"));
         // The indexer clause lowers to a fully-populated `index_binder`/
-        // `index_domain` pair (both are the AST contract β builds on), but
-        // always travels with an interim #5482 ERROR-severity diagnostic until
-        // compiler elaboration lands — see the doc comment on
+        // `index_domain` pair (both are the AST contract β builds on), though
+        // it also travels with an interim #5482 ERROR-severity diagnostic
+        // until compiler elaboration lands — see the doc comment on
         // `SubDecl::index_binder` (crates/reify-ast/src/decl.rs). That
-        // diagnostic doesn't block AST consumption, so the reference walker
-        // under test here still has a real `index_domain` expression to walk.
-        assert_eq!(
-            parsed.errors.len(),
-            1,
-            "expected exactly the interim #5482 indexed-sub diagnostic: {:?}",
-            parsed.errors
-        );
+        // diagnostic is not the behavior under test, so assert directly on the
+        // AST field the walker must reach instead of on the diagnostic's
+        // wording (which would break for an unrelated reason once #5482
+        // elaboration lands and the diagnostic is retired).
         assert!(
-            parsed.errors[0].message.contains("#5482"),
-            "expected the interim #5482 indexed-sub diagnostic, got: {:?}",
-            parsed.errors
+            find_sub(&parsed, "xs").index_domain.is_some(),
+            "fixture must actually lower an index_domain for the walker to reach"
         );
 
         // The 1-char identifier `n` is not safe to locate via `occurrences`
@@ -2062,6 +2099,57 @@ structure S {
             refset.references,
             vec![span_of(domain_off, "n")],
             "the sole use of `n` inside the indexer domain expression `0..n` must \
+             be reachable from a find-references query on its declaration"
+        );
+    }
+
+    // --- task #5579 (amendment): inline relate-block relation use reachable
+    // from find-references (task δ 4384 `relate_relations` symmetry) ---
+
+    #[test]
+    fn collect_references_reaches_inline_relate_block_use() {
+        // `gap` is used only inside the inline `at … where { }` relate-block's
+        // relation expression (task δ 4384), never in the sub's args/pose/
+        // where. Mirrors `collect_references_reaches_indexed_sub_domain_use`
+        // above, but for `SubDecl::relate_relations` instead of
+        // `index_domain` — this is the positive reachability counterpart to
+        // `member_access_field_segment_refuses_in_inline_relate_block`, which
+        // only exercises the separate `cursor_on_member_segment` refusal
+        // guard and would stay green even if the
+        // `for rel in &s.relate_relations` walk in `collect_uses_in_sub`
+        // (now folded into `sub_direct_exprs`) were deleted.
+        let source = "\
+structure S {
+    param gap: Length = 1mm
+    sub bolt : Bolt at auto where {
+        concentric(bolt.face, gap)
+    }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("relateuse"));
+        assert!(
+            parsed.errors.is_empty(),
+            "inline relate-block fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            !find_sub(&parsed, "bolt").relate_relations.is_empty(),
+            "fixture must actually lower a relate_relations entry for the walker to reach"
+        );
+
+        // gap[0] = `param gap` decl, gap[1] = the sole use inside the relate block.
+        let gap = occurrences(source, "gap");
+        assert_eq!(gap.len(), 2, "1 param decl + 1 use inside the relate block");
+
+        let pos = offset_to_position(source, gap[0] as u32);
+        let refset = collect_references(source, &parsed, pos, false)
+            .expect("param gap declaration should resolve to a ReferenceSet");
+        assert_eq!(refset.name, "gap");
+        assert_eq!(refset.kind, RefSymbolKind::Param);
+        assert_eq!(refset.declaration, span_of(gap[0], "gap"));
+        assert_eq!(
+            refset.references,
+            vec![span_of(gap[1], "gap")],
+            "the sole use of `gap` inside the inline relate-block relation must \
              be reachable from a find-references query on its declaration"
         );
     }
@@ -3359,19 +3447,15 @@ structure S {
     let other: Int = count
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("indexdom"));
-        // Indexed subs always carry exactly the interim #5482 diagnostic (see
+        // Indexed subs also carry the interim #5482 diagnostic (see
         // `collect_references_reaches_indexed_sub_domain_use` above) — not a
-        // parse failure, just a "not yet elaborated" marker.
-        assert_eq!(
-            parsed.errors.len(),
-            1,
-            "expected exactly the interim #5482 indexed-sub diagnostic: {:?}",
-            parsed.errors
-        );
+        // parse failure, just a "not yet elaborated" marker, and not the
+        // behavior under test here. Assert directly on the AST field the
+        // guard clause must reach instead, so this test doesn't break for an
+        // unrelated reason once #5482 elaboration lands.
         assert!(
-            parsed.errors[0].message.contains("#5482"),
-            "expected the interim #5482 indexed-sub diagnostic, got: {:?}",
-            parsed.errors
+            find_sub(&parsed, "xs").index_domain.is_some(),
+            "fixture must actually lower an index_domain for the guard to refuse against"
         );
 
         // d[0] = `param count` decl, d[1] = `.count` segment in `cfg.count`,
