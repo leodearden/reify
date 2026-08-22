@@ -549,6 +549,71 @@ fn debouncer_paths_are_coalesced_and_drained_independently() {
     assert_eq!(deb.next_wait(t0 + Duration::from_millis(160)), None);
 }
 
+/// PREMISE PIN for the far-future-stamp idiom used by the two `Drop` tests
+/// below (`watcher_drop_discards_a_pending_event_rather_than_delivering_it`
+/// and `watcher_drop_joins_worker_promptly_even_with_a_pending_event`), which
+/// inject via `FileWatcher::record_pending_for_test` at the stamp returned by
+/// `far_future_stamp()` below, and then assert against a debouncer entry that
+/// must STILL be pending.
+///
+/// The mathematical identity those tests rest on: `Instant::duration_since`
+/// SATURATES to zero when `earlier > self` (saturating rather than panicking
+/// since Rust 1.60), so `Debouncer::drain_ready`'s
+/// `now.duration_since(pending.last_seen) >= window` test can never hold for
+/// an entry stamped in the future, no matter how much real time passes.
+/// `next_wait` saturates the same way and therefore keeps reporting a FULL
+/// window, so the worker just re-parks instead of spinning.
+///
+/// That turns "win a 100ms real-time race against the debounce window" --
+/// which is what those tests used to do, and is how this class of flake was
+/// born -- into a structural invariant with zero wall-clock dependence.
+///
+/// Keeping the identity pinned HERE means a future change to `drain_ready`
+/// that breaks it (swapping in `checked_duration_since`, reordering the
+/// comparison operands, or comparing signed deltas) turns THIS test red at
+/// the identity, rather than silently converting the two `Drop` tests back
+/// into wall-clock flakes.
+#[test]
+fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window() {
+    let t0 = Instant::now();
+    let path = PathBuf::from("frozen.ri");
+    let mut deb = Debouncer::new(Duration::from_millis(100));
+
+    // Stamped an hour into the future relative to every `now` queried below.
+    deb.record(
+        path.clone(),
+        ChangeKind::Changed,
+        t0 + Duration::from_secs(3600),
+    );
+
+    // Never ready -- not at the stamp's own reference point, not once a full
+    // window has elapsed, not once 600x the window has elapsed.
+    assert_eq!(
+        deb.drain_ready(t0),
+        vec![],
+        "an entry stamped in the future is not ready at t0"
+    );
+    assert_eq!(
+        deb.drain_ready(t0 + Duration::from_millis(100)),
+        vec![],
+        "a full debounce window of real time does not make a future-stamped entry ready"
+    );
+    assert_eq!(
+        deb.drain_ready(t0 + Duration::from_secs(600)),
+        vec![],
+        "no amount of elapsed time makes a future-stamped entry ready: \
+         `duration_since` saturates to zero, so `>= window` is unreachable"
+    );
+
+    // And the worker's park budget stays a FULL window rather than
+    // collapsing to zero, so an injected entry costs no spin.
+    assert_eq!(
+        deb.next_wait(t0),
+        Some(Duration::from_millis(100)),
+        "next_wait saturates the same way and reports the whole window"
+    );
+}
+
 // Assertions over these helpers must be MONOTONE UNDER DESCHEDULING.
 // A saturated host can deschedule this thread for an entire timeout
 // budget, so: lower bounds on `start.elapsed()` and `>=`-style
