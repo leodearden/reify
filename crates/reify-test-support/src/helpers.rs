@@ -1727,17 +1727,27 @@ mod tests {
     /// get_value_cell_in should return the ValueCellDecl of the named cell in the
     /// named template, even when the module has multiple templates. Asserts on
     /// wrapper-only fields (`id.member`, `cell_type`) that get_let_expr_in cannot
-    /// reach, since exposing those fields is the entire motivation for this helper.
-    /// Uses distinct non-integer floats (1.5, 2.7) per template so a
-    /// wrong-template resolution is observable. There is no Int/Real
-    /// hazard to dodge here: `classify_number_literal` treats a real-form
-    /// token (any literal containing `.`, `e`, or `E`, per its `is_real`
-    /// flag) as `Type::Real` unconditionally, so a whole-number real
-    /// literal like `1.0` compiles as `Type::Real`, not `Type::Int`.
+    /// reach, since exposing those fields is the entire motivation for this helper
+    /// — plus the resolved literal value itself, so a wrong-template resolution is
+    /// actually observable rather than merely claimed. Both templates declare a
+    /// cell with the SAME member name ("w") but DIFFERENT values (1.5 vs 2.7): if
+    /// this helper ever resolved the wrong template, the value assertion below
+    /// would catch it directly (Alpha's 1.5 where Beta's 2.7 is expected).
+    ///
+    /// Non-integer literals are used so `cell_type` is asserted independent of any
+    /// Int/Real classification hazard: `classify_number_literal`
+    /// (crates/reify-ast/src/decl.rs) returns `NumberClass::Real` unconditionally
+    /// for any real-form token (one containing `.`, `e`, or `E`, per its `is_real`
+    /// flag), so even a whole-number real literal like `1.0` compiles to
+    /// `Type::Scalar { dimension: DIMENSIONLESS }` (Display: "Real"), never
+    /// `Type::Int` — the distinct 1.5/2.7 values above are purely to make
+    /// wrong-template resolution observable, not to dodge a type hazard.
     #[test]
     fn test_get_value_cell_in_returns_cell_from_named_template() {
+        use reify_ir::{CompiledExprKind, Value};
+
         let source = r#"
-            structure Alpha { let v = 1.5 }
+            structure Alpha { let w = 1.5 }
             structure Beta  { let w = 2.7 }
         "#;
         let module = super::compile_source(source);
@@ -1749,6 +1759,21 @@ mod tests {
             "expected cell_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             cell.cell_type
         );
+        match &cell
+            .default_expr
+            .as_ref()
+            .expect("Beta.w should have a default expr")
+            .kind
+        {
+            CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+                *v, 2.7,
+                "expected Beta.w's literal to be 2.7 (Alpha's is 1.5) — \
+                 a wrong-template resolution would return the latter"
+            ),
+            other => panic!(
+                "expected CompiledExprKind::Literal(Value::Real(2.7)) for Beta.w, got {other:?}"
+            ),
+        }
     }
 
     /// get_value_cell_in should panic with "no template named" when the template
@@ -1774,17 +1799,16 @@ mod tests {
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
     /// get_let_expr_in should return the default_expr of the named cell in the
-    /// named template, even when the module has multiple templates.
-    /// Uses distinct non-integer floats (1.5, 2.7) per template so a
-    /// wrong-template resolution is observable. There is no Int/Real
-    /// hazard to dodge here: `classify_number_literal` treats a real-form
-    /// token (any literal containing `.`, `e`, or `E`, per its `is_real`
-    /// flag) as `Type::Real` unconditionally, so a whole-number real
-    /// literal like `1.0` compiles as `Type::Real`, not `Type::Int`.
+    /// named template, even when the module has multiple templates. Reuses the
+    /// fixture shape and non-integer-literal rationale documented on
+    /// `test_get_value_cell_in_returns_cell_from_named_template` above — see
+    /// that test's doc comment rather than repeating it here.
     #[test]
     fn test_get_let_expr_in_finds_named_template() {
+        use reify_ir::{CompiledExprKind, Value};
+
         let source = r#"
-            structure Alpha { let v = 1.5 }
+            structure Alpha { let w = 1.5 }
             structure Beta  { let w = 2.7 }
         "#;
         let module = super::compile_source(source);
@@ -1795,6 +1819,16 @@ mod tests {
             "expected result_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             expr.result_type
         );
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+                *v, 2.7,
+                "expected Beta.w's literal to be 2.7 (Alpha's is 1.5) — \
+                 a wrong-template resolution would return the latter"
+            ),
+            other => panic!(
+                "expected CompiledExprKind::Literal(Value::Real(2.7)) for Beta.w, got {other:?}"
+            ),
+        }
     }
 
     /// get_let_expr_in should panic with "no template named" when the template
@@ -1889,39 +1923,6 @@ mod tests {
         let module =
             crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
         super::get_let_expr(&module, "anything");
-    }
-
-    // ── delegation regression: get_let_expr_in stays expressed on get_value_cell_in ──
-
-    /// get_let_expr_in delegates to get_value_cell_in (see the collapse in this same
-    /// commit series) rather than running its own independent template/cell lookup, so
-    /// this is not a cross-check between two implementations — there is only one lookup
-    /// left. What it pins is that the delegation stays intact: if a future edit gives
-    /// get_let_expr_in its own lookup again, a wrong-template regression there would
-    /// surface as a content_hash mismatch against get_value_cell_in's result rather than
-    /// two independent bugs silently agreeing. Uses a module where the same cell name
-    /// ("w") exists in two templates with DIFFERENT values so a wrong-template resolution
-    /// is actually observable. Compares via `content_hash` — CompiledExpr and
-    /// CompiledExprKind derive no PartialEq, so content_hash equality is the established
-    /// structural-equality mechanism already relied on elsewhere in this crate (e.g.
-    /// builders/topology.rs's content_hash comparisons).
-    #[test]
-    fn test_get_let_expr_in_agrees_with_get_value_cell_in() {
-        let source = r#"
-            structure Alpha { let w = 1.5 }
-            structure Beta  { let w = 2.7 }
-        "#;
-        let module = super::compile_source(source);
-        let expr_hash = super::get_let_expr_in(&module, "Beta", "w").content_hash;
-        let cell_expr_hash = super::get_value_cell_in(&module, "Beta", "w")
-            .default_expr
-            .as_ref()
-            .unwrap()
-            .content_hash;
-        assert_eq!(
-            expr_hash, cell_expr_hash,
-            "get_let_expr_in and get_value_cell_in must resolve the same default_expr for Beta.w"
-        );
     }
 
     // ── assert_no_type_cascade ────────────────────────────────────────────
