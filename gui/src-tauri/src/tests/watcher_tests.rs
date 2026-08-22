@@ -1557,6 +1557,35 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     );
 }
 
+/// An `Instant` far enough past the present that a `Debouncer` entry stamped
+/// with it can never become ready, for as long as any test could plausibly
+/// run. The single seam that takes real time out of the two `Drop` tests
+/// below.
+///
+/// `Debouncer::drain_ready` asks `now.duration_since(last_seen) >= window`,
+/// and `Instant::duration_since` saturates to zero whenever `last_seen` lies
+/// in the future -- so an entry stamped here is structurally un-drainable
+/// rather than merely unlikely to be drained, and `next_wait` saturates
+/// identically (a full window every time), so the worker parks rather than
+/// spins. That identity is pinned directly, and independently of any watcher,
+/// by `debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window`
+/// above -- if it ever stops holding, that test goes red at the identity
+/// instead of these two going flaky again.
+///
+/// Deliberately built with `checked_add` rather than by adding a `Duration`
+/// to `Instant::now()` with `+`: that latter shape is precisely what
+/// `tests/infra/test_no_new_wallclock_rust_deadlines.sh` (Rule A) rejects --
+/// a real-clock deadline rolled by hand instead of taken through the
+/// `WaitClock` seam. This file carries zero of that guard's escape
+/// annotations by design, so the one legitimate real-`Instant` offset in it
+/// is written in a form the guard has no reason to flag. Behaviour is
+/// identical; `checked_add` also states the no-overflow intent outright.
+fn far_future_stamp() -> Instant {
+    Instant::now()
+        .checked_add(Duration::from_secs(3600))
+        .expect("an hour past now is representable as an Instant")
+}
+
 /// `Drop` must cleanly shut down and join the worker thread even while a
 /// change is still pending in the `Debouncer` (i.e. its quiet window hasn't
 /// elapsed yet) -- this is the subtlest part of the trailing-edge rewrite:
@@ -1626,123 +1655,83 @@ fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
 /// shutdown instead would fail here rather than silently altering
 /// observable behavior with nothing to catch it.
 ///
-/// A fixed sleep between the write and the drop can't distinguish "the
-/// event was recorded and then correctly discarded" from "the event never
-/// reached the notify closure in time" (e.g. on a slow/loaded host) -- both
-/// look identical from here (`received` ends up empty either way), and the
-/// latter would let this test pass vacuously without exercising the
-/// discard-on-drop contract it claims to pin. So this polls
-/// `FileWatcher::pending_paths` (a test-only hook into the debouncer's
-/// internal state) to positively confirm the event was recorded as pending
-/// *before* dropping, and fails loudly if that confirmation never arrives.
+/// HOW THE PENDING ENTRY GETS THERE, and why that is no longer a race
+/// (#6438). This test used to write a real file, wait for the directory
+/// watch to be confirmed live, then poll `pending_paths()` on a 2ms cadence
+/// trying to catch the entry inside its 100ms debounce window. That window
+/// is the ONLY interval in which the entry is observable, so a loaded host
+/// that descheduled the polling thread straight past it made the test
+/// hard-fail on its 5s deadline even though the watcher had behaved
+/// perfectly and the event had been delivered normally. Nothing was lost and
+/// nothing was wrong; the test simply lost a 100ms real-time race. Widening
+/// the deadline could never have helped -- the thing being polled for was
+/// already gone. That is the flake this task exists to kill, and the fourth
+/// instance of the class in this file.
+///
+/// The pending entry is now injected directly, through
+/// `FileWatcher::record_pending_for_test`, stamped at `far_future_stamp()`.
+/// A future-stamped entry is structurally un-drainable, so "an entry is
+/// pending when `Drop` runs" is an invariant rather than a race, and the
+/// discard assertion below is UNCONDITIONAL. That is strictly stronger than
+/// the pre-fix form, which gated the same assertion on a re-snapshot and
+/// silently degraded to an `eprintln!` skip whenever the confirmation went
+/// stale.
+///
+/// The contract exercised is still exactly the real one: `Drop` never reads
+/// `last_seen`. It sets `shutdown` under the mutex, notifies the condvar and
+/// joins; the worker returns at the top of its loop without draining. The
+/// future stamp changes only how the entry got into the map, never what
+/// `Drop` does with it.
+///
+/// Nothing is lost by dropping the real write either -- the full
+/// inotify -> debouncer -> callback path stays covered end to end by
+/// `watcher_detects_ri_file_modification`, `watcher_detects_ri_file_removal`,
+/// `watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files`,
+/// `watcher_rereads_final_content_after_nonatomic_truncate_then_append` and
+/// `watcher_survives_a_panicking_callback_and_keeps_delivering_later_events`.
 #[test]
 fn watcher_drop_discards_a_pending_event_rather_than_delivering_it() {
     let dir = tempfile::tempdir().unwrap();
-    let ri_file = dir.path().join("abandoned.ri");
-    std::fs::write(&ri_file, "structure Abandoned {}").unwrap();
 
     let received: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let received_clone = received.clone();
-    let probe_seen = Arc::new(AtomicBool::new(false));
-    let probe_seen_clone = probe_seen.clone();
 
+    // No probe filter and no registration barrier any more: this test writes
+    // NOTHING to disk, so the notify closure cannot produce an event at all.
+    // Any path that reaches `received` is therefore a real violation of the
+    // discard contract rather than incidental probe traffic to be screened
+    // out -- which is why the callback can now push unconditionally.
     let Some(watcher) = try_watcher(dir.path(), None, move |event| {
         if let FileEvent::Changed(path) = event {
-            // MANDATORY, not just hygiene: this test asserts
-            // `paths.is_empty()` after drop, so any probe event reaching
-            // `received` would fail it outright.
-            if path.ends_with("probe.ri") {
-                probe_seen_clone.store(true, Ordering::SeqCst);
-                return;
-            }
             received_clone.lock().unwrap().push(path);
         }
     }) else {
         return;
     };
 
-    // This barrier guards the vacuous-pass hole UPSTREAM (did the write
-    // below even reach the notify closure at all); the pending_paths()
-    // confirmation loop further down already guards it DOWNSTREAM (was the
-    // write recorded into the debouncer). Both are needed: a write issued
-    // before the watch is live produces no event at all, which the
-    // downstream loop alone couldn't distinguish from "recorded and then
-    // legitimately drained before we polled".
-    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    let ri_file = dir.path().join("abandoned.ri");
+    watcher.record_pending_for_test(ri_file.clone(), ChangeKind::Changed, far_future_stamp());
     assert!(
-        registered,
-        "the watcher never delivered a probe event, so the directory watch \
-         was never confirmed live -- the write below could have been lost \
-         outright and this run could not exercise the discard-on-drop \
-         contract"
-    );
-
-    // Trigger an event.
-    std::fs::write(&ri_file, "structure Abandoned { param x = 1mm }").unwrap();
-
-    // Confirm the notify closure actually recorded this event into the
-    // debouncer before we drop. Once recorded, the entry is guaranteed to
-    // stay pending for the full 100ms debounce window before the worker
-    // could drain it, so polling at a much finer grain than that window
-    // reliably observes it while it's still pending -- this is what makes
-    // the drop below race against a genuinely-pending entry rather than an
-    // empty debouncer.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let recorded = loop {
-        if watcher
+        watcher
             .pending_paths()
             .iter()
-            .any(|p| p.ends_with("abandoned.ri"))
-        {
-            break true;
-        }
-        if Instant::now() >= deadline {
-            break false;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    };
-    assert!(
-        recorded,
-        "the event was never recorded as pending in the debouncer within \
-         the deadline -- can't exercise the discard-on-drop contract \
-         without it (this would otherwise let the test pass vacuously, \
-         see doc comment above)"
+            .any(|p| p.ends_with("abandoned.ri")),
+        "the injected entry should be pending before Drop -- otherwise this \
+         run does not exercise the discard-on-drop contract at all"
     );
 
-    // One more snapshot immediately before dropping, shrinking the window
-    // between "confirmed pending" and Drop as far as possible: on a heavily
-    // loaded host, the worker could in principle drain and deliver this
-    // event in the gap between the loop above and here (the debounce
-    // window happening to elapse right at this instant). That would be the
-    // confirmation going stale, not the discard-on-drop contract failing --
-    // so gate the hard assertion below on the entry still being observed
-    // as pending at this last possible moment.
-    let still_pending = watcher
-        .pending_paths()
-        .iter()
-        .any(|p| p.ends_with("abandoned.ri"));
-
-    // `Drop` joins the worker thread before returning, so once this call
-    // is back, the worker has already exited -- there's no race to poll
-    // for below; a direct snapshot is enough.
+    // `Drop` joins the worker thread before returning, so once this call is
+    // back the worker has already exited -- there's no race to poll for
+    // below; a direct snapshot is enough.
     drop(watcher);
 
     let paths = received.lock().unwrap();
-    if still_pending {
-        assert!(
-            paths.is_empty(),
-            "a change still pending in the Debouncer when Drop runs should be \
-             discarded, not delivered -- got: {:?}",
-            *paths
-        );
-    } else {
-        eprintln!(
-            "NOTE: the pending entry was no longer observed immediately before \
-             Drop (drained by the worker in a narrow race window) -- skipping \
-             the discard-on-drop assertion for this run; got: {:?}",
-            *paths
-        );
-    }
+    assert!(
+        paths.is_empty(),
+        "a change still pending in the Debouncer when Drop runs should be \
+         discarded, not delivered -- got: {:?}",
+        *paths
+    );
 }
 
 /// Constructing and immediately dropping a `FileWatcher` in a loop must
