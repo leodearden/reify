@@ -3008,8 +3008,8 @@ fn multi_realization_partial_hide_retains_at_entity_granularity() {
 /// against the mock's own operation log, that the post-edit rebuild really did
 /// dispatch an op whose handle is past the seeded ceiling. A drift in dispatch
 /// count now fails with a message naming the handles it saw, instead of failing
-/// downstream on a determinacy assertion. The injectable form is filed as a
-/// follow-up.
+/// downstream on a determinacy assertion. The injectable form is filed under
+/// ticket `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
 ///
 /// Pre-amendment this test FAILS: the edited rebuild's `Undef` was read as a
 /// delta gap and the pre-edit mass was re-surfaced `determined` / `final` /
@@ -3348,8 +3348,8 @@ structure Asm {
 /// The residual is that #5338's retention never applies to contained bodies, which
 /// costs nothing while their selective demand resolves to an empty scene anyway.
 /// Both halves live upstream of this crate (reify-eval's realization-node keying
-/// vs. the composed mesh path), so closing them is filed as a follow-up rather
-/// than smuggled into an amendment pass.
+/// vs. the composed mesh path), so closing them is filed under ticket
+/// `tkt_0RSRP0RVHF2SMG12S7QB1F9VHT` rather than smuggled into an amendment pass.
 #[test]
 fn contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key() {
     let mut session = rigid_mass_props_session();

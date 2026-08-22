@@ -105,7 +105,7 @@ pub(crate) fn rigid_mass_props_session_seeded(
 /// degeneration is injected rather than starved. That mock lives in
 /// `crates/reify-test-support`, outside this task's locked scope, so the
 /// precondition is made OBSERVABLE here instead of injectable there; the
-/// injectable form is filed as a follow-up.
+/// injectable form is filed under ticket `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
 pub(crate) fn rigid_mass_props_session_seeded_with_ops(
     ids: std::ops::RangeInclusive<u64>,
 ) -> (

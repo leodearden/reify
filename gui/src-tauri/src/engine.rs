@@ -2383,7 +2383,10 @@ impl EngineSession {
     ///   Both halves are pinned by
     ///   `contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key`
     ///   and its positive twin (commands_tests.rs), which show the same source
-    ///   retaining correctly once the demand key resolves.
+    ///   retaining correctly once the demand key resolves. Closing the upstream key
+    ///   gap is filed under ticket `tkt_0RSRP0RVHF2SMG12S7QB1F9VHT` — a ticket
+    ///   rather than a `#NNNN` cite because the curator assigns the task id
+    ///   asynchronously and a cite must resolve to a live task to be valid.
     ///
     ///   Under-retention degrades to the pre-#5338 behaviour (the cell reads
     ///   `Undef`), never to a stale value served as Final, so it fails safe.
