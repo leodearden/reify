@@ -563,27 +563,53 @@ fn error_diagnostics(notification: &serde_json::Value) -> Vec<serde_json::Value>
         .collect()
 }
 
-/// Result of `spawn_lsp_and_initialize`: a running `reify lsp` child that has
-/// already completed the `initialize`/`initialized` handshake, plus the
-/// pieces each caller needs to keep driving it.
-struct LspSession {
+/// Which of this file's two stderr disciplines `spawn_lsp_and_initialize_core`
+/// should apply. Consumed only by `spawn_lsp_drained`/`spawn_lsp_undrained`
+/// (task #6162) — see their doc comments for when to use which.
+enum StderrMode {
+    Drained,
+    Undrained,
+}
+
+/// The stderr handle `spawn_lsp_and_initialize_core` hands back. Which
+/// variant is populated is determined entirely by the `StderrMode` passed
+/// in, so `spawn_lsp_drained`/`spawn_lsp_undrained` can match it
+/// infallibly instead of every caller re-asserting the invariant with an
+/// `.expect()` on a Some/None pair that was only ever complementary by
+/// convention, not by the type system (task #6162).
+enum SessionStderr {
+    Reader(thread::JoinHandle<(Vec<u8>, Option<io::Error>)>),
+    Pipe(std::process::ChildStderr),
+}
+
+/// Result of `spawn_lsp_drained`: a running `reify lsp` child that has
+/// already completed the `initialize`/`initialized` handshake, with stderr
+/// being drained in the background and ready for `wait_for_exit`.
+struct DrainedLspSession {
     child: KillOnDrop,
     stdin: std::process::ChildStdin,
     rx: mpsc::Receiver<serde_json::Value>,
     /// The raw `initialize` response, for callers that assert on its shape
-    /// (e.g. capabilities) beyond the generic `result.is_some()` check this
-    /// function already performs.
+    /// (e.g. capabilities) beyond the generic `result.is_some()` check
+    /// `spawn_lsp_and_initialize_core` already performs.
     init_response: serde_json::Value,
-    /// `Some` when `drain_stderr` was `true`: the background thread already
-    /// draining stderr (spawned before any stdin write — see
-    /// `spawn_pipe_reader`'s doc comment), ready to be handed to
-    /// `wait_for_exit`. `None` otherwise.
-    stderr_reader: Option<thread::JoinHandle<(Vec<u8>, Option<io::Error>)>>,
-    /// `Some` when `drain_stderr` was `false`: the raw, deliberately
-    /// undrained stderr pipe. The caller must keep this alive for as long
-    /// as backpressure needs to be sustained — dropping it early gives the
-    /// child EPIPE instead of backpressure. `None` otherwise.
-    stderr_pipe: Option<std::process::ChildStderr>,
+    /// The background thread already draining stderr (spawned before any
+    /// stdin write — see `spawn_pipe_reader`'s doc comment), ready to be
+    /// handed to `wait_for_exit`.
+    stderr_reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>,
+}
+
+/// Result of `spawn_lsp_undrained`: a running `reify lsp` child that has
+/// already completed the `initialize`/`initialized` handshake, with the
+/// raw, deliberately undrained stderr pipe.
+struct UndrainedLspSession {
+    child: KillOnDrop,
+    stdin: std::process::ChildStdin,
+    rx: mpsc::Receiver<serde_json::Value>,
+    /// The caller must keep this alive for as long as backpressure needs to
+    /// be sustained — dropping it early gives the child EPIPE instead of
+    /// backpressure.
+    stderr_pipe: std::process::ChildStderr,
 }
 
 /// Spawns `reify lsp`, drains stdout, and drives the `initialize` /
@@ -592,20 +618,26 @@ struct LspSession {
 /// verbatim between `lsp_full_interactive_loop_through_binary` and
 /// `lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr`).
 ///
-/// stdout is always drained via `spawn_reader`, regardless of
-/// `drain_stderr`, so a blocked stdout pipe can never be mistaken for a
-/// stderr backpressure scenario a caller is deliberately inducing.
+/// stdout is always drained via `spawn_reader`, regardless of `mode`, so a
+/// blocked stdout pipe can never be mistaken for a stderr backpressure
+/// scenario a caller is deliberately inducing.
 ///
-/// `drain_stderr` selects which of this file's two stderr disciplines the
-/// caller needs:
-///   - `true`: stderr is drained the same way stdout is, via
-///     `spawn_pipe_reader` spawned before any stdin write — load-bearing
-///     ordering, see its doc comment. The reader comes back in
-///     `LspSession::stderr_reader`, ready for `wait_for_exit`.
-///   - `false`: stderr is taken into a named handle and never read, so the
-///     caller can put it under deliberate, sustained backpressure. It comes
-///     back in `LspSession::stderr_pipe`.
-fn spawn_lsp_and_initialize(drain_stderr: bool) -> LspSession {
+/// Private core shared by `spawn_lsp_drained`/`spawn_lsp_undrained`: those
+/// are the two functions callers should actually use. Each returns a
+/// distinct, non-`Option`-shaped result type so a caller can never observe
+/// (or need to defensively unwrap) the stderr shape it did not ask for —
+/// unlike a single `bool`-flagged function returning one struct with two
+/// complementary `Option` fields, which pushed an unreachable
+/// `.expect()` onto every call site (task #6162).
+fn spawn_lsp_and_initialize_core(
+    mode: StderrMode,
+) -> (
+    KillOnDrop,
+    std::process::ChildStdin,
+    mpsc::Receiver<serde_json::Value>,
+    serde_json::Value,
+    SessionStderr,
+) {
     let mut child = KillOnDrop(
         Command::new(env!("CARGO_BIN_EXE_reify"))
             .args(["lsp"])
@@ -621,10 +653,11 @@ fn spawn_lsp_and_initialize(drain_stderr: bool) -> LspSession {
     let stderr_pipe = child.stderr.take().expect("stderr");
 
     let rx = spawn_reader(stdout);
-    let (stderr_reader, stderr_pipe) = if drain_stderr {
-        (Some(spawn_pipe_reader(stderr_pipe)), None)
-    } else {
-        (None, Some(stderr_pipe))
+    // Whichever arm runs, it runs before any stdin write below — load-
+    // bearing ordering, see `spawn_pipe_reader`'s doc comment.
+    let stderr = match mode {
+        StderrMode::Drained => SessionStderr::Reader(spawn_pipe_reader(stderr_pipe)),
+        StderrMode::Undrained => SessionStderr::Pipe(stderr_pipe),
     };
 
     let init_request = serde_json::json!({
@@ -651,12 +684,51 @@ fn spawn_lsp_and_initialize(drain_stderr: bool) -> LspSession {
     });
     send_jsonrpc(&mut stdin, &initialized.to_string());
 
-    LspSession {
+    (child, stdin, rx, init_response, stderr)
+}
+
+/// Spawns `reify lsp` with stderr drained the same way stdout is drained —
+/// use this when the test needs the child to run to completion without
+/// stderr backpressure. Pairs with `wait_for_exit`, which expects exactly
+/// this `stderr_reader` shape. See `spawn_lsp_and_initialize_core`'s doc
+/// comment for the shared spawn + handshake sequence.
+fn spawn_lsp_drained() -> DrainedLspSession {
+    let (child, stdin, rx, init_response, stderr) =
+        spawn_lsp_and_initialize_core(StderrMode::Drained);
+    let stderr_reader = match stderr {
+        SessionStderr::Reader(reader) => reader,
+        SessionStderr::Pipe(_) => {
+            unreachable!("StderrMode::Drained always yields SessionStderr::Reader")
+        }
+    };
+    DrainedLspSession {
         child,
         stdin,
         rx,
         init_response,
         stderr_reader,
+    }
+}
+
+/// Spawns `reify lsp` with stderr taken into a named handle and
+/// deliberately never read — use this when the test needs to put stderr
+/// under deliberate, sustained backpressure. Dropping the returned
+/// `stderr_pipe` early gives the child EPIPE instead of backpressure. See
+/// `spawn_lsp_and_initialize_core`'s doc comment for the shared spawn +
+/// handshake sequence.
+fn spawn_lsp_undrained() -> UndrainedLspSession {
+    let (child, stdin, rx, _init_response, stderr) =
+        spawn_lsp_and_initialize_core(StderrMode::Undrained);
+    let stderr_pipe = match stderr {
+        SessionStderr::Pipe(pipe) => pipe,
+        SessionStderr::Reader(_) => {
+            unreachable!("StderrMode::Undrained always yields SessionStderr::Pipe")
+        }
+    };
+    UndrainedLspSession {
+        child,
+        stdin,
+        rx,
         stderr_pipe,
     }
 }
@@ -744,28 +816,26 @@ fn huge_unknown_uri_did_change(version: i64) -> (String, serde_json::Value) {
 #[test]
 fn lsp_full_interactive_loop_through_binary() {
     let _lock = acquire_lsp_test_lock();
-    // See `spawn_lsp_and_initialize`'s doc comment for the spawn + handshake
-    // sequence, including why the reader-thread ordering is load-bearing.
-    // Wrapped in KillOnDrop (see its doc comment above) so every panic site
-    // below — wait_for_notification and the stderr assertions — kills and
-    // reaps this child instead of leaving it running (e.g. parked in
-    // `pipe_write` backpressure) for the test process to clean up on exit.
+    // See `spawn_lsp_and_initialize_core`'s doc comment for the spawn +
+    // handshake sequence, including why the reader-thread ordering is
+    // load-bearing. Wrapped in KillOnDrop (see its doc comment above) so
+    // every panic site below — wait_for_notification and the stderr
+    // assertions — kills and reaps this child instead of leaving it running
+    // (e.g. parked in `pipe_write` backpressure) for the test process to
+    // clean up on exit.
     //
     // `stderr_drain_survives_backpressure_from_a_chatty_stub_child` and
     // `wait_for_exit_timeout_branch_drains_and_reports_stderr` are what make
     // a regression in the reader-thread ordering reachable by name, even
     // though (per `spawn_pipe_reader`'s doc comment) the failure mode either
     // would hit is a hang, not a clean assertion failure.
-    let LspSession {
+    let DrainedLspSession {
         mut child,
         mut stdin,
         rx,
         init_response,
         stderr_reader,
-        ..
-    } = spawn_lsp_and_initialize(true);
-    let stderr_reader =
-        stderr_reader.expect("spawn_lsp_and_initialize(true) always returns a stderr reader");
+    } = spawn_lsp_drained();
 
     // Verify textDocumentSync capability is present (canonical assertion migrated
     // from lsp_initialize_returns_capabilities, which was removed because it ran as
@@ -1028,22 +1098,24 @@ fn lsp_full_interactive_loop_through_binary() {
 /// Does NOT call `wait_for_exit`: that helper drains stderr via its
 /// `stderr_reader` argument, which is exactly the one thing this test must
 /// not do.
-#[cfg(unix)]
+///
+/// Not gated `#[cfg(unix)]`, unlike this file's two `/bin/sh`-stub tests:
+/// this test drives `CARGO_BIN_EXE_reify` through the same portable
+/// `Command`/`Stdio` surface as `lsp_full_interactive_loop_through_binary`
+/// and uses no unix-only API, so gating it would silently drop the task's
+/// primary end-to-end regression test on non-unix targets for no reason.
 #[test]
 fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
     let _lock = acquire_lsp_test_lock();
-    // See `spawn_lsp_and_initialize`'s doc comment for the spawn + handshake
-    // sequence.
-    let LspSession {
+    // See `spawn_lsp_and_initialize_core`'s doc comment for the spawn +
+    // handshake sequence.
+    let UndrainedLspSession {
         mut child,
         mut stdin,
         rx,
         stderr_pipe,
-        ..
-    } = spawn_lsp_and_initialize(false);
-    // Taken but deliberately NEVER read — see doc comment above.
-    let stderr_pipe =
-        stderr_pipe.expect("spawn_lsp_and_initialize(false) always returns the raw stderr pipe");
+    } = spawn_lsp_undrained();
+    // Deliberately NEVER read — see doc comment above.
 
     // Task #6162's trigger (see `huge_unknown_uri_did_change`'s doc
     // comment): a never-opened URI with a deliberately huge (160 KiB) path,
@@ -1115,6 +1187,29 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
     drop(stderr_pipe);
 }
 
+/// Spawns `/bin/sh -c script` with stdin/stdout null and stderr piped,
+/// wraps it in `KillOnDrop`, and spawns its stderr pipe reader — the
+/// boilerplate shared by every `/bin/sh`-stub test in this file (task
+/// #6162). The reader is spawned here, before the caller can possibly wait
+/// on the child, so the load-bearing ordering `spawn_pipe_reader`'s doc
+/// comment describes lives in exactly one place instead of being
+/// duplicated per call site.
+#[cfg(unix)]
+#[allow(clippy::type_complexity)]
+fn spawn_sh_stub(script: &str) -> (KillOnDrop, thread::JoinHandle<(Vec<u8>, Option<io::Error>)>) {
+    let child = Command::new("/bin/sh")
+        .args(["-c", script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn /bin/sh stub");
+    let mut guard = KillOnDrop(child);
+    let stderr_pipe = guard.stderr.take().expect("stderr");
+    let stderr_reader = spawn_pipe_reader(stderr_pipe);
+    (guard, stderr_reader)
+}
+
 /// Pins `wait_for_exit`'s timeout branch (kill → reap → join → interpolate),
 /// which has ZERO coverage from `lsp_full_interactive_loop_through_binary`
 /// above: `reify lsp` always exits cleanly, so nothing ever drives the
@@ -1180,20 +1275,8 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
 #[test]
 #[should_panic(expected = "REIFY_6161_TIMEOUT_MARKER")]
 fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
-    let child = Command::new("/bin/sh")
-        .args([
-            "-c",
-            "printf 'REIFY_6161_TIMEOUT_MARKER\n' >&2; exec sleep 30",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn /bin/sh stub");
-    let mut guard = KillOnDrop(child);
-
-    let stderr_pipe = guard.stderr.take().expect("stderr");
-    let stderr_reader = spawn_pipe_reader(stderr_pipe);
+    let (mut guard, stderr_reader) =
+        spawn_sh_stub("printf 'REIFY_6161_TIMEOUT_MARKER\n' >&2; exec sleep 30");
 
     wait_for_exit(&mut guard, 5, stderr_reader);
 }
@@ -1216,12 +1299,14 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
 /// 256 iterations of a 1024-byte `printf`, i.e. 256 * 1024 = 262144 bytes,
 /// then exits 0.
 ///
-/// `spawn_pipe_reader` is called on the stderr pipe BEFORE `wait_for_exit`
-/// — mirroring `lsp_full_interactive_loop_through_binary`'s ordering, and
-/// the property under test: reading the pipe concurrently with the
-/// child's writes is what prevents the child from blocking in `write()`
-/// once the (possibly kernel-shrunk — see `spawn_pipe_reader`'s doc
-/// comment) pipe buffer fills. Falsified by hand while writing this test:
+/// `spawn_sh_stub` calls `spawn_pipe_reader` on the stderr pipe before
+/// returning, i.e. before this test can possibly wait on the child —
+/// mirroring `lsp_full_interactive_loop_through_binary`'s ordering, and the
+/// property under test: reading the pipe concurrently with the child's
+/// writes is what prevents the child from blocking in `write()` once the
+/// (possibly kernel-shrunk — see `spawn_pipe_reader`'s doc comment) pipe
+/// buffer fills. Falsified by hand while writing this test (before the
+/// spawn+reader boilerplate was extracted into `spawn_sh_stub`):
 /// temporarily moving the `spawn_pipe_reader` call to after an unbounded
 /// `try_wait` poll loop (i.e. waiting for the child to exit before ever
 /// starting to drain it) made the test hang, exactly as
@@ -1246,22 +1331,9 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
 #[cfg(unix)]
 #[test]
 fn stderr_drain_survives_backpressure_from_a_chatty_stub_child() {
-    let child = Command::new("/bin/sh")
-        .args([
-            "-c",
-            "printf 'REIFY_6162_BACKPRESSURE_MARKER\n' >&2; i=0; while [ $i -lt 256 ]; do printf '%1024s' '' >&2; i=$((i+1)); done",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn /bin/sh stub");
-    let mut guard = KillOnDrop(child);
-
-    let stderr_pipe = guard.stderr.take().expect("stderr");
-    // Spawned BEFORE wait_for_exit — this ordering is the property under
-    // test (see doc comment above).
-    let stderr_reader = spawn_pipe_reader(stderr_pipe);
+    let (mut guard, stderr_reader) = spawn_sh_stub(
+        "printf 'REIFY_6162_BACKPRESSURE_MARKER\n' >&2; i=0; while [ $i -lt 256 ]; do printf '%1024s' '' >&2; i=$((i+1)); done",
+    );
 
     let (status, stderr) = wait_for_exit(&mut guard, 30, stderr_reader);
     let stderr_summary = elide(&stderr);
