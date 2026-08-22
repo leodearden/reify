@@ -913,6 +913,13 @@ mod expand_tests {
     /// `ExprKind` arm would silently agree with a substituter that forgot the
     /// same arm, and the test would pass vacuously. `LambdaParam` renders as
     /// `LambdaParam { name: "i", .. }`, so a *binder* never counts as a use.
+    ///
+    /// This is the ONE place a rendering probe is load-bearing, and review
+    /// esc-5385-6 accepted it on that argument. The rendering probes that
+    /// remain elsewhere in this module are POSITIVE (`contains(..)` must hold),
+    /// which fails loudly on a `Debug` change rather than passing vacuously;
+    /// negative assertions that can be named positionally are matched
+    /// structurally instead.
     fn ident_uses(expr: &reify_ast::Expr, name: &str) -> usize {
         let needle = format!("Ident({name:?})");
         format!("{expr:?}").matches(&needle).count()
@@ -1176,16 +1183,28 @@ mod expand_tests {
         let elements = elements.expect("expansion must succeed");
         assert_eq!(elements.len(), 2);
         for (k, element) in elements.iter().enumerate() {
-            let rendered = format!("{element:?}");
+            // Matched positionally rather than against a `Debug` rendering
+            // (review esc-5385-6): the discriminant is one hop from the root,
+            // so the exact node can be named instead of pattern-matching a
+            // derived format string that a field rename would silently reshape.
+            let reify_ast::ExprKind::Match { discriminant, .. } = &element.kind else {
+                panic!("element {k} must still be a Match; got {element:?}");
+            };
+            let reify_ast::ExprKind::FunctionCall { name, args, .. } = &discriminant.kind else {
+                panic!("element {k}: discriminant must be `enum_of(..)`; got {discriminant:?}");
+            };
+            assert_eq!(name, "enum_of", "element {k}: discriminant callee");
             // `enum_of` must have been applied to the folded literal, not to a
             // surviving `Ident("i")`.
-            let discriminant_folded = rendered.contains(&format!(
-                "\"enum_of\", args: [Expr {{ kind: NumberLiteral {{ value: {k}.0, is_real: false }}"
-            ));
             assert!(
-                discriminant_folded,
+                matches!(
+                    &args[0].kind,
+                    reify_ast::ExprKind::NumberLiteral { value, is_real: false }
+                        if *value == k as f64
+                ),
                 "element {k}: the discriminant must substitute even though an \
-                 arm rebinds `i`: {rendered}"
+                 arm rebinds `i`; got {:?}",
+                args[0],
             );
         }
     }

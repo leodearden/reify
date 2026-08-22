@@ -9,8 +9,8 @@
 //!   - `generate(3, |i| i)` types its cell to `List<Int>`         (index-param Int seeding, step-4).
 //!   - non-Int count `generate(3mm, …)` / `generate(2.5, …)` emits ArgTypeMismatch (step-6).
 
-use reify_core::{DiagnosticCode, Severity, Type};
-use reify_ir::{CompiledExprKind, Value};
+use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 use reify_test_support::{compile_source, compile_source_with_stdlib};
 
 /// Helper: fetch a structure template's let-cell `default_expr.result_type`.
@@ -1028,22 +1028,48 @@ fn total_boolean_ops(compiled: &reify_compiler::CompiledModule, structure: &str)
         .count()
 }
 
-/// Debug-render a value cell's `default_expr`. The compiled tree is where a
-/// compile-time rewrite is unambiguously present or absent, and the rendered
-/// `ValueCellId`s name the entity each identifier resolved against — which is
-/// exactly the shadowing question.
-fn default_expr_debug(
-    compiled: &reify_compiler::CompiledModule,
+/// A value cell's compiled `default_expr`. The compiled tree is where a
+/// compile-time rewrite is unambiguously present or absent, and the
+/// `ValueCellId`s it carries name the entity each identifier resolved against —
+/// which is exactly the shadowing question.
+///
+/// The shadowing tests below match on this tree STRUCTURALLY rather than on its
+/// `Debug` rendering (review esc-5385-6). A rendering probe puts a field name or
+/// a derived-`Debug` spelling on the critical path of a NEGATIVE assertion, and
+/// a rename would make those pass vacuously — the dangerous direction.
+fn default_expr<'a>(
+    compiled: &'a reify_compiler::CompiledModule,
     structure: &str,
     cell: &str,
-) -> String {
-    format!(
-        "{:?}",
-        value_cell(template(compiled, structure), cell)
-            .default_expr
-            .as_ref()
-            .unwrap_or_else(|| panic!("cell '{cell}' has no default_expr"))
-    )
+) -> &'a CompiledExpr {
+    value_cell(template(compiled, structure), cell)
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("cell '{cell}' has no default_expr"))
+}
+
+/// The bodies of a `Match` expression's arms, in source order.
+fn match_arm_bodies(expr: &CompiledExpr) -> Vec<&CompiledExpr> {
+    let CompiledExprKind::Match { arms, .. } = &expr.kind else {
+        panic!("expected a compiled Match; got {:#?}", expr.kind);
+    };
+    arms.iter().map(|arm| &arm.body).collect()
+}
+
+/// The single `ValueCellId` argument of a call to `name` — i.e. exactly which
+/// cell `union_all(<ident>)` resolved its argument against.
+fn sole_call_arg_cell<'a>(expr: &'a CompiledExpr, name: &str) -> &'a ValueCellId {
+    let CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+        panic!("expected a compiled call to {name}(); got {:#?}", expr.kind);
+    };
+    assert_eq!(function.name, name, "expected a call to {name}()");
+    let [only] = args.as_slice() else {
+        panic!("expected {name}() to have exactly one argument; got {args:#?}");
+    };
+    let CompiledExprKind::ValueRef(id) = &only.kind else {
+        panic!("expected {name}()'s argument to be a ValueRef; got {:#?}", only.kind);
+    };
+    id
 }
 
 /// A LAMBDA PARAM that shadows a geometry-list let must not expand to that
@@ -1099,12 +1125,26 @@ fn lambda_param_shadowing_a_geometry_list_let_is_not_expanded_by_union_all() {
         3,
     );
     // …and `combined`'s compiled argument resolves to the lambda's OWN binder
-    // cell (`$lambdaN.S`), not to the outer `S.holes` list cell.
-    let combined = default_expr_debug(&compiled, "S", "combined");
+    // cell (`$lambdaN.S`), not to the outer `S.holes` list cell. Read off the
+    // tree, not off its `Debug` rendering (review esc-5385-6):
+    // `generate(2, |holes| union_all(holes))` compiles to
+    // `FunctionCall(generate)[Literal, Lambda{ body: FunctionCall(union_all) }]`.
+    let combined = default_expr(&compiled, "S", "combined");
+    let CompiledExprKind::FunctionCall { args, .. } = &combined.kind else {
+        panic!("expected `combined` to compile to a generate() call; got {combined:#?}");
+    };
+    let CompiledExprKind::Lambda { body, .. } = &args[1].kind else {
+        panic!("expected generate()'s second argument to be a Lambda; got {:#?}", args[1]);
+    };
+    let folded = sole_call_arg_cell(body, "union_all");
+    assert_ne!(
+        *folded,
+        ValueCellId::new("S", "holes"),
+        "the compiled fold must not reference the OUTER geometry-list cell",
+    );
     assert!(
-        !combined.contains("entity: \"S\", member: \"holes\""),
-        "the compiled fold must not reference the OUTER geometry-list cell; \
-         got: {combined}",
+        folded.entity.starts_with("$lambda"),
+        "…it must resolve to the lambda's own binder cell; got {folded:?}",
     );
 
     // Positive control: same fixture, non-shadowing binder name.
@@ -1182,17 +1222,27 @@ fn match_arm_binder_shadowing_a_geometry_list_let_is_not_expanded_by_union_all()
     );
 
     // The arm body's argument resolves to the arm's OWN payload binder
-    // (`$matcharmN.S`), never to the outer `S.holes` list cell.
-    let combined = default_expr_debug(&compiled, "S", "combined");
+    // (`$matcharmN.S`), never to the outer `S.holes` list cell — read off the
+    // compiled arm rather than its `Debug` rendering (review esc-5385-6).
+    let combined = default_expr(&compiled, "S", "combined");
+    let bodies = match_arm_bodies(combined);
+    let fold_body = bodies
+        .iter()
+        .find(|b| {
+            matches!(&b.kind, CompiledExprKind::FunctionCall { function, .. }
+                     if function.name == "union_all")
+        })
+        .unwrap_or_else(|| panic!("no arm body is a union_all() call; got {bodies:#?}"));
+    let folded = sole_call_arg_cell(fold_body, "union_all");
     assert!(
-        combined.contains("$matcharm"),
+        folded.entity.starts_with("$matcharm"),
         "`union_all`'s argument must resolve to the arm's payload binder; \
-         got: {combined}",
+         got {folded:?}",
     );
-    assert!(
-        !combined.contains("entity: \"S\", member: \"holes\""),
-        "the compiled arm must not reference the OUTER geometry-list cell; \
-         got: {combined}",
+    assert_ne!(
+        *folded,
+        ValueCellId::new("S", "holes"),
+        "the compiled arm must not reference the OUTER geometry-list cell",
     );
 }
 
@@ -1231,21 +1281,41 @@ fn match_arm_binder_shadowing_a_geometry_list_let_does_not_inherit_its_count() {
     let errors = error_messages(&compiled);
     assert!(errors.is_empty(), "compile errors: {errors:?}");
 
-    let n = default_expr_debug(&compiled, "S", "n");
+    // Structural, not `Debug`-rendered (review esc-5385-6): the fold, had it
+    // fired, would have REPLACED this arm body with `Literal(Int(3))`, so the
+    // arm bodies are the complete set of places it could appear.
+    let n = default_expr(&compiled, "S", "n");
+    let bodies = match_arm_bodies(n);
+    let count_call = bodies
+        .iter()
+        .find(|b| matches!(&b.kind, CompiledExprKind::MethodCall { method, .. } if method == "count"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the binder's `.count` must survive as a MethodCall on the bound \
+                 payload rather than be folded away; got {bodies:#?}"
+            )
+        });
+    let CompiledExprKind::MethodCall { object, .. } = &count_call.kind else {
+        unreachable!("selected by the MethodCall predicate above");
+    };
+    let CompiledExprKind::ValueRef(receiver) = &object.kind else {
+        panic!("`.count`'s receiver must be a ValueRef; got {:#?}", object.kind);
+    };
     assert!(
-        n.contains("method: \"count\""),
-        "the binder's `.count` must survive as a MethodCall on the bound \
-         payload rather than be folded away; got: {n}",
+        receiver.entity.starts_with("$matcharm"),
+        "…and its receiver must be the arm's own binder cell; got {receiver:?}",
+    );
+    assert_ne!(
+        *receiver,
+        ValueCellId::new("S", "holes"),
+        "…never the OUTER geometry-list cell",
     );
     assert!(
-        n.contains("$matcharm"),
-        "…and its receiver must be the arm's own binder cell; got: {n}",
-    );
-    assert!(
-        !n.contains("Literal(Int(3))"),
-        "no folded `Int(3)` may appear anywhere in the compiled match — that is \
-         the OUTER geometry list's length leaking past a shadowing binder; \
-         got: {n}",
+        !bodies
+            .iter()
+            .any(|b| matches!(&b.kind, CompiledExprKind::Literal(Value::Int(3)))),
+        "no folded `Int(3)` may appear in any arm body — that is the OUTER \
+         geometry list's length leaking past a shadowing binder; got {bodies:#?}",
     );
 
     // Positive control: same fixture, non-shadowing binder name — the fold is
@@ -1263,10 +1333,13 @@ fn match_arm_binder_shadowing_a_geometry_list_let_does_not_inherit_its_count() {
         }
     "#,
     );
+    let control_bodies = match_arm_bodies(default_expr(&unshadowed, "S", "n"));
     assert!(
-        default_expr_debug(&unshadowed, "S", "n").contains("Literal(Int(3))"),
+        control_bodies
+            .iter()
+            .any(|b| matches!(&b.kind, CompiledExprKind::Literal(Value::Int(3)))),
         "control: an UNshadowed `holes.count` inside the same match arm must \
-         still fold to the outer list's length; got: {}",
-        default_expr_debug(&unshadowed, "S", "n"),
+         still fold to the outer list's length; got {control_bodies:#?}",
     );
 }
+

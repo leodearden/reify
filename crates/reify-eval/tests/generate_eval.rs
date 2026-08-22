@@ -624,16 +624,34 @@ fn quantifier_variable_shadowing_a_geometry_list_let_does_not_inherit_its_count(
         .iter()
         .find(|vc| vc.id.member == "ok")
         .expect("value cell 'ok'");
-    let rendered = format!("{:?}", ok_cell.default_expr.as_ref().expect("default_expr"));
-    assert!(
-        rendered.contains("MethodCall"),
-        "the quantifier variable's `holes.count` must survive as a MethodCall on \
-         the bound variable, not be folded away; got: {rendered}",
-    );
-    assert!(
-        !rendered.contains("Literal(Int(3))"),
-        "the predicate must contain no folded `Int(3)` — that is the OUTER \
-         geometry list's length leaking past the shadowing binder; got: {rendered}",
+    // Matched STRUCTURALLY rather than against a `Debug` rendering (review
+    // esc-5385-6): a rendering probe gates a negative assertion on the exact
+    // spelling of derived `Debug` output, so a field rename would make it pass
+    // vacuously. `forall holes in xs: holes.count == 2` compiles to
+    // `Quantifier{ predicate: BinOp{ left: <holes.count>, right: Literal(2) } }`,
+    // and the fold — had it fired — would have replaced `left` in place.
+    let ok_expr = ok_cell.default_expr.as_ref().expect("default_expr");
+    let reify_ir::CompiledExprKind::Quantifier { predicate, .. } = &ok_expr.kind else {
+        panic!("expected `ok` to compile to a Quantifier; got {ok_expr:#?}");
+    };
+    let reify_ir::CompiledExprKind::BinOp { left, .. } = &predicate.kind else {
+        panic!("expected the predicate to be a comparison; got {predicate:#?}");
+    };
+    let reify_ir::CompiledExprKind::MethodCall { object, method, .. } = &left.kind else {
+        panic!(
+            "the quantifier variable's `holes.count` must survive as a MethodCall \
+             on the bound variable, not be folded away; got {left:#?}"
+        );
+    };
+    assert_eq!(method, "count", "the surviving MethodCall must be `.count`");
+    let reify_ir::CompiledExprKind::ValueRef(receiver) = &object.kind else {
+        panic!("`.count`'s receiver must be a ValueRef; got {object:#?}");
+    };
+    assert_ne!(
+        *receiver,
+        ValueCellId::new("S", "holes"),
+        "the predicate must not reference the OUTER geometry-list cell — that is \
+         its length leaking past the shadowing binder",
     );
 }
 
@@ -734,3 +752,4 @@ fn indexing_a_geometry_list_reads_the_pre_hydration_placeholder() {
          should assert the handle instead: {first:?}",
     );
 }
+
