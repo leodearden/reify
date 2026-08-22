@@ -3872,7 +3872,7 @@ mod tests {
         }
     }
 
-    /// transform_log(identity) == Map { angular=[0,0,0] DIMENSIONLESS, linear=[0,0,0] LENGTH }.
+    /// transform_log(identity) == Map { angular=[0,0,0] ANGLE, linear=[0,0,0] LENGTH }.
     #[test]
     fn transform_log_identity_is_zero_twist() {
         let id = eval_builtin("transform3_identity", &[]);
@@ -3885,10 +3885,7 @@ mod tests {
         for (i, v) in lin.iter().enumerate() {
             assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
         }
-        assert_eq!(
-            map_vec3_dim(&result, "angular"),
-            DimensionVector::DIMENSIONLESS
-        );
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::ANGLE);
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -3918,10 +3915,7 @@ mod tests {
             "linear[2] = {}, expected 3",
             lin[2]
         );
-        assert_eq!(
-            map_vec3_dim(&result, "angular"),
-            DimensionVector::DIMENSIONLESS
-        );
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::ANGLE);
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -4328,14 +4322,18 @@ mod tests {
     // ── transform_exp tests (step-21) ────────────────────────────────────────
 
     /// Helper: build a twist Map with given angular & linear vectors.
+    ///
+    /// The angular half is monomorphic ANGLE (#6080) — a rotation vector is
+    /// axis * angle — so it takes no dimension parameter. Only the linear half
+    /// is polymorphic (LENGTH | DIMENSIONLESS), which is #6126's territory.
     fn make_twist(angular: [f64; 3], linear: [f64; 3], linear_dim: DimensionVector) -> Value {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
             Value::Vector(vec![
-                Value::Real(angular[0]),
-                Value::Real(angular[1]),
-                Value::Real(angular[2]),
+                Value::angle(angular[0]),
+                Value::angle(angular[1]),
+                Value::angle(angular[2]),
             ]),
         );
         let make_lin = |v: f64| -> Value {
@@ -4526,18 +4524,18 @@ mod tests {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::Real(0.0); 3]),
+            Value::Vector(vec![Value::angle(0.0); 3]),
         );
         assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
     }
 
-    /// transform_exp with non-DIMENSIONLESS angular dimension → Undef.
+    /// transform_exp with non-ANGLE angular dimension → Undef (#6080).
     #[test]
     fn transform_exp_angular_wrong_dimension_returns_undef() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of DIMENSIONLESS
+            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of ANGLE
         );
         m.insert(
             Value::String("linear".to_string()),
@@ -4547,12 +4545,15 @@ mod tests {
     }
 
     /// transform_exp with non-LENGTH linear dimension → Undef.
+    ///
+    /// The angular half must be a VALID ANGLE vector, or this test would pass
+    /// on the angular gate and stop covering the linear one (#6126's).
     #[test]
     fn transform_exp_linear_wrong_dimension_returns_undef() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::Real(0.0); 3]),
+            Value::Vector(vec![Value::angle(0.0); 3]),
         );
         m.insert(
             Value::String("linear".to_string()),
@@ -4588,6 +4589,150 @@ mod tests {
         let twist = make_twist([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
         assert!(eval_builtin("transform_exp", &[]).is_undef());
         assert!(eval_builtin("transform_exp", &[twist.clone(), twist]).is_undef());
+    }
+
+    // ── Twist.angular DIMENSION tests (#6080) ─────────────────────────────
+    //
+    // A twist's angular half is a rotation vector — axis * angle — so it
+    // carries ANGLE, exactly like `orient_log`'s output. Both ends of the
+    // transform_log / transform_exp pair are pinned here, because the pair is
+    // an identity and only moves correctly if they agree.
+    //
+    // SCOPE: the `linear` half is NOT touched by any of these. Its
+    // LENGTH|DIMENSIONLESS gate is ruled by #6126.
+
+    /// The transform_log tests above read angular through `map_vec3_components`
+    /// (i.e. `as_f64()`), which is dimension-blind; these assert per-component
+    /// dimension directly.
+    #[test]
+    fn transform_log_emits_angle_dimensioned_angular() {
+        let t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
+        let ang = match map.get(&Value::String("angular".to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => items,
+            other => panic!("expected Vector3 angular, got {other:?}"),
+        };
+        assert_scalar_approx!(ang[0].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(ang[1].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(
+            ang[2].clone(),
+            std::f64::consts::FRAC_PI_2,
+            DimensionVector::ANGLE
+        );
+    }
+
+    /// The zero / near-identity rotation path must not be left dimensionless.
+    #[test]
+    fn transform_log_identity_emits_angle_dimensioned_zero_angular() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let result = eval_builtin("transform_log", &[id]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
+        let ang = match map.get(&Value::String("angular".to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => items,
+            other => panic!("expected Vector3 angular, got {other:?}"),
+        };
+        for comp in ang.iter() {
+            assert_scalar_approx!(comp.clone(), 0.0, DimensionVector::ANGLE);
+        }
+    }
+
+    /// The widening: an ANGLE angular half is accepted.
+    #[test]
+    fn transform_exp_accepts_angle_angular() {
+        let twist = make_twist(
+            [0.0, 0.0, std::f64::consts::FRAC_PI_2],
+            [1.0, 2.0, 3.0],
+            DimensionVector::LENGTH,
+        );
+        let result = eval_builtin("transform_exp", &[twist]);
+        match result {
+            Value::Transform { rotation, .. } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+            }
+            other => panic!("expected Transform, got {other:?}"),
+        }
+    }
+
+    /// The narrowing: a dimensionless angular half is rejected. DIMENSIONLESS
+    /// is a SPECIFIC dimension (the zero vector), not a wildcard.
+    #[test]
+    fn transform_exp_rejects_dimensionless_angular() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+            ]),
+        );
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// Regression pin: widening to ANGLE must not make the gate permissive.
+    #[test]
+    fn transform_exp_rejects_length_angular() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::length(0.001); 3]),
+        );
+        m.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
+    }
+
+    /// Coupled-change guard: `transform_exp(transform_log(T)) ≈ T` survives
+    /// only if the emission and the gate agree on ANGLE. Also asserts the
+    /// intermediate twist's angular half is ANGLE-dimensioned.
+    #[test]
+    fn transform_log_then_exp_round_trip_angular_is_angle() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q, 1.5, -2.5, 3.0);
+        let twist = eval_builtin("transform_log", std::slice::from_ref(&t));
+        assert_eq!(map_vec3_dim(&twist, "angular"), DimensionVector::ANGLE);
+        // The linear half is untouched by #6080 and stays LENGTH.
+        assert_eq!(map_vec3_dim(&twist, "linear"), DimensionVector::LENGTH);
+        let back = eval_builtin("transform_exp", &[twist]);
+        match back {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-10);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.5).abs() < 1e-10, "tx = {tx}, expected 1.5");
+                        assert!((ty - (-2.5)).abs() < 1e-10, "ty = {ty}, expected -2.5");
+                        assert!((tz - 3.0).abs() < 1e-10, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {other:?}"),
+                }
+            }
+            other => panic!("expected Transform, got {other:?}"),
+        }
     }
 
     // ── step-1/2: project(point, Frame<3>) tests ─────────────────────────────
