@@ -272,6 +272,104 @@ fn check_surface_verdict_is_unchanged_for_build_surface_fixture() {
     );
 }
 
+/// OCCT-gated: a `reify check` run on a binary where a geometry kernel IS live
+/// must never tell the user to build one.
+///
+/// This is the reviewer's exact repro shape, at the surface a user actually
+/// touches. `capture_repr_tol && achieved_repr_tol.is_empty()` has more than
+/// one cause; "no geometry kernel" is only one of them. Here the subject
+/// declares no realization, so nothing is tessellated and the map stays empty
+/// even though OCCT is running — and the pre-fix remedy answered that with
+/// "a geometry kernel is required — build with OCCT", a false statement and a
+/// dead end. That is the same INV-SF-4 misattribution class ζ exists to
+/// remove, merely relocated from the operand kinds to the kernel.
+///
+/// The eval-level pair
+/// (`kernel_present_but_nothing_tessellated_does_not_blame_the_kernel` and
+/// `measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check`)
+/// brackets the same discriminator with a stub kernel, so it gates in
+/// stub-mode CI. Only a real OCCT run reproduces the reported defect
+/// end-to-end, which is what this test adds.
+///
+/// The OCCT gate is load-bearing rather than incidental: in stub mode this
+/// same fixture legitimately lands in the no-kernel arm and SHOULD name the
+/// kernel, so asserting the negative there would be wrong.
+#[test]
+fn check_with_kernel_present_does_not_claim_a_kernel_is_missing() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping: OCCT unavailable (cfg(has_occt) not set — stub-mode \
+             build). With no kernel registered this fixture legitimately lands \
+             in the missing-kernel arm and SHOULD name the kernel; the negative \
+             asserted below only holds when a kernel is present. The eval-level \
+             stub-kernel test covers this arm in stub-mode CI."
+        );
+        return;
+    }
+
+    let path = common::fixture_path("representation_within_no_realization.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    assert!(
+        status.success(),
+        "Indeterminate is not a failure — `reify check` must still exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("INDETERMINATE Checker#constraint[0]"),
+        "nothing was tessellated for the subject, so the verdict is \
+         Indeterminate (never a false Violated).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // Counted, not `find`-ed: a regression that emitted the Info twice must
+    // fail here rather than pass on the first match.
+    let attributions: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("Checker#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one line must name the constraint that could not be \
+         evaluated, with a reason.\nstderr: {stderr}"
+    );
+    let attribution = attributions[0];
+
+    // `report_eval_output` prints every diagnostic as "{severity}: {message}",
+    // so the severity that actually reached the user is readable off the line.
+    // Asserted POSITIVELY: a mere "not an error" check would sail past a
+    // regression that re-emitted this at Warning severity.
+    assert!(
+        attribution.starts_with("info:"),
+        "INV-SF-2 severity-hygiene corollary: a subject with no realization is a \
+         path a healthy design routinely hits, so this is Info — not a warning \
+         and not an error.\nline: {attribution}"
+    );
+    assert!(
+        attribution.contains("does not measure"),
+        "INV-SF-4: the reason must still name the surface — that token is stable \
+         across every remedy.\nline: {attribution}"
+    );
+    assert!(
+        attribution.contains("realization"),
+        "INV-SF-4: with a kernel present the actionable check is whether the \
+         subject declares a realization.\nline: {attribution}"
+    );
+    assert!(
+        !attribution.contains("build with OCCT") && !attribution.contains("kernel is required"),
+        "OCCT is demonstrably live on this binary (the sibling fixture \
+         representation_within_build_surface.ri reports OK on it), so telling \
+         the user to build one is a FALSE claim and a dead end — the very defect \
+         class ζ removes.\nline: {attribution}"
+    );
+
+    assert!(
+        !stderr.contains("operator undefined for these operand kinds"),
+        "C-SURFACE 1, re-pinned on a second fixture shape: the operands are \
+         fully defined here (`subject` carries a default); it is the missing \
+         measurement that blocks the verdict.\nstderr: {stderr}"
+    );
+}
 /// C2 guard: a module with no `RepresentationWithin` constraints must not be
 /// affected by the new routing in `cmd_check`.
 ///
