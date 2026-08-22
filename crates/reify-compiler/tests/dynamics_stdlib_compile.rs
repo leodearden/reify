@@ -10,7 +10,7 @@
 
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::{BinOp, CompiledExprKind, Value};
+use reify_ir::{BinOp, CompiledExprKind, CompiledFunction, Value};
 use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -45,6 +45,21 @@ fn find_structure(name: &str) -> &'static TopologyTemplate {
                     .iter()
                     .map(|t| (&t.name, &t.entity_kind))
                     .collect::<Vec<_>>()
+            )
+        })
+}
+
+fn find_function(name: &str) -> &'static CompiledFunction {
+    let module = load_stdlib_module();
+    module
+        .functions
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `{}` in std/dynamics; found functions: {:?}",
+                name,
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
             )
         })
 }
@@ -775,4 +790,62 @@ structure def Probe {
             errors
         );
     }
+}
+
+// ─── task 6041: std.kinematic type guard (inverse_dynamics) ───────────────
+
+/// `inverse_dynamics` and `inverse_dynamics_at_snapshot` take the real
+/// `Mechanism`/`Snapshot` structure types from `std.kinematic` (task 4311),
+/// not the pre-task-4311 `Real` placeholders — mirrors what
+/// `mass_properties_has_four_params_with_correct_types` guards for the
+/// `Frame3`/`std.ports` half (task 4547). Not a load-order position check:
+/// a reversed `std.kinematic`/`std.dynamics` order panics the stdlib loader
+/// for every test in this binary before a position assertion could run, so
+/// only a silent type regression (order correct, types wrong) is worth
+/// guarding here.
+#[test]
+fn inverse_dynamics_fns_have_mechanism_and_snapshot_param_types() {
+    let inverse_dynamics = find_function("inverse_dynamics");
+    assert_eq!(
+        inverse_dynamics.params,
+        vec![
+            (
+                "mechanism".to_string(),
+                Type::StructureRef("Mechanism".to_string())
+            ),
+            (
+                "trajectory".to_string(),
+                Type::StructureRef("MotionTrajectory".to_string())
+            ),
+        ],
+        "inverse_dynamics params should be exactly (mechanism: Mechanism, \
+         trajectory: MotionTrajectory); got: {:?}",
+        inverse_dynamics.params
+    );
+
+    let inverse_dynamics_at_snapshot = find_function("inverse_dynamics_at_snapshot");
+    assert_eq!(
+        inverse_dynamics_at_snapshot.params,
+        vec![
+            (
+                "mechanism".to_string(),
+                Type::StructureRef("Mechanism".to_string())
+            ),
+            (
+                "snapshot".to_string(),
+                Type::StructureRef("Snapshot".to_string())
+            ),
+            (
+                "q_dot".to_string(),
+                Type::List(Box::new(Type::dimensionless_scalar()))
+            ),
+            (
+                "q_ddot".to_string(),
+                Type::List(Box::new(Type::dimensionless_scalar()))
+            ),
+        ],
+        "inverse_dynamics_at_snapshot params should be exactly (mechanism: Mechanism, \
+         snapshot: Snapshot, q_dot: List<JointValue>, q_ddot: List<JointValue>); got: {:?}",
+        inverse_dynamics_at_snapshot.params
+    );
 }

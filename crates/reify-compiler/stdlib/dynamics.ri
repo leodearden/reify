@@ -22,7 +22,10 @@
 //   - structure def TrajectorySample      (t, values, vels, accels)
 //   - structure def MotionTrajectory      (mechanism, samples)
 //
-// Module placement: registered last in `stdlib_loader.rs` after `std.process`.
+// Module placement: see the ordering notes on the `std.dynamics` entry in
+// `stdlib_loader.rs` (`std.kinematic` and `std.ports` must precede) —
+// encoding note 3 below covers the `Frame3`/`origin` half of that
+// constraint.
 // Hard dependencies: `std.units` (Mass / Length / Time) and `std.trajectory`
 // (for the `JointValue` alias used by TrajectorySample).
 //
