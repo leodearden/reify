@@ -6661,14 +6661,26 @@
         // `arg_acceptance::accept_arg` and worded by `ArgRejection::message`
         // ("… dx argument expects Length, got …") rather than by
         // `eval_named_arg_f64`'s generic "non-numeric/non-finite" arm.
+        //
+        // SEVERITY MIGRATION (task 5743): the same rejection is now an ERROR
+        // carrying `DiagnosticCode::DimensionedArgRejected`, because 5743
+        // promoted the shared `accept_length_value` arm this position routes
+        // through (contract C1(iv) / INV-SF-2). The test's SUBJECT is unchanged
+        // — it still pins 5623's wording migration — so the severity was
+        // RETARGETED rather than the assertion weakened, and the code is now
+        // asserted too. Its sibling `…_nan_dx_…` deliberately still expects a
+        // Warning: a NaN LENGTH was ACCEPTED by `accept_arg` (it IS a Length),
+        // so it carries no `ArgRejection` and no dimension-rejection code.
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_core::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Error)
+                    && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
                     && d.message.contains("expects Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'expects Length', 'dx', and 'translate', got: {:?}",
+            "expected an Error carrying DimensionedArgRejected and mentioning \
+             'expects Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -7830,6 +7842,69 @@
     #[test]
     fn compile_geometry_op_interp_length_gate_rejects_every_coordinate() {
         assert_length_gated(INTERP_GATE);
+    }
+
+    /// The severity promotion (task 5743) reaches the VARIADIC route too, not
+    /// only the named-arg one — and merging task 5658 is what made that true.
+    ///
+    /// 5658 lifted the rejection emit out of `eval_named_arg_length` into the
+    /// shared `accept_length_value`, which `accept_variadic_length_args` also
+    /// calls; 5743 then promoted that ONE arm. So `interp`/`bezier`/`nurbs` pole
+    /// rejections inherit `Severity::Error` + `DimensionedArgRejected` for free,
+    /// and INV-SF-6 (a `DiagnosticCode` on every `ArgSpec`-backed rejection)
+    /// holds across the WHOLE merged Contract C surface rather than half of it.
+    ///
+    /// This asserts the `ArgRejection` diagnostic SPECIFICALLY — the one worded
+    /// "argument expects Length" — rather than "some Error naming the arg". That
+    /// distinction is the whole point: the op-compile Error which accompanies it
+    /// ("missing or non-Length argument 'x1' for interp") ALSO contains both the
+    /// arg name and the word "Length", so the looser shape passed before the
+    /// promotion as well. The sibling e2e in `geometry_length_args_units_e2e.rs`
+    /// is deliberately that looser shape (it is testing op-dropping, not
+    /// severity), which is why this discriminating unit assertion exists here.
+    #[test]
+    fn compile_geometry_op_variadic_pole_rejection_is_error_with_the_shared_code() {
+        let values = ValueMap::new();
+
+        // BARE x1; every other coordinate is a proper Length, so the rejection
+        // under test is the only one.
+        let op = interp_with_coords(&[
+            literal_f64(0.0),
+            literal_length(0.0),
+            literal_length(0.0),
+            literal_length(0.01),
+            literal_length(0.0),
+            literal_length(0.0),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_err(), "a bare interp pole must drop the op");
+
+        let rej = diagnostics
+            .iter()
+            .find(|d| d.message.contains("argument expects Length"))
+            .unwrap_or_else(|| panic!("expected a Length rejection; got: {diagnostics:?}"));
+        assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+        assert_eq!(
+            rej.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{rej:?}"
+        );
+        assert!(
+            rej.message.contains("x1") && rej.message.contains("interp"),
+            "the variadic route must report the DISPLAY name, not the compiler's \
+             inert `c0`: {:?}",
+            rej.message
+        );
     }
 
     /// Six DISTINCT Length coordinates are accepted and land in their own IR
