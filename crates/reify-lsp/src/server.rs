@@ -252,6 +252,18 @@ impl LanguageServer for ReifyLanguageServer {
         // mutation — the unknown-URI log below is emitted AFTER the guard drops,
         // so a blocking stderr write can never be performed while every other
         // did_open/did_change/did_close is queued behind this lock (task #6162).
+        //
+        // This lock-scope narrowing has no dedicated regression test: the two
+        // e2e guards in cli_lsp_protocol.rs
+        // (`lsp_full_interactive_loop_through_binary` phase 4b and
+        // `lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr`)
+        // would still pass unchanged if a future refactor moved the eprintln!
+        // below back inside this lock, since the now-truncated line is too
+        // short to ever block in either scenario. A concurrent in-process
+        // test was considered and rejected (task #6162's design decisions):
+        // it would need to redirect the process-wide stderr fd onto a
+        // deliberately-full pipe, risking a hung test binary under a shared
+        // parallel test run.
         let known = {
             let mut state = self.state.write().await;
             state.documents.update(&uri, text.clone(), version)
@@ -270,7 +282,8 @@ impl LanguageServer for ReifyLanguageServer {
             // Routing this through `window/logMessage`, or rate-limiting
             // per URI, would close that residual; it is deliberately
             // deferred as separate follow-up work rather than folded into
-            // this fix (see task #6162's design decisions).
+            // this fix and tracked by task #6329 (filed from this task's
+            // amendment review), not by this (closed) task's own id.
             eprintln!(
                 "[reify-lsp] didChange for unknown URI: {}",
                 truncate_for_log(uri.as_str())
@@ -3061,14 +3074,20 @@ structure Assembly {
         let exactly_max: String = "a".repeat(LOG_URI_MAX_CHARS);
         assert_eq!(truncate_for_log(&exactly_max), exactly_max);
 
-        // (c) one char over the boundary: keeps the first 256 chars and
-        // reports the exact byte length (257) in the marker.
+        // (c) one char over the boundary: keeps EXACTLY the first 256 chars
+        // and reports the exact byte length (257) in the marker. Exact
+        // `assert_eq!` against the whole expected string, not `starts_with`
+        // — `starts_with` is satisfied by any output that keeps *at least*
+        // 256 chars, so it would not catch an off-by-one that changed
+        // `nth(LOG_URI_MAX_CHARS)` to keep one char too many.
         let one_over: String = "a".repeat(LOG_URI_MAX_CHARS + 1);
         let truncated = truncate_for_log(&one_over);
-        assert!(truncated.starts_with(&"a".repeat(LOG_URI_MAX_CHARS)));
-        assert!(
-            truncated.contains("[truncated, 257 bytes total]"),
-            "expected truncation marker with byte count, got: {truncated}"
+        assert_eq!(
+            truncated,
+            format!(
+                "{}...[truncated, 257 bytes total]",
+                "a".repeat(LOG_URI_MAX_CHARS)
+            )
         );
 
         // (d) multi-byte safety: 300 repetitions of a 3-byte codepoint
