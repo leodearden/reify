@@ -18,7 +18,7 @@
 //! itself derives from a filesystem path, and (b) refusing to run when the
 //! index at that identity cannot be shown to be fresh and non-empty.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
 // §4.2 — repo-identity derivation
@@ -134,19 +134,95 @@ fn repo_id_for_abs_path(abs: &Path) -> String {
 
 /// Derive the repo id for a project root as supplied on the command line.
 ///
-/// Canonicalizes first so `.` (the default `--project-root`), a trailing
-/// slash, a `/./` segment and a symlinked path all resolve to ONE identity —
-/// the same normalization `load_tasks_from_fused_memory` already applies to
-/// the project root. Three cosmetic spellings of one directory yielding three
-/// index identities would silently gate the wrong index.
+/// Normalizes the path exactly the way the INDEXER does before hashing it,
+/// because an identity that disagrees with the one
+/// `scripts/jcodemunch-index-reify.sh` wrote is worse than useless: it names
+/// an index that does not exist, so the refusal sends the operator to
+/// re-index a phantom. That script does `~`-expansion followed by
+/// `readlink -f` (absolutize + resolve symlinks, **non-strict** on a missing
+/// leaf), so [`normalize_project_root`] reproduces all three steps:
 ///
-/// Falls back to the path as given when canonicalize fails (e.g. the root
-/// does not exist); the caller's downstream freshness check will then refuse
-/// on the absent index rather than this function panicking.
+/// 1. a leading `~` / `~/…` expands against `$HOME`;
+/// 2. a relative path is joined onto the current directory;
+/// 3. symlinks are resolved, falling back to the deepest existing ancestor
+///    when the leaf does not exist.
+///
+/// Step 3 subsumes the cosmetic normalization this function has always done —
+/// `.` (the default `--project-root`), a trailing slash, a `/./` segment and
+/// a symlinked path all still resolve to ONE identity, the same normalization
+/// `load_tasks_from_fused_memory` applies to the project root. Steps 1 and 2
+/// are what a bare `canonicalize` could not do: `canonicalize` FAILS outright
+/// on a path that does not exist, and the old fallback then hashed the string
+/// as given, so `--project-root ~/src/reify` (arriving quoted, never expanded
+/// by a shell) or a relative root hashed a spelling the indexer could never
+/// produce.
+///
+/// Never panics and never requires the leaf to exist: a root that is not
+/// there yet still yields the identity the indexer *would* use, and the
+/// caller's downstream freshness check refuses on the absent index.
 pub fn resolve_repo_id(project_root: &Path) -> String {
-    let canonical = std::fs::canonicalize(project_root);
-    let target = canonical.as_deref().unwrap_or(project_root);
-    repo_id_for_abs_path(target)
+    repo_id_for_abs_path(&normalize_project_root(project_root))
+}
+
+/// `~`-expand, absolutize, then resolve symlinks non-strictly — the
+/// `readlink -f` semantics `scripts/jcodemunch-index-reify.sh` applies before
+/// deriving the same identity. See [`resolve_repo_id`] for why each step is
+/// load-bearing.
+fn normalize_project_root(project_root: &Path) -> PathBuf {
+    let absolute = absolutize(&expand_tilde(project_root));
+    // Whole path exists: `canonicalize` IS `readlink -f`.
+    if let Ok(canonical) = std::fs::canonicalize(&absolute) {
+        return canonical;
+    }
+    // Leaf missing: `readlink -f` still resolves the existing prefix and
+    // re-joins the rest, so a symlinked parent yields the same identity
+    // whether or not the leaf has been created yet.
+    if let (Some(parent), Some(leaf)) = (absolute.parent(), absolute.file_name()) {
+        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+            return canonical_parent.join(leaf);
+        }
+    }
+    absolute
+}
+
+/// Expand a leading `~` against `$HOME`.
+///
+/// Only a bare `~` or `~/…` is treated as a home reference — `~user/…` is a
+/// shell form the indexer script does not expand either, so guessing at it
+/// here would *introduce* a divergence rather than close one. An unset or
+/// empty `$HOME` leaves the path untouched for the same reason.
+fn expand_tilde(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    let Some(rest) = raw.strip_prefix('~') else {
+        return path.to_path_buf();
+    };
+    if !(rest.is_empty() || rest.starts_with('/')) {
+        return path.to_path_buf();
+    }
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => {
+            let trimmed = rest.trim_start_matches('/');
+            if trimmed.is_empty() {
+                PathBuf::from(home)
+            } else {
+                PathBuf::from(home).join(trimmed)
+            }
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Join a relative path onto the current directory. An already-absolute path
+/// passes through; an unreadable cwd leaves it as given, which is the only
+/// honest answer available.
+fn absolutize(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -163,8 +239,16 @@ pub struct IndexState {
     /// `meta.git_head` — the commit the corpus was indexed at. `None` means
     /// the index is absent, has no such row, or could not be read.
     pub index_head: Option<String>,
-    /// `select count(*) from symbols`. Zero for an absent or husk index.
-    pub symbol_count: i64,
+    /// Whether `symbols` holds at least one row.
+    ///
+    /// Probed with `select exists(select 1 from symbols)`, which stops at the
+    /// first row, rather than `count(*)`, which walks the whole table — on
+    /// the real reify index that is 10^5–10^6 rows scanned on EVERY
+    /// jcodemunch-backed run (plus page-cache pressure on a DB a live watcher
+    /// is writing) for a number the §4.3 ladder only ever compares to zero.
+    /// The exact count is wanted solely to *render* a refusal, so it is
+    /// fetched there and only there — see [`count_symbols`].
+    pub symbols_present: bool,
     /// `Some(msg)` when the DB file EXISTS but could not be opened or
     /// queried — a corrupt file, a permissions problem, or jcodemunch having
     /// changed its schema. Stays `None` for a plainly-absent index, which is
@@ -178,7 +262,7 @@ impl IndexState {
     fn absent() -> Self {
         Self {
             index_head: None,
-            symbol_count: 0,
+            symbols_present: false,
             unreadable: None,
         }
     }
@@ -216,16 +300,13 @@ pub fn read_index_state(index_dir: &Path, repo_id: &str) -> IndexState {
         return IndexState::absent();
     }
 
-    let conn = match rusqlite::Connection::open_with_flags(
-        &path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) {
+    let conn = match open_read_only(&path) {
         Ok(conn) => conn,
         // The file exists but will not open: corrupt, unreadable, or not a
         // SQLite database. That is a diagnostic, not an empty index.
         Err(e) => {
             return IndexState {
-                unreadable: Some(e.to_string()),
+                unreadable: Some(e),
                 ..IndexState::absent()
             };
         }
@@ -254,21 +335,186 @@ pub fn read_index_state(index_dir: &Path, repo_id: &str) -> IndexState {
             }
         };
 
-    let symbol_count = match conn.query_row("select count(*) from symbols", [], |row| {
+    // Emptiness, not the count: `exists(select 1 …)` short-circuits on the
+    // first row, so this is O(1) where `count(*)` is a full table walk. See
+    // `IndexState::symbols_present`.
+    let symbols_present = match conn.query_row("select exists(select 1 from symbols)", [], |row| {
         row.get::<_, i64>(0)
     }) {
-        Ok(n) => n,
+        Ok(n) => n != 0,
         Err(e) => {
             note(e);
-            0
+            false
         }
     };
 
     IndexState {
         index_head,
-        symbol_count,
+        symbols_present,
         unreadable,
     }
+}
+
+/// Open `path` read-only **and prove it is actually readable**, with a
+/// WAL-safe fallback.
+///
+/// The first attempt is a plain `SQLITE_OPEN_READ_ONLY` open with no
+/// `SQLITE_OPEN_CREATE` — see [`read_index_state`] for why CREATE is
+/// forbidden.
+///
+/// That attempt is then VERIFIED with a trivial schema read, because a
+/// successful open is not evidence of a readable database. Measured on the
+/// bundled SQLite 3.45: for a database in WAL journal mode carrying an
+/// uncheckpointed `-wal`, with no `-shm` beside it and no write access to the
+/// containing directory, `open_with_flags` returns `Ok` and the FIRST QUERY
+/// fails with `SQLITE_CANTOPEN` / "unable to open database file" — SQLite
+/// defers materialising the shared-memory segment until it reads. jcodemunch's
+/// index is maintained by a long-running watcher, so this is invisible while
+/// the watcher is up and its `-shm` exists, and appears against a corpus that
+/// is perfectly intact. Without the probe the failure would surface from
+/// whichever of the two state probes ran first, i.e. as an arbitrary one of
+/// them rather than as the open fault it is.
+///
+/// The fallback re-opens the same file through a `file:…?immutable=1` URI,
+/// which tells SQLite to read the main database directly and skip the WAL
+/// machinery entirely. `immutable=1` is a *promise* the file is not changing,
+/// so it is deliberately a fallback and never the first attempt: whenever a
+/// writer could be attached, the plain open+probe succeeds and this path is
+/// not taken. Its cost is that WAL frames are invisible, so the answer comes
+/// from the last checkpointed image — which for §4.3's two questions ("is this
+/// corpus at the live head" and "does it hold any symbols") errs toward
+/// staleness/emptiness, i.e. fails closed into a refusal rather than into a
+/// false all-clear.
+fn open_read_only(path: &Path) -> Result<rusqlite::Connection, String> {
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+    let first_err = match rusqlite::Connection::open_with_flags(path, flags) {
+        Ok(conn) => match probe_readable(&conn) {
+            Ok(()) => return Ok(conn),
+            Err(e) => e,
+        },
+        Err(e) => e.to_string(),
+    };
+    let uri = format!("file:{}?immutable=1", uri_escape(path));
+    let fallback = rusqlite::Connection::open_with_flags(
+        Path::new(&uri),
+        flags | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    );
+    match fallback {
+        Ok(conn) if probe_readable(&conn).is_ok() => Ok(conn),
+        // Report the FIRST error either way. The immutable retry's error would
+        // blame the URI form for a fault that is really about the file, which
+        // is the opposite of the diagnosis an operator needs.
+        _ => Err(first_err),
+    }
+}
+
+/// The cheapest read that forces SQLite to acquire a read lock — and
+/// therefore to materialise a WAL `-shm` segment if one is needed. Reads the
+/// schema, which every SQLite database has and which costs one page.
+fn probe_readable(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.query_row("select count(*) from sqlite_schema", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Percent-escape the three characters SQLite's URI parser treats specially,
+/// so an index path containing `?`, `#` or `%` survives the `file:` form.
+fn uri_escape(path: &Path) -> String {
+    let mut out = String::new();
+    for c in path.to_string_lossy().chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '?' => out.push_str("%3f"),
+            '#' => out.push_str("%23"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Exact `select count(*) from symbols` for the index at `repo_id`.
+///
+/// The O(n) table walk [`read_index_state`] deliberately skips. Call it on
+/// the REFUSAL path only, where the message is about to name the count and
+/// the run is ending anyway — never as a startup precondition.
+///
+/// Returns 0 for an absent, unopenable or schema-drifted index, which is the
+/// same value §4.3 already reasons about for those shapes.
+pub fn count_symbols(index_dir: &Path, repo_id: &str) -> i64 {
+    let path = index_db_path(index_dir, repo_id);
+    if !path.exists() {
+        return 0;
+    }
+    let Ok(conn) = open_read_only(&path) else {
+        return 0;
+    };
+    conn.query_row("select count(*) from symbols", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .unwrap_or(0)
+}
+
+// -----------------------------------------------------------------------
+// Shared synthetic-index writer (test support)
+// -----------------------------------------------------------------------
+
+/// Write a synthetic jcodemunch index DB for `repo_id` under `dir`, returning
+/// the path written.
+///
+/// `git_head`: `Some(sha)` writes the `meta.git_head` row; `None` omits it
+/// (the row-missing shape). `symbol_rows` seeds that many `symbols` rows —
+/// zero leaves the empty-husk shape a `delete-index` leaves behind.
+///
+/// The schema is verbatim from a live jcodemunch index. That is exactly why
+/// this lives here as the ONE writer rather than being copied into
+/// `tests/common/index_fixture.rs` as well: it encodes a *captured upstream
+/// schema*, it is not the function under test, and a jcodemunch schema change
+/// mirrored into only one of two copies would leave the unit suite and the
+/// integration suite silently testing different corpora. (`index_db_path` is
+/// the deliberate exception — the integration fixture re-derives that by hand
+/// so the tests hold an independent opinion about the filename.)
+///
+/// Gated behind `test-support` so it never reaches a production build; the
+/// crate self-pulls that feature in its own `[dev-dependencies]`, which is
+/// how `tests/common/index_fixture.rs` reaches it.
+#[cfg(any(test, feature = "test-support"))]
+// G-allow: the ONE synthetic-index writer, shared by this module's unit tests and the integration fixture `tests/common/index_fixture.rs`; public only under `test-support` (which the crate self-pulls in its own [dev-dependencies]) so integration tests can reach it, never compiled into a production build.
+pub fn write_index_db(
+    dir: &Path,
+    repo_id: &str,
+    git_head: Option<&str>,
+    symbol_rows: usize,
+) -> PathBuf {
+    std::fs::create_dir_all(dir).expect("create index dir");
+    let path = index_db_path(dir, repo_id);
+    let conn = rusqlite::Connection::open(&path).expect("open synthetic index db");
+    conn.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);\
+         CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT, path TEXT);",
+    )
+    .expect("create index schema");
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('index_version', '16')",
+        [],
+    )
+    .expect("insert index_version");
+    if let Some(sha) = git_head {
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('git_head', ?)",
+            rusqlite::params![sha],
+        )
+        .expect("insert git_head");
+    }
+    for i in 0..symbol_rows {
+        conn.execute(
+            "INSERT INTO symbols (name, path) VALUES (?, 'src/lib.rs')",
+            rusqlite::params![format!("sym_{i}")],
+        )
+        .expect("insert symbol");
+    }
+    path
 }
 
 // -----------------------------------------------------------------------
@@ -283,6 +529,18 @@ pub const E_JC_INDEX_STALE: &str = "E_JC_INDEX_STALE";
 
 /// The index carries no symbols, or does not exist at all.
 pub const E_JC_INDEX_EMPTY: &str = "E_JC_INDEX_EMPTY";
+
+/// The index file EXISTS but could not be read — a corrupt file, a
+/// permissions problem, a WAL database no fallback could open, or jcodemunch
+/// having changed its schema.
+///
+/// Its own code because its REMEDY differs: "re-index this checkout" is the
+/// wrong instruction for an intact corpus behind an unreadable file, and
+/// sending an operator to rebuild an index that is not the problem is worse
+/// than saying nothing. Keeping it out of [`E_JC_INDEX_EMPTY`] is the same
+/// distinction [`IndexState::unreadable`] draws at the reader layer, carried
+/// through to the decision layer instead of being collapsed there.
+pub const E_JC_INDEX_UNREADABLE: &str = "E_JC_INDEX_UNREADABLE";
 
 /// Why a jcodemunch-backed run was refused before querying any detector.
 ///
@@ -317,9 +575,16 @@ impl IndexRefusal {
         self
     }
 
-    /// Attach the reader's schema-drift diagnostic, if any.
-    pub fn with_unreadable(mut self, unreadable: Option<String>) -> Self {
-        self.unreadable = unreadable;
+    /// Attach the exact symbol count, fetched lazily on the refusal path via
+    /// [`count_symbols`].
+    ///
+    /// [`evaluate_freshness`] leaves the field at 0 because the reader
+    /// answers emptiness with an O(1) `exists` probe and never learns a
+    /// number; 0 is the truthful value for every arm that is *about*
+    /// emptiness, and the STALE arm is the only one where an exact count
+    /// tells the operator anything.
+    pub fn with_symbol_count(mut self, symbol_count: i64) -> Self {
+        self.symbol_count = symbol_count;
         self
     }
 }
@@ -328,6 +593,8 @@ impl std::fmt::Display for IndexRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let what = if self.code == E_JC_INDEX_STALE {
             "is stale"
+        } else if self.code == E_JC_INDEX_UNREADABLE {
+            "could not be read"
         } else {
             "is empty or absent"
         };
@@ -343,45 +610,70 @@ impl std::fmt::Display for IndexRefusal {
         if let Some(diag) = &self.unreadable {
             write!(f, " (index unreadable: {diag})")?;
         }
-        write!(
-            f,
-            "; re-index this checkout before querying, or pass --no-jcodemunch \
-             to skip the jcodemunch-backed detectors"
-        )
+        // The remedy is per-code, not boilerplate. "re-index this checkout"
+        // is actively misleading for an intact corpus behind an unreadable
+        // file — it points at the wrong artifact and costs a full re-index to
+        // learn nothing.
+        if self.code == E_JC_INDEX_UNREADABLE {
+            write!(
+                f,
+                "; the index file exists but could not be read — repair or \
+                 remove it and re-index, or pass --no-jcodemunch to skip the \
+                 jcodemunch-backed detectors"
+            )
+        } else {
+            write!(
+                f,
+                "; re-index this checkout before querying, or pass --no-jcodemunch \
+                 to skip the jcodemunch-backed detectors"
+            )
+        }
     }
 }
 
 /// Decide whether `state` is a corpus worth querying, per §4.3.
 ///
-/// Three-arm ladder, in this order — the order is the contract, pinned by
+/// Four-arm ladder, in this order — the order is the contract, pinned by
 /// tests, not an artifact of statement sequence:
 ///
+/// 0. `unreadable` set ⇒ [`E_JC_INDEX_UNREADABLE`]. Evaluated FIRST because
+///    every quantity below it was read from a file we could not fully read,
+///    so any verdict derived from them would be an assertion about a corpus
+///    we never saw. It is also the arm with a different remedy.
 /// 1. no `index_head` ⇒ [`E_JC_INDEX_EMPTY`]. An absent index is the limiting
 ///    case of an empty one; it is classified EMPTY rather than STALE because
 ///    there is no head to name and the refusal is required to name it.
 /// 2. `index_head != live_head` ⇒ [`E_JC_INDEX_STALE`]. Queries answer about
 ///    a different commit's code, so P1 reports symbols as orphaned that the
 ///    current tree references.
-/// 3. `symbol_count == 0` ⇒ [`E_JC_INDEX_EMPTY`]. The mirror image: every
-///    query returns nothing, so every producer looks orphaned.
+/// 3. no symbols ⇒ [`E_JC_INDEX_EMPTY`]. The mirror image: every query
+///    returns nothing, so every producer looks orphaned.
 ///
 /// Identity-agnostic — the caller attaches the probed `repo_id` via
-/// [`IndexRefusal::with_repo_id`] — so the decision stays a pure function of
-/// the three §4.3 quantities.
+/// [`IndexRefusal::with_repo_id`] and the exact count via
+/// [`IndexRefusal::with_symbol_count`] — so the decision stays a pure
+/// function of the state it is handed, with no filesystem access of its own.
 pub fn evaluate_freshness(state: &IndexState, live_head: &str) -> Result<(), IndexRefusal> {
     let refuse = |code: &'static str| IndexRefusal {
         code,
         repo_id: String::new(),
         index_head: state.index_head.clone(),
         live_head: live_head.to_string(),
-        symbol_count: state.symbol_count,
-        unreadable: None,
+        // 0 by construction — see `with_symbol_count`.
+        symbol_count: 0,
+        // Propagated here rather than re-attached by the caller: a diagnostic
+        // that only survives because one call site remembers to forward it is
+        // one refactor away from vanishing silently.
+        unreadable: state.unreadable.clone(),
     };
 
+    if state.unreadable.is_some() {
+        return Err(refuse(E_JC_INDEX_UNREADABLE));
+    }
     match &state.index_head {
         None => Err(refuse(E_JC_INDEX_EMPTY)),
         Some(head) if head != live_head => Err(refuse(E_JC_INDEX_STALE)),
-        Some(_) if state.symbol_count == 0 => Err(refuse(E_JC_INDEX_EMPTY)),
+        Some(_) if !state.symbols_present => Err(refuse(E_JC_INDEX_EMPTY)),
         Some(_) => Ok(()),
     }
 }
@@ -389,6 +681,7 @@ pub fn evaluate_freshness(state: &IndexState, live_head: &str) -> Result<(), Ind
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     // -------------------------------------------------------------------
@@ -505,46 +798,6 @@ mod tests {
     // with a `git_head` row, alongside a `symbols` table.
     // -------------------------------------------------------------------
 
-    /// Write a synthetic index DB for `repo_id` under `dir`.
-    ///
-    /// `git_head`: `Some(sha)` writes the `meta.git_head` row; `None` omits it
-    /// (the row-missing shape). `symbol_rows` seeds that many `symbols` rows —
-    /// zero leaves the empty-husk shape a `delete-index` leaves behind.
-    fn write_index_db(
-        dir: &Path,
-        repo_id: &str,
-        git_head: Option<&str>,
-        symbol_rows: usize,
-    ) -> std::path::PathBuf {
-        let path = index_db_path(dir, repo_id);
-        let conn = rusqlite::Connection::open(&path).expect("open synthetic index db");
-        conn.execute_batch(
-            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);\
-             CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT, path TEXT);",
-        )
-        .expect("create index schema");
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('index_version', '16')",
-            [],
-        )
-        .expect("insert index_version");
-        if let Some(sha) = git_head {
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES ('git_head', ?)",
-                rusqlite::params![sha],
-            )
-            .expect("insert git_head");
-        }
-        for i in 0..symbol_rows {
-            conn.execute(
-                "INSERT INTO symbols (name, path) VALUES (?, 'src/lib.rs')",
-                rusqlite::params![format!("sym_{i}")],
-            )
-            .expect("insert symbol");
-        }
-        path
-    }
-
     #[test]
     fn index_db_path_maps_repo_id_to_flattened_db_filename() {
         let dir = Path::new("/tmp/ix");
@@ -574,7 +827,7 @@ mod tests {
 
         let state = read_index_state(tmp.path(), "local/proj-deadbeef");
         assert_eq!(state.index_head.as_deref(), Some("abc123"));
-        assert_eq!(state.symbol_count, 3);
+        assert!(state.symbols_present, "3 rows is a non-empty corpus");
         assert_eq!(state.unreadable, None, "a healthy index is not unreadable");
     }
 
@@ -589,7 +842,7 @@ mod tests {
 
         let state = read_index_state(tmp.path(), "local/proj-deadbeef");
         assert_eq!(state.index_head.as_deref(), Some("abc123"));
-        assert_eq!(state.symbol_count, 0, "empty husk carries zero symbols");
+        assert!(!state.symbols_present, "an empty husk carries no symbols");
         assert_eq!(state.unreadable, None, "a husk is readable, just empty");
     }
 
@@ -601,7 +854,7 @@ mod tests {
 
         let state = read_index_state(tmp.path(), "local/proj-deadbeef");
         assert_eq!(state.index_head, None);
-        assert_eq!(state.symbol_count, 0);
+        assert!(!state.symbols_present);
         assert_eq!(
             state.unreadable, None,
             "a plainly-absent index is not a schema-drift diagnostic — that \
@@ -629,7 +882,10 @@ mod tests {
 
         let state = read_index_state(tmp.path(), "local/proj-deadbeef");
         assert_eq!(state.index_head, None, "no git_head row to read");
-        assert_eq!(state.symbol_count, 7, "symbol count is read independently");
+        assert!(
+            state.symbols_present,
+            "the symbols probe is read independently of the meta probe"
+        );
         assert_eq!(state.unreadable, None);
     }
 
@@ -649,7 +905,7 @@ mod tests {
 
         let state = read_index_state(tmp.path(), "local/proj-deadbeef");
         assert_eq!(state.index_head, None);
-        assert_eq!(state.symbol_count, 0);
+        assert!(!state.symbols_present);
         let diag = state
             .unreadable
             .as_deref()
@@ -671,12 +927,21 @@ mod tests {
     // quantities.
     // -------------------------------------------------------------------
 
-    /// An `IndexState` with the three §4.3 quantities set explicitly.
-    fn state(index_head: Option<&str>, symbol_count: i64) -> IndexState {
+    /// A readable `IndexState` with the §4.3 quantities set explicitly.
+    fn state(index_head: Option<&str>, symbols_present: bool) -> IndexState {
         IndexState {
             index_head: index_head.map(str::to_string),
-            symbol_count,
+            symbols_present,
             unreadable: None,
+        }
+    }
+
+    /// An `IndexState` that could not be read — the file is there, the
+    /// contents are not trustworthy.
+    fn unreadable_state(diag: &str) -> IndexState {
+        IndexState {
+            unreadable: Some(diag.to_string()),
+            ..IndexState::absent()
         }
     }
 
@@ -686,14 +951,14 @@ mod tests {
     #[test]
     fn evaluate_freshness_admits_a_fresh_populated_index() {
         assert!(
-            evaluate_freshness(&state(Some(LIVE), 42), LIVE).is_ok(),
+            evaluate_freshness(&state(Some(LIVE), true), LIVE).is_ok(),
             "an index at the live commit with symbols in it must be admitted"
         );
     }
 
     #[test]
     fn evaluate_freshness_refuses_a_stale_index() {
-        let refusal = evaluate_freshness(&state(Some(OTHER), 42), LIVE)
+        let refusal = evaluate_freshness(&state(Some(OTHER), true), LIVE)
             .expect_err("an index at a different commit must be refused");
         assert_eq!(refusal.code(), E_JC_INDEX_STALE);
     }
@@ -703,7 +968,7 @@ mod tests {
         // Fresh head, zero symbols: the mirror-image failure. Every query
         // returns nothing, so P1 reports every producer as an orphan while
         // the head comparison alone would have said "all good".
-        let refusal = evaluate_freshness(&state(Some(LIVE), 0), LIVE)
+        let refusal = evaluate_freshness(&state(Some(LIVE), false), LIVE)
             .expect_err("an index with zero symbols must be refused");
         assert_eq!(refusal.code(), E_JC_INDEX_EMPTY);
     }
@@ -713,8 +978,8 @@ mod tests {
         // Precedence arm 1. Classified EMPTY, not STALE: there is no
         // index_head to name, and §4.3 requires the refusal to name it —
         // calling a nonexistent head "stale" would be nonsense.
-        let refusal =
-            evaluate_freshness(&state(None, 0), LIVE).expect_err("an absent index must be refused");
+        let refusal = evaluate_freshness(&state(None, false), LIVE)
+            .expect_err("an absent index must be refused");
         assert_eq!(refusal.code(), E_JC_INDEX_EMPTY);
     }
 
@@ -723,7 +988,7 @@ mod tests {
         // Heads differ AND the corpus is empty. Pinning STALE here fixes
         // §4.3's left-to-right conjunct order, so the outcome is deterministic
         // rather than an incidental consequence of statement order.
-        let refusal = evaluate_freshness(&state(Some(OTHER), 0), LIVE)
+        let refusal = evaluate_freshness(&state(Some(OTHER), false), LIVE)
             .expect_err("a stale AND empty index must be refused");
         assert_eq!(
             refusal.code(),
@@ -737,7 +1002,13 @@ mod tests {
         // §4.3's prose requirement coexists with the code rather than being
         // replaced by it: an operator reading stderr needs to see WHICH heads
         // disagreed and how big the corpus was, or the refusal is unactionable.
-        let stale = evaluate_freshness(&state(Some(OTHER), 42), LIVE).unwrap_err();
+        // The exact count is attached by the caller (`with_symbol_count`,
+        // fed by `count_symbols`) rather than read on the startup path — see
+        // `IndexState::symbols_present`. Rendering it is still part of §4.3's
+        // prose requirement, so the builder is exercised here too.
+        let stale = evaluate_freshness(&state(Some(OTHER), true), LIVE)
+            .unwrap_err()
+            .with_symbol_count(42);
         let msg = stale.to_string();
         assert!(
             msg.contains(E_JC_INDEX_STALE),
@@ -747,7 +1018,7 @@ mod tests {
         assert!(msg.contains(LIVE), "live_head missing from {msg}");
         assert!(msg.contains("42"), "symbol_count missing from {msg}");
 
-        let empty = evaluate_freshness(&state(Some(LIVE), 0), LIVE).unwrap_err();
+        let empty = evaluate_freshness(&state(Some(LIVE), false), LIVE).unwrap_err();
         let msg = empty.to_string();
         assert!(
             msg.contains(E_JC_INDEX_EMPTY),
@@ -762,7 +1033,7 @@ mod tests {
         // With no index_head there is nothing to print, but printing NOTHING
         // would read as a truncated message. An explicit absent-marker keeps
         // "no index at all" distinguishable from "index at head <blank>".
-        let refusal = evaluate_freshness(&state(None, 0), LIVE).unwrap_err();
+        let refusal = evaluate_freshness(&state(None, false), LIVE).unwrap_err();
         let msg = refusal.to_string();
         assert!(
             msg.contains(E_JC_INDEX_EMPTY),
@@ -776,14 +1047,71 @@ mod tests {
     }
 
     #[test]
-    fn the_two_marker_codes_are_distinct_non_empty_tokens() {
-        // A refactor that collapsed these to one token, or emptied either,
-        // would silently destroy every machine consumer's ability to tell a
-        // stale corpus from an absent one while all the code() assertions
-        // above still passed.
-        assert_ne!(E_JC_INDEX_STALE, E_JC_INDEX_EMPTY);
-        assert!(!E_JC_INDEX_STALE.is_empty());
-        assert!(!E_JC_INDEX_EMPTY.is_empty());
+    fn the_marker_codes_are_distinct_non_empty_tokens() {
+        // A refactor that collapsed any two of these to one token, or emptied
+        // one, would silently destroy every machine consumer's ability to
+        // tell a stale corpus from an absent one from an unreadable one while
+        // all the code() assertions above still passed.
+        let codes = [E_JC_INDEX_STALE, E_JC_INDEX_EMPTY, E_JC_INDEX_UNREADABLE];
+        for (i, a) in codes.iter().enumerate() {
+            assert!(!a.is_empty(), "marker {i} is empty");
+            for b in &codes[i + 1..] {
+                assert_ne!(a, b, "marker codes must stay distinct");
+            }
+        }
+    }
+
+    #[test]
+    fn evaluate_freshness_refuses_an_unreadable_index_with_its_own_code() {
+        // Precedence arm 0. An unreadable file must NOT be collapsed into
+        // E_JC_INDEX_EMPTY: the corpus behind a WAL database whose watcher is
+        // down, or behind a permissions fault, is intact, and "re-index this
+        // checkout" is then the wrong instruction — a full re-index that
+        // learns nothing.
+        let refusal = evaluate_freshness(&unreadable_state("disk I/O error"), LIVE)
+            .expect_err("an unreadable index must be refused");
+        assert_eq!(refusal.code(), E_JC_INDEX_UNREADABLE);
+    }
+
+    #[test]
+    fn unreadable_refusal_outranks_a_head_mismatch() {
+        // Every quantity below arm 0 was read from a file we could not fully
+        // read, so a STALE verdict derived from them would be an assertion
+        // about a corpus we never saw.
+        let drifted = IndexState {
+            index_head: Some(OTHER.to_string()),
+            symbols_present: true,
+            unreadable: Some("no such table: symbols".to_string()),
+        };
+        let refusal = evaluate_freshness(&drifted, LIVE).expect_err("must refuse");
+        assert_eq!(
+            refusal.code(),
+            E_JC_INDEX_UNREADABLE,
+            "unreadability is evaluated before staleness"
+        );
+    }
+
+    #[test]
+    fn unreadable_refusal_carries_the_diagnostic_and_its_own_remedy() {
+        // The diagnostic is propagated by `evaluate_freshness` itself, not
+        // re-attached by the caller: a diagnostic that survives only because
+        // one call site remembers to forward it is one refactor from
+        // vanishing silently.
+        let refusal =
+            evaluate_freshness(&unreadable_state("file is not a database"), LIVE).unwrap_err();
+        let msg = refusal.to_string();
+        assert!(
+            msg.contains("index unreadable: file is not a database"),
+            "the reader's diagnostic must survive into the message, got {msg}"
+        );
+        assert!(
+            !msg.contains("re-index this checkout before querying"),
+            "the empty/stale remedy points at the wrong artifact here, got {msg}"
+        );
+        assert!(
+            msg.contains("could not be read"),
+            "the remedy must say the file could not be read, got {msg}"
+        );
     }
 
     #[test]
@@ -806,5 +1134,196 @@ mod tests {
             plain.starts_with("local/"),
             "derived ids are local/-scoped, got {plain}"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // §4.2 — agreement with the indexer's own normalization
+    //
+    // `scripts/jcodemunch-index-reify.sh` derives the SAME id in bash, and it
+    // is the side that actually writes the index. Any divergence makes the
+    // gate probe a file the indexer never created, so the refusal names an
+    // identity corresponding to nothing and sends the operator to re-index a
+    // phantom. These pin the three spellings where the two implementations
+    // used to disagree.
+    // -------------------------------------------------------------------
+
+    /// The script's pipeline: `~`-expand, then `readlink -f`. Computed by
+    /// invoking the same coreutils the script invokes, so this is a genuine
+    /// cross-implementation check rather than our own logic restated.
+    fn readlink_f(path: &str) -> String {
+        let home = std::env::var("HOME").expect("HOME is required to mirror the script");
+        let expanded = if path == "~" {
+            home
+        } else if let Some(rest) = path.strip_prefix("~/") {
+            format!("{home}/{rest}")
+        } else {
+            path.to_string()
+        };
+        let out = std::process::Command::new("readlink")
+            .args(["-f", "--", &expanded])
+            .output()
+            .expect("readlink -f");
+        assert!(out.status.success(), "readlink -f failed for {expanded}");
+        String::from_utf8(out.stdout)
+            .expect("utf8 path")
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn resolve_repo_id_agrees_with_the_indexer_scripts_readlink_f_semantics() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        // An existing dir; a missing LEAF under an existing parent (where
+        // `readlink -f` is non-strict and plain `canonicalize` fails); a
+        // relative path; and an unexpanded `~` form.
+        let cases = [
+            manifest.to_string(),
+            format!("{manifest}/no-such-dir-6108"),
+            "src".to_string(),
+            "~/no-such-dir-6108".to_string(),
+        ];
+        for case in cases {
+            let expected = repo_id_for_abs_path(Path::new(&readlink_f(&case)));
+            assert_eq!(
+                resolve_repo_id(Path::new(&case)),
+                expected,
+                "identity for {case:?} must match the indexer script's derivation"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_repo_id_expands_a_leading_tilde() {
+        // A `--project-root` arriving quoted from a config or another script
+        // is never expanded by a shell. Hashing the literal `~/...` string
+        // would derive an id no indexer could ever have written.
+        let home = std::env::var("HOME").expect("HOME is required by the derivation under test");
+        assert_eq!(
+            resolve_repo_id(Path::new("~/no-such-dir-6108")),
+            resolve_repo_id(Path::new(&format!("{home}/no-such-dir-6108"))),
+            "a leading ~ must expand to $HOME"
+        );
+        // `~user/…` is deliberately NOT expanded — the script does not expand
+        // it either, so guessing here would introduce a divergence.
+        let literal = resolve_repo_id(Path::new("~someone/no-such-dir-6108"));
+        assert!(
+            literal.starts_with("local/"),
+            "a ~user path still derives an id, got {literal}"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_id_absolutizes_a_relative_root_that_does_not_exist() {
+        // The old fallback hashed the string AS GIVEN whenever canonicalize
+        // failed, so a relative root under a nonexistent leaf derived an id
+        // from `"no-such-dir-6108"` rather than from its absolute path.
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_eq!(
+            resolve_repo_id(Path::new("no-such-dir-6108")),
+            resolve_repo_id(&cwd.join("no-such-dir-6108")),
+            "a relative root must be joined onto the current directory"
+        );
+    }
+
+    #[test]
+    fn read_index_state_reads_a_wal_index_with_no_shm_and_a_read_only_directory() {
+        // jcodemunch's index is maintained by a long-running watcher. Where
+        // that watcher runs under another account (or the index dir is a
+        // read-only mount), the DB can be left in WAL mode with an
+        // uncheckpointed `-wal`, no `-shm`, and no write access to create one.
+        // Measured on the bundled SQLite 3.45: the read-only OPEN succeeds and
+        // the first QUERY fails with "unable to open database file". The corpus
+        // is intact, so refusing with "re-index this checkout" would send the
+        // operator to rebuild the wrong thing.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let staging = tmp.path().join("staging");
+        let index_dir = tmp.path().join("index");
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+
+        let staged = write_index_db(&staging, "local/proj-deadbeef", Some("abc123"), 4);
+        let live = index_dir.join("local-proj-deadbeef.db");
+        {
+            let conn = rusqlite::Connection::open(&staged).expect("reopen to switch journal mode");
+            let mode: String = conn
+                .query_row("pragma journal_mode=WAL", [], |row| row.get(0))
+                .expect("set WAL");
+            assert_eq!(mode.to_lowercase(), "wal", "fixture must be in WAL mode");
+            conn.execute(
+                "INSERT INTO symbols (name, path) VALUES ('wal_row', 'src/lib.rs')",
+                [],
+            )
+            .expect("insert under WAL");
+            // Copy db + -wal WHILE the writer still holds them, so the copy
+            // carries an uncheckpointed WAL and no -shm. Closing first would
+            // let SQLite checkpoint and delete both sidecars, which is the
+            // healthy shape this test is deliberately not about.
+            std::fs::copy(&staged, &live).expect("copy main db");
+            std::fs::copy(
+                PathBuf::from(format!("{}-wal", staged.display())),
+                PathBuf::from(format!("{}-wal", live.display())),
+            )
+            .expect("copy -wal");
+        }
+
+        // Permissions are restored before any assertion so a failure here
+        // cannot leave an unremovable tempdir behind.
+        std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod index dir read-only");
+        let plain_read_failed = rusqlite::Connection::open_with_flags(
+            &live,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .and_then(|c| c.query_row("select count(*) from symbols", [], |r| r.get::<_, i64>(0)))
+        .is_err();
+        let state = read_index_state(&index_dir, "local/proj-deadbeef");
+        let lazy_count = count_symbols(&index_dir, "local/proj-deadbeef");
+        std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("restore index dir permissions");
+
+        // PREMISE: without the fallback this read is what fails. If this
+        // assertion ever starts failing, the fallback is no longer exercised
+        // here and this test has quietly stopped proving anything.
+        assert!(
+            plain_read_failed,
+            "a plain read-only read of a WAL db with an uncheckpointed -wal, no -shm \
+             and no writable directory must fail"
+        );
+
+        assert_eq!(
+            state.unreadable, None,
+            "such an index is readable via the immutable fallback, not a fault"
+        );
+        assert_eq!(state.index_head.as_deref(), Some("abc123"));
+        assert!(state.symbols_present, "the corpus is intact");
+        // `immutable=1` reads the main database and ignores WAL frames, so the
+        // row written after the mode switch is not visible. That is the
+        // documented trade-off: the fallback answers §4.3's two questions from
+        // the last checkpointed image, and any error is in the fails-closed
+        // direction.
+        assert_eq!(
+            lazy_count, 4,
+            "the lazy exact count reads the same checkpointed image"
+        );
+    }
+
+    #[test]
+    fn count_symbols_is_zero_for_an_absent_index_and_does_not_create_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let expected = index_db_path(tmp.path(), "local/proj-deadbeef");
+        assert_eq!(count_symbols(tmp.path(), "local/proj-deadbeef"), 0);
+        assert!(
+            !expected.exists(),
+            "the lazy count must not create the db it fails to find"
+        );
+    }
+
+    #[test]
+    fn count_symbols_reports_the_exact_row_count() {
+        // The number `read_index_state` deliberately does not pay for. It has
+        // exactly one consumer — the rendered refusal — so it is pinned here
+        // rather than on the startup path.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_index_db(tmp.path(), "local/proj-deadbeef", Some("abc123"), 9);
+        assert_eq!(count_symbols(tmp.path(), "local/proj-deadbeef"), 9);
     }
 }

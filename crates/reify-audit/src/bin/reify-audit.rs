@@ -54,7 +54,6 @@ use reify_audit::{
     AuditContext, ChangedSymbol, DeadSymbol, Finding, JCodemunchOps, LayerViolation, RealGitOps,
     Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
     fused_memory_client::FusedMemoryClient,
-    git_env,
     jcodemunch_client::RealJCodemunchOps,
     jcodemunch_index,
 };
@@ -142,56 +141,25 @@ use std::io::Write;
 // §4.3 — jcodemunch index freshness precondition
 // -----------------------------------------------------------------------
 
-/// Read the working tree's HEAD sha, for the §4.3 freshness comparison.
-///
-/// Built through [`git_env::command`] rather than a bare
-/// `Command::new("git")`: that module exists because an inherited `GIT_DIR` /
-/// `GIT_WORK_TREE` makes `git -C <root>` report a DIFFERENT repository, and a
-/// `live_head` read from the wrong repo would make the whole freshness
-/// comparison silently meaningless — the exact class of vacuity this gate
-/// exists to close.
-fn live_head_sha(project_root: &Path) -> Result<String, String> {
-    let out = git_env::command(project_root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(|e| {
-            format!(
-                "could not run `git rev-parse HEAD` in '{}': {e}",
-                project_root.display()
-            )
-        })?;
-    if !out.status.success() {
-        return Err(format!(
-            "`git rev-parse HEAD` failed in '{}' (exit {:?}): {}",
-            project_root.display(),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if sha.is_empty() {
-        return Err(format!(
-            "`git rev-parse HEAD` produced no sha in '{}'",
-            project_root.display()
-        ));
-    }
-    Ok(sha)
-}
-
 /// Refuse to query a jcodemunch corpus that cannot be shown fresh and
 /// non-empty. Returns the already-rendered refusal message on `Err`.
 ///
 /// Called ONLY once a live serve is genuinely about to be queried — see the
 /// call site — and always before any detector `check()`.
-fn enforce_index_freshness(args: &Args, repo_id: &str) -> Result<(), String> {
-    let project_root = Path::new(&args.project_root);
-
+///
+/// Takes the caller's `RealGitOps` rather than shelling out itself: that
+/// routes the HEAD read through the same bounded-retry path every other git
+/// invocation uses, so a transient EAGAIN under load cannot abort an audit
+/// with a message blaming index freshness. It also honours `RealGitOps`'
+/// single-instance construction requirement.
+fn enforce_index_freshness(args: &Args, git: &RealGitOps, repo_id: &str) -> Result<(), String> {
     // A freshness claim we cannot verify is worth no more than a stale one, so
     // an unreadable HEAD refuses rather than proceeding. The breadcrumb is
-    // deliberately distinct from both marker tokens: neither "stale" nor
-    // "empty" has been established here, and mislabelling this as either would
-    // send an operator to re-index when the real fault is the git invocation.
-    let live_head = live_head_sha(project_root).map_err(|e| {
+    // deliberately distinct from every marker token: neither staleness nor
+    // emptiness nor unreadability of the INDEX has been established here, and
+    // mislabelling this as any of them would send an operator to re-index when
+    // the real fault is the git invocation.
+    let live_head = git.head_sha().map_err(|e| {
         format!(
             "cannot verify jcodemunch index freshness for {repo_id} — {e}; refusing \
              rather than querying a corpus of unknown vintage (pass --no-jcodemunch \
@@ -199,15 +167,16 @@ fn enforce_index_freshness(args: &Args, repo_id: &str) -> Result<(), String> {
         )
     })?;
 
-    let state =
-        jcodemunch_index::read_index_state(Path::new(&args.jcodemunch_index_dir), repo_id);
+    let index_dir = Path::new(&args.jcodemunch_index_dir);
+    let state = jcodemunch_index::read_index_state(index_dir, repo_id);
     jcodemunch_index::evaluate_freshness(&state, &live_head).map_err(|refusal| {
         refusal
             .with_repo_id(repo_id)
-            // Surface a schema-drift diagnostic when there is one, so a future
-            // jcodemunch schema change is debuggable instead of masquerading
-            // as a routine empty index.
-            .with_unreadable(state.unreadable.clone())
+            // The exact symbol count is deliberately NOT read on the startup
+            // path (`count(*)` is a full table walk over 10^5–10^6 rows); it
+            // is fetched here, on the refusal path, where the message is about
+            // to name it and the run is ending anyway.
+            .with_symbol_count(jcodemunch_index::count_symbols(index_dir, repo_id))
             .to_string()
     })
 }
@@ -561,6 +530,37 @@ fn needs_jcodemunch(args: &Args) -> bool {
     })
 }
 
+/// The detectors that cannot produce a finding without querying jcodemunch.
+/// Kept beside [`needs_jcodemunch`], whose `--pattern` arm must stay the same
+/// set: one lists the tokens, the other decides whether a client is needed.
+const JCODEMUNCH_BACKED: [&str; 4] = ["P1", "PDEAD", "PUNTESTED", "PLAYER"];
+
+/// Return true when EVERY detector selected by `--pattern` is
+/// jcodemunch-backed, i.e. a refusal costs the run nothing it could still
+/// have delivered.
+///
+/// This is the blast-radius boundary for the §4.3 gate. `needs_jcodemunch` is
+/// true for the pattern-less DEFAULT sweep, which also runs P2, P5, PTODO and
+/// PDSSENTINEL — none of which consult jcodemunch at all. Refusing the whole
+/// process there would kill five working detectors over one unusable corpus,
+/// and §4.2 makes that the EXPECTED case rather than an anomaly: identity is
+/// now per-checkout, so every warm-lane/task worktree derives an id nothing
+/// has indexed. A default sweep from any such worktree with the serve up would
+/// exit 125 with zero findings.
+///
+/// So the refusal is scoped: an all-jcodemunch run set has nothing to salvage
+/// and hard-refuses (the §4.3 contract, and what B4/B5/B6 pin); a mixed or
+/// default run set degrades the jcodemunch-backed detectors to the Noop seam
+/// and keeps going, which is exactly the shape the unreachable-serve fail-soft
+/// already has. Either way the corpus is never queried.
+///
+/// `false` for a pattern-less run: the default sweep is mixed by definition.
+fn jcodemunch_only_run_set(args: &Args) -> bool {
+    args.pattern
+        .as_deref()
+        .is_some_and(|p| p.split(',').map(str::trim).all(|t| JCODEMUNCH_BACKED.contains(&t)))
+}
+
 /// Opt-in dispatch predicate for PDEAD: true only when `PDEAD` is in the
 /// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_pdead(args: &Args) -> bool {
@@ -733,16 +733,35 @@ fn main() -> ExitCode {
                     // client is not "a detector query", so gating a successful
                     // construction satisfies §4.3 literally while preserving
                     // the fail-soft.
-                    if let Err(msg) = enforce_index_freshness(&args, &jcodemunch_repo_id) {
-                        // Returns BEFORE any findings array is serialized, so
-                        // the refusal emits no parseable JSON on stderr. That
-                        // is what lets the /audit skill's existing
-                        // exit-125 disambiguator classify this as an infra
-                        // error rather than 125 High findings.
-                        eprintln!("reify-audit: {msg}");
-                        return ExitCode::from(ERROR_EXIT);
+                    match enforce_index_freshness(&args, &git, &jcodemunch_repo_id) {
+                        Ok(()) => Box::new(r),
+                        // Nothing in the run set survives a refusal, so refuse
+                        // the process. Returns BEFORE any findings array is
+                        // serialized, so the refusal emits no parseable JSON on
+                        // stderr — which is what lets the /audit skill's
+                        // existing exit-125 disambiguator classify this as an
+                        // infra error rather than 125 High findings.
+                        Err(msg) if jcodemunch_only_run_set(&args) => {
+                            eprintln!("reify-audit: {msg}");
+                            return ExitCode::from(ERROR_EXIT);
+                        }
+                        // Mixed or default sweep: the corpus is still never
+                        // queried (Noop answers every jcodemunch call with
+                        // nothing), but P2/P5/PTODO/PDSSENTINEL keep running
+                        // and the run still emits its findings array. The
+                        // breadcrumb carries the marker token, so the condition
+                        // is machine-detectable rather than silent — the same
+                        // contract the unreachable-serve fail-soft has.
+                        Err(msg) => {
+                            eprintln!(
+                                "reify-audit: {msg} — jcodemunch-backed detectors \
+                                degraded to zero findings; the rest of the sweep \
+                                still runs (use --pattern P1 to make this a hard \
+                                refusal)"
+                            );
+                            Box::new(NoopJCodemunchOps)
+                        }
                     }
-                    Box::new(r)
                 }
                 Err(e) => {
                     eprintln!(

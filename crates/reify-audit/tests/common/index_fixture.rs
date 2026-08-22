@@ -7,11 +7,13 @@
 //! `#[ignore]`-gated live ones — a PASS-shaped skip proves nothing, which is
 //! precisely the vacuity the freshness gate exists to eliminate.
 //!
-//! Schema is verbatim from a live jcodemunch index probed while writing this:
-//! `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)` carrying a
-//! `git_head` row, alongside a `symbols` table. Shape follows
-//! `write_empty_runs_db` in `tests/cli.rs` (`Connection::open` +
-//! `execute_batch` of a verbatim schema in a tempdir).
+//! The DB writer itself lives in the library behind the `test-support`
+//! feature (`jcodemunch_index::write_index_db`) and is re-exported below: it
+//! encodes a captured upstream jcodemunch schema, so exactly one copy must
+//! exist or a schema change would have to be mirrored into two suites. What
+//! this module owns is the *independent* half — the on-disk filename the
+//! operator would predict, and a real one-commit git repo to compare heads
+//! against.
 
 #![allow(dead_code)]
 
@@ -31,45 +33,19 @@ pub fn index_db_path(index_dir: &Path, repo_id: &str) -> PathBuf {
 
 /// Write a synthetic index DB for `repo_id` under `index_dir`.
 ///
-/// - `git_head`: `Some(sha)` writes the `meta.git_head` row; `None` omits it.
-/// - `symbol_rows`: how many `symbols` rows to seed. Zero produces the
-///   empty-husk shape a `delete-index` leaves behind — an index that exists
-///   and knows its commit but answers every query with nothing.
-pub fn write_index_db(
-    index_dir: &Path,
-    repo_id: &str,
-    git_head: Option<&str>,
-    symbol_rows: usize,
-) -> PathBuf {
-    std::fs::create_dir_all(index_dir).expect("create index dir");
-    let path = index_db_path(index_dir, repo_id);
-    let conn = rusqlite::Connection::open(&path).expect("open synthetic index db");
-    conn.execute_batch(
-        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);\
-         CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT, path TEXT);",
-    )
-    .expect("create index schema");
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES ('index_version', '16')",
-        [],
-    )
-    .expect("insert index_version");
-    if let Some(sha) = git_head {
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('git_head', ?)",
-            rusqlite::params![sha],
-        )
-        .expect("insert git_head");
-    }
-    for i in 0..symbol_rows {
-        conn.execute(
-            "INSERT INTO symbols (name, path) VALUES (?, 'src/lib.rs')",
-            rusqlite::params![format!("sym_{i}")],
-        )
-        .expect("insert symbol row");
-    }
-    path
-}
+/// Re-exported from the library's `test-support` writer rather than
+/// re-implemented here. The doc on `index_db_path` above explains why THAT is
+/// deliberately duplicated — the tests must hold an independent opinion about
+/// the filename the operator would predict — but the argument does not extend
+/// to the DB *writer*: it is not a function under test, it encodes a captured
+/// upstream jcodemunch schema, and two copies would mean a schema change had
+/// to be mirrored twice or the unit and integration suites would silently be
+/// testing different corpora.
+// `allow(unused_imports)` for the same reason this module carries
+// `allow(dead_code)`: `tests/common/` is compiled into EVERY integration test
+// binary, and only `cli.rs` uses the §4.3 fixtures.
+#[allow(unused_imports)]
+pub use reify_audit::jcodemunch_index::write_index_db;
 
 /// Build a real single-commit git repo at `dir` and return its HEAD sha.
 ///
