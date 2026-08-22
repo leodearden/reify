@@ -3254,3 +3254,153 @@ fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
     assert_rigid_mass_props_final(&state, "RigidBodyA", "edited body, next rebuild");
     assert_rigid_mass_props_final(&state, "RigidBodyB", "untouched body, next rebuild");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment round 3 — the CONTAINED sub-part shape.
+//
+// Every fixture above is a flat, root-level template, where the frontend's mesh
+// key (`Entity#realization[N]`) and the panel cell's `entity_path` are the same
+// string. For a `: Rigid` body reached through containment they are NOT: the mesh
+// key carries the composed CONTAINMENT path (`Asm.part#realization[0]`, built by
+// reify-eval's `surface_realizations` from the dotted path prefix) while the cell
+// keeps the TEMPLATE name (`RigidPart`, since `ValueData.entity_path` is
+// `cell.id.entity` and value cells are template-level). The pair below pins what
+// that mismatch actually costs, measured rather than assumed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A `: Rigid` body reached through containment: `Asm` holds one placed `sub part`
+/// whose type is the `: Rigid` template. Surfaces as mesh key
+/// `Asm.part#realization[0]` with mass-prop cells on entity `RigidPart`.
+///
+/// The placement mirrors `get_entity_tree_aux_sub_inherits_default_visible_false`
+/// (engine_tests.rs), the existing composed-path fixture.
+const RIGID_CONTAINED_SUB_SRC: &str = r#"structure def RigidPart : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+
+structure Asm {
+    sub part : RigidPart at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+}"#;
+
+/// Task #5338 amendment round 3 (reviewer suggestion 1) — a contained `: Rigid`
+/// sub-part under the frontend's REAL key does not reach the retention path at
+/// all, and the degradation is fail-safe.
+///
+/// MEASURED on this branch, and the reason this is a lock rather than a fix:
+/// feeding `sync_demand` the key the frontend actually holds
+/// (`Asm.part#realization[0]`, straight out of `state.meshes`) leaves the pass
+/// dispatching NOTHING — `state.meshes` is EMPTY on the very first selective
+/// rebuild, where the flat fixtures emit every visible body's mesh (see
+/// `contained_rigid_sub_part_retention_works_once_the_demand_key_resolves`, which
+/// runs the SAME source and cold load and differs only in the demand key). So the
+/// composed containment path does not resolve to a realization node in the demand
+/// graph: the cone is empty and the sub-part is not rendered.
+///
+/// The `sync_demand` prune ALSO drops the cached cells there — `visible_entities`
+/// holds `Asm.part`, the cache keys on `RigidPart` — and that is the CORRECT
+/// outcome, not a second bug to fix independently. Retaining them would paint a
+/// `determined` / `final` mass for a body the pass never demanded and the viewport
+/// never drew, i.e. exactly the arch §8 violation ("a pruned realization's cached
+/// result is never served as Final") the prune exists to discharge. Repairing the
+/// join alone, without the upstream key resolution, would therefore make this
+/// WORSE, not better.
+///
+/// The residual is that #5338's retention never applies to contained bodies, which
+/// costs nothing while their selective demand resolves to an empty scene anyway.
+/// Both halves live upstream of this crate (reify-eval's realization-node keying
+/// vs. the composed mesh path), so closing them is filed as a follow-up rather
+/// than smuggled into an amendment pass.
+#[test]
+fn contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_CONTAINED_SUB_SRC, "contained_rigid")
+        .expect("load_from_source should succeed for the contained-sub source");
+    // The cold load is full-scope, so the sub-part's mass props resolve normally —
+    // establishing that the cells exist and CAN be Final, which is what makes the
+    // assertions below a change of verdict rather than a cell that never resolved.
+    assert_rigid_mass_props_final(&state, "RigidPart", "cold load (full scope)");
+
+    // The join-key mismatch itself: the mesh key is the composed containment path,
+    // the cells sit on the template name. Pinned explicitly — if reify-eval ever
+    // makes these agree, this assertion is the first thing to go red and the
+    // `sync_demand` limitation doc above it can be retired.
+    let keys = visible_realization_keys(&state);
+    assert_eq!(
+        keys,
+        vec!["Asm.part#realization[0]".to_string()],
+        "the frontend's key for a contained sub-part is the composed containment \
+         path, while its mass-prop cells key on the template name `RigidPart` — \
+         that mismatch is this test's whole premise"
+    );
+
+    session.sync_demand(&keys);
+    for i in 1..=3 {
+        let state = session
+            .build_gui_state()
+            .unwrap_or_else(|e| panic!("re-render #{i} under the composed key: {e}"));
+        assert!(
+            state.meshes.is_empty(),
+            "[re-render {i}] MEASURED: the composed key resolves to no realization \
+             node, so the pass dispatches nothing and the scene is empty; got {:?}. \
+             A non-empty scene here means the upstream key gap closed — re-read the \
+             `sync_demand` known-limitation doc before touching the prune",
+            state
+                .meshes
+                .iter()
+                .map(|m| m.entity_path.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_rigid_mass_props_not_final(
+            &state,
+            "RigidPart",
+            &format!("re-render {i} under the composed key (nothing demanded)"),
+        );
+    }
+}
+
+/// The positive twin: the retention mechanism is NOT containment-blind — feed
+/// `sync_demand` a key that resolves and a contained sub-part behaves exactly like
+/// a root body.
+///
+/// Same source and same cold load as
+/// `contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key`; the
+/// ONLY difference is the demand key (`RigidPart#realization[0]`, the template-level
+/// form, instead of the composed `Asm.part#realization[0]`). Re-render 1 dispatches
+/// and emits the mesh; re-renders 2-3 are hash-exempt and are served from the
+/// retention cache. That isolates the defect to the KEY, not to the cache's
+/// entity join or to anything containment-specific in `surface_geometry_derived_cells`
+/// — so a future fix belongs at the key seam, and this test says what "fixed" looks
+/// like.
+#[test]
+fn contained_rigid_sub_part_retention_works_once_the_demand_key_resolves() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_CONTAINED_SUB_SRC, "contained_rigid")
+        .expect("load_from_source should succeed for the contained-sub source");
+    assert_rigid_mass_props_final(&state, "RigidPart", "cold load (full scope)");
+
+    session.sync_demand(&["RigidPart#realization[0]".to_string()]);
+
+    let state = session
+        .build_gui_state()
+        .expect("first selective rebuild under the template-level key");
+    assert!(
+        !state.meshes.is_empty(),
+        "the template-level key must resolve to a demand root — an empty scene here \
+         would make the retention assertions below vacuous"
+    );
+    assert_rigid_mass_props_final(&state, "RigidPart", "first selective rebuild (dispatched)");
+
+    for i in 2..=3 {
+        let state = session
+            .build_gui_state()
+            .unwrap_or_else(|e| panic!("re-render #{i} under the template-level key: {e}"));
+        assert_rigid_mass_props_final(
+            &state,
+            "RigidPart",
+            &format!("re-render {i} (hash-exempt, served from retention)"),
+        );
+    }
+}

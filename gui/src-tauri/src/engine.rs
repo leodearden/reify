@@ -2357,10 +2357,32 @@ impl EngineSession {
     ///   actually care about, since a `: Rigid` body's `mass` / `centroid` /
     ///   `moment_of_inertia` / `moi_principal` are entity-level cells — ARE
     ///   pruned exactly.
-    /// * **Ancestor-only entities are pruned every sync.** A cell whose entity
-    ///   never appears as a realization key on its own (an assembly-level
-    ///   aggregate, say) matches nothing in `visible_entities` and is therefore
-    ///   dropped on every `sync_demand`, re-opening the delta gap for that cell.
+    /// * **Contained sub-parts are pruned every sync.** A cell whose entity never
+    ///   appears as a realization key on its own is dropped on every
+    ///   `sync_demand`, re-opening the delta gap for that cell. The shape this
+    ///   actually hits is NOT some exotic assembly-level aggregate — it is an
+    ///   ordinary contained body. `MeshSurface.entity_path` is the composed
+    ///   CONTAINMENT path for descendants (`Asm.part#realization[0]`, reify-eval
+    ///   `geometry_ops.rs`; see the field doc at reify-eval `lib.rs`), while
+    ///   `ValueData.entity_path` is `cell.id.entity`, the TEMPLATE name
+    ///   (`RigidPart`) — value cells are template-level. So for
+    ///   `structure Asm { sub part : RigidPart }` the two sides do not join, and
+    ///   the sub-part's mass-prop cells are pruned on every sync.
+    ///
+    ///   MEASURED, and the reason this is documented rather than repaired here:
+    ///   under that same composed key the demand cone resolves to NOTHING — the
+    ///   first selective rebuild dispatches no realization and `state.meshes` comes
+    ///   back EMPTY, where a flat fixture emits every visible body's mesh. The
+    ///   sub-part is not rendered at all, so pruning its cached cells is the
+    ///   CORRECT outcome: retaining them would paint a `determined` / `final` mass
+    ///   for a body the pass never demanded, which is precisely the arch §8
+    ///   violation this prune discharges. Repairing the entity join alone, without
+    ///   the upstream key resolution, would make this worse rather than better.
+    ///   Both halves are pinned by
+    ///   `contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key`
+    ///   and its positive twin (commands_tests.rs), which show the same source
+    ///   retaining correctly once the demand key resolves.
+    ///
     ///   Under-retention degrades to the pre-#5338 behaviour (the cell reads
     ///   `Undef`), never to a stale value served as Final, so it fails safe.
     ///
@@ -2388,9 +2410,14 @@ impl EngineSession {
             .collect();
 
         // Prune BEFORE the engine borrow: retain only cells whose entity still has
-        // a visible realization. `ValueCellId`'s entity half is the same entity
-        // string `parse_realization_key` extracts from `Entity#realization[N]`
-        // (e.g. `RigidMassSmoke`, `Asm.part`), so the two sides join directly.
+        // a visible realization. For a ROOT template `ValueCellId`'s entity half is
+        // the same string `parse_realization_key` extracts from
+        // `Entity#realization[N]` (e.g. `RigidMassSmoke`), so the two sides join
+        // directly. For a CONTAINED descendant they do not — the key carries the
+        // composed containment path (`Asm.part`) and the cell the template name
+        // (`RigidPart`) — and the entry is pruned; see the known-limitation bullet
+        // above for why that is the correct outcome there rather than a bug to fix
+        // in this line.
         let visible_entities: HashSet<&str> =
             visible.iter().map(|rid| rid.entity.as_str()).collect();
         self.geometry_derived_cache
@@ -4362,8 +4389,17 @@ fn surface_geometry_derived_cells(
     // meshes. An unparseable key is simply not counted as dispatched, which fails
     // toward RETAIN rather than toward dropping a still-correct value.
     //
-    // LIMIT OF THE SIGNAL (do not read the above as exact): mesh presence is a
-    // PROXY for "the realization ran", and the two diverge in one shape — a
+    // LIMIT OF THE SIGNAL, part 1: the join is the same string join `sync_demand`
+    // does, so it inherits the same containment blindness — a CONTAINED body's mesh
+    // key is `Asm.part#realization[0]` while its cells key on the template name
+    // `RigidPart`, so a contained realization never registers as dispatched and its
+    // `Undef` is always read as a gap. Reachable only inside a full-scope session,
+    // since `sync_demand` prunes those entries outright (see its known-limitation
+    // bullet); the containment case is pinned by
+    // `contained_rigid_sub_part_is_not_served_as_final_under_the_composed_key`.
+    //
+    // LIMIT OF THE SIGNAL, part 2 (do not read the above as exact): mesh presence is
+    // a PROXY for "the realization ran", and the two diverge in one shape — a
     // realization that IS dispatched but whose kernel OPS fail emits no terminal
     // handle, hence no mesh, while its geometry-query cells still arrive `Undef`.
     // That is indistinguishable here from hash-exempt, so the retained value is
