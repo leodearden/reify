@@ -4508,44 +4508,80 @@ fn surface_geometry_derived_cells(
     // this pass served from the retention cache — the same complete value set the
     // panel now shows. Without the overlay a hash-exempt rebuild would leave the
     // PD constraint Indeterminate next to a Determined `moi_principal`, which is
-    // exactly the incoherence the dogfood retest reported. `ValueMap` is an
-    // `im::HashMap` (O(1) structural-sharing clone), and the overlay is built ONLY
-    // when the delta actually left a gap, so the no-gap warm path is unchanged.
-    let recheck_values = if cache_sourced.is_empty() {
-        None
-    } else {
-        let mut merged = delta_values.clone();
-        for (id, retained) in cache_sourced {
-            merged.insert(id, retained);
-        }
-        Some(merged)
-    };
-    let recheck_values = recheck_values.as_ref().unwrap_or(delta_values);
+    // exactly the incoherence the dogfood retest reported.
+    //
+    // COST, stated honestly (an earlier revision of this comment claimed "the
+    // overlay is built ONLY when the delta actually left a gap, so the no-gap warm
+    // path is unchanged", which reads as "this is rare" and is misleading): with
+    // retention in place the GAP path IS the warm path. Every hash-exempt
+    // re-render of a `: Rigid` body serves its four mass-prop cells from the cache,
+    // so `cache_sourced` is non-empty and `surfaced_any` is true on every such
+    // pass; and the `moi_principal[0] > 0` PD constraint comes out of
+    // `build_constraints` Indeterminate every time, because that panel is built
+    // from the kernel-less snapshot. Both guard clauses therefore pass on the
+    // STEADY-STATE re-render, not rarely. Pre-#5338 this pass surfaced nothing and
+    // the dispatch was skipped outright, so this is a real move from a cold path to
+    // a warm one.
+    //
+    // What that buys and what it costs: it buys constraint/panel coherence, which
+    // is a correctness property, not a nicety — the alternative is a Satisfied-able
+    // constraint permanently reading Indeterminate beside the value that satisfies
+    // it. It costs, per re-render, one `im::HashMap` clone (O(1), structural
+    // sharing) plus one insert per cache-sourced cell, and one
+    // `check_constraints_with_values` — a kernel-LESS `values.clone()` +
+    // active-constraint scan + dispatch over the active constraints
+    // (reify-eval `engine_constraints.rs`). No kernel query, so the P0 kernel-less
+    // edit-latency gate is untouched; the load is proportional to the constraint
+    // graph, not to mesh size.
+    //
+    // Narrowing it further needs something this scope does not have. Skipping the
+    // dispatch when only cache-sourced cells were surfaced is NOT sound on its own
+    // (the verdicts would have to come from somewhere, and dropping them is the
+    // incoherence above); memoizing verdicts on the merged value set needs an
+    // equality/fingerprint over the whole `ValueMap` AND an argument that
+    // `active_constraint_ids` cannot move while those values hold still — active
+    // constraints are derived from the engine's own snapshot, not from the values
+    // passed in, so that argument is not available here. A per-constraint subset
+    // re-check API in reify-eval would close it properly; out of this task's locked
+    // scope.
+    //
+    // The overlay is built INSIDE the guard so a pass that surfaces cells but has
+    // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
+    // the clone nor the dispatch.
+    if surfaced_any && constraints.iter().any(|c| c.status == "Indeterminate") {
+        let merged: Option<ValueMap> = if cache_sourced.is_empty() {
+            None
+        } else {
+            let mut merged = delta_values.clone();
+            for (id, retained) in cache_sourced {
+                merged.insert(id, retained);
+            }
+            Some(merged)
+        };
+        let recheck_values = merged.as_ref().unwrap_or(delta_values);
 
-    if surfaced_any
-        && constraints.iter().any(|c| c.status == "Indeterminate")
-        && let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values)
-    {
-        for c in constraints.iter_mut() {
-            if c.status != "Indeterminate" {
-                continue;
+        if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
+            for c in constraints.iter_mut() {
+                if c.status != "Indeterminate" {
+                    continue;
+                }
+                let Some(new_sat) = recheck
+                    .iter()
+                    .find(|e| e.id.to_string() == c.node_id)
+                    .map(|e| e.satisfaction)
+                else {
+                    continue;
+                };
+                if new_sat == Satisfaction::Indeterminate {
+                    continue;
+                }
+                c.status = match new_sat {
+                    Satisfaction::Satisfied => "Satisfied",
+                    Satisfaction::Violated => "Violated",
+                    Satisfaction::Indeterminate => "Indeterminate",
+                }
+                .to_string();
             }
-            let Some(new_sat) = recheck
-                .iter()
-                .find(|e| e.id.to_string() == c.node_id)
-                .map(|e| e.satisfaction)
-            else {
-                continue;
-            };
-            if new_sat == Satisfaction::Indeterminate {
-                continue;
-            }
-            c.status = match new_sat {
-                Satisfaction::Satisfied => "Satisfied",
-                Satisfaction::Violated => "Violated",
-                Satisfaction::Indeterminate => "Indeterminate",
-            }
-            .to_string();
         }
     }
 }
