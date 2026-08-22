@@ -52,15 +52,26 @@ module cost_robustness_tradeoff
 //
 // # Why auto(free), not strict auto
 //
-// A strict `auto` triggers the perturbation-based uniqueness re-solve
-// (`solver.rs::verify_uniqueness`), which is NOT tradeoff-aware: it re-solves
-// via the plain `solve_core` path, which — not knowing about the
-// `cost_robustness_lambda` marker — would apply the α robustness floor to the
-// perturbed re-solve.  Comparing a floor-free tradeoff-blend solution against a
-// floor-adjusted perturbed one would (falsely) disagree, masking the tradeoff
-// signal behind a spurious `ConstraintNonUnique`.  `auto(free)` skips that
-// check — the tradeoff behaviour is the concern here, not uniqueness — mirroring
-// `continuous_cost_min.ri`'s identical "Why auto(free)" reasoning for the plain
+// A strict `auto` triggers the uniqueness check (`solver.rs::verify_uniqueness`).
+// That check used to re-solve via the plain `solve_core` path, which — not knowing
+// about the `cost_robustness_lambda` marker — would apply the α robustness floor to
+// the perturbed re-solve; comparing a floor-free tradeoff-blend solution against a
+// floor-adjusted perturbed one (falsely) disagreed, masking the tradeoff signal
+// behind a spurious `ConstraintNonUnique`.
+//
+// Task #5711 CLOSED that hazard for a constraint-BRACKETED model: `verify_uniqueness`
+// no longer re-solves for a γ objective at all (the γ dispatch is seed-dependent by
+// construction, so a re-solve from a different anchor measures the anchor, not the
+// model).  It instead rules on the constraints alone — every strict auto bounded on
+// BOTH sides by the user's own constraints is well-determined.  The hazard genuinely
+// REMAINS for a model whose strict auto lacks a constraint side: that side then comes
+// from `default_bounds_for`, a solver-internal default, and the verdict stays
+// `ConstraintNonUnique`.
+//
+// This example nonetheless stays `auto(free)`, deliberately: the tradeoff behaviour is
+// what it exercises, not uniqueness, and flipping it would change an e2e-asserted
+// fixture (`crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs`).  Same
+// reasoning as `continuous_cost_min.ri`'s "Why auto(free)" block for the plain
 // Money-objective floor (task β #4790).
 // `thickness / 1m` (not `/1mm`, unlike `continuous_cost_min.ri`): a shallower
 // cost gradient keeps the λ=0.5 blend's own optimum safely inside the box

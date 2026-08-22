@@ -2677,19 +2677,65 @@ fn score_solution(problem: &ResolutionProblem, values: &HashMap<ValueCellId, Val
 /// fixture into exactly the silent false-negative #5711 exists to
 /// eliminate. Do NOT "fix" this by adding `.or(synth)` back.
 ///
-/// Objective scoring is also skipped entirely (`objective_scores` closure
-/// returns `None` without evaluating anything) whenever `problem.objective`
-/// carries the γ `cost_robustness_tradeoff` marker (task #4791, review
-/// suggestion 1): [`solve_cost_robustness_tradeoff`]'s final solve minimises
-/// a normalised BLEND of cost and robustness, but the re-solve below always
-/// runs [`solve_core`] on the ORIGINAL `problem` — whose objective is the RAW
-/// cost term, not the blend the incumbent was actually optimised against.
-/// Scoring a blend-optimal incumbent against a raw-cost-optimal perturbed
-/// point on the raw-cost scale would make the perturbed point look strictly
-/// better whenever λ<1 pulls the blend solution off the min-cost point,
-/// firing `IncumbentSuboptimal` systematically and silently disabling this
-/// whole gate for every γ model. Falling back to pure parameter-agreement
-/// semantics here matches this path's pre-#5711 behaviour.
+/// # The γ `cost_robustness_tradeoff` path (task #5711 amendment 2)
+///
+/// When `problem.objective` carries the γ `cost_robustness_tradeoff` marker
+/// (task #4791) this function does not perturb at all: it returns
+/// [`strict_autos_constraint_bracketed`] directly, before the re-solve below.
+///
+/// **Why the perturbation machinery is STRUCTURALLY INAPPLICABLE here.**
+/// [`solve_cost_robustness_tradeoff`] is SEED-DEPENDENT BY CONSTRUCTION — its
+/// own doc records that all three of its solves share the SAME deterministic
+/// `initial` seed "so the whole dispatch stays reproducible", which is
+/// reproducibility for a FIXED seed, never seed-invariance. Concretely, a
+/// floor-free pure-cost minimise's true optimum sits an infinitesimal distance
+/// PAST the constraint boundary (the penalty has zero slope at its own root),
+/// so [`solve_core_with_sd_tolerance`]'s "optimizer drifted infeasible → fall
+/// back to the initially-feasible seed" safety net returns THE SEED ITSELF, and
+/// re-seeding therefore MOVES the answer. (Independently corroborated in
+/// tracked source: `examples/cost_robustness_tradeoff.ri` documents exactly this
+/// drift-fallback-returns-the-seed behaviour.) A perturbation check compares
+/// f(seed_A) against f(seed_B) for a seed-dependent f, so every verdict it
+/// yields is an artifact of the ANCHOR, not evidence about the model.
+///
+/// **The rule that replaces it.** §11.6 test (2) asks whether the value is
+/// uniquely optimal under the applicable objective; for γ that objective is the
+/// BLEND, taken over the constraint-derived feasible interval. So the question
+/// is answerable with NO solve at all: if every strict auto's derived interval
+/// is bounded on BOTH sides, the blend's argmin is fixed by the user's own
+/// constraints plus objective — well-determined, return `true`. If any side is
+/// missing, that side is supplied by [`default_bounds_for`], a solver-internal
+/// default the user never authored, so the resolved value is
+/// DEFAULT-BOUNDS-determined rather than model-determined — genuine
+/// non-determinedness, return `false`.
+///
+/// **A/B evidence table.** Recorded so the next reader inherits MEASUREMENT
+/// rather than assertion (branch `task/5711` vs. merge-base `a1116ef21b`,
+/// swapping only this file):
+///
+/// | model | main | branch, before this fix | after this fix |
+/// |---|---|---|---|
+/// | two-sided `1mm < t < 4mm`, γ, strict, `bounds: None`, λ ∈ {0, 0.5, 1} | `Solved{unique:true, t=0.0025}` | `Infeasible{ConstraintNonUnique}` for ALL THREE λ | `Solved{unique:true}` ✓ |
+/// | one-sided `t > 1mm` (`tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`) | `ConstraintNonUnique`, `thickness = undef` | identical (NOT a regression — a pre-existing verdict) | identical ✓ |
+///
+/// λ=1 regressing is what identifies the mechanism: there the blend is a
+/// positive-affine transform of cost alone, so "λ<1 pulls the blend off the
+/// min-cost point" cannot be the explanation. Also measured and REJECTED: a
+/// dispatch-consistent re-solve (running [`solve_cost_robustness_tradeoff`] for
+/// the perturbed anchor and comparing on the blend scale) recovers only λ=0 and
+/// leaves λ=0.5 and λ=1 `Infeasible` — because it does not address
+/// seed-dependence, it merely relabels it.
+///
+/// **Do NOT simplify this to `return true` for γ.** A blanket abstention was
+/// MEASURED to turn the one-sided prd-gate fixture's loud `error: strict auto
+/// parameter resolution is not uniquely determined` into a silent
+/// `thickness = 10 m` — 10 m being [`default_bounds_for`]'s `Length` ceiling,
+/// i.e. a value pinned by a SOLVER-INTERNAL default rather than by the user's
+/// model. That is a second, opposite behaviour change in the very commit meant
+/// to remove one. `gamma_strict_auto_one_sided_stays_non_unique`
+/// (`tests/cost_robustness_tradeoff_blend.rs`) is the standing guard against it;
+/// its already-green status is deliberate, not accidental. Same convention as
+/// the "Do NOT fix this by adding `.or(synth)`" note above.
 ///
 /// # Per-fixture measurement (task #5711 pre-1, HEAD 8050d728aa, commit
 /// `34cfd26a61`)
