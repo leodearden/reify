@@ -2364,7 +2364,7 @@ mod tests {
         let cases: [[f64; 4]; 3] = [
             [0.5, 0.5, 0.5, 0.5],
             [std::f64::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2],
-            [0.7071067811865476, 0.5, 0.5, 0.0],
+            [std::f64::consts::FRAC_1_SQRT_2, 0.5, 0.5, 0.0],
         ];
         for case in cases.iter() {
             let n = (case[0] * case[0] + case[1] * case[1] + case[2] * case[2] + case[3] * case[3])
