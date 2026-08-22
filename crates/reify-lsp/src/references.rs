@@ -398,6 +398,9 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
                     || s.pose_expr
                         .as_ref()
                         .is_some_and(|p| expr_member_segment_hit(p, off))
+                    || s.index_domain
+                        .as_ref()
+                        .is_some_and(|d| expr_member_segment_hit(d, off))
                     || s.where_clause
                         .as_ref()
                         .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
@@ -917,8 +920,10 @@ fn collect_uses_in_connect(c: &ConnectDecl, name: &str, out: &mut Vec<SourceSpan
 /// `variable_span` fields are likewise never walked as a binding by
 /// `collect_idents_in_expr` below (only `collection`/`predicate` are) — see
 /// the "Known limitation" doc comment on that function. `index_domain` IS an
-/// ordinary expression in the enclosing scope (task #5579), so it is walked
-/// like `pose_expr`.
+/// ordinary expression in the enclosing scope (task #5579), so — like
+/// `pose_expr` — it is walked here AND guarded by the `.member`-segment
+/// refusal in `cursor_on_member_segment`'s `MemberDecl::Sub` arm (~:393-407),
+/// keeping the two scanners symmetric.
 fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<SourceSpan>) {
     for (_, arg) in &s.args {
         collect_idents_in_expr(arg, name, out);
