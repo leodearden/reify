@@ -22,6 +22,35 @@
 //! `(Undef, Auto)`, destroying solver work and causing `eval(guard=T)` to
 //! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
 //! configuration.
+//!
+//! # Warm-Resolution back-prop sync set
+//!
+//! Four entry points resolve Auto params through the constraint solver and
+//! back-propagate the result: `Engine::eval`, `Engine::eval_cached`,
+//! [`Engine::edit_param`], and [`Engine::edit_source`]. Between them there
+//! are six write-back arms, because `Engine::eval` and `Engine::eval_cached`
+//! each take a mutually exclusive merged-cluster branch through
+//! `dispatch_merged_cluster_solve` / `dispatch_merged_cluster_solve_cached`
+//! (task #5118).
+//!
+//! All six write the resolved auto into `values`, the snapshot map as
+//! `Determined`, and a cache entry. Two legs are NOT uniform across the six:
+//!
+//! 1. `values`
+//! 2. snapshot map as `Determined`
+//! 3. cache entry
+//! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
+//! 5. journal — all arms except `eval_cached`'s per-template arm and
+//!    [`Engine::edit_source`]: `eval`'s two arms journal via hand-rolled
+//!    `Started`/`Completed` pairs, `eval_cached`'s merged-cluster arm and
+//!    [`Engine::edit_param`] via `commit_cell_result`
+//!
+//! Check all five legs when modifying warm Resolution back-prop.
+//!
+//! A further arm, `resolve_concurrent_edit` — the fourth member of this
+//! roster's original four-site form, before [`Engine::edit_source`] and the
+//! merged-cluster branches were added — was removed with `concurrent.rs` in
+//! ffb85f0627 (task ο, #5065).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1723,24 +1752,10 @@ impl Engine {
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
             // preserved automatically.  This is the `edit_param` arm of the
-            // warm-Resolution back-prop sync set: `Engine::eval`,
-            // `Engine::eval_cached`, `Engine::edit_param` and `Engine::edit_source`
-            // (four entry points; six write-back arms, because `eval` and
-            // `eval_cached` each take a mutually exclusive merged-cluster branch
-            // through `dispatch_merged_cluster_solve` / `..._cached`, task #5118).
-            // All six write the resolved auto into `values`, the snapshot map
-            // as `Determined`, and a cache entry.  Two legs are NOT uniform
-            // across the six: `edit_param`/`edit_source` additionally write
-            // `self.param_overrides`, and `eval_cached`'s per-template arm
-            // plus `edit_source` emit no journal events (the other four do:
-            // `eval`'s two arms via hand-rolled Started/Completed pairs, and
-            // `eval_cached`'s merged-cluster arm and `edit_param` via
-            // `commit_cell_result`).  Check all five legs when modifying
-            // warm Resolution back-prop.  A further arm,
-            // `resolve_concurrent_edit` — the fourth member of this roster's
-            // original four-site form, before `edit_source` and the
-            // merged-cluster branches were added — was removed with
-            // `concurrent.rs` in ffb85f0627 (task ο, #5065).
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the five legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
@@ -4077,9 +4092,10 @@ impl Engine {
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
             // preserved automatically.  This is the `edit_source` arm of the
-            // warm-Resolution back-prop sync set; see the roster note in
-            // `edit_param`'s resolution phase above for the full membership and
-            // the sync obligation.
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the five legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
