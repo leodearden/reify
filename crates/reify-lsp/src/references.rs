@@ -3407,6 +3407,75 @@ structure S {
         );
     }
 
+    // --- task #5579 step-5: member-access .field segment refuses inside an
+    // inline relate-block relation expression ---
+
+    #[test]
+    fn member_access_field_segment_refuses_in_inline_relate_block() {
+        // Fixture: `param axis` collides in name with the `.axis` member-access
+        // segment inside the inline `sub … at … where { }` relate block's
+        // relation expression `concentric(bolt.axis, 1)` (task δ 4384). Same
+        // wrong-rename vector as the indexed-sub domain case above (step-3),
+        // reached through `SubDecl::relate_relations` instead of `index_domain`.
+        let source = "\
+structure S {
+    param axis: Int = 4
+    sub bolt : Bolt at auto where {
+        concentric(bolt.axis, 1)
+    }
+    let other: Int = axis
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("relateblock"));
+        assert!(
+            parsed.errors.is_empty(),
+            "inline relate-block fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // d[0] = `param axis` decl, d[1] = `.axis` segment in `bolt.axis`,
+        // d[2] = the unrelated `let other` use.
+        let d = occurrences(source, "axis");
+        assert_eq!(
+            d.len(),
+            3,
+            "1 param decl + 1 member-access segment + 1 unrelated use"
+        );
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+        let uri = Url::parse("file:///relateblock.ri").unwrap();
+
+        // All four producers must refuse the `.axis` segment inside the relate block.
+        assert!(
+            prepare_rename(source, &parsed, member_pos).is_none(),
+            "prepare_rename must refuse .field segment inside inline relate block"
+        );
+        assert!(
+            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
+            "compute_rename must refuse .field segment inside inline relate block"
+        );
+        assert!(
+            compute_document_highlights(source, &parsed, member_pos).is_none(),
+            "compute_document_highlights must refuse .field segment inside inline relate block"
+        );
+        assert!(
+            collect_references(source, &parsed, member_pos, true).is_none(),
+            "collect_references must refuse .field segment inside inline relate block"
+        );
+
+        // Over-refusal guard: the BASE `bolt` (start of `bolt.axis`) must still
+        // resolve as a Sub binding — the guard clause must refuse only the
+        // `.axis` segment, not the whole relation expression.
+        let bolt_off = source.find("bolt.axis").expect("bolt.axis present");
+        let bolt_pos = offset_to_position(source, bolt_off as u32);
+        let bolt_set = collect_references(source, &parsed, bolt_pos, false)
+            .expect("cursor on base `bolt` must resolve to a ReferenceSet");
+        assert_eq!(
+            bolt_set.kind,
+            RefSymbolKind::Sub,
+            "base `bolt` resolves as Sub binding"
+        );
+    }
+
     // --- step-1 (β, task 4202): compute_references maps a ReferenceSet to LSP Locations ---
 
     #[test]
