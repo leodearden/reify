@@ -1,61 +1,39 @@
 //! Consolidated integration-test harness for the physical-modelling subsystem —
-//! what a part is MADE OF and HOW it is MADE, beside the geometry-parameter
-//! primitives that describe it dimensionally.
-//!
-//! - MADE OF: material structs, SI / imperial / compound unit resolution, physical
-//!   constants.
-//! - HOW MADE: process, printer print-envelope, stackup, nominal markers.
-//! - GEOMETRY PARAMETERS swept in with them: solid params, rounded primitives,
-//!   half-space, vec3, datum construction and projection, zone slab, and
-//!   curvature arg-aware typing.
+//! what a part is MADE OF (material structs, SI / imperial / compound unit resolution,
+//! physical constants), HOW it is MADE (process, printer print-envelope, stackup,
+//! nominal markers), and the geometry-parameter primitives that describe it
+//! dimensionally (solid params, rounded primitives, half-space, vec3, datum
+//! construction and projection, zone slab, curvature arg-aware typing).
 //!
 //! Task #5694 (PRD `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1, leaf CMP-4,
 //! batch 4 of 6): folds 19 former standalone `tests/*.rs` binaries into this single
-//! compile unit to cut the merge-gate link count. Layout-only — no `#[test]` fn is
-//! added or removed (invariant I3); the test *ids* change with the layout, which is
-//! the designed consequence, not a regression.
+//! compile unit to cut the merge-gate link count.
 //!
-//! The layout contract those declarations obey — stem-named modules, the mandatory
-//! `#[path]`, the kLOC cap and the baseline ratchet — is stated ONCE, in
-//! `tests/infra/test_harness_kloc_cap.sh`'s C1/C2 header, and mechanically enforced
-//! by that guard. Deliberately not restated here.
+//! Layout contract C1 — stem-named modules, why the `#[path]` on every declaration
+//! below is mandatory rather than stylistic, the kLOC cap, the baseline ratchet, and
+//! the by-design test-id change (no `#[test]` fn added or removed, invariant I3):
+//! see `tests/infra/test_harness_kloc_cap.sh`'s C1/C2 header, kept there, not
+//! restated here.
 //!
-//! Why `#[path]` is not optional in this file: a harness root is an integration-test
-//! CRATE root, so a bare `mod si_units_tests;` resolves against `tests/`, not against
-//! `tests/harness_physical_modeling/`. Mid-move — while the old top-level
-//! `tests/<stem>.rs` still exists — that would SILENTLY bind the stale file instead
-//! of failing, and the fold would look green while testing the wrong source. The
-//! explicit `#[path]` makes the pre-move state a hard error.
+//! Crate-local: this harness declares the shared `common` helper ONCE, because a
+//! per-member `mod common;` would load the same source repeatedly in one compile unit
+//! (`clippy::duplicate_mod`). Its four consumers (`compound_unit_resolution_tests`,
+//! `imperial_units_tests`, `physical_constants_tests`, `si_units_tests`) reach it as
+//! `use crate::common[::…]` — so this unit's `external_lines` of 363 is that charge,
+//! expected rather than stray.
 //!
-//! This unit DOES declare `common`, by design rather than by oversight: four of its
-//! members (`compound_unit_resolution_tests`, `imperial_units_tests`,
-//! `physical_constants_tests`, `si_units_tests`) consume `tests/common/mod.rs`, so
-//! this unit's `external_lines` of 363 is expected and charged on purpose, not stray.
-//! It is declared ONCE here because a per-member `mod common;` would load the same
-//! source repeatedly in one compile unit (`clippy::duplicate_mod`, an error under
-//! `-D warnings`, even though nextest still passes); members reach it as
-//! `use crate::common[::…]`.
+//! `m9_error_cases` and `m11_annotations_solver_hint_tests` are here BY SCOPE, not by
+//! subject: their prefixes fall inside leaf CMP-4 and no better in-scope home exists.
+//! Moving them to one that fits later is a correction, not a regression.
 //!
-//! TWO MEMBERS ARE HERE BY SCOPE, NOT BY SUBJECT — record this so a later reader does
-//! not mistake it for an accident: `m9_error_cases.rs` and
-//! `m11_annotations_solver_hint_tests.rs` land in this unit because the `m9` / `m11`
-//! prefixes fall inside leaf CMP-4's declared scope and no better in-scope subsystem
-//! home exists, NOT because they are physical-modelling tests. If a future leaf grows
-//! a home that actually fits them, moving them out is a correction, not a regression.
-//!
-//! Routing vs. the three neighbours, so future unit / material tests land correctly.
-//! The line is subsystem, not filename — do NOT fold any of these together:
-//! - `harness_units/` pins the stdlib unit SURFACE — which symbols `stdlib/units.ri`
-//!   ships and how the display-label surfaces round-trip. It is bound by
-//!   `docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md` §C3 and
-//!   must keep existing.
-//! - `harness_units_materials/` holds the compiler-side unit MACHINERY (`UnitEntry` /
-//!   `UnitRegistry`, the `unit`-declaration pre-pass, dimension resolution) plus the
-//!   materials / money / cost / affine clusters it was swept with.
-//! - THIS root holds the stdlib unit and constant CONSUMPTION tests — code that spends
-//!   those units and constants — swept with the batch-4 prefixes.
-//! - `harness_mechanics` (the sibling added by this same leaf) holds mechanics and
-//!   behaviour: what the part DOES under load or motion.
+//! Routing vs. the three neighbours — the line is subsystem, not filename; do NOT fold
+//! any of these together:
+//! - `harness_units/` pins the stdlib unit SURFACE, and is bound to keep existing by
+//!   `docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md` §C3.
+//! - `harness_units_materials/` holds the compiler-side unit MACHINERY, plus the
+//!   materials / money / cost / affine clusters swept with it.
+//! - THIS root holds the unit and constant CONSUMPTION tests — code that spends them.
+//! - `harness_mechanics` (this leaf's sibling) holds what the part DOES under load.
 #[path = "common/mod.rs"]
 mod common;
 #[path = "harness_physical_modeling/compound_unit_resolution_tests.rs"]

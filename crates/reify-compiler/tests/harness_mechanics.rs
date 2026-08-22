@@ -1,36 +1,25 @@
 //! Consolidated integration-test harness for the mechanics & simulation subsystem —
-//! how a part MOVES and how it RESPONDS: trajectory planning and motion shaping,
-//! kinematics, dynamics, modal analysis, mechanisms and their joints, motion-value
-//! coupling, tensegrity, buckling, flexures, FEA supertrait conformance, constitutive
-//! models, ground sugar and anisotropic bars — beside the motion-shaping worked
-//! examples (`tots` optimal point-to-point, ZV-shaped ramp) swept in with them.
+//! how a part MOVES and how it RESPONDS: trajectory and motion shaping, kinematics,
+//! dynamics, modal analysis, mechanisms and their joints, motion-value coupling,
+//! tensegrity, buckling, flexures, FEA supertrait conformance, constitutive models,
+//! ground sugar and anisotropic bars — beside the motion-shaping worked examples
+//! (`tots` optimal point-to-point, ZV-shaped ramp) swept in with them.
 //!
 //! Task #5694 (PRD `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1, leaf CMP-4,
 //! batch 4 of 6): folds 18 former standalone `tests/*.rs` binaries into this single
-//! compile unit to cut the merge-gate link count. Layout-only — no `#[test]` fn is
-//! added or removed (invariant I3); the test *ids* change with the layout, which is
-//! the designed consequence, not a regression.
+//! compile unit to cut the merge-gate link count.
 //!
-//! The layout contract those declarations obey — stem-named modules, the mandatory
-//! `#[path]`, the kLOC cap and the baseline ratchet — is stated ONCE, in
-//! `tests/infra/test_harness_kloc_cap.sh`'s C1/C2 header, and mechanically enforced
-//! by that guard. Deliberately not restated here.
+//! Layout contract C1 — stem-named modules, why the `#[path]` on every declaration
+//! below is mandatory rather than stylistic, the kLOC cap, the baseline ratchet, and
+//! the by-design test-id change (no `#[test]` fn added or removed, invariant I3):
+//! see `tests/infra/test_harness_kloc_cap.sh`'s C1/C2 header, kept there, not
+//! restated here.
 //!
-//! Why `#[path]` is not optional in this file: a harness root is an integration-test
-//! CRATE root, so a bare `mod trajectory_stdlib_compile;` resolves against
-//! `tests/`, not against `tests/harness_mechanics/`. Mid-move — while the old
-//! top-level `tests/<stem>.rs` still exists — that would SILENTLY bind the stale
-//! file instead of failing, and the fold would look green while testing the wrong
-//! source. The explicit `#[path]` makes the pre-move state a hard error.
-//!
-//! The one fact specific to THIS unit: it DOES declare `common`, by design rather
-//! than by oversight — `flexure_dimension_types` consumes `tests/common/mod.rs`
-//! (`common::stdlib_param_si_value`, `common::compile_with_stdlib_helper`). One
-//! consumer is enough to require the include, so this unit's `external_lines` of 363
-//! is expected and charged on purpose, not stray. It is declared ONCE here because a
+//! Crate-local: this harness declares the shared `common` helper ONCE, because a
 //! per-member `mod common;` would load the same source repeatedly in one compile unit
-//! (`clippy::duplicate_mod`, an error under `-D warnings`, even though nextest still
-//! passes); members reach it as `use crate::common[::…]`.
+//! (`clippy::duplicate_mod`). Its one consumer, `flexure_dimension_types`, reaches it
+//! as `use crate::common[::…]` — so this unit's `external_lines` of 363 is that
+//! charge, expected rather than stray.
 //!
 //! Routing vs. the sibling `harness_physical_modeling` root added by this same leaf —
 //! the line is subsystem, not filename. THIS root holds mechanics and behaviour: what
