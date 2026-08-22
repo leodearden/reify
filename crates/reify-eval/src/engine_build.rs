@@ -11707,16 +11707,41 @@ impl Engine {
                     );
                     reify_expr::eval_expr(expr, &ctx)
                 };
-                if !new_val.is_undef() {
-                    // Update local context for chain deps.
-                    ctx_values.insert(cell_id.clone(), new_val.clone());
+                // Existing snapshot entry, read BEFORE any write-back (Phase 3
+                // is the only mutator and runs after this loop), so this is the
+                // value as of the previous build.
+                let existing = self
+                    .eval_state
+                    .as_ref()
+                    .and_then(|s| s.snapshot.values.get(cell_id));
+                // MONOTONE write-back guard (review esc-5385-4).
+                //
+                // The shallow `!new_val.is_undef()` test alone protects a SCALAR
+                // geometry let — `let body = cylinder(r, h)` re-evaluates to a
+                // bare `Value::Undef`, so the realized handle survives — but NOT
+                // a geometry-LIST let. `eval_expr(generate(3, |i| cylinder(…)))`
+                // goes through `generate_index_list`, which is LENGTH-PRESERVING:
+                // it yields `Value::List([Undef, Undef, Undef])`, which is not
+                // `is_undef()`. That would sail through and overwrite a
+                // previously realized 3-handle list with three Undefs — and the
+                // all-or-nothing regroup in `into_entries` then refuses to
+                // repair it, because hash-exempt `holes#k` realizations outside
+                // the demand seed never enter `named_steps`.
+                //
+                // So additionally refuse any write-back that is LESS RESOLVED
+                // than what the snapshot already holds. `post_process_derived_lets`
+                // reaches the same conclusion from the other side: its candidate
+                // filter is already `value_is_or_contains_undef`, not `is_undef`.
+                let regresses = crate::invariants::value_is_or_contains_undef(&new_val)
+                    && existing
+                        .is_some_and(|(v, _)| !crate::invariants::value_is_or_contains_undef(v));
+                if !new_val.is_undef() && !regresses {
                     // Preserve existing DeterminacyState from snapshot.values.
-                    let det = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(cell_id))
+                    let det = existing
                         .map(|(_, d)| *d)
                         .unwrap_or(reify_ir::DeterminacyState::Determined);
+                    // Update local context for chain deps.
+                    ctx_values.insert(cell_id.clone(), new_val.clone());
                     refreshed.push((cell_id.clone(), new_val, det));
                 }
             }

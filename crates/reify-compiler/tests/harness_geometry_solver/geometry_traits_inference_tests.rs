@@ -1820,3 +1820,103 @@ fn intersection_of_extrude_infinite_with_box_at_bounded_slot_emits_no_geometry_u
         geometry_unbounded
     );
 }
+
+// ─── task #5385 / review esc-5385-4: union_all over a geometry LIST ─────────
+
+/// End-to-end negative conformance test for the list form made legal by task
+/// #5385: `union_all([box(...), half_space(...)])` at a `param g : Bounded`
+/// slot MUST emit `DiagnosticCode::GeometryUnbounded`.
+///
+/// This is the integration counterpart the unit test in
+/// `geometry_traits_inference::tests` cannot be: it compiles real source, so
+/// the arg reaching `geometry_operand_traits_in_env` carries whatever
+/// `result_type` the expression compiler really assigns. That matters because
+/// geometry builtin calls are typed `Type::dimensionless_scalar()`, so the list
+/// literal compiles to `List<Real>` — gating the fold's list arm on
+/// `List<Geometry>` (as the first cut of #5385 did) makes it dead code and the
+/// boundedness check silently inert.
+#[test]
+fn union_all_over_a_geometry_list_literal_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all([box(1mm, 1mm, 1mm), half_space(0mm, 0mm, 0mm, 0, 0, 1)]))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected a GeometryUnbounded diagnostic for `union_all([box(...), \
+         half_space(...)])` at a Bounded slot, but got none. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// Positive control for the test above: the SAME list form with only bounded
+/// elements must NOT emit `GeometryUnbounded`. Without this, the negative test
+/// above would still pass if the fold started failing CLOSED (claiming
+/// not-`bounded` for every list), which would break the very idiom #5385 exists
+/// to make legal.
+#[test]
+fn union_all_over_an_all_bounded_geometry_list_literal_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all([box(1mm, 1mm, 1mm), box(2mm, 2mm, 2mm)]))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected NO GeometryUnbounded diagnostic for an all-bounded geometry \
+         list, got: {geometry_unbounded:?}"
+    );
+}
+
+/// The multi-ARGUMENT form shares `fold_geometry_args_in_env` with the list
+/// form and was filtered out by the same `result_type == Type::Geometry` gate,
+/// so it took the `all()` default too. Pin it here: `union_all(box(...),
+/// half_space(...))` at a Bounded slot must also diagnose.
+#[test]
+fn union_all_multi_arg_with_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all(box(1mm, 1mm, 1mm), half_space(0mm, 0mm, 0mm, 0, 0, 1)))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected a GeometryUnbounded diagnostic for `union_all(box(...), \
+         half_space(...))` at a Bounded slot, but got none. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}

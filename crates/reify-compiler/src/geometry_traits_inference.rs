@@ -944,8 +944,13 @@ fn fold_geometry_args_in_env(
 
 /// The traits of each geometry OPERAND contributed by a single argument.
 ///
-/// A `Type::Geometry` argument contributes itself, as the plain
-/// `result_type == Type::Geometry` filter always did.
+/// A single geometry argument contributes itself — either a `Type::Geometry`
+/// value-ref, as the plain `result_type == Type::Geometry` filter always did,
+/// or a direct geometry builtin CALL, which the expression compiler types as a
+/// `Type::dimensionless_scalar()` placeholder (see [`is_geometry_operand`]).
+/// Accepting the placeholder here is what makes the multi-argument form
+/// `union_all(box(…), half_space(…))` fold over real operands instead of
+/// filtering them all out and taking the `all()` default.
 ///
 /// Task #5385 made a single `List<Geometry>` argument legal for
 /// `union_all`/`intersection_all`, so such an argument contributes each of its
@@ -953,6 +958,18 @@ fn fold_geometry_args_in_env(
 /// nothing, and its defensive `InferredTraits::all()` default silently claims
 /// `bounded` for a list containing an unbounded `half_space` — the exact
 /// failure the `union_all` dispatch arms were added to prevent.
+///
+/// DO NOT gate the list arm on `result_type == List<Geometry>` (review
+/// esc-5385-4): that shape is one the expression compiler never emits for a
+/// list LITERAL of geometry calls, so the arm would be dead and the safety
+/// check inert. `expr.rs`'s `is_geometry_function` arm types every geometry
+/// builtin call as a `Type::dimensionless_scalar()` PLACEHOLDER, and the
+/// `ListLiteral` arm derives its element type from the FIRST compiled element,
+/// so `[box(…), half_space(…)]` compiles to `List<Real>`. The arm therefore
+/// keys on the KIND (`ListLiteral`) plus a per-element geometry-operand test
+/// that accepts that placeholder — the same `extract_function_call_name(..)
+/// .map(is_geometry_function)` fallback `conformance/mod.rs` already applies to
+/// a scalar-placeholder arg.
 ///
 /// KNOWN RESIDUAL (task #5385): only a syntactically-visible `ListLiteral`
 /// exposes its elements here. `union_all(holes)` naming a geometry-list LET
@@ -970,17 +987,42 @@ fn geometry_operand_traits_in_env(
     arg: &CompiledExpr,
     env: &dyn LetBindingEnv,
 ) -> Vec<InferredTraits> {
-    match &arg.result_type {
-        reify_core::Type::Geometry => vec![infer_traits_for_expr_in_env(arg, env)],
-        reify_core::Type::List(inner) if **inner == reify_core::Type::Geometry => match &arg.kind {
-            CompiledExprKind::ListLiteral(elements) => elements
-                .iter()
-                .map(|e| infer_traits_for_expr_in_env(e, env))
-                .collect(),
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
+    if is_geometry_operand(arg) {
+        return vec![infer_traits_for_expr_in_env(arg, env)];
     }
+    // A list LITERAL every element of which is a geometry operand contributes
+    // each element. Non-empty is required: an empty literal is not evidence of
+    // a geometry list, and `all()` over zero elements is vacuously true.
+    if let CompiledExprKind::ListLiteral(elements) = &arg.kind
+        && !elements.is_empty()
+        && elements.iter().all(is_geometry_operand)
+    {
+        return elements
+            .iter()
+            .map(|e| infer_traits_for_expr_in_env(e, env))
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Is this compiled expression a geometry OPERAND?
+///
+/// Two accepted shapes, mirroring `conformance/mod.rs`'s `is_geometry_arg`:
+///   1. `result_type == Type::Geometry` — a `ValueRef` to a `let g = box(…)`,
+///      which `entity.rs` registers with the real geometry type; and
+///   2. a `FunctionCall` whose callee is in [`crate::units::is_geometry_function`]
+///      — `box(…)`/`half_space(…)` etc., which `expr.rs` types as a
+///      `Type::dimensionless_scalar()` placeholder, NOT `Type::Geometry`.
+///
+/// Shape 2 is the one that actually occurs inside a geometry list literal;
+/// omitting it is what made the previous `List<Geometry>` gate dead code.
+fn is_geometry_operand(expr: &CompiledExpr) -> bool {
+    expr.result_type == reify_core::Type::Geometry
+        || matches!(
+            &expr.kind,
+            CompiledExprKind::FunctionCall { function, .. }
+                if crate::units::is_geometry_function(function.name.as_str())
+        )
 }
 
 /// Find the first two geometry-typed arguments and recurse on each with the
@@ -1009,8 +1051,21 @@ mod tests {
 
     // --- task #5385: union_all over a single List<Geometry> argument ---
 
-    /// Build a geometry-typed `CompiledExpr` for `name()` with no args.
+    /// Build a `CompiledExpr` for the geometry call `name()` in **the shape the
+    /// expression compiler actually emits**: `expr.rs`'s `is_geometry_function`
+    /// arm types every geometry builtin call as a `Type::dimensionless_scalar()`
+    /// PLACEHOLDER, never `Type::Geometry`.
+    ///
+    /// Hand-building these with `result_type: Type::Geometry` (as this helper
+    /// did before review esc-5385-4) makes the test pass against an input shape
+    /// the compiler never produces, which is exactly how the dead
+    /// `List<Geometry>` gate went unnoticed.
     fn geom_call(name: &str) -> CompiledExpr {
+        assert!(
+            crate::units::is_geometry_function(name),
+            "geom_call({name}) must name a real geometry builtin, or this test \
+             pins a shape the compiler never emits",
+        );
         CompiledExpr {
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
@@ -1019,7 +1074,7 @@ mod tests {
                 },
                 args: vec![],
             },
-            result_type: reify_core::Type::Geometry,
+            result_type: reify_core::Type::dimensionless_scalar(),
             content_hash: reify_core::ContentHash(0),
         }
     }
@@ -1034,9 +1089,15 @@ mod tests {
     /// for a union containing an unbounded `half_space`.
     #[test]
     fn union_all_over_a_geometry_list_folds_over_its_elements() {
+        // `List<Real>`, NOT `List<Geometry>` — `expr.rs`'s ListLiteral arm takes
+        // the element type from the FIRST compiled element, and that element is
+        // a geometry call carrying the `dimensionless_scalar` placeholder. This
+        // is the shape real compilation produces (review esc-5385-4).
         let list_arg = CompiledExpr {
             kind: CompiledExprKind::ListLiteral(vec![geom_call("half_space"), geom_call("box")]),
-            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            result_type: reify_core::Type::List(Box::new(
+                reify_core::Type::dimensionless_scalar(),
+            )),
             content_hash: reify_core::ContentHash(0),
         };
 
