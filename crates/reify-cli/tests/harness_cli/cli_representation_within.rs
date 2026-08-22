@@ -131,8 +131,15 @@ fn check_representation_within_violated_under_occt() {
 /// is therefore `Indeterminate` — but it must say *why*, and point at the
 /// surface that can answer, instead of blaming the operand kinds.
 ///
-/// OCCT-INDEPENDENT: the map is empty on the build surface in both kernel
-/// modes, so the behaviour is identical and there is nothing to gate.
+/// The VERDICT and the surface attribution are OCCT-independent: the map is
+/// empty on the build surface in both kernel modes. The REMEDY is not, and is
+/// gated accordingly — `Engine::unmeasured_reason` tests kernel presence before
+/// `capture_repr_tol` so that whatever it offers can actually work on the
+/// binary in hand. With OCCT the terminal remedy is `reify check` (it will
+/// register the kernel and measure); in stub mode `reify check` is a dead end,
+/// so the remedy jumps straight to the kernel. Asserting the `reify check`
+/// token unconditionally would pass in stub mode while recommending something
+/// that cannot answer there — exactly the defect class this test guards.
 ///
 /// `--verbose` is deliberately not passed — plain `reify build` already prints
 /// both the status line and the reason.
@@ -159,24 +166,56 @@ fn build_surface_reports_attributable_indeterminate() {
          cannot answer.\nstderr: {stderr}"
     );
 
-    let attribution = stderr
+    // Counted, not `find`-ed: `Engine::build` runs a constraint pass and then a
+    // post-geometry re-check, and the stale-diagnostic `retain` that would
+    // dedupe them only fires when the re-check UPGRADES an Indeterminate —
+    // which it never does here. A regression that let both passes' diagnostics
+    // reach `BuildResult` must fail here rather than pass on the first match.
+    let attributions: Vec<&str> = stderr
         .lines()
-        .find(|l| l.contains("SphereCheck#constraint[0]"))
-        .unwrap_or_else(|| {
-            panic!(
-                "INV-SF-4: exactly the constraint that could not be evaluated must \
-                 be named, with a reason.\nstderr: {stderr}"
-            )
-        });
+        .filter(|l| l.contains("SphereCheck#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one line must name the constraint that could not be \
+         evaluated, with a reason.\nstderr: {stderr}"
+    );
+    let attribution = attributions[0];
+
     assert!(
         attribution.contains("does not measure"),
-        "INV-SF-4: the reason must name the surface.\nline: {attribution}"
+        "INV-SF-4: the reason must name the surface — that token is stable \
+         across every remedy.\nline: {attribution}"
     );
-    assert!(
-        attribution.contains("reify check"),
-        "INV-SF-4: the user must be pointed at the surface that does measure.\n\
-         line: {attribution}"
-    );
+    if reify_kernel_occt::OCCT_AVAILABLE {
+        assert!(
+            attribution.contains("reify check"),
+            "INV-SF-4: a kernel is live on this binary, so the surface that DOES \
+             measure is one `reify check` away and must be named.\n\
+             line: {attribution}"
+        );
+        assert!(
+            !attribution.contains("kernel"),
+            "a kernel is demonstrably registered on this build (`cmd_build` uses \
+             `Engine::with_registered_kernel`), so blaming one would be a false \
+             claim — the same INV-SF-4 misattribution ζ removes, relocated from \
+             the operand kinds to the kernel.\nline: {attribution}"
+        );
+    } else {
+        assert!(
+            attribution.contains("geometry kernel"),
+            "stub mode: `reify check` cannot measure on this binary either, so \
+             the remedy must jump straight to what is actually missing rather \
+             than hand the user a dead end.\nline: {attribution}"
+        );
+        assert!(
+            !attribution.contains("reify check"),
+            "stub mode: pointing at `reify check` is the dead-end remedy under \
+             test — that binary's `reify check` has no kernel either.\n\
+             line: {attribution}"
+        );
+    }
     // `report_eval_output` prints every diagnostic as "{severity}: {message}",
     // so the severity that actually reached the user is readable off the line.
     // Asserted POSITIVELY: a mere "not an error" check would sail past a
@@ -355,12 +394,17 @@ fn check_with_kernel_present_does_not_claim_a_kernel_is_missing() {
         "INV-SF-4: with a kernel present the actionable check is whether the \
          subject declares a realization.\nline: {attribution}"
     );
+    // Cause tokens, not substrings of arm 2's current sentence: a reworded
+    // kernel remedy ("a BRep kernel must be built in") must still fail this
+    // gate, so the negative is on `kernel` / `OCCT` themselves — matching the
+    // eval-level sibling
+    // `kernel_present_but_nothing_tessellated_does_not_blame_the_kernel`.
     assert!(
-        !attribution.contains("build with OCCT") && !attribution.contains("kernel is required"),
+        !attribution.contains("kernel") && !attribution.contains("OCCT"),
         "OCCT is demonstrably live on this binary (the sibling fixture \
-         representation_within_build_surface.ri reports OK on it), so telling \
-         the user to build one is a FALSE claim and a dead end — the very defect \
-         class ζ removes.\nline: {attribution}"
+         representation_within_build_surface.ri reports OK on it), so any \
+         mention of a missing kernel is a FALSE claim and a dead end — the very \
+         defect class ζ removes.\nline: {attribution}"
     );
 
     assert!(
