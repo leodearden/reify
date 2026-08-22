@@ -27,7 +27,16 @@
 //! serializer emits is a bare built-in resolved by the compiler's
 //! unconditional `unit_to_scalar` fallback, so a rewritten literal must parse
 //! in a module that imports nothing.
+//!
+//! That is the *unshadowed* case, and it is the weaker half of what a real
+//! caller needs. γ's edit path splices into user modules, which usually DO
+//! `import std.units`, and the compiler consults the per-module `UnitRegistry`
+//! BEFORE the built-in table. Section (d) below closes that half: it rebuilds
+//! the stdlib-seeded registry and asserts the two tables agree bit-for-bit on
+//! every emittable symbol, so the exactness proof still holds for the table
+//! that actually wins at resolution time.
 
+use reify_compiler::{UnitEntry, UnitRegistry, stdlib_loader};
 use reify_core::DimensionVector;
 use reify_ir::Value;
 use reify_ir::ri_literal::{value_to_ri_literal, value_to_ri_literal_with_unit};
@@ -437,7 +446,148 @@ fn a_dimensionless_scalar_downgrades_to_real_with_identical_bits() {
     );
 }
 
-// ─── (d) rejections are never spliced ────────────────────────────────────────
+// ─── (d) the registry precondition ───────────────────────────────────────────
+
+/// Rebuild the stdlib-seeded `UnitRegistry` the way the compiler does.
+///
+/// There is no public accessor for it — `CompilationCtx.unit_registry` and
+/// `phase_units` are both `pub(crate)`, and the seeded registry is never
+/// surfaced across the compile boundary. So this replays the body of
+/// `compile_builder/units_phase.rs`'s prelude loop verbatim from public parts.
+///
+/// Iterating EVERY stdlib module matters: `mm` is not declared in
+/// `stdlib/units.ri` at all — it is generated into `std.si_units` from the
+/// milli prefix — so a `std/units`-only scan would miss the single most
+/// frequently emitted symbol in the whole ladder. Last-write-wins is
+/// semantically inert here because `stdlib_loader`'s
+/// `assert_no_cross_module_name_collisions` panics on a duplicate unit name
+/// across stdlib modules.
+fn stdlib_seeded_unit_registry() -> UnitRegistry {
+    let mut registry = UnitRegistry::new();
+    for module in stdlib_loader::load_stdlib() {
+        let module_display = module.path.to_string();
+        for cu in &module.units {
+            if cu.is_pub {
+                registry.seed_prelude_unit(UnitEntry::from_compiled_for_prelude(
+                    cu,
+                    module_display.clone(),
+                ));
+            }
+        }
+    }
+    registry
+}
+
+/// CROSS-GUARD against the table that actually WINS at resolution time.
+///
+/// The serializer proves exactness against `reify_core::unit_symbol_to_si`,
+/// the built-in table. But the compiler resolves a bare unit as
+/// `scope.lookup_unit_in_registry(..).or_else(|| unit_to_scalar(..))`
+/// (`reify-compiler/src/expr.rs`) — the per-module `UnitRegistry` is consulted
+/// FIRST and the built-in table is only its fallback. So for a module that
+/// imports `std.units`, the registry's factor is the one the literal is
+/// actually multiplied by, and the serializer's proof is only as good as the
+/// two tables agreeing.
+///
+/// Today they do, bit-for-bit. Nothing else pins that. `units.ri:24` declares
+/// `deg = 3.141592653589793 / 180`, which agrees with `std::f64::consts::PI /
+/// 180.0` only because those are the same decimal digits divided the same way
+/// — rewrite it as `PI() / 180` evaluated differently, or nudge a digit, and
+/// every other test in this diff stays green while every `deg` write-back
+/// silently becomes lossy. Hence an assertion on `.to_bits()`, not a tolerance.
+///
+/// Sibling guard: `reify-core`'s
+/// `ri_emittable_units_agrees_physically_with_display_ladders` does the same
+/// job against the GUI display ladders. This one is the load-bearing half —
+/// display ladders never resolve a literal.
+#[test]
+fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
+    let registry = stdlib_seeded_unit_registry();
+
+    // Drive from the canonical emission ladders, plus the two symbols reachable
+    // only through a caller-supplied hint (`in`, `g`) — a hint is honoured on
+    // exactly the same terms as a rung, so it is exposed to the same drift.
+    let mut symbols: Vec<&'static str> = Vec::new();
+    for dim in [
+        DimensionVector::LENGTH,
+        DimensionVector::ANGLE,
+        DimensionVector::MASS,
+        DimensionVector::TIME,
+        DimensionVector::TEMPERATURE,
+        DimensionVector::CURRENT,
+        DimensionVector::AMOUNT_OF_SUBSTANCE,
+        DimensionVector::LUMINOUS_INTENSITY,
+    ] {
+        symbols.extend_from_slice(reify_core::ri_emittable_units(&dim));
+    }
+    symbols.extend_from_slice(&["in", "g"]);
+
+    let mut compared = 0usize;
+    let mut builtin_only: Vec<&'static str> = Vec::new();
+
+    for sym in symbols {
+        let (builtin_factor, builtin_dim) = reify_core::unit_symbol_to_si(sym)
+            .unwrap_or_else(|| panic!("emittable symbol {sym:?} must be a bare built-in"));
+
+        let Some(entry) = registry.lookup(sym) else {
+            // Not shadowed at all — the built-in fallback wins unconditionally,
+            // which is the *strongest* form of the guarantee, not a gap. `A`,
+            // `mol` and `cd` land here: `si_units.rs` registers them only as
+            // prefix bases (`mA`, `kA`, …) and `SI_PREFIXES` has no empty
+            // prefix, so no bare declaration is ever emitted for them.
+            builtin_only.push(sym);
+            continue;
+        };
+
+        assert_eq!(
+            entry.factor.to_bits(),
+            builtin_factor.to_bits(),
+            "unit {sym:?} DRIFTED between the two tables that resolve it.\n  \
+             stdlib registry ({}): factor = {:?}  bits = {:#018x}\n  \
+             unit_symbol_to_si:      factor = {builtin_factor:?}  bits = {:#018x}\n  \
+             The registry is consulted FIRST, so it is the factor a rewritten \
+             literal is actually multiplied by — value_to_ri_literal's \
+             bit-exactness proof is against the built-in table and is now void \
+             for this symbol.",
+            entry.source_module.as_deref().unwrap_or("?"),
+            entry.factor,
+            entry.factor.to_bits(),
+            builtin_factor.to_bits()
+        );
+        assert_eq!(
+            entry.dimension, builtin_dim,
+            "unit {sym:?} has dimension {:?} in the stdlib registry but {:?} in \
+             the built-in table",
+            entry.dimension.canonical_name(),
+            builtin_dim.canonical_name()
+        );
+        assert!(
+            entry.offset.is_none(),
+            "unit {sym:?} is AFFINE in the stdlib registry (offset {:?}), but the \
+             built-in table has no offset to represent. `si = mag * factor + \
+             offset` is not the arithmetic the serializer proves against, so an \
+             affine shadow silently offsets every write-back of this symbol.",
+            entry.offset
+        );
+        compared += 1;
+    }
+
+    println!(
+        "stdlib/built-in unit cross-guard: {compared} symbols compared, \
+         built-in-only (unshadowed): {builtin_only:?}"
+    );
+    // The guard is worthless if it silently compares nothing — e.g. if
+    // `load_stdlib()`'s module set changed shape and every lookup missed.
+    // mm/cm/m/deg/rad/kg/s/K/in/g are all declared today.
+    assert!(
+        compared >= 10,
+        "expected at least the 10 stdlib-declared emittable symbols to be \
+         compared, got {compared} (built-in-only: {builtin_only:?}) — did the \
+         stdlib module set or the seeding shape change?"
+    );
+}
+
+// ─── (e) rejections are never spliced ────────────────────────────────────────
 
 /// Rejected values are deliberately NOT parsed — the point is that nothing
 /// unparseable can ever reach a splice in the first place.
