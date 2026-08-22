@@ -1594,56 +1594,66 @@ fn far_future_stamp() -> Instant {
 /// the worker re-checks the flag, finds it unset, and goes back to sleep
 /// with no one left to wake it. If that were broken, dropping a
 /// `FileWatcher` shortly after a write would hang.
+///
+/// RETURNING AT ALL IS THE ASSERTION. That is the honest statement of the
+/// contract -- "`Drop` must not hang" -- and it is what the deleted
+/// `elapsed < 2s` bound was really guarding (see the tombstone in the body).
+///
+/// THE PENDING ENTRY IS NOW GUARANTEED, NOT MERELY LIKELY (#6438). This test
+/// used to write a real file and `sleep(10ms)`, hoping to land inside the
+/// 100ms debounce window, and never confirmed that it had: on a loaded host
+/// the sleep could overrun the window entirely, leaving nothing pending, and
+/// the test would then pass without exercising the pending-drop race at all
+/// -- a vacuous pass that looked exactly like a real one. It now injects the
+/// entry through `FileWatcher::record_pending_for_test` at
+/// `far_future_stamp()`, which is structurally un-drainable, and asserts
+/// positively that it is pending before dropping. The precondition is
+/// therefore checked rather than hoped for, and no real time is consumed.
+///
+/// With the write gone, the `wait_for_watch_registration` barrier and its
+/// `probe_seen` plumbing went with it: they existed only to prove the watch
+/// was live enough for that write to produce an event, and nothing is written
+/// to disk here any more.
 #[test]
 fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
     let dir = tempfile::tempdir().unwrap();
-    let ri_file = dir.path().join("closing.ri");
-    std::fs::write(&ri_file, "structure Closing {}").unwrap();
 
-    let probe_seen = Arc::new(AtomicBool::new(false));
-    let probe_seen_clone = probe_seen.clone();
-
-    let Some(watcher) = try_watcher(dir.path(), None, move |event| {
-        if let FileEvent::Changed(path) = event
-            && path.ends_with("probe.ri")
-        {
-            probe_seen_clone.store(true, Ordering::SeqCst);
-        }
-    }) else {
+    let Some(watcher) = try_watcher(dir.path(), None, |_event| {}) else {
         return;
     };
 
-    let registered = wait_for_watch_registration(dir.path(), &probe_seen);
+    watcher.record_pending_for_test(
+        dir.path().join("closing.ri"),
+        ChangeKind::Changed,
+        far_future_stamp(),
+    );
     assert!(
-        registered,
-        "the watcher never delivered a probe event, so the directory watch \
-         was never confirmed live -- the write below could have been lost \
-         outright and this run could not exercise the pending-drop race"
+        watcher
+            .pending_paths()
+            .iter()
+            .any(|p| p.ends_with("closing.ri")),
+        "the injected entry should be pending before Drop -- otherwise this \
+         run does not exercise the pending-drop race at all"
     );
 
-    // Trigger an event and drop almost immediately -- well within the
-    // 100ms debounce window, so a not-yet-drained entry is very likely
-    // still sitting in the Debouncer when Drop runs below. (The barrier
-    // above may itself leave a still-pending probe.ri entry in the
-    // Debouncer at this point -- harmless here, since this test WANTS some
-    // pending entry when Drop runs and doesn't care which path it's for.)
-    std::fs::write(&ri_file, "structure Closing { param x = 1mm }").unwrap();
-    std::thread::sleep(Duration::from_millis(10));
-
-    let start = Instant::now();
     drop(watcher);
-    let elapsed = start.elapsed();
 
-    // Generous bound: a correct Drop wakes the worker via the condvar and
-    // joins almost instantly. This is only guarding against a hang (a
-    // lost-wakeup regression would block here indefinitely), not timing
-    // the happy path precisely.
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "Drop should join the worker thread promptly even with a pending \
-         event, took {:?}",
-        elapsed
-    );
+    // A real-clock `elapsed < Duration::from_secs(2)` bound around the `drop`
+    // above was removed here (#6438). It contradicted this file's own
+    // monotone-under-descheduling invariant stated above the `wait_*` tests:
+    // an upper bound on elapsed time INVERTS under load -- a host that
+    // deschedules this thread for two seconds fails a correct `Drop` -- which
+    // is precisely the shape already deleted in the
+    // `wait_until_with_retry_returns_true_without_waiting_when_already_satisfied`
+    // tombstone. Widening it would only have traded a flake for a
+    // non-discriminating bound.
+    //
+    // Nothing is lost: the assertion's only real job was catching a
+    // lost-wakeup HANG, and a hang is still caught loudly, by the harness
+    // rather than by this thread. .config/nextest.toml sets
+    // `slow-timeout = { period = "120s", terminate-after = 10 }`, so a `drop`
+    // that never returns is reported as a slow test and then terminated,
+    // instead of silently passing. Please do not "restore" the bound.
 }
 
 /// Pins the "pending-on-shutdown is dropped, not flushed" contract
