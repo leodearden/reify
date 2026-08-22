@@ -3417,3 +3417,84 @@ structure def Probe {
         );
     }
 }
+
+#[cfg(test)]
+mod unmeasured_reason_capability_tests {
+    use reify_constraints::SimpleConstraintChecker;
+
+    use crate::Engine;
+
+    /// The shipped stub-mode shape, isolated to the ONE axis on which a
+    /// CAPABILITY test differs from a PRESENCE test: a registered kernel that
+    /// cannot produce a BRep tessellation and that IS this engine's
+    /// `default_kernel_name`.
+    ///
+    /// Every no-OCCT CLI/GUI binary is in exactly this shape —
+    /// `reify-kernel-manifold`'s `inventory::submit!` is unconditional, so
+    /// `pick_lexmin_brep_kernel`'s `.or_else(|| registered.values().next())`
+    /// fallback hands a stub binary `default_kernel_name == Some("manifold")`
+    /// — and it is unreachable through any public `Engine` constructor in this
+    /// crate's test binary: `with_registered_kernel{,s}` consult the LIVE
+    /// registry, which on an OCCT build always yields OCCT. Hence a unit test
+    /// that sets the field directly rather than an integration test.
+    ///
+    /// `"openvdb"` stands in for the CLI's `"manifold"`. reify-eval links no
+    /// manifold adapter, so `"manifold"` is absent from THIS binary's registry
+    /// and would take [`Engine::has_repr_capable_kernel`]'s deliberate
+    /// benefit-of-the-doubt path for kernels that declared nothing. OpenVDB is
+    /// registered here and declares Voxel/Mesh only: the same "registered, but
+    /// cannot produce the measurement" fact, expressed with a kernel this
+    /// binary actually holds.
+    ///
+    /// ## Why this gate is load-bearing
+    ///
+    /// It is the only test in this task's suite that is RED against the
+    /// previous `default_kernel_name.is_none()` discriminator on an OCCT
+    /// build. That predicate read a `Some` default as "a kernel can measure",
+    /// so with capture ON it selected arm 3 — "check that the subject declares
+    /// a realization" — blaming the subject for a kernel's missing capability.
+    /// The suite's other non-measuring cases all reach their incapable kernel
+    /// set via `Engine::new(_, None)`, whose `default_kernel_name` is `None`;
+    /// the old predicate routed those to arm 1 as well, so they pass under
+    /// BOTH discriminators and cannot catch a regression here.
+    #[test]
+    fn registered_non_brep_default_kernel_is_not_measurement_capable() {
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        if !engine.ensure_openvdb_kernel() {
+            eprintln!(
+                "skipping stub-mode capability gate: OpenVDB is absent from this \
+                 binary's inventory registry (cfg(not(has_openvdb)))"
+            );
+            return;
+        }
+        // The axis under test: the Mesh-only adapter is not merely present, it
+        // is what the lex-min picker would hand a stub-mode binary.
+        engine.default_kernel_name =
+            Some(crate::kernel_registry::openvdb_kernel_name().to_string());
+        // Capture ON, so `capture_repr_tol` cannot be what selects the arm.
+        engine.set_capture_repr_tol(true);
+
+        assert!(
+            !engine.has_repr_capable_kernel(),
+            "a kernel declaring no (_, ReprKind::BRep) pair cannot produce the \
+             measurement, however the lex-min picker selected it as default"
+        );
+
+        let reason = engine.unmeasured_reason();
+        assert!(
+            reason.contains("geometry kernel"),
+            "INV-SF-4: the missing CAPABILITY is the established cause and is \
+             what must be named. Got: {reason:?}"
+        );
+        assert!(
+            !reason.contains("check that the subject declares a realization"),
+            "arm 3 blames the subject for a kernel's missing capability — the \
+             misattribution class ζ exists to remove, merely relocated. Got: {reason:?}"
+        );
+        assert!(
+            !reason.contains("reify check"),
+            "arm 2 sends a stub-mode run to a subcommand whose binary has no \
+             capable kernel either — the two-hop dead end. Got: {reason:?}"
+        );
+    }
+}
