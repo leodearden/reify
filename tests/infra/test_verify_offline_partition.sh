@@ -12,7 +12,30 @@
 #   (d) heavy (+) smoke partition -- no overlap, no orphan.
 #   (e) resolve-to-disk -- every atom parsed from the ACTUAL emitted offline
 #       -E expression maps to a real crates/<pkg>/tests/<bin>.rs file, and
-#       the parsed count is exactly 6 (no silent membership drift).
+#       the parsed count is exactly 7 (task 6368 added the 7th, test-scoped
+#       atom), PLUS every ` & test(/^<stem>::/)` sub-clause the lib carries
+#       survives VERBATIM into that emitted expression.
+#
+# WHAT THE DRIFT-GUARD IN THIS FILE DOES AND DOES NOT COVER. Every atom
+# parser here -- heavy_atoms(), parse_atoms_from_plan(), _resolve_atoms_ok's
+# _atom_re -- matches only the `package(X) & binary(Y)` PREFIX of an atom.
+# That is deliberate (it must keep counting test-scoped and whole-binary
+# atoms alike), but it makes the count / no-orphan / resolve-to-disk trio
+# BINARY-MEMBERSHIP guards, not whole-atom guards: on their own they would
+# stay green if the 7th atom's ` & test(...)` clause were silently deleted,
+# even though that converts it to whole-binary and evicts all 247 tests in
+# harness_fea_solver_e2e from the merge gate to relieve one -- the exact
+# outcome esc-6368-2 rescoped AWAY from. Two things close that, at
+# different granularities, and neither is this file's parsers:
+#   - the EXACT-LITERAL pin on the clause lives in
+#     tests/infra/test_heavy_filter_atoms.sh Assertion C (and the
+#     resolve-the-stem-to-disk check in its Assertion F). That suite owns
+#     the clause's spelling; this one deliberately does not duplicate it.
+#   - the clause SURVIVING verify.sh's interpolation into the real emitted
+#     plan is what this file adds, in assertion (e) below -- derived from
+#     the lib rather than hardcoded, so a legitimate future stem rename does
+#     not false-fail here, with a >=1-clause non-vacuity guard so a DELETED
+#     clause cannot pass it vacuously.
 #
 # Plus a non-vacuity self-check that deliberately breaks the partition
 # (dangling atom / dropped atom / injected overlap) and asserts the guard's
@@ -202,10 +225,23 @@ offline_plan() {
     printf '%s' "$_OFFLINE_PLAN_CACHE"
 }
 
-# heavy_atoms — the 6 `package(X) & binary(Y)` atoms parsed directly out of
+# heavy_atoms — the 7 `package(X) & binary(Y)` atoms parsed directly out of
 # REIFY_HEAVY_NEXTEST_FILTER (the lib source-of-truth, A1), one per line.
+# PREFIX-ONLY by design: a test-scoped atom's trailing ` & test(...)` clause
+# is not captured here, so this (and everything built on it) is a
+# binary-membership view. See the header's coverage note; the clause itself
+# is covered by heavy_test_scope_clauses() below plus
+# tests/infra/test_heavy_filter_atoms.sh Assertions C/F.
 heavy_atoms() {
     printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE 'package\([a-z0-9_-]+\) & binary\([a-z0-9_-]+\)'
+}
+
+# heavy_test_scope_clauses — the ` & test(/^<stem>::/)` sub-clauses carried by
+# REIFY_HEAVY_NEXTEST_FILTER (the lib source-of-truth, A1), one per line.
+# The complement of heavy_atoms(): that one sees only the prefix every atom
+# shares, this one sees only the suffix that narrows an atom below whole-binary.
+heavy_test_scope_clauses() {
+    printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE '& test\(/\^[a-z0-9_]+::/\)'
 }
 
 # parse_atoms_from_plan [text] — the `package(X) & binary(Y)` atoms parsed
@@ -216,6 +252,8 @@ heavy_atoms() {
 # ACTUAL emitted -E expression rather than REIFY_HEAVY_NEXTEST_FILTER
 # directly -- proving verify.sh's real output resolves to disk (assertion e),
 # not merely the lib source-of-truth (which heavy_atoms() already covers).
+# PREFIX-ONLY, exactly like heavy_atoms(): the emitted-plan counterpart for
+# test-scope clauses is _test_scope_clauses_survive_ok below, not this.
 parse_atoms_from_plan() {
     local cmds
     if [ "$#" -eq 0 ]; then
@@ -317,12 +355,62 @@ _no_orphan_ok() {
     return 0
 }
 
-_atom_count_is_6() {
+# _test_scope_clauses_survive_ok — 0 iff the lib carries AT LEAST ONE
+# ` & test(...)` clause AND every one of them appears VERBATIM in the ACTUAL
+# emitted offline -E expression. Two distinct defects, one check:
+#   - clause DELETED from the lib -> the >=1 non-vacuity guard fires. This is
+#     the hole the header's coverage note names: every prefix-only parser in
+#     this file (count-7 / no-orphan / resolve-to-disk) stays green through
+#     that deletion, because the atom keeps its package()/binary() prefix and
+#     its binary keeps resolving -- it has merely widened from one test to all
+#     247 in harness_fea_solver_e2e.
+#   - clause MANGLED in transit -> the verbatim grep -F fires. Nothing
+#     previously asserted that verify.sh interpolates the clause into the
+#     emitted plan intact; the plan is built by shell string-concatenation
+#     around an expression containing `(`, `/`, `^` and `::`, so "the lib says
+#     X" and "the plan carries X" are genuinely separate claims.
+# Derived from the lib rather than hardcoded, deliberately: the exact-literal
+# pin belongs to tests/infra/test_heavy_filter_atoms.sh Assertion C, so a
+# legitimate future stem rename lands as ONE expected failure there rather
+# than also false-failing here.
+#
+# Takes an optional [expr-text] override (default: the ACTUAL offline plan's
+# command lines), matching _no_orphan_ok / _no_overlap_ok / _resolve_atoms_ok,
+# so the non-vacuity self-check below can feed a synthetic clause-stripped
+# expression through the SAME check rather than a re-implementation of it.
+_test_scope_clauses_survive_ok() {
+    local clauses expr rc=0
+    clauses="$(heavy_test_scope_clauses)" || return 1
+    [ -n "$clauses" ] || return 1
+    if [ "$#" -eq 0 ]; then
+        expr="$(offline_plan | grep -v '^#')" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            _dump_plan_evidence "_test_scope_clauses_survive_ok (driver failed)" "$expr" "$rc"
+            return 1
+        fi
+    else
+        expr="$1"
+    fi
+    while IFS= read -r _clause; do
+        [ -n "$_clause" ] || continue
+        if ! printf '%s\n' "$expr" | grep -qF -- "$_clause"; then
+            # Only dump when checking the REAL plan -- an override miss is the
+            # self-check's expected outcome, not evidence worth archiving.
+            if [ "$#" -eq 0 ]; then
+                _dump_plan_evidence "_test_scope_clauses_survive_ok (clause '$_clause' absent from emitted plan)" "$expr" "$rc"
+            fi
+            return 1
+        fi
+    done <<< "$clauses"
+    return 0
+}
+
+_atom_count_is_7() {
     local atoms n
     atoms="$(parse_atoms_from_plan)" || return 1
     n=0
     [ -n "$atoms" ] && n="$(printf '%s\n' "$atoms" | wc -l | tr -d '[:space:]')"
-    [ "$n" -eq 6 ]
+    [ "$n" -eq 7 ]
 }
 
 # _resolve_atoms_ok [atom-list] — 0 iff <atom-list> (default:
@@ -353,10 +441,11 @@ _resolve_atoms_ok() {
 }
 
 # assert_guard_rejects — non-vacuity self-check: proves the guard's own
-# resolve-to-disk / orphan / overlap checks actually DETECT a deliberately
-# broken partition (dangling atom / dropped atom / injected overlap), and
-# still ACCEPT the real, unmodified partition (the guard is green on truth,
-# not merely unconditionally red). Mirrors
+# resolve-to-disk / orphan / overlap / test-scope checks actually DETECT a
+# deliberately broken partition (dangling atom / dropped atom / injected
+# overlap / stripped test-scope clause), and still ACCEPT the real,
+# unmodified partition (the guard is green on truth, not merely
+# unconditionally red). Mirrors
 # tests/infra/test_run_all_classification.sh's injected-drift self-check.
 assert_guard_rejects() {
     local real_atoms first_atom remaining_atoms
@@ -384,11 +473,30 @@ assert_guard_rejects() {
     local overlap_expr="${REIFY_HEAVY_NEXTEST_FILTER} | (package(reify-solver-elastic) & binary(solver_gate_smoke))"
     if _no_overlap_ok "$overlap_expr"; then return 1; fi
 
-    # (4) sanity -- the REAL, unmodified partition must still be ACCEPTED by
-    # all three checks (default args -- actual offline plan / actual lib).
+    # (4) dropped test-scope clause -- the REAL emitted expression with every
+    # ` & test(/^<stem>::/)` clause stripped out, i.e. exactly what a silent
+    # widening of a test-scoped atom to its whole binary looks like on the
+    # wire. _test_scope_clauses_survive_ok must REJECT it. This is the break
+    # that motivated the check: checks (1)-(3) above, and every prefix-only
+    # parser in this file, ACCEPT this same input unchanged -- the atoms still
+    # count 7, still resolve to disk, still show no orphan and no overlap.
+    local stripped_expr
+    stripped_expr="$(offline_plan | grep -v '^#' | sed 's/ & test(\/\^[a-z0-9_]*::\/)//g')" || return 1
+    [ -n "$stripped_expr" ] || return 1
+    # Self-check the fixture itself: the strip must actually have removed
+    # something, or (4) would prove nothing.
+    if printf '%s\n' "$stripped_expr" | grep -qE '& test\(/\^[a-z0-9_]+::/\)'; then return 1; fi
+    if _test_scope_clauses_survive_ok "$stripped_expr"; then return 1; fi
+    # ...and the prefix-only checks really are blind to that same break, which
+    # is what makes the new check load-bearing rather than redundant.
+    _resolve_atoms_ok "$(parse_atoms_from_plan "$stripped_expr")" || return 1
+
+    # (5) sanity -- the REAL, unmodified partition must still be ACCEPTED by
+    # all four checks (default args -- actual offline plan / actual lib).
     _resolve_atoms_ok || return 1
     _no_orphan_ok || return 1
     _no_overlap_ok || return 1
+    _test_scope_clauses_survive_ok || return 1
 
     return 0
 }
@@ -504,19 +612,25 @@ assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (r
 # ---------------------------------------------------------------------------
 # Assertion (e): resolve-to-disk -- every atom parsed from the ACTUAL
 # emitted offline -E expression maps to a real test file, and the parsed
-# count is exactly 6 (no silent membership drift).
+# count is exactly 7 (task 6368 added the 7th, test-scoped atom). Both are
+# BINARY-MEMBERSHIP checks (prefix-only parsers, see the header note), so a
+# third check covers the part they structurally cannot: that the lib's
+# ` & test(...)` clauses survive verbatim into the emitted expression.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms ---"
 
-# Both parse atoms out of the ACTUAL emitted offline -E expression -- nextest-
-# only, same reasoning as assertion (d)'s orphan check above (task 5599).
+# All three parse the ACTUAL emitted offline -E expression -- nextest-only,
+# same reasoning as assertion (d)'s orphan check above (task 5599).
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
-    assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
-        _atom_count_is_6
+    assert "offline plan atoms: exactly 7 parsed (no silent membership drift)" \
+        _atom_count_is_7
 
     assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
         _resolve_atoms_ok
+
+    assert "offline plan: >=1 test-scope clause in the lib, and every one survives verbatim into the emitted -E expression (a dropped clause widens its atom to the whole binary; the prefix-only parsers above cannot see that)" \
+        _test_scope_clauses_survive_ok
 else
     assert 'offline plan atoms, nextest unavailable: no -E expression exists to parse atoms from (cargo-test fallback has no -E support)' \
         _offline_lacks '-E "('
@@ -533,7 +647,7 @@ echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
 # Nextest-only: assert_guard_rejects mutates and re-checks the emitted -E
 # expression, which does not exist on the cargo-test fallback (task 5599).
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
-    assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
+    assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap / stripped test-scope clause), and still accept the real one" \
         assert_guard_rejects
 else
     echo "  (skipped: nextest unavailable -- no -E expression to break and re-check)"
