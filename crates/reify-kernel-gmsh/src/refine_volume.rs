@@ -28,6 +28,14 @@
 //!   which deliberately writes no clamp — is not silently pinned to a fine
 //!   `MeshSizeMax` left over from an adaptive-refinement iteration.
 //!
+//! Each half has its own guard in `tests/refine_volume_tests.rs`, so neither
+//! can rot into a comment: inbound is
+//! `uniform_size_field_refines_monotonically_under_leaked_global_clamp`
+//! (assertion 2) and `non_uniform_size_field_refines_marked_region_and_caps_
+//! the_rest`; outbound is
+//! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
+//! which straddles a refine with exactly the `mesh_plane_2d` call named above.
+//!
 //! Scope of that guarantee: it covers the `MeshSizeMin`/`MeshSizeMax` pair
 //! only. The `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
 //! `MeshSizeExtendFromBoundary` writes below are still left behind for a later
@@ -56,12 +64,22 @@ use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeM
 use crate::options::MeshingOptions;
 
 /// Gmsh's documented default for `Mesh.MeshSizeMin` — no floor.
+///
+/// `pub` (like [`crate::init::GMSH_LOCK`], and for the same reason) so this
+/// crate's `tests/` binaries — separate compilation units — can restore the
+/// process-global clamp to gmsh's defaults without re-declaring the literal.
+/// A test-local copy could drift silently away from the value this module
+/// actually writes, which would quietly weaken the "from gmsh's defaults"
+/// leg of `refine_volume_tests.rs`'s inbound-hermeticity assertion rather
+/// than fail it.
 #[cfg(has_gmsh)]
-const GMSH_MESH_SIZE_MIN_DEFAULT: f64 = 0.0;
+pub const GMSH_MESH_SIZE_MIN_DEFAULT: f64 = 0.0;
 
 /// Gmsh's documented default for `Mesh.MeshSizeMax` — effectively no cap.
+///
+/// `pub` for the same reason as [`GMSH_MESH_SIZE_MIN_DEFAULT`].
 #[cfg(has_gmsh)]
-const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
+pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
 
 /// RAII reset of the process-global `Mesh.MeshSizeMin`/`MeshSizeMax` pair to
 /// gmsh's defaults, covering the early-`?`-return paths as well as success.
@@ -73,14 +91,30 @@ const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
 /// leaving them behind means no downstream path inherits state from this one
 /// (task #6211).
 ///
-/// Must be constructed while `init::GMSH_LOCK` is held, and therefore declared
-/// *after* the lock guard in the function body so it drops (and writes) before
-/// the lock is released.
+/// # Why it borrows the lock guard
+///
+/// The two FFI writes in `drop` mutate gmsh's process-global option table and
+/// must therefore happen while `init::GMSH_LOCK` is held. The
+/// `PhantomData<&'g MutexGuard<'g, ()>>` makes that structural rather than a
+/// comment a refactor can quietly violate: [`Self::armed`] can only be called
+/// with a live guard in hand, so the binding cannot be hoisted above the
+/// `let _guard = …` line, and because this type has a `Drop` impl (no
+/// `#[may_dangle]`) dropck requires the borrow to still be live when it drops
+/// — which forces the writes to land *before* the lock is released.
 #[cfg(has_gmsh)]
-struct MeshSizeClampReset;
+struct MeshSizeClampReset<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
 
 #[cfg(has_gmsh)]
-impl Drop for MeshSizeClampReset {
+impl<'g> MeshSizeClampReset<'g> {
+    /// Arm the reset. Takes the live `GMSH_LOCK` guard by reference purely for
+    /// its lifetime — the guard itself is never touched.
+    fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+#[cfg(has_gmsh)]
+impl Drop for MeshSizeClampReset<'_> {
     fn drop(&mut self) {
         // Best-effort, like the trailing `ffi::clear()`: a failure here cannot
         // be reported from `drop` and must not mask the real result.
@@ -309,7 +343,7 @@ pub fn refine_volume_with_size_field(
     } else {
         GMSH_MESH_SIZE_MAX_DEFAULT
     };
-    let _clamp_reset = MeshSizeClampReset;
+    let _clamp_reset = MeshSizeClampReset::armed(&_guard);
     ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT)?;
     ffi::option_set_number("Mesh.MeshSizeMax", max_hint)?;
 

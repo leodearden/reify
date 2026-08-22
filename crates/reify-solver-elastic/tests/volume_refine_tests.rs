@@ -246,7 +246,8 @@ fn non_finite_size_errors() {
 /// process was squeezed into `[size, size]` and the size field silently became
 /// a no-op. That inbound squeeze can no longer happen: the function now writes
 /// the pair itself on entry — `MeshSizeMin` to gmsh's `0.0` default,
-/// `MeshSizeMax` to `max(vertex_sizes)` (`refine_volume.rs:313-314`) — so its
+/// `MeshSizeMax` to `max(vertex_sizes)`, at the "Mesh-size clamp: set
+/// explicitly, never inherited" block in `refine_volume.rs` — so its
 /// output is a function of its own arguments rather than of whatever a sibling
 /// entry point last left behind.
 ///
@@ -296,10 +297,11 @@ fn non_finite_size_errors() {
 /// which is why the constraint reads as a prohibition rather than a
 /// reservation. Since #6211 it is *also* enforced mechanically for the clamp
 /// pair: `refine_volume.rs` sets `Mesh.MeshSizeMin` / `MeshSizeMax` on entry
-/// (`:313-314`) and restores gmsh's defaults on every exit path — early `?`
-/// returns included — via `MeshSizeClampReset` (`:82-90`), so a `[size, size]`
+/// and restores gmsh's defaults on every exit path — early `?` returns
+/// included — via its `MeshSizeClampReset` RAII guard, so a `[size, size]`
 /// leaked by a sibling `mesh_to_volume` can no longer reach this test's refine
-/// calls.
+/// calls. (Both directions are pinned by fixtures in
+/// `reify-kernel-gmsh/tests/refine_volume_tests.rs`, not only by this note.)
 ///
 /// What that does *not* cover is any global option `refine_volume.rs` does not
 /// itself write on entry. Today it writes `General.Terminal`,
