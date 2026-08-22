@@ -323,6 +323,143 @@ fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
     );
 }
 
+/// Minimal stub `GeometryKernel` whose only job is to make
+/// `default_kernel_name` be `Some(..)` — i.e. "a geometry kernel IS
+/// registered" — without requiring OCCT.
+///
+/// None of these bodies is ever reached: the sources used with it declare no
+/// realization, so no geometry op is ever dispatched.  Mirrors the equivalent
+/// stub in `crates/reify-eval/tests/morph_producer_seam.rs`.
+///
+/// Using a stub rather than a real OCCT handle is deliberate: it makes
+/// [`kernel_present_but_nothing_tessellated_does_not_blame_the_kernel`]
+/// OCCT-INDEPENDENT, so it gates in stub-mode CI too — where the original
+/// OCCT-binary reproduction of this defect cannot run at all.
+struct NoRealizationStubKernel;
+
+impl reify_ir::GeometryKernel for NoRealizationStubKernel {
+    fn execute(
+        &mut self,
+        _op: &reify_ir::GeometryOp,
+    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+        Err(reify_ir::GeometryError::OperationFailed("stub".into()))
+    }
+    fn query(&self, _q: &reify_ir::GeometryQuery) -> Result<reify_ir::Value, reify_ir::QueryError> {
+        Err(reify_ir::QueryError::QueryFailed("stub".into()))
+    }
+    fn export(
+        &self,
+        _h: reify_ir::GeometryHandleId,
+        _f: reify_ir::ExportFormat,
+        _w: &mut dyn std::io::Write,
+    ) -> Result<(), reify_ir::ExportError> {
+        Err(reify_ir::ExportError::FormatError("stub".into()))
+    }
+    fn tessellate(
+        &self,
+        _h: reify_ir::GeometryHandleId,
+        _t: f64,
+    ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+        Err(reify_ir::TessError::TessellationFailed("stub".into()))
+    }
+}
+
+/// INV-SF-4: a run that asked for the measurement while a geometry kernel IS
+/// present must not claim a kernel is missing.
+///
+/// `capture_repr_tol == true && achieved_repr_tol.is_empty()` has more than
+/// one cause, and "no geometry kernel" is only one of them.  The other — a
+/// kernel is present but the subject simply has no realization to tessellate —
+/// is trivially reachable, and answering it with "build with OCCT" on a binary
+/// where OCCT is demonstrably live is a false statement and a dead end: the
+/// same INV-SF-4 misattribution class ζ exists to remove, merely relocated
+/// from the operand kinds to the kernel.
+///
+/// The engine already carries the discriminator: `Engine::default_kernel_name`
+/// is `Some(..)` iff a kernel is registered (`with_prelude` maps
+/// `Some(kernel)` → `Some(DEFAULT_KERNEL_NAME)`, engine_admin.rs).
+///
+/// This test isolates the KERNEL-PRESENT arm;
+/// [`measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check`]
+/// isolates the complementary kernel-absent one.  Together they bracket the
+/// discriminator: same capture flag, same empty map, opposite kernel presence,
+/// opposite remedy.
+///
+/// RED before the three-way remedy split: the remedy branches on
+/// `capture_repr_tol` alone, so this emits the kernel wording.
+#[test]
+fn kernel_present_but_nothing_tessellated_does_not_blame_the_kernel() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    // `Some(..)` ⇒ `default_kernel_name = Some(DEFAULT_KERNEL_NAME)`: a kernel
+    // IS registered.  The subject declares no realization, so nothing is ever
+    // tessellated and the map stays empty for a reason that is NOT the kernel.
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        Some(Box::new(NoRealizationStubKernel)),
+    );
+
+    // Exactly what `cmd_check` does for a module carrying a
+    // RepresentationWithin.
+    engine.set_capture_repr_tol(true);
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "C1: nothing was measured for this subject ⇒ Indeterminate"
+    );
+
+    let attributions: Vec<&reify_core::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("Checker#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one diagnostic must name the constraint. Got: {:#?}",
+        result.diagnostics
+    );
+    let attribution = attributions[0];
+
+    assert_eq!(
+        attribution.severity,
+        Severity::Info,
+        "severity is unaffected by which remedy applies. Got: {attribution:#?}"
+    );
+    assert_eq!(
+        attribution.code,
+        Some(DiagnosticCode::ConstraintIndeterminate),
+        "INV-SF-6: coded on this branch too. Got: {attribution:#?}"
+    );
+    assert!(
+        attribution.message.contains("does not measure"),
+        "the surface is still the reason — that token is stable across every \
+         remedy. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        !attribution.message.contains("OCCT"),
+        "INV-SF-4: a kernel is demonstrably registered on this engine, so any \
+         sentence telling the user to build with OCCT is the false claim under \
+         test. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        !attribution.message.contains("kernel"),
+        "INV-SF-4: with a kernel present the engine has NOT established that a \
+         kernel is the problem, so the remedy must not mention one at all. \
+         Got: {:?}",
+        attribution.message
+    );
+}
+
 /// A module with NO `RepresentationWithin` at all — the universal
 /// non-assertion case that must keep taking the C2 fast path.
 const NO_ASSERTION_SOURCE: &str = r#"
