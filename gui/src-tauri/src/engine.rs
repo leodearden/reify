@@ -597,10 +597,12 @@ pub struct EngineSession {
     /// Task #5338: last delta-resolved value per geometry-derived panel cell —
     /// the VALUE-side twin of the mesh-side retention the frontend already does.
     ///
-    /// A `TessellateResult` is an INCREMENTAL DELTA, not a full snapshot. The
-    /// normative statement is the DELTA CONTRACT block on
-    /// `Engine::demand_scoped_unified_pass` (reify-eval `engine_build.rs`); read
-    /// it there rather than here. The consequence this cache exists for: a
+    /// A `TessellateResult` is an INCREMENTAL DELTA, not a full snapshot. Its two
+    /// halves have different normative homes — the MESH half upstream (the DELTA
+    /// CONTRACT block on `Engine::demand_scoped_unified_pass`, reify-eval
+    /// `engine_build.rs`), the VALUES half in this crate, at
+    /// `surface_geometry_derived_cells`, which carries the measurement. Read them
+    /// there rather than here. The consequence this cache exists for: a
     /// realization the pass skipped carries `Undef` for its auto-derived
     /// mass-property cells even though those values are unchanged and still
     /// correct, so an absent/`Undef` entry means "retain the previous value", NOT
@@ -3052,10 +3054,13 @@ impl EngineSession {
         //
         // ── DURABILITY INVARIANT (task #5338) ────────────────────────────────
         //
-        // `tess_result` is an INCREMENTAL DELTA, not a full snapshot. The
-        // normative statement is the DELTA CONTRACT block on
-        // `Engine::demand_scoped_unified_pass` (reify-eval engine_build.rs) — read
-        // it there; it is deliberately not restated or duplicated here.
+        // `tess_result` is an INCREMENTAL DELTA, not a full snapshot. The MESH half
+        // is normative upstream — the DELTA CONTRACT block on
+        // `Engine::demand_scoped_unified_pass` (reify-eval engine_build.rs), which
+        // is deliberately not restated here. That block is silent on `values`; the
+        // VALUES half (a hash-exempt cell arrives as an explicit `Undef` ENTRY, not
+        // as an absent key) is established at `surface_geometry_derived_cells`
+        // below, with the measurement. Read each half at its own site.
         //
         // The consequence this function must honour: an absent (or `Undef`)
         // realization in the delta means "RETAIN the previous value", NOT "the
@@ -4311,11 +4316,27 @@ pub(crate) fn build_constraints(
 /// ## Task #5338: the delta contract
 ///
 /// `delta_values` / `delta_meshes` are the value and mesh halves of an INCREMENTAL
-/// DELTA, **not** a full snapshot — the DELTA CONTRACT block on
-/// `Engine::demand_scoped_unified_pass` (reify-eval `engine_build.rs`) is the
-/// normative statement and is deliberately not restated here. What this function
-/// must honour: an absent/`Undef` entry means "retain the previous value", NOT
-/// "the value is gone". Task 5194's original overlay read the values as a snapshot
+/// DELTA, **not** a full snapshot. The two halves have DIFFERENT normative homes,
+/// and this is the site that states so — do not collapse them into one pointer:
+///
+/// * **Mesh half — normative upstream.** The DELTA CONTRACT block on
+///   `Engine::demand_scoped_unified_pass` (reify-eval `engine_build.rs`) owns it:
+///   a realization absent from `meshes` is HIDDEN *or* HASH-EXEMPT, and absence
+///   means "retain the previously rendered mesh". Read it there; it is deliberately
+///   not restated here.
+/// * **Values half — established HERE.** That block is exclusively about `.meshes`
+///   and says nothing about `values`, so the claim this function's discriminator
+///   rests on is stated in this crate and nowhere else: a hash-exempt cell arrives
+///   as an EXPLICIT `Value::Undef` ENTRY, never as an absent key. MEASURED on this
+///   branch (2026-08-22) by printing `delta_values.get(&id)` alongside
+///   `delta_meshes.len()` at the lookup site in the body below while running
+///   `contained_rigid_sub_part_retention_works_once_the_demand_key_resolves`: the
+///   two hash-exempt re-renders report `entry=Some(Undef) meshes=0` for all four
+///   mass-prop cells, against `entry=Some(Scalar/Point/Tensor/List) meshes=1` on
+///   the dispatched pass. Re-measure the same way if you need to re-verify it.
+///
+/// What this function must honour: an absent/`Undef` entry means "retain the
+/// previous value", NOT "the value is gone". Task 5194's original overlay read the values as a snapshot
 /// and left delta-omitted cells undetermined, so a `: Rigid` body's mass-prop cells
 /// reverted to `Undef` from the SECOND selective re-render onward — on argv-launch,
 /// watcher-reload and warm-edit alike. `cache` closes that: a delta-resolved value
