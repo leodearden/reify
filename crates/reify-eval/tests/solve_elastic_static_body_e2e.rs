@@ -1622,12 +1622,12 @@ const CYLINDER_PREDICTED_MISSES: usize = 84;
 /// A node the closed form puts outside that comes back finite is this crate's
 /// own contract broken, so that is a hard failure here. The opposite direction —
 /// an EXCESS miss, i.e. a node the geometry puts inside that the realized mesh
-/// failed to cover — is the upstream coverage defect (#6200) this test
-/// explicitly disclaims ownership of, and the realized mesh is not
-/// bit-reproducible across runs, so pinning it live would let upstream drift red
-/// the merge gate for a defect that "must not be fixed here". The excess is
-/// logged loudly instead, and the exact-count/bucket form of the claim is kept
-/// in [`realized_cylinder_mesh_covers_its_own_aabb`].
+/// failed to cover — would be a regression of the upstream mesh-coverage defect
+/// that #6200 fixed, which this test explicitly disclaims ownership of; and the
+/// realized mesh is not bit-reproducible across runs, so pinning it live would
+/// let upstream drift red the merge gate for something that "must not be fixed
+/// here". The excess is logged loudly instead, and the exact-count/bucket form
+/// of the claim is kept in [`realized_cylinder_mesh_covers_its_own_aabb`].
 ///
 /// Returns the [`GridMissReport`] it dumped, so a caller that wants to add the
 /// upstream-owned claims on the SAME field does not have to re-classify (and
@@ -1680,11 +1680,13 @@ fn assert_cylinder_grid_miss_measurement(
     // ── (b) COVERAGE — OVER-firing. Logged, NOT asserted (upstream-owned) ───
     // With (a) green the predicted 84 are all present, so any EXCESS is a node
     // the geometry places INSIDE the cylinder that the realized mesh failed to
-    // cover — the box's defect (#6200) reaching this fixture. Reported here;
-    // pinned in `realized_cylinder_mesh_covers_its_own_aabb`.
+    // cover — a regression of the coverage defect #6200 fixed, reaching this
+    // fixture. Reported here; pinned in
+    // `realized_cylinder_mesh_covers_its_own_aabb`.
     if report.n_missed > CYLINDER_PREDICTED_MISSES {
         eprintln!(
-            "#6154 realized cylinder MESH UNDER-COVERS (upstream, see #6200): closed \
+            "#6154 realized cylinder MESH UNDER-COVERS (upstream mesh-coverage \
+             regression; the defect fixed under #6200 is back): closed \
              form predicts {CYLINDER_PREDICTED_MISSES} of \
              {REALIZED_CYLINDER_GRID_NODES} nodes out-of-solid and all of them are \
              present, so the {} extra miss(es) are nodes the geometry places INSIDE \
@@ -1781,25 +1783,27 @@ fn realized_box_mesh_tiles_its_own_aabb() {
 /// the closed form places inside it, so the miss set is EXACTLY the predicted
 /// 84, split (interior, face, edge, corner) = (0, 40, 36, 8).
 ///
-/// Green as measured on 2026-08-20, and `#[ignore]`d anyway, because what it
-/// pins is not this crate's to keep green: an excess miss is a node the geometry
-/// places inside the cylinder that the realized tet mesh failed to cover — the
-/// same upstream coverage defect the box measures, tracked as #6200 — and the
-/// gmsh/HXT tetrahedralization that decides it is not bit-reproducible run to
-/// run (the box's split drifts on this very host; this fixture has only ever
-/// been observed on one host and one gmsh build). Live, one drifted node would
-/// red the merge gate for a defect this file explicitly says "must not be fixed
-/// here". [`assert_cylinder_grid_miss_measurement`] keeps the half this crate
-/// DOES own — the sentinel must fire on every predicted-outside node — as a hard
-/// live assertion, and logs any excess; this test re-runs that half on its own
-/// realization before adding the two upstream-owned claims, so all three are
-/// pinned on one and the same field.
+/// Measured green on this base, and `#[ignore]`d anyway — the gate is about
+/// DRIFT and EXPENSE, not about waiting on anyone. What it pins is an EXACT node
+/// count over a gmsh/HXT tetrahedralization that is not bit-reproducible run to
+/// run (the box's pre-fix split drifted on this very host, 1055 vs 1060 across
+/// five runs; this fixture has only ever been observed on one host and one gmsh
+/// build). Live, one drifted node would red the merge queue for a mesh property
+/// this crate does not own and this file explicitly says "must not be fixed
+/// here". It also costs a full OCCT+gmsh realization of its own.
 ///
-/// So: run this explicitly (`--ignored`) to re-measure the cylinder's coverage,
-/// and expect it to go green and STAY green once #6200 lands.
+/// [`assert_cylinder_grid_miss_measurement`] keeps the half this crate DOES own
+/// — the sentinel must fire on every predicted-outside node — as a hard LIVE
+/// assertion on the capstone's realization, and logs any excess. This test
+/// re-runs that half on its own realization before adding the two mesh-coverage
+/// claims, so all three are pinned on one and the same field.
+///
+/// So: run it explicitly (`--ignored`) to re-measure the cylinder's coverage.
+/// The excess-miss direction it pins would now be a REGRESSION of the upstream
+/// coverage defect fixed under #6200, not an instance of it.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "upstream-owned (#6200): pins the realized cylinder mesh's exact coverage, which gmsh/HXT drift can move; the sentinel half this crate owns is asserted live in non_prismatic_body_solve_runs_on_realized_volume_mesh"]
+#[ignore = "expensive: re-measures the realized cylinder's exact coverage; gmsh/HXT tetrahedralization is not bit-reproducible, so the exact count is run-explicit only"]
 fn realized_cylinder_mesh_covers_its_own_aabb() {
     let Some(disp) = realized_cylinder_displacement("realized_cylinder_mesh_covers_its_own_aabb")
     else {
@@ -1818,12 +1822,12 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
     // excess over the closed form is a node the geometry places INSIDE.
     assert_eq!(
         report.n_missed, CYLINDER_PREDICTED_MISSES,
-        "REALIZED CYLINDER MESH UNDER-COVERS (upstream, see #6200): the closed form \
-         predicts exactly {CYLINDER_PREDICTED_MISSES} of \
-         {REALIZED_CYLINDER_GRID_NODES} nodes out-of-solid, so the {} extra miss(es) \
-         are nodes the geometry places INSIDE the cylinder. That is the same coverage \
-         defect measured on the box, now reaching the cylinder fixture — it is NOT a \
-         sentinel bug and must not be fixed here.",
+        "REALIZED CYLINDER MESH UNDER-COVERS: the closed form predicts exactly \
+         {CYLINDER_PREDICTED_MISSES} of {REALIZED_CYLINDER_GRID_NODES} nodes \
+         out-of-solid, so the {} extra miss(es) are nodes the geometry places INSIDE \
+         the cylinder. That is a REGRESSION of the upstream mesh-coverage defect \
+         fixed under #6200, now reaching the cylinder fixture — it is NOT a sentinel \
+         bug and must not be fixed here.",
         report.n_missed.saturating_sub(CYLINDER_PREDICTED_MISSES),
     );
 
