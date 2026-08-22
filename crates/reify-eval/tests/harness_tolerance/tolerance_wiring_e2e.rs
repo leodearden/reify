@@ -1694,9 +1694,9 @@ fn realization_entries_counts_terminal_cache_entry_once_and_not_on_cache_hit() {
 
 /// Task 4152: `realization_entries` SURVIVES `clear_realization_cache()`.
 ///
-/// Counter survival is structural — see `RealizationCache::clear`
-/// (realization_cache.rs:141-153) for the mechanism and rationale, which
-/// this test pins end-to-end rather than restates.
+/// Counter survival is structural — see `RealizationCache::clear` in
+/// `src/realization_cache.rs` for the mechanism and rationale, which this
+/// test pins end-to-end rather than restates.
 ///
 /// Asserts the flush genuinely emptied the cache (so this is not vacuously
 /// true), that the counter is unmoved, and that a subsequent build re-realizes
