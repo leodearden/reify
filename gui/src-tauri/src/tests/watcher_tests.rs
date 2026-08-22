@@ -623,17 +623,34 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 // `VirtualClock` tests below, which have no wall-clock dependency
 // at all. See #5709.
 
+// The upper-bound half of the test below -- `start.elapsed()` compared
+// against a one-second `Duration`, asserted under the name
+// `..._returns_true_promptly_...` -- was removed here (#6438).
+// It was the last live contradiction of the invariant stated directly above:
+// an upper bound on elapsed time is starvation-invertible, so a host that
+// deschedules this thread for a second fails a `wait_for` that did exactly
+// the right thing. Same shape as the
+// `wait_until_with_retry_returns_true_without_waiting_when_already_satisfied`
+// tombstone further down.
+//
+// The PROMPTNESS claim is not lost, and is not even weakened: it is already
+// pinned exactly, and deterministically, by
+// `wait_until_on_does_not_advance_the_clock_when_the_condition_already_holds`
+// below, which asserts `clock.now() == t0` on a `VirtualClock`. "The clock
+// did not advance AT ALL" is strictly stronger than "under a second of real
+// time elapsed", and it has no wall-clock dependency whatsoever. `wait_for`
+// reaches that same already-holds fast path via `wait_until` -> `wait_until_on`,
+// so the behaviour under test here is the behaviour pinned there.
+//
+// What remains below is this test's real content: that the ARRIVAL claim
+// holds -- a predicate already satisfied is observed on the first check --
+// which is monotone under descheduling and therefore safe. The name lost
+// "promptly" to match.
 #[test]
-fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
+fn wait_for_returns_true_when_the_condition_is_already_satisfied() {
     let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
-    let start = Instant::now();
     let found = wait_for(&sink, Duration::from_secs(10), |v: &[u32]| v.contains(&42));
     assert!(found, "predicate should be satisfied on the first check");
-    assert!(
-        start.elapsed() < Duration::from_secs(1),
-        "should return promptly when already satisfied, took {:?}",
-        start.elapsed()
-    );
 }
 
 #[test]
@@ -1638,8 +1655,9 @@ fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
 
     drop(watcher);
 
-    // A real-clock `elapsed < Duration::from_secs(2)` bound around the `drop`
-    // above was removed here (#6438). It contradicted this file's own
+    // A real-clock upper bound around the `drop` above -- `elapsed` compared
+    // against a two-second `Duration` -- was removed here (#6438). It
+    // contradicted this file's own
     // monotone-under-descheduling invariant stated above the `wait_*` tests:
     // an upper bound on elapsed time INVERTS under load -- a host that
     // deschedules this thread for two seconds fails a correct `Drop` -- which
