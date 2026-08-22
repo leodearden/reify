@@ -538,66 +538,69 @@ pub(crate) fn eval_all_args_to_values(
         .collect()
 }
 
-/// Evaluate all args in a variadic builtin to BARE f64 values, reading each as
-/// SI with no dimension check.
-///
-/// Returns `None` if any arg evaluates to a non-finite value, pushing a
-/// warning diagnostic for the first bad arg.
-///
-/// This is now the remaining BARE variadic reader: after task 5658 routed
-/// `interp`/`bezier`/`nurbs` through [`accept_variadic_length_args`], its only
-/// caller is `profile_polygon`'s 2-D vertex pairs — a length-semantic residual
-/// owned by task 5661, not a deliberate exemption. Its `Value::as_f64` reads a
-/// bare `Value::Real(10.0)` as **10 SI metres**, which is exactly the 1000×
-/// hazard Contract C exists to close.
-pub(crate) fn eval_all_args_to_f64(
-    label: &str,
-    args: &[(String, reify_ir::CompiledExpr)],
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    meta_map: &HashMap<String, HashMap<String, String>>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Vec<f64>> {
-    // `collect()` into `Option` short-circuits at the first `None`, so only the
-    // first non-finite arg is diagnosed. Preserved deliberately: this helper's
-    // observable behaviour is unchanged by the task-5658 refactor.
-    args.iter()
-        .zip(eval_all_args_to_values(args, values, functions, meta_map))
-        .map(|((name, _), v)| match v.as_f64() {
-            Some(f) if f.is_finite() => Some(f),
-            _ => {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "{} arg '{}' is non-finite",
-                    label, name
-                )));
-                None
-            }
-        })
-        .collect()
-}
-
-/// The flat variadic position `i`, rendered ON DEMAND as the coordinate name an
-/// author would recognise: `x1`, `y1`, `z1`, `x2`, `y2`, `z2`, …
+/// The flat variadic position `flat`, rendered ON DEMAND as the coordinate name
+/// an author would recognise: `x1`, `y1`, `z1`, `x2`, … for a 3-D stream, or
+/// `x1`, `y1`, `x2`, `y2`, … for a 2-D one.
 ///
 /// The compiler names variadic args positionally (`c0`…`cN`) and those names
 /// are inert — `c3` in a diagnostic tells a `.ri` author nothing. This mints
 /// the same naming task 5623 established for `line_segment`'s endpoints, so a
 /// variadic rejection reads like every other Contract C one.
 ///
-/// A `Copy` newtype around the index rather than a `String`-returning function,
+/// `per_point` is the STRIDE, and it is data rather than code because the
+/// route now serves both widths (task 5661): `interp`/`bezier`/`nurbs` stream
+/// 3-D triples, `polygon` streams 2-D vertex PAIRS. A stride-3 renderer applied
+/// to pairs would name six positions `x1,y1,z1,x2,y2,z2` — wrong axis letters
+/// AND wrong vertex numbers, i.e. a diagnostic that actively misdirects the
+/// author. Use the [`CoordName::xyz`] / [`CoordName::xy`] constructors rather
+/// than building the struct literally, so a call site cannot pick a stride by
+/// accident. One renderer for both widths also means a reworded name cannot
+/// drift between them.
+///
+/// A `Copy` struct over the index rather than a `String`-returning function,
 /// because the gate predicate in [`accept_variadic_length_args`] names EVERY
 /// position on EVERY rebuild while only the rejection branches ever read the
-/// name. `interp`/`bezier` are arity-open, so a `String` per position would cost
-/// a 500-point spline 1500 heap allocations per solver iteration on the fully
-/// clean path — and geometry rebuild is the interactive hot path. The `Display`
-/// impl defers that `format!` to the branches that actually build a diagnostic
-/// or an `Err`.
+/// name. Every variadic consumer is arity-open, so a `String` per position
+/// would cost a 500-point spline 1500 heap allocations per solver iteration —
+/// and a 500-vertex polygon 1000 — on the fully clean path, where geometry
+/// rebuild is the interactive hot path. The `Display` impl defers that
+/// `format!` to the branches that actually build a diagnostic or an `Err`.
 #[derive(Clone, Copy)]
-struct CoordName(usize);
+struct CoordName {
+    /// Position in the flat coordinate stream, renumbered from the start of the
+    /// gated span (see `curve_nurbs_curve`, which offsets by its pole start).
+    flat: usize,
+    /// Coordinates per point: 3 for a point in space, 2 for a vertex in a
+    /// plane. Always `<= 3`, so the axis-letter index below is in bounds.
+    per_point: usize,
+}
+
+impl CoordName {
+    /// A coordinate in a 3-D stream: `x1, y1, z1, x2, y2, z2, …`.
+    fn xyz(flat: usize) -> Self {
+        Self {
+            flat,
+            per_point: 3,
+        }
+    }
+
+    /// A coordinate in a 2-D stream: `x1, y1, x2, y2, x3, y3, …`.
+    fn xy(flat: usize) -> Self {
+        Self {
+            flat,
+            per_point: 2,
+        }
+    }
+}
 
 impl std::fmt::Display for CoordName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", ["x", "y", "z"][self.0 % 3], self.0 / 3 + 1)
+        write!(
+            f,
+            "{}{}",
+            ["x", "y", "z"][self.flat % self.per_point],
+            self.flat / self.per_point + 1
+        )
     }
 }
 
@@ -627,6 +630,10 @@ impl std::fmt::Display for CoordName {
 /// TARGET signatures as `Point<N,Length>` control points with `Real` weights and
 /// knots — this gate makes the flat positional form honour the declared types.
 ///
+/// The route's fourth consumer, `polygon`'s 2-D vertex pairs (task 5661), keeps
+/// its one-row triage table at its own call site in `profile_polygon` rather
+/// than restating it here — 5752's allowlist must read BOTH.
+///
 /// ALL FAILURES AT ONCE, for [`required_length_args`]' reason and by the same
 /// mechanism: the positions are deliberately NOT `?`-chained. A coordinate
 /// stream is written as one gesture — `interp(0, 0, 0, 10, 0, 0)` — so a bare
@@ -636,9 +643,11 @@ impl std::fmt::Display for CoordName {
 /// returned, so an `Unresolved` position cannot be masked by a later `Invalid`
 /// one.
 ///
-/// The three `Err` wordings are copied from [`required_length_arg`] and
-/// `eval_all_args_to_f64` respectively, so the caller-facing text stays shared
-/// with the named-arg route rather than forking. An `Undefined` position gets
+/// The three `Err` wordings are copied from [`required_length_arg`] and — for
+/// the un-gated branch — from the bare variadic reader this route replaced
+/// (`eval_all_args_to_f64`, deleted in task 5661 once `profile_polygon` became
+/// its last caller), so the caller-facing text stays shared with the named-arg
+/// route rather than forking. An `Undefined` position gets
 /// the DISTINCT "unresolved (Undef)" message rather than a silent continue
 /// (PRD decision D10 / INV-SF-1): during solver iteration an Undef cell is
 /// expected transient state, and calling it "missing or non-Length" is
@@ -3706,7 +3715,7 @@ fn curve_interp_curve(
         "interp",
         args,
         &vals,
-        &|i| Some(CoordName(i)),
+        &|i| Some(CoordName::xyz(i)),
         diagnostics,
     )?;
     let points: Vec<[f64; 3]> =
@@ -3731,7 +3740,7 @@ fn curve_bezier_curve(
         "bezier",
         args,
         &vals,
-        &|i| Some(CoordName(i)),
+        &|i| Some(CoordName::xyz(i)),
         diagnostics,
     )?;
     let control_points: Vec<[f64; 3]> =
@@ -3777,11 +3786,13 @@ fn curve_nurbs_curve(
     //   read them.
     //
     //   MULTIPLICITY — EVERY non-finite weight and knot is now reported in one
-    //   build, not just the first. `eval_all_args_to_f64` short-circuits at the
-    //   first `None` via `collect::<Option<_>>()`; `accept_variadic_length_args`
-    //   loops to completion, so a nurbs with two NaN knots emits two warnings
-    //   where it previously emitted one. That is the same all-at-once policy
-    //   the gated positions follow, extended to the un-gated ones for free.
+    //   build, not just the first. The pre-5658 reader (`eval_all_args_to_f64`,
+    //   deleted in 5661 once `profile_polygon` became its last caller)
+    //   short-circuited at the first `None` via `collect::<Option<_>>()`;
+    //   `accept_variadic_length_args` loops to completion, so a nurbs with two
+    //   NaN knots emits two warnings where it previously emitted one. That is
+    //   the same all-at-once policy the gated positions follow, extended to the
+    //   un-gated ones for free.
     //
     // Both are pinned in `geometry_ops/tests.rs`, by
     // `compile_geometry_op_nurbs_non_finite_weight_and_knot_drop_the_op` and
@@ -3855,7 +3866,7 @@ fn curve_nurbs_curve(
         &|i| {
             (pole_start..pole_end)
                 .contains(&i)
-                .then(|| CoordName(i - pole_start))
+                .then(|| CoordName::xyz(i - pole_start))
         },
         diagnostics,
     )?;
@@ -3938,12 +3949,49 @@ fn profile_polygon(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let coords =
-        eval_all_args_to_f64("polygon", args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| {
-                "polygon() has invalid (non-numeric or non-finite) coordinates"
-                    .to_string()
-            })?;
+    // Per-arg triage (task 5661's R2 residual) — written down here so task
+    // 5752's closure-guard allowlist can lift it verbatim:
+    //
+    // | builtin   | positions                | class      | justification                          |
+    // |-----------|--------------------------|------------|----------------------------------------|
+    // | `polygon` | every arg (`2n`, `n>=3`) | **LENGTH** | coordinate of a vertex in the XY plane |
+    //
+    // This is the SIMPLEST row in the program: polygon has NO dimensionless
+    // position at any arity — no direction vector, no count, no angle, no
+    // weight, no knot — so unlike `nurbs` its gated span is the whole argument
+    // list and it needs no per-arity allowlist key. `CoordName::xy` because the
+    // stream is 2-D vertex PAIRS, not the 3-D triples the curve constructors
+    // feed the same route.
+    //
+    // Three DELIBERATE wording/behaviour deltas, all inherited from the shared
+    // chokepoint rather than chosen here (which is the point — Contract C
+    // wording is byte-identical BY CONSTRUCTION, not by convention):
+    //
+    //   ERR TEXT — the local "polygon() has invalid (non-numeric or non-finite)
+    //   coordinates" becomes the shared "missing or non-Length argument
+    //   '{coord}' for polygon", or "argument '{coord}' for polygon is
+    //   unresolved (Undef)" for an Undef position (PRD D10 / INV-SF-1).
+    //
+    //   NO UN-GATED BRANCH — `accept_variadic_length_args`' "failed to evaluate
+    //   all polygon args to f64" wording is unreachable here, because every
+    //   position is gated. Same shape as `interp` and `bezier`.
+    //
+    //   MULTIPLICITY — a non-finite vertex is now reported for EVERY bad
+    //   position in one build, not just the first: the pre-5661 reader
+    //   short-circuited via `collect::<Option<_>>()`.
+    //
+    // The label stays the literal `"polygon"`, which here happens to equal
+    // `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
+    // which renders `interp_curve`. Spelling it out keeps today's label bytes
+    // and leaves `_kind` unused, as in `curve_interp_curve`.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+    let coords = accept_variadic_length_args(
+        "polygon",
+        args,
+        &vals,
+        &|i| Some(CoordName::xy(i)),
+        diagnostics,
+    )?;
     let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
     Ok(reify_ir::GeometryOp::PolygonProfile { points })
 }
