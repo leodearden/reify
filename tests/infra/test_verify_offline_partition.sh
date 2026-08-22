@@ -12,7 +12,8 @@
 #   (d) heavy (+) smoke partition -- no overlap, no orphan.
 #   (e) resolve-to-disk -- every atom parsed from the ACTUAL emitted offline
 #       -E expression maps to a real crates/<pkg>/tests/<bin>.rs file, and
-#       the parsed count is exactly 6 (no silent membership drift).
+#       the parsed count is exactly 7 (no silent membership drift; task 6368
+#       added the 7th, test-scoped atom).
 #
 # Plus a non-vacuity self-check that deliberately breaks the partition
 # (dangling atom / dropped atom / injected overlap) and asserts the guard's
@@ -202,7 +203,7 @@ offline_plan() {
     printf '%s' "$_OFFLINE_PLAN_CACHE"
 }
 
-# heavy_atoms — the 6 `package(X) & binary(Y)` atoms parsed directly out of
+# heavy_atoms — the 7 `package(X) & binary(Y)` atoms parsed directly out of
 # REIFY_HEAVY_NEXTEST_FILTER (the lib source-of-truth, A1), one per line.
 heavy_atoms() {
     printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE 'package\([a-z0-9_-]+\) & binary\([a-z0-9_-]+\)'
@@ -317,12 +318,12 @@ _no_orphan_ok() {
     return 0
 }
 
-_atom_count_is_6() {
+_atom_count_is_7() {
     local atoms n
     atoms="$(parse_atoms_from_plan)" || return 1
     n=0
     [ -n "$atoms" ] && n="$(printf '%s\n' "$atoms" | wc -l | tr -d '[:space:]')"
-    [ "$n" -eq 6 ]
+    [ "$n" -eq 7 ]
 }
 
 # _resolve_atoms_ok [atom-list] — 0 iff <atom-list> (default:
@@ -504,7 +505,8 @@ assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (r
 # ---------------------------------------------------------------------------
 # Assertion (e): resolve-to-disk -- every atom parsed from the ACTUAL
 # emitted offline -E expression maps to a real test file, and the parsed
-# count is exactly 6 (no silent membership drift).
+# count is exactly 7 (no silent membership drift; task 6368 added the 7th,
+# test-scoped atom).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms ---"
@@ -512,8 +514,8 @@ echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms --
 # Both parse atoms out of the ACTUAL emitted offline -E expression -- nextest-
 # only, same reasoning as assertion (d)'s orphan check above (task 5599).
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
-    assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
-        _atom_count_is_6
+    assert "offline plan atoms: exactly 7 parsed (no silent membership drift)" \
+        _atom_count_is_7
 
     assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
         _resolve_atoms_ok

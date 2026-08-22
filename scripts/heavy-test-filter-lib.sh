@@ -42,7 +42,21 @@ _REIFY_HEAVY_TEST_FILTER_LIB_SOURCED=1
 
 # The `heavy` set (PRD §3): reify-solver-elastic {determinism,
 # analytical_validation, modal_benchmarks} + reify-eval {tensegrity_t0a} +
-# reify-eval-fea-tests {buckling_smoke, fea_diagnostics_e2e}. Positive
-# expression only — the gate view derives `not ($REIFY_HEAVY_NEXTEST_FILTER)`
-# at the A4 consumer, so this is the one place membership can ever change.
-export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval-fea-tests) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e))'
+# reify-eval-fea-tests {buckling_smoke, fea_diagnostics_e2e} + reify-eval
+# {harness_fea_solver_e2e::fea_in_the_loop_producer, test-scoped -- task 6368}.
+# Positive expression only — the gate view derives
+# `not ($REIFY_HEAVY_NEXTEST_FILTER)` at the A4 consumer, so this is the one
+# place membership can ever change.
+#
+# The 7th atom (task 6368, RESCOPED per esc-6368-2) is deliberately
+# TEST-scoped rather than whole-binary: it moves ONLY the
+# fea_in_the_loop_producer submodule (a real ~490s Nelder-Mead-over-FEA
+# optimisation, task 4880) off the merge gate, leaving its 246 fast siblings
+# in the same harness_fea_solver_e2e binary (mean 2.25s across 39 merge-gate
+# runs) on the gate -- a whole-binary atom would evict all 247 tests to
+# relieve one. The atom's binary()/test() targets a `#[path]`-declared
+# submodule of the harness_fea_solver_e2e binary (crates/reify-eval/tests/
+# harness_fea_solver_e2e/fea_in_the_loop_producer.rs) that does not exist on
+# main yet (stranded task 4880) -- the atom is inert until that binary lands
+# and then auto-applies; it is safe to land now regardless.
+export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval-fea-tests) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)) | (package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/))'
