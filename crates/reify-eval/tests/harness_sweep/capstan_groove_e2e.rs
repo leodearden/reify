@@ -762,7 +762,23 @@ const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
 /// carry a stale "~80 mm over full travel" for the migration. The relation used
 /// to live only in a comment; here it is stated over the file's evaluated cells.
 ///
-/// Four claims, all read back from those cells:
+/// Five claims, all read back from those cells:
+///   0. the two spellings of each cell agree. The value map carries every
+///      contained structure's scalar cells under BOTH the bare template
+///      (`Capstan.band`, `Fairlead.stroke`) and the instance-scoped
+///      [`sub_entity`] composition (`CapstanDrive.capstan.band`,
+///      `CapstanDrive.shuttle.stroke`). They CAN diverge in principle — a
+///      `sub` constructor override would rebind the instance while leaving the
+///      template's default in place — and they cannot today only because those
+///      overrides are dropped (task 4147, recorded in the design file's own
+///      header). That is a property of the current evaluator, not of the
+///      design, so it is asserted rather than assumed: it is what makes claims
+///      (1)–(3) below (which read the template form, as the rest of this module
+///      does) and the DSL constraint `shuttle.stroke >= capstan.band` (which
+///      resolves against the INSTANCE) provably statements about the same two
+///      numbers. Should 4147 ever be fixed and an override introduced here,
+///      this claim fails first and points at the fork rather than letting the
+///      two gates silently drift onto different values;
 ///   1. `band` really is the ACTIVE migration — `lead · active_turns`. Guards
 ///      the definition against a later edit that quietly redefines it as the
 ///      total grooved extent;
@@ -771,7 +787,10 @@ const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
 ///      wraps") stated over cells: 88.346 mm − 60.346 mm = 28.000 mm = 7 mm × 4;
 ///   3. `band < groove_len` strictly, i.e. the two figures have not collapsed
 ///      into one (they cannot while `dead_total > 0`);
-///   4. the coverage relation itself: `band <= stroke <= band + lead`.
+///   4. the coverage relation itself: `band <= stroke <= band + lead`, read off
+///      the INSTANCE cells — the same form the DSL constraint resolves against,
+///      so the Rust gate and the design gate check the same numbers (claim (0)
+///      is what licenses reading the template form everywhere else).
 ///
 /// The upper bound in (4) is derived, not tuned to admit the observed 63 mm: the
 /// stroke is the band rounded UP to a whole turn, `ceil(active_turns) · lead`,
@@ -796,6 +815,44 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     let dead_total = entity_real(&result.values, CAPSTAN_ENTITY, "dead_total");
     let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
     let stroke = entity_cell(&result.values, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
+
+    // The instance-scoped spellings — what the DSL constraint resolves against.
+    let capstan_inst = sub_entity(CAPSTAN_SUB);
+    let shuttle_inst = sub_entity(SHUTTLE_SUB);
+    let band_inst = entity_cell(&result.values, &capstan_inst, "band", DimensionVector::LENGTH);
+    let stroke_inst = entity_cell(&result.values, &shuttle_inst, "stroke", DimensionVector::LENGTH);
+
+    // ---- (0) The template and instance spellings are the same number ----
+    // Not a formality: an override through `sub capstan = Capstan(...)` would
+    // rebind the instance and leave the template default standing, forking the
+    // two. Overrides through `sub` are dropped today (task 4147), so this holds
+    // — but it holds by evaluator behaviour, not by design, and everything
+    // below plus the DSL constraint would otherwise be talking past each other.
+    // `BAND_IDENTITY_REL_TOL` is reused rather than a new tolerance invented:
+    // this is the same evaluated cell read twice, so only fp slack is in play,
+    // and in fact the two are bit-identical today.
+    assert!(
+        (band_inst - band).abs() <= BAND_IDENTITY_REL_TOL * band.abs(),
+        "`{CAPSTAN_ENTITY}.band` and `{capstan_inst}.band` must be the same \
+         evaluated cell: the template reads {:.9} mm, the instance {:.9} mm. A \
+         divergence means a `sub` constructor override has taken effect (task \
+         4147 fixed?) — claims (1)-(3) below read the template form while the \
+         file's `shuttle.stroke >= capstan.band` constraint resolves against the \
+         instance, so the two gates would no longer be checking the same drum.",
+        band * 1e3,
+        band_inst * 1e3
+    );
+    assert!(
+        (stroke_inst - stroke).abs() <= BAND_IDENTITY_REL_TOL * stroke.abs(),
+        "`{FAIRLEAD_ENTITY}.stroke` and `{shuttle_inst}.stroke` must be the same \
+         evaluated cell: the template reads {:.9} mm, the instance {:.9} mm. A \
+         divergence means a `sub` constructor override has taken effect (task \
+         4147 fixed?), and the coverage window below — which reads the instance \
+         form — would be gating a different stroke from the one the rest of this \
+         module and `docs/projects/printer_v01.md` describe.",
+        stroke * 1e3,
+        stroke_inst * 1e3
+    );
 
     // ---- (1) `band` is the ACTIVE migration, not the total grooved extent ----
     let band_expected = lead * active_turns;
@@ -853,10 +910,15 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     // x. So the two bounds together say "one whole turn of margin, no more" —
     // neither is the literal 63 mm, which is deliberately absent from this
     // assertion so a lead/d_ratio edit moves the gate with the design.
+    // Read off the INSTANCE cells: `shuttle.stroke >= capstan.band` in the file
+    // resolves against those, so asserting the same spelling here means the two
+    // gates cannot end up pinning different numbers. Claim (0) already proved
+    // they equal the template forms, which is what keeps `lead` (template) a
+    // legitimate term in the upper bound.
     assert!(
-        stroke >= band && stroke <= band + lead,
+        stroke_inst >= band_inst && stroke_inst <= band_inst + lead,
         "the fairlead shuttle's stroke must cover the capstan's band migration \
-         and overshoot it by less than one whole turn: {FAIRLEAD_ENTITY}.stroke = \
+         and overshoot it by less than one whole turn: {shuttle_inst}.stroke = \
          {:.6} mm against a band of {:.6} mm (lower bound) and band + lead = \
          {:.6} mm (upper bound). The stroke is the band rounded UP to a whole \
          turn, ceil(active_turns) · lead = ceil({active_turns:.6}) × {:.6} mm = \
@@ -864,9 +926,9 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
          before the wrap band does (fleet angle opens, the fairlead side-loads \
          instead of guiding), and one above the upper bound is no longer that \
          rounding rule — it is an unexplained number.",
-        stroke * 1e3,
-        band * 1e3,
-        (band + lead) * 1e3,
+        stroke_inst * 1e3,
+        band_inst * 1e3,
+        (band_inst + lead) * 1e3,
         lead * 1e3,
         active_turns.ceil() * lead * 1e3
     );
