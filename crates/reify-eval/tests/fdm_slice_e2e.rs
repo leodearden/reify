@@ -35,7 +35,8 @@
 //! `fdm_slice` `@optimized("fdm::slice")` surface; until then `fdm_slice` is an
 //! unresolved name and `parse_and_compile_with_stdlib` panics on the compile error.
 
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
+use reify_eval::compute_targets::fdm_slice::toolpath_to_value;
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::{ExportFormat, Value};
 
@@ -250,6 +251,24 @@ fn assert_compiles_clean(src: &str, what: &str) {
     );
 }
 
+/// Assert `src` is REJECTED with a `ParamDefaultTypeMismatch` whose message
+/// renders the initializer's type as `rendered`.
+///
+/// The escape hatch for types the binding check itself does not descend into:
+/// the rejection message spells the initializer type out in full
+/// (`Point3<Scalar[m]>` vs `Point3<Real>`), so a deliberate wrong-dimension
+/// binding turns an otherwise-invisible element type into an observable string.
+fn assert_rejection_renders_initializer_type(src: &str, rendered: &str, what: &str) {
+    let errors = compile_errors(src);
+    assert!(
+        errors.iter().any(|(code, msg)| *code
+            == Some(DiagnosticCode::ParamDefaultTypeMismatch)
+            && msg.contains(rendered)),
+        "{what}: expected a ParamDefaultTypeMismatch naming the initializer type \
+         `{rendered}`, got: {errors:?}"
+    );
+}
+
 /// Assert `src` is REJECTED with at least one `ParamDefaultTypeMismatch`.
 fn assert_param_default_type_mismatch(src: &str, what: &str) {
     let errors = compile_errors(src);
@@ -266,8 +285,23 @@ fn assert_param_default_type_mismatch(src: &str, what: &str) {
 ///
 /// This is the enforcement of `fdm_slice.ri`'s "Field-type ↔ marshalling
 /// contract" header, which until now asserted that the declarations and the
-/// marshaller "MUST stay aligned" with nothing actually checking it. Drift in
-/// either direction is now a test failure.
+/// marshaller "MUST stay aligned" with nothing actually checking it.
+///
+/// # Reach (what this test does and does not pin)
+///
+/// The SCALAR fields — `width` / `height` / `layer_z` / `speed` /
+/// `nominal_temp` / `Layer.z` — are pinned directly and in both directions: the
+/// positive half fails if a field stops being its own dimension, the negative
+/// half fails if it reverts to bare `Real`.
+///
+/// `centerline` is NOT reachable that way. The `ParamDefaultTypeMismatch`
+/// mechanism does not inspect List element types or `Point3` component types,
+/// so `param c : List<Int> = Bead().centerline` and `param p : Point3<Real> =
+/// Bead().centerline[0]` BOTH compile clean — a revert to `List<Point3<Real>>`
+/// would sail past any binding-shaped assertion. What is expressible is the
+/// type the compiler *renders* in a deliberate wrong-dimension rejection, so
+/// that is the observation point used for it below. The marshaller-side
+/// counterpart is `fdm_slice.rs`'s `assert_point3_length`.
 ///
 /// Pure compile-level: no OCCT, no PrusaSlicer, no beads — so unlike the two
 /// tests above it carries no `OCCT_AVAILABLE` / `slicer_on_path` guard and runs
@@ -347,5 +381,27 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
     assert_param_default_type_mismatch(
         "structure P { param m : Mass = Bead().width }",
         "a Mass param must never accept a Bead width",
+    );
+
+    // `centerline` — the one field whose type actually gates usability
+    // (`resolve_point3_length_arg` rejects bare-`Real` components). Neither
+    // binding half above can see it, so it is pinned by the RENDERED type in a
+    // wrong-dimension rejection instead: `Point3<Scalar[m]>` today, which a
+    // revert to `List<Point3<Real>>` turns into `Point3<Real>`.
+    assert_rejection_renders_initializer_type(
+        "structure P { param m : Mass = Bead().centerline[0] }",
+        "Point3<Scalar[m]>",
+        "Bead.centerline elements stay Point3<Length>",
+    );
+    // Control for that pin: the two spellings the mechanism CANNOT distinguish,
+    // recorded so nobody mistakes them for coverage. Both compile clean today
+    // and would still compile clean after a revert.
+    assert_compiles_clean(
+        "structure P { param c : List<Int> = Bead().centerline }",
+        "List element types are not checked (so this pins nothing)",
+    );
+    assert_compiles_clean(
+        "structure P { param p : Point3<Real> = Bead().centerline[0] }",
+        "Point3 component types are not checked (so this pins nothing)",
     );
 }

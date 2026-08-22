@@ -63,7 +63,19 @@ structure def Bead {
     param layer_z : Length = 0mm
     // Nominal extruder temperature active when the bead was laid down. Kelvin:
     // `degC` is affine, so a Temperature is always absolute.
-    param nominal_temp : Temperature = 0K
+    //
+    // The default is `0degC` (= 273.15K), not `0K`, because 0 °C is this
+    // field's NOT-OBSERVED sentinel: the ζ parser initialises its temperature
+    // accumulator to 0 °C (`reify_fdm::toolpath`'s `Sweep::new`) and never
+    // distinguishes "no M104/M109 was seen" from a genuine 0 °C setpoint, so a
+    // bead marshalled from temperature-less G-code reports 0degC. Defaulting to
+    // the same value keeps a default-constructed `Bead()` and a marshalled
+    // unset bead in agreement — the affine conversion is the only one under
+    // which "zero" does not survive, so this is the one field where the two
+    // could disagree. Consumers MUST NOT read 0degC as a measurement: in
+    // particular `bead.nominal_temp > 0K` is TRUE for every temperature-less
+    // toolpath and is not an "is a temperature known" test.
+    param nominal_temp : Temperature = 0degC
     // Active feedrate when the bead began extruding.
     param speed : Velocity = 0m/s
 }

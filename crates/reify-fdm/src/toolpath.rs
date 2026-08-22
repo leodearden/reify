@@ -119,6 +119,18 @@ pub struct Bead {
     pub layer_z: f64,
     /// Nominal extruder temperature in °C active when the bead was laid down
     /// (last `M104`/`M109` `S` value).
+    ///
+    /// **`0.0` is the not-observed sentinel, not a measurement.** The sweep
+    /// initialises its temperature accumulator to `0.0` (`Sweep::new`) and
+    /// nothing here distinguishes "no `M104`/`M109` was ever seen" from a
+    /// genuine 0 °C setpoint, so a temperature-less G-code yields beads
+    /// reporting 0 °C. Consumers must not read `0.0` as "the extruder was at
+    /// freezing"; the DSL projection preserves the sentinel verbatim (0 °C →
+    /// the stdlib `Bead.nominal_temp` default of `0degC` = 273.15 K), so
+    /// `bead.nominal_temp > 0K` is TRUE for every such toolpath and is not an
+    /// "is a temperature known" test. Making the distinction representable
+    /// (`Option<f64>`) would ripple through the parser and both r0 consumers,
+    /// and is deliberately not done here.
     pub nominal_temp: f64,
     /// Active feedrate in mm·min⁻¹ when the bead began extruding.
     pub speed: f64,
