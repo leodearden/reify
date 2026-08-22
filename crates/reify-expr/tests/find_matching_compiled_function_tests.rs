@@ -291,6 +291,49 @@ fn first_match_wins() {
     );
 }
 
+/// Tier 1 (exact) outranks tier 2 (head) and tier 3 (wildcard) regardless of
+/// TABLE ORDER: a candidate matching every param by exact equality wins even
+/// when a wildcard-eligible, head-matching candidate is declared BEFORE it.
+///
+/// This was structurally guaranteed while tier 1 was a separate full pass over
+/// `fns`. All three tiers now share ONE scan, so the property is carried by
+/// `find_matching_compiled_function` returning early ONLY on an exact hit while
+/// tiers 2 and 3 merely record their first candidate — an "optimization" that
+/// returned early on a head match too would silently pick the generic overload
+/// here. Nothing else in this file pins it, so it is pinned here.
+#[test]
+fn later_exact_candidate_beats_an_earlier_head_matching_generic() {
+    let generic_first = make_generic_fn(
+        "f",
+        &["T"],
+        vec![(
+            "x".to_string(),
+            Type::Option(Box::new(Type::TypeParam("T".to_string()))),
+        )],
+        b"tier_order_generic_option",
+    );
+    let exact_second = make_generic_fn(
+        "f",
+        &[],
+        vec![("x".to_string(), Type::Option(Box::new(Type::length())))],
+        b"tier_order_exact_option_length",
+    );
+    let fns = vec![generic_first, exact_second.clone()];
+    let args = [CompiledExpr::literal(
+        Value::Undef,
+        Type::Option(Box::new(Type::length())),
+    )];
+
+    let selected = find_matching_compiled_function(&fns, "f", &args)
+        .expect("both candidates match; this must resolve");
+    assert_eq!(
+        selected.content_hash, exact_second.content_hash,
+        "an exact Option<Length> candidate must win over a head-matching generic \
+         Option<T> candidate declared before it — tier 1 outranks tier 2 \
+         irrespective of table order"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Characterization: the wildcard pass (pass 2)
 //

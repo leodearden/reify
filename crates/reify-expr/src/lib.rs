@@ -1531,35 +1531,26 @@ fn type_carries_dim_param(t: &Type) -> bool {
 ///   `Type::Enum(name)`, so a declared `Result<T, E>` param must still
 ///   recognise an erased `Result` subject.
 ///
-/// Unlike the three `type_carries_*` mirrors above, this one deliberately keeps
-/// the canonical copy's `_` catch-all rather than an exhaustive match: staying
-/// byte-comparable with the canonical copy is worth more here than compiler-
-/// forced review of new `Type` variants, since a new variant falling to
-/// `param == arg` is the conservative answer (it can only narrow, never widen).
+/// Unlike the three `type_carries_*` mirrors above, this one keeps the
+/// canonical copy's `_` catch-all rather than an exhaustive match: byte-
+/// comparability with the canonical copy is worth more than compiler-forced
+/// review of new `Type` variants, and a new variant falling to `param == arg`
+/// can only narrow, never widen.
 ///
 /// # Why this mirror is `pub` when its three `type_carries_*` siblings are not
 ///
-/// Prose is a weak sync guard for ~120 lines of match arms, so this pair is
-/// additionally pinned by a BEHAVIOURAL differential test —
+/// The pair is pinned by a BEHAVIOURAL differential —
 /// `sync_drift_check_heads_unifiable_matches_eval_mirror` in
 /// `crates/reify-compiler/src/type_compat.rs` — which runs both
-/// implementations over a corpus covering every arm and asserts they agree
-/// verdict-for-verdict. The canonical copy is private to a private module
-/// (`mod type_compat` in reify-compiler's lib.rs), so that test can only live
-/// on the compiler side, which means THIS copy is the one that has to be
-/// reachable across the crate boundary. Exporting the predicate is the cost of
-/// having a real drift guard instead of a comment; it is a pure function of two
-/// `&Type`s with no state to misuse.
+/// implementations over a per-arm corpus and asserts each row's pinned verdict.
+/// The canonical copy is private to a private module (`mod type_compat`), so
+/// that test can only live compiler-side, which makes THIS copy the one that
+/// has to be reachable across the crate boundary.
 ///
-/// The drift guard is the second-best fix. The best one is to delete the mirror
-/// outright by hoisting this helper (and the three `type_carries_*` ones) into
-/// `reify-core` beside `Type` — already a real, non-dev dependency of BOTH
-/// crates, so the "cannot be imported" constraint above does not apply to it.
-/// All four are pure functions of `&reify_core::Type` and depend on nothing
-/// else, so the move is mechanical: one definition in reify-core plus a `use`
-/// on each side, after which both this mirror and its drift guard are deleted.
-/// That is a cross-crate move touching a third crate outside this task's file
-/// locks, deliberately not attempted here and filed as task #5689.
+/// The drift guard is the second-best fix; the best is deleting this mirror by
+/// hoisting it and the three `type_carries_*` helpers into `reify-core` — a
+/// real, non-dev dependency of both crates — which is outside this task's file
+/// locks. Filed as task #5689.
 pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
@@ -1759,19 +1750,7 @@ pub fn find_matching_compiled_function<'a>(
     let arity_match = |f: &&CompiledFunction| f.name == name && f.params.len() == args.len();
     let exact = |((_, param_ty), arg): (&(String, Type), &CompiledExpr)| *param_ty == arg.result_type;
 
-    // First-match-wins among candidates whose params ALL match by exact equality.
-    // (Includes generic candidates only when their args happen to be exact —
-    // e.g. a TypeParam param vs a concrete arg is NOT exact, so generics fall
-    // through to the wildcard pass below.)
-    if let Some(f) = fns
-        .iter()
-        .filter(arity_match)
-        .find(|f| f.params.iter().zip(args.iter()).all(exact))
-    {
-        return Some(f);
-    }
-
-    // No exact overload — allow wildcard params to match:
+    // Tier 3's predicate. Allows wildcard params to match:
     //   * a *generic* candidate's type-param-carrying params (gated on
     //     `!type_params.is_empty()` so this pass can never relax a non-generic
     //     fn via type-params), and
@@ -1830,42 +1809,33 @@ pub fn find_matching_compiled_function<'a>(
     // `Applied{"Result",[Int,String]}` vs arg `Enum("Result")` head-matches but
     // carries no type param and is not equal), so a standalone head pass could
     // SELECT candidates the wildcard pass rejects — widening resolution rather
-    // than narrowing it. Filtering through `wildcard` first is what makes this
-    // tier a pure narrowing, and what makes it a provable no-op for non-generic
-    // candidates (INV-6). Pinned by
+    // than narrowing it. Pinned by
     // `head_match_alone_never_selects_a_wildcard_ineligible_candidate` in
-    // tests/find_matching_compiled_function_tests.rs, which uses exactly that
-    // `Applied{"Result",[Int,String]}`-vs-`Enum("Result")` witness and is the
-    // only test in the file that the `.find(head).or_else(..)` shape below
-    // fails.
+    // tests/find_matching_compiled_function_tests.rs.
     //
-    // ONE pass, not two chained ones: `first_wildcard` remembers tier 3's answer
-    // (the first wildcard-eligible candidate in table order) as the scan goes, so
-    // the fall-through needs no SECOND walk. A
-    // `.find(head).or_else(|| ..find(wildcard))` pair re-walks the whole table and
-    // re-runs both predicates on the *common* case — any subject whose head
-    // matches nothing, which is exactly what the fall-through pin covers — and
-    // `fns` on the eval hot path is the merged prelude table (hundreds of
-    // entries).
-    //
-    // Cost, stated plainly for anyone profiling this path: on a head match the
-    // loop exits early, but on FALL-THROUGH it now scans `fns` to the end, where
-    // the pre-tier-2 `.find(wildcard)` returned at the first wildcard-eligible
-    // candidate. That regression is accepted: the per-entry cost of an entry that
-    // is not a candidate is the `f.name == name` comparison in `arity_match`
-    // (arity and both predicates are only reached by same-name entries, of which
-    // an overload set has a handful), and tier 1 above already walks the whole
-    // table on any call that reaches tier 2 at all.
+    // ONE scan for all three tiers, not one per tier: each is an independent
+    // per-candidate predicate applied in a fixed priority order, so recording
+    // the first hit of each and returning them in that order is equivalent to
+    // three chained passes — and `fns` on the eval hot path is the merged
+    // prelude table (hundreds of entries), each extra pass re-running
+    // `arity_match` over all of it. Tier 1 still short-circuits; tiers 2 and 3
+    // cannot, since a LATER candidate may still match exactly.
+    let mut first_head = None;
     let mut first_wildcard = None;
-    for f in fns.iter().filter(arity_match).filter(wildcard) {
-        if head(&f) {
+    for f in fns.iter().filter(arity_match) {
+        // Tier 1 wins wherever it appears in table order.
+        if f.params.iter().zip(args.iter()).all(exact) {
             return Some(f);
         }
-        if first_wildcard.is_none() {
-            first_wildcard = Some(f);
+        if first_head.is_none() && wildcard(&f) {
+            if head(&f) {
+                first_head = Some(f);
+            } else if first_wildcard.is_none() {
+                first_wildcard = Some(f);
+            }
         }
     }
-    first_wildcard
+    first_head.or(first_wildcard)
 }
 
 /// Evaluate a compiled function's body with pre-evaluated `Value` arguments.
