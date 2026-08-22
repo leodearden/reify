@@ -1813,6 +1813,11 @@ pub fn find_matching_compiled_function<'a>(
     // `head_match_alone_never_selects_a_wildcard_ineligible_candidate` in
     // tests/find_matching_compiled_function_tests.rs.
     //
+    // The three tiers below are a hand-copy of compile-side
+    // `resolve_function_overload`'s `exact_matches` / `head_matches` / `matches`
+    // filters, and the drift guard on `heads_unifiable` covers the helper only,
+    // not the ladder. Hoisting both into reify-core is task #5689.
+    //
     // ONE scan for all three tiers, not one per tier: each is an independent
     // per-candidate predicate applied in a fixed priority order, so recording
     // the first hit of each and returning them in that order is equivalent to
