@@ -8169,17 +8169,45 @@ impl Engine {
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
                             {
-                                // Let re-serve stored determinacy is always Determined (every
-                                // Let commit path stamps UnconditionalDetermined), so the
-                                // DeterminacyRule::UnconditionalDetermined below reproduces the
-                                // stored `(val, det)` — hence entry.result — exactly, keeping
+                                // Let re-serve stored determinacy is Determined or
+                                // Undetermined, so pick the rule that reproduces the stored
+                                // `det` EXACTLY — both UnconditionalDetermined and Undetermined
+                                // resolve value-independently, so the committed `(val, det)` —
+                                // hence entry.result — matches, keeping
                                 // record_evaluation_with_freshness on its content-hash early-
                                 // cutoff path so the preserved freshness is carried, not reset.
-                                debug_assert_eq!(
-                                    det,
-                                    DeterminacyState::Determined,
-                                    "Let re-serve entry determinacy must be Determined"
-                                );
+                                //
+                                // Undetermined is genuinely reachable here: the main let
+                                // evaluators do stamp UnconditionalDetermined, but they are not
+                                // the only Let commit paths. `reeval_cone_cell` — reached from
+                                // the R3e (#4907) post-mint re-eval pass at the tail of
+                                // `evaluate_let_bindings` — commits with
+                                // DeterminacyRule::DeriveFromValue, so a consumer let that
+                                // still evaluates to Value::Undef (e.g. a kernel-less
+                                // `single(faces_by_normal(..))` selector) lands in the cache as
+                                // (Undef, Undetermined) and is re-served through this block on
+                                // the next eval_cached. Hard-coding UnconditionalDetermined here
+                                // silently UPGRADED such an entry to Determined — see
+                                // `let_reserve_preserves_undetermined_determinacy` in
+                                // tests/engine_eval_commit_migration.rs.
+                                let rule = match det {
+                                    DeterminacyState::Determined => {
+                                        DeterminacyRule::UnconditionalDetermined
+                                    }
+                                    DeterminacyState::Undetermined => DeterminacyRule::Undetermined,
+                                    // Neither Auto nor Provisional is expressible by
+                                    // DeterminacyRule, and neither can reach a Let cache entry:
+                                    // Auto is written only for cells whose `kind.is_auto()` (a
+                                    // distinct ValueCellKind, pre-seeded + re-served separately
+                                    // ~@6448), and Provisional is never constructed on the eval
+                                    // path at all. Same structural argument as the sibling Param
+                                    // re-serve ~@6688.
+                                    DeterminacyState::Auto | DeterminacyState::Provisional => {
+                                        unreachable!(
+                                            "let re-serve determinacy is never Auto/Provisional"
+                                        )
+                                    }
+                                };
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
                                 let trace = entry.dependency_trace.clone();
@@ -8196,7 +8224,7 @@ impl Engine {
                                     },
                                     cell.id.clone(),
                                     val,
-                                    DeterminacyRule::UnconditionalDetermined,
+                                    rule,
                                     TraceSource::CachedServe,
                                     trace,
                                     version,

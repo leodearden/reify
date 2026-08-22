@@ -21,8 +21,8 @@ use reify_core::VersionId;
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::journal::{EventKind, EventPayload};
-use reify_ir::{ErrorRef, Freshness, Value};
-use reify_test_support::{make_engine, mm, parse_and_compile};
+use reify_ir::{DeterminacyState, ErrorRef, Freshness, Value};
+use reify_test_support::{make_engine, mm, parse_and_compile, parse_and_compile_with_stdlib};
 
 /// Returns the payload of the FIRST `EventKind::Started` event recorded for
 /// `id` in `engine`'s journal, IF that payload is `EventPayload::Custom` —
@@ -1305,5 +1305,99 @@ fn eval_cached_param_reserve_commits_and_preserves() {
         v2.eval_result.values.get(&w_det_id),
         Some(&Value::Bool(true)),
         "determined(w) must stay true across the re-serve (determinacy preserved)"
+    );
+}
+
+/// Construction-only geometry source whose selector `let` (`top_face`) stays
+/// `Value::Undef` on the kernel-less value-eval surface, so it is stored in the
+/// cache as `(Undef, Undetermined)` rather than `(_, Determined)`.
+///
+/// Why it lands `Undetermined`: `b = box(..)` first evaluates to `Undef` and is
+/// then resolved by the R3d (#4900) in-walk symbolic mint, which enrolls it in
+/// `minted_in_walk`. The R3e (#4907) post-mint re-eval pass therefore re-commits
+/// `b`'s same-pass consumer `top_face` through `reeval_cone_cell`, whose
+/// `DeterminacyRule::DeriveFromValue` maps its still-`Undef` value to
+/// `DeterminacyState::Undetermined`. That makes the main let evaluators'
+/// `UnconditionalDetermined` NOT the only determinacy a Let cache entry can
+/// carry into the `eval_cached` preserve-freshness re-serve.
+const UNDETERMINED_LET_SRC: &str = r#"structure def ConstructionOnly {
+    let b        = box(10mm, 20mm, 30mm)
+    let zdir     = vec3(0.0, 0.0, 1.0)
+    let tol      = 1deg
+    let top_face = single(faces_by_normal(b, zdir, tol))
+}"#;
+
+/// Reads the `DeterminacyState` stored in `engine`'s cache entry for `node`,
+/// or `None` if there is no entry or it is not a `CachedResult::Value`.
+fn cached_determinacy(engine: &Engine, node: &NodeId) -> Option<DeterminacyState> {
+    match &engine.cache_store().get(node)?.result {
+        CachedResult::Value(_, det) => Some(*det),
+        _ => None,
+    }
+}
+
+/// REGRESSION (task #5238): the `eval_cached` Let preserve-freshness re-serve
+/// must reproduce the cache entry's stored determinacy EXACTLY, including
+/// `Undetermined`.
+///
+/// The impl-4 migration of that re-serve onto `commit_cell_result` originally
+/// hard-coded `DeterminacyRule::UnconditionalDetermined` behind a
+/// `debug_assert_eq!(det, Determined)` justified by "every Let commit path
+/// stamps `UnconditionalDetermined`". That premise is false — `reeval_cone_cell`
+/// commits with `DeriveFromValue` (see `UNDETERMINED_LET_SRC`'s doc) — so an
+/// `Undetermined` Let entry reaching the re-serve was silently UPGRADED to
+/// `Determined` (a debug-build panic, and a silent determinacy corruption in
+/// release). The fix selects the rule from the stored `det`, mirroring the
+/// sibling Param re-serve.
+///
+/// Non-vacuity: an injected `Freshness::Failed` is asserted to survive v2. Only
+/// the preserve-freshness re-serve can carry it — every other path that could
+/// write `top_face` on v2 (the Let cache-MISS arm, `reeval_cone_cell`) uses
+/// `CacheLeg::Record`, which hard-codes `Freshness::Final`. So a still-`Failed`
+/// freshness pins that the migrated re-serve really was the last writer, making
+/// the determinacy assertion a genuine guard rather than a pass-by-absence.
+#[test]
+fn let_reserve_preserves_undetermined_determinacy() {
+    let module = parse_and_compile_with_stdlib(UNDETERMINED_LET_SRC);
+    let mut engine = make_engine();
+
+    let top_face_id = ValueCellId::new("ConstructionOnly", "top_face");
+    let top_face_node = NodeId::Value(top_face_id.clone());
+
+    // (v1) Populate the cache via a first warm pass.
+    engine.eval_cached(&module, VersionId(1));
+    assert_eq!(
+        cached_determinacy(&engine, &top_face_node),
+        Some(DeterminacyState::Undetermined),
+        "fixture precondition: the unresolved selector let `top_face` must be \
+         cached as Undetermined after v1 — if this fires, the fixture no longer \
+         exercises a non-Determined Let re-serve and must be repaired"
+    );
+
+    // Inject a non-Final freshness so the re-serve is identifiable as the last
+    // writer on v2 (mark_failed, not set_freshness — the latter panics on
+    // Failed/Pending; same constraint as test-4).
+    let err = ErrorRef::new("injected");
+    let injected = Freshness::Failed { error: err.clone() };
+    assert!(
+        engine.cache_store_mut().mark_failed(&top_face_node, err),
+        "mark_failed should find top_face's cache entry and flip its freshness"
+    );
+
+    // (v2) Version bump; top_face is not dirty and basis(1) != version(2), so
+    // the Let preserve-freshness re-serve (~@6871) fires.
+    engine.eval_cached(&module, VersionId(2));
+
+    assert_eq!(
+        engine.cache_store().freshness(&top_face_node),
+        injected,
+        "non-vacuity: the injected Failed freshness must survive v2, pinning the \
+         preserve-freshness re-serve as top_face's last writer"
+    );
+    assert_eq!(
+        cached_determinacy(&engine, &top_face_node),
+        Some(DeterminacyState::Undetermined),
+        "the Let re-serve must reproduce the stored Undetermined determinacy, \
+         not upgrade it to Determined"
     );
 }
