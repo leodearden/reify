@@ -673,3 +673,44 @@ fn generator_emits_scan_evidence_on_a_marker_free_repo() {
         "a marker-free repo examines no markers; stderr:\n{stderr}"
     );
 }
+
+/// (C3) EXTENSIBILITY, parser level — `parse_scan_line` IGNORES an unrecognised
+/// `key=value` token and still returns the two required counters.
+///
+/// C1/C2 above drive the REAL generator, which emits exactly `files_scanned`
+/// and `markers_examined`, so the parser's additive-extension branch never
+/// executes there and the documented promise ("appending a future counter
+/// stays backward compatible and cannot turn this contract test RED", PRD §6.6)
+/// went unexercised on both sides of the contract. Driving the parser directly
+/// — no fixture, no spawned binary — is what makes that branch reachable at all.
+///
+/// The fixture deliberately carries TWO shapes of extra token:
+///   * `future_counter=9` — the plain additive case;
+///   * `skipped_files_scanned=0` — the ADVERSARIAL one, whose name ends with a
+///     required key. A parser matching by SUBSTRING rather than by whole token
+///     reads this 0 as the file count; that is exactly the defect the shell
+///     consumer shipped with (see fixture (vi) in
+///     tests/infra/test_reify_audit_ptodo.sh, the mirror of this test). Pinning
+///     it on BOTH sides is what keeps one grammar from growing two parsers.
+///
+/// Field ORDER is also varied here (`markers_examined` first) — the grammar is
+/// a token set, not a sequence, and neither consumer may assume otherwise.
+#[test]
+fn parse_scan_line_ignores_unrecognised_tokens() {
+    let stderr = "ptodo-baseline-gen: 4 fingerprint(s) emitted\n\
+                  @@PTODO_SCAN@@ markers_examined=4 future_counter=9 \
+                  files_scanned=7 skipped_files_scanned=0\n";
+
+    let (files_scanned, markers_examined) = parse_scan_line(stderr);
+
+    assert_eq!(
+        files_scanned, 7,
+        "files_scanned must come from the token NAMED files_scanned, never from \
+         one merely ending with it (skipped_files_scanned=0 here)"
+    );
+    assert_eq!(
+        markers_examined, 4,
+        "markers_examined must survive both an unrecognised token and a \
+         non-canonical field order"
+    );
+}
