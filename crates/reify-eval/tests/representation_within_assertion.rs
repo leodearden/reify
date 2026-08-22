@@ -238,29 +238,48 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
     );
 }
 
-/// INV-SF-4: when a measurement *was* requested and still did not happen, the
-/// remedy must be the geometry kernel — NOT "run `reify check`".
+/// INV-SF-4: when a measurement *was* requested and no geometry kernel exists
+/// to make it, the remedy must be the kernel — NOT "run `reify check`".
 ///
-/// An empty `achieved_repr_tol` has two causes, and `capture_repr_tol` is the
-/// discriminator the engine already carries:
+/// An empty `achieved_repr_tol` has THREE causes, and the engine already
+/// carries a discriminator for each:
 /// - capture OFF — nobody asked (`reify build` / `reify eval`); remedy is
 ///   `reify check` (pinned by
 ///   [`non_measuring_surface_yields_attributable_indeterminate`]).
-/// - capture ON, map still empty — `cmd_check` asked (it sets the flag whenever
-///   the module carries a `RepresentationWithin`) but tessellation produced
-///   nothing, the dominant cause being a binary with no geometry kernel
-///   (stub-mode `reify check`). Telling *that* user to run `reify check` is a
-///   dead end, so the remedy names the kernel instead.
+/// - capture ON, `default_kernel_name` is `None` — `cmd_check` asked (it sets
+///   the flag whenever the module carries a `RepresentationWithin`) but this
+///   binary registered no geometry kernel at all (stub-mode `reify check`).
+///   Telling *that* user to run `reify check` is a dead end, so the remedy
+///   names the kernel instead. **That is the arm this test isolates.**
+/// - capture ON, a kernel IS registered, still nothing measured — the remedy
+///   must not blame the kernel; pinned by the complementary
+///   [`kernel_present_but_nothing_tessellated_does_not_blame_the_kernel`].
 ///
-/// The same branch keeps the pre-`check()` pass inside `tessellate_realizations`
-/// — which runs before the map is populated, on a surface that genuinely does
-/// measure — from minting a self-contradictory "run `reify check`" diagnostic.
+/// The two kernel-arm tests bracket the discriminator: same capture flag, same
+/// empty map, opposite kernel presence, opposite remedy.
+///
+/// The source must genuinely REALIZE geometry so that the absent kernel is the
+/// ONLY reason the map is empty. [`NON_MEASURING_SURFACE_SOURCE`] cannot serve
+/// here: it declares no realization, so on `make_simple_engine()` (which is
+/// `Engine::new(checker, None)` — no kernel) BOTH causes hold at once and the
+/// test could not discriminate between them, which is precisely why an earlier
+/// revision of this gate passed for the wrong reason and locked the kernel
+/// wording in rather than gating it. [`OCCT_SOURCE_COARSE`] realizes a sphere,
+/// so with no kernel behind it only the missing-kernel cause remains.
+///
+/// The kernel branch also keeps the pre-`check()` pass inside
+/// `tessellate_realizations` — which runs before the map is populated, on a
+/// surface that genuinely does measure — from minting a self-contradictory
+/// "run `reify check`" diagnostic.
 ///
 /// The emission *gate* is unchanged: still `Indeterminate && map.is_empty()`.
-/// `capture_repr_tol` selects only the remedy clause.
+/// `capture_repr_tol` and `default_kernel_name` select only the remedy clause.
 #[test]
 fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
-    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    // Geometry-bearing source: a realization exists to tessellate, so the
+    // absent kernel is the only remaining reason the map stays empty.
+    let compiled = compile_no_errors(OCCT_SOURCE_COARSE, "kernel_absent");
+    // `Engine::new(checker, None)` ⇒ `default_kernel_name` is `None`.
     let mut engine = make_simple_engine();
 
     // Exactly what `cmd_check` does for a module carrying a
@@ -272,8 +291,8 @@ fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
     let rw_entry = result
         .constraint_results
         .iter()
-        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
-        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+        .find(|e| e.id.entity == "SphereCheck" && e.id.index == 0)
+        .expect("must have SphereCheck#constraint[0] (RepresentationWithin)");
     assert_eq!(
         rw_entry.satisfaction,
         Satisfaction::Indeterminate,
@@ -283,7 +302,7 @@ fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
     let attributions: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
-        .filter(|d| d.message.contains("Checker#constraint[0]"))
+        .filter(|d| d.message.contains("SphereCheck#constraint[0]"))
         .collect();
     assert_eq!(
         attributions.len(),
