@@ -38,6 +38,12 @@ TS_DIR="$REPO_ROOT/tree-sitter-reify"
 # before any cargo leaf.
 FRESHNESS_SCRIPT="$REPO_ROOT/scripts/tree-sitter-freshness.sh"
 
+# The semaphore e2e suite stubs cargo and then RUNS verify.sh, so it drives the
+# freshness guard's ensure/check leaves against a tree nothing ever compiles into.
+# It isolates itself with REIFY_TS_FRESHNESS_TARGET_DIR; the two tests at the end
+# of the freshness block below own that seam from this side.
+SEMAPHORE_E2E_SUITE="$SCRIPT_DIR/test_verify_semaphore_e2e.sh"
+
 # --- Counters ---
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -1777,6 +1783,211 @@ test_freshness_ensure_forces_and_is_idempotent() {
         fi
     else
         echo "  (skipped 12b: no unwritable regular file available here — running as root?)"
+    fi
+}
+
+test_freshness_target_dir_override_is_a_clean_noop() {
+    # REIFY_TS_FRESHNESS_TARGET_DIR pointed at an EMPTY tree must make BOTH modes
+    # clean no-ops (exit 0) that leave the real worktree untouched.
+    #
+    # This is not a curiosity of the knob — it is the contract
+    # tests/infra/test_verify_semaphore_e2e.sh's apply_hermetic_env now depends on.
+    # That harness stubs cargo and then runs verify.sh for real, so it executes
+    # both freshness leaves while nothing is ever compiled:
+    #   - `check`'s post-condition ("every archive rebuilt in this run's window
+    #     matches the sources on disk") would be asserted against archives that
+    #     run never built — an unconditional RED in any lane whose real archive is
+    #     stale or unattested, with no relation to the semaphore behaviour tested.
+    #   - `ensure`'s repair path would bump mtimes on the lane's TRACKED
+    #     tree-sitter sources, which in a CoW-seeded warm lane is exactly the
+    #     signal this task's whole mechanism reads.
+    # Both are closed by pointing the knob at an empty per-run dir. If either mode
+    # ever stopped being a no-op there, that suite breaks for a reason nobody
+    # would look for in this file — so the contract is pinned here, next to the
+    # guard that owns it.
+    #
+    # Deliberately does NOT set REIFY_TS_FRESHNESS_TS_DIR: the point is that the
+    # target-dir knob ALONE suffices, which is precisely how the e2e harness uses
+    # it. TS_DIR therefore resolves to the real tree-sitter-reify/ throughout.
+    local tmp target
+    tmp="$(mktemp -d)"
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+    target="$tmp/empty-target"
+    mkdir -p "$target"
+
+    # Snapshot the REAL worktree state `ensure` would perturb if it ran its repair:
+    # the watched inputs' mtimes, plus the real target/'s run-window epoch (whose
+    # removal would silently narrow an enclosing verify run's `check` scope — the
+    # regression a prior review round caught in this very file).
+    local real_epoch="$REPO_ROOT/target/.tree-sitter-freshness.epoch"
+    local snap_before snap_after epoch_before epoch_after
+    snap_before=$(ts_watched_files "$TS_DIR" | while IFS= read -r f; do
+        printf '%s %s\n' "$(ts_mtime "$f")" "$f"
+    done)
+    epoch_before="absent"
+    [ -f "$real_epoch" ] && epoch_before="$(ts_mtime "$real_epoch")"
+
+    # ---- (1) ensure: no built archive => nothing to force ----
+    run_ts_freshness ensure "$target"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure against an empty target dir exited $TS_FRESHNESS_RC (expected 0)."
+        echo "  The semaphore e2e harness runs this leaf on every hermetic section;"
+        echo "  a non-zero here fails that suite wholesale."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"nothing to force"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure against an empty target dir did not report the"
+        echo "  no-archive no-op. Expected a 'nothing to force' line naming $target."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # Positive proof the writes were REDIRECTED rather than merely skipped: the
+    # run-window epoch ensure stamps unconditionally must land under the override.
+    if [ ! -f "$target/.tree-sitter-freshness.epoch" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure stamped no run-window epoch under the override dir"
+        echo "  ($target). Either the knob was ignored — in which case the real target/ was"
+        echo "  written instead — or the epoch is no longer unconditional, which would"
+        echo "  narrow every later 'check' back to newest-dir-only scope."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (2) check: no built archive => nothing to check ----
+    run_ts_freshness check "$target"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check against an empty target dir exited $TS_FRESHNESS_RC (expected 0)."
+        echo "  Nothing was built there, so there is nothing that can be stale — a"
+        echo "  non-zero verdict here is a RED with no archive behind it."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"nothing to check"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: check against an empty target dir did not report the"
+        echo "  no-archive no-op. Expected a 'nothing to check' line naming $target."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # ---- (3) ...and the real worktree was never touched ----
+    snap_after=$(ts_watched_files "$TS_DIR" | while IFS= read -r f; do
+        printf '%s %s\n' "$(ts_mtime "$f")" "$f"
+    done)
+    if [ "$snap_after" != "$snap_before" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the target-dir override alone did not spare the real"
+        echo "  tree-sitter sources — their mtimes moved. In a CoW-seeded warm lane those"
+        echo "  mtimes ARE the rebuild signal, so a harness that perturbs them is mutating"
+        echo "  lane-shared state on every hermetic section."
+        echo "  --- before ---"; printf '%s\n' "$snap_before"
+        echo "  --- after ---";  printf '%s\n' "$snap_after"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    epoch_after="absent"
+    [ -f "$real_epoch" ] && epoch_after="$(ts_mtime "$real_epoch")"
+    if [ "$epoch_after" != "$epoch_before" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the real target/'s run-window epoch changed"
+        echo "  ($epoch_before -> $epoch_after) while the override was in force. Writing it"
+        echo "  re-opens a window that is not this run's; consuming it narrows an enclosing"
+        echo "  verify run's later 'check' to newest-dir-only scope. Either way the override"
+        echo "  is not isolating what it claims to."
+        return 1
+    fi
+}
+
+test_semaphore_e2e_harness_isolates_the_freshness_guard() {
+    # The other half of the seam pinned above: prove that
+    # tests/infra/test_verify_semaphore_e2e.sh's apply_hermetic_env actually
+    # EXPORTS REIFY_TS_FRESHNESS_TARGET_DIR, at a per-run path.
+    #
+    # Mirrors that suite's Section E S-technique, which proves the same helper
+    # exports REIFY_COMPILE_GATE_DISABLE. Section E can observe its knob through a
+    # fixed marker verify.sh prints to stderr; this knob emits no marker, so the
+    # helper is EXTRACTED AND RUN instead and its effect observed directly.
+    #
+    # Deliberately NOT a grep of the suite's source text. A bare
+    # `grep REIFY_TS_FRESHNESS_TARGET_DIR` is satisfied by the knob appearing in a
+    # comment — and that helper is now heavily commented about exactly this knob,
+    # so the grep would pass with the export deleted. (This file has removed that
+    # class of assertion once already.) Observing the value in a GRANDCHILD
+    # process is what "exported" actually means, and no comment can fake it.
+    assert_file_exists "$SEMAPHORE_E2E_SUITE" || return 1
+
+    local tmp probe stub observed rc=0
+    tmp="$(mktemp -d)"
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+    probe="$tmp/probe.sh"
+    # Stands in for the per-run stub dir every call site builds under its own
+    # `mktemp -d`; the helper is exports-only, so it need not exist.
+    stub="$tmp/run-root/stubs"
+
+    cat > "$probe" <<'PROBE'
+# `set -u` is deliberately OFF. The helper is self-contained today, but a future
+# edit that derives the path from one of that suite's globals would abort here
+# under -u and produce a FAIL about an unbound variable rather than about the
+# property under test. Without -u such a global expands empty, the derived path
+# stops matching the per-run root, and the per-run assertion below says so.
+set -o pipefail
+src="$1"; stub="$2"
+body=$(sed -n '/^apply_hermetic_env() {$/,/^}$/p' "$src")
+if [ -z "$body" ]; then printf '%s' '__NO_FUNCTION__'; exit 0; fi
+eval "$body"
+apply_hermetic_env "$stub" "$stub.lock" 1
+# Grandchild process: only a genuinely EXPORTED variable survives this hop.
+bash -c 'printf "%s" "${REIFY_TS_FRESHNESS_TARGET_DIR:-__UNSET__}"'
+PROBE
+
+    observed=$(bash "$probe" "$SEMAPHORE_E2E_SUITE" "$stub" 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: could not evaluate apply_hermetic_env in isolation (exit $rc)."
+        echo "  The helper is expected to be self-contained (exports only)."
+        echo "  --- probe output ---"; printf '%s\n' "$observed"
+        return 1
+    fi
+    if [ "$observed" = "__NO_FUNCTION__" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: no 'apply_hermetic_env() {' definition found in"
+        echo "  $SEMAPHORE_E2E_SUITE. If the helper was renamed or reshaped, this pin must"
+        echo "  follow it — silently passing would leave the freshness isolation unproven."
+        return 1
+    fi
+    if [ "$observed" = "__UNSET__" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: apply_hermetic_env does not export"
+        echo "  REIFY_TS_FRESHNESS_TARGET_DIR. Without it that suite runs verify.sh's"
+        echo "  freshness leaves against the lane's REAL target/ with cargo stubbed:"
+        echo "  'check' asserts a post-condition over archives the run never built (a RED"
+        echo "  unrelated to the semaphore), and 'ensure' bumps mtimes on the worktree's"
+        echo "  tracked tree-sitter sources. See the no-op contract pinned by"
+        echo "  test_freshness_target_dir_override_is_a_clean_noop."
+        return 1
+    fi
+    # Per-run: the value must live inside the caller's own throwaway root, so two
+    # concurrent sections (and two concurrent lanes) cannot collide, and cleanup
+    # of that root reclaims it. Asserted at the ROOT, not as an exact path, so a
+    # future re-derivation inside the same tmp tree stays green.
+    if [[ "$observed" != "$tmp/"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: REIFY_TS_FRESHNESS_TARGET_DIR is not derived from the"
+        echo "  caller's per-run stub dir. Expected a path under $tmp/, got: $observed"
+        echo "  A fixed or shared path would leak one section's run window into the next,"
+        echo "  and a path under the repo would defeat the isolation entirely."
+        return 1
+    fi
+    if [[ "$observed" == "$REPO_ROOT/target"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: REIFY_TS_FRESHNESS_TARGET_DIR points into the real build"
+        echo "  tree ($observed). That is the state the override exists to avoid."
+        return 1
     fi
 }
 
