@@ -376,10 +376,11 @@ fn kinematic_stdlib_smoke_e2e() {
     let lin = map_vec3(twist, "linear", "twist.linear");
     assert_vec3_close(ang, [0.0, 0.0, 0.0], 1e-12, "twist.angular");
     assert_vec3_close(lin, [1e-3, 0.0, 0.0], 1e-15, "twist.linear");
-    // Twist convention: angular=DIMENSIONLESS (axis*angle in radians, but
-    // dimensionless because the angle is implicit), linear=LENGTH because
-    // t_unit_x's translation was LENGTH-typed.
-    assert_vec3_dim(ang, DimensionVector::DIMENSIONLESS, "twist.angular dim");
+    // Twist convention: angular=ANGLE because transform_log's angular half is
+    // the rotation vector theta*n_hat, whose magnitude is an angle in radians
+    // (task #6080); linear=LENGTH because t_unit_x's translation was
+    // LENGTH-typed.
+    assert_vec3_dim(ang, DimensionVector::ANGLE, "twist.angular dim");
     assert_vec3_dim(lin, DimensionVector::LENGTH, "twist.linear dim");
 
     // t_round = exp(twist) → ≈ t_unit_x (Transform with identity rotation, [1mm,0,0] translation)
