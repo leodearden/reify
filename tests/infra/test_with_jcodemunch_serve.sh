@@ -724,8 +724,20 @@ if FLAG == "--deaf":
     _srv.listen(16)
     note("stub-deaf=[1]")
     _held = []
+    _accepted = False
     while True:
         _c, _ = _srv.accept()
+        if not _accepted:
+            # ANTI-VACUITY WITNESS. `stub-deaf=[1]` above only proves the stub
+            # reached listen(); it says nothing about whether a readiness probe
+            # ever got accepted. Without this, a run whose probes all hit
+            # connection-refused (stub still starting on a loaded host) returns
+            # in milliseconds, never burns `curl --max-time`, and the wall-clock
+            # assertion below passes under the iteration-counting code too —
+            # i.e. proves nothing. This line is what makes the probe's own
+            # effect observable, matching b4_foreign_answered's `request-path`.
+            _accepted = True
+            note("stub-deaf-accepted=[1]")
         _held.append(_c)
 
 
@@ -1069,8 +1081,14 @@ RW_TIMEOUT=20
 # ANTI-VACUITY: the fixture really bound the port and really accepted. A deaf
 # stub that never started would refuse for the ordinary connection-refused
 # reason and would say nothing about deadline arithmetic.
-b4_deaf_bound()   { has_line "$B4X_WITNESS" "stub-deaf=[1]"; }
-b4_deaf_refuses() { has_line "$B4X_ERR" "$M_NOT_READY"; }
+b4_deaf_bound()    { has_line "$B4X_WITNESS" "stub-deaf=[1]"; }
+# ...and, separately, that a probe was actually ACCEPTED. Binding is not
+# enough: only an accepted connection makes a probe burn `curl --max-time`,
+# which is the sole thing that discriminates wall-clock accounting from
+# iteration counting. Without this leg b4_deaf_honours_wall_clock passes
+# vacuously whenever the stub binds later than the deadline.
+b4_deaf_accepted() { has_line "$B4X_WITNESS" "stub-deaf-accepted=[1]"; }
+b4_deaf_refuses()  { has_line "$B4X_ERR" "$M_NOT_READY"; }
 b4_deaf_nonzero() { [ "$B4X_RC" -ne 0 ]; }
 b4_deaf_honours_wall_clock() {
     [ "$B4X_ELAPSED" -le 15 ] && return 0
@@ -1078,7 +1096,8 @@ b4_deaf_honours_wall_clock() {
     return 1
 }
 
-assert "the deaf stub really bound and accepted (anti-vacuity)"            b4_deaf_bound
+assert "the deaf stub really bound (anti-vacuity)"                         b4_deaf_bound
+assert "the deaf stub really accepted a probe (anti-vacuity)"              b4_deaf_accepted
 assert "an accepting-but-silent endpoint refuses $M_NOT_READY"             b4_deaf_refuses
 assert "the deaf refusal exits non-zero"                                   b4_deaf_nonzero
 assert "the readiness deadline is wall clock, not poll iterations"         b4_deaf_honours_wall_clock

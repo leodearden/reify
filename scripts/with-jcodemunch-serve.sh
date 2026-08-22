@@ -379,6 +379,12 @@ fi
 READY_TIMEOUT="${REIFY_JC_SERVE_READY_TIMEOUT:-180}"
 READY_POLL_INTERVAL=1
 
+# Teardown deadlines, in WALL-CLOCK SECONDS (see the free-wait loop in cleanup).
+# α's Drop constants (:361-362): give the group 10 s to release the port and
+# exit, escalating ONCE from -TERM to -KILL at the 5 s mark.
+TEARDOWN_DEADLINE_SECS=10
+TEARDOWN_KILL_AFTER_SECS=5
+
 SERVE_URL="http://127.0.0.1:$PORT/mcp"
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/with-jcodemunch-serve-XXXXXX")"
@@ -509,21 +515,29 @@ cleanup() {
     # slightly different moments and either can be the laggard. port_is_free is
     # the same probe preflight used, so "free" means the same thing at both ends
     # of the run.
-    local waited=0 escalated=0
+    # WALL CLOCK, NOT POLL ITERATIONS — the same accounting correction made in
+    # await_ready, and for the same reason. Counting iterations and calling each
+    # one 0.1 s undercounts: every pass also forks `port_is_free` (a `timeout 1`
+    # /dev/tcp probe) and `group_gone` on top of the `sleep 0.1`, so on a loaded
+    # pool host a 100-iteration loop routinely ran 13-15 s, and in the case where
+    # the connect probe actually hits its `timeout 1` it ran to ~100 s. That is
+    # worst in exactly the state teardown exists for — a leak, where the loop
+    # always runs to the cap. $SECONDS makes the 10 s deadline and the 5 s -KILL
+    # escalation the real values the comment above claims they are.
+    local started=$SECONDS escalated=0
     TEARDOWN_PORT_FREE=0
     TEARDOWN_GROUP_GONE=0
-    while [ "$waited" -lt 100 ]; do
+    while [ $((SECONDS - started)) -lt "$TEARDOWN_DEADLINE_SECS" ]; do
         if port_is_free "$PORT"; then TEARDOWN_PORT_FREE=1; else TEARDOWN_PORT_FREE=0; fi
         if group_gone; then TEARDOWN_GROUP_GONE=1; else TEARDOWN_GROUP_GONE=0; fi
         if [ "$TEARDOWN_PORT_FREE" -eq 1 ] && [ "$TEARDOWN_GROUP_GONE" -eq 1 ]; then
             break
         fi
-        if [ "$escalated" -eq 0 ] && [ "$waited" -ge 50 ]; then
+        if [ "$escalated" -eq 0 ] && [ $((SECONDS - started)) -ge "$TEARDOWN_KILL_AFTER_SECS" ]; then
             KILL_STATUS="$(signal_group -KILL)"
             escalated=1
         fi
         sleep 0.1
-        waited=$((waited + 1))
     done
 
     # ONLY ONCE THE GROUP IS OBSERVABLY GONE — this guard is load-bearing, not
