@@ -566,24 +566,56 @@ assert "loud skip => bannered notice on BOTH stdout and stderr, naming gate/coun
 #
 # The unit blocks above prove the library's logic. This block proves the
 # WIRING: that the two gates actually consult it, and that an unusable
-# substrate produces a partial-but-real run instead of exit 70.
+# substrate produces a partial-but-real run instead of a HARNESS_ERROR verdict.
 #
-# WHY AN EXPLICIT REIFY_BIN HANDOFF. resolve_trusted_reify_bin trusts an
-# explicit REIFY_BIN outright (its precedence rule 1: a deliberate
-# operator/verify.sh handoff, not the auto-discovery path where
-# cross-candidate leftovers are the risk). Without the handoff these blocks
-# would skip on any lane whose target/.reify-bin-sha predates the branch's own
-# commits — i.e. on essentially every task lane, including this one, since a
-# shell-only branch never rebuilds the binary and so never restamps the sidecar.
-_e2e_reify_bin() {
-    if [ -n "${REIFY_BIN:-}" ] && [ -f "${REIFY_BIN}" ]; then
-        printf '%s\n' "$REIFY_BIN"; return 0
+# WHAT THIS BLOCK MAY AND MAY NOT ASSERT (task 5897, review amendment)
+# ---------------------------------------------------------------------
+# Driving the real gates means their FULL verdict outcome — 3/3 FAIL-or-
+# UNPROVABLE for the corpus gate, 7/7 PASS for the hygiene gate — is only as
+# trustworthy as the lane's reify binary. #5133's freshness guard exists
+# precisely because an auto-discovered target/{release,debug}/reify can predate
+# the current tree or belong to a different merge candidate; the two gates
+# themselves SKIP in that case rather than publish a verdict from it.
+#
+# So the binary is resolved through resolve_trusted_reify_bin FIRST, and the
+# assertion strength follows its answer:
+#   * TRUSTED (an explicit REIFY_BIN handoff, or a sidecar matching HEAD) —
+#     assert everything, including exit 0 and the N/N probe count.
+#   * NOT TRUSTED — hand the binary over anyway (so the wiring is still
+#     exercised) but assert only the properties THIS GUARD owns: that no
+#     HARNESS_ERROR/usage exit reached the gate, that the loud banner fired or
+#     did not as expected, that the gate reached its assertion stage at all,
+#     and — when the gate did reach a verdict — that the count is right. A
+#     compiler-touching branch whose lane binary predates its own changes would
+#     otherwise red this test for a reason with nothing to do with the
+#     substrate guard, in the exact situation where the gate under test would
+#     cleanly skip.
+#   * NO BINARY AT ALL — skip Block D loudly, matching what both gates do.
+source "$REPO_ROOT/scripts/reify-bin-freshness.sh"
+
+_E2E_BIN=""
+_E2E_BIN_TRUSTED=0
+_E2E_BIN_NOTE=""
+
+_resolve_e2e_bin() {
+    if resolve_trusted_reify_bin "$REPO_ROOT"; then
+        _E2E_BIN="$REIFY_BIN_RESOLVED"
+        _E2E_BIN_TRUSTED=1
+        return 0
     fi
+    _E2E_BIN_NOTE="$REIFY_BIN_SKIP_REASON"
+    _E2E_BIN_TRUSTED=0
+    # Untrusted, but present: still worth running, with narrowed assertions.
+    # (resolve_trusted_reify_bin already trusts an explicit REIFY_BIN outright,
+    # so reaching here means auto-discovery found a binary of unproven
+    # provenance — or found nothing.)
     if [ -f "$REPO_ROOT/target/release/reify" ]; then
-        printf '%s\n' "$REPO_ROOT/target/release/reify"; return 0
+        _E2E_BIN="$REPO_ROOT/target/release/reify"
+        return 0
     fi
     if [ -f "$REPO_ROOT/target/debug/reify" ]; then
-        printf '%s\n' "$REPO_ROOT/target/debug/reify"; return 0
+        _E2E_BIN="$REPO_ROOT/target/debug/reify"
+        return 0
     fi
     return 1
 }
@@ -611,65 +643,108 @@ EOF
     printf '%s\n' "$stub"
 }
 
-# _gate_under_denied_substrate <gate_script> <gate_name> <want_probe_count>
-#
-# Drives the REAL gate with TREE_SITTER_BIN pointed at the cache-denial stub
-# and asserts the four things that together define "fixed":
-#   (a) exit 0 — a clean skip, not a verdict;
-#   (b) NOT exit 70 — checked explicitly and separately, because 70 is the
-#       specific spurious-FAIL this task exists to kill and a future refactor
-#       could regress to it while still failing (a) for some other reason;
-#   (c) the loud banner on STDOUT — a silent partial run is the failure mode
-#       the banner exists to prevent, so its absence must fail the test;
-#   (d) the gate's own GATE_PASS line reports <want_probe_count> probe(s) —
-#       proof of PER-ROW skipping. A whole-script `exit 0` would also satisfy
-#       (a) and (b); only this assertion distinguishes the two designs.
-#
-# LANE-ROBUST BY CONSTRUCTION: where the grammar was never generated the
-# preflight answers 75 from the absent parser.c without ever consulting the
-# stub, and the identical per-row path fires. So this block asserts the same
-# thing whether or not the lane has a grammar — which is why it is the PRIMARY
-# assertion and the full-run case below is the guarded one.
-_gate_under_denied_substrate() {
-    local gate="$1" name="$2" want="$3"
-    local bin stub out="$_RUN_ROOT/$2.denied.out" err="$_RUN_ROOT/$2.denied.err" rc=0
+# _run_gate <gate_script> <name> <denied|usable> — runs the REAL gate and
+# captures its streams. Sets _GATE_RC / _GATE_OUT / _GATE_ERR. Always returns 0;
+# the assertion functions below read the capture.
+_run_gate() {
+    local gate="$1" name="$2" mode="$3" stub
+    _GATE_OUT="$_RUN_ROOT/$name.$mode.out"
+    _GATE_ERR="$_RUN_ROOT/$name.$mode.err"
+    _GATE_RC=0
 
-    if ! bin="$(_e2e_reify_bin)"; then
-        echo "no reify binary available (target/{release,debug}/reify absent and REIFY_BIN unset)"
+    if [ "$mode" = "denied" ]; then
+        stub="$(_mk_cache_denial_stub)"
+        REIFY_BIN="$_E2E_BIN" TREE_SITTER_BIN="$stub" bash "$gate" \
+            > "$_GATE_OUT" 2> "$_GATE_ERR" || _GATE_RC=$?
+    else
+        REIFY_BIN="$_E2E_BIN" bash "$gate" \
+            > "$_GATE_OUT" 2> "$_GATE_ERR" || _GATE_RC=$?
+    fi
+    return 0
+}
+
+# _guard_owned_checks <want_probe_count> <yes|no: expect the banner>
+#
+# The properties this guard owns, asserted on EVERY lane whatever the binary's
+# provenance:
+#   (a) no `alpha exited 70` / `alpha exited 64` — the HARNESS_ERROR and usage
+#       exits are the specific spurious FAILs this task kills, and they are
+#       reported by the gate independently of any verdict, so this is the
+#       verdict-free form of the "not 70" assertion;
+#   (b) the gate script itself did not exit 70;
+#   (c) the banner fired (denied) or stayed silent (usable) — a silent partial
+#       run, and an over-firing guard, are both failures;
+#   (d) the gate REACHED ITS ASSERTION STAGE (test_summary's "Results:" line).
+#       This is what distinguishes per-row skipping from a whole-script
+#       `exit 0`, which returns long before test_summary and would satisfy
+#       (a)-(c) just as well;
+#   (e) when the gate did publish a verdict line, its probe count is <want>.
+_guard_owned_checks() {
+    local want="$1" want_banner="$2"
+
+    if grep -qE 'alpha exited (64|70)' "$_GATE_OUT"; then
+        echo "the checker returned a usage/HARNESS_ERROR exit — the exact spurious FAIL this guard must prevent"
+        cat "$_GATE_OUT"; cat "$_GATE_ERR"
         return 1
     fi
-    stub="$(_mk_cache_denial_stub)"
-
-    REIFY_BIN="$bin" TREE_SITTER_BIN="$stub" bash "$gate" > "$out" 2> "$err" || rc=$?
-
-    if [ "$rc" -eq 70 ]; then
+    if [ "$_GATE_RC" -eq 70 ]; then
         echo "gate exited 70 (HARNESS_ERROR) — the exact spurious FAIL this guard must prevent"
-        cat "$out"; cat "$err"
+        cat "$_GATE_OUT"; cat "$_GATE_ERR"
         return 1
     fi
-    if [ "$rc" -ne 0 ]; then
-        echo "gate exited $rc, want 0 (clean partial run)"
-        cat "$out"; cat "$err"
-        return 1
-    fi
-    if ! grep -q 'GRAMMAR probes SKIPPED' "$out"; then
+    if [ "$want_banner" = "yes" ] && ! grep -q 'GRAMMAR probes SKIPPED' "$_GATE_OUT"; then
         echo "no loud substrate banner on stdout — a silent partial run"
-        cat "$out"
+        cat "$_GATE_OUT"
         return 1
     fi
-    if ! grep -qF "$want/$want probe(s)" "$out"; then
-        echo "gate did not report $want/$want probe(s) — check-kind rows were not run"
-        cat "$out"
+    if [ "$want_banner" = "no" ] && grep -q 'GRAMMAR probes SKIPPED' "$_GATE_OUT"; then
+        echo "gate printed the substrate banner on a USABLE substrate — the guard is over-firing"
+        cat "$_GATE_OUT"
+        return 1
+    fi
+    if ! grep -q '^Results: ' "$_GATE_OUT"; then
+        echo "gate never reached its assertion stage — it skipped whole-script instead of per-row"
+        cat "$_GATE_OUT"; cat "$_GATE_ERR"
+        return 1
+    fi
+    if grep -q '^  PASS: ' "$_GATE_OUT" && ! grep -qF "$want/$want probe(s)" "$_GATE_OUT"; then
+        echo "gate published a verdict but not for $want/$want probe(s) — the wrong rows ran"
+        cat "$_GATE_OUT"
         return 1
     fi
     return 0
 }
 
-# _gate_with_usable_substrate <gate_script> <gate_name> <want_probe_count>
+# _assert_denied <want_probe_count> — the PRIMARY assertion: under a denied
+# substrate the gate must degrade to a loud, partial, still-asserting run.
 #
-# NEGATIVE CONTROL: on a lane whose substrate really is usable, the gate must
-# run the FULL committed probe-set and print NO banner — i.e. this task changed
-# nothing about the healthy path.
+# LANE-ROBUST BY CONSTRUCTION: where the grammar was never generated the
+# preflight answers 75 from the absent parser.c without ever consulting the
+# stub, and the identical per-row path fires. So this asserts the same thing
+# whether or not the lane has a grammar — which is why it is the PRIMARY
+# assertion and the full-run case below is the guarded one.
+_assert_denied() {
+    local want="$1"
+    _guard_owned_checks "$want" yes || return 1
+    if [ "$_E2E_BIN_TRUSTED" != "1" ]; then
+        return 0
+    fi
+    if [ "$_GATE_RC" -ne 0 ]; then
+        echo "gate exited $_GATE_RC, want 0 (clean partial run)"
+        cat "$_GATE_OUT"; cat "$_GATE_ERR"
+        return 1
+    fi
+    if ! grep -qF "$want/$want probe(s)" "$_GATE_OUT"; then
+        echo "gate did not report $want/$want probe(s) — check-kind rows were not run"
+        cat "$_GATE_OUT"
+        return 1
+    fi
+    return 0
+}
+
+# _assert_usable_control <want_probe_count> — NEGATIVE CONTROL: on a lane whose
+# substrate really is usable, the gate must run the FULL committed probe-set and
+# print NO banner — i.e. this task changed nothing about the healthy path.
 #
 # RUN AGAINST THE REAL TOOLCHAIN, WITH NO TREE_SITTER_BIN OVERRIDE. A stubbed
 # "clean" tree-sitter (exit 0, no output) cannot serve here: both committed
@@ -681,34 +756,20 @@ _gate_under_denied_substrate() {
 # own bookkeeping in a place that would rot silently. The real toolchain asserts
 # exactly "usable substrate ⇒ the gate behaves as it does today", which is the
 # gate's own committed contract and needs no new assumption.
-#
-# SELF-GUARDING, LOUDLY: this case genuinely requires a usable substrate, so on
-# a lane without one it announces its own skip rather than passing vacuously —
-# a skip-guard on a test of a skip-guard, made explicit.
-_gate_with_usable_substrate() {
-    local gate="$1" name="$2" want="$3"
-    local bin out="$_RUN_ROOT/$2.usable.out" err="$_RUN_ROOT/$2.usable.err" rc=0
-
-    if ! bin="$(_e2e_reify_bin)"; then
-        echo "no reify binary available (target/{release,debug}/reify absent and REIFY_BIN unset)"
+_assert_usable_control() {
+    local want="$1"
+    _guard_owned_checks "$want" no || return 1
+    if [ "$_E2E_BIN_TRUSTED" != "1" ]; then
+        return 0
+    fi
+    if [ "$_GATE_RC" -ne 0 ]; then
+        echo "gate exited $_GATE_RC on a usable substrate, want 0"
+        cat "$_GATE_OUT"; cat "$_GATE_ERR"
         return 1
     fi
-
-    REIFY_BIN="$bin" bash "$gate" > "$out" 2> "$err" || rc=$?
-
-    if [ "$rc" -ne 0 ]; then
-        echo "gate exited $rc on a usable substrate, want 0"
-        cat "$out"; cat "$err"
-        return 1
-    fi
-    if grep -q 'GRAMMAR probes SKIPPED' "$out"; then
-        echo "gate printed the substrate banner on a USABLE substrate — the guard is over-firing"
-        cat "$out"
-        return 1
-    fi
-    if ! grep -qF "$want/$want probe(s)" "$out"; then
+    if ! grep -qF "$want/$want probe(s)" "$_GATE_OUT"; then
         echo "gate did not report the full $want/$want probe(s) on a usable substrate"
-        cat "$out"
+        cat "$_GATE_OUT"
         return 1
     fi
     return 0
@@ -722,19 +783,73 @@ _skip_usable_control() {
     echo "        (the PRIMARY denied-substrate assertion above still ran)"
 }
 
-echo "-- end-to-end: tests/infra/test_prd_gate_corpus.sh --"
+# _usable_control_case <gate> <name> <want> <label> <assert_desc>
+#
+# SELF-GUARDING, LOUDLY, AND TOLERANT OF A MID-RUN FLIP. This case genuinely
+# requires a usable substrate, so on a lane without one it announces its own
+# skip rather than passing vacuously — a skip-guard on a test of a skip-guard,
+# made explicit.
+#
+# It also survives the TOCTOU that a naive version would flake on: the parent
+# decides "usable" from its own preflight, and the spawned gate then re-runs the
+# same 30s-bounded tree-sitter probe. This suite is classified `pool`, so it can
+# run concurrently with the two gates it drives (and with its own second gate
+# invocation), all contending for ~/.cache/tree-sitter/lock/<grammar>.lock; on a
+# cold cache the compile plus lock wait can exceed the bound in the child but
+# not in the parent. If the child banner'd, the substrate is re-probed with the
+# memo cleared, and a substrate that really has gone unusable downgrades to the
+# explicit skip instead of accusing the code under test of over-firing.
+_usable_control_case() {
+    local gate="$1" name="$2" want="$3" label="$4" desc="$5"
+
+    PRD_GATE_SUBSTRATE_STATUS=""
+    if ! resolve_grammar_substrate "$REPO_ROOT"; then
+        _skip_usable_control "$label"
+        return 0
+    fi
+
+    _run_gate "$gate" "$name" usable
+
+    if grep -q 'GRAMMAR probes SKIPPED' "$_GATE_OUT"; then
+        PRD_GATE_SUBSTRATE_STATUS=""
+        if ! resolve_grammar_substrate "$REPO_ROOT"; then
+            _skip_usable_control "$label (the substrate flipped to unusable mid-run)"
+            return 0
+        fi
+    fi
+
+    assert "$desc" _assert_usable_control "$want"
+}
 
 _CORPUS_GATE="$SCRIPT_DIR/test_prd_gate_corpus.sh"
+_HYGIENE_GATE="$SCRIPT_DIR/test_prd_gate_compiler_type_hygiene.sh"
 
-assert "corpus gate under a denied substrate => exit 0 (not 70), loud banner, and its 2 check probes still run" \
-    _gate_under_denied_substrate "$_CORPUS_GATE" "corpus" 2
-
-if resolve_grammar_substrate "$REPO_ROOT"; then
-    assert "corpus gate on a usable substrate => full 3-probe committed set, no banner" \
-        _gate_with_usable_substrate "$_CORPUS_GATE" "corpus" 3
-else
-    _skip_usable_control "corpus gate full-run control"
+if ! _resolve_e2e_bin; then
+    echo "  SKIP: end-to-end blocks — no reify binary (target/{release,debug}/reify"
+    echo "        absent and REIFY_BIN unset), so both gates would skip anyway."
+    echo "        Reason: $_E2E_BIN_NOTE"
+    echo "        (the hermetic unit blocks above still ran)"
+    test_summary
 fi
+
+if [ "$_E2E_BIN_TRUSTED" = "1" ]; then
+    echo "-- end-to-end: reify binary freshness-verified — asserting full gate outcomes --"
+else
+    echo "-- end-to-end: reify binary NOT freshness-verified — asserting only this guard's own properties --"
+    echo "        (no HARNESS_ERROR/usage exit, the banner, and that the gate reached its"
+    echo "         assertion stage; a verdict difference owned by an unverified binary must"
+    echo "         not red this test, exactly as it does not red the gates themselves)"
+    echo "        Reason: $_E2E_BIN_NOTE"
+fi
+
+echo "-- end-to-end: tests/infra/test_prd_gate_corpus.sh --"
+
+_run_gate "$_CORPUS_GATE" "corpus" denied
+assert "corpus gate under a denied substrate => no HARNESS_ERROR exit, loud banner, and its 2 check probes still run" \
+    _assert_denied 2
+
+_usable_control_case "$_CORPUS_GATE" "corpus" 3 "corpus gate full-run control" \
+    "corpus gate on a usable substrate => full 3-probe committed set, no banner"
 
 echo "-- end-to-end: tests/infra/test_prd_gate_compiler_type_hygiene.sh --"
 
@@ -745,16 +860,11 @@ echo "-- end-to-end: tests/infra/test_prd_gate_compiler_type_hygiene.sh --"
 # parameterized on the very thing most likely to break — and would pass while
 # checking the wrong gate's contract. The probe-set is 1 grammar + 6 check, so
 # a denied substrate must still run 6.
-_HYGIENE_GATE="$SCRIPT_DIR/test_prd_gate_compiler_type_hygiene.sh"
+_run_gate "$_HYGIENE_GATE" "hygiene" denied
+assert "hygiene gate under a denied substrate => no HARNESS_ERROR exit, loud banner, and its 6 check probes still run" \
+    _assert_denied 6
 
-assert "hygiene gate under a denied substrate => exit 0 (not 70), loud banner, and its 6 check probes still run" \
-    _gate_under_denied_substrate "$_HYGIENE_GATE" "hygiene" 6
-
-if resolve_grammar_substrate "$REPO_ROOT"; then
-    assert "hygiene gate on a usable substrate => full 7-probe committed set, no banner" \
-        _gate_with_usable_substrate "$_HYGIENE_GATE" "hygiene" 7
-else
-    _skip_usable_control "hygiene gate full-run control"
-fi
+_usable_control_case "$_HYGIENE_GATE" "hygiene" 7 "hygiene gate full-run control" \
+    "hygiene gate on a usable substrate => full 7-probe committed set, no banner"
 
 test_summary
