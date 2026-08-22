@@ -709,6 +709,53 @@ fn normalize_vec3_arr(v: [f64; 3]) -> Option<[f64; 3]> {
     normalize_vec3(v[0], v[1], v[2])
 }
 
+/// Pure classifier (post-`Value::Undef` hook) for orientation-builtin calls,
+/// mirroring `tolerancing::diagnose` / `geometry::diagnose` / `stackup::diagnose`.
+/// `reify-expr`'s `FunctionCall` arm calls this (re-exported as
+/// `orientation_diagnose`) when a stdlib builtin returns `Value::Undef`, and
+/// pushes any returned `Diagnostic` into the `EvalContext` runtime sink so
+/// `reify eval` can print it and exit non-zero.
+///
+/// Only `orient_exp` is diagnosed, and only for its one user-correctable
+/// failure cause: a rotation vector whose components carry the wrong dimension.
+/// A rotation vector is `axis * angle`, so it carries ANGLE (#6080) — the exact
+/// dimension `orient_log` emits, which is what keeps `exp(log(q)) == q`
+/// well-typed. `DIMENSIONLESS` used to be the accepted spelling and is now
+/// rejected like any other wrong dimension, so this diagnostic is the migration
+/// mechanism for that breaking change: it names the offending dimension instead
+/// of leaving a bare `undef` behind.
+///
+/// Severity is `Error` (so `reify eval` exits 1), per #6126's 2026-08-19
+/// amendment via esc-6080-6. The `E_` token is carried in the message text
+/// rather than as a `DiagnosticCode` variant — the same restraint
+/// `tolerancing::diagnose` documents, since a new variant would pull
+/// `reify-core` and its exhaustive code-enumeration tests into scope.
+///
+/// Returns `None` for any other name, and for a shape error (wrong arity,
+/// non-container argument, non-3d vector, mixed component dimensions), which
+/// keeps its existing silent-`Undef` behaviour so a shape error is never
+/// misattributed as a dimension error — the same restraint `geometry::diagnose`
+/// documents.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
+    match name {
+        "orient_exp" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let (comps, dim) = tensor_components_f64(&args[0])?;
+            if comps.len() != 3 || dim == DimensionVector::ANGLE {
+                return None;
+            }
+            Some(reify_core::Diagnostic::error(format!(
+                "E_RotationVectorDimension: orient_exp expects a rotation vector \
+                 with ANGLE dimension (rad); got {dim}. A rotation vector is \
+                 axis * angle, so spell a bare radian value `1.5708rad` / `90deg`"
+            )))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{elementary_rotation_quat, normalize_quaternion};

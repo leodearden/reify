@@ -601,10 +601,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     }
                     let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
-                    // case (`linear_combine`) / AffineMap-constructor / inverse-
-                    // dynamics / iso_it_tolerance builtin returns `Value::Undef`,
-                    // classify and emit its specific diagnostic into the ctx sink.
-                    // The five name families are disjoint, so at most one diagnose
+                    // case (`linear_combine`) / AffineMap-constructor or
+                    // transform_exp / inverse-dynamics / iso_it_tolerance /
+                    // orient_exp builtin returns `Value::Undef`, classify and emit
+                    // its specific diagnostic into the ctx sink.
+                    // The six name families are disjoint, so at most one diagnose
                     // helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
@@ -2307,9 +2308,11 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β),
-/// inverse-dynamics body mass, and ISO tolerancing — for a builtin call whose
-/// `result` is `Value::Undef`.
+/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β)
+/// plus the `transform_exp` twist-angular dimension gate (#6080),
+/// inverse-dynamics body mass, ISO tolerancing, and the `orient_exp`
+/// rotation-vector dimension gate (#6080) — for a builtin call whose `result` is
+/// `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -2320,11 +2323,12 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The five name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors / inverse-dynamics / `"iso_it_tolerance"`) are
-/// disjoint, so at most one of the five classifiers returns `Some` for any
-/// single `Undef`; each returns `None` for every other name or for valid input,
-/// making this a cheap no-op for ordinary builtins.
+/// The six name families (stackup math builtins / `"linear_combine"` /
+/// `affine_*` constructors + `"transform_exp"` / inverse-dynamics /
+/// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
+/// six classifiers returns `Some` for any single `Undef`; each returns `None`
+/// for every other name or for valid input, making this a cheap no-op for
+/// ordinary builtins.
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     if !matches!(result, Value::Undef) {
@@ -2343,6 +2347,8 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     }
     // AffineMap-constructor warnings: `affine_scale` zero (degenerate, det=0) or
     // dimensioned scale factor (the linear part of an affine map is dimensionless).
+    // Also the #6080 Error for a `transform_exp` twist whose `angular` half is
+    // not Vector3<Angle> — same classifier, different severity per arm.
     if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
@@ -2355,6 +2361,14 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     // Severity::Error instead of a silent Undef. Post-Undef-only, same
     // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
     if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+    // spelling, so this Severity::Error is the migration mechanism for that
+    // breaking change rather than a silent Undef. Post-Undef-only, same
+    // (name,&[Value])->Option<Diagnostic> shape as the five above.
+    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
 }

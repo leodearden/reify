@@ -1461,40 +1461,82 @@ fn eval_frame_at(args: &[Value]) -> Value {
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
 
-/// Pure classifier (post-`Value::Undef` hook) for affine-constructor calls,
-/// mirroring `stackup::diagnose` / `fea::diagnose`. `reify-expr`'s `FunctionCall`
-/// arm calls this (re-exported as `geometry_diagnose`) when a stdlib builtin
-/// returns `Value::Undef`, and pushes any returned `Diagnostic` into the
-/// `EvalContext` runtime sink so `reify eval` can print it.
+/// Pure classifier (post-`Value::Undef` hook) for affine-constructor and
+/// `transform_exp` calls, mirroring `stackup::diagnose` / `fea::diagnose`.
+/// `reify-expr`'s `FunctionCall` arm calls this (re-exported as
+/// `geometry_diagnose`) when a stdlib builtin returns `Value::Undef`, and pushes
+/// any returned `Diagnostic` into the `EvalContext` runtime sink so
+/// `reify eval` can print it.
 ///
-/// Only `affine_scale` with exactly 3 args is diagnosed, distinguishing its two
-/// user-correctable failure causes (the third — arity — stays silent, like the
-/// `transform3` convention):
+/// Two names are diagnosed, with *different* severities:
+///
+/// **`affine_scale`** (exactly 3 args) — distinguishes its two user-correctable
+/// failure causes (the third — arity — stays silent, like the `transform3`
+/// convention):
 /// - **dimensioned factor** → violates the G6 dimensionless-linear-part contract;
 /// - **zero factor** → degenerate (det=0, non-invertible) map.
 ///
-/// Severity is `Warning` with no `DiagnosticCode`, mirroring the existing
+/// Severity here is `Warning` with no `DiagnosticCode`, mirroring the existing
 /// degenerate-scale rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
-/// Returns `None` for any other name, wrong arity, or valid input.
+///
+/// **`transform_exp`** — diagnoses a `Twist` whose `angular` half carries the
+/// wrong dimension. A rotation vector is `axis * angle`, so `Twist.angular` is
+/// `Vector3<Angle>` (#6080); `DIMENSIONLESS` used to be the accepted spelling
+/// and is now rejected like any other wrong dimension, so this diagnostic is the
+/// migration mechanism for that breaking change. Severity is `Error` (so
+/// `reify eval` exits 1), per #6126's 2026-08-19 amendment via esc-6080-6, with
+/// the `E_` token carried in the message text rather than as a `DiagnosticCode`
+/// variant. This arm inspects ONLY the `angular` key: the `linear` convention is
+/// owned by #6126, so a linear-half failure falls through as `None` rather than
+/// being poached by a competing angular message.
+///
+/// Returns `None` for any other name, wrong arity, a shape error, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
-    if name != "affine_scale" || args.len() != 3 {
-        return None;
+    match name {
+        "affine_scale" => {
+            if args.len() != 3 {
+                return None;
+            }
+            // Check dimensioned factors first so a dimensioned-and-otherwise-fine factor
+            // reports the dimensionless requirement rather than a spurious zero message.
+            if args.iter().any(|a| !a.dimension().is_dimensionless()) {
+                return Some(reify_core::Diagnostic::warning(
+                    "affine_scale: scale factors must be dimensionless (Real); a dimensioned \
+                     factor was dropped (the linear part of an affine map is dimensionless)",
+                ));
+            }
+            if args.iter().any(|a| a.as_f64() == Some(0.0)) {
+                return Some(reify_core::Diagnostic::warning(
+                    "affine_scale dropped: factor=0 produces a degenerate (det=0) \
+                     non-invertible map (every scale factor must be non-zero)",
+                ));
+            }
+            None
+        }
+        "transform_exp" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let Value::Map(m) = &args[0] else {
+                return None;
+            };
+            let angular = m.get(&Value::String("angular".to_string()))?;
+            // `decompose_vec3` returns `None` for every shape error (non-Vector,
+            // non-3d, mixed or non-finite components), which keeps those silent
+            // so a shape error is never misattributed as a dimension error.
+            let (_, ang_dim) = decompose_vec3(angular)?;
+            if ang_dim == DimensionVector::ANGLE {
+                return None;
+            }
+            Some(reify_core::Diagnostic::error(format!(
+                "E_RotationVectorDimension: transform_exp expects a Twist whose \
+                 `angular` half carries ANGLE dimension (rad); got {ang_dim}. A \
+                 rotation vector is axis * angle, so spell a bare radian value \
+                 `1.5708rad` / `90deg`"
+            )))
+        }
+        _ => None,
     }
-    // Check dimensioned factors first so a dimensioned-and-otherwise-fine factor
-    // reports the dimensionless requirement rather than a spurious zero message.
-    if args.iter().any(|a| !a.dimension().is_dimensionless()) {
-        return Some(reify_core::Diagnostic::warning(
-            "affine_scale: scale factors must be dimensionless (Real); a dimensioned \
-             factor was dropped (the linear part of an affine map is dimensionless)",
-        ));
-    }
-    if args.iter().any(|a| a.as_f64() == Some(0.0)) {
-        return Some(reify_core::Diagnostic::warning(
-            "affine_scale dropped: factor=0 produces a degenerate (det=0) \
-             non-invertible map (every scale factor must be non-zero)",
-        ));
-    }
-    None
 }
 
 #[cfg(test)]
