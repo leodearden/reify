@@ -590,12 +590,24 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            // Extract angular: must be Vector3<DIMENSIONLESS>.
+            // Extract angular: must be Vector3<ANGLE>.
+            //
+            // Twist angular convention (monomorphic, mirrored on transform_log):
+            //   • ANGLE only — a rotation vector is axis * angle (#6080), the
+            //     same dimension `orient_log` emits.
+            //   • Every other dim, INCLUDING DIMENSIONLESS → rejected as Undef.
+            //     DIMENSIONLESS is a specific dimension (the zero exponent
+            //     vector), not a wildcard, so admitting it would re-open the
+            //     hole PRD #5747 decision D11 closed. A bare radian rotation
+            //     vector is spelled `1.5708rad` / `90deg`.
+            //
+            // The θ arithmetic below consumes radians, which is `Value::angle`'s
+            // SI contract — a type gate, not a numerics change.
             let (ang_comps, ang_dim) = match decompose_vec3(angular_val) {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            if ang_dim != DimensionVector::DIMENSIONLESS {
+            if ang_dim != DimensionVector::ANGLE {
                 return Some(Value::Undef);
             }
             let (wx, wy, wz) = (ang_comps[0], ang_comps[1], ang_comps[2]);
@@ -756,9 +768,18 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             let mut m = BTreeMap::new();
+            // The angular half is monomorphic ANGLE (#6080), so it is built with
+            // `Value::angle` directly rather than `make_dimensioned_component`:
+            // the latter's Real-for-dimensionless collapse has nothing to do
+            // here, and the direct constructor states the dimension
+            // unconditionally. Mirrors transform_exp's ANGLE-only gate.
             m.insert(
                 Value::String("angular".to_string()),
-                Value::Vector(vec![Value::Real(wx), Value::Real(wy), Value::Real(wz)]),
+                Value::Vector(vec![
+                    Value::angle(wx),
+                    Value::angle(wy),
+                    Value::angle(wz),
+                ]),
             );
             m.insert(
                 Value::String("linear".to_string()),
