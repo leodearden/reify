@@ -110,6 +110,104 @@ _fixture() {
     done
 }
 
+# ---------------------------------------------------------------------------
+# _detect_rust_wallclock_deadline <dir>
+#
+# Scans all *.rs files in <dir> for hand-rolled real-clock deadlines and
+# elapsed-time upper bounds. A PHYSICAL line is a violation iff it matches
+# Rule A or Rule B and does NOT carry the escape comment.
+#
+#   Rule A  Instant::now\(\)[[:space:]]*\+
+#           A real-clock deadline built by hand. Keys on `Instant::now()`
+#           IMMEDIATELY followed by `+`, i.e. reading the raw clock and
+#           adding to it, instead of going through the WaitClock seam.
+#           It deliberately spares:
+#             * `let t0 = Instant::now();`          -- a synthetic-clock seed
+#             * `VirtualClock::new(Instant::now())` -- likewise
+#             * `clock.now() + timeout`             -- the blessed seam itself
+#             * `t0 + Duration::from_millis(150)`   -- synthetic arithmetic
+#           Where a genuine real-clock offset IS wanted, `checked_add` says so
+#           without tripping this (see far_future_stamp in watcher_tests.rs).
+#
+#   Rule B  <[[:space:]]*Duration::
+#           An UPPER bound against a Duration -- what a Rust upper bound on
+#           elapsed time looks like, whether the left operand is `x.elapsed()`
+#           or a bound variable holding it. That is exactly why the rule does
+#           not key on `.elapsed()`: the bound deleted from
+#           watcher_drop_joins_worker_promptly_even_with_a_pending_event
+#           compared a bound variable, and an .elapsed()-keyed rule would have
+#           missed it. `>=` / `>` are NOT matched: per watcher_tests.rs's own
+#           invariant note, lower bounds are monotone under descheduling and
+#           are the safe form.
+#
+# NO LINE JOINER, deliberately -- and this is the sharpest difference from the
+# sibling guard, which needs a bash quote-state machine. Both rules here are
+# single-physical-line constructs: `Instant::now() +` is one token pair, and a
+# comparison operator sits on the same line as the `Duration::` it compares
+# against in every formatting rustfmt produces. So a physical-line escape
+# comment is EXACT, and a Rust-grammar joiner (`//`, `/* */`, raw strings,
+# paren-balanced macros) would be substantial complexity for zero detection
+# gain -- and would be a fresh source of bugs in a guard whose whole value is
+# being trivially auditable.
+#
+# Prints each violation as "file:lineno: <content>" to stderr.
+# Returns 1 if any violations found, 0 if none.
+#
+# Uses [[ =~ ]] per line rather than `echo | grep`, avoiding two subprocess
+# spawns per line -- the same performance rationale the sibling guard records.
+# ---------------------------------------------------------------------------
+_detect_rust_wallclock_deadline() {
+    local dir="$1"
+
+    # The escape token is split across two adjacent single-quoted strings so
+    # this source file holds no contiguous copy of it (see SELF-MATCH SAFETY
+    # in the header).
+    local _esc_re; _esc_re='wallcl''ock:allow'
+    local _rule_a; _rule_a='Instant::now\(\)[[:space:]]*\+'
+    local _rule_b; _rule_b='<[[:space:]]*Duration::'
+
+    local _found=0
+    local f
+    for f in "$dir"/*.rs; do
+        # An unmatched glob expands to the literal pattern under default
+        # shell options, so a directory with no .rs files lands here with
+        # `f` set to `<dir>/*.rs`, which is not a file. Skipping keeps an
+        # empty directory CLEAN rather than aborting under `set -euo
+        # pipefail` (fixture 2m).
+        [ -f "$f" ] || continue
+
+        local _lineno=0
+        local _line
+        # `IFS=` and `-r` keep each line byte-exact (leading whitespace,
+        # backslashes). The `|| [ -n "$_line" ]` guard processes a final
+        # line lacking a trailing newline instead of silently dropping it.
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _lineno=$((_lineno + 1))
+            [[ "$_line" =~ $_esc_re ]] && continue
+            if [[ "$_line" =~ $_rule_a ]] || [[ "$_line" =~ $_rule_b ]]; then
+                echo "$f:$_lineno: $_line" >&2
+                _found=1
+            fi
+        done < "$f"
+    done
+
+    if [ "$_found" = "1" ]; then
+        echo "" >&2
+        echo "Each line above builds a real-clock deadline by hand, or bounds elapsed time from ABOVE." >&2
+        echo "An upper bound on elapsed time INVERTS under load: a saturated host that deschedules the" >&2
+        echo "test thread fails code that behaved perfectly. That is the flake class tasks #5143, #5422," >&2
+        echo "#5709 and #6438 each had to clean up. Try these three fixes, in this order:" >&2
+        echo "  1. Drive the budget through the WaitClock seam in watcher_tests.rs (clock.now(), " >&2
+        echo "     VirtualClock) so the assertion consumes no real time and the claim becomes exact." >&2
+        echo "  2. Delete the upper bound outright and let nextest's slow-timeout / terminate-after" >&2
+        echo "     catch a genuine hang -- that is what the two tombstones in watcher_tests.rs do." >&2
+        echo "  3. Only if the site is genuinely legitimate, annotate it on the same line with" >&2
+        echo "     '// ${_esc_re} -- <reason>'. The guard landed with an EMPTY allowlist, so" >&2
+        echo "     yours would be the first and should be argued for on its merits." >&2
+        return 1
+    fi
+    return 0
+}
 # ===========================================================================
 # Section 1: Hermetic positive-detection -- the detector must flag a planted
 #             hand-rolled real-clock deadline (Rule A).
