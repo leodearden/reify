@@ -1731,10 +1731,12 @@ impl Engine {
             // All six write the resolved auto into `values`, the snapshot map
             // as `Determined`, and a cache entry.  Two legs are NOT uniform
             // across the six: `edit_param`/`edit_source` additionally write
-            // `self.param_overrides`, and `eval_cached`/`edit_source` emit no
-            // journal events (the other four do, via `commit_cell_result` or
-            // hand-rolled Started/Completed pairs).  Check all five legs when
-            // modifying warm Resolution back-prop.  A further arm,
+            // `self.param_overrides`, and `eval_cached`'s per-template arm
+            // plus `edit_source` emit no journal events (the other four do:
+            // `eval`'s two arms via hand-rolled Started/Completed pairs, and
+            // `eval_cached`'s merged-cluster arm and `edit_param` via
+            // `commit_cell_result`).  Check all five legs when modifying
+            // warm Resolution back-prop.  A further arm,
             // `resolve_concurrent_edit` — the fourth member of this roster's
             // original four-site form, before `edit_source` and the
             // merged-cluster branches were added — was removed with
