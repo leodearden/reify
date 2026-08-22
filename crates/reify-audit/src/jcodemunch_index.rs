@@ -177,10 +177,10 @@ fn normalize_project_root(project_root: &Path) -> PathBuf {
     // Leaf missing: `readlink -f` still resolves the existing prefix and
     // re-joins the rest, so a symlinked parent yields the same identity
     // whether or not the leaf has been created yet.
-    if let (Some(parent), Some(leaf)) = (absolute.parent(), absolute.file_name()) {
-        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
-            return canonical_parent.join(leaf);
-        }
+    if let (Some(parent), Some(leaf)) = (absolute.parent(), absolute.file_name())
+        && let Ok(canonical_parent) = std::fs::canonicalize(parent)
+    {
+        return canonical_parent.join(leaf);
     }
     absolute
 }
