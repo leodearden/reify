@@ -43,8 +43,8 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
 /// renamed or deleted, which would otherwise silently disable coverage
 /// forever. It is the canonical replacement for the per-file copies of this
 /// `Path::exists` filter that existed in
-/// `crates/reify-compiler/tests/examples_smoke.rs` and
-/// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`; both now
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// and `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`; both now
 /// route their guard through this function. Those guards keep their own skip
 /// lists private, and this doc is the only place their shared contract is
 /// stated — the call sites carry a pointer back here, not a copy.

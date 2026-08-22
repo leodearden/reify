@@ -813,7 +813,8 @@ fn missing_skip_set_paths<'a>(
 /// assertion message below for why this matters most for `SkipKind::PerfBudget`
 /// keys specifically.
 ///
-/// A guard of the same name in `crates/reify-compiler/tests/examples_smoke.rs`
+/// A guard of the same name in
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
 /// covers that crate's own skip list. Only the existence filter is shared —
 /// this asserts nothing about that file's contents, and no fixed relation
 /// between the two skip lists is claimed (see the `SKIP_SET` doc above).
