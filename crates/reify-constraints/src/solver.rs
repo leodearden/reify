@@ -4425,6 +4425,192 @@ mod tests {
 
     // ---- end classify_uniqueness tests ----
 
+    // ---- strict_autos_constraint_bracketed tests (task #5711, amendment 2) ----
+    //
+    // `strict_autos_constraint_bracketed` is the pure predicate behind the γ
+    // (`cost_robustness_tradeoff`) branch of `verify_uniqueness`. The
+    // perturbation machinery is STRUCTURALLY INAPPLICABLE on that path —
+    // `solve_cost_robustness_tradeoff` is seed-dependent by construction, so a
+    // perturbation check compares f(seed_A) against f(seed_B) for a
+    // seed-dependent f — but PRD
+    // docs/reify-implementation-architecture.md:1140 §11.6 still needs an
+    // answer. Test (2) ("uniquely optimal under the applicable objective") is
+    // answered WITHOUT any solve: if every strict auto's interval is bounded on
+    // BOTH sides by the user's own constraints, the blend's argmin is fixed by
+    // the user's model and the value is well-determined; if a side is missing,
+    // that side comes from `default_bounds_for` — a solver-internal default the
+    // user never authored — so the resolved value is default-bounds-determined,
+    // which is genuine non-determinedness.
+    //
+    // The predicate is PURE: no solve, no I/O, no mutation. These fixtures
+    // therefore build `DerivedInterval` values directly rather than routing
+    // through `derive_param_intervals`.
+
+    /// A strict (`free: false`) auto param named `Part::<name>` with the
+    /// PRODUCTION `bounds: None` shape (solver.rs records that no `.ri` surface
+    /// ever sets `AutoParam.bounds`).
+    fn bracketed_test_param(name: &str, free: bool) -> reify_ir::AutoParam {
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
+        AutoParam {
+            id: ValueCellId::new("Part", name),
+            param_type: Type::length(),
+            bounds: None,
+            free,
+        }
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_two_sided_returns_true() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![bracketed_test_param("t", false)];
+        // `1mm < t < 4mm` — both sides supplied by the user's constraints.
+        let mut iv = DerivedInterval::default();
+        iv.push_lo(0.001, true);
+        iv.push_hi(0.004, true);
+
+        assert!(
+            strict_autos_constraint_bracketed(&params, &[iv]),
+            "a strict auto bracketed on BOTH sides is constraint-determined"
+        );
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_missing_hi_returns_false() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![bracketed_test_param("t", false)];
+        // The one-sided `t > 1mm` shape (tests/prd-gate/fixtures/
+        // cost_robustness_tradeoff_form.ri): the upper side would come from
+        // `default_bounds_for(Length)`, not from the model.
+        let mut iv = DerivedInterval::default();
+        iv.push_lo(0.001, true);
+
+        assert!(
+            !strict_autos_constraint_bracketed(&params, &[iv]),
+            "a missing upper side means the value is default-bounds-determined, not \
+             model-determined"
+        );
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_missing_lo_returns_false() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![bracketed_test_param("t", false)];
+        let mut iv = DerivedInterval::default();
+        iv.push_hi(0.004, true);
+
+        assert!(
+            !strict_autos_constraint_bracketed(&params, &[iv]),
+            "a missing lower side is symmetric with a missing upper side"
+        );
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_unbounded_returns_false() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![bracketed_test_param("t", false)];
+
+        assert!(
+            !strict_autos_constraint_bracketed(&params, &[DerivedInterval::default()]),
+            "a strict auto with NEITHER side constrained is entirely default-bounds-determined"
+        );
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_free_params_are_exempt() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        // A bracketed STRICT param alongside an entirely unbracketed FREE one.
+        let params = vec![
+            bracketed_test_param("t", false),
+            bracketed_test_param("u", true),
+        ];
+        let mut bracketed = DerivedInterval::default();
+        bracketed.push_lo(0.001, true);
+        bracketed.push_hi(0.004, true);
+
+        assert!(
+            strict_autos_constraint_bracketed(&params, &[bracketed, DerivedInterval::default()]),
+            "free params carry no §11.6 obligation (finalise_uniqueness only calls \
+             verify_uniqueness when at least one param is strict), so an unbracketed free \
+             param must not veto the verdict"
+        );
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_no_strict_params_is_vacuously_true() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![
+            bracketed_test_param("t", true),
+            bracketed_test_param("u", true),
+        ];
+
+        assert!(
+            strict_autos_constraint_bracketed(
+                &params,
+                &[DerivedInterval::default(), DerivedInterval::default()]
+            ),
+            "with no strict params the §11.6 obligation is vacuous and the predicate holds"
+        );
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_index_beyond_intervals_returns_false() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        // Two params, ONE interval — a length mismatch is a bug in the caller.
+        let params = vec![
+            bracketed_test_param("t", false),
+            bracketed_test_param("u", false),
+        ];
+        let mut iv = DerivedInterval::default();
+        iv.push_lo(0.001, true);
+        iv.push_hi(0.004, true);
+
+        assert!(
+            !strict_autos_constraint_bracketed(&params, &[iv]),
+            "a strict param with no corresponding interval must read as NOT bracketed — \
+             preserving solutions_agree's loud-not-silent contract rather than silently \
+             defaulting to 'bracketed'"
+        );
+    }
+
+    #[test]
+    fn strict_autos_constraint_bracketed_strict_bounds_still_count() {
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![bracketed_test_param("t", false)];
+        // BOTH sides strict (`>` / `<`) — mirroring `derived_seed_box`'s
+        // `include_strict = true`. The question this predicate answers is "did
+        // the USER's constraints supply this side", NOT "is it a legal clamp
+        // target", so bound strictness is irrelevant.
+        let strict_both = DerivedInterval {
+            lo: Some((0.001, true)),
+            hi: Some((0.004, true)),
+        };
+        // …and the non-strict (`>=` / `<=`) pair must agree.
+        let non_strict_both = DerivedInterval {
+            lo: Some((0.001, false)),
+            hi: Some((0.004, false)),
+        };
+
+        assert!(
+            strict_autos_constraint_bracketed(&params, &[strict_both]),
+            "a strict (`>`/`<`) bound still SUPPLIES that side"
+        );
+        assert!(
+            strict_autos_constraint_bracketed(&params, &[non_strict_both]),
+            "a non-strict (`>=`/`<=`) bound must give the same verdict as a strict one"
+        );
+    }
+
+    // ---- end strict_autos_constraint_bracketed tests ----
+
     #[test]
     fn single_param_feasibility() {
         use crate::DimensionalSolver;
