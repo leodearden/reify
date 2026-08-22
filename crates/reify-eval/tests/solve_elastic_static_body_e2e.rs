@@ -1247,19 +1247,26 @@ fn solve_elastic_static_body_e2e_skipped_without_gmsh() {
 /// §7a-resampled `displacement` field. `None` ⇒ OCCT is unavailable and the
 /// caller skips.
 ///
-/// ## Only the `#[ignore]`d gate calls this — the live measurement rides a
-/// realization that already happens
+/// ## One caller, and it pays for a SECOND realization on purpose
 ///
 /// A full OCCT tessellation + gmsh tet-mesh + solve is the most expensive thing
 /// in this file, and `multi_case_body_solve_shares_one_realization_across_cases`
 /// above ALREADY performs exactly this one, on this source, in this binary. So
-/// #6154's live measurement is asserted from there, via
+/// #6154's live *measurement* is asserted from there, via
 /// [`assert_box_grid_miss_measurement`], rather than paying for a second copy of
-/// it. This helper serves [`realized_box_mesh_tiles_its_own_aabb`], which is
-/// `#[ignore]`d against #6200 and so costs a default run nothing.
+/// it.
+///
+/// The sole caller of THIS helper is [`realized_box_mesh_tiles_its_own_aabb`],
+/// the coverage guard, which runs by default now that #6200 has landed — so a
+/// default run does pay one additional realization here (measured ~12 s
+/// standalone, against ~144 s for the whole file). That is the accepted price of
+/// an INDEPENDENT realization: the guard keeps catching a coverage regression
+/// even if the capstone's realization path changes, and the `missed_interior`
+/// claim exists nowhere else — [`assert_box_grid_miss_measurement`] pins
+/// report-vs-field reconciliation and grid shape, never coverage.
 ///
 /// Not memoized. A `OnceLock` would only dedupe among THIS helper's own callers
-/// — a default run has none — and could never dedupe against the capstone's
+/// — there is exactly one — and could never dedupe against the capstone's
 /// realization, because that capstone asserts on the `Engine`
 /// (`realization_kernel_provenance()`), which a field-returning helper cannot
 /// hand back without keeping a live OCCT/gmsh handle alive for its caller. The
@@ -1488,12 +1495,13 @@ fn assert_report_reconciles_with_field(
 /// `elastic_static.rs`'s field-population contract used to claim of
 /// `displacement`: "Every grid point lies inside the solid (prismatic box), so
 /// all samples are finite (no NaN sentinels for the cantilever geometry)". The
-/// realized path contradicts it — about a third of this prismatic box's grid
-/// nodes carry the out-of-solid sentinel. VERDICT: a COVERAGE defect in the
-/// realized tet mesh, not a tolerance one; the measurement, its provenance and
-/// the closing argument are recorded ONCE, in
-/// `docs/prds/v0_4/fea-result-model.md` §11 Q2, and the upstream defect is
-/// #6200. For today's numbers read the dump below, never a comment.
+/// realized path contradicted it — when #6154 measured it, about a third of this
+/// prismatic box's grid nodes carried the out-of-solid sentinel. VERDICT: a
+/// COVERAGE defect in the realized tet mesh, not a tolerance one; the
+/// measurement, its provenance and the closing argument are recorded ONCE, in
+/// `docs/prds/v0_4/fea-result-model.md` §11 Q2, and the upstream defect was
+/// fixed under #6200. This function pins no count either way — for today's
+/// numbers read the dump below, never a comment.
 ///
 /// Called from `multi_case_body_solve_shares_one_realization_across_cases`,
 /// which already realizes this exact source — see
@@ -1516,11 +1524,12 @@ fn assert_report_reconciles_with_field(
 ///     construction, so it says nothing about this field (it is pinned in that
 ///     function's own crate-local fixtures instead).
 ///
-/// The BOX-SPECIFIC prediction the split exposes as violated
-/// (`missed_interior == 0`) is preserved un-weakened in
-/// [`realized_box_mesh_tiles_its_own_aabb`], `#[ignore]`d against #6200 —
-/// splitting the two keeps this measurement, and its dump, running on every CI
-/// run instead of aborting at the first upstream-owned failure.
+/// The BOX-SPECIFIC prediction (`missed_interior == 0`) — which this split
+/// exposed as violated when #6154 measured it, and which #6200's landed fix has
+/// since restored — is asserted un-weakened in
+/// [`realized_box_mesh_tiles_its_own_aabb`], now live. Splitting the two is what
+/// kept this measurement, and its dump, running on every CI run instead of
+/// aborting at the first upstream-owned failure; it still does.
 #[cfg(has_gmsh)]
 fn assert_box_grid_miss_measurement(disp: &reify_ir::SampledField) {
     let (report, _hist) = classify_and_dump_grid_misses(disp, "realized box");
@@ -1687,44 +1696,58 @@ fn assert_cylinder_grid_miss_measurement(
     report
 }
 
-/// Task #6154's measurement, held as #6200's acceptance gate.
+/// Task #6154's box prediction, which is now a LANDED-REGRESSION guard.
 ///
 /// For a PRISMATIC body the mesh AABB **is** the solid, so every
-/// strictly-index-interior grid point must lie inside some tet. It does not: the
-/// realized tet mesh fills only a fraction of the AABB it spans, and a few dozen
-/// index-interior nodes land in no tet at all. That is a COVERAGE defect, not a
-/// tolerance one — measured margins are orders of magnitude beyond any
-/// defensible `tol`, and `volume_mesh_to_solver_mesh` is exonerated. The
-/// measurement, the fill-fraction proof and the exoneration are recorded once in
+/// strictly-index-interior grid point must lie inside some tet. When #6154
+/// measured it, it did not: the realized tet mesh filled only a fraction of the
+/// AABB it spanned, and a few dozen index-interior nodes landed in no tet at
+/// all. That was a COVERAGE defect, not a tolerance one — the measured margins
+/// were orders of magnitude beyond any defensible `tol`, and
+/// `volume_mesh_to_solver_mesh` was exonerated. That measurement, the
+/// fill-fraction proof and the exoneration are recorded once in
 /// `docs/prds/v0_4/fea-result-model.md` §11 Q2; today's figures come from the
-/// per-run dump. The defect is upstream of this crate, in the gmsh
-/// tetrahedralization path (`crates/reify-kernel-gmsh`), which #6154's scope
-/// explicitly excludes.
+/// per-run dump, never from a comment.
 ///
-/// The assertion is kept — not deleted, not weakened to a threshold — so that
-/// #6200 has an executable acceptance gate: unblocking it is exactly making this
-/// test pass with the `#[ignore]` removed. It is `== 0` rather than a count
-/// because the count drifts run to run while the defect does not.
+/// The defect was upstream of this crate, in the gmsh tetrahedralization path
+/// (`crates/reify-kernel-gmsh`), which #6154's scope explicitly excluded, and it
+/// was fixed under #6200 (merged as `6ed34b2fe8`). This assertion was carried
+/// verbatim through that wait — never deleted, never weakened to a threshold —
+/// precisely so that #6200 had an executable acceptance gate: unblocking it was
+/// exactly making this test pass with the `#[ignore]` removed. With the fix
+/// landed the gate is gone and the test runs by default; its job now is to keep
+/// the fix fixed.
+///
+/// It stays `== 0` on `missed_interior` rather than tightening to `n_missed ==
+/// 0`, even though the box currently measures zero misses in total. The
+/// AABB-shell buckets (face/edge/corner) remain legitimately exposed to boundary
+/// round-off, and the total drifts run to run — gmsh/HXT tetrahedralization is
+/// not bit-reproducible, and PRD §11 Q2 records 1055 vs 1060 across five runs of
+/// the pre-fix mesh. Tightening would trade a stable invariant for a flake.
+///
+/// This pays for its OWN realization rather than riding the capstone's — see
+/// [`realized_box_operating_displacement`] — deliberately: an independent
+/// realization keeps the guard honest if the capstone's realization path ever
+/// changes, and the coverage claim lives nowhere else.
 ///
 /// ## `missed_interior` counts GRID points, NOT mesh nodes
 ///
 /// The two are easy to conflate and behave completely differently, so read this
-/// before judging whether #6200's fix should turn this test green. #6200's own
+/// before judging what this guard does and does not pin. #6200's own
 /// measurements record that a box's strictly-interior MESH-NODE count is purely
 /// RESOLUTION-driven — 0 at the auto mesh size even for a complete, `fill = 1.0`
 /// mesh, because `auto_mesh_size_from_features` makes the cross-section exactly
-/// one element wide — so an assertion keyed on THAT number would not go green
-/// from a coverage fix alone.
+/// one element wide — so an assertion keyed on THAT number would not have gone
+/// green from a coverage fix at all.
 ///
-/// This gate is keyed on COVERAGE instead. `missed_interior` is the number of
+/// This one is keyed on COVERAGE instead. `missed_interior` is the number of
 /// strictly-index-interior §7a GRID points that lie inside no tet, and a grid
 /// point is a query location, not a mesh entity. It reaches 0 exactly when the
 /// tets tile the AABB, at ANY mesh resolution and with ANY interior-node count —
 /// which is precisely the fill-fraction property #6200's acceptance states. So
-/// this remains a valid gate for that fix, and needs no mesh-size override.
+/// it was a valid gate for that fix, and it needs no mesh-size override now.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #6200 — the realized tet mesh does not fill its own AABB, so missed_interior is non-zero: a coverage defect upstream of this crate, not a tol issue"]
 fn realized_box_mesh_tiles_its_own_aabb() {
     let Some(disp) = realized_box_operating_displacement("realized_box_mesh_tiles_its_own_aabb")
     else {
@@ -1738,7 +1761,9 @@ fn realized_box_mesh_tiles_its_own_aabb() {
          so every strictly-index-interior grid point must lie inside some tet. A \
          non-zero interior count means the realized mesh handed to §7a does not tile \
          its own AABB — that is a COVERAGE defect, not a tolerance one, and widening \
-         `tol` would not legitimately fix it (see #6200). Measured: interior={} of \
+         `tol` would not legitimately fix it. This is a REGRESSION of the upstream \
+         mesh-coverage defect fixed under #6200; the fix belongs there, not here. \
+         Measured: interior={} of \
          n_missed={} (face={}, edge={}, corner={}). Per-axis miss histograms: \
          x={:?} y={:?} z={:?}",
         report.missed_interior,
