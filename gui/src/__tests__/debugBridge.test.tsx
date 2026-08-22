@@ -2703,13 +2703,15 @@ describe('debug bridge tree-node expand/collapse', () => {
     expect(result.error).toContain('constraint');
   });
 
-  // (j) closes the coverage gap under driveTreeNode's CSS escape — the one of
-  // the three escape sites in bridge.ts with no test of its own. (f) above
-  // reaches the same not-found branch but with a metacharacter-free path, so
-  // nothing today would notice if the escape were dropped: an unescaped quote or
-  // backslash interpolated into the `[data-testid="…"]` selector makes
-  // document.querySelector THROW a DOMException, which the dispatcher surfaces
-  // as an opaque `{error: '<parser message>'}` — a hostile or simply typo'd path
+  // (j) closes the coverage gap under driveTreeNode's CSS escape — one of the
+  // TWO escape call sites in bridge.ts that had no test of its own, the other
+  // being `resolveByTestId`'s testId arm, now pinned by (n)/(o) in the
+  // resolveByTestId block. (f) above reaches the same not-found branch but with
+  // a metacharacter-free path, so nothing else would notice if the escape were
+  // dropped here: an unescaped quote or backslash interpolated into the
+  // `[data-testid="…"]` selector makes document.querySelector THROW a
+  // DOMException, which the dispatcher surfaces as an opaque
+  // `{error: '<parser message>'}` — a hostile or simply typo'd path
   // reading as a bridge malfunction rather than as "no such node".
   //
   // Same hostile-input list and same "not-found rather than parser-throw"
@@ -4906,5 +4908,74 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     });
 
     expect(result).toEqual({ ok: true });
+  });
+
+  // (n)/(o) close the coverage gap under `resolveByTestId`'s TESTID escape —
+  // the busiest escape call site in bridge.ts and, until these cases, an
+  // unpinned one. Every #5891 scoped tool (click_element, focus_element,
+  // scroll, element_screenshot, wait_for_selector and wait_for's selector arm)
+  // routes its caller-supplied testId through `idSel`, yet case (f) above
+  // covers only the sibling VIEWPORTID arm.
+  //
+  // Measured, not assumed: replacing `escapeAttrValue(testId)` with a raw
+  // `${testId}` in `resolveByTestId` left all 284 tests in this file plus
+  // waitFor.test.ts green before (n) existed. An unescaped quote or backslash
+  // makes document.querySelectorAll THROW a DOMException, which the dispatcher
+  // surfaces as an opaque `{error: '<CSS parser message>'}` — a typo'd or
+  // hostile testId reading as a bridge malfunction rather than as "no such
+  // element".
+  //
+  // Same shape as (j)/(k) in the tree-node block, which pin the same shared
+  // helper through `driveTreeNode`.
+  it('(n) a testId carrying selector metacharacters returns the notFound wording, not a CSS-parser throw', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Deliberately NO matching element: the point is that the lookup reaches
+    // its own not-found diagnostic instead of dying inside the selector parser.
+    for (const [i, badId] of ['row-"1"', 'row-\\1', 'row-1"]'].entries()) {
+      const result = await dispatchCmd(5115 + i, 'click_element', { testId: badId });
+
+      expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFound(badId) });
+    }
+  });
+
+  // (o) is (n)'s POSITIVE complement, and it exists because (n) alone pins only
+  // that the helper does not THROW — which a helper that STRIPPED its
+  // metacharacters would satisfy just as well. Measured mutation matrix against
+  // `escapeAttrValue`, which is why both cases are needed:
+  //
+  //   escape dropped from resolveByTestId          → (n) FAILS, (o) fails
+  //   `v.replace(/["\\]/g, '')` — strip, not escape → (n) PASSES, (o) FAILS
+  //
+  // That matrix also settles which arm of the escape runs here: the strip
+  // mutation could only flip a verdict if the hand-rolled `["\\]` fallback is
+  // live. It is — jsdom exposes no global `CSS` (verified directly), so
+  // `CSS.escape` is never reached under vitest and NO test in this file
+  // exercises it. That branch is covered only by the real webview.
+  it('(o) a testId that really contains a quote and a backslash still resolves and clicks', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Both metacharacters in one fixture: the quote would terminate the
+    // selector string and the backslash would start an escape sequence inside
+    // it. Built with setAttribute rather than innerHTML so the attribute holds
+    // these bytes exactly, with no HTML-parser unescaping in between.
+    const testId = 'row-"1"\\x';
+    const el = document.createElement('button');
+    el.setAttribute('data-testid', testId);
+    document.body.appendChild(el);
+    const clickSpy = vi.fn();
+    el.addEventListener('click', clickSpy);
+
+    // The fixture holds the RAW metacharacters — asserted, so the test cannot
+    // pass by accidentally storing a pre-escaped attribute.
+    expect(el.getAttribute('data-testid')).toBe(testId);
+
+    const result = await dispatchCmd(5118, 'click_element', { testId });
+
+    // A single match, so the response stays the bare success shape.
+    expect(result).toEqual({ ok: true });
+    expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 });
