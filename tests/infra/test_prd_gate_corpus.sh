@@ -75,26 +75,38 @@ CORPUS="$REPO_ROOT/tests/prd-gate/corpus-probe-set.json"
 # env var, so the completeness assertions below — which derive expected_count and
 # expected_ids from the JSON at CORPUS_PATH, deliberately, "to avoid triple
 # bookkeeping" — recalibrate for free. The embedded python needs no change at all.
+# The preflight, the filtered-copy mint, its EXIT-trap cleanup and the banner
+# are all owned by prd_gate_resolve_probe_set — one composed call, so this gate
+# and the hygiene gate cannot drift, and a third gate needs no new copy of it.
 source "$REPO_ROOT/scripts/prd-gate-substrate-guard.sh"
-if ! resolve_grammar_substrate "$REPO_ROOT"; then
-    _FILTERED_CORPUS="$(mktemp "${TMPDIR:-/tmp}/prd-gate-corpus-filtered-XXXXXX.json")"
-    trap 'rm -f "$_FILTERED_CORPUS"' EXIT
-
-    if ! prd_gate_probe_set_drop_grammar "$CORPUS" "$_FILTERED_CORPUS"; then
+_GUARD_RC=0
+prd_gate_resolve_probe_set "test_prd_gate_corpus" "$REPO_ROOT" "$CORPUS" || _GUARD_RC=$?
+case "$_GUARD_RC" in
+    0)
+        # Either the committed corpus (usable substrate) or the grammar-filtered
+        # copy, with the banner already emitted.
+        CORPUS="$PRD_GATE_PROBE_SET"
+        ;;
+    1)
         # Degenerate: nothing left to run. Not reachable with today's corpus
         # (1 grammar + 2 check), but an all-grammar corpus must skip the script
         # rather than hand the checker an empty probe-set, which it rejects with
         # exit 64 — a gate FAIL, i.e. the very spurious RED this guard prevents.
-        prd_gate_loud_substrate_skip "test_prd_gate_corpus" \
-            "$PRD_GATE_DROPPED_COUNT" 0 "$GRAMMAR_SUBSTRATE_REASON"
         echo "SKIP: every corpus row is a grammar probe — nothing left to run"
         exit 0
-    fi
-
-    prd_gate_loud_substrate_skip "test_prd_gate_corpus" \
-        "$PRD_GATE_DROPPED_COUNT" "$PRD_GATE_KEPT_COUNT" "$GRAMMAR_SUBSTRATE_REASON"
-    CORPUS="$_FILTERED_CORPUS"
-fi
+        ;;
+    *)
+        # NOT a substrate skip: the committed corpus is missing, unreadable, or
+        # not JSON. Before this guard existed that reached the checker and came
+        # back exit 64, which the branch below maps to a gate FAIL — so it must
+        # still FAIL here. Laundering it into the SKIP above would turn a broken
+        # committed artifact green while naming the wrong cause, and only on the
+        # sandboxed lanes this guard was written to serve.
+        echo "  FAIL: corpus missing, invalid, or harness error — could not filter $CORPUS"
+        FAIL=$((FAIL + 1))
+        test_summary
+        ;;
+esac
 
 # ── Run α with --json to get machine-readable verdict output ───────────────
 # Capture stdout (JSON) only; stderr flows to terminal for diagnostics.

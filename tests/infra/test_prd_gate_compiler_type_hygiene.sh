@@ -79,26 +79,38 @@ PROBE_SET="$REPO_ROOT/tests/prd-gate/compiler-type-hygiene-probe-set.json"
 # env var, so the completeness assertion below — which derives expected_count
 # from the JSON at CORPUS_PATH, deliberately, as the single source of truth —
 # recalibrates for free. The embedded python needs no change at all.
+# The preflight, the filtered-copy mint, its EXIT-trap cleanup and the banner
+# are all owned by prd_gate_resolve_probe_set — one composed call, identical to
+# the corpus gate's, so the two cannot drift.
 source "$REPO_ROOT/scripts/prd-gate-substrate-guard.sh"
-if ! resolve_grammar_substrate "$REPO_ROOT"; then
-    _FILTERED_PROBE_SET="$(mktemp "${TMPDIR:-/tmp}/prd-gate-hygiene-filtered-XXXXXX.json")"
-    trap 'rm -f "$_FILTERED_PROBE_SET"' EXIT
-
-    if ! prd_gate_probe_set_drop_grammar "$PROBE_SET" "$_FILTERED_PROBE_SET"; then
+_GUARD_RC=0
+prd_gate_resolve_probe_set "test_prd_gate_compiler_type_hygiene" "$REPO_ROOT" "$PROBE_SET" \
+    || _GUARD_RC=$?
+case "$_GUARD_RC" in
+    0)
+        # Either the committed probe-set (usable substrate) or the
+        # grammar-filtered copy, with the banner already emitted.
+        PROBE_SET="$PRD_GATE_PROBE_SET"
+        ;;
+    1)
         # Degenerate: nothing left to run. Not reachable with today's probe-set
         # (1 grammar + 6 check), but an all-grammar set must skip the script
         # rather than hand the checker an empty probe-set, which it rejects with
         # exit 64 — a gate FAIL, i.e. the very spurious RED this guard prevents.
-        prd_gate_loud_substrate_skip "test_prd_gate_compiler_type_hygiene" \
-            "$PRD_GATE_DROPPED_COUNT" 0 "$GRAMMAR_SUBSTRATE_REASON"
         echo "SKIP: every probe is a grammar probe — nothing left to run"
         exit 0
-    fi
-
-    prd_gate_loud_substrate_skip "test_prd_gate_compiler_type_hygiene" \
-        "$PRD_GATE_DROPPED_COUNT" "$PRD_GATE_KEPT_COUNT" "$GRAMMAR_SUBSTRATE_REASON"
-    PROBE_SET="$_FILTERED_PROBE_SET"
-fi
+        ;;
+    *)
+        # NOT a substrate skip: the committed probe-set is missing, unreadable,
+        # or not JSON. Before this guard existed that reached the checker and
+        # came back exit 64, which the branch below maps to a gate FAIL — so it
+        # must still FAIL here rather than becoming a green skip that names the
+        # substrate for a defect that has nothing to do with it.
+        echo "  FAIL: probe-set missing, invalid, or harness error — could not filter $PROBE_SET"
+        FAIL=$((FAIL + 1))
+        test_summary
+        ;;
+esac
 
 # ── Run prd-capability-check.py with --json ────────────────────────────────
 # Capture stdout (JSON) only; stderr flows to terminal for diagnostics.

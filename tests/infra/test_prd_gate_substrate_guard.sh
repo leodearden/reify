@@ -74,12 +74,27 @@ import os, sys
 
 # <root>/scripts/prd-capability-check.py -> <root>
 here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# One line per invocation: the memoization assertion below counts REAL
+# subprocess launches rather than trusting the library's own report of its
+# cache.
+with open(os.path.join(here, "stub-calls.txt"), "a") as f:
+    f.write("call\n")
 with open(os.path.join(here, "stub-stdout.txt")) as f:
     sys.stdout.write(f.read())
 with open(os.path.join(here, "stub-rc.txt")) as f:
     sys.exit(int(f.read().strip()))
 PYEOF
     printf '%s\n' "$root"
+}
+
+# How many times <root>'s stub checker has actually been launched.
+_stub_call_count() {
+    local f="$1/stub-calls.txt"
+    if [ -f "$f" ]; then
+        wc -l < "$f" | tr -d ' '
+    else
+        printf '0\n'
+    fi
 }
 
 # ── Assertion helpers ──────────────────────────────────────────────────────
@@ -166,6 +181,78 @@ assert "unusable checker (exit 75) => returns 1, OK=0, reason has the 'unusable:
 
 assert "unexpected exit code (64) => returns 1, OK=0, and the reason names the code" \
     _want_unusable_reason_contains "$_ROOT_64" "64" "unexpected"
+
+# The unexpected-code reason must also carry the preflight's STDERR. That is the
+# whole diagnostic value of this branch: the likeliest unexpected exits of all
+# (an unhandled traceback, an unimportable module, a missing python3) write
+# nothing at all to STDOUT, so a stdout-only report announces a degradation
+# while withholding the one line that would explain it.
+_STUB_STDERR_MARK='ModuleNotFoundError: No module named reify_synthetic_missing_dep'
+_ROOT_STDERR="$(_mk_stub_root 1 'unused')"
+printf '%s\n' "$_STUB_STDERR_MARK" > "$_ROOT_STDERR/stub-stderr.txt"
+cat > "$_ROOT_STDERR/scripts/prd-capability-check.py" <<'PYEOF'
+import os, sys
+
+# Silent on stdout, loud on stderr — the shape of every unexpected exit that
+# actually happens in the wild.
+here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(here, "stub-stderr.txt")) as f:
+    sys.stderr.write(f.read())
+sys.exit(1)
+PYEOF
+
+assert "unexpected exit with a silent stdout => the reason quotes the preflight's STDERR" \
+    _want_unusable_reason_contains "$_ROOT_STDERR" "$_STUB_STDERR_MARK" "stderr:"
+
+# MEMOIZATION — one preflight per (repo_root, tree-sitter) per shell. The
+# preflight costs a real, cc-invoking tree-sitter subprocess on a cold cache and
+# a single run consults it repeatedly; the memo makes the repeats free WITHOUT
+# letting a fresh shell inherit a stale answer. Asserted by counting the stub's
+# actual launches, not by reading the library's own cache variable.
+_want_memoized() {
+    local root_a="$1" root_b="$2"
+    local n1 n2 m1 m2 m3
+
+    PRD_GATE_SUBSTRATE_STATUS=""
+    resolve_grammar_substrate "$root_a" || true
+    n1="$(_stub_call_count "$root_a")"
+    resolve_grammar_substrate "$root_a" || true
+    n2="$(_stub_call_count "$root_a")"
+    if [ "$n1" != "$n2" ]; then
+        echo "a repeat consult of the SAME root re-ran the checker ($n1 -> $n2 launches)"
+        return 1
+    fi
+    if [ "${GRAMMAR_SUBSTRATE_OK:-<unset>}" != "1" ]; then
+        echo "the memoized answer came back OK=${GRAMMAR_SUBSTRATE_OK:-<unset>}, want 1"
+        return 1
+    fi
+
+    m1="$(_stub_call_count "$root_b")"
+    resolve_grammar_substrate "$root_b" || true
+    m2="$(_stub_call_count "$root_b")"
+    if [ "$m2" = "$m1" ]; then
+        echo "a DIFFERENT repo_root hit the memo — the key is not root-scoped"
+        return 1
+    fi
+    if [ "${GRAMMAR_SUBSTRATE_OK:-<unset>}" != "0" ]; then
+        echo "the second root's own answer was masked by the first root's (OK=${GRAMMAR_SUBSTRATE_OK:-<unset>})"
+        return 1
+    fi
+
+    # The documented reset. A caller re-checking whether the substrate flipped
+    # mid-run needs it, or it just re-reads its own earlier answer.
+    PRD_GATE_SUBSTRATE_STATUS=""
+    resolve_grammar_substrate "$root_b" || true
+    m3="$(_stub_call_count "$root_b")"
+    if [ "$m3" = "$m2" ]; then
+        echo 'PRD_GATE_SUBSTRATE_STATUS="" did not force a fresh probe'
+        return 1
+    fi
+    return 0
+}
+
+assert "the preflight memoizes per repo_root, a different root misses, and an empty memo forces a fresh probe" \
+    _want_memoized "$_ROOT_OK" "$_ROOT_75"
 
 # ── Block B: prd_gate_probe_set_drop_grammar ───────────────────────────────
 echo "-- prd_gate_probe_set_drop_grammar (hermetic, synthetic probe-sets) --"
@@ -254,13 +341,23 @@ if len(loaded) != len(want):
 PYEOF
 }
 
-# _want_filter_refuses <src> <dst> — the degenerate all-grammar case: nothing
-# to keep, so the filter must FAIL rather than hand the checker an empty
-# probe-set (which it rejects with exit 64 — a gate FAIL, not a skip).
-_want_filter_refuses() {
-    local src="$1" dst="$2"
-    if prd_gate_probe_set_drop_grammar "$src" "$dst"; then
-        echo "expected prd_gate_probe_set_drop_grammar to return non-zero on an all-grammar set, got 0"
+# _want_filter_rc <src> <dst> <want_rc> — the filter's two refusal modes, which
+# must NOT be conflated:
+#   1  the degenerate all-grammar set — nothing to keep, so the caller SKIPs
+#      rather than handing the checker an empty probe-set (exit 64 — a gate
+#      FAIL, not a skip);
+#   2  the source is missing, unreadable, or not JSON — a REAL defect in a
+#      committed artifact, which the caller must surface as a FAIL. Before this
+#      guard existed such a file reached the checker and came back exit 64,
+#      which both gates map to a FAIL; collapsing it into 1 would turn a broken
+#      committed probe-set into a green skip announcing the substrate as the
+#      cause — and only on the sandboxed lanes this guard was written to serve,
+#      where the filter path is the one that runs.
+_want_filter_rc() {
+    local src="$1" dst="$2" want_rc="$3" rc=0
+    prd_gate_probe_set_drop_grammar "$src" "$dst" || rc=$?
+    if [ "$rc" != "$want_rc" ]; then
+        echo "prd_gate_probe_set_drop_grammar returned $rc, want $want_rc"
         return 1
     fi
     if [ "${PRD_GATE_KEPT_COUNT:-<unset>}" != "0" ]; then
@@ -283,8 +380,116 @@ assert "1 grammar + 2 check => keeps exactly the 2 check probes, in order, field
 assert "all-check set => passed through unchanged with DROPPED=0" \
     _want_filtered "$_PS_ALL_CHECK" "$_RUN_ROOT/all_check.filtered.json" 3 0
 
-assert "all-grammar set => KEPT=0 and the filter refuses (never an empty probe-set)" \
-    _want_filter_refuses "$_PS_ALL_GRAMMAR" "$_RUN_ROOT/all_grammar.filtered.json"
+assert "all-grammar set => KEPT=0 and the filter refuses with rc 1 (never an empty probe-set)" \
+    _want_filter_rc "$_PS_ALL_GRAMMAR" "$_RUN_ROOT/all_grammar.filtered.json" 1
+
+# A source the filter cannot read at all is NOT the degenerate case, and must
+# not be reported as one. Both shapes are exercised because they fail in
+# different places — open() vs json.load().
+_PS_MISSING="$_RUN_ROOT/does-not-exist.json"
+_PS_CORRUPT="$_RUN_ROOT/corrupt.json"
+printf '%s\n' '{not json' > "$_PS_CORRUPT"
+
+assert "a nonexistent probe-set => rc 2 (source unusable), NOT rc 1 (degenerate skip)" \
+    _want_filter_rc "$_PS_MISSING" "$_RUN_ROOT/missing.filtered.json" 2
+
+assert "a probe-set that is not JSON => rc 2 (source unusable), NOT rc 1 (degenerate skip)" \
+    _want_filter_rc "$_PS_CORRUPT" "$_RUN_ROOT/corrupt.filtered.json" 2
+
+# ── Block B2: prd_gate_resolve_probe_set (the composed entrypoint) ──────────
+echo "-- prd_gate_resolve_probe_set (hermetic, stubbed checker + synthetic probe-sets) --"
+
+# RUN IN A SUBSHELL, ALWAYS. The composed entrypoint owns an EXIT trap for the
+# temp probe-set it mints, and bash EXIT traps do not stack — calling it in
+# THIS shell would silently disown this suite's own `trap cleanup EXIT` and leak
+# the whole scratch root. A subshell's trap fires at subshell exit and leaves
+# the parent's alone, so the filtered file is copied out before it is reclaimed.
+#
+# Sets: _C_RC, _C_PATH (the PRD_GATE_PROBE_SET it chose), _C_OUT (stdout+stderr
+# capture), _C_COPY (a copy of whatever probe-set it pointed at).
+_run_composed() {
+    local root="$1" committed="$2"
+    _C_OUT="$_RUN_ROOT/composed.out"
+    _C_COPY="$_RUN_ROOT/composed.copy.json"
+    local meta="$_RUN_ROOT/composed.meta"
+    rm -f "$_C_OUT" "$_C_COPY" "$meta"
+    (
+        rc=0
+        prd_gate_resolve_probe_set "unit-composed-gate" "$root" "$committed" || rc=$?
+        if [ -n "${PRD_GATE_PROBE_SET:-}" ] && [ -f "${PRD_GATE_PROBE_SET:-}" ]; then
+            cp "$PRD_GATE_PROBE_SET" "$_C_COPY" || true
+        fi
+        printf '%s\n%s\n' "$rc" "${PRD_GATE_PROBE_SET:-<unset>}" > "$meta"
+    ) > "$_C_OUT" 2>&1
+    _C_RC="$(sed -n 1p "$meta")"
+    _C_PATH="$(sed -n 2p "$meta")"
+    return 0
+}
+
+# _want_composed <root> <committed> <want_rc> <want_path: same|other> <want_banner: yes|no>
+_want_composed() {
+    local root="$1" committed="$2" want_rc="$3" want_path="$4" want_banner="$5"
+    _run_composed "$root" "$committed"
+
+    if [ "${_C_RC:-<unset>}" != "$want_rc" ]; then
+        echo "prd_gate_resolve_probe_set returned ${_C_RC:-<unset>}, want $want_rc"
+        cat "$_C_OUT"
+        return 1
+    fi
+    case "$want_path" in
+        same)
+            if [ "$_C_PATH" != "$committed" ]; then
+                echo "PRD_GATE_PROBE_SET=$_C_PATH, want the committed set unchanged ($committed)"
+                return 1
+            fi ;;
+        other)
+            if [ "$_C_PATH" = "$committed" ]; then
+                echo "PRD_GATE_PROBE_SET is still the committed set — no filtered copy was minted"
+                return 1
+            fi ;;
+    esac
+    if [ "$want_banner" = "yes" ] && ! grep -q 'GRAMMAR probes SKIPPED' "$_C_OUT"; then
+        echo "no loud substrate banner — a silent degradation"
+        cat "$_C_OUT"
+        return 1
+    fi
+    if [ "$want_banner" = "no" ] && grep -q 'GRAMMAR probes SKIPPED' "$_C_OUT"; then
+        echo "banner emitted when it should not have been (it would name the substrate for an unrelated cause)"
+        cat "$_C_OUT"
+        return 1
+    fi
+    return 0
+}
+
+# The filtered copy must be the real thing, not just a different path.
+_want_composed_filtered_content() {
+    local want_kept="$1"
+    local n
+    n="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["probes"])); sys.exit(0 if not [p for p in d["probes"] if p.get("probe_kind")=="grammar"] else 1)' "$_C_COPY")" || {
+        echo "the filtered copy still contains a grammar probe"
+        return 1
+    }
+    if [ "$n" != "$want_kept" ]; then
+        echo "the filtered copy holds $n probe(s), want $want_kept"
+        return 1
+    fi
+    return 0
+}
+
+assert "usable substrate => rc 0, the COMMITTED set is used unchanged, and no banner" \
+    _want_composed "$_ROOT_OK" "$_PS_MIXED" 0 same no
+
+assert "unusable substrate => rc 0, a FILTERED copy is used, and the banner fires" \
+    _want_composed "$_ROOT_75" "$_PS_MIXED" 0 other yes
+
+assert "the filtered copy the composed entrypoint hands back really has the grammar row removed" \
+    _want_composed_filtered_content 2
+
+assert "unusable substrate + all-grammar set => rc 1 (caller whole-script SKIPs)" \
+    _want_composed "$_ROOT_75" "$_PS_ALL_GRAMMAR" 1 same yes
+
+assert "unusable substrate + unreadable committed set => rc 2 (caller FAILs) and NO banner" \
+    _want_composed "$_ROOT_75" "$_PS_MISSING" 2 same no
 
 # ── Block C: prd_gate_loud_substrate_skip ──────────────────────────────────
 echo "-- prd_gate_loud_substrate_skip (hermetic) --"
