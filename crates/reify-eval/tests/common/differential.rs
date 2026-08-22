@@ -1283,6 +1283,36 @@ pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure Select
     let b = box(p, p, p)
 }"#;
 
+/// Geometry-LIST let under selective demand (task #5385, review esc-5385-4).
+///
+/// - body_a = `let a = box(10mm, 10mm, 10mm)`: the always-visible body, so the
+///   demand set is never empty while `merged` is hidden.
+/// - `let holes = generate(3, |i| cylinder(r, h))` unrolls at compile time into
+///   three sibling realizations `holes#0..2`, regrouped at eval into ONE
+///   `List<Geometry>` value cell `holes`.
+/// - `let merged = union_all(holes)`: the consumer that pulls
+///   `NodeId::Value(SelectiveGeomList.holes)` into the demand cone, so hiding it
+///   makes `holes` leave the cone (⇒ `mark_demand_pruned_pending` marks it
+///   `Pending`) and un-hiding it makes `holes` demanded AND `Pending` — exactly
+///   Part B's candidate shape in `refresh_and_gate_demanded_realizations`.
+///
+/// The bug this pins (without the monotone write-back guard): Part B re-evaluates
+/// `holes`' `default_expr` and writes it back behind a shallow `!is_undef()`
+/// test. `generate` is LENGTH-PRESERVING (`generate_index_list`), so re-eval of a
+/// geometry list yields `Value::List([Undef, Undef, Undef])` — which is NOT
+/// `is_undef()`. The shallow guard passes and a previously realized 3-handle list
+/// is overwritten with three Undefs. The all-or-nothing regroup in `into_entries`
+/// then cannot repair it: hash-exempt `holes#k` realizations outside the demand
+/// seed never enter `named_steps`, so `resolved_count != expected` and the cell
+/// is left as `[Undef, Undef, Undef]`.
+pub const SELECTIVE_DEMAND_GEOM_LIST_SRC: &str = r#"pub structure SelectiveGeomList {
+    param r : Length = 5mm
+    param h : Length = 20mm
+    let a = box(10mm, 10mm, 10mm)
+    let holes = generate(3, |i| cylinder(r, h))
+    let merged = union_all(holes)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere

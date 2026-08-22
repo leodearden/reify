@@ -10,6 +10,7 @@
 //!   - non-Int count `generate(3mm, …)` / `generate(2.5, …)` emits ArgTypeMismatch (step-6).
 
 use reify_core::{DiagnosticCode, Severity, Type};
+use reify_ir::{CompiledExprKind, Value};
 use reify_test_support::compile_source;
 
 /// Helper: fetch a structure template's let-cell `default_expr.result_type`.
@@ -502,11 +503,18 @@ fn mixed_kind_geometry_list_literal_is_a_loud_error() {
 }
 
 /// Compile-level companion to `geometry_list_count_is_determinate`: the
-/// `.count` of a geometry-list let types to `Int`, because it is folded to the
-/// statically-known element count at compile time rather than evaluated
+/// `.count` of a geometry-list let is CONSTANT-FOLDED at compile time into the
+/// statically-known element count, rather than surviving as a `MethodCall`
 /// against a cell whose Value is authoritative only after hydration.
+///
+/// The KIND assertion is the load-bearing one. Typing alone is TAUTOLOGICAL
+/// with respect to the fold (review esc-5385-4 S4): `expr.rs` maps
+/// `"count" => Type::Int` for ANY list receiver, so `let xs = [1,2,3]
+/// let n = xs.count` also types to `Int` through the ordinary un-folded path —
+/// a `Type::Int` assertion therefore passes unchanged with the fold deleted
+/// outright. Only `Literal(Int(3))` in the compiled tree tells the two apart.
 #[test]
-fn geometry_list_count_cell_types_to_int() {
+fn geometry_list_count_constant_folds_to_a_literal_int() {
     let source = r#"
         structure S {
             let holes = generate(3, |i| cylinder(5mm, 20mm))
@@ -518,10 +526,52 @@ fn geometry_list_count_cell_types_to_int() {
     let errors = error_messages(&compiled);
     assert!(errors.is_empty(), "compile errors: {errors:?}");
 
+    let n_expr = value_cell(template(&compiled, "S"), "n")
+        .default_expr
+        .as_ref()
+        .expect("cell `n` must carry a default_expr");
+    assert!(
+        matches!(n_expr.kind, CompiledExprKind::Literal(Value::Int(3))),
+        "`holes.count` must be folded to the literal element count, not left as \
+         a MethodCall on the not-yet-hydrated list cell; got: {:?}",
+        n_expr.kind,
+    );
+
+    // The type is a CONSEQUENCE of the fold rather than evidence of it, but a
+    // fold that produced the right count at the wrong type would still be a
+    // regression — so keep it pinned.
     assert_eq!(
         cell_result_type(&compiled, "S", "n"),
         Type::Int,
         "`holes.count` must compile to an Int-typed expr",
+    );
+
+    // Control — the ordinary, UN-folded `.count` path over a scalar list.
+    // It agrees on the type and disagrees on the kind, which is precisely why
+    // only the kind assertion above can witness the fold.
+    let unfolded = compile_source(
+        r#"
+        structure S {
+            let xs = [1, 2, 3]
+            let n = xs.count
+        }
+    "#,
+    );
+    let unfolded_expr = value_cell(template(&unfolded, "S"), "n")
+        .default_expr
+        .as_ref()
+        .expect("cell `n` must carry a default_expr");
+    assert_eq!(
+        unfolded_expr.result_type,
+        Type::Int,
+        "control: the un-folded path types to Int too — typing cannot tell the \
+         two apart",
+    );
+    assert!(
+        !matches!(unfolded_expr.kind, CompiledExprKind::Literal(_)),
+        "control: the un-folded path must NOT be a literal, or the kind \
+         assertion above would be tautological too; got: {:?}",
+        unfolded_expr.kind,
     );
 }
 
@@ -751,22 +801,339 @@ fn a_rejected_geometry_list_let_does_not_cascade_into_its_fold() {
     );
 }
 
-/// Negative control for the suppression above: a genuinely non-geometry list
-/// still gets the fold's own diagnostic, so `AlreadyDiagnosed` is not a
-/// blanket mute on every single-argument fold.
+/// Negative control for the suppression above — and, unlike its predecessor, a
+/// REAL one (review esc-5385-4 S4).
+///
+/// The version this replaces compiled `let xs = [1,2,3]  let combined =
+/// union_all(xs)` on its own: a strict duplicate of
+/// `union_all_over_a_non_geometry_list_reports_the_element_kind` with a subset
+/// of its assertions, and no control at all over `GeometryListArg::
+/// AlreadyDiagnosed` — `xs` never enters `geometry_list_rejected`, so the mute
+/// it claimed to be the control for was never in play.
+///
+/// This version puts BOTH folds in ONE structure, so the two dispositions are
+/// decided against the same scope in the same compile:
+///   * `union_all(rejected)` — the let already failed loudly, so the fold adds
+///     nothing (`AlreadyDiagnosed`);
+///   * `union_all(xs)` — an ordinary non-geometry list, so the fold speaks.
+///
+/// A blanket mute over every single-argument fold loses the second Error; a
+/// lost mute adds a third. Only the exact pairing passes, and the label span
+/// settles which fold the surviving Error belongs to.
 #[test]
-fn union_all_over_a_scalar_list_still_reports_a_non_geometry_list() {
+fn a_scalar_fold_still_speaks_beside_a_muted_rejected_lets_fold() {
     let source = r#"
         structure S {
+            param k : Int = 3
+            let rejected = generate(k, |i| cylinder(5mm, 20mm))
             let xs = [1, 2, 3]
-            let combined = union_all(xs)
+            let quiet = union_all(rejected)
+            let loud = union_all(xs)
         }
     "#;
     let compiled = compile_source(source);
 
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        errors.len(),
+        2,
+        "exactly two Errors — the rejected let's own, and the scalar fold's; \
+         got: {messages:?}",
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("literal non-negative Int count")),
+        "the declaring let must still report its own defect; got: {messages:?}",
+    );
+
+    let fold_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("must be a geometry list"))
+        .collect();
+    assert_eq!(
+        fold_errors.len(),
+        1,
+        "the fold's own diagnostic must fire exactly once — for `xs`, never for \
+         the already-diagnosed `rejected`; got: {messages:?}",
+    );
+
+    // The span is what proves WHICH fold the survivor belongs to: `union_all(xs)`.
+    let labelled: Vec<&str> = fold_errors[0]
+        .labels
+        .iter()
+        .filter_map(|l| source.get(l.span.start as usize..l.span.end as usize))
+        .collect();
+    assert_eq!(
+        labelled,
+        vec!["xs"],
+        "the surviving fold Error must be anchored at the scalar list argument, \
+         not at the rejected geometry-list let",
+    );
+}
+
+// ─── task #5385 (review esc-5385-4 S5): shadowing must defeat the union_all
+//     EXPANSION too, not only the `.count` fold ───
+
+/// Every `Boolean` op across EVERY realization of `structure`.
+///
+/// A suppressed fold emits no realization to name, so the total is the signal:
+/// the fixtures below contain no other boolean geometry, and a fold that
+/// wrongly expanded a shadowed name to the outer list's elements would show up
+/// here as n-1 Union ops per expanded element.
+fn total_boolean_ops(compiled: &reify_compiler::CompiledModule, structure: &str) -> usize {
+    template(compiled, structure)
+        .realizations
+        .iter()
+        .flat_map(|r| r.operations.iter())
+        .filter(|o| matches!(o, reify_compiler::CompiledGeometryOp::Boolean { .. }))
+        .count()
+}
+
+/// Debug-render a value cell's `default_expr`. The compiled tree is where a
+/// compile-time rewrite is unambiguously present or absent, and the rendered
+/// `ValueCellId`s name the entity each identifier resolved against — which is
+/// exactly the shadowing question.
+fn default_expr_debug(
+    compiled: &reify_compiler::CompiledModule,
+    structure: &str,
+    cell: &str,
+) -> String {
+    format!(
+        "{:?}",
+        value_cell(template(compiled, structure), cell)
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("cell '{cell}' has no default_expr"))
+    )
+}
+
+/// A LAMBDA PARAM that shadows a geometry-list let must not expand to that
+/// let's ELEMENTS when folded. This is the `union_all` half of the shadowing
+/// guard added for review esc-5385-3; its `.count` half is pinned by
+/// `lambda_param_shadowing_a_geometry_list_let_does_not_inherit_its_count`
+/// (crates/reify-eval/tests/generate_eval.rs).
+///
+/// The forbidden regression is silent: the inner `holes` expanding to the OUTER
+/// let's three cylinders would make each `combined` element a two-Union fold
+/// over geometry the user never named there — a wrong answer with no
+/// diagnostic. The outcome demanded instead is a DIAGNOSTIC.
+///
+/// Self-discriminating: the second compile is the SAME fixture with the binder
+/// renamed `j`, so `holes` is no longer shadowed and the fold does run. One
+/// identifier separates 0 Boolean ops + an Error from 4 Boolean ops + a clean
+/// compile, which is what makes the zero above non-vacuous.
+///
+/// Note on mechanism: a geometry `generate` body is index-substituted
+/// (`substitute_index_ident`, itself shadowing-aware) BEFORE
+/// `resolve_geometry_list_arg` sees it, so today the shadowed `holes` is
+/// already the literal index by the time the fold is classified, and it is the
+/// substitution — not `geometry_list_binding_is_live` — that does the work.
+/// The test pins the CONTRACT from the outside, so it holds whichever layer
+/// enforces it.
+#[test]
+fn lambda_param_shadowing_a_geometry_list_let_is_not_expanded_by_union_all() {
+    let compiled = compile_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let combined = generate(2, |holes| union_all(holes))
+        }
+    "#,
+    );
+
     let errors = error_messages(&compiled);
     assert!(
-        errors.iter().any(|m| m.contains("must be a geometry list")),
-        "a scalar list must still be diagnosed by the fold; got: {errors:?}",
+        !errors.is_empty(),
+        "a shadowed name under union_all must be diagnosed, never silently \
+         expanded to the outer list's elements",
+    );
+    assert_eq!(
+        total_boolean_ops(&compiled, "S"),
+        0,
+        "no Boolean op may be emitted — the only geometry in S is the outer \
+         list's three cylinders, and the shadowed fold must not reach them",
+    );
+    // The outer list itself is untouched: the guard suppresses the FOLD, not
+    // the declaring let.
+    assert_eq!(
+        list_realizations(template(&compiled, "S"), "holes").len(),
+        3,
+    );
+    // …and `combined`'s compiled argument resolves to the lambda's OWN binder
+    // cell (`$lambdaN.S`), not to the outer `S.holes` list cell.
+    let combined = default_expr_debug(&compiled, "S", "combined");
+    assert!(
+        !combined.contains("entity: \"S\", member: \"holes\""),
+        "the compiled fold must not reference the OUTER geometry-list cell; \
+         got: {combined}",
+    );
+
+    // Positive control: same fixture, non-shadowing binder name.
+    let unshadowed = compile_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let combined = generate(2, |j| union_all(holes))
+        }
+    "#,
+    );
+    assert!(
+        error_messages(&unshadowed).is_empty(),
+        "control: without the shadow the fold is legal; got: {:?}",
+        error_messages(&unshadowed),
+    );
+    assert_eq!(
+        total_boolean_ops(&unshadowed, "S"),
+        4,
+        "control: without the shadow each of the 2 elements folds the 3-element \
+         list into n-1 = 2 Union ops",
+    );
+}
+
+/// A MATCH-ARM PAYLOAD BINDER that shadows a geometry-list let must not expand
+/// to that let's elements either — the third derived-scope leg (`$matcharmN`),
+/// which review esc-5385-4 S5 found unpinned at every level.
+///
+/// What fires TODAY is the geometry-typed-match rejection (task 3418), which
+/// sits upstream of the fold: `compile_geometry_call` refuses the whole `match`
+/// before `resolve_geometry_list_arg` is ever consulted, so the arm's
+/// `union_all(holes)` never expands anything. That is a diagnostic, not a
+/// silently-wrong fold, which is the contract this test exists to pin — and it
+/// is deliberately asserted at the contract level (an Error exists, zero
+/// Boolean ops, no reference to the outer cell) so that if geometry `match`
+/// ever becomes supported, the guard in `resolve_geometry_list_arg` becomes the
+/// thing holding this test up rather than the test needing to be rewritten.
+#[test]
+fn match_arm_binder_shadowing_a_geometry_list_let_is_not_expanded_by_union_all() {
+    let compiled = compile_source(
+        r#"
+        enum Mode { Fold { parts: Solid }, Plain }
+        structure S {
+            param m : Mode = Mode.Plain
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let combined = match m {
+                Fold { parts: holes } => union_all(holes),
+                Plain => box(1mm, 1mm, 1mm),
+            }
+        }
+    "#,
+    );
+
+    let errors = error_messages(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "a match-arm binder shadowing a geometry list must be diagnosed, never \
+         silently folded over the outer list",
+    );
+    assert_eq!(
+        total_boolean_ops(&compiled, "S"),
+        0,
+        "no Boolean op may be emitted for the shadowed fold; got {:#?}",
+        template(&compiled, "S")
+            .realizations
+            .iter()
+            .map(|r| (&r.name, r.operations.len()))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        list_realizations(template(&compiled, "S"), "holes").len(),
+        3,
+        "the declaring let is untouched — only the fold over the shadowed name \
+         is refused",
+    );
+
+    // The arm body's argument resolves to the arm's OWN payload binder
+    // (`$matcharmN.S`), never to the outer `S.holes` list cell.
+    let combined = default_expr_debug(&compiled, "S", "combined");
+    assert!(
+        combined.contains("$matcharm"),
+        "`union_all`'s argument must resolve to the arm's payload binder; \
+         got: {combined}",
+    );
+    assert!(
+        !combined.contains("entity: \"S\", member: \"holes\""),
+        "the compiled arm must not reference the OUTER geometry-list cell; \
+         got: {combined}",
+    );
+}
+
+/// The `.count` leg of the same match-arm binder — the one derived scope that
+/// neither of the eval-side shadowing tests covers (review esc-5385-4 S5:
+/// "the match-arm-binder leg is unpinned for both").
+///
+/// Unlike the two `union_all` tests above, this one reaches
+/// `geometry_list_binding_is_live` for real. The arm body is compiled by
+/// `compile_expr` in a cloned `$matcharm0.S` scope that inherits
+/// `geometry_list_lens` VERBATIM and registers the binder in `names` only, so a
+/// bare-name lookup keyed on `"holes"` finds the outer let's length. Without
+/// the gate the arm body folds to `Literal(Int(3))` — the OUTER list's length,
+/// silently, for a binder the caller supplied as a `List<Int>`.
+///
+/// Self-discriminating: the second compile is the SAME fixture with the binder
+/// renamed `ys`. `holes` is then unshadowed, the fold is CORRECT, and the arm
+/// body really does become `Literal(Int(3))` — so the negative assertion above
+/// is pinning the guard, not an accident of the fixture.
+#[test]
+fn match_arm_binder_shadowing_a_geometry_list_let_does_not_inherit_its_count() {
+    let compiled = compile_source(
+        r#"
+        enum Tally { Counted { xs: List<Int> }, Unknown }
+        structure S {
+            param t : Tally = Tally.Unknown
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let n = match t {
+                Counted { xs: holes } => holes.count,
+                Unknown => 0,
+            }
+        }
+    "#,
+    );
+
+    let errors = error_messages(&compiled);
+    assert!(errors.is_empty(), "compile errors: {errors:?}");
+
+    let n = default_expr_debug(&compiled, "S", "n");
+    assert!(
+        n.contains("method: \"count\""),
+        "the binder's `.count` must survive as a MethodCall on the bound \
+         payload rather than be folded away; got: {n}",
+    );
+    assert!(
+        n.contains("$matcharm"),
+        "…and its receiver must be the arm's own binder cell; got: {n}",
+    );
+    assert!(
+        !n.contains("Literal(Int(3))"),
+        "no folded `Int(3)` may appear anywhere in the compiled match — that is \
+         the OUTER geometry list's length leaking past a shadowing binder; \
+         got: {n}",
+    );
+
+    // Positive control: same fixture, non-shadowing binder name — the fold is
+    // legitimate there and DOES produce the literal.
+    let unshadowed = compile_source(
+        r#"
+        enum Tally { Counted { xs: List<Int> }, Unknown }
+        structure S {
+            param t : Tally = Tally.Unknown
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let n = match t {
+                Counted { xs: ys } => holes.count,
+                Unknown => 0,
+            }
+        }
+    "#,
+    );
+    assert!(
+        default_expr_debug(&unshadowed, "S", "n").contains("Literal(Int(3))"),
+        "control: an UNshadowed `holes.count` inside the same match arm must \
+         still fold to the outer list's length; got: {}",
+        default_expr_debug(&unshadowed, "S", "n"),
     );
 }

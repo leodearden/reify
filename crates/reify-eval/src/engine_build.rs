@@ -11716,22 +11716,36 @@ impl Engine {
                     .and_then(|s| s.snapshot.values.get(cell_id));
                 // MONOTONE write-back guard (review esc-5385-4).
                 //
-                // The shallow `!new_val.is_undef()` test alone protects a SCALAR
-                // geometry let — `let body = cylinder(r, h)` re-evaluates to a
-                // bare `Value::Undef`, so the realized handle survives — but NOT
-                // a geometry-LIST let. `eval_expr(generate(3, |i| cylinder(…)))`
-                // goes through `generate_index_list`, which is LENGTH-PRESERVING:
-                // it yields `Value::List([Undef, Undef, Undef])`, which is not
-                // `is_undef()`. That would sail through and overwrite a
-                // previously realized 3-handle list with three Undefs — and the
-                // all-or-nothing regroup in `into_entries` then refuses to
-                // repair it, because hash-exempt `holes#k` realizations outside
-                // the demand seed never enter `named_steps`.
+                // Refuse any write-back that is LESS RESOLVED than what the
+                // snapshot already holds. The shallow `!new_val.is_undef()` test
+                // only catches a value that is undef WHOLESALE; it passes a
+                // partially-undef container such as `Value::List([Undef; n])`,
+                // which a length-preserving re-eval can produce.
+                // `post_process_derived_lets` reaches the same conclusion from
+                // the other side: its candidate filter is already
+                // `value_is_or_contains_undef`, not `is_undef`. Keeping the two
+                // passes on the same predicate is the point.
                 //
-                // So additionally refuse any write-back that is LESS RESOLVED
-                // than what the snapshot already holds. `post_process_derived_lets`
-                // reaches the same conclusion from the other side: its candidate
-                // filter is already `value_is_or_contains_undef`, not `is_undef`.
+                // SCOPE — measured, do not over-claim. This does NOT protect a
+                // geometry-LIST let (`let holes = generate(3, |i| cylinder(…))`).
+                // Such a cell never holds a resolved value in `snapshot.values`
+                // to begin with: it reads `List([Undef; n])` in EVERY path
+                // (`eval`, `tessellate_snapshot`, `build_snapshot`, `build`),
+                // because the regroup in `post_process_geometry_handle_cells` /
+                // `hydrate_geometry_handles_into_values` writes the assembled
+                // list into the build's working `ValueMap` — which becomes the
+                // RESULT — and never back into the snapshot. A scalar geometry
+                // let is written back, which is why only the scalar survives a
+                // rebuild that skips its realization. `existing` is therefore
+                // already undef-containing for a list cell, so `regresses` is
+                // always false there and this guard is inert for it.
+                //
+                // The consequent defect — under selective demand, a second
+                // no-op `tessellate_snapshot` returns `[Undef; n]` for a
+                // geometry list where the first returned live handles, while
+                // full scope returns live handles both times — is filed
+                // separately (esc-5385-5); it is NOT fixed here, and this guard
+                // must not be read as fixing it.
                 let regresses = crate::invariants::value_is_or_contains_undef(&new_val)
                     && existing
                         .is_some_and(|(v, _)| !crate::invariants::value_is_or_contains_undef(v));
@@ -12081,8 +12095,21 @@ impl GeometryListCellAccumulator {
         let mut out = Vec::new();
         for (key, &expected) in &self.declared {
             let elements = self.resolved.get(key);
-            let resolved_count = elements.map(|m| m.len()).unwrap_or(0);
-            if resolved_count != expected {
+            // EXACT INDEX SET, not just the count (review esc-5385-4).
+            //
+            // A count check alone admits a compensating pair: indices
+            // `{0, 1, 7}` against `expected == 3` passes, and the emit below
+            // then yields a 3-element list whose contents are silently wrong —
+            // `m.values()` walks the BTreeMap in ascending KEY order whatever
+            // those keys are, so element 2 would be index 7's handle. (A
+            // duplicate index is the benign direction: it collapses to one
+            // entry, shortening the count, so the list is conservatively
+            // dropped.) Unreachable today — `index` comes from `enumerate()` in
+            // the compiler's unroll — but `declare` already carries a
+            // `debug_assert!` for the analogous `len` disagreement, and this
+            // costs the same as the count check it replaces.
+            let contiguous = elements.is_some_and(|m| m.keys().copied().eq(0..expected));
+            if !contiguous {
                 continue;
             }
             let (entity, list_name) = key;

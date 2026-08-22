@@ -3910,6 +3910,24 @@ fn compile_expr_guarded_with_expected_inner(
             // registers its binder in `names` only. Gate the fold on the name
             // still resolving to THIS entity's list let, or a binder that
             // shadows one is silently folded to the OUTER list's length.
+            //
+            // WIRED CONSUMERS (review esc-5385-3): this `.count` fold and the
+            // `union_all` / `intersection_all` expansion in geometry_boolean.rs
+            // are the ONLY reads of a geometry-list let that resolve at COMPILE
+            // time. Every other use — `holes[0]`, iteration, `size(holes)`,
+            // passing `holes` to a user function or list helper — compiles to
+            // an ordinary value-cell expression with no diagnostic, and those
+            // cells evaluate BEFORE `post_process_geometry_handle_cells`
+            // regroups the sibling realization handles into the list cell, so
+            // they read the pre-hydration placeholder and yield `Undef`. The
+            // full CLI build/tessellate pass does recompute, so this is a
+            // single-pass (`Engine::eval`) seam rather than a user-visible
+            // silent undef; it is pinned by
+            // `indexing_a_geometry_list_reads_the_pre_hydration_placeholder`
+            // (crates/reify-eval/tests/generate_eval.rs). Closing it properly
+            // is the eval-side `UndefCause`-provenance half, task #5402 —
+            // deliberately NOT a compile-time rejection here, which would risk
+            // refusing programs the full pipeline resolves correctly.
             if member == "count"
                 && let reify_ast::ExprKind::Ident(list_name) = &object.kind
                 && scope.geometry_list_binding_is_live(list_name.as_str())

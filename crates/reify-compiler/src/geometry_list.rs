@@ -635,9 +635,25 @@ pub(crate) fn resolve_geometry_list_arg(
     let Some(shape) = classify_geometry_list_let(arg, functions, &known, &HashSet::new()) else {
         return GeometryListArg::NotGeometry;
     };
-    // The cap diagnostic belongs to the declaring let, not to every fold over
-    // it, so an over-cap inline list is reported as "not a geometry list"
-    // rather than re-emitting the cap error here.
+    // KNOWN GAP (review esc-5385-3): the cap diagnostic is DISCARDED here, and
+    // the resulting `NotGeometry` makes the caller say "this collection's
+    // elements are not geometry" — factually wrong, and the user is never told
+    // about `GEOMETRY_LIST_MAX_ELEMENTS`.
+    //
+    // The original justification — "the cap diagnostic belongs to the declaring
+    // let, not to every fold over it" — holds only for a NAMED list, and a named
+    // list never reaches this line: the `Ident` arm above returns
+    // `AlreadyDiagnosed` for a let whose own cap Error pass 1 already emitted.
+    // Everything below that arm is inline-only (`union_all([<257 geom exprs>])`,
+    // `union_all(generate(300, |i| box(…)))`), and an inline list has no
+    // declaring let to own the diagnostic — so it is lost outright.
+    //
+    // Fixing it cannot be done in this module alone: it needs either a
+    // `GeometryListArg::OverCap { count }` variant or a `&mut Vec<Diagnostic>`
+    // parameter on this function, and BOTH require a matching arm / extra
+    // argument at the sole call site, `compile_boolean_op`'s `union_all` /
+    // `intersection_all` single-argument handling in geometry_boolean.rs. Left
+    // for a follow-up rather than half-applied here.
     let mut throwaway = Vec::new();
     match expand_geometry_list_elements(arg, &shape, arg.span, &mut throwaway) {
         Some(elements) => GeometryListArg::Elements(elements),

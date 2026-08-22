@@ -626,3 +626,144 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
          — doing so silently reverts the user's edit_param)."
     );
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry-LIST lets across a rebuild (task #5385, review esc-5385-4).
+//
+// MEASURED GROUND TRUTH for the test below — `snapshot.values` and
+// `TessellateResult.values` do NOT agree for a geometry list, and only the
+// latter is the user-visible surface:
+//
+//   cell                       snapshot.values      TessellateResult.values
+//   `a`     (scalar geometry)  live GeometryHandle  live GeometryHandle
+//   `holes` (List<Geometry>)   List([Undef; 3])     List([3 live handles])
+//
+// The `snapshot.values` column for `holes` is `List([Undef; 3])` in EVERY path —
+// `eval`, `tessellate_snapshot`, `build_snapshot` and `build` — because the
+// regroup in `post_process_geometry_handle_cells` writes the assembled list into
+// the build's working `ValueMap` (which becomes the result), never back into the
+// snapshot. That pre-hydration placeholder is deliberate and already pinned by
+// `indexing_a_geometry_list_reads_the_pre_hydration_placeholder`
+// (generate_eval.rs); the remaining silent-Undef seam is #5402's.
+//
+// So this test asserts on the RESULT, not on `snapshot.values`. Asserting the
+// snapshot would pin `[Undef; 3]` — the defect — as if it were the contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Editing a param the list depends on must leave the list RESOLVED, and
+/// actually re-realized — not stale, not `[Undef; n]`.
+///
+/// The review noted every geometry-list test was single-shot `Engine::eval`, so
+/// no test drove build → `edit_param` → rebuild. `r` feeds all three
+/// `cylinder(r, h)` elements, so a correct rebuild changes every element's
+/// `upstream_values_hash` while keeping all three live.
+#[test]
+fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let e = "SelectiveGeomList";
+    let holes_id = ValueCellId::new(e, "holes");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+
+    let tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after eval()");
+    let hashes_before = geometry_list_upstream_hashes(&tess1, &holes_id, 3, "before edit_param");
+
+    // ── Edit `r` 5mm → 7mm; all three cylinders depend on it ────────────────
+    engine
+        .edit_param(ValueCellId::new(e, "r"), Value::length(0.007))
+        .expect("edit_param(r, 7mm) must succeed");
+
+    let tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after edit_param");
+    assert_live_handle_list(
+        &tess2,
+        &holes_id,
+        3,
+        "after edit_param + rebuild: the list must still hold three live handles",
+    );
+    let hashes_after = geometry_list_upstream_hashes(&tess2, &holes_id, 3, "after edit_param");
+
+    assert_ne!(
+        hashes_before, hashes_after,
+        "after edit_param(r, 7mm) every element's upstream_values_hash must \
+         change — an unchanged hash means the list was served stale rather than \
+         re-realized from the current param"
+    );
+}
+
+/// Assert `result.values[cell]` is a `len`-element list in which NO element is
+/// `Undef`, and return the backing realization ids in order. `ctx` labels the
+/// call site in panic messages.
+fn assert_live_handle_list(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<RealizationNodeId> {
+    let value = result
+        .values
+        .get(cell)
+        .unwrap_or_else(|| panic!("{ctx}: no value cell `{cell}` in the result"));
+    let Value::List(items) = value else {
+        panic!("{ctx}: `{cell}` should be a List; got: {value:?}");
+    };
+    assert_eq!(
+        items.len(),
+        len,
+        "{ctx}: `{cell}` should have {len} elements; got: {items:?}",
+    );
+    let mut refs = Vec::new();
+    for (k, item) in items.iter().enumerate() {
+        assert!(
+            !item.is_undef(),
+            "{ctx}: `{cell}[{k}]` is Undef — a realized geometry list regressed to \
+             unresolved.\nfull value: {items:?}",
+        );
+        match item {
+            Value::GeometryHandle {
+                realization_ref, ..
+            } => refs.push(realization_ref.clone()),
+            other => panic!("{ctx}: `{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
+        }
+    }
+    refs
+}
+
+/// The per-element `upstream_values_hash` of a geometry-list cell, in order.
+/// Distinguishes "re-realized from the current params" from "served stale".
+fn geometry_list_upstream_hashes(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<[u8; 32]> {
+    let value = result
+        .values
+        .get(cell)
+        .unwrap_or_else(|| panic!("{ctx}: no value cell `{cell}` in the result"));
+    let Value::List(items) = value else {
+        panic!("{ctx}: `{cell}` should be a List; got: {value:?}");
+    };
+    assert_eq!(items.len(), len, "{ctx}: `{cell}` should have {len} elements");
+    items
+        .iter()
+        .enumerate()
+        .map(|(k, item)| match item {
+            Value::GeometryHandle {
+                upstream_values_hash,
+                ..
+            } => *upstream_values_hash,
+            other => panic!("{ctx}: `{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
+        })
+        .collect()
+}
+

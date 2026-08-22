@@ -312,18 +312,102 @@ fn geometry_list_literal_yields_evaluable_geometry_list() {
     assert_geometry_handle_list(&result, "S", "parts", 2);
 }
 
-/// The probe-captured repro itself, read from the PRD fixture on disk so the
-/// pinned signal cannot drift from the artifact that documents it.
+/// The probe-captured repro itself.
 ///
 /// Probed 2026-07-24: `P.holes = [undef, undef, undef, undef]`, no diagnostic,
 /// `reify check` green. That is the user-observable defect this task closes.
+///
+/// Source INLINED rather than read from
+/// `docs/prds/v0_6/fixtures/silent_undef_generate_geometry.ri` (review
+/// esc-5385-4). Two reasons, both about build coupling:
+///
+/// 1. `docs/prds/**/fixtures/` is the DEPRECATED fixture tier being emptied by
+///    task #6431 (`tests/prd-gate/README.md` → "Where fixtures live"). A
+///    `read_to_string` of a path on that tier hard-panics the moment the move
+///    lands.
+/// 2. The escalation that makes a Rust-read `.ri` fixture count as source
+///    (`_RUST_COUPLED_RI_FIXTURES`, `scripts/verify.sh`) covers only
+///    `tests/prd-gate/fixtures/`. A compiled test reading from `docs/` is
+///    therefore coupled to a file the docs fast-path scopes to no-heavy-checks
+///    — a docs-only edit could break this test with the gate none the wiser.
+///
+/// The `.ri` file remains the PRD's documenting artifact; this const is the
+/// pinned signal. Keeping the two in step is manual — the alternative (move the
+/// fixture to `tests/prd-gate/fixtures/` and register its basename in
+/// `_RUST_COUPLED_RI_FIXTURES`) spans `docs/`, `tests/prd-gate/` and the verify
+/// pipeline, so it is filed rather than done here.
+const PRD_FIXTURE_SILENT_UNDEF_GENERATE_GEOMETRY: &str = r#"module silent_undef_generate_geometry
+
+structure def P {
+    let holes = generate(4, |i| cylinder(5mm, 20mm))
+}"#;
+
+/// ELEMENT ORDER: item `k` of the assembled list must be the element the
+/// compiler unrolled at `list_binding.index == k` — not merely *some*
+/// permutation of the three realizations (review esc-5385-4).
+///
+/// `assert_geometry_handle_list` checks length, non-undef and pairwise
+/// distinctness, all of which a reversed or re-keyed regroup would still
+/// satisfy. This test resolves the expectation from the COMPILED module rather
+/// than assuming realization ids happen to ascend with index, so it also
+/// discriminates a regroup that keyed on realization id instead of
+/// `GeometryListBinding::index`.
+///
+/// Note `upstream_values_hash` is NOT a usable per-element discriminator here:
+/// all three elements read the same upstream cells, so all three hashes are
+/// equal even though the elements are distinct realizations. `realization_ref`
+/// is the only symbolic discriminator, which is why the oracle is built from
+/// `list_binding`.
+#[test]
+fn geometry_list_element_k_is_the_realization_unrolled_at_index_k() {
+    let source = r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+        }
+    "#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {errors:?}");
+
+    // Oracle: the realization the COMPILER assigned to each index of `holes`.
+    let mut expected: Vec<Option<reify_core::identity::RealizationNodeId>> = vec![None; 3];
+    for template in &compiled.templates {
+        for realization in &template.realizations {
+            if let Some(binding) = &realization.list_binding {
+                if binding.list_name == "holes" {
+                    assert_eq!(binding.len, 3, "fixture drift: holes should have len 3");
+                    expected[binding.index] = Some(realization.id.clone());
+                }
+            }
+        }
+    }
+    let expected: Vec<_> = expected
+        .into_iter()
+        .enumerate()
+        .map(|(k, r)| r.unwrap_or_else(|| panic!("compiler emitted no element at index {k}")))
+        .collect();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+    let actual = assert_geometry_handle_list(&result, "S", "holes", 3);
+
+    assert_eq!(
+        actual, expected,
+        "list element k must be backed by the realization the compiler unrolled \
+         at list_binding.index == k, in that order"
+    );
+}
+
 #[test]
 fn prd_fixture_silent_undef_generate_geometry_no_longer_undefs() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/prds/v0_6/fixtures/silent_undef_generate_geometry.ri");
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read fixture {}: {e}", path.display()));
-    let result = eval_source(&source);
+    let result = eval_source(PRD_FIXTURE_SILENT_UNDEF_GENERATE_GEOMETRY);
     assert_geometry_handle_list(&result, "P", "holes", 4);
 }
 

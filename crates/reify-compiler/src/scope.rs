@@ -447,17 +447,22 @@ impl<'u> CompilationScope<'u> {
     /// Callers use this to stay SILENT rather than pile a second diagnostic on
     /// a let the user has already been told about.
     ///
-    /// The two rejection paths differ in whether the name is registered at all:
-    /// `diagnose_unsupported_geometry_list` registers it as `List<Geometry>` so
-    /// downstream reads type-check, while the over-cap path routes the let out
-    /// entirely and registers nothing. Hence the two-case shape — an
-    /// unregistered name cannot have been shadowed, and a registered one must
-    /// still pass the same entity-stamp liveness check
+    /// BOTH rejection paths register the name as `List<Geometry>`, so a rejected
+    /// name always resolves. `compile_entity`'s pass 1 registers at that type
+    /// FIRST and only then attempts `expand_geometry_list_elements`, so the
+    /// over-cap path inherits that registration; the
+    /// `diagnose_unsupported_geometry_list` path registers explicitly, for the
+    /// stated reason that downstream reads should type-check rather than
+    /// cascade a second, unrelated diagnostic. "Routes the let out" therefore
+    /// means out of LOWERING — no value cell, no realizations — never out of
+    /// scope.
+    ///
+    /// Rejection alone is consequently not sufficient: a rejected name must
+    /// ALSO still be live, i.e. pass the same entity-stamp check
     /// [`Self::geometry_list_binding_is_live`] applies, so a lambda param that
     /// happens to reuse a rejected name gets ordinary treatment.
     pub(crate) fn geometry_list_was_rejected(&self, name: &str) -> bool {
-        self.geometry_list_rejected.contains(name)
-            && (self.resolve(name).is_none() || self.geometry_list_binding_is_live(name))
+        self.geometry_list_rejected.contains(name) && self.geometry_list_binding_is_live(name)
     }
 
     /// Register a match-arm `GuardedDeclGroup` under its logical name.
