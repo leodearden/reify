@@ -608,7 +608,13 @@ finish_teardown() {
         why="the next invocation will refuse E_JC_SERVE_PORT_BUSY. Find it with 'ss -ltnp | grep $PORT'"
     else
         what="process group ${SERVE_PGID:-<none>} is still alive (the port was released)"
-        why="it is a stray process outliving this run rather than a blocked port. Find it with 'ps -eo pid,pgid,cmd | awk \$2==${SERVE_PGID:-0}'"
+        # The awk program MUST be emitted single-quoted with a literal `$2`, so an
+        # operator can paste this line verbatim. The unquoted spelling
+        # (`awk \$2==<pgid>`) renders as `awk $2==12345`; the operator's own shell
+        # then expands `$2` to the empty string and awk receives the program
+        # `==12345` — a syntax error. Keep this in the `-v g=<pgid>` form, matching
+        # the guard's own literal in tests/infra/test_with_jcodemunch_serve.sh.
+        why="it is a stray process outliving this run rather than a blocked port. Find it with: ps -eo pid,pgid,cmd | awk -v g=${SERVE_PGID:-0} '\$2==g'"
     fi
 
     printf 'with-jcodemunch-serve: teardown diagnostics for port %s: pgid %s; -TERM: %s; -KILL: %s\n' \
