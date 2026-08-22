@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 
-use reify_kernel_gmsh::refine_volume::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
+use reify_kernel_gmsh::mesh_size_clamp::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
 use reify_kernel_gmsh::{MeshingOptions, ffi, init, mesh_plane_2d, refine_volume_with_size_field};
 use reify_ir::{ElementOrderTag, Mesh};
 

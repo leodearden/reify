@@ -35,7 +35,7 @@ mod common;
 use std::sync::Mutex;
 
 use reify_ir::ElementOrderTag;
-use reify_kernel_gmsh::refine_volume::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
+use reify_kernel_gmsh::mesh_size_clamp::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init, mesh_plane_2d};
 
 /// Whole-test-body serialisation, layered *above* `init::GMSH_LOCK`.
@@ -127,7 +127,8 @@ fn mesh_to_volume_tet_count(size: f64) -> usize {
 /// happened.
 ///
 /// `mesh_to_volume` writes `Mesh.MeshSizeMin`/`MeshSizeMax` to its resolved
-/// size (`kernel_real.rs:203-206`). Gmsh's option table is process-global and
+/// size (the two `option_set_number` calls in `kernel_real.rs` guarded by
+/// `if resolved_size > 0.0`). Gmsh's option table is process-global and
 /// `gmshClear()` clears MODELS, not OPTIONS, so without an RAII restore that
 /// `[size, size]` pair outlives the call for the rest of the process. The
 /// downstream victim is real, not hypothetical: `mesh_plane_2d(_, _, None, …)`
