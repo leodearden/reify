@@ -194,7 +194,17 @@ _ratchet_check_scan_evidence() {
         # Pure field read: take the files_scanned=<value> token verbatim, then
         # test it for well-formedness.  Anything unparseable stays visible in
         # the diagnostic rather than being coerced to a number.
-        _count="$(printf '%s\n' "$_line" | sed -n 's/.*files_scanned=\([^ ]*\).*/\1/p')"
+        #
+        # Split on whitespace FIRST, then anchor the key with `^`, mirroring the
+        # Rust consumer's `split_whitespace()` + `strip_prefix("files_scanned=")`
+        # (crates/reify-audit/tests/ptodo_baseline.rs::parse_scan_line) so the
+        # two implementations of one grammar cannot drift.  An unanchored
+        # `.*files_scanned=` would match any token whose name merely ENDS WITH
+        # the key (`skipped_files_scanned=0`) and read its value instead —
+        # turning an additive extension into a hard RED, the precise false-RED
+        # the EXTENSIBILITY rule rules out.  Pinned by fixture (vi) above.
+        _count="$(printf '%s\n' "$_line" | tr ' \t' '\n\n' \
+            | sed -n 's/^files_scanned=\(.*\)$/\1/p' | head -n1)"
         if [ -z "$_count" ]; then
             _shape='the @@PTODO_SCAN@@ line carries no files_scanned field'
         elif ! printf '%s\n' "$_count" | grep -qE '^[0-9]+$'; then
