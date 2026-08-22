@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
     assert_rigid_mass_props_not_final, cwd_lock, find_moi_principal_constraint,
-    rigid_mass_props_fixture_path, rigid_mass_props_session, rigid_mass_props_session_seeded,
-    visible_realization_keys,
+    rigid_mass_props_fixture_path, rigid_mass_props_session,
+    rigid_mass_props_session_seeded_with_ops, visible_realization_keys,
 };
 
 use reify_constraints::SimpleConstraintChecker;
@@ -2992,22 +2992,38 @@ fn multi_realization_partial_hide_retains_at_entity_granularity() {
 /// retains only when the cell's realization did NOT run this pass.
 ///
 /// The degeneration is induced without OCCT by NARROWING the
-/// `MockGeometryKernel` seed. The mock's `next_id` is monotonic and never reset,
-/// and each dispatch of the box allocates the next id; MEASURED on this branch
-/// the fixture consumes id 1 on the cold load and id 2 on the first selective
-/// rebuild, so seeding `1..=2` leaves the warm `set_parameter` dispatch (id 3)
-/// UNANSWERED. Its geometry queries then fail with an `OpContractViolation` —
-/// exactly the shape of a failing kernel query or degenerate geometry in
-/// production, and encoded in the delta exactly as a hash-exempt gap is.
+/// `MockGeometryKernel` seed: the mock's `next_id` is monotonic and never reset,
+/// each dispatch of the box allocates the next id, and seeding `1..=2` leaves the
+/// warm `set_parameter` dispatch UNANSWERED. Its geometry queries then fail with
+/// an `OpContractViolation` — exactly the shape of a failing kernel query or
+/// degenerate geometry in production, and encoded in the delta exactly as a
+/// hash-exempt gap is.
+///
+/// Reviewer suggestion 4: seed-range starvation couples this test to the number
+/// of kernel dispatches the production path happens to perform, which is a
+/// fragile way to say "the geometry query failed". The knob that would fix it
+/// properly (`with_volume_error(h, ..)` / `fail_after_n_dispatches` on
+/// `MockGeometryKernel`) lives in `crates/reify-test-support`, outside this task's
+/// locked scope, so the coupling is instead made EXPLICIT: step (3) asserts,
+/// against the mock's own operation log, that the post-edit rebuild really did
+/// dispatch an op whose handle is past the seeded ceiling. A drift in dispatch
+/// count now fails with a message naming the handles it saw, instead of failing
+/// downstream on a determinacy assertion. The injectable form is filed as a
+/// follow-up.
 ///
 /// Pre-amendment this test FAILS: the edited rebuild's `Undef` was read as a
 /// delta gap and the pre-edit mass was re-surfaced `determined` / `final` /
 /// `reason = None`, i.e. a stale value presented as fresh and authoritative.
 #[test]
 fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
+    /// The mock seed ceiling: a dispatched op that allocates a handle above this
+    /// has no volume / centroid / inertia reply, so its geometry queries fail.
+    const SEED_CEILING: u64 = 2;
+
     let dir = tempfile::tempdir().expect("tempdir");
     let (path, _text) = rigid_mass_props_tempfile(dir.path());
-    let engine = Arc::new(Mutex::new(rigid_mass_props_session_seeded(1..=2)));
+    let (session, ops) = rigid_mass_props_session_seeded_with_ops(1..=SEED_CEILING);
+    let engine = Arc::new(Mutex::new(session));
 
     // (1) Cold load: the box realizes to seeded handle 1, so the mass props
     //     resolve and enter the retention cache.
@@ -3034,8 +3050,38 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
 
     // (3) Warm edit: the realization's input-cone hash CHANGES, so it is
     //     dispatched — and its geometry queries now hit an unseeded handle.
+    let ops_before = ops.lock().expect("mock op log").len();
     let state = crate::commands::set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
         .expect("set_parameter_impl");
+    // State the precondition directly rather than trusting the dispatch count: the
+    // edit must have re-executed geometry, and at least one of those ops must have
+    // landed past the seeded ceiling, which is what makes its queries fail. Both
+    // halves matter — no new op at all would mean the realization stayed
+    // hash-exempt (a different scenario, covered by
+    // `warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass`), and a
+    // new op INSIDE the seeded range would mean the queries were answered and
+    // nothing degenerated.
+    let new_handles: Vec<u64> = ops
+        .lock()
+        .expect("mock op log")
+        .iter()
+        .skip(ops_before)
+        .map(|rec| rec.result_handle.0)
+        .collect();
+    assert!(
+        !new_handles.is_empty(),
+        "the edit must have re-DISPATCHED the realization — no new kernel op means \
+         it stayed hash-exempt, which is a different scenario than the one this \
+         test induces"
+    );
+    assert!(
+        new_handles.iter().any(|h| *h > SEED_CEILING),
+        "the post-edit dispatch must allocate a handle past the seeded ceiling \
+         ({SEED_CEILING}) so its volume / centroid / inertia queries go unanswered \
+         — that unanswered query IS the degeneration under test. Got new handles \
+         {new_handles:?}; if they are all seeded, the production path's dispatch \
+         count drifted and the seed range needs re-narrowing"
+    );
     let depth = state
         .values
         .iter()

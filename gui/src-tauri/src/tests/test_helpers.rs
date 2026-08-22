@@ -85,6 +85,33 @@ pub(crate) fn rigid_mass_props_session() -> crate::engine::EngineSession {
 pub(crate) fn rigid_mass_props_session_seeded(
     ids: std::ops::RangeInclusive<u64>,
 ) -> crate::engine::EngineSession {
+    rigid_mass_props_session_seeded_with_ops(ids).0
+}
+
+/// [`rigid_mass_props_session_seeded`] plus the mock kernel's shared operation
+/// log, so a test can assert a precondition about DISPATCH directly — "the warm
+/// rebuild re-executed the box and got a handle past the seeded ceiling, so its
+/// geometry queries are unanswered" — instead of leaving it as a comment about a
+/// measured dispatch count.
+///
+/// Only `GeometryKernel::execute` pushes to this log (`MockGeometryKernel`,
+/// crates/reify-test-support/src/mocks.rs); queries do not, so
+/// `GeometryOpRecord::result_handle` is exactly the handle a dispatched op
+/// allocated, and comparing it against the seed range says whether that op's
+/// queries can be answered.
+///
+/// Reviewer suggestion 4 asked for explicit failure seeding on the mock itself
+/// (`with_volume_error(h, ..)` / a `fail_after_n_dispatches` knob) so the
+/// degeneration is injected rather than starved. That mock lives in
+/// `crates/reify-test-support`, outside this task's locked scope, so the
+/// precondition is made OBSERVABLE here instead of injectable there; the
+/// injectable form is filed as a follow-up.
+pub(crate) fn rigid_mass_props_session_seeded_with_ops(
+    ids: std::ops::RangeInclusive<u64>,
+) -> (
+    crate::engine::EngineSession,
+    std::sync::Arc<std::sync::Mutex<Vec<reify_test_support::GeometryOpRecord>>>,
+) {
     use reify_constraints::SimpleConstraintChecker;
     use reify_ir::{GeometryHandleId, Value};
     use reify_test_support::MockGeometryKernel;
@@ -109,7 +136,11 @@ pub(crate) fn rigid_mass_props_session_seeded(
                 ]),
             );
     }
-    crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    let ops = kernel.operations_ref();
+    (
+        crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel))),
+        ops,
+    )
 }
 
 /// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,
