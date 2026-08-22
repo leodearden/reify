@@ -279,8 +279,16 @@ fn units_flat_and_module_path() {
     // The reverse (.ri-emission) table, in both spellings. `reify-ir`'s
     // `value_to_ri_literal` depends on this surface, so pin it at compile
     // time rather than incidentally (task #5095).
+    //
+    // Deliberately NOT asserting the ladder's CONTENTS here. That is this
+    // file's remit boundary: it pins reachability and the SIGNATURE (the
+    // `&'static [&'static str]` annotation below is load-bearing — it fails to
+    // compile if the return type moves to an owned or borrowed form). The
+    // table's contents belong to `units.rs`, where the ladder and its two
+    // drift guards live; duplicating `["mm", "cm", "m"]` here would add a
+    // third edit site for a deliberate ladder change and no coverage.
     let ladder: &'static [&'static str] = ri_emittable_units(&DimensionVector::LENGTH);
-    assert_eq!(ladder, &["mm", "cm", "m"]);
+    assert!(!ladder.is_empty(), "LENGTH must have an emission ladder");
     assert_eq!(ri_emittable_units_mod(&DimensionVector::LENGTH), ladder);
     assert!(ri_emittable_units(&DimensionVector::DIMENSIONLESS).is_empty());
 }

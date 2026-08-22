@@ -81,6 +81,14 @@ fn ri_type_name(v: &Value) -> &'static str {
             DimensionVector::MASS => "Mass",
             DimensionVector::TIME => "Time",
             DimensionVector::TEMPERATURE => "Temperature",
+            // A dimensionless Scalar is emitted as a bare real and comes back
+            // as a `Value::Real`, so `Real` is the type its param must declare.
+            // That variant change is the serializer's one documented
+            // exception, pinned by
+            // `a_dimensionless_scalar_downgrades_to_real_with_identical_bits`
+            // — it cannot ride `assert_round_trips`, whose `assert_identical`
+            // asserts discriminant equality.
+            DimensionVector::DIMENSIONLESS => "Real",
             other => panic!("no .ri type name wired for dimension {other}"),
         },
         other => panic!("no .ri type name wired for {other:?}"),
@@ -367,7 +375,69 @@ fn deterministic_sweep_round_trips_exactly() {
     assert_round_trips(&cases);
 }
 
-// ─── (c) rejections are never spliced ────────────────────────────────────────
+// ─── (c) the one documented variant change ───────────────────────────────────
+
+/// A dimensionless `Scalar` round-trips as a `Real` — same dimension, same
+/// bits, DIFFERENT variant.
+///
+/// This is the serializer's sole documented exception to the "same `Value`
+/// variant" clause (`ri_literal`'s module doc, qualification 1), and it is the
+/// one case the shared harness structurally cannot carry: `assert_identical`
+/// asserts `mem::discriminant` equality, so routing this through
+/// `assert_round_trips` would fail by construction. Pinning it here means the
+/// exception is *asserted*, not silently excluded from the very test that is
+/// supposed to police the contract.
+///
+/// The change is not a defect to fix: an un-suffixed `.ri` number literal has
+/// no reading other than `Real`, so the alternative would be refusing to write
+/// a dimensionless scalar at all.
+#[test]
+fn a_dimensionless_scalar_downgrades_to_real_with_identical_bits() {
+    // The mm-inexact witness, reused so the magnitude is a genuinely awkward
+    // f64 rather than something a shortest-form printer rounds off easily.
+    let si = -0.5566166674539299_f64;
+    let original = Value::Scalar {
+        si_value: si,
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+
+    let literal = value_to_ri_literal(&original).expect("a dimensionless scalar is emittable");
+    assert_eq!(
+        literal, "-0.5566166674539299",
+        "a dimensionless scalar must be emitted as a bare real, with no unit"
+    );
+
+    let source = format!(
+        "structure def S {{\n  param x : {} = {literal}\n}}\n",
+        ri_type_name(&original)
+    );
+    let got = cell_value(&eval_source(&source), "S", "x");
+
+    // The documented downgrade: variant moves Scalar → Real...
+    assert!(
+        matches!(got, Value::Real(_)),
+        "literal {literal:?} must re-parse as Value::Real, got {got:?}"
+    );
+    assert_ne!(
+        std::mem::discriminant(&original),
+        std::mem::discriminant(&got),
+        "this test exists because the variant DOES change; if it no longer \
+         does, the module doc's qualification 1 is stale and should be dropped"
+    );
+    // ...while dimension and raw bits are preserved exactly.
+    assert_eq!(
+        got.dimension(),
+        original.dimension(),
+        "the downgrade must not change the dimension"
+    );
+    assert_eq!(
+        got.as_f64().expect("Real is float-bearing").to_bits(),
+        si.to_bits(),
+        "the downgrade must be bit-exact"
+    );
+}
+
+// ─── (d) rejections are never spliced ────────────────────────────────────────
 
 /// Rejected values are deliberately NOT parsed — the point is that nothing
 /// unparseable can ever reach a splice in the first place.

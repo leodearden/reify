@@ -12,6 +12,44 @@
 //! There is no third outcome. A "close enough" literal would silently corrupt
 //! a user's design file, which is strictly worse than refusing to edit it.
 //!
+//! # The two qualifications on that sentence
+//!
+//! Both are load-bearing for a caller deciding whether a splice is safe, so
+//! they are stated here rather than left in an inline comment.
+//!
+//! **1. One documented variant change.** A *dimensionless* `Value::Scalar` has
+//! no unit to write, so it is emitted as a bare real and re-parses as
+//! `Value::Real`. Dimension and bits are preserved; only the discriminant
+//! moves — and it moves to the variant that `.ri` source has no way to
+//! distinguish, since an un-suffixed number literal is a `Real`. This is the
+//! sole exception to the "same variant" clause. It is pinned, not merely
+//! excluded, by `ri_literal_roundtrip.rs`'s
+//! `a_dimensionless_scalar_downgrades_to_real_with_identical_bits`, because
+//! the shared round-trip harness asserts discriminant equality and structurally
+//! cannot carry this case.
+//!
+//! **2. A precondition on the target module's unit registry.** The exactness
+//! proof below reproduces the arithmetic of `unit_to_scalar`, the *built-in*
+//! table. But the compiler resolves a bare unit as
+//! `registry.lookup(..).or_else(|| unit_to_scalar(..))` (reify-compiler's
+//! `expr.rs`) — the per-module `UnitRegistry` is consulted FIRST, and the
+//! built-in table is only its fallback. So the guarantee reads in full:
+//!
+//! > …provided the target module's unit registry does not *shadow* the emitted
+//! > symbol with a different factor.
+//!
+//! It holds unconditionally for a module that imports nothing (which is what
+//! makes the bare-built-in ladder the right choice), and it holds today for a
+//! module that imports `std.units`, whose `cm`/`in`/`g`/`deg` declarations
+//! agree with the built-in table bit-for-bit — pinned by
+//! `ri_literal_roundtrip.rs`'s
+//! `stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table`, since
+//! that registry is the table that actually wins at resolution time. It does
+//! NOT hold for a module that declares its own `unit mm : Length = …` with a
+//! different factor; nothing in this crate can see that, and a caller splicing
+//! into arbitrary user source should treat a user-shadowed unit symbol as
+//! outside the guarantee.
+//!
 //! # Why not `Display for Value`
 //!
 //! `Display` is a human-facing rendering and breaks the round-trip in three
@@ -159,6 +197,13 @@ fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
 /// Serialize a [`Value`] as `.ri` source text that re-parses to that same value.
 ///
 /// Equivalent to [`value_to_ri_literal_with_unit`] with no unit preference.
+///
+/// Re-parsing an `Ok` result yields the same variant, dimension and f64 bits,
+/// subject to the module-level doc's two qualifications: a *dimensionless*
+/// `Value::Scalar` comes back as a `Value::Real` (same dimension, same bits,
+/// different variant — an un-suffixed `.ri` number literal has no other
+/// reading), and the bit-exactness holds unless the target module's
+/// `UnitRegistry` shadows the emitted symbol with a different factor.
 pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     value_to_ri_literal_with_unit(value, None)
 }
@@ -221,7 +266,11 @@ pub fn value_to_ri_literal_with_unit(
             }
             // A dimensionless scalar has no unit to write, so it goes out as a
             // bare real. That re-parses as `Value::Real`, whose `dimension()`
-            // is `DIMENSIONLESS` — dimensionally identical.
+            // is `DIMENSIONLESS` — dimensionally identical, same bits, but a
+            // DIFFERENT variant. This is the module doc's qualification 1, the
+            // one documented exception to the "same variant" clause; it is
+            // pinned by `ri_literal_roundtrip.rs`'s
+            // `a_dimensionless_scalar_downgrades_to_real_with_identical_bits`.
             if dimension.is_dimensionless() {
                 return Ok(format_f64_shortest(*si_value, true));
             }
@@ -292,6 +341,25 @@ fn first_unrepresentable_char(s: &str) -> Option<char> {
 /// Deliberately a fixed `&'static str` per variant rather than `{value:?}`:
 /// a `SampledField` or `Matrix` payload could be enormous, and this string
 /// ends up in a user-facing MCP error.
+///
+/// **EXHAUSTIVE BY CONSTRUCTION — do not add a `_` arm.** A catch-all here is
+/// not a tidiness question: it collapses to a single useless name exactly the
+/// values an agent is most likely to try to edit (a `Direction`, a `Frame`, a
+/// `Range`), and it lets a newly added [`Value`] variant degrade silently
+/// instead of failing to compile. Listing every variant makes the compiler the
+/// guard.
+///
+/// The `Bool`/`Int`/`Real`/`String`/`Scalar` arms are unreachable from the one
+/// caller — [`value_to_ri_literal_with_unit`] handles those variants before it
+/// reaches its catch-all — but they are required for exhaustiveness, and they
+/// keep this a total `Value → kind name` function rather than a
+/// caller-specific residue.
+///
+/// This duplicates `reify_constraints::value_kind_label`'s variant list. The
+/// non-duplicating form is a `Value::kind_name()` inherent method both delegate
+/// to (the shape `Value::format_hover()` already uses), which lives in
+/// `crates/reify-ir/src/value.rs` — outside this task's locked scope, so it is
+/// filed as follow-up rather than done here.
 fn value_kind_name(value: &Value) -> &'static str {
     match value {
         Value::Bool(_) => "Bool",
@@ -304,12 +372,28 @@ fn value_kind_name(value: &Value) -> &'static str {
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
         Value::Option(_) => "Option",
+        Value::Field { .. } => "Field",
+        Value::Lambda { .. } => "Lambda",
+        Value::Tensor(_) => "Tensor",
         Value::Point(_) => "Point",
         Value::Vector(_) => "Vector",
-        Value::Tensor(_) => "Tensor",
+        Value::Complex { .. } => "Complex",
+        Value::Orientation { .. } => "Orientation",
+        Value::Frame { .. } => "Frame",
+        Value::Transform { .. } => "Transform",
+        Value::Plane { .. } => "Plane",
+        Value::Axis { .. } => "Axis",
+        Value::Direction { .. } => "Direction",
+        Value::BoundingBox { .. } => "BoundingBox",
+        Value::Range { .. } => "Range",
         Value::Matrix(_) => "Matrix",
+        Value::SampledField(_) => "SampledField",
+        Value::StructureInstance(_) => "StructureInstance",
+        Value::GeometryHandle { .. } => "GeometryHandle",
+        Value::AffineMap { .. } => "AffineMap",
+        Value::Selector(_) => "Selector",
+        Value::Feature(_) => "Feature",
         Value::Undef => "Undef",
-        _ => "Unsupported",
     }
 }
 
@@ -321,6 +405,10 @@ fn value_kind_name(value: &Value) -> &'static str {
 /// the same single multiply the compiler performs for a bare unit literal
 /// (`unit_to_scalar` delegates to that table). So a `Some` here is a *proof*
 /// that the literal re-parses to the original bits, not an estimate.
+///
+/// The proof is against the BUILT-IN table, which the compiler consults only
+/// as the `or_else` fallback behind the target module's `UnitRegistry` — see
+/// the module doc's qualification 2 for the precondition that carries.
 ///
 /// Naive `si_value / factor` is emphatically NOT enough — measured over 200k
 /// uniform magnitudes per unit, it fails to round-trip for ~2.1% of `mm`,
@@ -561,6 +649,12 @@ mod tests {
     /// The catch-all must name the kind so γ can render a useful MCP error,
     /// and must NOT embed a `{value:?}` dump (a `SampledField` payload could
     /// be enormous).
+    ///
+    /// `Complex`, `Direction`, `Range` and `Orientation` are here deliberately:
+    /// they are the variants an earlier `_ => "Unsupported"` catch-all
+    /// collapsed into one uninformative name, and a datum-ish param is exactly
+    /// what an agent is most likely to try to edit. Covering only the variants
+    /// a catch-all happens to list gives false confidence.
     #[test]
     fn unsupported_value_kinds_are_rejected_with_a_stable_kind_name() {
         let cases = [
@@ -569,6 +663,40 @@ mod tests {
             (Value::Point(vec![]), "Point"),
             (Value::Option(None), "Option"),
             (Value::enum_unit("Fit", "Loose"), "Enum"),
+            (
+                Value::Complex {
+                    re: 1.0,
+                    im: -2.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                "Complex",
+            ),
+            (
+                Value::Direction {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                "Direction",
+            ),
+            (
+                Value::Range {
+                    lower: Some(Box::new(Value::Int(0))),
+                    upper: Some(Box::new(Value::Int(10))),
+                    lower_inclusive: true,
+                    upper_inclusive: false,
+                },
+                "Range",
+            ),
+            (
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                "Orientation",
+            ),
         ];
         for (v, expected) in cases {
             match err(&v) {
