@@ -327,6 +327,22 @@ assert "vacuity floor fires when the scan line carries no files_scanned field" \
              case "$1" in *"no files_scanned field"*) exit 0 ;; *) exit 1 ;; esac' \
     -- "$_SCAN_NOFIELD_DIAG" "$_SCAN_NOFIELD_RC"
 
+# (vi) THE EXTENSIBILITY ASSERT — an ADDITIVE third token must be ignored, even
+# when its name ENDS WITH the required field's name.  The §6.6 grammar is open
+# for extension and both consumers promise a future counter "cannot turn the
+# gate RED"; a parse that matched `files_scanned=` as a SUBSTRING would read
+# `skipped_files_scanned`'s 0 here and hard-RED the whole tests/infra PTODO
+# gate — the exact false-RED the contract rules out.  Hence the fixture pins
+# the adversarial name, not merely an unrelated extra token.  Its Rust
+# counterpart (same grammar, other consumer) is
+# `parse_scan_line_ignores_unrecognised_tokens` in
+# crates/reify-audit/tests/ptodo_baseline.rs.
+_SCAN_ERR_EXTRA='@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 skipped_files_scanned=0'
+_SCAN_EXTRA_RC=0
+_SCAN_EXTRA_OUT="$(_ratchet_check_scan_evidence "$_SCAN_ERR_EXTRA" 2>&1)" || _SCAN_EXTRA_RC=$?
+assert "vacuity floor ignores an additive third counter and stays silent + rc0" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_SCAN_EXTRA_OUT" "$_SCAN_EXTRA_RC"
+
 # -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
 # The freshness guard rebuilds target/release/reify-audit (and all crate
