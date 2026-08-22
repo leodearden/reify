@@ -2808,8 +2808,20 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
 /// That is the granularity the prune is exact at (see `EngineSession::sync_demand`
 /// docs), and the granularity a `: Rigid` body's entity-level mass-prop cells
 /// actually live at.
+///
+/// Body A's `depth` is hoisted into a defaulted `param` so a warm `set_parameter`
+/// can re-dispatch body A while body B stays hash-exempt
+/// (`warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props`). It
+/// is INERT for the consumers that never edit: at load `depth = 300mm`, so the box
+/// receives the same scalar args a literal would give it, and
+/// `compute_realization_upstream_values_hash_from_ops` folds the op's arg VALUES —
+/// the input cone only moves once `set_parameter` is actually called. That is why
+/// one fixture serves all three consumers; an earlier round carried a second,
+/// literal-armed copy of this source on a constant-cone premise that hoisting does
+/// not in fact disturb.
 const RIGID_TWO_BODY_SRC: &str = r#"structure def RigidBodyA : Rigid {
-    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param depth : Length = 300mm
+    param geometry : Solid = box(100mm, 100mm, depth)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }
 
@@ -3088,25 +3100,6 @@ const RIGID_DENSITY_SCALE_SRC: &str = r#"structure def RigidDensityScale : Rigid
     constraint depth > 0mm
 }"#;
 
-/// [`RIGID_TWO_BODY_SRC`] with an EDITABLE op arg on body A (`depth`, feeding its
-/// box), so a warm `set_parameter` can re-dispatch body A while body B stays
-/// hash-exempt.
-///
-/// A separate const rather than an edit to `RIGID_TWO_BODY_SRC`: that one is
-/// consumed by `hidden_rigid_body_mass_props_are_not_served_as_final` and
-/// `full_scene_debug_read_does_not_leak_hidden_cells_into_the_retention_cache`,
-/// whose premises rest on both bodies having a CONSTANT input cone.
-const RIGID_TWO_BODY_EDITABLE_SRC: &str = r#"structure def RigidBodyA : Rigid {
-    param depth : Length = 300mm
-    param geometry : Solid = box(100mm, 100mm, depth)
-    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
-}
-
-structure def RigidBodyB : Rigid {
-    param geometry : Solid = box(50mm, 50mm, 150mm)
-    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
-}"#;
-
 /// Task #5338 amendment round 2 (reviewer blocking issue) — a warm edit of a
 /// mass input that is not a geometry-op arg must not replay the PRE-EDIT mass as
 /// a fresh, authoritative value.
@@ -3217,8 +3210,8 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
 fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
     let mut session = rigid_mass_props_session();
     let state = session
-        .load_from_source(RIGID_TWO_BODY_EDITABLE_SRC, "two_body_editable")
-        .expect("load_from_source should succeed for the editable two-body source");
+        .load_from_source(RIGID_TWO_BODY_SRC, "two_body")
+        .expect("load_from_source should succeed for the two-Rigid-body source");
     assert_rigid_mass_props_final(&state, "RigidBodyA", "cold load");
     assert_rigid_mass_props_final(&state, "RigidBodyB", "cold load");
 
