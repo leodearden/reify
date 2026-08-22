@@ -971,14 +971,28 @@ fn fold_geometry_args_in_env(
 /// .map(is_geometry_function)` fallback `conformance/mod.rs` already applies to
 /// a scalar-placeholder arg.
 ///
-/// KNOWN RESIDUAL (task #5385): only a syntactically-visible `ListLiteral`
-/// exposes its elements here. `union_all(holes)` naming a geometry-list LET
-/// compiles to a `ValueRef`, and `LetBindingEnv` maps a cell to one
-/// `InferredTraits` rather than to a list of them, so that form still takes the
-/// `all()` default. Narrowing it needs a list-aware `LetBindingEnv` (a new
-/// per-element accessor plus the conformance-walker env that implements it),
-/// which is why it is a follow-up rather than a widening of this task — filed
-/// as task #6418 (review esc-5385-3, suggestion 5).
+/// The INLINE `generate` fold form is handled by its own arm (review
+/// esc-5385-7). `resolve_geometry_list_arg` accepts `generate(<literal>, |i|
+/// <geom>)` as a single fold argument, but such an arg compiles to a
+/// `FunctionCall` whose callee is `generate` — not a geometry builtin, so
+/// [`is_geometry_operand`] rejects it — and it is not a `ListLiteral` either.
+/// It therefore contributed ZERO operands and the fold's
+/// `.unwrap_or(InferredTraits::all())` default silently claimed `bounded` for
+/// `union_all(generate(2, |i| half_space(…)))`. Unlike the named-let residual
+/// below, the lambda body is syntactically visible right here, so no new env is
+/// needed: the arm contributes the BODY's traits ONCE. The element count is
+/// irrelevant to the fold because `combine` (both the `union_all` and the
+/// `intersection_all` variant) is idempotent over identical operands, so `n`
+/// copies of one operand fold to the same result as one.
+///
+/// KNOWN RESIDUAL (task #5385): only a syntactically-visible `ListLiteral` or
+/// inline `generate` exposes its elements here. `union_all(holes)` naming a
+/// geometry-list LET compiles to a `ValueRef`, and `LetBindingEnv` maps a cell
+/// to one `InferredTraits` rather than to a list of them, so that form still
+/// takes the `all()` default. Narrowing it needs a list-aware `LetBindingEnv`
+/// (a new per-element accessor plus the conformance-walker env that implements
+/// it), which is why it is a follow-up rather than a widening of this task —
+/// filed as task #6418 (review esc-5385-3, suggestion 5).
 ///
 /// That residual is PINNED, not merely described, by
 /// `union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap` in this
@@ -1007,6 +1021,22 @@ fn geometry_operand_traits_in_env(
             .iter()
             .map(|e| infer_traits_for_expr_in_env(e, env))
             .collect();
+    }
+    // An inline `generate(<count>, |i| <geom>)` fold arg contributes its lambda
+    // BODY's traits once (see the doc-comment: `combine` is idempotent, so the
+    // count cannot change the fold's result).
+    //
+    // Matching `CompiledExprKind::FunctionCall` by name is builtin-only by
+    // construction: a user-defined `fn generate` lowers to `UserFunctionCall`
+    // (expr.rs), never to this variant, so a user override cannot be mistaken
+    // for the builtin combinator here.
+    if let CompiledExprKind::FunctionCall { function, args } = &arg.kind
+        && function.name == "generate"
+        && let [_count, lambda] = args.as_slice()
+        && let CompiledExprKind::Lambda { body, .. } = &lambda.kind
+        && is_geometry_operand(body)
+    {
+        return vec![infer_traits_for_expr_in_env(body, env)];
     }
     Vec::new()
 }

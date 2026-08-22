@@ -1920,3 +1920,70 @@ fn union_all_multi_arg_with_half_space_at_bounded_param_emits_geometry_unbounded
         compiled.diagnostics
     );
 }
+
+/// Review esc-5385-7: the INLINE `generate` fold form that #5385 made legal —
+/// `union_all(generate(2, |i| half_space(...)))` — must diagnose exactly like
+/// the syntactically-equivalent list literal above.
+///
+/// `resolve_geometry_list_arg` accepts `generate(<literal>, |i| <geom>)` as a
+/// single fold argument, but the arg reaching `geometry_operand_traits_in_env`
+/// is a `FunctionCall` whose callee (`generate`) is not a geometry builtin, so
+/// it is neither a geometry operand nor a `ListLiteral`: it contributed ZERO
+/// operands and the fold's `.unwrap_or(InferredTraits::all())` default silently
+/// claimed `bounded`. This is NOT the documented named-let residual (#6418) —
+/// the lambda body is syntactically visible right here and needs no list-aware
+/// `LetBindingEnv`.
+#[test]
+fn union_all_over_an_inline_generate_of_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all(generate(2, |i| half_space(0mm, 0mm, 0mm, 0, 0, 1))))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected a GeometryUnbounded diagnostic for `union_all(generate(2, |i| \
+         half_space(...)))` at a Bounded slot, but got none. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// Positive control for the test above: an all-bounded inline `generate` fold
+/// must NOT diagnose. Without this, the negative test would still pass if the
+/// new arm started failing CLOSED for every `generate` fold, breaking the idiom
+/// #5385 exists to make legal.
+#[test]
+fn union_all_over_an_all_bounded_inline_generate_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all(generate(3, |i| box(1mm, 1mm, 1mm))))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected NO GeometryUnbounded diagnostic for an all-bounded inline \
+         `generate` fold, got: {geometry_unbounded:?}"
+    );
+}
