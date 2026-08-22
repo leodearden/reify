@@ -628,6 +628,147 @@ fn reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication() {
     );
 }
 
+/// One reasonless marker is ONE defect and costs exactly ONE
+/// `allow-missing-reason:` finding — the count never depends on how the marked
+/// line happens to be written.
+///
+/// The counterpart to `reasonless_marker_survives_every_mention_side_filter`:
+/// that test proves the RAW harvest keeps a marker reportable when the filters
+/// drop its only token, and every one of its five fixtures carries exactly one
+/// call-shaped token. This one covers what the raw harvest ALTERED — a marked
+/// line with SEVERAL shapes. Keying the report by name would make the module's
+/// own canonical example, `translate(primitive(...), 0, 0, -h/2)`, cost two
+/// findings and `f(g(h(x)))` three, inflating one of the four categories #5480
+/// hard-gates by an amount no one chose. `fabrication_findings` therefore keys
+/// the REPORT by marker LINE and names it after the LEFTMOST call shape.
+///
+/// Case (b) pins the other half of "per line": two markers sharing a
+/// representative name are two defects and two findings, each citing its own
+/// line, because each line is its own edit — a name-keyed map would collapse
+/// them and leave the second marker invisible.
+#[test]
+fn reasonless_marker_costs_exactly_one_finding_per_marker_line() {
+    for (label, chunk, expected, marker_lines) in [
+        (
+            "multi-shape marker line — the module's canonical `(...)` example",
+            "# Geometry\n\n- `translate(primitive(...), 0, 0, -h/2)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+            vec![("allow-missing-reason", "translate")],
+            vec![3usize],
+        ),
+        (
+            "two markers sharing a representative name — two edits, two findings",
+            "# Stdlib\n\n- `ghost_op(x)` <!-- pdoccover:allow -->\n\
+             - `ghost_op(y)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+            vec![
+                ("allow-missing-reason", "ghost_op"),
+                ("allow-missing-reason", "ghost_op"),
+            ],
+            vec![3usize, 4usize],
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(
+            root,
+            FIX_UNITS,
+            "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+        );
+        write_file(root, FIX_STDLIB_CHUNK, chunk);
+
+        let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+        let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+        let got: Vec<(&str, &str)> = findings
+            .iter()
+            .map(|f| (finding_category(f), finding_name(f)))
+            .collect();
+        assert_eq!(
+            got, expected,
+            "[{label}] one reasonless marker must cost exactly one finding, \
+             keyed on the LEFTMOST call shape of its line. If this is RED with \
+             EXTRA findings, `fabrication_findings` has gone back to keying the \
+             report by every raw name on the marked line, and the marker count \
+             now tracks incidental line syntax rather than the number of \
+             malformed markers. Got {findings:?}"
+        );
+        for (finding, line) in findings.iter().zip(&marker_lines) {
+            assert!(
+                finding
+                    .summary
+                    .contains(&format!("{FIX_STDLIB_CHUNK}:{line}")),
+                "[{label}] each finding must cite its OWN marker line \
+                 ({line}) — that is the line the reader has to edit; got {:?}",
+                finding.summary
+            );
+        }
+    }
+}
+
+/// The subsumption set is deliberately WIDER than both the reported set and
+/// `chunk_call_mentions`' output — a recorded trade, not a side effect.
+///
+/// `fabrication_findings` keys subsumption on every RAW name of a marked line,
+/// so a marker on `solid.volume()` also swallows the `fabricated-name: volume`
+/// verdict a bare `volume(x)` earns elsewhere in the same file, even though
+/// `.volume(` is never a mention. That is a false NEGATIVE, and this lane's
+/// mention-side filters otherwise never widen in that direction.
+///
+/// It is accepted rather than fixed because the obvious narrowing — subsume
+/// only names that survive the filters on the marked line — re-couples the two
+/// sides and breaks
+/// `reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication` in the
+/// other direction: a marker whose only shape is filtered would then report the
+/// marker AND the fabrication, charging one mistake twice. The residue is
+/// self-healing (writing the reason body restores the fabrication verdict), the
+/// marked line does textually name the token, and `fabricated-name:` is
+/// report-only for #5480. Pinned so the trade is a decision with a test behind
+/// it — if this goes RED with a `fabricated-name:` finding as well, the
+/// narrowing was made deliberately and the doc comment must move with it.
+#[test]
+fn reasonless_marker_subsumes_a_fabrication_it_names_only_as_a_receiver() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+    );
+    // Line 3 names `volume` only as a member-access RECEIVER (filter 1 drops
+    // it, so it is never a mention); line 4 claims it as a free function, which
+    // on its own is a live fabrication.
+    write_file(
+        root,
+        FIX_STDLIB_CHUNK,
+        "# Query\n\n- `solid.volume()` <!-- pdoccover:allow -->\n\
+         - `volume(x)` — unrelated free-function claim.\n\
+         - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+    );
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    let got: Vec<(&str, &str)> = findings
+        .iter()
+        .map(|f| (finding_category(f), finding_name(f)))
+        .collect();
+    assert_eq!(
+        got,
+        vec![("allow-missing-reason", "volume")],
+        "the marked line's RAW name subsumes the fabrication verdict for the \
+         same name elsewhere in the file, even though the marked line only \
+         names it as a member-access receiver. Documented in \
+         `fabrication_findings`' doc comment as the one place this lane widens \
+         in the false-negative direction. Got {findings:?}"
+    );
+    assert!(
+        findings[0].summary.contains(&format!("{FIX_STDLIB_CHUNK}:3")),
+        "the reported line is the MARKER's (3), not the claim's (4); got {:?}",
+        findings[0].summary
+    );
+}
+
 /// The `allow-missing-reason:` verdict SUBSUMES the fabrication verdict for the
 /// same name in the same file REGARDLESS OF LINE ORDER.
 ///

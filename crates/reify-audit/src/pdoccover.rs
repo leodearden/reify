@@ -95,7 +95,9 @@
 //!   that exists nowhere in the compiler or stdlib and gives the reader no
 //!   signal that it is a placeholder;
 //! - a grammar metavariable that is not a reserved word (`predicate` in
-//!   `forall x in collection: predicate(x)`, constraints.md:50).
+//!   `forall x in collection: predicate(x)`, constraints.md:50-51 — the
+//!   `forall` and `exists` productions both use it; the finding cites the
+//!   first, 50, because the lane dedupes per (file, name)).
 //!
 //! Both are prose-vs-example-source judgements, and this detector must not
 //! make them. Two rejected approaches, both measured rather than assumed,
@@ -108,10 +110,17 @@
 //!   clean, not RED;
 //! - a "single-character argument" metavariable rule (to catch
 //!   `predicate(x)` specifically) was measured to ALSO drop `determined`,
-//!   `constrained`, `undetermined`, `partially_determined` and `some` —
-//!   five names spec §2.10:221 explicitly lists as standard library
-//!   functions, not keywords. Blinding the lane to five real builtins to
-//!   win one metavariable is the wrong trade.
+//!   `constrained`, `undetermined` and `partially_determined` — FOUR names,
+//!   exactly those of spec §2.10:221's ten-name carve-out that this corpus
+//!   documents in the `f(x)` shape, and every one of them a standard
+//!   library FUNCTION the spec is explicit is not a keyword, so filter 3
+//!   deliberately leaves all four claimable. Blinding the lane to four real
+//!   builtins to win one metavariable is the wrong trade. (`some(spec)` is
+//!   dropped by the rejected rule too, but is NOT part of that cost and
+//!   must not be counted as a fifth: `some` is a §2.10:212 value-literal
+//!   KEYWORD, filter 3 already drops it unconditionally, and
+//!   `ri_keywords_excludes_the_spec_carve_outs` omits it from the carve-out
+//!   list for exactly that reason.)
 //!
 //! Do not add a context-modelling filter to [`chunk_call_mentions`] without
 //! updating this section and the floor guard's anchor set. Because two
@@ -154,6 +163,9 @@
 //! deliberately NOT honoured. The reason body is mandatory: a reasonless
 //! marker emits `allow-missing-reason:` and confers no exemption, so the
 //! escape hatch can never become un-reviewable (PRD design decision 7).
+//! One malformed marker costs exactly one finding, and it subsumes the
+//! `fabricated-name:` verdict for every name its line mentions — both are
+//! deliberate, and [`fabrication_findings`] is canonical for why.
 //!
 //! ## Scope
 //!
@@ -201,11 +213,13 @@
 //! baseline. So δ's gate keys on `undocumented-name:`, `stale-baseline-entry:`,
 //! `stale-allow-entry:` and `allow-missing-reason:`; `fabricated-name:` stays
 //! REPORT-ONLY. Two ways to lift that, whichever comes first: a per-line
-//! `pdoccover:allow` marker on each of the two chunk lines (traits.md:9,
-//! constraints.md:50), or the baseline format grows `path:name` rows and the
-//! disposition logic covers fabrications so the ratchet absorbs them the way it
-//! absorbs omissions. Either is a deliberate decision with a test behind it —
-//! neither is a silent widening of the gate.
+//! `pdoccover:allow` marker on each of the two chunk lines (traits.md:9 and
+//! constraints.md:50 — constraints.md:51 repeats the same name, and the
+//! per-(file, name) dedup subsumes it, so one marker settles both), or the
+//! baseline format grows `path:name` rows and the disposition logic covers
+//! fabrications so the ratchet absorbs them the way it absorbs omissions.
+//! Either is a deliberate decision with a test behind it — neither is a
+//! silent widening of the gate.
 //!
 //! ## Both scanners are deliberately format-agnostic
 //!
@@ -1832,6 +1846,38 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 /// going RED. `reasonless_marker_survives_every_mention_side_filter` in
 /// tests/pdoccover.rs pins one case per filter.
 ///
+/// ## One marker, one finding — and one wider subsumption set
+///
+/// Reading the RAW shapes means a marked line can offer SEVERAL names, so the
+/// pre-pass keeps two structures with deliberately different shapes, and the
+/// difference is the recorded decision rather than an accident of the raw
+/// harvest:
+///
+/// - **Reporting is keyed by marker LINE.** One malformed marker is one defect
+///   and costs exactly one finding, whatever its line happens to contain: the
+///   representative name is the LEFTMOST call shape on it. Keying the report by
+///   name instead would make `translate(primitive(...), 0, 0, -h/2)` cost two
+///   findings and `f(g(h(x)))` three — a count that varies with how the marked
+///   line is written, in one of the four categories #5480 hard-gates. Two
+///   markers that happen to share a representative name are still two defects
+///   and two findings, each citing its own line, because each is its own edit.
+///   Pinned by `reasonless_marker_costs_exactly_one_finding_per_marker_line`.
+/// - **Subsumption is keyed by every raw NAME on the marked lines**, which is
+///   wider than the reported set and wider than [`chunk_call_mentions`] would
+///   give: a marker on `solid.volume()` also subsumes a `fabricated-name:
+///   volume` verdict for a bare `volume(x)` elsewhere in the same file, even
+///   though `.volume(` is never a mention. That is a false NEGATIVE, the one
+///   place this lane's filters widen in that direction — accepted because the
+///   alternative (subsume only what survives the filters) would re-couple the
+///   two sides and break the guarantee above in the other direction: a marker
+///   whose only shape is filtered would report the marker AND the fabrication,
+///   charging one mistake twice — which is exactly what
+///   `reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication`
+///   forbids. The residue is self-healing (writing the reason body restores
+///   the fabrication verdict), the marked line does textually name the token,
+///   and `fabricated-name:` is report-only for δ. Pinned by
+///   `reasonless_marker_subsumes_a_fabrication_it_names_only_as_a_receiver`.
+///
 /// Residual, and deliberately left: a reasonless marker on a line with NO
 /// call-shaped token at all still reports nothing, because a finding here is
 /// keyed by NAME and such a line offers none. Reporting it would need a
@@ -1844,37 +1890,45 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
     for (path, content) in &inputs.chunk_sources {
         let mentions = chunk_call_mentions(content);
 
-        // Pre-pass: name -> FIRST line in this file carrying a reasonless
-        // marker for it. Position-independent, so the marker always wins.
+        // Pre-pass over this file's reasonless markers. Position-independent,
+        // so a marker always wins over a plain mention whatever their order.
         //
-        // Read from the RAW call shapes on marker-carrying lines
-        // (`call_shape_sites`), deliberately NOT from `mentions`: every
-        // mention-side filter is free to drop the only call-shaped token on a
-        // marked line (`auto(free)`, `pipe@region(x)`,
-        // `translate(primitive(...))`, or a name the chunk declares
-        // elsewhere), and sourcing this pass from the narrowed view would then
-        // make the malformed marker invisible — a false-clean on a category
-        // #5480 hard-gates, and precisely the hole in PRD design decision 7
-        // that the line-order independence below also exists to close.
-        let mut reasonless: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
+        // Both structures read the RAW call shapes on marker-carrying lines
+        // (`call_shape_sites`), deliberately NOT `mentions`: every mention-side
+        // filter is free to drop the only call-shaped token on a marked line
+        // (`auto(free)`, `pipe@region(x)`, `translate(primitive(...))`, or a
+        // name the chunk declares elsewhere), and sourcing this pass from the
+        // narrowed view would then make the malformed marker invisible — a
+        // false-clean on a category #5480 hard-gates, and precisely the hole in
+        // PRD design decision 7 that the line-order independence also closes.
+        //
+        // The two shapes differ on purpose (see this function's doc comment):
+        // `reasonless_lines` carries ONE entry per marker LINE — the line and
+        // its LEFTMOST call shape as the representative name — so one malformed
+        // marker costs exactly one finding however many `ident(` tokens its line
+        // happens to hold; `reasonless_names` carries EVERY raw name on those
+        // lines, and is the (deliberately wider) subsumption set.
+        let mut reasonless_lines: Vec<(usize, &str)> = Vec::new();
+        let mut reasonless_names: BTreeSet<&str> = BTreeSet::new();
         for (idx, line) in content.lines().enumerate() {
             if !allow_marker_present(line) || allow_marker_reason(line).is_some() {
                 continue;
             }
-            for (name, _, _) in call_shape_sites(line) {
-                reasonless.entry(name.to_string()).or_insert(idx + 1);
+            let sites = call_shape_sites(line);
+            if let Some(&(name, _, _)) = sites.first() {
+                reasonless_lines.push((idx + 1, name));
             }
+            reasonless_names.extend(sites.iter().map(|&(name, _, _)| name));
         }
 
         // A reasonless marker suppresses nothing and is itself the defect —
-        // reported once per name per file (the map is keyed by name), and
-        // reported INSTEAD of any fabrication verdict, so one malformed marker
-        // costs one finding. Emitted independently of the mention walk below,
-        // because the name it is keyed on may not survive into `mentions` at
-        // all. `check()` sorts the whole list, so emitting here does not fix
-        // the reported order.
-        for (name, marker_line) in &reasonless {
+        // reported once per MARKER LINE, and reported INSTEAD of any
+        // fabrication verdict for any name that line names, so one malformed
+        // marker costs one finding. Emitted independently of the mention walk
+        // below, because the name it is keyed on may not survive into
+        // `mentions` at all. `check()` sorts the whole list, so emitting here
+        // does not fix the reported order.
+        for (marker_line, name) in &reasonless_lines {
             out.push(keyed(
                 "allow-missing-reason",
                 name,
@@ -1891,8 +1945,11 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
 
         for (name, line_no) in mentions {
             // The malformed marker was reported instead, whatever line it sits
-            // on relative to this mention.
-            if reasonless.contains_key(&name) {
+            // on relative to this mention. Keyed on the RAW names of the marked
+            // lines, so this subsumes slightly more than the marker reported —
+            // a documented, self-healing false negative (doc comment, "One
+            // marker, one finding — and one wider subsumption set").
+            if reasonless_names.contains(name.as_str()) {
                 continue;
             }
             if known.contains(&name) {
