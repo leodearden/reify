@@ -282,7 +282,7 @@ mod tests {
 
     /// `JOINT_TYPED_FN_NAMES` is exactly the 17 expected names: correct count,
     /// every expected name present, and no extra entry. Mirrors
-    /// `math_construction_names_are_exactly_the_four`.
+    /// `math_construction_names_are_exactly_the_eight`.
     #[test]
     fn joint_typed_fn_names_are_exactly_the_17() {
         assert_eq!(

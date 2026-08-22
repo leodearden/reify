@@ -2521,13 +2521,30 @@ impl<'a> Lowering<'a> {
         let struct_node = node.child_by_field_name("structure_name")?;
         let structure_name = self.node_text(struct_node).to_string();
 
-        // Detect collection form: `sub name : List<StructName>`
-        // by checking for the "List" keyword token among children.
+        // Detect collection form: `sub name : List<StructName>` by looking for
+        // the anonymous `'List'` keyword token among the DIRECT children. An
+        // anonymous token's `kind()` IS its literal text, so `kind() == "List"`
+        // matches exactly the collection arm's keyword and nothing else.
+        //
+        // A `self.node_text(child) == "List"` fallback used to sit alongside the
+        // kind check; it was removed as part of task α (indexed-sub
+        // instantiation) because it matched ANY direct child whose source text
+        // happens to be `List` — a `pose` expression that is the bare identifier
+        // `List`, and, once α added the indexer clause, a binder named `List`
+        // (`sub xs[List in 0..4] = Foo(a: 1)`) or a domain that is the bare
+        // identifier `List` (`sub xs[i in List] = Foo(a: 1)`). Any of those
+        // silently flipped an *instantiation* into the collection form, which
+        // discards `type_args` and skips the `named_argument_list` loop below.
+        // The fallback was never load-bearing: the keyword token is always a
+        // direct child with kind `"List"`, pinned by
+        // `sub_decl_specialization_body_parser_tests::sub_decl_cst_shape_for_list_collection`
+        // and by the `List`-named binder/domain cases in
+        // `indexed_sub_instantiation_parser_tests`.
         let mut is_collection = false;
         {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "List" || self.node_text(child) == "List" {
+                if child.kind() == "List" {
                     is_collection = true;
                     break;
                 }
@@ -2694,6 +2711,110 @@ impl<'a> Lowering<'a> {
             .map(|n| self.lower_relation_members(n))
             .unwrap_or_default();
 
+        // Lower the optional indexer clause `[<binder> in <domain>]` from the
+        // instantiation arm (indexed-sub-instantiation.md §3.1, task α). The
+        // grammar exposes the two halves as the named fields "binder" and
+        // "domain"; both are absent on the other arms, so both lower to None
+        // there. The binder keeps its own narrow span (an unused-binder
+        // diagnostic must underline the binder alone).
+        //
+        // The two halves are lowered JOINTLY, not independently, so the
+        // both-`Some`-or-both-`None` pairing invariant documented on
+        // `SubDecl::index_binder` is enforced by this code rather than merely
+        // asserted: the grammar admits the clause as one indivisible
+        // `optional(seq(…))`, but `lower_expr` can still return `None` (an
+        // unhandled node kind, or a nested lowering failure), which an
+        // independent `.and_then(…)` would turn into a half-populated
+        // `Some(binder)` / `None(domain)` pair. β types the domain and may
+        // reasonably `expect(...)` the pair; a half-populated `SubDecl` would be
+        // a latent panic there. So a failed domain lowering drops BOTH halves
+        // and emits a diagnostic instead of silently degrading to a plain sub.
+        //
+        // Domain lowering uses plain `lower_expr`, NOT `lower_binding_value`:
+        // unlike `at <pose>`, the domain is not an `auto` binding site. α stores
+        // it syntactically only — checking it is a `Range<Int>` is task β's.
+        let (index_binder, index_domain) = match (
+            node.child_by_field_name("binder"),
+            node.child_by_field_name("domain"),
+        ) {
+            (Some(binder_node), Some(domain_node)) => match self.lower_expr(domain_node) {
+                Some(domain) => {
+                    // TODO(#5482): delete this interim rejection when β wires
+                    // the count cell.
+                    //
+                    // The pair is still POPULATED above and below — the AST
+                    // contract is what β builds on, so this diagnostic is a
+                    // guard, not a lowering failure. Without it α would leave a
+                    // silent-miscompile window open: the clause lowers, nothing
+                    // reads it, and the declaration elaborates to exactly ONE
+                    // instance with the binder resolving against nothing.
+                    //
+                    // Reported as an ERROR rather than a warning because the
+                    // parse layer has no warning channel at all
+                    // (`reify_ast::decl::ParseError` is `{message, span}`, no
+                    // severity field), and error matches the pre-α baseline
+                    // where this very source was a hard parse error. Emitting a
+                    // lowering-pass semantic rejection over this channel is the
+                    // established shape in this file — cf. `unknown port
+                    // direction` and `unsupported forall body kind`.
+                    //
+                    // Spanned binder-start..domain-end: the two named fields
+                    // are the stable, field-derived way to reach the clause
+                    // interior. `self.span(node)` would underline the whole
+                    // sub, and the `[`/`]` tokens are anonymous.
+                    self.push_error(
+                        format!(
+                            "indexed sub instantiation `sub {name}[{} in …]` is not yet \
+                             elaborated (#5482): the indexer clause parses but no compiler \
+                             pass reads it, so this declares exactly ONE `{name}` instance \
+                             rather than one per index. Remove the indexer clause until \
+                             indexed-sub elaboration (#5482) lands.",
+                            self.node_text(binder_node),
+                        ),
+                        SourceSpan::new(
+                            binder_node.start_byte() as u32,
+                            domain_node.end_byte() as u32,
+                        ),
+                    );
+                    (
+                        Some(SpannedIdent {
+                            name: self.node_text(binder_node).to_string(),
+                            span: self.span(binder_node),
+                        }),
+                        Some(domain),
+                    )
+                }
+                // Distinct from the rejection above, and deliberately so: this
+                // arm reports a MALFORMED domain and drops the pair; that one
+                // reports a well-formed but unelaborated clause and KEEPS it.
+                //
+                // Reachable on a clean CST, not only on ERROR recovery: the
+                // domain `a.(b)` is an `instance_qualified_access`, which the
+                // grammar admits with ANY `$._expression` inside the parens and
+                // `lower_instance_qualified_access` then rejects for the missing
+                // `::`, returning None. Pinned by
+                // `malformed_indexer_domain_is_reported_and_drops_both_halves`
+                // in reify-syntax's harness_syntax::indexed_sub_instantiation
+                // parser tests.
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid indexer domain for `sub {name}[{} in …]`: the domain \
+                             expression could not be lowered",
+                            self.node_text(binder_node),
+                        ),
+                        self.span(domain_node),
+                    );
+                    (None, None)
+                }
+            },
+            // A half-present field pair is unreachable through the grammar (the
+            // clause is one indivisible `optional(seq(…))`); it can only arise
+            // on an ERROR CST node, which already surfaces its own diagnostic.
+            // Dropping both halves keeps the pairing invariant total.
+            _ => (None, None),
+        };
+
         Some(SubDecl {
             name,
             structure_name,
@@ -2707,6 +2828,8 @@ impl<'a> Lowering<'a> {
             is_aux,
             is_priv: self.has_priv_keyword(node),
             pose_expr,
+            index_binder,
+            index_domain,
             relate_relations,
             span: self.span(node),
             content_hash: self.content_hash(node),
@@ -3650,6 +3773,8 @@ impl<'a> Lowering<'a> {
             is_aux: false,
             is_priv: false,
             pose_expr: None,
+            index_binder: None,
+            index_domain: None,
             relate_relations: Vec::new(),
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),

@@ -140,8 +140,17 @@ slot_emit_event() {
 #   be able to substitute an ERR-exit for that contract: diagnostics never
 #   change control flow.
 #
-#   A DISTINCT marker family from @@REIFY_CLOCK_*@@, and outside run_all.sh's
-#   sanitizer prefix by design -- stated once, in docs/notes/verify-pipeline-knobs.md.
+#   A DISTINCT marker family from @@REIFY_CLOCK_*@@ -- but NOT, since task
+#   #6389, outside run_all.sh's re-emission sanitizer. Which side of that line
+#   an emission falls on is decided by WHERE it is written, not by its prefix:
+#   a sentinel captured from a run_all POOL MEMBER's stdout/stderr is
+#   neutralized on re-emission ($_RA_SLOT_SANITIZE), because run_all is a test
+#   runner and a member-captured sentinel is a quoted or fixture one, never a
+#   real starved acquire; run_all's OWN pool-wait sentinel rides the worker
+#   subshell's inherited parent fd 2, never enters that path, and reaches
+#   dark-factory untouched -- which it must, being the only classification
+#   route for the one finite-WAIT path outside DF's basename allowlist.
+#   Stated once, in docs/notes/verify-pipeline-knobs.md.
 # ---------------------------------------------------------------------------
 slot_emit_timeout() {
     printf '@@REIFY_SLOT_TIMEOUT@@ reason=%s slots=%s waited=%s disposition=%s lock=%s\n' \
@@ -192,10 +201,11 @@ slot_emit_timeout() {
 #                  Defaulting to `fatal` keeps every pre-existing caller's wire
 #                  shape meaning exactly what it did before this field existed.
 #                  NOTE (cross-repo): dark-factory's SEMAPHORE_TIMEOUT detector
-#                  is presence/line-anchored and does NOT yet read this field,
-#                  so a soft deadline is still classified as a starvation
-#                  verdict today; the field exists so the DF side CAN gate on it
-#                  without a second reify-side wire change.
+#                  reads this field as of dark-factory task 4212 (closed
+#                  2026-08-19): a `soft` deadline is advisory and falls through
+#                  to per-tool dispatch instead of being classified as a
+#                  starvation verdict; a sentinel with no `disposition=` field
+#                  keeps DF's pre-4212 classify behavior.
 #
 #   On success  — SLOT_ACQUIRE_SLOT=<N>, SLOT_ACQUIRE_ELAPSED=<secs>,
 #                 FD 9 held open, slot_emit_event ACQUIRE called; returns 0.

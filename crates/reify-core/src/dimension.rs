@@ -662,9 +662,23 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::IMPULSE, "Momentum"),
 ];
 
+/// SI base-unit symbol for each slot of a [`DimensionVector`], in slot order.
+///
+/// The single home for this table. [`DimensionVector`]'s [`fmt::Display`] impl
+/// renders from it, and `reify-compiler`'s ctor-conformance migration hint
+/// composes example unit literals from it — a second copy in the compiler would
+/// reintroduce exactly the drift a derived hint exists to prevent.
+///
+/// Typed `[&str; 10]` rather than `&[&str]` deliberately: the length is tied to
+/// `DimensionVector`'s `[Rational; 10]`, so adding an 11th base dimension breaks
+/// at COMPILE time rather than silently mis-labelling or panicking on an
+/// out-of-range slot.
+pub const BASE_UNIT_SYMBOLS: [&str; 10] =
+    ["m", "kg", "s", "A", "K", "mol", "cd", "rad", "sr", "USD"];
+
 impl fmt::Display for DimensionVector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names = ["m", "kg", "s", "A", "K", "mol", "cd", "rad", "sr", "USD"];
+        let names = BASE_UNIT_SYMBOLS;
         // Emit positive-exponent slots first, then negative-exponent slots,
         // preserving index order within each group. This produces conventional
         // notation like "USD·kg^-1" rather than "kg^-1·USD".

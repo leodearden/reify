@@ -761,4 +761,156 @@ assert "hI1: a repo with no tracked .rs file matching SCOPE_PATHSPECS exits 2, n
 assert "hI1: ...and prints a diagnostic naming the stale scope" \
     bash -c "bash '$GATE' --repo-root '$EMPTY_FIX' 2>&1 | grep -q 'ERROR: no tracked .rs files matched SCOPE_PATHSPECS'"
 
+# ===========================================================================
+# hJ — CHARACTERIZATION pin of an ACCEPTED OVER-FLAG (task 5159).
+#
+# WHAT IS PINNED: the gate flags the fragment `unwrap_or( … Ordering::Equal
+# … )` even when the `Option<Ordering>` being defaulted comes from
+# `Iterator::find` on an ALREADY-`total_cmp`-based comparator, where no NaN
+# hazard exists. Flagged (hJ1); cleared by the escape (hJ2).
+#
+# PINNED AS ACCEPTED, NOT AS A DEFECT TO BE TIDIED UP. Why the matcher stays
+# fragment-based, and why narrowing it is rejected, is recorded ONCE,
+# canonically, in docs/prds/compute-fea-hardening.md "Resolved design
+# decision 9" §G — read that before proposing a narrower regex. It is not
+# restated here on purpose: three copies of one argument is the drift
+# decision 9 exists to stop.
+#
+# The shape below is read verbatim from `impl Ord for SampledField` in
+# crates/reify-ir/src/value.rs, where two live instances sit (the nested
+# `cmp_floats` helper and the `axis_grids` leg). BOTH are outside the covered
+# scope, so the gate is green on the real tree and this over-flag costs the
+# tree nothing today — it would cost exactly two annotations if reify-ir were
+# ever brought in scope.
+# ===========================================================================
+echo ""
+echo "--- (hJ): the total_cmp().find().unwrap_or() over-flag is deliberate and escapable ---"
+
+write_fixture <<'RS'
+fn cmp_floats(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| x.total_cmp(y))
+        .find(|o| !o.is_eq())
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+RS
+stage
+assert "hJ1: the gate FLAGS a total_cmp-based comparator whose unwrap_or defaults an exhausted find (accepted over-flag, not the NaN hazard)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+write_fixture <<'RS'
+fn cmp_floats(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| x.total_cmp(y))
+        .find(|o| !o.is_eq())
+        .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — total_cmp already; unwrap_or defaults an exhausted find, not a partial_cmp
+}
+RS
+stage
+assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# ===========================================================================
+# hK — the KEEP-SCOPED decision, pinned executably (task 5159).
+#
+# These crates/modules are OUT of SCOPE_PATHSPECS by RECORDED DECISION, not
+# by oversight. The scope RULE ("the physical/geometric numeric solve path"),
+# the 2026-08-20 per-site census, why widening today is not honestly
+# executable, and the widening trigger are recorded ONCE, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" — go there,
+# not to a paraphrase here.
+#
+# EXACTLY WHAT THIS BLOCK PINS — read this before citing it as evidence:
+#   1. hK1-hK7: an UNGUARDED hazard planted at each excluded path is NOT
+#      flagged. This detects ONE thing — a widening of SCOPE_PATHSPECS that
+#      brings that path in scope. That is the intended tripwire: the gate's
+#      pathspecs, decision 9 and these pins are meant to fail together, and a
+#      reviewer seeing one flip should be sent to decision 9's census table
+#      and its four follow-up tickets before approving.
+#   2. hK1-hK7 (second assert each): the path still EXISTS as a tracked file
+#      in the REAL repo. Every other assertion here runs against the
+#      synthetic $FIX repo and would keep passing against a path that had
+#      been renamed or deleted — pinning a string, not a site. This leg is
+#      what makes a crate split or module move fail loudly instead of
+#      silently hollowing the block out.
+#
+# WHAT IT DOES *NOT* PIN: general census drift. A NEW unguarded site
+# appearing in an already-excluded file (which is how the 2026-07-09 census
+# went stale) leaves every assertion here green. Nothing in this suite
+# re-runs the census; decision 9's file-level record is the authority, and
+# re-measuring is a human/task job. Do not read a green hK as "the census is
+# still accurate".
+#
+# ANTI-VACUITY: hK8 writes the BYTE-IDENTICAL hazard text to a COVERED path
+# and requires exit 1. Without it, a typo in $HK_HAZARD would make all seven
+# exclusion assertions pass for the wrong reason and the pin would be
+# worthless — the same failure mode block (hI) guards at the scan-set level.
+# ===========================================================================
+echo ""
+echo "--- (hK): deliberately-excluded domains stay OUT of the gate's scan set ---"
+
+# The one hazard line every hK assertion uses, written byte-identically to
+# both the excluded paths (must NOT flag) and the covered path (MUST flag).
+HK_HAZARD='pub fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); }'
+
+# write_hazard_at <repo-relative-path> — plant $HK_HAZARD at that path.
+#
+# Two-file writer: the COVERED crates/reify-fdm/src/lib.rs is always
+# (re)created first, clean, so the scan set is never empty. Without it the
+# gate would exit 2 per the (hI) contract and every "not flagged" assertion
+# below would be testing the wrong thing — passing because the gate errored
+# out, not because the path is out of scope. When <path> IS the covered file
+# (hK8) it simply overwrites that clean content with the hazard.
+write_hazard_at() {
+    local rel="$1"
+    rm -rf "$FIX/crates"
+    mkdir -p "$FIX/crates/reify-fdm/src"
+    printf 'pub fn covered_but_clean() {}\n' > "$FIX/crates/reify-fdm/src/lib.rs"
+    mkdir -p "$FIX/$(dirname "$rel")"
+    printf '%s\n' "$HK_HAZARD" > "$FIX/$rel"
+    stage
+}
+
+# The deliberately-excluded set, as measured on 2026-08-20. Line numbers
+# drift (that is the whole point of this block); the FILE-level record is
+# what is authoritative here and in decision 9.
+HK_EXCLUDED=(
+    'crates/reify-stdlib/src/analysis.rs'
+    'crates/reify-stdlib/src/matrix.rs'
+    'crates/reify-constraints/src/solver.rs'
+    'crates/reify-eval/src/engine_build.rs'
+    'crates/reify-eval/src/persistent_cache.rs'
+    'crates/reify-eval/src/warm_pool.rs'
+    'crates/reify-ir/src/value.rs'
+)
+
+_hk_i=0
+for _hk_rel in "${HK_EXCLUDED[@]}"; do
+    _hk_i=$((_hk_i + 1))
+    write_hazard_at "$_hk_rel"
+    assert "hK$_hk_i: $_hk_rel is OUT of scope by decision — an UNGUARDED hazard there is not flagged" \
+        _exits_with 0 bash "$GATE" --repo-root "$FIX"
+    # REAL-TREE leg: the assertion above is entirely synthetic ($FIX), so it
+    # would keep passing against a path that no longer exists. Fail loudly on
+    # a rename/move/delete instead, and send the reader to decision 9 to
+    # re-site the row rather than to delete the pin.
+    assert "hK$_hk_i: ...and $_hk_rel still exists as a tracked file in the real tree (census path not renamed — re-site it in decision 9, do not drop the pin)" \
+        git -C "$REPO_ROOT" ls-files --error-unmatch "$_hk_rel"
+done
+
+# hK8 — ANTI-VACUITY CONTROL. Same bytes, covered path, must flag.
+write_hazard_at 'crates/reify-fdm/src/lib.rs'
+assert "hK8: CONTROL — the byte-identical hazard IS flagged at a COVERED path (so hK1-hK7 are not passing vacuously)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hK9 — the covered scope is still wired end-to-end: covered file, clean, green.
+write_fixture <<'RS'
+pub fn covered_but_clean() {}
+RS
+stage
+assert "hK9: CONTROL — a clean covered file alone is exit 0 (scan set non-empty and scanned)" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
 test_summary

@@ -37,6 +37,7 @@ Positions/lengths take a `Length` (e.g. `5mm`); angles take an `Angle` (e.g. `90
 **Pattern:** `linear_pattern(geo, dx, dy, dz, count, spacing)`, `linear_pattern_2d(geo, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)` (each axis is ordered direction, then count, then spacing), `circular_pattern(geo, axis, count, angle)` or `circular_pattern(geo, ox, oy, oz, ax, ay, az, count, angle)`, `arbitrary_pattern(geo, transforms)` (a list of transforms) or `arbitrary_pattern(geo, dx1, dy1, dz1, …)` (explicit offset triples)
 **Split:** `split(solid, plane)` → `List<Geometry>` — a topology selector (returns the pieces on each side of the plane), not a CSG boolean
 **Curves:** `line_segment(x1, y1, z1, x2, y2, z2)`, `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)`, `helix(radius, pitch, height)`, `interp(x1, y1, z1, …)` (coordinate triples), `bezier(x1, y1, z1, …)` (coordinate triples), `nurbs(degree, n_points, coords…, weights…)`
+Curve coordinates are length-semantic and must be dimensioned — `0mm`, not `0`; a bare number is rejected rather than read as SI metres. That covers every `interp` and `bezier` argument and `nurbs`' `coords…`. What stays dimensionless: `arc`'s angles and `ax`/`ay`/`az`, and `nurbs`' `degree` and `n_points` (counts), its `weights…` (rational blending factors) and its trailing knots (parameter-space values).
 
 ## Constants
 

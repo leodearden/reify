@@ -14,14 +14,21 @@
 #     docs/design/merge-verify-lane-dispatch-seam.md
 #
 # In brief (task 5608; escalation esc-5363-5): `<worktree_base>/<lane>.lock` is
-# ONE inode with THREE dark-factory acquirers on THREE different waits, and a
-# timeout on the 300s one is requeued while a timeout on the 30s one is
-# classified `merge_error` — terminal, escalated. A long-held lease therefore
-# starves a short waiter into a spurious merge failure. That asymmetry is the
-# defect; the behavioural fix is dark-factory's (seam doc §1, §4). This script
-# is reify's half: an oracle DF can consult BEFORE dispatching into its own
-# bounded wait, so contention becomes a deferred dispatch instead of a failed
-# one.
+# ONE inode per lane, and dark-factory has FOUR acquirers of that inode family
+# on four independently-tuned waits (seam doc §1) — three that can target
+# `_merge-verify`, plus a task-lane consumer-hold that never does. So a dispatch
+# that lands while a verify-length lease (1–2h) is held burns the full bounded
+# wait before deferring. On an idle lane it costs nothing: the value this guard
+# adds is in the contended case, not on every dispatch.
+# How dark-factory CLASSIFIES that timeout is DF-owned and changes as DF
+# changes; it is stated once, in the seam doc's §1 acquirer table. Do not
+# restate it here — this header carried a copy that went stale when DF task
+# 3003 reclassified the reset path, which is the argument for the pointer.
+#
+# Reify's half is unaffected by that classification either way: this script is
+# an oracle DF can consult BEFORE dispatching into its own bounded wait, so a
+# contended lane becomes a deferred dispatch that never burns the wait, nor the
+# requeue and re-dispatch cycle that follows it.
 #
 # stdout contract: stdout carries the BUSY sentinel line and NOTHING else, on
 # every path. All diagnostics — including --help — go to stderr, so a caller
@@ -89,8 +96,10 @@ Usage: $(basename "$0") check [--mount DIR] [--lane NAME] [--lock-path PATH]
             @@REIFY_WARM_LANE_LOCK_BUSY@@ lane=<n> lock=<p>
           A throttle-not-requeue signal (the same cross-repo code
           warm-lane-disk-guard.sh --soft and fleet-load-detector.sh emit):
-          dark-factory should DEFER this dispatch rather than enter its own
-          30s bounded wait, whose timeout is classified merge_error.
+          dark-factory should DEFER this dispatch rather than enter its
+          own bounded wait on the same inode — a wait it would burn in
+          full, then pay for again with a requeue and re-dispatch cycle.
+          What DF does with that timeout is DF's contract: seam doc §1.
     2   — Usage error: unknown flag, missing flag value, missing/unknown
           subcommand, or no mount when one is required. A wiring bug, not a
           verdict — never read it as BUSY.
@@ -112,9 +121,14 @@ FLOCK_BIN="${REIFY_WARM_LANE_LOCK_GUARD_FLOCK:-flock}"
 # The would-block exit status asked of flock via -E. `flock -n` returns a bare 1
 # on contention, which is indistinguishable from "flock itself failed" — and
 # reading a tool fault as contention is exactly the false BUSY this guard must
-# never emit. A distinct code separates the two. 124 mirrors dark-factory's own
-# `flock -x -w 30 -E 124` in _seed_warm_lane, so the two repos speak one dialect
-# about this lock.
+# never emit. A distinct code separates the two; 124 is chosen only to be
+# DISTINGUISHABLE FROM THAT BARE 1, and it is consumed EXCLUSIVELY here — passed
+# to this script's own `flock -n -s -E` below, and compared against this same
+# variable a few lines further down. It matches dark-factory's current
+# _SEED_WARM_LANE_LOCK_TIMEOUT_RC by CONVENTION (both echo timeout(1)'s 124),
+# NOT by coupling: DF never observes this guard's exit codes and this guard
+# never observes DF's flock rc, so a DF retune of that constant leaves this
+# value entirely correct and must NOT be chased here. Reasoning: seam doc §3.
 FLOCK_CONFLICT_RC=124
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
@@ -326,8 +340,9 @@ _probe
 if [ "$PROBE_RESULT" = "BUSY" ]; then
     err "Lane '$LANE' is BUSY: an exclusive holder occupies $LOCK."
     hint "Dark-factory should DEFER this dispatch. Dispatching now would enter its own"
-    hint "30s bounded wait on this same inode, whose timeout is classified merge_error"
-    hint "(terminal) rather than requeued — the failure mode task 5608 exists to avoid."
+    hint "bounded wait on this same inode — burned in full against a holder that outlasts"
+    hint "it, then paid for again by the requeue and re-dispatch that follow. Deferring"
+    hint "here avoids both; see docs/design/merge-verify-lane-dispatch-seam.md §1."
     # The ONE line this script ever writes to stdout. Emitted last, after the
     # stderr prose, so a caller reading only stdout gets the verdict and nothing
     # else; `lane=` and `lock=` are everything a defer decision needs (holder

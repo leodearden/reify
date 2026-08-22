@@ -3,6 +3,12 @@
 PRD: `docs/prds/merge-gate-health.md`. Sidecar: `merge-gate-health.capability-manifest.yaml`. Program milestone: 5254.
 Batch: reify **5256–5261**; dark-factory **2828–2831**. Folded into existing tasks (no new filing): W2a/W2c → DF 2821 (in-progress; its description already mandates the cross-attempt deterministic discriminator), W3b → DF 2822 (evidence appended 2026-07-19), trivial-pass red-main precheck → DF 2823 (in-progress), manifest-row mechanical gate → reify 5252 (in-progress). Config-only leaves landed directly with the 2026-07-19 config batch (operator-authorized): `verify_use_cgroup_scope: true` (W1b-reify) + `REIFY_RUN_ALL_FLAKY_LEDGER` durable path (W5a) in `dark-factory-orchestrator.yaml`. 5251 (false-premise de-flake) was cancelled independently the same evening; census evidence appended to its record.
 
+**Dated evidence, 2026-07-19 (decompose date).** The `path:line` anchors in the DF-side
+bindings below record where each symbol stood when this manifest was decomposed; they are
+provenance for the VERIFIED verdicts, not live breadcrumbs. Do not re-anchor them — grep the
+symbol named beside each one. No DF commit SHA is claimed: these anchors were never
+re-located against one, and stamping a SHA now would manufacture false provenance.
+
 | Leaf | Capability asserted | Evidence binding | Status |
 |---|---|---|---|
 | 5256 (W3a) | `requires-full-gate` exits 0 for `tests/infra/test_*.sh` | guard oracle exists on main: `scripts/verify-pipeline-guard.sh` + manifest `scripts/verify-pipeline-paths.txt`; current rc=1 hole reproduced 2026-07-19 (survey §flake-RCA) | VERIFIED (hole reproduced; fix pending) |

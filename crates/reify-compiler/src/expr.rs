@@ -3145,7 +3145,8 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
                     // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
-                    // `is_field_op` →
+                    // `is_field_op` → `is_parse_typed_fn` →
+                    // `is_orientation_typed_fn` (task 5344) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
@@ -3398,7 +3399,20 @@ fn compile_expr_guarded_with_expected_inner(
                         // The math-linalg family, routed via three sibling
                         // single-source-of-truth slices in `math_signatures`:
                         //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
-                        //     vec / matrix / diag / identity.
+                        //     vec / matrix / diag / identity, plus the
+                        //     fixed-`n` aggregate constructors vec3 / vec2
+                        //     (task 4622) and point3 / point2 (task 5344).
+                        //     The four fixed-`n` names are eval twins — one
+                        //     `construct_point_or_vector(args, n, is_point)`
+                        //     helper serves all of them — so they share one
+                        //     resolver rather than being split across families.
+                        //     Typing `point3(..)` as a real `Type::Point` is
+                        //     also what makes `t * origin` well-typed once the
+                        //     orientation family (below) gives `transform3(..)`
+                        //     a real `Type::Transform(3)`: `type_compat`'s
+                        //     `(Transform(n), Point{n})` Mul rule was
+                        //     previously unreachable because `point3(..)` fell
+                        //     through to its first argument's `Scalar[m]`.
                         //   • OPERATION / FUNCTION (task 4182 δ,
                         //     MATH_OPERATION_NAMES): the §3 table — sqrt/abs/…,
                         //     dot/cross/normalize/magnitude/outer,
@@ -3565,6 +3579,38 @@ fn compile_expr_guarded_with_expected_inner(
                         // `parse_signatures.rs`'s own two-name spot-check), so
                         // this arm's position in the ladder is unobservable.
                         parse_fn_result_type(name)
+                    } else if is_orientation_typed_fn(name) {
+                        // Orientation / transform / frame constructor family
+                        // (task 5344) — 18 names, each with a FIXED nominal
+                        // result type. Eval dispatch is name-based in
+                        // reify_stdlib (orientation::eval_orientation for
+                        // orient_*, geometry::eval_geometry for the
+                        // frame/transform names); the call STAYS a FunctionCall.
+                        //
+                        // Set the cell type up-front. This REPLACES the wrong
+                        // first-arg fallback below, which mistyped every call
+                        // site in the family — the zero-arg members (typed Real
+                        // PLUS a "cannot infer return type" warning per site, 25
+                        // of them in prj/printer_v01/printer.ri) and the n-arg
+                        // ones alike (orient_axis_angle silently adopted its
+                        // rotation-AXIS argument's Vector{3}).
+                        //
+                        // Cell TYPE matches the eval VALUE KIND exactly
+                        // (Type::Orientation(3) ⇄ Value::Orientation, Frame ⇄
+                        // Frame, Transform ⇄ Transform), so unlike the joint
+                        // StructureRef arm this needs no escape hatch. Note this
+                        // makes reify_eval::value_type_kind_matches AGREE where
+                        // it previously did not: eval was already producing a
+                        // Value::Orientation into a cell statically typed Real.
+                        //
+                        // Membership and its rationale (why an explicit list and
+                        // never a prefix rule; the four excluded decomposers;
+                        // the frame_at exclusion; the two traps) are documented
+                        // ONCE, on ORIENTATION_TYPED_FN_NAMES. The family is
+                        // pinned disjoint from all sibling families by the
+                        // units.rs disjointness test, so this arm's position in
+                        // the ladder is unobservable.
+                        orientation_typed_fn_result_type(name)
                     } else {
                         compiled_args
                             .first()

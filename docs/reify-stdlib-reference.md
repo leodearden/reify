@@ -350,10 +350,16 @@ parameters are unit-less in the joint's local frame.
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
 compiler's current lowering for a few of these constructors (`polygon`,
-`line_segment`, `arc`, `interp`, `bezier`) accepts only flat positional
+`line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat positional
 coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
+
+The flat form is only a SHAPE divergence, not a units one: every argument the
+structured signature types as a `Length` must still be written dimensioned in
+the flat form (`0mm`, not `0`), and a bare number is rejected rather than read
+as SI metres. Arguments the structured signature types as `Real` or `Int` —
+weights, knots, degrees, counts, and direction components — stay dimensionless.
 
 **3D solids:**
 
@@ -398,7 +404,9 @@ convention changes:
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
-`translate(primitive(...), 0, 0, -h/2)` workaround.
+`translate(primitive(...), 0mm, 0mm, -h/2)` workaround — note the dimensioned zeros: `translate`'s
+components are length-semantic, so a bare `0` is rejected rather than read as 0 SI metres. (`-h/2`
+needs no change; dividing a length by a bare number preserves the length.)
 
 `rounded_box`/`rounded_rect` additionally require `corner_r > 0` and
 `2*corner_r < min(width, depth)`; a statically-known violation (constant literal
@@ -440,6 +448,13 @@ fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
 // current compiler form: same list -> flat-args divergence as `interp` above
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
+// current compiler form: nurbs(degree, n_points, coords…, weights…, knots…) —
+// one flat positional stream, with degree FIRST (not last as above) and an
+// explicit n_points that the structured form derives from the list. Only
+// `coords…` is length-semantic and must be dimensioned; degree, n_points,
+// weights and knots are the `Int`/`Real` above and stay dimensionless. Knot
+// count is n_points + degree + 1. e.g.
+// nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
 
 // Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
 // fn nurbs_surface(/* NURBS surface parameters */) -> Surface

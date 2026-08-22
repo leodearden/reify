@@ -914,8 +914,11 @@ echo "--- (hE): the escape is matched against comment text, not raw \$0 ---"
 # calls a bundle half AND merely MENTIONS the escape token inside a string
 # literal is silently suppressed today: the whole line is `next`ed before the
 # half-call is ever tested.  A violation that a nearby string can switch off is
-# not a gate.  The mirror-image rationale is already written down at
-# check-nan-safe-ordering.sh:361-364 for `nan-safe:allow`.
+# not a gate.  The mirror-image rationale is already written down in
+# check-nan-safe-ordering.sh, in the comment on its `comment_tail ~
+# /nan-safe:allow/` match explaining why raw $0 is wrong because a token
+# "merely *appears inside a string*" (cite by text, not :NNN — line numbers
+# drift, see docs/prds/compute-fea-hardening.md decision 9).
 write_baseline
 mkdir -p "$FIX/crates/reify-foo/src"
 cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
@@ -1149,8 +1152,11 @@ assert "hF1b: stderr says the scope matched nothing (discriminates the four exit
 # with a stub that always exits 1 and run against the CLEAN baseline: today the
 # unchecked `out="$(awk …)"` assignment aborts under `set -e` carrying awk's
 # own status, so the gate exits 1 on a clean tree with nothing printed — the
-# same code it uses for a genuine violation.  main's rationale for the explicit
-# check is at check-nan-safe-ordering.sh:346-352.
+# same code it uses for a genuine violation.  main's rationale for the
+# explicit check is at check-nan-safe-ordering.sh, in the comment above its
+# `out="$(awk …)"` status check that begins "Checked explicitly (rather than
+# left to `set -e`)" (cite by text, not :NNN — line numbers drift, see
+# docs/prds/compute-fea-hardening.md decision 9).
 #
 # hF1's guard is what makes this total: with an empty scan set now impossible,
 # the negative-pass loop is guaranteed to execute at least once, so a

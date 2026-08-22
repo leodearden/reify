@@ -51,6 +51,7 @@ mod parse_signatures;
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
 pub mod module_dag;
 mod module_pragmas;
+mod orientation_signatures;
 pub mod prelude_context;
 pub(crate) mod recursion_guard;
 pub mod relation_signatures;
@@ -100,6 +101,7 @@ pub(crate) use ice::*;
 pub(crate) use joint_signatures::*;
 pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
+pub(crate) use orientation_signatures::*;
 pub(crate) use parse_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
@@ -576,6 +578,36 @@ pub fn compile_with_prelude_context_checked_with_config(
     compile_builder::enums_phase::build_resolution_enums_from_cache(
         &mut compile_ctx,
         prelude_enums,
+    );
+
+    // #5429 / PRD docs/prds/v0_6/uniform-member-access.md §4 M5, D8: a MODULE-LOCAL
+    // `enum N` shadows a PRELUDE `structure def N` in declared-type positions, so
+    // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than being
+    // conflated with std.tolerancing's `structure def Fit` (stdlib/tolerancing.ri:268).
+    //
+    // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
+    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
+    // `phase_entities` alone made a trait requirement / fn signature param keep
+    // `Type::StructureRef("Fit")` while the conforming structure's param became
+    // `Type::Enum("Fit")` — conformance and overload resolution then rejected the
+    // pair, turning a previously-WARNING module into a hard ERROR (esc-5429-1).
+    //
+    // Placed here because both inputs are final: `ctx.enum_defs` and
+    // `ctx.seen_entity_names` are seeded by `pre_pass::collect_decl_refs` and
+    // `resolve_enum_variant_payloads` has already run. The set-construction rules
+    // (local-only, minus local structure names) live in ONE place — see
+    // `enums_phase::build_local_enum_shadow_set`.
+    //
+    // Bound to a leading-underscore NAME, never `let _ = …` (which would drop the
+    // guard immediately and make the scope a silent no-op). It drops at the end of
+    // this function, leaving the ambient set empty for every other caller. This is
+    // orthogonal to the `EnumNameScope` guards that `functions.rs`/`entity.rs`
+    // install: that set is a LAST-RESORT fallback consulted only after the
+    // structure-name arm fails, whereas this one OVERRIDES that arm's result — they
+    // are separate thread-locals and compose without interfering.
+    let _local_enum_shadow_scope = crate::type_resolution::LocalEnumShadowScope::new(
+        compile_builder::enums_phase::build_local_enum_shadow_set(&compile_ctx),
     );
 
     compile_builder::functions_phase::phase_functions(

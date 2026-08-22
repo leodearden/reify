@@ -121,6 +121,55 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
 ];
 
+/// Per-SITE waivers for ctor-conformance diagnostics that a shipped example
+/// still emits because its call site has not been migrated yet, and cannot be
+/// migrated by the task that promoted the family.
+///
+/// Each entry is `(relative_path, param_name, owning_task)`:
+/// * `relative_path` is the same forward-slash `relative_to_examples_dir` key
+///   form `SKIP_SET` uses (`"trajectory/printer_print_envelope.ri"`, never the
+///   repo-relative `"examples/trajectory/..."` spelling);
+/// * `param_name` is the offending ctor param, parsed back out of the
+///   diagnostic by [`param_name_from_ctor_diagnostic`];
+/// * `owning_task` is the live task that owns retiring the entry, in the
+///   canonical `#NNNN` cite form required by the repo's citation convention.
+///
+/// # This is NOT `SKIP_SET`, and must never be merged into it
+///
+/// `SKIP_SET` is for files that cannot reach a clean compile AT ALL — the file
+/// is dropped from the walk entirely, so it gets no coverage of any kind.
+/// `printer_print_envelope.ri` compiles cleanly; it merely carries two
+/// un-migrated call sites. It stays fully walked, and every OTHER diagnostic it
+/// emits still fails the gate.
+///
+/// # The waiver is per-SITE, never per-file
+///
+/// Matching is on the `(file, param)` PAIR. A future diagnostic in the same file
+/// at a different param is unwaived and fails the gate, as does a diagnostic at
+/// one of these params that carries a different, non-`argument '<name>'`
+/// wording.
+///
+/// # Retirement
+///
+/// Task #5847 owns deleting BOTH entries in the same diff that dimensions
+/// `trajectory/printer_print_envelope.ri:154` / `:155` (esc-5627-5 option A).
+/// The sites cannot be dimensioned in isolation without collapsing the TOTS
+/// solve, which is the whole reason the debt exists rather than the migration
+/// simply having been done. Leaving the entries behind after that lands is
+/// caught by [`ctor_conformance_migration_debt_entries_are_all_live`].
+const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
+    (
+        "trajectory/printer_print_envelope.ri",
+        "velocity_limit",
+        "#5847",
+    ),
+    (
+        "trajectory/printer_print_envelope.ri",
+        "acceleration_limit",
+        "#5847",
+    ),
+];
+
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
 /// stdlib prelude, accumulate every file that produces an Error-severity
 /// diagnostic, and panic once at the end with a report covering ALL failures.
@@ -190,56 +239,83 @@ fn all_examples_parse_and_compile_with_stdlib() {
 /// Every violation across the whole corpus is accumulated and reported in one
 /// panic — the gate exists for corpus-wide visibility, so it must NOT fail fast.
 ///
-/// A newly-failing file must be fixed at the conformance walker (or the arg
-/// genuinely corrected), NOT silenced by a `SKIP_SET` entry: `SKIP_SET` exists
-/// for files that cannot reach a clean compile at all, and a ctor-conformance
-/// false positive is never that.
+/// Sites listed in [`CTOR_CONFORMANCE_MIGRATION_DEBT`] are waived per `(file,
+/// param)` pair; see [`CTOR_CONFORMANCE_GATE_REMEDY`] for what a firing
+/// diagnostic means and which of the three remedies applies.
 #[test]
 fn no_example_emits_ctor_field_conformance_diagnostics() {
-    use std::collections::HashSet;
-
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
-    let mut violations: Vec<(String, String, String)> = Vec::new();
-
-    let paths = discover_ri_files();
-    let mut exercised = 0usize;
-    for path in &paths {
-        let rel_key = relative_to_examples_dir(path);
-        if skip.contains(rel_key.as_str()) {
-            continue;
-        }
-        exercised += 1;
-        ctor_conformance_one(path, &rel_key, &mut violations);
-    }
+    let walk = ctor_conformance_corpus_walk();
 
     assert!(
-        exercised >= 40,
+        walk.exercised >= 40,
         "ctor-conformance corpus gate exercised only {} .ri files — expected ~40+; \
          did the examples/ directory move, or did SKIP_SET grow unexpectedly?",
-        exercised
+        walk.exercised
     );
 
-    if !violations.is_empty() {
-        let n = violations.len();
-        let lines: Vec<String> = violations
-            .into_iter()
-            .map(|(file, code, message)| format!("  {} [{}] {}", file, code, message))
+    let unwaived: Vec<&CtorConformanceViolation> = walk
+        .violations
+        .iter()
+        .filter(|v| !violation_is_waived(v))
+        .collect();
+
+    if !unwaived.is_empty() {
+        let n = unwaived.len();
+        let waived = walk.violations.len() - n;
+        let lines: Vec<String> = unwaived
+            .iter()
+            .map(|v| format!("  {} [{}] {}", v.file, v.code, v.message))
             .collect();
         panic!(
-            "ctor-conformance corpus gate: {} diagnostic(s) across {} exercised example files.\n\
-             Every one is a struct-ctor field-conformance diagnostic fired against a shipped \
-             example — i.e. a false positive from the conformance walker, not a broken example.\n\
-             Fix the walker in crates/reify-compiler/src/conformance/mod.rs — either the \
-             family's dedicated shape-based arm in `walk_param_against_arg_type` \
-             (Vector / Point / Field / Matrix / Tensor) or the \
-             `general_leaf_param_family_is_validated` allowlist that gates the general \
-             concrete-leaf arm; do NOT add a SKIP_SET entry.\n\n{}",
+            "ctor-conformance corpus gate: {} unwaived diagnostic(s) across {} exercised \
+             example files ({} waived by CTOR_CONFORMANCE_MIGRATION_DEBT).\n\n{}\n\n{}",
             n,
-            exercised,
-            lines.join("\n")
+            walk.exercised,
+            waived,
+            lines.join("\n"),
+            CTOR_CONFORMANCE_GATE_REMEDY,
         );
     }
 }
+
+/// Appended to every ctor-conformance corpus-gate failure.
+///
+/// The pre-γ text asserted that every firing diagnostic was "a false positive
+/// from the conformance walker, not a broken example" and directed the reader
+/// straight at the `general_leaf_param_family_is_validated` allowlist. That was
+/// true while the walker only judged families the corpus was already written
+/// for; after task 5627 promoted the dimensioned-`Scalar` family it is no longer
+/// the common case, and an implementer following it verbatim would REVERT that
+/// promotion to make the gate green. So the remedy has to name all three
+/// mechanisms and let the reader pick, rather than presume one.
+const CTOR_CONFORMANCE_GATE_REMEDY: &str = "\
+Each line above is a struct-ctor field-conformance diagnostic fired against a \
+shipped example. There are three possible causes; diagnose before fixing.\n\
+\n\
+  1. TRUE POSITIVE (now the common case) — the example is genuinely \
+un-migrated. Fix the EXAMPLE: dimension the call site (`300mm/s`, not `300.0`), \
+or, when the arg is right and the DECLARATION is wrong, correct the annotation \
+— `examples/bearing_auto_seal.ri`'s `param durometer : Length = 70.0` was a \
+dimensionless hardness number mis-annotated as a Length, and the fix was \
+`: Real`, NOT adding a unit to the literal.\n\
+\n\
+  2. FALSE POSITIVE from the walker — still possible, and still fixed at \
+crates/reify-compiler/src/conformance/mod.rs: either the family's dedicated \
+shape-based arm in `walk_param_against_arg_type` (Vector / Point / Field / \
+Matrix / Tensor) or the `general_leaf_param_family_is_validated` allowlist that \
+gates the general concrete-leaf arm. Do not reach for this one first: a \
+promoted family firing on an un-migrated example is cause 1, and narrowing the \
+walker to silence it would undo a landed decision.\n\
+\n\
+  3. BLOCKED ON ANOTHER TASK — the site is a true positive but cannot be fixed \
+here (dimensioning it in isolation breaks something else). Add a per-SITE \
+`CTOR_CONFORMANCE_MIGRATION_DEBT` entry naming the file, the param and the LIVE \
+task that owns retiring it. Per-site, never per-file, and never without an \
+owner.\n\
+\n\
+A SKIP_SET entry is NEVER the answer for a file that compiles cleanly: it drops \
+the file from the walk entirely and removes all of its coverage, not just the \
+one diagnostic.";
 
 /// Sanity guard: every entry in SKIP_SET must name a relative path that actually
 /// exists under `examples/`.  Catches mis-typed or stale skip entries before they
@@ -432,6 +508,195 @@ fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode
     )
 }
 
+/// One ctor-conformance diagnostic observed during the corpus walk.
+///
+/// Carries the offending param name alongside file / code / message so the gate
+/// can waive per SITE rather than per file — a bare `(file, code, message)`
+/// triple can only be matched on the whole message, which would make a waiver
+/// hostage to diagnostic wording.
+#[derive(Debug)]
+struct CtorConformanceViolation {
+    /// `relative_to_examples_dir` key of the emitting file.
+    file: String,
+    /// Offending param name, when the message carries one in the
+    /// `argument '<name>'` shape. `None` for the ctor-conformance codes whose
+    /// wording names no param — those can never be waived, which is the
+    /// intended conservative default.
+    param: Option<String>,
+    /// `Debug` rendering of the `DiagnosticCode`, for the failure report.
+    code: String,
+    message: String,
+}
+
+/// The result of one full pass over the example corpus.
+struct CtorConformanceWalk {
+    /// Number of files actually compiled (i.e. discovered minus `SKIP_SET`).
+    exercised: usize,
+    violations: Vec<CtorConformanceViolation>,
+}
+
+/// The corpus walk, computed once per test binary and shared by every gate that
+/// needs it.
+///
+/// Compiling all ~250 examples is the single most expensive thing this binary
+/// does. `no_example_emits_ctor_field_conformance_diagnostics` and
+/// `ctor_conformance_migration_debt_entries_are_all_live` need exactly the same
+/// data, so memoizing keeps the second guard free rather than doubling the
+/// gate's wall-clock.
+fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    static WALK: OnceLock<CtorConformanceWalk> = OnceLock::new();
+    WALK.get_or_init(|| {
+        let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
+        let mut violations: Vec<CtorConformanceViolation> = Vec::new();
+        let mut exercised = 0usize;
+
+        for path in &discover_ri_files() {
+            let rel_key = relative_to_examples_dir(path);
+            if skip.contains(rel_key.as_str()) {
+                continue;
+            }
+            exercised += 1;
+            ctor_conformance_one(path, &rel_key, &mut violations);
+        }
+
+        CtorConformanceWalk {
+            exercised,
+            violations,
+        }
+    })
+}
+
+/// The `emit_arg_type_mismatch` message prefix that introduces the offending
+/// param name (`crates/reify-compiler/src/conformance/mod.rs`).
+const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
+
+/// Recover the offending param name from a ctor-conformance diagnostic message.
+///
+/// A `Diagnostic` carries no structured param field, so the only handle the
+/// per-site waiver has is the wording: the text between the first pair of single
+/// quotes following the `argument '` prefix. Returns `None` for any message that
+/// does not have that shape (the non-`ArgTypeMismatch` ctor-conformance codes),
+/// which makes such a diagnostic unwaivable rather than silently waived.
+///
+/// This is a real coupling to diagnostic prose, and it is deliberately guarded
+/// rather than merely commented: if the wording ever drifts so extraction stops
+/// matching, [`ctor_conformance_migration_debt_entries_are_all_live`] goes red
+/// naming the entry that stopped matching.
+fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
+    let start = message.find(CTOR_DIAGNOSTIC_ARG_PREFIX)? + CTOR_DIAGNOSTIC_ARG_PREFIX.len();
+    let rest = &message[start..];
+    let end = rest.find('\'')?;
+    Some(rest[..end].to_owned())
+}
+
+/// Whether `entry` (a [`CTOR_CONFORMANCE_MIGRATION_DEBT`] row) waives `v`.
+///
+/// Both halves of the key must match: the file AND the param. An entry whose
+/// param does not match — including because extraction returned `None` — waives
+/// nothing.
+fn debt_entry_matches(entry: &(&str, &str, &str), v: &CtorConformanceViolation) -> bool {
+    entry.0 == v.file && v.param.as_deref() == Some(entry.1)
+}
+
+/// Whether any debt entry waives `v`.
+fn violation_is_waived(v: &CtorConformanceViolation) -> bool {
+    CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .any(|entry| debt_entry_matches(entry, v))
+}
+
+/// Expiry guard: every [`CTOR_CONFORMANCE_MIGRATION_DEBT`] entry must still
+/// waive at least one live diagnostic.
+///
+/// A waiver that outlives the thing it waives is worse than no waiver: it is a
+/// silent, permanent hole in the gate at a `(file, param)` pair nobody is
+/// looking at any more. Liveness is the cheapest predicate with exactly the
+/// right shape — the instant #5847 dimensions the two printer sites, these
+/// entries match nothing and this test goes red naming them.
+///
+/// It doubles as the drift guard on [`param_name_from_ctor_diagnostic`]'s
+/// coupling to diagnostic wording: if extraction stops matching, every entry
+/// goes stale at once and this fails loudly, instead of the gate silently
+/// waiving nothing (noisy but visible) or — after a careless "fix" — everything.
+///
+/// A separate `#[test]` rather than extra assertions inside the gate, so waiver
+/// ROT and a corpus REGRESSION are distinguishable by test name.
+#[test]
+fn ctor_conformance_migration_debt_entries_are_all_live() {
+    let walk = ctor_conformance_corpus_walk();
+
+    let stale: Vec<String> = CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .filter(|entry| !walk.violations.iter().any(|v| debt_entry_matches(entry, v)))
+        .map(|(file, param, owner)| format!("  {} :: param '{}'  (owner {})", file, param, owner))
+        .collect();
+
+    assert!(
+        stale.is_empty(),
+        "CTOR_CONFORMANCE_MIGRATION_DEBT has {} stale entry/entries — each waives no live \
+         diagnostic:\n{}\n\n\
+         Either the site was migrated (the expected case: DELETE the entry, in the same diff \
+         that migrated it), or `param_name_from_ctor_diagnostic` no longer matches the \
+         `emit_arg_type_mismatch` wording in \
+         crates/reify-compiler/src/conformance/mod.rs (then FIX the extraction — do not \
+         delete the entries, the waiver would be silently waiving nothing).",
+        stale.len(),
+        stale.join("\n"),
+    );
+}
+
+/// Sanity guard mirroring [`skip_set_entries_exist_under_examples_dir`]: every
+/// debt entry must name a file that actually exists under `examples/`.
+///
+/// Cheap, and it separates "mis-typed path" from "already migrated" — both of
+/// which would otherwise surface only as a stale-entry failure above.
+#[test]
+fn ctor_conformance_migration_debt_entries_exist_under_examples_dir() {
+    for (rel_path, param, owner) in CTOR_CONFORMANCE_MIGRATION_DEBT {
+        let path = Path::new(EXAMPLES_DIR).join(rel_path);
+        assert!(
+            path.exists(),
+            "CTOR_CONFORMANCE_MIGRATION_DEBT entry '{}' (param '{}', owner {}) does not exist \
+             under {}",
+            rel_path,
+            param,
+            owner,
+            EXAMPLES_DIR,
+        );
+    }
+}
+
+/// The two waiver lists must name disjoint files.
+///
+/// A `SKIP_SET` file is never walked, so a debt entry for one could never waive
+/// anything — it would be dead on arrival, and the only symptom would be the
+/// liveness failure above, which reads as "already migrated" and invites exactly
+/// the wrong fix. Asserting disjointness directly names the real problem.
+#[test]
+fn ctor_conformance_migration_debt_is_disjoint_from_skip_set() {
+    use std::collections::HashSet;
+
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
+    let overlap: Vec<&str> = CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .map(|(file, _, _)| *file)
+        .filter(|file| skip.contains(file))
+        .collect();
+
+    assert!(
+        overlap.is_empty(),
+        "these files are in BOTH SKIP_SET and CTOR_CONFORMANCE_MIGRATION_DEBT: {:?}.\n\
+         A skipped file is never compiled by the corpus walk, so its debt entries waive \
+         nothing. Decide which list the file belongs in: SKIP_SET if it cannot reach a clean \
+         compile at all, CTOR_CONFORMANCE_MIGRATION_DEBT if it compiles cleanly and merely \
+         carries un-migrated ctor call sites.",
+        overlap,
+    );
+}
+
 /// Parse `path`, compile it with the stdlib prelude, and append one entry to
 /// `violations` for EVERY ctor-conformance-coded diagnostic found, regardless of
 /// severity.
@@ -444,7 +709,7 @@ fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode
 fn ctor_conformance_one(
     path: &Path,
     rel_key: &str,
-    violations: &mut Vec<(String, String, String)>,
+    violations: &mut Vec<CtorConformanceViolation>,
 ) {
     use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
     use reify_core::ModulePath;
@@ -468,11 +733,12 @@ fn ctor_conformance_one(
         .iter()
         .filter(|d| is_ctor_conformance_code(d.code))
     {
-        violations.push((
-            rel_key.to_owned(),
-            format!("{:?}", d.code.expect("filtered to Some(code) above")),
-            d.message.clone(),
-        ));
+        violations.push(CtorConformanceViolation {
+            file: rel_key.to_owned(),
+            param: param_name_from_ctor_diagnostic(&d.message),
+            code: format!("{:?}", d.code.expect("filtered to Some(code) above")),
+            message: d.message.clone(),
+        });
     }
 }
 

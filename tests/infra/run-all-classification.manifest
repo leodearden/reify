@@ -21,7 +21,7 @@
 #                       knob flips to 1 (H3). See docs/prds/run-all-host-
 #                       infra-partition.md §3 for the full rationale.
 #
-# Conservative-first, refine-later (PRD §3): the 4 host-exclusive entries
+# Conservative-first, refine-later (PRD §3): the host-exclusive entries
 # below start whole-file host-exclusive as a conservative default; H5-H7
 # refine them (moving hermetic portions into pool) by editing ONLY this
 # manifest — the drift-guard (tests/infra/test_run_all_classification.sh)
@@ -70,7 +70,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (131, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (146, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -92,6 +92,7 @@ test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_govtest_slice_reaper.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
 test_gui_typecheck_test_side.sh pool
@@ -100,6 +101,7 @@ test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
 test_hooks_call_verify.sh pool
 test_infra_classification_manifest_gate.sh pool
+test_jcodemunch_index_reify.sh pool
 test_jobserver_acceptance.sh pool
 test_jobserver_balancer.sh pool
 test_jobserver_canary.sh pool
@@ -181,17 +183,20 @@ test_sn_gate.sh pool
 test_stash_guard.sh pool
 test_sync_comments_grep.sh pool
 test_target_per_lane_independence.sh pool
+test_test_binary_concurrency_sampler.sh pool
 test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool
 test_test_run_semaphore.sh pool
 test_thin_warm_lane.sh pool
 test_typecheck_compiles_tests.sh pool
+test_verify_admission_knob_parity.sh pool
 test_verify_compile_gate.sh pool
 test_verify_env_ambient_isolation.sh pool
 test_verify_failfast_order.sh pool
 test_verify_gate_exclude_heavy.sh pool
 test_verify_gui_feature_check.sh pool
 test_verify_gui_retry_specs.sh pool
+test_verify_ld_library_path_scope.sh pool
 test_verify_nextest_probe.sh pool
 test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool

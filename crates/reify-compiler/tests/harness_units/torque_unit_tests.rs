@@ -6,9 +6,13 @@
 //! case-distinct from the generated `nm` (nanometre, prefix "n" × base `m`).
 //!
 //! Case-distinctness is an EXISTING property of `UnitRegistry::lookup`
-//! (crates/reify-compiler/src/units.rs:1533), an exact HashMap key match with
+//! (crates/reify-compiler/src/units.rs), an exact HashMap key match with
 //! zero case folding — this file PINS that property against `Nm`/`nm`/`NM`/`nM`
 //! rather than building it.
+//!
+//! Cross-file references here name SYMBOLS, never line numbers: a hand-copied
+//! line number rots on the first unrelated edit to the cited file and no gate
+//! catches the drift.
 
 use crate::common::{assert_eq_rel, assert_simple_unit, stdlib_param_si_value};
 use reify_core::{DimensionVector, Severity};
@@ -29,11 +33,12 @@ fn nm_torque_is_case_distinct_from_nm_nanometre() {
     assert_eq!(d, DimensionVector::LENGTH);
 
     // (c)/(d) NEGATIVE: `NM` and `nM` are ungeneratable and must stay unknown.
-    // `M` is an SI *prefix* (1e6, si_units.rs:21) but no base or derived unit is
-    // *named* `M`, and `N` is not a prefix at all — so si_units.rs's
-    // `<prefix><name>` concatenation can never produce either spelling. Use
-    // `compile_source_with_stdlib` directly here (not `stdlib_param_si_value`,
-    // which panics on any error diagnostic and so cannot express a negative).
+    // `M` is an SI *prefix* (1e6, si_units.rs's `SI_PREFIXES` table) but no
+    // base or derived unit is *named* `M`, and `N` is not a prefix at all —
+    // so si_units.rs's `<prefix><name>` concatenation can never produce
+    // either spelling. Use `compile_source_with_stdlib` directly here (not
+    // `stdlib_param_si_value`, which panics on any error diagnostic and so
+    // cannot express a negative).
 
     // (c) NEGATIVE: `5NM` must remain an unknown unit naming "NM".
     let source = "structure def S { param x : Torque = 5NM }";
@@ -81,9 +86,9 @@ fn stdlib_units_module_contains_nm_with_torque_dimension() {
 
 #[test]
 fn nm_equals_n_times_m_per_rad_and_is_not_energy() {
-    // `N` has factor 1.0 (si_units.rs:180-184); `m` and `rad` are SI bases with
-    // factor 1 — so both sides resolve to exactly 5.0. This is an exact
-    // identity, not a tuned tolerance.
+    // `N` has factor 1.0 (si_units.rs's `SI_DERIVED_UNITS` table); `m` and
+    // `rad` are SI bases with factor 1 — so both sides resolve to exactly
+    // 5.0. This is an exact identity, not a tuned tolerance.
     let (nm_v, nm_d) = stdlib_param_si_value("Torque", "5Nm");
     let (ex_v, ex_d) = stdlib_param_si_value("Torque", "5N*m/rad");
     assert_eq_rel(nm_v, ex_v, 1e-12, "5Nm should equal 5N*m/rad in SI");
@@ -113,11 +118,12 @@ fn nm_equals_n_times_m_per_rad_and_is_not_energy() {
 /// (`tests/prd-gate/fixtures/unit_nm_torque_immediate.ri`) and asserts it
 /// compiles clean — the end-to-end user-observable θ signal (PRD §12).
 /// Path resolution mirrors the idiom at
-/// `crates/reify-compiler/tests/buckling_stdlib_compile.rs:700-712` and
-/// `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:766-775`: the
-/// committed fixture is the single source of truth, read from disk rather
-/// than inlined, so it cannot drift out of sync. Read-only input: this test
-/// must never edit the fixture file.
+/// `crates/reify-compiler/tests/buckling_stdlib_compile.rs`'s
+/// `coexist_fixture_source` and
+/// `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`'s
+/// `corpus_files`: the committed fixture is the single source of truth,
+/// read from disk rather than inlined, so it cannot drift out of sync.
+/// Read-only input: this test must never edit the fixture file.
 #[test]
 fn prd_gate_fixture_unit_nm_torque_immediate_compiles_clean() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

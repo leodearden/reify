@@ -553,6 +553,13 @@ describe('bridge event listeners', () => {
   });
 });
 
+// The code↔doc pin for deliberately-consumer-less channels (task 6227,
+// `diagnostics` only) has moved to `eventChannelConsumerCoverage.test.ts`
+// check (f), generalized (task 6380) to iterate every channel registered in
+// that file's `DELIBERATELY_CONSUMERLESS`, alongside the `channelRegistrationsIn`
+// helper it depends on, which now lives in `eventChannelConsumerContract.ts`.
+// See that check's docblock for the full rationale.
+
 describe('bridge tensegrity/display listeners', () => {
   it("onTensegrityWiresUpdate subscribes to 'tensegrity-wires-update' event", async () => {
     const unlisten = vi.fn();

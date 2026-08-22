@@ -141,6 +141,7 @@
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <STEPControl_Controller.hxx>
+#include <StepData_StepModel.hxx>
 #include <Interface_Static.hxx>
 #include <Standard_Failure.hxx>
 
@@ -6268,6 +6269,49 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
         // Construct the writer AFTER the schema is set, so its model captures
         // the requested `write.step.schema`.
         STEPControl_Writer writer;
+
+        // LENGTH UNIT REGIME. Reify model space is SI METRES; exported STEP is
+        // MILLIMETRES (the CAD-interop default, and the unit OCCT already
+        // declares as SI_UNIT(.MILLI.,.METRE.) in the written file). Setting
+        // these two values is what makes the declaration and the payload
+        // AGREE: without them OCCT's scale factor is 1.0 and reify's metre
+        // coordinates are emitted verbatim under a millimetre declaration, so
+        // a 30 mm part reads back as 30 µm — a 1000x shrink.
+        //
+        // Both APIs express a unit as its SIZE IN MILLIMETRES, so the local
+        // (in-memory) unit is 1000.0 — "reify's coordinates are metres" — and
+        // the write unit is 1.0 — "emit millimetres". OCCT derives the scale
+        // factor from the ratio local/write and applies the x1000 itself; the
+        // declared SI_UNIT line is unchanged, only the payload moves.
+        //
+        // ORDERING IS LOAD-BEARING, for the same reason the `write.step.schema`
+        // ordering above is: the units cannot be set BEFORE the writer is
+        // constructed (the model does not exist yet — Model() is what creates
+        // and owns it) nor AFTER Transfer (which has already computed and
+        // applied the scale factor). Construct writer -> set units -> Transfer
+        // is the only correct order.
+        //
+        // BOTH values are set EXPLICITLY on every call, for the same reason the
+        // schema is re-set per call above: SetWriteLengthUnit is otherwise
+        // uninitialised and falls back to the process-global `write.step.unit`
+        // Interface_Static, which another caller could have moved.
+        //
+        // The PER-MODEL API is chosen deliberately over the equivalent
+        // process-global `xstep.cascade.unit` / `write.step.unit` statics: a
+        // per-model setting cannot leak into a concurrent export or into a
+        // future STEP reader, whereas this function already needs
+        // g_step_export_mutex and a per-call schema re-set precisely because
+        // OCCT's globals do leak.
+        Handle(StepData_StepModel) step_model = writer.Model();
+        if (step_model.IsNull()) {
+            // Fail loudly rather than exporting geometry mislabelled by 1000x.
+            throw std::runtime_error(
+                "STEPControl_Writer::Model() returned null; cannot set the STEP "
+                "length unit regime");
+        }
+        step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
+        step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
+
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
         // Write to a temporary file, then read back
