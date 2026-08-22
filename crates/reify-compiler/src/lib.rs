@@ -95,7 +95,6 @@ pub(crate) use functions::*;
 pub(crate) use geometry::*;
 pub(crate) use geometry_boolean::*;
 pub(crate) use geometry_curve::*;
-#[allow(unused_imports)]
 pub(crate) use geometry_list::*;
 pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;

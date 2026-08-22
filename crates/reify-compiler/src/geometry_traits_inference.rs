@@ -980,6 +980,12 @@ fn fold_geometry_args_in_env(
 /// which is why it is a follow-up rather than a widening of this task — filed
 /// as an agent-followup from #5385 (review esc-5385-3, suggestion 5).
 ///
+/// That residual is PINNED, not merely described, by
+/// `union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap` in this
+/// module's tests (review esc-5385-6): it asserts both the mechanism (a named
+/// list arg contributes zero operands) and the consequence (the fold claims
+/// `bounded`), so the follow-up cannot land without deliberately flipping it.
+///
 /// Failing CLOSED here instead is NOT an acceptable stopgap: claiming
 /// not-`bounded` for the common all-bounded case would emit spurious errors for
 /// the very idiom this task exists to make legal.
@@ -1115,6 +1121,68 @@ mod tests {
         assert!(
             !via_list.bounded,
             "a union containing half_space is NOT bounded; got {via_list:?}",
+        );
+    }
+
+    /// GAP PIN (review esc-5385-6) — a geometry-list LET passed by NAME does
+    /// NOT fold over its elements, so `union_all(holes)` at a `Bounded` slot is
+    /// accepted even when an element is unbounded.
+    ///
+    /// This asserts the CURRENT, UNSOUND disposition on purpose: the KNOWN
+    /// RESIDUAL on [`geometry_operand_traits_in_env`] describes the gap in
+    /// prose, and prose alone is silently satisfied if the follow-up is dropped.
+    /// Pinning the mechanism directly — a `ValueRef` typed `List<Geometry>`
+    /// contributes ZERO operands — means the follow-up that threads per-element
+    /// traits through `LetBindingEnv` MUST come here and flip this test rather
+    /// than leave a stale claim behind.
+    ///
+    /// Both halves matter: the empty-operand assertion is the mechanism, and the
+    /// `bounded` assertion is its user-visible consequence, contrasted against
+    /// the syntactically-adjacent LITERAL form which does fold (pinned by
+    /// `union_all_over_a_geometry_list_folds_over_its_elements` above).
+    #[test]
+    fn union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap() {
+        // `entity.rs` pass 1 registers a geometry-list let at exactly this type,
+        // and `expr.rs` compiles a bare reference to it as a `ValueRef` — the
+        // shape `union_all(holes)` really produces.
+        let named_list = CompiledExpr {
+            kind: CompiledExprKind::ValueRef(ValueCellId::new("S", "holes")),
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        assert!(
+            geometry_operand_traits_in_env(&named_list, &EmptyLetEnv).is_empty(),
+            "MECHANISM: a named geometry-list arg contributes no operands today.              If this now yields per-element traits, the gap is CLOSED — delete              this test and the KNOWN RESIDUAL rustdoc, and re-point the              consequence assertion below.",
+        );
+
+        let via_name = try_infer_traits_for_function_call("union_all", &[named_list])
+            .expect("union_all must be dispatched");
+        assert!(
+            via_name.bounded,
+            "CONSEQUENCE: with no operands the fold takes its              `InferredTraits::all()` default, which claims `bounded`. This is              the gap, not the contract.",
+        );
+
+        // Contrast: the same geometry, written as a LITERAL, is correctly
+        // unbounded. One syntactic step apart, two different verdicts — which is
+        // exactly what makes the gap worth pinning.
+        let via_literal = try_infer_traits_for_function_call(
+            "union_all",
+            &[CompiledExpr {
+                kind: CompiledExprKind::ListLiteral(vec![
+                    geom_call("half_space"),
+                    geom_call("box"),
+                ]),
+                result_type: reify_core::Type::List(Box::new(
+                    reify_core::Type::dimensionless_scalar(),
+                )),
+                content_hash: reify_core::ContentHash(0),
+            }],
+        )
+        .expect("union_all must be dispatched");
+        assert!(
+            !via_literal.bounded,
+            "control: the literal form must still fold over its elements — if              this regresses, the gap pin above is measuring nothing",
         );
     }
 

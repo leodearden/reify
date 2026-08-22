@@ -1182,15 +1182,20 @@ pub(crate) fn compile_entity(
     // and into register_guarded_names. (task 4527)
     let mut known_selector_lets: HashSet<&str> = HashSet::new();
     // Parallel to `known_geometry_lets`: tracks which let names are geometry-LIST
-    // lets — `[<geom>, ...]` or `generate(<int literal>, |i| <geom>)` — mapped to
-    // their statically-known shape. Each such let lowers to N sibling
-    // `RealizationDecl`s (one per element) that eval regroups into a single
-    // `Value::List` cell, so the element COUNT must survive from this pre-pass to
-    // the realization-emission loop below. Disjoint from `known_geometry_lets` by
-    // construction: `classify_geometry_list_let` only accepts shapes that
-    // `is_geometry_let` rejects, and the Let arm tries geometry-let FIRST.
-    // (task #5385)
-    let mut known_geometry_list_lets: HashMap<&str, GeometryListShape> = HashMap::new();
+    // lets — `[<geom>, ...]` or `generate(<int literal>, |i| <geom>)`. Each such
+    // let lowers to N sibling `RealizationDecl`s (one per element) that eval
+    // regroups into a single `Value::List` cell. Disjoint from
+    // `known_geometry_lets` by construction: `classify_geometry_list_let` only
+    // accepts shapes that `is_geometry_let` rejects, and the Let arm tries
+    // geometry-let FIRST. (task #5385)
+    //
+    // MEMBERSHIP ONLY — deliberately not a name→count map (review esc-5385-6).
+    // The element COUNT has exactly one source of truth,
+    // `scope.geometry_list_elements[name].len()`, which is what both the
+    // `"{list}#{k}"` name minting and the realization-emission loop below read.
+    // A second count here could drift from the elements actually emitted and
+    // silently desynchronise `geometry_realization_names` from `named_steps`.
+    let mut known_geometry_list_lets: HashSet<&str> = HashSet::new();
     // Lets that plainly intend geometry-in-a-collection but cannot be statically
     // unrolled (non-literal `generate` count, mixed-kind list literal). The Error
     // is emitted once, here in pass 1; the name is recorded so pass 2 and the
@@ -1529,7 +1534,7 @@ pub(crate) fn compile_entity(
                             scope
                                 .geometry_list_elements
                                 .insert(let_decl.name.clone(), elements);
-                            known_geometry_list_lets.insert(let_decl.name.as_str(), shape);
+                            known_geometry_list_lets.insert(let_decl.name.as_str());
                         }
                         None => {
                             // Over the element cap — the Error is already
@@ -2276,7 +2281,7 @@ pub(crate) fn compile_entity(
                 // dimensionless scalars, so the inferred type here would be
                 // `List<Real>`. Pass 1 already registered the name as
                 // `List<Geometry>` in scope; do NOT re-register it.
-                if known_geometry_list_lets.contains_key(let_decl.name.as_str()) {
+                if known_geometry_list_lets.contains(let_decl.name.as_str()) {
                     let id = ValueCellId::new(entity_name, &let_decl.name);
 
                     let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
@@ -3963,23 +3968,28 @@ pub(crate) fn compile_entity(
     // loop below MUST mint exactly these names, or `geometry_realization_names`
     // and eval's `named_steps` drift apart.
     //
+    // Both sides therefore read ONE count — `scope.geometry_list_elements[name]`,
+    // the elements pass 1 unrolled — rather than a separately-stored length that
+    // could drift from them (review esc-5385-6). Computed eagerly into a Vec so
+    // the immutable borrow of `scope` ends before the insertion loop below takes
+    // it mutably.
+    //
     // The synthetic `"{list}#{k}"` names cannot collide with a user identifier
     // (`#` is not an identifier character) and cannot be written in source, so
     // they never resolve a `GeomRef::Sub`. They are registered anyway so this
     // set stays exactly the set of names with `named_steps` entries at eval.
-    let geometry_list_realization_member_names = |member: &reify_ast::MemberDecl| -> Vec<String> {
-        match member {
-            reify_ast::MemberDecl::Let(let_decl) => known_geometry_list_lets
+    let geometry_list_realization_member_names: Vec<String> = structure
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            reify_ast::MemberDecl::Let(let_decl) => scope
+                .geometry_list_elements
                 .get(let_decl.name.as_str())
-                .map(|shape| {
-                    (0..shape.len())
-                        .map(|k| format!("{}#{}", let_decl.name, k))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        }
-    };
+                .map(|elements| (let_decl.name.clone(), elements.len())),
+            _ => None,
+        })
+        .flat_map(|(name, len)| (0..len).map(move |k| format!("{name}#{k}")))
+        .collect();
 
     // Populate geometry_realization_names via the shared helper before the
     // emission loop so forward references (a later member's arg naming an
@@ -3988,9 +3998,9 @@ pub(crate) fn compile_entity(
         if let Some(name) = geometry_realization_member_name(member) {
             scope.geometry_realization_names.insert(name);
         }
-        for name in geometry_list_realization_member_names(member) {
-            scope.geometry_realization_names.insert(name);
-        }
+    }
+    for name in geometry_list_realization_member_names {
+        scope.geometry_realization_names.insert(name);
     }
 
     let mut realizations = Vec::new();
@@ -4009,7 +4019,7 @@ pub(crate) fn compile_entity(
             // single-geometry arm to mirror the pass-1 classification order;
             // the two predicates are disjoint either way.
             reify_ast::MemberDecl::Let(let_decl)
-                if known_geometry_list_lets.contains_key(let_decl.name.as_str()) =>
+                if known_geometry_list_lets.contains(let_decl.name.as_str()) =>
             {
                 // Elements were unrolled once in pass 1 and cached on the
                 // scope; cloned here only to release the `&scope` borrow that

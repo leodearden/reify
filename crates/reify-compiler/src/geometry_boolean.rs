@@ -233,6 +233,15 @@ pub(crate) fn compile_boolean_op(
                         );
                         return None;
                     }
+                    // An INLINE list over the element cap (review esc-5385-6).
+                    // It has no declaring let to own the cap Error, so report it
+                    // here — and as a cap problem: its elements ARE geometry, so
+                    // the `NotGeometry` label above would send the user looking
+                    // for a type error that does not exist.
+                    GeometryListArg::OverCap { subject, count } => {
+                        push_element_cap_error(subject, count, args[0].span, diagnostics);
+                        return None;
+                    }
                     // The declaring let already reported its own Error; a
                     // second one here would point at the fold rather than at
                     // the real defect (review esc-5385-3).

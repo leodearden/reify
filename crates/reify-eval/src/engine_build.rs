@@ -11714,42 +11714,39 @@ impl Engine {
                     .eval_state
                     .as_ref()
                     .and_then(|s| s.snapshot.values.get(cell_id));
-                // MONOTONE write-back guard (review esc-5385-4).
+                // The write-back test is deliberately the SHALLOW
+                // `!new_val.is_undef()` — do not "strengthen" it to
+                // `value_is_or_contains_undef` without a test that fails
+                // without it (review esc-5385-6).
                 //
-                // Refuse any write-back that is LESS RESOLVED than what the
-                // snapshot already holds. The shallow `!new_val.is_undef()` test
-                // only catches a value that is undef WHOLESALE; it passes a
-                // partially-undef container such as `Value::List([Undef; n])`,
-                // which a length-preserving re-eval can produce.
-                // `post_process_derived_lets` reaches the same conclusion from
-                // the other side: its candidate filter is already
-                // `value_is_or_contains_undef`, not `is_undef`. Keeping the two
-                // passes on the same predicate is the point.
-                //
-                // SCOPE — measured, do not over-claim. This does NOT protect a
-                // geometry-LIST let (`let holes = generate(3, |i| cylinder(…))`).
-                // Such a cell never holds a resolved value in `snapshot.values`
-                // to begin with: it reads `List([Undef; n])` in EVERY path
-                // (`eval`, `tessellate_snapshot`, `build_snapshot`, `build`),
-                // because the regroup in `post_process_geometry_handle_cells` /
+                // A monotone variant (refuse any write-back less resolved than
+                // the existing snapshot value) was tried here for a geometry
+                // LIST let and MEASURED INERT for that case: such a cell never
+                // holds a resolved value in `snapshot.values` to begin with. It
+                // reads `List([Undef; n])` in EVERY path (`eval`,
+                // `tessellate_snapshot`, `build_snapshot`, `build`), because the
+                // regroup in `post_process_geometry_handle_cells` /
                 // `hydrate_geometry_handles_into_values` writes the assembled
                 // list into the build's working `ValueMap` — which becomes the
-                // RESULT — and never back into the snapshot. A scalar geometry
-                // let is written back, which is why only the scalar survives a
-                // rebuild that skips its realization. `existing` is therefore
-                // already undef-containing for a list cell, so `regresses` is
-                // always false there and this guard is inert for it.
+                // RESULT — and never back into the snapshot. The `existing`
+                // value is therefore already undef-containing for a list cell,
+                // so a monotone test can never fire there.
                 //
-                // The consequent defect — under selective demand, a second
-                // no-op `tessellate_snapshot` returns `[Undef; n]` for a
-                // geometry list where the first returned live handles, while
-                // full scope returns live handles both times — is filed
-                // separately (esc-5385-5); it is NOT fixed here, and this guard
-                // must not be read as fixing it.
-                let regresses = crate::invariants::value_is_or_contains_undef(&new_val)
-                    && existing
-                        .is_some_and(|(v, _)| !crate::invariants::value_is_or_contains_undef(v));
-                if !new_val.is_undef() && !regresses {
+                // What it DID change is every other `Let` cell on this shared
+                // selective-demand refresh path: a cell that LEGITIMATELY
+                // regresses (a dependency left the demand cone, so the re-eval
+                // is honestly partially-undef) would keep its stale
+                // fully-resolved snapshot value instead — a staleness
+                // regression in the very path this file's staleness tests
+                // guard, with no test pinning it either way. Untested
+                // behaviour change plus inert motivation ⇒ removed.
+                //
+                // The real defect on the geometry-list side — under selective
+                // demand a second no-op `tessellate_snapshot` returns
+                // `[Undef; n]` where the first returned live handles, while full
+                // scope returns live handles both times — is filed separately
+                // (esc-5385-5) and is NOT addressed by anything at this line.
+                if !new_val.is_undef() {
                     // Preserve existing DeterminacyState from snapshot.values.
                     let det = existing
                         .map(|(_, d)| *d)

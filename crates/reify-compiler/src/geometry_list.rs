@@ -39,6 +39,22 @@ impl GeometryListShape {
             GeometryListShape::Generate { count, .. } => *count,
         }
     }
+
+    /// How to name this shape in the user's own terms inside the element-cap
+    /// Error.
+    ///
+    /// Lives on the shape rather than at each call site so the two emitters —
+    /// the declaring let (via [`expand_geometry_list_elements`]) and an inline
+    /// fold argument (via [`resolve_geometry_list_arg`]) — cannot drift into
+    /// naming the same construct differently.
+    pub(crate) fn subject(&self) -> &'static str {
+        match self {
+            GeometryListShape::ListLiteral { .. } => "a geometry list literal",
+            GeometryListShape::Generate { .. } => {
+                "generate() with a geometry-producing lambda"
+            }
+        }
+    }
 }
 
 /// Classify `expr` as a *geometry-list* let initializer, or `None`.
@@ -128,15 +144,28 @@ pub(crate) fn classify_geometry_list_let(
 /// source line. 256 is far above any hand-authored pattern while still
 /// bounding the blow-up. Exceeding it is a loud compile-time Error, never a
 /// silent truncation.
+///
+/// BUDGET — the real multiplier is 2x, not 1x (review esc-5385-6). Folding the
+/// list (`union_all(holes)`) re-compiles each element expression inline in
+/// `geometry_boolean.rs`, so `let holes = generate(N, |i| …)` followed by
+/// `union_all(holes)` emits N realization build steps PLUS N more inside the
+/// fold — 2N kernel steps, plus N-1 Boolean ops. That duplication is not
+/// specific to lists (`union(a, b)` over two geometry lets duplicates both
+/// operands identically — see the note at the fold site); referencing the
+/// already-emitted `<list>#k` realizations instead is a change to the whole
+/// boolean-arg path, filed as a follow-up. Until then, read this cap as
+/// bounding ~2 x 256 kernel steps per folded list.
 pub(crate) const GEOMETRY_LIST_MAX_ELEMENTS: usize = 256;
 
 /// Push the single labelled Error that rejects an over-cap geometry list.
 ///
 /// Shared by BOTH shapes so the cap can never be enforced on one and silently
-/// skipped on the other (review esc-5385-3). `subject` names the construct in
-/// the user's own terms and is repeated verbatim in the message, so a caller
-/// that adds a third shape must name it rather than inherit a wrong one.
-fn push_element_cap_error(
+/// skipped on the other (review esc-5385-3), and by both EMITTERS — the
+/// declaring let and an inline fold argument (review esc-5385-6) — so an
+/// over-cap inline list is told about the cap rather than mis-told that its
+/// elements are not geometry. `subject` comes from
+/// [`GeometryListShape::subject`] and is repeated verbatim in the message.
+pub(crate) fn push_element_cap_error(
     subject: &str,
     count: usize,
     span: reify_core::SourceSpan,
@@ -186,12 +215,7 @@ pub(crate) fn expand_geometry_list_elements(
             // 500-element geometry literal explodes the realization graph
             // identically.
             if *elements > GEOMETRY_LIST_MAX_ELEMENTS {
-                push_element_cap_error(
-                    "a geometry list literal",
-                    *elements,
-                    span,
-                    diagnostics,
-                );
+                push_element_cap_error(shape.subject(), *elements, span, diagnostics);
                 return None;
             }
             let reify_ast::ExprKind::ListLiteral(items) = &expr.kind else {
@@ -203,12 +227,7 @@ pub(crate) fn expand_geometry_list_elements(
         }
         GeometryListShape::Generate { count, param } => {
             if *count > GEOMETRY_LIST_MAX_ELEMENTS {
-                push_element_cap_error(
-                    "generate() with a geometry-producing lambda",
-                    *count,
-                    span,
-                    diagnostics,
-                );
+                push_element_cap_error(shape.subject(), *count, span, diagnostics);
                 return None;
             }
             let reify_ast::ExprKind::FunctionCall { args, .. } = &expr.kind else {
@@ -560,6 +579,24 @@ pub(crate) enum GeometryListArg {
     /// (or not one that can be unrolled at compile time). The caller reports
     /// this specifically rather than falling through to the arity message.
     NotGeometry,
+    /// The argument IS an inline geometry list, but longer than
+    /// [`GEOMETRY_LIST_MAX_ELEMENTS`] (review esc-5385-6).
+    ///
+    /// Distinct from [`GeometryListArg::NotGeometry`] because the two need
+    /// OPPOSITE messages: these elements ARE geometry, there are just too many
+    /// of them, and telling the user otherwise sends them looking for a type
+    /// error that does not exist. The caller emits
+    /// [`push_element_cap_error`] with this `subject` and `count`.
+    ///
+    /// Only INLINE lists reach this variant. A named list let is capped once at
+    /// its declaration in entity.rs pass 1 and resolves here as
+    /// [`GeometryListArg::AlreadyDiagnosed`].
+    OverCap {
+        /// [`GeometryListShape::subject`] of the offending inline list.
+        subject: &'static str,
+        /// Its element count — the number the user must reduce.
+        count: usize,
+    },
     /// Not a collection at all — the caller falls through unchanged, so a
     /// single non-list geometry arg (`union_all(box(…))`) keeps its existing
     /// "expects at least 2 arguments" diagnostic.
@@ -581,6 +618,10 @@ pub(crate) enum GeometryListArg {
 ///     entity.rs pass 1 and cached on the scope);
 ///   * an inline geometry list literal;
 ///   * an inline `generate(<literal>, |i| <geom>)`.
+///
+/// An inline list over [`GEOMETRY_LIST_MAX_ELEMENTS`] resolves to
+/// [`GeometryListArg::OverCap`] so the caller reports the cap rather than
+/// mislabelling its elements as non-geometry (review esc-5385-6).
 ///
 /// Diagnostics are the CALLER's to emit — this function only classifies, so
 /// the caller can phrase "empty fold" and "not a geometry list" in terms of
@@ -617,7 +658,8 @@ pub(crate) fn resolve_geometry_list_arg(
     // Inline list expressions. `known_geometry_lets` is approximated by the
     // realization names already registered in scope — exactly the names that
     // lower to a `RealizationDecl`, which is what `is_geometry_let`'s Ident arm
-    // is asking about.
+    // is asking about; `known_selector_lets` is approximated from the scope's
+    // registered types, for the reason spelled out below.
     let is_inline_list = match &arg.kind {
         reify_ast::ExprKind::ListLiteral(_) => true,
         reify_ast::ExprKind::FunctionCall { name, .. } => name == "generate",
@@ -632,30 +674,53 @@ pub(crate) fn resolve_geometry_list_arg(
         .iter()
         .map(|s| s.as_str())
         .collect();
-    let Some(shape) = classify_geometry_list_let(arg, functions, &known, &HashSet::new()) else {
+    // SELECTOR LETS (review esc-5385-6). `is_geometry_let`'s `is_selector_composition`
+    // guard (task 4119 δ) tells CSG `union`/`difference` apart from selector-algebra
+    // `union`/`difference` by asking whether any operand is a selector — and for an
+    // IDENT operand that question is answered purely by this set. Passing an empty
+    // one would classify `union(sel_a, sel_b)` inside `union_all([…])` as CSG
+    // geometry, while entity.rs pass 1 — which HAS the real set — routes the very
+    // same expression to the selector path. Two classifiers, one expression,
+    // opposite answers.
+    //
+    // Derived from the scope's registered TYPES rather than from entity.rs's
+    // syntactic accumulator, which is a local of `compile_entity` and reaches this
+    // module only through a new `CompilationScope` field. The two agree on the case
+    // that matters (a let bound to a selector expression is registered
+    // `Type::Selector(_)` by the value-cell pass, which runs before any fold is
+    // compiled in the realization-emission loop) and this form is a superset: it
+    // also covers Selector-typed PARAMS, for which "is this ident selector-valued?"
+    // has the same answer. Superset is the safe direction — it can only route a
+    // composition AWAY from the CSG geometry path, never a real geometry list into
+    // it.
+    let known_selectors: HashSet<&str> = scope
+        .names
+        .iter()
+        .filter(|(_, (_, ty, _))| matches!(ty, Type::Selector(_)))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let Some(shape) = classify_geometry_list_let(arg, functions, &known, &known_selectors) else {
         return GeometryListArg::NotGeometry;
     };
-    // KNOWN GAP (review esc-5385-3): the cap diagnostic is DISCARDED here, and
-    // the resulting `NotGeometry` makes the caller say "this collection's
-    // elements are not geometry" — factually wrong, and the user is never told
-    // about `GEOMETRY_LIST_MAX_ELEMENTS`.
-    //
-    // The original justification — "the cap diagnostic belongs to the declaring
-    // let, not to every fold over it" — holds only for a NAMED list, and a named
-    // list never reaches this line: the `Ident` arm above returns
-    // `AlreadyDiagnosed` for a let whose own cap Error pass 1 already emitted.
-    // Everything below that arm is inline-only (`union_all([<257 geom exprs>])`,
-    // `union_all(generate(300, |i| box(…)))`), and an inline list has no
-    // declaring let to own the diagnostic — so it is lost outright.
-    //
-    // Fixing it cannot be done in this module alone: it needs either a
-    // `GeometryListArg::OverCap { count }` variant or a `&mut Vec<Diagnostic>`
-    // parameter on this function, and BOTH require a matching arm / extra
-    // argument at the sole call site, `compile_boolean_op`'s `union_all` /
-    // `intersection_all` single-argument handling in geometry_boolean.rs. Left
-    // for a follow-up rather than half-applied here.
-    let mut throwaway = Vec::new();
-    match expand_geometry_list_elements(arg, &shape, arg.span, &mut throwaway) {
+    // OVER-CAP (review esc-5385-6): an inline list has no declaring let to own
+    // the cap Error, so it must be reported at the fold — but as a CAP problem,
+    // not as `NotGeometry`, whose "elements are not geometry" label is factually
+    // wrong for `union_all(generate(300, |i| box(…)))`. Classify it here and let
+    // the caller emit `push_element_cap_error`, keeping this function
+    // diagnostic-free as its contract states. A NAMED over-cap list never
+    // reaches this line: the `Ident` arm above returns `AlreadyDiagnosed`.
+    if shape.len() > GEOMETRY_LIST_MAX_ELEMENTS {
+        return GeometryListArg::OverCap {
+            subject: shape.subject(),
+            count: shape.len(),
+        };
+    }
+    // The cap is the ONLY failure `expand_geometry_list_elements` reports, and
+    // it is ruled out above, so `diagnostics` here can only stay empty; the
+    // `None` arm is the defensive shape-mismatch case (unreachable while shape
+    // and expr come from the same `classify_…` call, as they do here).
+    let mut unused = Vec::new();
+    match expand_geometry_list_elements(arg, &shape, arg.span, &mut unused) {
         Some(elements) => GeometryListArg::Elements(elements),
         None => GeometryListArg::NotGeometry,
     }

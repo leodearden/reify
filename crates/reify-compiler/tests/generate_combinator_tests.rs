@@ -11,7 +11,7 @@
 
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::compile_source;
+use reify_test_support::{compile_source, compile_source_with_stdlib};
 
 /// Helper: fetch a structure template's let-cell `default_expr.result_type`.
 fn cell_result_type(
@@ -707,6 +707,75 @@ fn union_all_over_an_empty_geometry_list_reports_the_empty_fold() {
     );
 }
 
+/// An INLINE geometry list longer than `GEOMETRY_LIST_MAX_ELEMENTS` (256) must
+/// be told about the CAP, in both of its shapes.
+///
+/// Before review esc-5385-6 the over-cap diagnostic raised inside
+/// `resolve_geometry_list_arg` was discarded into a throwaway `Vec` and the
+/// argument reported as `NotGeometry`, so the user was told "this collection's
+/// elements are not geometry" — factually wrong (they ARE geometry) and silent
+/// about the only thing they could act on. A named over-cap list is capped once
+/// at its declaring let; an INLINE one has no declaring let, so the fold is the
+/// only place the message can come from.
+///
+/// The cap is `pub(crate)`, so 256/257 are spelled out here: an integration test
+/// cannot import the constant. If the constant moves, the message assertion
+/// fails loudly rather than silently passing on a stale number.
+#[test]
+fn union_all_over_an_over_cap_inline_geometry_list_reports_the_cap() {
+    // (i) generate form.
+    let generated = compile_source(
+        r#"
+        structure S {
+            let u = union_all(generate(257, |i| box(1mm, 1mm, 1mm)))
+        }
+    "#,
+    );
+    let errors = error_messages(&generated);
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("limited to 256 geometry elements") && m.contains("257")),
+        "expected the element-cap error naming the cap and the actual count; \
+         got: {errors:?}",
+    );
+    assert!(
+        !errors.iter().any(|m| m.contains("must be a geometry list")),
+        "the elements ARE geometry — the not-a-geometry-list message would send \
+         the user hunting a type error that does not exist; got: {errors:?}",
+    );
+
+    // (ii) list-literal form, built programmatically (257 hand-written elements
+    // would be unreadable). Same cap, same message — the cap binds the
+    // realization blow-up, not the syntax that produced it.
+    let elements = vec!["box(1mm, 1mm, 1mm)"; 257].join(", ");
+    let literal = compile_source(&format!(
+        "structure S {{\n    let u = union_all([{elements}])\n}}"
+    ));
+    let literal_errors = error_messages(&literal);
+    assert!(
+        literal_errors
+            .iter()
+            .any(|m| m.contains("limited to 256 geometry elements") && m.contains("257")),
+        "an over-cap inline LITERAL must report the cap too; got: {literal_errors:?}",
+    );
+
+    // Control: one element fewer compiles clean, so the assertions above are
+    // pinning the cap rather than some unrelated failure of large fixtures.
+    let at_cap = compile_source(
+        r#"
+        structure S {
+            let u = union_all(generate(256, |i| box(1mm, 1mm, 1mm)))
+        }
+    "#,
+    );
+    assert!(
+        error_messages(&at_cap).is_empty(),
+        "control: exactly at the cap must compile clean; got: {:?}",
+        error_messages(&at_cap),
+    );
+}
+
 /// Regression: a single NON-list geometry argument is unchanged — it still
 /// gets the arity message pinned by
 /// `geometry_arg_count_span_tests::union_all_arg_count_diagnostic_has_span_label`.
@@ -725,6 +794,70 @@ fn union_all_over_a_single_non_list_geometry_still_reports_arity() {
             .iter()
             .any(|m| m.contains("union_all() expects at least 2 arguments")),
         "a single non-list geometry arg must still hit the arity gate; got: {errors:?}",
+    );
+}
+
+/// A list element that is a SELECTOR composition (`union(<selector let>,
+/// <selector let>)`) must not be folded as CSG geometry.
+///
+/// `is_geometry_let`'s `is_selector_composition` guard (task 4119 δ) tells CSG
+/// `union`/`difference` apart from selector-algebra `union`/`difference` by
+/// asking whether any operand is selector-valued — and for an IDENT operand
+/// that question is answered entirely by the `known_selector_lets` set handed
+/// to it. `resolve_geometry_list_arg` passed an EMPTY one before review
+/// esc-5385-6, so this inline list classified as geometry here while entity.rs
+/// pass 1 — which has the real set — routes the same expression to the selector
+/// path: two classifiers, one expression, opposite answers.
+///
+/// The observable consequence is the discriminator: with the empty set the fold
+/// emits CSG Boolean ops over selector operands; with the set derived from the
+/// scope's registered types it does not, and the user gets a diagnostic instead.
+#[test]
+fn union_all_over_a_list_holding_a_selector_composition_is_not_folded_as_csg() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+        structure def S {
+            let b = box(10mm, 10mm, 10mm)
+            let c = box(20mm, 20mm, 20mm)
+            let sel_a = faces(b)
+            let sel_b = faces(c)
+            let combined = union_all([union(sel_a, sel_b), box(1mm, 1mm, 1mm)])
+        }
+    "#,
+    );
+
+    assert_eq!(
+        total_boolean_ops(&compiled, "S"),
+        0,
+        "no CSG Boolean op may be emitted: one of the two list elements is a \
+         SELECTOR composition, not geometry",
+    );
+    let errors = error_messages(&compiled);
+    assert!(
+        errors.iter().any(|m| m.contains("geometry list")),
+        "the fold must be refused with a geometry-list diagnostic rather than \
+         silently folding selector algebra as CSG; got: {errors:?}",
+    );
+
+    // Control: same fixture with both elements real geometry folds normally, so
+    // the zero above is the selector guard rather than an artefact of compiling
+    // a list literal with stdlib loaded.
+    let control = compile_source_with_stdlib(
+        r#"
+        structure def S {
+            let b = box(10mm, 10mm, 10mm)
+            let combined = union_all([union(b, b), box(1mm, 1mm, 1mm)])
+        }
+    "#,
+    );
+    assert!(
+        error_messages(&control).is_empty(),
+        "control: an all-geometry list must still compile clean; got: {:?}",
+        error_messages(&control),
+    );
+    assert!(
+        total_boolean_ops(&control, "S") > 0,
+        "control: an all-geometry list must still emit Boolean ops",
     );
 }
 
