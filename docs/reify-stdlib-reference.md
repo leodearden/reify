@@ -290,14 +290,20 @@ enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
 Added to support the closed-chain kinematic loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). All
 operations validate inputs and return `Undef` on shape mismatch, wrong
-argument count, dimensional mismatch, or non-finite components.
+argument count, dimensional mismatch, or non-finite components. Two of them —
+`orient_exp` and `transform_exp` — additionally emit an **error** diagnostic
+naming the offending dimension when the *rotation vector* they are handed
+carries the wrong dimension, so `reify eval` exits non-zero rather than leaving
+a bare `Undef` behind; see *Rotation-vector dimension convention* below. Every
+other failure mode, on those two builtins and on all the others, stays a silent
+`Undef`.
 
 ```
 // SO(3) — quaternion algebra on Orientation<3>
 fn orient_compose(a: Orientation<3>, b: Orientation<3>) -> Orientation<3>
 fn orient_inverse(q: Orientation<3>) -> Orientation<3>
-fn orient_log(q: Orientation<3>) -> Vector3<Dimensionless>           // axis * angle (rotation vector)
-fn orient_exp(rot_vec: Vector3<Dimensionless>) -> Orientation<3>     // inverse of orient_log
+fn orient_log(q: Orientation<3>) -> Vector3<Angle>                   // axis * angle (rotation vector)
+fn orient_exp(rot_vec: Vector3<Angle>) -> Orientation<3>             // inverse of orient_log
 fn orient_slerp(a: Orientation<3>, b: Orientation<3>, t: Real) -> Orientation<3>
 fn orient_to_axis_angle(q: Orientation<3>) -> Map { axis: Vector3<Dimensionless>, angle: Angle }
 fn orient_to_euler(convention: EulerConvention, q: Orientation<3>) -> List<Angle>  // 3 elements
@@ -316,20 +322,47 @@ the `Orientation * Orientation` and `Transform * Transform` operators
 respectively, and produce bit-identical results to the operator path.
 
 **Twist representation.** SE(3) twists are encoded as a `Map` keyed by
-`"angular"` (a `Vector3<Dimensionless>` holding `axis * angle` in radians) and
+`"angular"` (a `Vector3<Angle>` holding `axis * angle`, i.e. radians) and
 `"linear"` (a `Vector3<Length>` holding the translational component):
 
 ```
-type Twist = Map { angular: Vector3<Dimensionless>, linear: Vector3<Length> }
+type Twist = Map { angular: Vector3<Angle>, linear: Vector3<Length> }
 ```
 
 A `Map` shape (rather than a 6-component `Vector`) is required because
 `Vector` enforces a single shared dimension across components; a twist mixes
-dimensionless rotation and `Length` translation. The same `Map` shape is
-returned by `joint_jacobian` (§13.1) so that solver code can compose twists
-and Jacobian columns uniformly.
+`Angle` rotation and `Length` translation. `joint_jacobian` (§13.1) returns the
+same `Map` **shape**, which lets solver code destructure both uniformly — but a
+Jacobian column is `d(pose)/dq`, not a twist, so the shape match does not imply
+a type match and its components are dimensioned on their own terms.
 
-**Linear-component dimension convention.** `transform_log` preserves the
+**Rotation-vector dimension convention (`angular`).** A rotation vector is
+`axis * angle` — a dimensionless unit axis scaled by an angle — so it carries
+`Angle`, and the `angular` half is **monomorphic**, not polymorphic:
+
+| rotation-vector dimension | accepted? | notes                                        |
+|---------------------------|-----------|----------------------------------------------|
+| `Angle`                   | ✓         | the only accepted dimension (SI unit: `rad`)  |
+| `Dimensionless`           | ✗         | **error** diagnostic; non-zero `reify eval` exit |
+| `Length`, `Mass`, …       | ✗         | **error** diagnostic; non-zero `reify eval` exit |
+
+This governs `orient_log` / `orient_exp` and the `angular` half of
+`transform_log` / `transform_exp` alike: `orient_log` and `transform_log`
+*emit* `Angle`-dimensioned components, and `orient_exp` and `transform_exp`
+*accept* only those, which is what keeps `exp(log(x)) == x` well-typed.
+
+`Dimensionless` is rejected on purpose. It is a **specific** dimension — the
+zero exponent vector — not a wildcard, so admitting it as a tolerant alias
+would re-open the hole PRD #5747 decision D11 closed for this family.
+
+**Migration.** `Dimensionless` rotation vectors used to be the accepted
+spelling, so this is a breaking change. Spell a bare radian value as a
+dimensioned literal instead — `1.5708rad`, or `90deg`. Because the rejection is
+an error diagnostic that names the offending dimension (rather than a silent
+`Undef`), an unmigrated call site fails loudly and self-describes the fix.
+
+**Linear-component dimension convention.** Unchanged by the rotation-vector
+ruling above, and deliberately still polymorphic: `transform_log` preserves the
 input `Transform`'s translation dimension on `linear` verbatim, and
 `transform_exp` accepts `linear` with the same polymorphic policy:
 
@@ -341,9 +374,17 @@ input `Transform`'s translation dimension on `linear` verbatim, and
 
 The pair `transform_log` ↔ `transform_exp` round-trips exactly under both
 policies, so a `Transform` whose translation is `Dimensionless` will round-trip
-through a `Dimensionless` linear, and likewise for `Length`. `joint_jacobian`
-always emits `Dimensionless` on both `angular` and `linear` because joint
-parameters are unit-less in the joint's local frame.
+through a `Dimensionless` linear, and likewise for `Length`. Note the asymmetry
+with `angular`: a wrong `linear` dimension is a silent `Undef`, not an error
+diagnostic.
+
+**`joint_jacobian` is out of scope here.** It always emits `Dimensionless` on
+both `angular` and `linear`, because joint parameters are unit-less in the
+joint's local frame. Its columns are `d(pose)/dq` rather than twists, and
+nothing feeds one to `transform_exp`, so the rotation-vector convention above
+does not reach them — the shared `Map` shape is not a type match. Giving those
+columns their own structure, and correcting §13.1's `joint_jacobian -> Twist`
+rows accordingly, is tracked by `#6102`.
 
 ### 3.2 `std.geometry.primitive`
 
