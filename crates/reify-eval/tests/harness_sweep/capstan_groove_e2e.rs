@@ -73,9 +73,11 @@
 //! `groove_len` (the whole grooved extent, band plus the dead anchor wraps) are
 //! two DIFFERENT axial figures, and `Fairlead.stroke` is a third — the band
 //! rounded up to a whole turn. The first test pins the coverage window
-//! `band ≤ stroke ≤ band + lead` over the file's evaluated cells; the second
-//! pins that `CapstanDrive` states the relation in the DSL itself, so a plain
-//! `reify check` catches a divergence too. Neither reads geometry, so both go
+//! `band ≤ stroke ≤ band + lead` over the file's evaluated cells — reading the
+//! instance-scoped spelling the DSL constraint resolves against, and separately
+//! asserting it agrees with the bare template the rest of this module reads (see
+//! [`sub_entity`]); the second pins that `CapstanDrive` states the relation in
+//! the DSL itself, so a plain `reify check` catches a divergence too. Neither reads geometry, so both go
 //! through [`dev_capstan_checked`] (no kernel) rather than the OCCT fixture —
 //! a gate whose whole point is "this must bite outside a full OCCT run" must
 //! not itself be skipped when OCCT is absent.
