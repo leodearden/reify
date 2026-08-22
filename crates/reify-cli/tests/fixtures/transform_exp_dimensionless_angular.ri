@@ -1,0 +1,20 @@
+// transform_exp_dimensionless_angular.ri — CLI fixture for the #6080
+// wrong-dimension diagnostic on the Twist ANGULAR half.
+//
+// `Twist.angular` is a rotation vector, so it carries ANGLE (#6080). A twist
+// whose angular part is DIMENSIONLESS must produce an
+// `E_RotationVectorDimension` error naming `angular` and the offending
+// dimension on stderr, and `reify eval` must exit non-zero.
+//
+// The `linear` half is a valid `Length` here on purpose: it isolates the
+// angular classifier, and the linear convention is owned by #6126, not this
+// task.
+//
+// Lives in tests/fixtures/ (NOT examples/) to keep examples_smoke.rs green,
+// since this file intentionally triggers a runtime Error diagnostic.
+
+module transform_exp_dimensionless_angular
+
+structure def TransformExpDimensionlessAngular {
+    let t = transform_exp(map{"angular" => vec3(0.0, 0.0, 1.5708), "linear" => vec3(0mm, 0mm, 0mm)})
+}

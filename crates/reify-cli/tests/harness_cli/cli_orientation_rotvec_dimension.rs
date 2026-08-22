@@ -66,3 +66,83 @@ fn check_orient_log_angle_probe_stays_clean() {
         "reify check orient_log_angle_probe.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+// ── Wrong-dimension diagnostics (acceptance clause 3) ────────────────────────
+//
+// Narrowing `orient_exp` / `Twist.angular` to ANGLE is a BREAKING change to a
+// published stdlib signature, so the rejected spellings must stop failing
+// silently. These tests prove the classifier is actually WIRED into
+// `emit_undef_builtin_diagnostics` — a unit test on `diagnose()` alone would
+// pass with the hook unreferenced.
+//
+// The diagnostic is unspanned: the hook signature is
+// `fn(&str, &[Value]) -> Option<Diagnostic>` and `CompiledExpr` carries no
+// span, so attribution lives in the message text (builtin name + offending
+// dimension). See the plan's design decision for the full rationale.
+
+/// A DIMENSIONLESS rotation vector — accepted before #6080 — now errors.
+///
+/// This is the migration case: the spelling that silently changed meaning.
+/// RED before the hook: `q = undef`, a `note:` line, and exit 0.
+#[test]
+fn eval_orient_exp_dimensionless_errors_and_exits_nonzero() {
+    let path = common::fixture_path("orient_exp_dimensionless.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        !status.success(),
+        "reify eval orient_exp_dimensionless.ri should exit non-zero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_RotationVectorDimension"),
+        "stderr should contain 'E_RotationVectorDimension'; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("dimensionless"),
+        "stderr should name the offending dimension ('dimensionless'); got: {stderr}"
+    );
+}
+
+/// A LENGTH rotation vector was never accepted, but used to fail silently.
+#[test]
+fn eval_orient_exp_length_errors_and_exits_nonzero() {
+    let path = common::fixture_path("orient_exp_length.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        !status.success(),
+        "reify eval orient_exp_length.ri should exit non-zero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_RotationVectorDimension"),
+        "stderr should contain 'E_RotationVectorDimension'; got: {stderr}"
+    );
+    assert!(
+        stderr.contains(" m"),
+        "stderr should name the offending dimension ('m'); got: {stderr}"
+    );
+}
+
+/// The `Twist.angular` half of the same ruling, through the same channel.
+#[test]
+fn eval_transform_exp_dimensionless_angular_errors_and_exits_nonzero() {
+    let path = common::fixture_path("transform_exp_dimensionless_angular.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        !status.success(),
+        "reify eval transform_exp_dimensionless_angular.ri should exit non-zero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_RotationVectorDimension"),
+        "stderr should contain 'E_RotationVectorDimension'; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("angular"),
+        "stderr should name the offending Twist field ('angular'); got: {stderr}"
+    );
+    assert!(
+        stderr.contains("dimensionless"),
+        "stderr should name the offending dimension ('dimensionless'); got: {stderr}"
+    );
+}

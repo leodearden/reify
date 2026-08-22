@@ -5481,6 +5481,168 @@ mod tests {
         );
     }
 
+    // ── diagnose() transform_exp ANGULAR arm (#6080 step-7 RED; GREEN step-8) ─
+    //
+    // `Twist.angular` is a rotation vector, so it carries ANGLE (#6080).
+    // Narrowing that gate is a breaking change to a published stdlib signature,
+    // so the wrong-dimension path must surface a `Severity::Error` naming
+    // `angular` and the offending dimension instead of a silent `Undef`.
+    //
+    // SCOPE: this arm inspects ONLY the `angular` key. The `linear` convention
+    // (LENGTH | DIMENSIONLESS) is owned by #6126; a linear failure must fall
+    // through as `None` here so the angular classifier does not poach it.
+
+    /// Build a twist `Value::Map` from an `angular` and a `linear` value.
+    fn twist_map(angular: Value, linear: Value) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("angular".to_string()), angular);
+        m.insert(Value::String("linear".to_string()), linear);
+        Value::Map(m)
+    }
+
+    /// The newly-rejected spelling: a bare (DIMENSIONLESS) angular half.
+    #[test]
+    fn diagnose_transform_exp_dimensionless_angular_errors() {
+        let tw = twist_map(
+            Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+            ]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        let d = super::diagnose("transform_exp", &[tw])
+            .expect("a dimensionless angular half must produce a diagnostic");
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
+        );
+        assert!(
+            d.message.contains("angular"),
+            "message must name the offending Twist field; got: {}",
+            d.message
+        );
+        assert!(
+            d.message
+                .contains(&DimensionVector::DIMENSIONLESS.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::DIMENSIONLESS,
+            d.message
+        );
+    }
+
+    /// A LENGTH angular half was never accepted, but used to fail silently.
+    #[test]
+    fn diagnose_transform_exp_length_angular_errors() {
+        let tw = twist_map(
+            Value::Vector(vec![Value::length(0.001); 3]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        let d = super::diagnose("transform_exp", &[tw])
+            .expect("a LENGTH angular half must produce a diagnostic");
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
+        );
+        assert!(
+            d.message.contains(&DimensionVector::LENGTH.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::LENGTH,
+            d.message
+        );
+    }
+
+    /// A valid ANGLE angular half is not diagnosed, even when asked directly.
+    #[test]
+    fn diagnose_transform_exp_angle_angular_returns_none() {
+        let tw = twist_map(
+            Value::Vector(vec![
+                Value::angle(0.0),
+                Value::angle(0.0),
+                Value::angle(std::f64::consts::FRAC_PI_2),
+            ]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[tw]).is_none(),
+            "a valid ANGLE angular half must not produce a diagnostic"
+        );
+    }
+
+    /// Angular is valid ANGLE but LINEAR is wrong: this arm must stay silent so
+    /// #6126 owns the linear failure mode without a competing message here.
+    #[test]
+    fn diagnose_transform_exp_bad_linear_with_valid_angular_returns_none() {
+        let mass = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+        let tw = twist_map(
+            Value::Vector(vec![
+                Value::angle(0.0),
+                Value::angle(0.0),
+                Value::angle(std::f64::consts::FRAC_PI_2),
+            ]),
+            Value::Vector(vec![mass; 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[tw]).is_none(),
+            "a linear-half failure is #6126's, not this angular classifier's"
+        );
+    }
+
+    /// Shape errors (wrong arity, non-Map, missing `angular`, non-3d angular)
+    /// keep their existing silent-`Undef` behaviour, so a shape error is never
+    /// misattributed as a dimension error.
+    #[test]
+    fn diagnose_transform_exp_shape_errors_return_none() {
+        assert!(
+            super::diagnose("transform_exp", &[]).is_none(),
+            "wrong arity must stay silent"
+        );
+        assert!(
+            super::diagnose("transform_exp", &[Value::Real(1.0)]).is_none(),
+            "a non-Map argument must stay silent"
+        );
+        let mut only_linear = std::collections::BTreeMap::new();
+        only_linear.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[Value::Map(only_linear)]).is_none(),
+            "a missing `angular` key must stay silent"
+        );
+        let tw = twist_map(
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[tw]).is_none(),
+            "a non-3d angular half must stay silent"
+        );
+    }
+
+    /// The name families stay disjoint: this classifier declines the emitting
+    /// sibling `transform_log` and the orientation family's `orient_exp`.
+    #[test]
+    fn diagnose_non_transform_exp_name_returns_none() {
+        let tw = twist_map(
+            Value::Vector(vec![Value::Real(0.0); 3]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_log", std::slice::from_ref(&tw)).is_none(),
+            "transform_log is an emitter, not a gate"
+        );
+        assert!(
+            super::diagnose("orient_exp", &[Value::Vector(vec![Value::Real(0.0); 3])]).is_none(),
+            "orient_exp belongs to orientation::diagnose, not geometry::diagnose"
+        );
+    }
+
     // ── affine_compose tests (step-3 RED / step-4 GREEN) ──────────────────────
 
     /// Build a `Value::AffineMap` directly for test purposes.

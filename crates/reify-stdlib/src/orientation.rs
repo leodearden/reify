@@ -3377,4 +3377,136 @@ mod tests {
             "Unknown EulerConvention variant should return Undef"
         );
     }
+    // ── diagnose() classifier tests (#6080 step-7 RED; GREEN after step-8) ────
+    //
+    // Narrowing `orient_exp` to ANGLE is a BREAKING change to a published stdlib
+    // signature, so the wrong-dimension path must stop being a silent `Undef`
+    // and become a `Severity::Error` naming the offending dimension — the
+    // migration mechanism. #6126's 2026-08-19 amendment (via esc-6080-6) binds
+    // this half to Error/exit-1 explicitly; a Warning would exit 0.
+
+    /// The newly-rejected spelling: a bare (DIMENSIONLESS) rotation vector.
+    ///
+    /// This case — not the never-accepted `mm` one — is what makes the
+    /// "DIMENSIONLESS is a specific dimension, not a wildcard" ruling testable.
+    #[test]
+    fn diagnose_orient_exp_dimensionless_arg_errors() {
+        let d = super::diagnose(
+            "orient_exp",
+            &[Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+            ])],
+        )
+        .expect("a dimensionless rotation vector must produce a diagnostic");
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
+        );
+        assert!(
+            d.message.contains("orient_exp"),
+            "message must name the builtin; got: {}",
+            d.message
+        );
+        assert!(
+            d.message
+                .contains(&DimensionVector::DIMENSIONLESS.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::DIMENSIONLESS,
+            d.message
+        );
+    }
+
+    /// A LENGTH rotation vector was never accepted, but used to fail silently.
+    #[test]
+    fn diagnose_orient_exp_length_arg_errors() {
+        let d = super::diagnose(
+            "orient_exp",
+            &[Value::Vector(vec![
+                Value::length(0.001),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])],
+        )
+        .expect("a LENGTH rotation vector must produce a diagnostic");
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
+        );
+        assert!(
+            d.message.contains(&DimensionVector::LENGTH.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::LENGTH,
+            d.message
+        );
+    }
+
+    /// A well-typed ANGLE rotation vector never reaches the hook (it does not
+    /// return `Undef`), and must not be diagnosed even if asked directly.
+    #[test]
+    fn diagnose_orient_exp_angle_arg_returns_none() {
+        assert!(
+            super::diagnose(
+                "orient_exp",
+                &[Value::Vector(vec![
+                    Value::angle(0.0),
+                    Value::angle(0.0),
+                    Value::angle(std::f64::consts::FRAC_PI_2),
+                ])],
+            )
+            .is_none(),
+            "a valid ANGLE rotation vector must not produce a diagnostic"
+        );
+    }
+
+    /// Shape errors (wrong arity, non-vector, non-3d) keep their existing
+    /// silent-`Undef` behaviour so the message never misattributes a shape
+    /// error as a dimension error — the same restraint `geometry::diagnose`
+    /// documents.
+    #[test]
+    fn diagnose_orient_exp_shape_errors_return_none() {
+        assert!(
+            super::diagnose("orient_exp", &[]).is_none(),
+            "wrong arity must stay silent"
+        );
+        assert!(
+            super::diagnose("orient_exp", &[Value::Real(1.0)]).is_none(),
+            "a non-container argument must stay silent"
+        );
+        assert!(
+            super::diagnose(
+                "orient_exp",
+                &[Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)])],
+            )
+            .is_none(),
+            "a non-3d vector must stay silent"
+        );
+    }
+
+    /// `emit_undef_builtin_diagnostics` relies on the name families being
+    /// disjoint, so this classifier must decline every other family's names —
+    /// including its own sibling `orient_log`, which is an emitter, not a gate.
+    #[test]
+    fn diagnose_non_orientation_name_returns_none() {
+        let arg = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            super::diagnose("orient_log", std::slice::from_ref(&arg)).is_none(),
+            "orient_log is not gated by this classifier"
+        );
+        assert!(
+            super::diagnose(
+                "affine_scale",
+                &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+            )
+            .is_none(),
+            "affine_scale belongs to geometry::diagnose, not orientation::diagnose"
+        );
+        assert!(
+            super::diagnose("transform_exp", std::slice::from_ref(&arg)).is_none(),
+            "transform_exp belongs to geometry::diagnose, not orientation::diagnose"
+        );
+    }
 }
