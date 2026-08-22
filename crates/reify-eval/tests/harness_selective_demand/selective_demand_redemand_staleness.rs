@@ -658,6 +658,16 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
 /// no test drove build → `edit_param` → rebuild. `r` feeds all three
 /// `cylinder(r, h)` elements, so a correct rebuild changes every element's
 /// `upstream_values_hash` while keeping all three live.
+///
+/// FULL SCOPE ON PURPOSE (review esc-5385-7). This test deliberately does NOT
+/// call `set_demand_selective`, so despite living in the selective-demand harness
+/// it exercises the ordinary full-scope rebuild path. Driving the same fixture
+/// through hide → un-hide is RED today for a reason this task does not own: a
+/// repeat `tessellate_snapshot` under selective demand returns
+/// `List([Undef; 3])`, a realization-NAME versus cell-MEMBER correspondence gap
+/// filed as task #6460. It lives here rather than in a rebuild harness so #6460
+/// can add its selective-demand cases against this same fixture and these same
+/// helpers.
 #[test]
 fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
     let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);

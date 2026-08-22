@@ -11744,14 +11744,9 @@ impl Engine {
                 // The real defect on the geometry-list side — under selective
                 // demand a second no-op `tessellate_snapshot` returns
                 // `[Undef; n]` where the first returned live handles, while full
-                // scope returns live handles both times — is filed separately
-                // (esc-5385-5) and is NOT addressed by anything at this line.
-                //
-                // NOTE: `SELECTIVE_DEMAND_GEOM_LIST_SRC`'s rustdoc in
-                // crates/reify-eval/tests/common/differential.rs still describes
-                // the removed guard as if it were in effect. Correcting it needs
-                // a file outside #5385's module locks, so it is filed as an
-                // agent-followup ticket from #5385 rather than fixed here.
+                // scope returns live handles both times — is filed separately as
+                // task #6460 (escalation esc-5385-5) and is NOT addressed by
+                // anything at this line.
                 if !new_val.is_undef() {
                     // Preserve existing DeterminacyState from snapshot.values.
                     let det = existing

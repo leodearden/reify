@@ -6547,8 +6547,30 @@ pub(crate) fn build_structure_def_skeleton(
             // Geometry-LIST lets (task #5385) route out here too: the skeleton
             // carries `realizations: vec![]` unconditionally, so a
             // `List<Geometry>` cell here would be a promise nothing hydrates.
-            // Skipping matches the geometry-let `continue` directly above and
-            // keeps skeleton and authoritative `value_cells` in agreement.
+            //
+            // This does NOT put skeleton and authoritative `value_cells` in
+            // agreement, and the earlier claim that it did was wrong (review
+            // esc-5385-7). Unlike a single-geometry let — which emits no value
+            // cell on EITHER path — the authoritative pass DOES push a
+            // `List<Geometry>` `ValueCellDecl` for an accepted geometry-list let
+            // (see the `known_geometry_list_lets` arm above). The skeleton
+            // deliberately omits it: its `value_cells` feed `ctor.lets`, and a
+            // cell whose Value only becomes authoritative after
+            // `post_process_geometry_handle_cells` regroups realization handles
+            // has nothing to regroup on a skeleton that emits no realizations.
+            // The accepted asymmetry is therefore that the cell is present via
+            // the `sub` arrival path and absent via the ctor / fn-returned /
+            // param-held ones.
+            //
+            // The two `diagnose_unsupported_geometry_list` rejection shapes (a
+            // non-literal `generate` count, a mixed-kind list literal) are
+            // deliberately NOT routed out here, so they do get an ordinary value
+            // cell on this pass while the authoritative pass skips them. That is
+            // unobservable: both shapes push an Error on the authoritative pass,
+            // so compilation fails before the skeleton's cells are used — and
+            // mirroring the routing would mean calling the diagnostic-EMITTING
+            // `diagnose_unsupported_geometry_list` a second time, double-reporting
+            // every such let.
             if classify_geometry_list_let(
                 &let_decl.value,
                 functions,

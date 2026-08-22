@@ -1296,15 +1296,25 @@ pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure Select
 ///   `Pending`) and un-hiding it makes `holes` demanded AND `Pending` — exactly
 ///   Part B's candidate shape in `refresh_and_gate_demanded_realizations`.
 ///
-/// The bug this pins (without the monotone write-back guard): Part B re-evaluates
-/// `holes`' `default_expr` and writes it back behind a shallow `!is_undef()`
-/// test. `generate` is LENGTH-PRESERVING (`generate_index_list`), so re-eval of a
-/// geometry list yields `Value::List([Undef, Undef, Undef])` — which is NOT
-/// `is_undef()`. The shallow guard passes and a previously realized 3-handle list
-/// is overwritten with three Undefs. The all-or-nothing regroup in `into_entries`
-/// then cannot repair it: hash-exempt `holes#k` realizations outside the demand
-/// seed never enter `named_steps`, so `resolved_count != expected` and the cell
-/// is left as `[Undef, Undef, Undef]`.
+/// WHAT ITS SOLE CONSUMER ACTUALLY PINS TODAY (review esc-5385-7). The only test
+/// using this fixture, `edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed`,
+/// is a FULL-SCOPE build → `edit_param` → rebuild test: it never calls
+/// `set_demand_selective`, so the demand-cone transitions described above are set
+/// up by this source but not taken by that test. It asserts that an edited param
+/// re-realizes all three elements as live handles with a changed
+/// `upstream_values_hash` — i.e. the rebuild path, not the demand path.
+///
+/// The selective-demand transitions this fixture was shaped for are #6460's to
+/// drive, and they are RED today: under `set_demand_selective` a second, no-op
+/// `tessellate_snapshot` returns `List([Undef, Undef, Undef])` where full scope
+/// returns live handles both times. That is a realization-NAME (`holes#k`) versus
+/// cell-MEMBER (`holes`) correspondence gap, not a write-back-guard problem — the
+/// monotone write-back guard once hypothesized here was MEASURED INERT for a
+/// geometry-list cell (such a cell never holds a resolved value in
+/// `snapshot.values` in any path) and was removed. The fixture and its
+/// `assert_live_handle_list` / `geometry_list_upstream_hashes` helpers are left in
+/// this harness deliberately, so #6460 can add its selective-demand tests without
+/// re-authoring them.
 pub const SELECTIVE_DEMAND_GEOM_LIST_SRC: &str = r#"pub structure SelectiveGeomList {
     param r : Length = 5mm
     param h : Length = 20mm
