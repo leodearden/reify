@@ -242,6 +242,14 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 // nested-scope descent, depth-bounded by `MAX_MEMBER_NESTING_DEPTH`). Keeping
 // the two scanners symmetric ensures the detection scan never drifts from the
 // use-collection scan.
+//
+// The `MemberDecl::Sub` arm's field set is the symmetry-critical part: it must
+// be updated whenever `SubDecl` gains a new expression-bearing field walked by
+// `collect_uses_in_sub` (crates/reify-lsp/src/references.rs `collect_uses_in_sub`
+// doc comment). This has already been missed twice — `relate_relations` (task δ
+// 4384) and `index_domain` (task #5481/#5579) — both silently letting a
+// `.member` segment mis-resolve to an unrelated same-named binding instead of
+// refusing.
 
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
 /// segment of a `MemberAccess` node anywhere in `expr`.
@@ -401,6 +409,9 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
                     || s.index_domain
                         .as_ref()
                         .is_some_and(|d| expr_member_segment_hit(d, off))
+                    || s.relate_relations
+                        .iter()
+                        .any(|r| expr_member_segment_hit(r, off))
                     || s.where_clause
                         .as_ref()
                         .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
