@@ -5782,9 +5782,11 @@
     // rejection arms were originally written out per builtin; they were
     // byte-identical modulo the labels, so the contract now lives once in
     // `assert_length_gated` and each builtin contributes only its data row
-    // (builder + gated position list). Gating the next family — variadic curve
-    // coordinates (task 5658), `profile_polygon` pairs (5661) — is a row, not
-    // another copy of the arms.
+    // (builder + gated position list). Gating a further family is a ROW, not
+    // another copy of the arms — as the two that followed showed: the variadic
+    // curve coordinates (task 5658) and `profile_polygon`'s 2-D vertex pairs
+    // (5661) each cost one `LengthGateCase` plus one table entry. The point
+    // still stands for whatever family comes next.
     //
     // Each family's ACCEPTED test stays hand-written below: those assert
     // distinct SI values into distinct IR fields (the field-ordering pins) and
@@ -7286,8 +7288,10 @@
     }
 
     /// The UN-GATED branch of `accept_variadic_length_args` — the one that
-    /// reproduces `eval_all_args_to_f64`'s bare read for `nurbs`' dimensionless
-    /// weights and knots.
+    /// reproduces, for `nurbs`' dimensionless weights and knots, the bare read
+    /// the pre-5658 variadic reader performed for every position (that reader,
+    /// `eval_all_args_to_f64`, was deleted in task 5661 once `profile_polygon`
+    /// became its last caller; the BEHAVIOUR pinned below is unchanged).
     ///
     /// [`compile_geometry_op_nurbs_dimensionless_neighbours_still_accepted`]
     /// only ever passes FINITE bare neighbours, so the whole non-finite arm was
@@ -7329,9 +7333,9 @@
                 diagnostics
                     .iter()
                     .any(|d| d.message == format!("nurbs arg '{name}' is non-finite")),
-                "the un-gated branch must reproduce eval_all_args_to_f64's \
-                 wording verbatim for a NaN {what}, naming the POSITIONAL \
-                 '{name}'; got: {:?}",
+                "the un-gated branch must reproduce the pre-5658 bare \
+                 reader's wording verbatim for a NaN {what}, naming the \
+                 POSITIONAL '{name}'; got: {:?}",
                 diagnostics
             );
             assert!(
@@ -7347,7 +7351,7 @@
     /// `curve_nurbs_curve` (the one the `ONE accepted behaviour change` comment
     /// used to omit).
     ///
-    /// `eval_all_args_to_f64` short-circuits via `collect::<Option<_>>()`, so it
+    /// The pre-5658 reader short-circuited via `collect::<Option<_>>()`, so it
     /// reported only the FIRST non-finite arg. `accept_variadic_length_args`
     /// loops to completion, so BOTH NaN knots are reported in one build — the
     /// same all-at-once policy the gated positions follow, now extended to the
@@ -7403,8 +7407,8 @@
     // coordinate of a vertex in the XY plane — no direction vector, no count,
     // no angle, no weight, no knot — so the gate closure is unconditional and
     // there is no dimensionless neighbour to lock. That makes polygon the
-    // SIMPLEST row in the program and the last `eval_all_args_to_f64` consumer:
-    // gating it retires the bare variadic reader entirely.
+    // SIMPLEST row in the program, and it was the pre-5658 bare variadic
+    // reader's last consumer: gating it retired that reader entirely.
     //
     // Two things distinguish it from R2's curve rows. It is a PROFILE op form,
     // not a `Curve` one, so it needs its own builder. And its stride is TWO,

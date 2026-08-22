@@ -299,8 +299,9 @@ fn nurbs_bare_pole_drops_op_dimensioned_builds() {
 // The variadic PROFILE constructor (task 5661)
 // ---------------------------------------------------------------------------
 
-/// `polygon`'s flat 2-D vertex pairs — the last `eval_all_args_to_f64`
-/// consumer, and the only arity-open PROFILE signature in the language.
+/// `polygon`'s flat 2-D vertex pairs — the pre-5658 bare variadic reader's last
+/// consumer (gating this retired it, so `eval_all_args_to_f64` no longer
+/// exists), and the only arity-open PROFILE signature in the language.
 ///
 /// Two things only this layer can show. First that a `.ri` author actually sees
 /// the DISPLAY name `x1` rather than the compiler's inert positional `c0` — the
