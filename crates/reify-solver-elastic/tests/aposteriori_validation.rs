@@ -1346,16 +1346,22 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
         eprintln!("skipping: libgmsh not available in this build");
         return;
     }
-    // Measure the seed indicator on a THROWAWAY instance of the same fixture,
-    // not on `problem` — `RecordingProblem::solve_and_estimate` appends to
-    // `history`, so calibrating on the recorded problem would pad the history
-    // with a pre-loop entry and make the `history.len() >= 2` assertion below
-    // pass without any refinement having happened.
-    let seed_indicator = cantilever_gmsh_problem()
-        .solve_and_estimate()
-        .global_indicator;
+    // Measure the seed indicator on the INNER problem, before wrapping it —
+    // not through `problem`, because `RecordingProblem::solve_and_estimate`
+    // appends to `history` and a pre-loop entry there would make the
+    // `history.len() >= 2` assertion below pass without any refinement having
+    // happened. Wrapping afterwards keeps `history` clean while calibrating
+    // against the very mesh the loop starts from, so the target is exact by
+    // construction rather than two independently-built fixtures agreeing to
+    // within a tolerance. `solve_and_estimate` does not refine — it solves and
+    // estimates on the current mesh — so the loop's own first call re-solves
+    // the same seed mesh idempotently. Mirrors
+    // [`convergence_status_reports_converged_when_target_is_reachable_immediately`],
+    // and avoids a second full gmsh remesh + FEA solve + ZZ recovery.
+    let mut inner = cantilever_gmsh_problem();
+    let seed_indicator = inner.solve_and_estimate().global_indicator;
 
-    let mut problem = RecordingProblem::new(cantilever_gmsh_problem());
+    let mut problem = RecordingProblem::new(inner);
     let budget = RefinementBudget {
         target_accuracy: seed_indicator * 0.95,
         max_refinement_iterations: 5,
