@@ -50,10 +50,11 @@ mod common;
 /// consumed to produce them, because the two exit-125 arms are otherwise
 /// indistinguishable at the call site: a serve/IO failure and a §4.3 index
 /// refusal both emit zero findings, and only the prose says which. A refusal
-/// names its marker token (`E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY`) plus the
-/// probed repo id, index head, live head and symbol count — exactly what an
-/// operator needs to fix it — and dropping the buffer here would reduce that
-/// to a bare "exit 125".
+/// names its marker token (the `E_JC_INDEX_*` family — `STALE`, `EMPTY` or
+/// `UNREADABLE`, each carrying a different remedy) plus the probed repo id,
+/// index head, live head and symbol count — exactly what an operator needs to
+/// fix it — and dropping the buffer here would reduce that to a bare
+/// "exit 125".
 ///
 /// An exit code of `None` means the binary was killed by a signal.
 fn run_reify_audit(args: &[&str]) -> (Option<i32>, Vec<serde_json::Value>, String) {

@@ -2801,10 +2801,20 @@ mod freshness_gate {
     impl Scenario {
         /// Invoke the binary with the given pattern and extra flags.
         fn run(&self, pattern: &str, extra: &[&str]) -> std::process::Output {
+            self.run_raw(&["--pattern", pattern], extra)
+        }
+
+        /// Invoke the binary with NO `--pattern` — the default all-detector
+        /// sweep, whose run set is mixed (P1 alongside P2/P5/PTODO/…).
+        fn run_default_sweep(&self, extra: &[&str]) -> std::process::Output {
+            self.run_raw(&[], extra)
+        }
+
+        fn run_raw(&self, pattern: &[&str], extra: &[&str]) -> std::process::Output {
             let bin = env!("CARGO_BIN_EXE_reify-audit");
             let mut cmd = Command::new(bin);
+            cmd.args(pattern);
             cmd.args([
-                "--pattern", pattern,
                 "--tasks-file", self.tasks_file.to_str().unwrap(),
                 "--runs-db", self.runs_db.to_str().unwrap(),
                 "--project-root", self.repo.to_str().unwrap(),
@@ -2852,6 +2862,15 @@ mod freshness_gate {
             stderr.contains("symbol_count=12"),
             "refusal must name the symbol count; stderr:\n{stderr}"
         );
+        // The one field that says WHICH index to rebuild. Without this
+        // assertion, dropping `with_repo_id` leaves the whole suite green
+        // while the operator loses the only actionable identifier — the
+        // §4.2-derived id is not something they can reconstruct by hand.
+        assert!(
+            stderr.contains(&s.repo_id),
+            "refusal must name the probed repo id {}; stderr:\n{stderr}",
+            s.repo_id
+        );
 
         // Load-bearing, not cosmetic. The `/audit` skill disambiguates
         // exit-125-as-infra-error from exit-125-as-125-High-findings by
@@ -2890,6 +2909,11 @@ mod freshness_gate {
         assert!(
             stderr.contains("symbol_count=0"),
             "refusal must name the symbol count; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&s.repo_id),
+            "refusal must name the probed repo id {}; stderr:\n{stderr}",
+            s.repo_id
         );
         assert!(
             !stderr_has_parseable_findings_array(&stderr),
@@ -2960,8 +2984,14 @@ mod freshness_gate {
             !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
             "an admitted run must emit NEITHER marker; stderr:\n{stderr}"
         );
+        // The same predicate the /audit skill's exit-125 disambiguator
+        // applies, and the exact inverse of what B4/B5/B5b assert. A bare
+        // `contains('[')` would be satisfied by any incidental diagnostic
+        // line — `git check-ignore exited Some(..)`, a PTODO
+        // `tasks.db unreachable at ...` breadcrumb — so it would still pass
+        // if the findings array were never serialized at all.
         assert!(
-            stderr.contains('['),
+            stderr_has_parseable_findings_array(&stderr),
             "an admitted run must emit a well-formed findings array; stderr:\n{stderr}"
         );
     }
@@ -2985,7 +3015,7 @@ mod freshness_gate {
             "the gate must be unreachable for non-jcodemunch patterns; stderr:\n{stderr}"
         );
         assert!(
-            stderr.contains('['),
+            stderr_has_parseable_findings_array(&stderr),
             "the run must still emit its findings array; stderr:\n{stderr}"
         );
     }
@@ -3043,6 +3073,170 @@ mod freshness_gate {
         assert!(
             !stderr.contains("jcodemunch unreachable"),
             "--no-jcodemunch must not even attempt a connection; stderr:\n{stderr}"
+        );
+    }
+
+    /// BLAST RADIUS — a mixed run set must NOT be killed by an unusable
+    /// corpus.
+    ///
+    /// The default sweep runs P2, P5, PTODO and PDSSENTINEL alongside P1, and
+    /// none of those four consult jcodemunch at all. Refusing the process here
+    /// would delete four working detectors' output over one stale index — and
+    /// §4.2 makes that the EXPECTED case, not an anomaly: identity is now
+    /// per-checkout, so every task worktree derives an id nothing has indexed.
+    /// A default `reify-audit --since <date>` from any warm lane with the
+    /// serve up would exit 125 with zero findings.
+    ///
+    /// So the corpus is still never queried (the Noop seam answers every
+    /// jcodemunch call with nothing), but the run completes and emits its
+    /// findings array, exactly as the unreachable-serve fail-soft does.
+    #[test]
+    fn default_sweep_degrades_rather_than_refusing_on_a_stale_index() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_default_sweep(&["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "a mixed run set must not be refused wholesale; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "the non-jcodemunch detectors must still emit their findings; stderr:\n{stderr}"
+        );
+        // Degraded, not silent: the marker keeps the condition machine-
+        // detectable, and the breadcrumb names what was lost.
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "the degraded sweep must still carry the marker; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("degraded to zero findings"),
+            "the breadcrumb must name what was lost; stderr:\n{stderr}"
+        );
+    }
+
+    /// The same stale corpus, selected by an ALL-jcodemunch pattern, is still
+    /// a hard refusal — nothing in that run set could have survived it. Pins
+    /// the boundary from the other side, so a future widening of the
+    /// degrade path cannot silently swallow §4.3.
+    #[test]
+    fn all_jcodemunch_pattern_still_refuses_hard() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1,PDEAD", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an all-jcodemunch run set must refuse; stderr:\n{stderr}"
+        );
+        assert!(stderr.contains("E_JC_INDEX_STALE"), "stderr:\n{stderr}");
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// A valid SQLite file carrying the WRONG SCHEMA is neither stale nor
+    /// empty: the file exists, and what is behind it is unknown. It gets its
+    /// own code and its own remedy, because "re-index this checkout" is the
+    /// wrong instruction for a corpus that may be perfectly intact.
+    ///
+    /// The reader-level version of this is pinned in the library's unit tests;
+    /// what is pinned HERE is that the diagnostic survives all the way into
+    /// the rendered CLI message, which no reader-level test can show.
+    #[test]
+    fn schema_drifted_index_refuses_with_its_own_code_and_diagnostic() {
+        let s = scenario();
+        let db = index_db_path(&s.index_dir, &s.repo_id);
+        let conn = rusqlite::Connection::open(&db).expect("open drifted db");
+        conn.execute_batch("CREATE TABLE something_else (x INTEGER);")
+            .expect("create unrelated table");
+        drop(conn);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(out.status.code(), Some(125), "stderr:\n{stderr}");
+        assert!(
+            stderr.contains("E_JC_INDEX_UNREADABLE"),
+            "schema drift must carry its own marker, not be collapsed into \
+             EMPTY; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("index unreadable:"),
+            "the reader's diagnostic must reach the operator; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("re-index this checkout before querying"),
+            "the empty/stale remedy points at the wrong artifact here; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// A freshness claim that cannot be VERIFIED gets a third message,
+    /// carrying no marker token at all.
+    ///
+    /// `--project-root` outside any git repo makes `git rev-parse HEAD` fail,
+    /// so there is no live head to compare against. Neither staleness nor
+    /// emptiness nor unreadability of the INDEX has been established, and
+    /// labelling this as any of them would send the operator to re-index when
+    /// the real fault is the git invocation.
+    #[test]
+    fn unverifiable_head_refuses_without_naming_an_index_fault() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 2);
+        let non_git = s.repo.parent().expect("tempdir parent").join("not-a-repo");
+        std::fs::create_dir_all(&non_git).expect("create non-git root");
+        let mock = spawn_jcodemunch_mock();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern", "P1",
+                "--tasks-file", s.tasks_file.to_str().unwrap(),
+                "--runs-db", s.runs_db.to_str().unwrap(),
+                "--project-root", non_git.to_str().unwrap(),
+                "--jcodemunch-index-dir", s.index_dir.to_str().unwrap(),
+                "--jcodemunch-url", mock.url(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an unverifiable head must refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("cannot verify jcodemunch index freshness"),
+            "the third message must be distinct from the index refusals; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "no index fault has been established, so no index marker may be \
+             emitted; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
         );
     }
 }
