@@ -547,15 +547,21 @@ pub(crate) fn eval_all_args_to_values(
 /// the same naming task 5623 established for `line_segment`'s endpoints, so a
 /// variadic rejection reads like every other Contract C one.
 ///
-/// `per_point` is the STRIDE, and it is data rather than code because the
-/// route now serves both widths (task 5661): `interp`/`bezier`/`nurbs` stream
-/// 3-D triples, `polygon` streams 2-D vertex PAIRS. A stride-3 renderer applied
-/// to pairs would name six positions `x1,y1,z1,x2,y2,z2` — wrong axis letters
-/// AND wrong vertex numbers, i.e. a diagnostic that actively misdirects the
-/// author. Use the [`CoordName::xyz`] / [`CoordName::xy`] constructors rather
-/// than building the struct literally, so a call site cannot pick a stride by
-/// accident. One renderer for both widths also means a reworded name cannot
-/// drift between them.
+/// The STRIDE is carried as data because the route now serves both widths
+/// (task 5661): `interp`/`bezier`/`nurbs` stream 3-D triples, `polygon` streams
+/// 2-D vertex PAIRS. A stride-3 renderer applied to pairs would name six
+/// positions `x1,y1,z1,x2,y2,z2` — wrong axis letters AND wrong vertex numbers,
+/// i.e. a diagnostic that actively misdirects the author. One renderer for both
+/// widths also means a reworded name cannot drift between them.
+///
+/// The stride is a [`Stride`] enum rather than a bare `usize` so that no
+/// out-of-range width is REPRESENTABLE. The renderer both indexes and divides
+/// by it, so a `0` would panic on divide-by-zero and a `4` would panic indexing
+/// past the axis table — and both would fire ONLY on the rejection path, i.e.
+/// only once an author already has a broken `.ri` file, which is the worst
+/// possible place to discover a stride typo. Deriving the axis letters FROM the
+/// variant (`Stride::axes`) also means the letter table and the point width
+/// cannot disagree: the stride IS the table's length.
 ///
 /// A `Copy` struct over the index rather than a `String`-returning function,
 /// because the gate predicate in [`accept_variadic_length_args`] names EVERY
@@ -570,9 +576,31 @@ struct CoordName {
     /// Position in the flat coordinate stream, renumbered from the start of the
     /// gated span (see `curve_nurbs_curve`, which offsets by its pole start).
     flat: usize,
-    /// Coordinates per point: 3 for a point in space, 2 for a vertex in a
-    /// plane. Always `<= 3`, so the axis-letter index below is in bounds.
-    per_point: usize,
+    /// How wide one point is in that stream.
+    stride: Stride,
+}
+
+/// How many coordinates one point occupies in a flat variadic stream, and — by
+/// the same token — which axis letters name them. See [`CoordName`] for why
+/// this is an enum and not a `usize`.
+#[derive(Clone, Copy)]
+enum Stride {
+    /// A vertex in a plane: `x1, y1, x2, y2, x3, y3, …`.
+    Xy,
+    /// A point in space: `x1, y1, z1, x2, y2, z2, …`.
+    Xyz,
+}
+
+impl Stride {
+    /// The axis letters, in stream order. The slice LENGTH is the stride, so
+    /// the two can never disagree and the modulo below is in bounds by
+    /// construction.
+    fn axes(self) -> &'static [&'static str] {
+        match self {
+            Stride::Xy => &["x", "y"],
+            Stride::Xyz => &["x", "y", "z"],
+        }
+    }
 }
 
 impl CoordName {
@@ -580,7 +608,7 @@ impl CoordName {
     fn xyz(flat: usize) -> Self {
         Self {
             flat,
-            per_point: 3,
+            stride: Stride::Xyz,
         }
     }
 
@@ -588,18 +616,19 @@ impl CoordName {
     fn xy(flat: usize) -> Self {
         Self {
             flat,
-            per_point: 2,
+            stride: Stride::Xy,
         }
     }
 }
 
 impl std::fmt::Display for CoordName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let axes = self.stride.axes();
         write!(
             f,
             "{}{}",
-            ["x", "y", "z"][self.flat % self.per_point],
-            self.flat / self.per_point + 1
+            axes[self.flat % axes.len()],
+            self.flat / axes.len() + 1
         )
     }
 }
@@ -612,27 +641,36 @@ impl std::fmt::Display for CoordName {
 /// `gated(i)` returns `Some(`[`CoordName`]`)` for a position that must be a
 /// finite LENGTH, and `None` for one that is legitimately dimensionless. The
 /// predicate hands back the INDEX to name, not a rendered name, so the fully
-/// clean path allocates nothing (see [`CoordName`]). Per-arg triage for the
-/// three variadic curve constructors (task 5658), written down here so task
-/// 5752's closure-guard allowlist can lift it verbatim:
+/// clean path allocates nothing (see [`CoordName`]).
 ///
-/// | builtin  | positions                | class         | justification                        |
-/// |----------|--------------------------|---------------|--------------------------------------|
-/// | `interp` | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a point in space       |
-/// | `bezier` | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a control point        |
-/// | `nurbs`  | 0 `degree`               | dimensionless | a polynomial degree, i.e. a count    |
-/// | `nurbs`  | 1 `n_points`             | dimensionless | a count                              |
-/// | `nurbs`  | `2 .. 2+3n` poles        | **LENGTH**    | coordinate of a control point        |
-/// | `nurbs`  | `2+3n .. 2+4n` weights   | dimensionless | rational blending factor             |
-/// | `nurbs`  | `2+4n ..` knots          | dimensionless | parameter-space value                |
+/// Per-arg triage for EVERY consumer of this route — the three variadic curve
+/// constructors (task 5658) and `polygon`'s 2-D vertex pairs (task 5661) — is
+/// written down HERE, in one place, so task 5752's closure-guard allowlist can
+/// lift it verbatim from a single site. A new consumer adds its rows to this
+/// table rather than to its own call site; a second location is how the
+/// allowlist silently goes stale.
+///
+/// | builtin   | positions                | class         | justification                          |
+/// |-----------|--------------------------|---------------|----------------------------------------|
+/// | `interp`  | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a point in space         |
+/// | `bezier`  | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a control point          |
+/// | `nurbs`   | 0 `degree`               | dimensionless | a polynomial degree, i.e. a count      |
+/// | `nurbs`   | 1 `n_points`             | dimensionless | a count                                |
+/// | `nurbs`   | `2 .. 2+3n` poles        | **LENGTH**    | coordinate of a control point          |
+/// | `nurbs`   | `2+3n .. 2+4n` weights   | dimensionless | rational blending factor               |
+/// | `nurbs`   | `2+4n ..` knots          | dimensionless | parameter-space value                  |
+/// | `polygon` | every arg (`2n`, `n>=3`) | **LENGTH**    | coordinate of a vertex in the XY plane |
 ///
 /// Corroborated by `docs/reify-stdlib-reference.md`, which already declares the
 /// TARGET signatures as `Point<N,Length>` control points with `Real` weights and
-/// knots — this gate makes the flat positional form honour the declared types.
+/// knots, and polygon's vertices as `Point2<Length>` — this gate makes the flat
+/// positional form honour the declared types.
 ///
-/// The route's fourth consumer, `polygon`'s 2-D vertex pairs (task 5661), keeps
-/// its one-row triage table at its own call site in `profile_polygon` rather
-/// than restating it here — 5752's allowlist must read BOTH.
+/// `polygon` is the SIMPLEST row in the table, and the only 2-D one (hence
+/// [`CoordName::xy`]; the curve rows are [`CoordName::xyz`]). It has no
+/// dimensionless position at ANY arity — no direction vector, no count, no
+/// angle, no weight, no knot — so its gated span is the whole argument list and
+/// it needs no per-arity allowlist key, unlike `nurbs`.
 ///
 /// ALL FAILURES AT ONCE, for [`required_length_args`]' reason and by the same
 /// mechanism: the positions are deliberately NOT `?`-chained. A coordinate
@@ -3949,19 +3987,10 @@ fn profile_polygon(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // Per-arg triage (task 5661's R2 residual) — written down here so task
-    // 5752's closure-guard allowlist can lift it verbatim:
-    //
-    // | builtin   | positions                | class      | justification                          |
-    // |-----------|--------------------------|------------|----------------------------------------|
-    // | `polygon` | every arg (`2n`, `n>=3`) | **LENGTH** | coordinate of a vertex in the XY plane |
-    //
-    // This is the SIMPLEST row in the program: polygon has NO dimensionless
-    // position at any arity — no direction vector, no count, no angle, no
-    // weight, no knot — so unlike `nurbs` its gated span is the whole argument
-    // list and it needs no per-arity allowlist key. `CoordName::xy` because the
-    // stream is 2-D vertex PAIRS, not the 3-D triples the curve constructors
-    // feed the same route.
+    // Per-arg triage (task 5661's R2 residual) lives in ONE place — the shared
+    // table in `accept_variadic_length_args`' doc, which task 5752's
+    // closure-guard allowlist lifts verbatim — and is deliberately NOT restated
+    // here; polygon's row is `every arg (2n, n>=3)` → LENGTH.
     //
     // Three DELIBERATE wording/behaviour deltas, all inherited from the shared
     // chokepoint rather than chosen here (which is the point — Contract C
