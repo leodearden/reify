@@ -2387,6 +2387,96 @@ fn vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch() {
     );
 }
 
+const SRC_POINT3_DIMENSIONED_AT_DIMENSIONLESS: &str = r#"module test.point3_dimensioned_at_dimensionless
+structure def Origin { param origin : Point3<Dimensionless> }
+structure def Root {
+    let o = Origin(origin: point3(1m, 0m, 0m))
+}
+"#;
+
+const SRC_POINT3_DIMENSIONED_AT_REAL: &str = r#"module test.point3_dimensioned_at_real
+structure def Origin { param origin : Point3<Real> }
+structure def Root {
+    let o = Origin(origin: point3(1m, 0m, 0m))
+}
+"#;
+
+/// THE PARAM-SIDE RULING (task 6159) at the `Point` arm, `.ri`/ctor seam — the
+/// third arm's twin of
+/// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
+/// (`Vector`) and
+/// `matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`
+/// (`Matrix`/`Tensor`).
+///
+/// `crates/reify-core/src/ty.rs` asserts a MEASURED end-to-end result for exactly
+/// this cell — `point3(1m, 0m, 0m)` at `Point3<Dimensionless>` emits ONE
+/// `ArgTypeMismatch` requiring quantity `Real` — and until this fixture nothing
+/// pinned it: the `Point` arm had only the direct-`Type` probe
+/// `dimensionless_quantity_point_param_rejects_dimensioned_point_arg`
+/// (`conformance/mod.rs`), which constructs the `Type::Point` itself and so
+/// BYPASSES the whole inference chain. That chain is what makes the claim true:
+/// task 5344 (`3c4ee5e9ac`) claimed `point3` / `point2` into the math
+/// construction family, so `math_fn_result_type`'s collapsed
+/// `"vec3" | "vec2" | "point3" | "point2"` arm now returns a real
+/// `Type::Point { n, quantity }` with the quantity taken from the FIRST argument.
+/// The same reasoning the `Matrix` fixture states about `matrix_shape` applies
+/// here, one arm over.
+///
+/// It also retires, by demonstration, the premise that "no `.ri` source can
+/// produce a dimensioned `Type::Point` arg" — expired since 5344 landed, still
+/// written at the sites task 6436 owns.
+///
+/// **Scope fence.** This pins the cell task 6159 itself ruled and measured.
+/// Converting the pre-existing `Point`-arm probes (task 5465's) to `.ri`
+/// fixtures, and reconciling the stale erasure rationales around them, stays
+/// task 6436's.
+#[test]
+fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Load-bearing twice over: a `Point3<Dimensionless>` that failed to resolve,
+    // or a `point3(…)` call that failed to compile, would emit zero
+    // ctor-conformance diagnostics and read as a RULE failure.
+    let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile of the source plus the whole stdlib.
+    assert_single_arg_type_mismatch_warning_in(
+        &module,
+        "origin",
+        "Point3<Dimensionless> ← Point3<Length> (from component [0] alone)",
+    );
+}
+
+/// `Real` is the SAME CELL as `Dimensionless` — the same fixture, spelled the
+/// other way, end to end.
+///
+/// `crates/reify-core/src/ty.rs` rules the two exact synonyms at every route into
+/// a quantity slot and measures this cell "identically at `Point3<Real>`, the
+/// `fdm_slice.ri` spelling". That is a claim about `resolve_type_name` and the
+/// dimension-EXPRESSION route in `type_resolution.rs`, not about the conformance
+/// rule, so only a second fixture can hold it: were the `Real` spelling ever to
+/// resolve to something other than `Type::Scalar { dimension: DIMENSIONLESS }`,
+/// the sibling above would stay green while
+/// `stdlib/fdm_slice.ri:43`'s `List<Point3<Real>>` silently left the ruling.
+#[test]
+fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_REAL);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    assert_single_arg_type_mismatch_warning_in(
+        &module,
+        "origin",
+        "Point3<Real> ← Point3<Length> — Real and Dimensionless are the same cell",
+    );
+}
+
 const SRC_VECTOR_GIVEN_STRING: &str = r#"module test.vector_string
 structure def Joint { param axis : Vector3<Length> }
 structure def Root {

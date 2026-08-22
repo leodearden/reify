@@ -147,6 +147,16 @@
 //! ruled above, and the same-cell claim for `Real` exercised end to end.
 //! `point3(0m, 0m, 0m)` at `Point3<Length>` stays CLEAN.
 //!
+//! The first two of those cells are now PINNED, not merely measured:
+//! `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch` and
+//! `point3_dimensioned_at_real_point_param_warns_arg_type_mismatch`
+//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`) drive
+//! them through the real `point3(…)` → `math_fn_result_type` → `Point` arm chain
+//! that the direct-`Type` probes in `conformance/mod.rs` deliberately bypass —
+//! the same reason the `Matrix` arm has a `matrix(…)` fixture alongside its own
+//! direct-`Type` probe.  Without them this section would document an end-to-end
+//! result that no test could hold.
+//!
 //! So the zero-new-diagnostics reach claim SURVIVES the expiry — the corpus gate
 //! was re-run green at this HEAD after the rebase — but its former JUSTIFICATION
 //! ("no `.ri` source can produce a dimensioned `Type::Point` arg") does NOT, and
@@ -161,16 +171,25 @@
 //!     site, and a `Field`'s slots erasing to `Field<Real, Real>` — are
 //!     untouched by task 5344, so the arg-side tolerance RULING stands and it is
 //!     only its stated basis that needs re-arguing;
-//!   * the Point-arm "why this is an in-module unit test and not a `.ri` fixture"
-//!     rationales in `conformance/mod.rs`;
+//!   * the Point-arm "why this is an in-module unit test and not a `.ri`
+//!     fixture" rationales on task 5465's
+//!     `point_param_rejects_cross_dimension_point_arg` and
+//!     `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`.  The
+//!     sibling probe task 6159 added,
+//!     `dimensionless_quantity_point_param_rejects_dimensioned_point_arg`, no
+//!     longer asserts it — it now states the true reason for being a
+//!     direct-`Type` probe (it reaches the walker without depending on
+//!     `math_fn_result_type`'s first-argument inference) and points here;
 //!   * the Point-family fixture notes in `struct_ctor_field_conformance_tests.rs`.
 //!
-//! Reconciling all of those — and converting the Point-arm probes to `.ri`
-//! fixtures, which the cells above show is now possible for the first time — is
-//! OWNED BY TASK 6436, filed from esc-6159-3 for exactly that purpose.  This
-//! section is deliberately the ONLY site task 6159 corrects, because it is the
-//! only one 6159 itself authored: the point is that a stale claim is FLAGGED
-//! rather than carried silently, not that it is fixed everywhere here.
+//! Reconciling all of those — and converting the PRE-EXISTING Point-arm probes
+//! to `.ri` fixtures, which the cells above show is now possible for the first
+//! time — is OWNED BY TASK 6436, filed from esc-6159-3 for exactly that purpose.
+//! Task 6159 corrects only what task 6159 itself authored: this section, the
+//! rationale on its own `dimensionless_quantity_point_param_rejects_dimensioned_point_arg`
+//! probe, and the two `.ri` fixtures above that pin the cells it measured.
+//! Everywhere else the stale claim is FLAGGED rather than carried silently —
+//! which is the point — not fixed here.
 //!
 //! The `Real` quantity slots in `stdlib/solver_elastic.ri:536/547` are out of
 //! reach for a different and durable reason: they sit inside `Field<…>`, and the
