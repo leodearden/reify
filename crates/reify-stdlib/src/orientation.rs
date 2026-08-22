@@ -2182,21 +2182,29 @@ mod tests {
     }
 
     // ── orient_exp tests (step-7) ──────────────────────────────────────────
+    //
+    // Every `orient_exp` input below is spelled with `Value::angle(..)`: a
+    // rotation vector carries ANGLE (#6080), so a dimensionless triple is no
+    // longer an accepted spelling. The guard tests in particular MUST use
+    // ANGLE inputs — given a dimensionless one they would still return Undef,
+    // but for the dimension reason rather than the arity / shape / non-finite
+    // reason they are named for, and would silently stop testing anything.
+
+    /// Build a `Value::Vector` rotation vector with ANGLE components (radians).
+    fn rot_vec(x: f64, y: f64, z: f64) -> Value {
+        Value::Vector(vec![Value::angle(x), Value::angle(y), Value::angle(z)])
+    }
 
     #[test]
     fn orient_exp_zero_vector_is_identity() {
-        let zero = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let zero = rot_vec(0.0, 0.0, 0.0);
         assert_orientation_approx!(eval_builtin("orient_exp", &[zero]), 1.0, 0.0, 0.0, 0.0);
     }
 
     /// exp([0,0,π/2]) = (cos(π/4), 0, 0, sin(π/4)) — 90°z rotation.
     #[test]
     fn orient_exp_z_pi_half_is_90deg_z_quaternion() {
-        let v = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(std::f64::consts::FRAC_PI_2),
-        ]);
+        let v = rot_vec(0.0, 0.0, std::f64::consts::FRAC_PI_2);
         let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
@@ -2218,11 +2226,7 @@ mod tests {
             [-0.5, 0.7, -0.3],
         ];
         for case in cases.iter() {
-            let v = Value::Vector(vec![
-                Value::Real(case[0]),
-                Value::Real(case[1]),
-                Value::Real(case[2]),
-            ]);
+            let v = rot_vec(case[0], case[1], case[2]);
             let q = eval_builtin("orient_exp", std::slice::from_ref(&v));
             let v_back = eval_builtin("orient_log", &[q]);
             match v_back {
@@ -2270,7 +2274,7 @@ mod tests {
 
     #[test]
     fn orient_exp_wrong_arg_count_returns_undef() {
-        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let v = rot_vec(0.0, 0.0, 0.0);
         assert!(eval_builtin("orient_exp", &[]).is_undef());
         assert!(eval_builtin("orient_exp", &[v.clone(), v]).is_undef());
     }
@@ -2282,28 +2286,105 @@ mod tests {
 
     #[test]
     fn orient_exp_non_3d_vector_returns_undef() {
-        let v2 = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let v2 = Value::Vector(vec![Value::angle(1.0), Value::angle(0.0)]);
         assert!(eval_builtin("orient_exp", &[v2]).is_undef());
     }
 
     #[test]
     fn orient_exp_nan_component_returns_undef() {
-        let nan_v = Value::Vector(vec![
-            Value::Real(f64::NAN),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let nan_v = rot_vec(f64::NAN, 0.0, 0.0);
         assert!(eval_builtin("orient_exp", &[nan_v]).is_undef());
     }
 
     #[test]
     fn orient_exp_inf_component_returns_undef() {
-        let inf_v = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(f64::INFINITY),
-            Value::Real(0.0),
-        ]);
+        let inf_v = rot_vec(0.0, f64::INFINITY, 0.0);
         assert!(eval_builtin("orient_exp", &[inf_v]).is_undef());
+    }
+
+    // ── orient_exp rotation-vector DIMENSION gate (#6080) ──────────────────
+
+    #[test]
+    fn orient_exp_accepts_angle_dimensioned_rotation_vector() {
+        let v = rot_vec(0.0, 0.0, std::f64::consts::FRAC_PI_2);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_exp", &[v]),
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
+        );
+    }
+
+    /// DIMENSIONLESS is a SPECIFIC dimension (the zero vector), not a wildcard,
+    /// so it is rejected like any other wrong dimension. This is the narrowing
+    /// half of #6080 — a bare `vec3(0, 0, 1.5708)` used to be accepted.
+    #[test]
+    fn orient_exp_rejects_dimensionless_rotation_vector() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        assert!(eval_builtin("orient_exp", &[v]).is_undef());
+    }
+
+    /// Regression pin: widening the gate to ANGLE must not make it permissive.
+    #[test]
+    fn orient_exp_rejects_length_rotation_vector() {
+        let v = Value::Vector(vec![
+            Value::length(0.001),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(eval_builtin("orient_exp", &[v]).is_undef());
+    }
+
+    /// Coupled-change guard: `orient_exp(orient_log(q)) ≈ q` holds only if the
+    /// emission and the gate agree on ANGLE. Also asserts the INTERMEDIATE is
+    /// ANGLE-dimensioned, so the round-trip cannot be satisfied by reverting
+    /// both ends to dimensionless.
+    #[test]
+    fn orient_log_then_exp_round_trip_preserves_angle() {
+        let cases: [[f64; 4]; 3] = [
+            [0.5, 0.5, 0.5, 0.5],
+            [std::f64::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2],
+            [0.7071067811865476, 0.5, 0.5, 0.0],
+        ];
+        for case in cases.iter() {
+            let n = (case[0] * case[0] + case[1] * case[1] + case[2] * case[2] + case[3] * case[3])
+                .sqrt();
+            let q = Value::Orientation {
+                w: case[0] / n,
+                x: case[1] / n,
+                y: case[2] / n,
+                z: case[3] / n,
+            };
+            let v = eval_builtin("orient_log", std::slice::from_ref(&q));
+            for comp in vector3_components(v.clone()) {
+                match comp {
+                    Value::Scalar { dimension, .. } => {
+                        assert_eq!(
+                            dimension,
+                            DimensionVector::ANGLE,
+                            "round-trip intermediate must be ANGLE-dimensioned"
+                        );
+                    }
+                    other => panic!("expected Scalar{{ANGLE}} component, got {other:?}"),
+                }
+            }
+            let q_back = eval_builtin("orient_exp", &[v]);
+            assert_orientation_approx!(
+                q_back,
+                case[0] / n,
+                case[1] / n,
+                case[2] / n,
+                case[3] / n,
+                sign_insensitive = 1e-12
+            );
+        }
     }
 
     // ── orient_slerp tests (step-9) ────────────────────────────────────────

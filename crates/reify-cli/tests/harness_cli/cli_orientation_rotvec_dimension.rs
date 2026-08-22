@@ -30,6 +30,27 @@ fn eval_orient_log_prints_angle_dimensioned_rotation_vector() {
     );
 }
 
+/// `orient_exp(orient_log(q))` still recovers `q` (acceptance clause 2).
+///
+/// The coupled-change guard: this identity holds only if orient_log's emission
+/// and orient_exp's gate agree on ANGLE. It is RED in between — orient_log
+/// hands out an ANGLE vector that the old DIMENSIONLESS gate rejects, so `rt`
+/// evaluates to `undef`.
+#[test]
+fn eval_orient_exp_of_orient_log_round_trips() {
+    let path = common::fixture_path("orient_rotvec_round_trip.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval orient_rotvec_round_trip.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("RotVecRoundTrip.rt = [0.7071067811865476, 0, 0, 0.7071067811865475]q"),
+        "stdout should show the recovered 90°z quaternion; got: {stdout}"
+    );
+}
+
 /// The probe fixture stays `reify check`-clean, before AND after #6080.
 ///
 /// This task rules on the EVAL-time dimension only; the static signature of
