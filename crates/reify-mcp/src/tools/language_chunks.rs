@@ -249,7 +249,16 @@ mod tests {
     /// `docs/notes/angle-crossing-doctrine-placement-2026-08-19.md`.
     #[test]
     fn field_operator_names_keep_a_chunk_mention() {
-        // Mirrors `FIELD_OP_NAMES` at `crates/reify-compiler/src/units.rs:1041`.
+        // Mirrors the four-name DERIVATIVE-operator subset of
+        // `crates/reify-compiler/src/units.rs`'s `FIELD_OP_NAMES` const (nine
+        // members total: fn_field, from_samples, restrict, compose, sample,
+        // gradient, divergence, curl, laplacian). Only those four are
+        // asserted here because they are the ones whose sole corpus mention
+        // is `units.md:92` — the other five members carry no angle-crossing
+        // vocabulary and have no PDOCCOVER exposure from this section. Cited
+        // by symbol, not line number: a line number into another crate
+        // drifts on any unrelated edit there, which is how the previous
+        // `:1041` cite went stale.
         // Hard-coded rather than depending on reify-compiler from reify-mcp to
         // read the live registry: that would be a layering inversion for a
         // four-element list, and PDOCCOVER already owns the live-registry
