@@ -219,7 +219,7 @@ assert "generator emitting NO scan evidence makes test_reify_audit_ptodo.sh exit
 # (2) ...and for the right reason.  Without this, any unrelated failure would
 #     satisfy (1) and this meta-test would stay green after the floor was gone.
 #
-#     MATCH THE MACHINE TOKEN, NOT THE PROSE.  _ratchet_check_nonempty emits
+#     MATCH THE MACHINE TOKEN, NOT THE PROSE.  _ratchet_check_scan_evidence emits
 #     @@RATCHET_VACUITY_FIRED@@ as the first line of its diagnostic for exactly
 #     this cross-file handshake — the same idiom as the @@HARDGATE_*_PASSED@@
 #     sentinels in test_reify_audit_ptodo.sh.  An English anchor is the wrong
