@@ -802,12 +802,10 @@ const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
 /// number is hard-coded here".
 #[test]
 fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
-    let result = dev_capstan();
+    // No geometry is read here, so this gate runs on the kernel-free
+    // evaluate + constraint-check surface: it must bite everywhere, not only
+    // where OCCT happens to be installed (module doc §3).
+    let result = dev_capstan_checked();
 
     let band = capstan_cell(&result.values, "band", DimensionVector::LENGTH);
     let lead = capstan_cell(&result.values, "lead", DimensionVector::LENGTH);
@@ -1109,12 +1107,10 @@ fn capstan_surfaces_only_the_finished_drum() {
 /// one both reading as green — is the gap this test closes.
 #[test]
 fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
-    let result = dev_capstan();
+    // Kernel-free surface deliberately: this gate's whole claim is that the
+    // relation bites outside a full OCCT run, so it must not itself be skipped
+    // when OCCT is absent (module doc §3).
+    let result = dev_capstan_checked();
 
     // ---- (1) The assembly states the relation ----
     let drive_constraints: Vec<_> = result
