@@ -26,13 +26,16 @@
 # `capstone-must-not-become-gate-resident` resolution applies to ε, and the same
 # split β's tests/infra/test_jcodemunch_index_reify.sh already makes.
 #
-# COST: ~101 s wall, almost all of it sleeping rather than burning CPU — the
-# readiness poll interval, the two never-ready deadlines and the two leak runs'
-# 10 s teardown free-waits. Measured against siblings in the same bucket:
-# test_warm_lane_audit.sh 143 s, test_jcodemunch_index_reify.sh 37 s. If this
-# needs to come down further, the leak runs are the place to look, and the cost
-# there is real coverage: the -KILL escalation fires at the 5 s mark, so a
-# shortened window would stop exercising it.
+# COST: ~135 s wall on a quiet host, ~185 s observed under a loaded pool,
+# almost all of it sleeping rather than burning CPU — the readiness poll
+# interval, the three never-ready deadlines and the three leak runs' 10 s
+# teardown free-waits.
+# Measured against siblings in the same bucket: test_warm_lane_audit.sh 143 s,
+# test_jcodemunch_index_reify.sh 37 s. If this needs to come down further, the
+# leak runs are the place to look, and the cost there is real coverage: the
+# -KILL escalation fires at the 5 s mark, so a shortened window would stop
+# exercising it. Nothing here waits on the network — see the stand-in note in
+# Block 3 for why every invocation goes through REIFY_JC_SERVE_CMD.
 #
 # EVERY PORT THIS SUITE BINDS IS A FREE EPHEMERAL PORT IT PICKS ITSELF. This
 # file is a `pool` member (tests/infra/run-all-classification.manifest), so
@@ -154,6 +157,71 @@ assert "the script sets -euo pipefail"                      b1_strict_mode
 assert "the script parses (bash -n)"                        b1_parses
 assert "--help exits 0 and prints a usage block"            b1_help_ok
 assert "--help documents all four refusal markers"          b1_help_names_markers
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 1b — argv splitting and flag validation
+#
+# The cheapest assertions in the file: no spawn, no port, no stub, nothing that
+# reaches preflight. They are here because this is the branch most likely to be
+# silently LOOSENED by a later edit — dropping the wrapper's `-*` arm would let
+# a typo'd `--prot 8917` fall through as the WRAPPED COMMAND, spawn a serve on
+# the default 8901 and then fail with a confusing 127, which is exactly the
+# confusion that arm's source comment says it exists to prevent.
+#
+# Every case asserts 64 (EX_USAGE, β's convention) rather than merely "non-zero",
+# so a refusal that decayed into a crash, a 1, or a burnt readiness deadline
+# fails here rather than passing as "well, it did refuse".
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 1b: argv splitting and flag validation ---"
+
+# b1b_usage_error <needle> [argv...] — exit 64, and the message says WHY.
+b1b_usage_error() {
+    local needle="$1"; shift
+    local out rc=0
+    require_nonempty "usage-error needle" "$needle" || return 1
+    out="$("$JC_SERVE" "$@" 2>&1)" || rc=$?
+    [ "$rc" = "64" ] || { printf '%s\n' "expected exit 64, got $rc for argv [$*]:" "$out"; return 1; }
+    case "$out" in *"$needle"*) return 0 ;; esac
+    printf '%s\n' "the exit-64 refusal for [$*] never mentions '$needle':" "$out"
+    return 1
+}
+
+# THE `--` TERMINATOR, both halves in one assertion: the SAME token is a usage
+# error as a wrapper flag and is accepted after `--`. Driven under --dry-run so
+# the claim costs no spawn; 5(e) carries the other half (that it is then really
+# executed).
+b1b_terminator_ends_flags() {
+    local out rc=0
+    out="$("$JC_SERVE" --dry-run --prot 8917 2>&1)" || rc=$?
+    [ "$rc" = "64" ] || { printf '%s\n' "a bare '--prot' was not a usage error (exit $rc):" "$out"; return 1; }
+    rc=0
+    out="$("$JC_SERVE" --dry-run -- --prot 8917 2>&1)" || rc=$?
+    [ "$rc" = "0" ] || { printf '%s\n' "'--' did not end flag parsing (exit $rc):" "$out"; return 1; }
+    case "$out" in
+        *"unknown wrapper flag"*) printf '%s\n' "'--' did not end flag parsing:" "$out"; return 1 ;;
+    esac
+    return 0
+}
+
+# NEGATIVE CONTROL: 64 is caused by the malformed argv, not emitted whenever the
+# wrapper is handed flags at all.
+b1b_valid_argv_control() {
+    local out rc=0
+    out="$("$JC_SERVE" --port 8917 --dry-run 2>&1)" || rc=$?
+    [ "$rc" = "0" ] && return 0
+    printf '%s\n' "a well-formed argv exited $rc:" "$out"
+    return 1
+}
+
+assert "--port with no argument is a usage error"           b1b_usage_error "requires an N argument" --port
+assert "a non-numeric --port is a usage error"              b1b_usage_error "must be a number" --port abc true
+assert "--port 0 is a usage error"                          b1b_usage_error "1..65535" --port 0 true
+assert "--port 70000 is a usage error"                      b1b_usage_error "1..65535" --port 70000 true
+assert "an unknown wrapper flag is a usage error"           b1b_usage_error "unknown wrapper flag" --prot 8917 true
+assert "no wrapped command at all is a usage error"         b1b_usage_error "no wrapped command"
+assert "'--' ends the wrapper's flags"                      b1b_terminator_ends_flags
+assert "a well-formed argv is not a usage error (control)"  b1b_valid_argv_control
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared fixtures for every behavioural block below
@@ -420,6 +488,31 @@ mk_min_path() {
     return 0
 }
 
+# ── A HERMETIC STAND-IN FOR THE SERVE COMMAND ───────────────────────────────
+#
+# Every wrapper invocation in this block points REIFY_JC_SERVE_CMD at this, and
+# the reason is the file header's own claim: "needing no uvx, no PyPI and no
+# network" has to hold for EVERY assertion here, not for most of them. An
+# invocation that omits the seam inherits the real
+# `uvx --python 3.13 --from jcodemunch-mcp==1.108.54 … serve` default, which
+#   * costs ~12 s even with a warm uv cache — on a `pool` gate member;
+#   * inherits the wrapper's 180 s readiness deadline, so a slow-but-reachable
+#     PyPI stretches it much further; and
+#   * makes the assertion VACUOUS on any host without uv, where the wrapper dies
+#     in require_tools before it ever reaches the branch under test.
+#
+# Deliberately NOT mk_stub_serve (defined further down, where Block 4 needs a
+# real responder): preflight refuses BEFORE any spawn, so every assertion in
+# this block needs the serve command only to EXIST. On the one path that does
+# reach a spawn — the free-port control — this exits immediately and the wrapper
+# refuses E_JC_SERVE_SPAWN_FAILED, which is precisely what makes that control
+# non-vacuous: it got past the port check, and what it refused with was not
+# E_JC_SERVE_PORT_BUSY.
+B3_DIR="$(mk_tmpdir)"
+B3_STANDIN="$B3_DIR/standin-serve"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$B3_STANDIN"
+chmod +x "$B3_STANDIN"
+
 # -- 3(a) the port is already occupied ---------------------------------------
 #
 # REFUSE, never adopt and never kill. An adopted serve carries an unknown pin
@@ -438,7 +531,8 @@ if [ -n "$B3A_DIR" ]; then
     B3A_PORT="$SQ_PORT"
     B3A_PID="$SQ_PID"
     if [ -n "$B3A_PORT" ]; then
-        B3A_OUT="$("$JC_SERVE" --port "$B3A_PORT" touch "$B3A_WITNESS" 2>&1)" || B3A_RC=$?
+        B3A_OUT="$(REIFY_JC_SERVE_CMD="$B3_STANDIN" \
+            "$JC_SERVE" --port "$B3A_PORT" touch "$B3A_WITNESS" 2>&1)" || B3A_RC=$?
     fi
 fi
 
@@ -466,9 +560,17 @@ b3a_squatter_alive() {
 b3a_negative_control() {
     local port out
     port="$(pick_free_port)" || return 1
-    out="$("$JC_SERVE" --port "$port" true 2>&1 || true)"
+    out="$(REIFY_JC_SERVE_CMD="$B3_STANDIN" REIFY_JC_SERVE_READY_TIMEOUT=10 \
+        "$JC_SERVE" --port "$port" true 2>&1 || true)"
+    require_nonempty "free-port output" "$out" || return 1
     case "$out" in *"$M_PORT_BUSY"*) printf '%s\n' "$M_PORT_BUSY fired on a FREE port:" "$out"; return 1 ;; esac
-    return 0
+    # ANTI-VACUITY: the run must really have got PAST the port check. A wrapper
+    # that died earlier — no uv on PATH, a broken argv — would satisfy the
+    # absence above without ever reaching the branch this controls for. The
+    # stand-in exits immediately, so the refusal it does reach is the spawn one.
+    case "$out" in *"$M_SPAWN_FAILED"*) return 0 ;; esac
+    printf '%s\n' "the free-port run never reached the spawn, so this control proves nothing:" "$out"
+    return 1
 }
 
 assert "the port-busy fixture really holds a port (anti-vacuity)"          b3a_fixture_live
@@ -590,15 +692,41 @@ mk_stub_serve() {
     local path="$1" mode="$2"
 
     cat > "$path.py" <<'STUBPY'
-"""Stub jcodemunch serve: stdlib only. argv = <port> <serverInfo.name>."""
+"""Stub jcodemunch serve: stdlib only. argv = <port> <serverInfo.name> [flag]."""
 import http.server
 import json
 import os
+import signal
+import socket
 import sys
+import time
 
 PORT = int(sys.argv[1])
 NAME = sys.argv[2]
+FLAG = sys.argv[3] if len(sys.argv) > 3 else ""
 WITNESS = os.environ["REIFY_JC_SERVE_WITNESS"]
+
+
+def note(line):
+    with open(WITNESS, "a") as fh:
+        fh.write(line + "\n")
+
+
+if FLAG == "--deaf":
+    # ACCEPTS TCP AND NEVER ANSWERS. A port squatter, a wedged serve, a
+    # misconfigured proxy: the endpoint completes the connect, so the readiness
+    # probe cannot fail fast and spends its whole `curl --max-time` on every
+    # poll. That is what makes an iteration-counted deadline undercount wall
+    # clock, and this is the fixture that measures it.
+    _srv = socket.socket()
+    _srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    _srv.bind(("127.0.0.1", PORT))
+    _srv.listen(16)
+    note("stub-deaf=[1]")
+    _held = []
+    while True:
+        _c, _ = _srv.accept()
+        _held.append(_c)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -637,7 +765,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_GET = do_POST
 
 
-http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+_server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+
+if FLAG == "--linger-on-term":
+    # CLOSES THE LISTENER ON TERM BUT KEEPS RUNNING. The blind spot a port-only
+    # teardown verdict cannot see: the port comes free immediately, so teardown
+    # reads as clean while this process survives as a stray forever. The group
+    # half of the verdict is what keeps waiting, escalates to -KILL and reaps it.
+    def _close_and_linger(signum, frame):
+        try:
+            _server.server_close()
+        except OSError:
+            pass
+        note("stub-lingering=[1]")
+        while True:
+            time.sleep(3600)
+
+    signal.signal(signal.SIGTERM, _close_and_linger)
+
+_server.serve_forever()
 STUBPY
 
     cat > "$path" <<'STUB'
@@ -683,6 +829,12 @@ STUB
         die)
             echo 'printf "stub-die=[3]\n" >> "$REIFY_JC_SERVE_WITNESS"' >> "$path"
             echo 'exit 3' >> "$path" ;;
+        deaf)
+            # Accepts the connect and answers nothing — see the responder.
+            echo 'exec python3 "$0.py" "$STUB_PORT" deaf-listener --deaf' >> "$path" ;;
+        lingerer)
+            # Releases the PORT on -TERM and keeps running — see the responder.
+            echo 'exec python3 "$0.py" "$STUB_PORT" jcodemunch-mcp --linger-on-term' >> "$path" ;;
         grandchild)
             # The leak shape `uvx` produces: the thing the wrapper spawns is NOT
             # the thing holding the port. A teardown that signalled only the
@@ -841,7 +993,8 @@ assert "a slow-starting serve produces no $M_NOT_READY"                    b4_sl
 # -- foreign: identity, not liveness ------------------------------------------
 #
 # The never-ready cases are the only ones that burn the WHOLE readiness
-# deadline, so theirs is trimmed from the suite default. 10 s is ~9 polls,
+# deadline (WALL CLOCK, since this stub answers instantly ~10 polls), so theirs
+# is trimmed from the suite default. 10 s is
 # ample headroom for a stdlib http.server to bind even with ~150 pool members
 # running concurrently — and if it somehow is not, `b4_foreign_answered` fails
 # loudly rather than letting an unreachable port masquerade as the identity
@@ -890,6 +1043,45 @@ assert "the spawn-failure refusal names the child's exit status"           b4_di
 assert "the spawn-failure refusal exits non-zero"                          b4_die_nonzero
 assert "the spawn failure is reported promptly, not at the deadline"       b4_die_prompt
 assert "the spawn-failure refusal never claims $READY_MARKER"              b4_die_not_ready
+
+# -- deaf: THE READINESS DEADLINE IS WALL CLOCK, NOT POLL ITERATIONS ----------
+#
+# The `deaf` stub completes the TCP connect and then answers nothing, so every
+# poll spends the probe's whole `curl --max-time 5` before the 1 s sleep — ~6 s
+# of wall clock per 1 s of deadline. A wrapper that charges the deadline one
+# second per ITERATION therefore overruns it by ~6x: at the production default
+# of 180 s that is ~13 minutes of apparent hang, while --help promises the
+# endpoint "never answered ... within the readiness deadline". A consumer
+# invoked from a hook or a gate would look wedged.
+#
+# 5 s deadline, 15 s ceiling. MEASURED both ways against this exact fixture:
+# wall-clock accounting refuses in 6 s (the deadline, plus the one probe already
+# in flight when it passes running to its own 5 s timeout), while iteration
+# counting needs FIVE such probes and takes 30 s. The ceiling sits between them
+# with ~9 s of headroom above the correct value, because this is a `pool` member
+# sharing a host with ~150 concurrent siblings: the assertion has to
+# DISCRIMINATE under load, not measure precisely.
+RW_TIMEOUT=5
+rw_run deaf true
+B4X_ERR="$RW_ERR"; B4X_WITNESS="$RW_WITNESS"; B4X_RC="$RW_RC"; B4X_ELAPSED="$RW_ELAPSED"
+RW_TIMEOUT=20
+
+# ANTI-VACUITY: the fixture really bound the port and really accepted. A deaf
+# stub that never started would refuse for the ordinary connection-refused
+# reason and would say nothing about deadline arithmetic.
+b4_deaf_bound()   { has_line "$B4X_WITNESS" "stub-deaf=[1]"; }
+b4_deaf_refuses() { has_line "$B4X_ERR" "$M_NOT_READY"; }
+b4_deaf_nonzero() { [ "$B4X_RC" -ne 0 ]; }
+b4_deaf_honours_wall_clock() {
+    [ "$B4X_ELAPSED" -le 15 ] && return 0
+    printf '%s\n' "a 5s readiness deadline against an accepting-but-silent endpoint took ${B4X_ELAPSED}s — the deadline is being counted in polls, not wall clock" "$(cat "$B4X_ERR")"
+    return 1
+}
+
+assert "the deaf stub really bound and accepted (anti-vacuity)"            b4_deaf_bound
+assert "an accepting-but-silent endpoint refuses $M_NOT_READY"             b4_deaf_refuses
+assert "the deaf refusal exits non-zero"                                   b4_deaf_nonzero
+assert "the readiness deadline is wall clock, not poll iterations"         b4_deaf_honours_wall_clock
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block 5 — transparency of the wrapped command
@@ -1019,9 +1211,31 @@ b5_url_overrides_ambient() {
     lacks_line "$RW_OUT" "198.51.100.7"
 }
 
+# -- 5(e) the `--` terminator passes a dash-leading command through -----------
+#
+# --help documents `--` as the sanctioned way to wrap a command whose name
+# starts with a dash, and Block 1b proves the flag parser stops consuming there.
+# This is the other half: the token is really EXECUTED as the wrapped command,
+# through the full spawn/ready/run/teardown path, rather than merely surviving
+# the parse. Resolved via PATH so argv[0] ITSELF leads with a dash — a
+# `$dir/-dash-cmd` spelling would not exercise the property at all.
+B5E_DIR="$(mk_tmpdir)"
+b5_dash_leading_command() {
+    local bin="$B5E_DIR/bin"
+    mkdir -p "$bin" || return 1
+    mk_echo_args "$bin/-dash-cmd" || return 1
+    RW_EXTRA_ENV=("PATH=$bin:$PATH")
+    rw_run healthy -- -dash-cmd kept || { RW_EXTRA_ENV=(); return 1; }
+    RW_EXTRA_ENV=()
+    [ "$RW_RC" = "0" ] || { printf '%s\n' "a '--'-terminated dash-leading command exited $RW_RC:" "$(cat "$RW_ERR")"; return 1; }
+    has_line "$RW_OUT" 'arg1=[kept]' || return 1
+    has_line "$RW_OUT" 'argc=[1]'
+}
+
 assert "the wrapped command is handed JCODEMUNCH_URL for the CHOSEN port"   b5_url_is_the_chosen_port
 assert "the exported JCODEMUNCH_URL carries no trailing slash"              b5_url_has_no_trailing_slash
 assert "a pre-set foreign JCODEMUNCH_URL is overridden, not inherited"      b5_url_overrides_ambient
+assert "'--' passes a dash-leading command through to be EXECUTED"          b5_dash_leading_command
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block 6 — teardown on EVERY exit path
@@ -1107,6 +1321,33 @@ b6_teardown_after_not_ready() {
     wait_gone "$pgid" "$RW_PORT" 2
 }
 assert "a never-ready serve is torn down rather than left listening"        b6_teardown_after_not_ready
+
+# -- the GROUP half of the verdict --------------------------------------------
+#
+# THE BLIND SPOT A PORT-ONLY VERDICT CANNOT SEE. The `lingerer` stub closes its
+# listener on -TERM and keeps running: the port comes free within a poll, so a
+# teardown that asks only "did the port stop accepting" declares success and
+# walks away from a process that outlives the run — a `uvx` parent whose python
+# child died, or a serve wedged mid-shutdown. Observing the GROUP as well keeps
+# the free-wait going, escalates to -KILL at the 5 s mark and reaps it.
+#
+# This run therefore costs ~5 s by design: the escalation IS the behaviour under
+# test. It must also stay SILENT — a reaped stray is a completed teardown, not a
+# leak, so no E_JC_SERVE_LEAKED and the wrapped command's status stands.
+b6_lingerer_is_reaped() {
+    local pgid
+    rw_run lingerer true || return 1
+    # ANTI-VACUITY: it really did release the port and keep running. Without
+    # this the assertion below passes against a stub that simply died on -TERM,
+    # which is the case every other mode already covers.
+    has_line "$RW_WITNESS" "stub-lingering=[1]" || return 1
+    [ "$RW_RC" = "0" ] || { printf '%s\n' "the lingerer run exited $RW_RC, expected 0" "$(cat "$RW_ERR")"; return 1; }
+    lacks_line "$RW_ERR" "$M_LEAKED" || return 1
+    pgid="$(witness_field "$RW_WITNESS" stub-pgid)"
+    require_nonempty "recorded stub pgid" "$pgid" || return 1
+    wait_gone "$pgid" "$RW_PORT" 2
+}
+assert "a serve that frees the port but keeps running is still reaped"     b6_lingerer_is_reaped
 
 # -- exits 5-6: the wrapper itself is signalled -------------------------------
 #
@@ -1338,6 +1579,26 @@ b7_leak_preserves_status() {
 }
 b7_leak_still_reported() { has_line "$B7F_ERR" "$M_LEAKED"; }
 
+# ...and the same for a status a SIGNAL committed to. The INT/TERM handlers pick
+# 130/143 BEFORE teardown runs, so a leak discovered afterwards must be reported
+# and must leave the status alone. The bug this pins is quiet: a promotion that
+# reads an unset WRAPPED_RC as 0 rewrites 143 into 75, and both are non-zero, so
+# nothing else in the suite notices. Costs the wrapper's full 10 s free-wait,
+# like the two runs above, so exactly one is driven.
+b7_leak_preserves_signal_status() {
+    local rc=0
+    rw_run_bg escapee sleep 3 || return 1
+    wait_for_ready "$RW_ERR" 25 || return 1
+    kill -TERM "$RWB_PID" 2>/dev/null || { echo "could not signal the wrapper (pid $RWB_PID)"; return 1; }
+    wait "$RWB_PID" || rc=$?
+    # ANTI-VACUITY: this run really did leak, otherwise there is no promotion to
+    # suppress and the assertion is about a case that never happened.
+    has_line "$RW_ERR" "$M_LEAKED" || return 1
+    [ "$rc" = "143" ] && return 0
+    printf '%s\n' "a SIGTERMed wrapper that also leaked exited $rc, expected 143 (a leak overwrote the signal's status)" "$(cat "$RW_ERR")"
+    return 1
+}
+
 assert "the escapee stub really survives the group signal (anti-vacuity)"     b7_leak_fixture_escaped
 assert "a leaked serve is reported $M_LEAKED"                                b7_leak_fixture_real
 assert "the leak report names the port"                                      b7_leak_names_port
@@ -1345,5 +1606,6 @@ assert "the leak report names 'ss -ltnp' as the reclaim instruction"         b7_
 assert "a leak on an otherwise-successful run exits non-zero"                b7_leak_nonzero
 assert "a leak does not mask the wrapped command's own failing status"       b7_leak_preserves_status
 assert "a leak is still reported when the wrapped command failed"            b7_leak_still_reported
+assert "a leak does not overwrite the 143 a SIGTERM already committed to"   b7_leak_preserves_signal_status
 
 test_summary

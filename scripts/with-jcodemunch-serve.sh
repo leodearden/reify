@@ -20,7 +20,8 @@
 #                            never adopted and never killed
 #   E_JC_SERVE_SPAWN_FAILED  the serve child died before becoming ready
 #   E_JC_SERVE_NOT_READY     the endpoint never answered as jcodemunch-mcp
-#   E_JC_SERVE_LEAKED        teardown ran and the port is STILL accepting
+#   E_JC_SERVE_LEAKED        teardown ran and the port is STILL accepting, or
+#                            the serve's process group is STILL alive
 #
 # Usage:
 #   scripts/with-jcodemunch-serve.sh <command> [args...]
@@ -55,6 +56,22 @@
 # `local/reify-4ae45bbd` that β actually indexes. Every invocation site carries
 # this obligation (PRD §4.2 / the capability manifest's note at §2: "β does; δ
 # and ζ carry the same obligation in their task records").
+#
+# ...AND IT IS ONLY HALF THE IDENTITY CONTRACT. This lever fixes what the SERVE
+# answers AS. It cannot fix what the CLIENT asks FOR, and this script
+# deliberately does not reach into the wrapped command's argv — δ owns the serve
+# LIFECYCLE only. `reify-audit` still defaults `--jcodemunch-repo` to
+# `leodearden/reify` (`crates/reify-audit/src/bin/reify-audit.rs:111,215`), the
+# same empty husk, so the canonical composition
+#
+#     scripts/with-jcodemunch-serve.sh reify-audit --pattern P1 --project-root …
+#
+# is STILL vacuous unless the caller ALSO passes
+# `--jcodemunch-repo local/reify-<hash>` by hand. Retiring that default is γ
+# (#6108) and wiring the invocation is ζ; until one of them lands, every caller
+# carries the client-side half itself — which is exactly why this task's
+# recorded acceptance evidence passes it explicitly rather than relying on the
+# default.
 #
 # PIN-BUMP CHECKLIST — this env var is accepted but DEPRECATED upstream; the
 # package logs "will be removed in v2.0. Use config.jsonc instead." A bump past
@@ -106,12 +123,6 @@ DEFAULT_PORT=8901
 # stdout belongs entirely to the wrapped command.
 READY_MARKER="JC-SERVE-READY"
 
-# The two markers the teardown report names. Held as variables rather than
-# inline literals so `--help`'s documented set and the emitted text cannot drift
-# apart silently.
-M_LEAKED_MARKER="E_JC_SERVE_LEAKED"
-M_PORT_BUSY_MARKER="E_JC_SERVE_PORT_BUSY"
-
 usage() {
     cat <<'USAGE'
 Usage: scripts/with-jcodemunch-serve.sh [--port N] [--dry-run] [--] <command> [args...]
@@ -140,8 +151,9 @@ Refusal markers (stderr, always non-zero exit):
   E_JC_SERVE_SPAWN_FAILED  the serve child died before becoming ready
   E_JC_SERVE_NOT_READY     the endpoint never answered as jcodemunch-mcp within
                            the readiness deadline
-  E_JC_SERVE_LEAKED        teardown ran and the port is STILL accepting — a
-                           serve was leaked and must be reclaimed by hand
+  E_JC_SERVE_LEAKED        teardown ran and the port is STILL accepting, or
+                           the serve's process group is STILL alive — a serve
+                           was leaked and must be reclaimed by hand
 USAGE
 }
 
@@ -225,6 +237,20 @@ fi
 # (it is the only subparser accepting `--paths-from`, which DELETEs every
 # previously-indexed file absent from its list — server.py:6505,
 # index_folder.py:1505-1511, sqlite_store.py:1698), and neither is `watch`.
+#
+# THE PIN IS COPIED, NOT SHARED. Four sites carry this version and nothing in
+# the repo asserts they agree, so a bump has to touch all four in one change:
+#   * here (δ, the serve side);
+#   * `scripts/jcodemunch-index-reify.sh:394` (β, the indexer side) — a serve on
+#     an older wheel than the indexer that wrote the index is precisely the
+#     drift this list exists to prevent;
+#   * `crates/reify-audit/tests/jcodemunch_session_live.rs:76` (α's
+#     JCODEMUNCH_PIN);
+#   * the `--dry-run` needle in `tests/infra/test_with_jcodemunch_serve.sh`,
+#     which is what fails loudly if THIS line alone moves.
+# Hoisting the three values (pin, interpreter, identity lever) into one sourced
+# `scripts/lib_jcodemunch_pin.sh` is the real fix, and it is out of δ's scope:
+# δ holds neither β nor α. Filed as follow-up work instead of half-done here.
 JC_PIN="jcodemunch-mcp==1.108.54"
 
 # THE INTERPRETER IS PART OF THE PIN (esc-6107-4). `--from jcodemunch-mcp==…`
@@ -388,12 +414,32 @@ serve_output() {
 # is read as a target, and it is the only spelling correct under BOTH
 # resolutions. This is α's finding at :277-283, re-measured here for bash.
 #
-# THE VERDICT RESTS ON THE OBSERVED OUTCOME — did the port stop accepting —
-# NEVER on `kill`'s exit status. The buggy bare form returns 0 for a group it
-# never reached, so a status gate would have been blind to the original defect;
-# and once `--` is added, exit 1 (`No such process`) becomes the EXPECTED result
-# of the `-KILL` escalation on the healthy path, where `-TERM` already worked.
-# The statuses are kept only as diagnostic detail for a leak report.
+# THE VERDICT RESTS ON OBSERVED OUTCOMES, NEVER on `kill`'s exit status. The
+# buggy bare form returns 0 for a group it never reached, so a status gate would
+# have been blind to the original defect; and once `--` is added, exit 1 (`No
+# such process`) becomes the EXPECTED result of the `-KILL` escalation on the
+# healthy path, where `-TERM` already worked. The statuses are kept only as
+# diagnostic detail for a leak report.
+#
+# TWO OBSERVATIONS, NOT ONE — the port AND the group. Teardown is complete only
+# when the port has stopped accepting AND the spawned process group is gone:
+#
+#   * The GROUP half closes a blind spot the port alone has. A serve that has
+#     released its listener but is still running — a `uvx` parent whose python
+#     child died, a serve wedged mid-shutdown — leaves the port free and would
+#     otherwise be reported as a clean teardown while the process lives on.
+#   * The PORT half is still required, because a member that ESCAPED the group
+#     (a grandchild `setsid`ing itself out of it) is by definition invisible to
+#     the group check while still holding the port. That is the shape
+#     tests/infra/test_with_jcodemunch_serve.sh's `escapee` fixture pins.
+#
+# KNOWN RESIDUAL — the port half cannot say WHO holds the port. If our serve
+# releases it and an unrelated process binds it inside the poll window, this
+# reports a leak that is not ours. Accepted deliberately: the operational claim
+# the message makes ("the next invocation will refuse E_JC_SERVE_PORT_BUSY") is
+# true either way, and attributing the listener would mean an identity probe on
+# the teardown path — a second thing that can hang exactly where hanging is
+# least acceptable.
 # ARMED BEFORE THE SPAWN, not after it. Two windows close that way rather
 # than one: the obvious one in which a spawned serve has no reaper, and the
 # narrower one in which $SCRATCH exists with nothing to remove it. Both
@@ -406,6 +452,10 @@ TEARDOWN_DONE=0
 TERM_STATUS="not sent"
 KILL_STATUS="not sent"
 
+# The status a signal handler has already committed this run to, so a leak
+# cannot silently replace it (see cleanup). Empty on every unsignalled path.
+INTENDED_RC=""
+
 signal_group() {
     local sig="$1" rc=0
     [ -n "$SERVE_PGID" ] || { printf '%s' "not sent"; return 0; }
@@ -413,26 +463,59 @@ signal_group() {
     printf '%s' "$rc"
 }
 
+# group_gone — is EVERY member of the spawned group gone?
+#
+# `kill -0 -- "-$pgid"` tests the GROUP rather than one pid, which is the
+# property that matters: the leader can be dead while a grandchild in the same
+# group still runs. An empty pgid means nothing was ever spawned, which is
+# vacuously gone.
+#
+# NO ZOMBIE CAVEAT IS NEEDED, and that is worth recording because it is the
+# obvious hazard here: the leader is a background job of THIS shell, so an
+# unreaped corpse would still be a signalable group member and would make this
+# answer "alive" forever. MEASURED on this host: bash reaps a background child
+# asynchronously on SIGCHLD whether or not `wait` is ever called — 200 ms after
+# a `kill -TERM` the pid was gone from /proc and `kill -0 -- -PGID` already
+# reported the group gone, while a later `wait` still returned its true status
+# (143). The free-wait loop below therefore converges without an explicit reap.
+group_gone() {
+    [ -n "$SERVE_PGID" ] || return 0
+    ! kill -0 -- "-$SERVE_PGID" 2>/dev/null
+}
+
 # cleanup — idempotent and re-entrancy-safe. bash EXIT traps do not stack, so
 # this one function is the whole reaper, and the INT/TERM handlers call it
 # before exiting rather than installing a second one.
 cleanup() {
+    # `$?` ON ENTRY TO AN EXIT TRAP IS THE STATUS THE SCRIPT IS EXITING WITH.
+    # Read FIRST, before any command can overwrite it. It covers every path
+    # uniformly — the ordinary `exit "$WRAPPED_RC"`, and every `refuse` path's
+    # exit 1, which a `${WRAPPED_RC:-0}` reading could not see at all (on a
+    # refusal WRAPPED_RC is unset, so a leak used to silently rewrite the
+    # refusal's 1 into 75).
+    local pending=$?
     [ "$TEARDOWN_DONE" -eq 1 ] && return 0
     TEARDOWN_DONE=1
+
+    # A signal handler decided its own status BEFORE calling us, and `$?` here
+    # is only the status of whatever ran last, so the handler's choice wins.
+    [ -n "$INTENDED_RC" ] && pending="$INTENDED_RC"
 
     TERM_STATUS="$(signal_group -TERM)"
 
     # Bounded free-wait to a 10 s deadline, escalating ONCE to -KILL at the 5 s
-    # mark — α's Drop constants (:361-362). port_is_free is the same probe
-    # preflight used, so "free" means the same thing at both ends of the run.
-    # The background job is deliberately left unreaped until after this loop: an
-    # unreaped pid cannot be recycled, so the group id stays unambiguously ours
-    # for as long as we are signalling it.
+    # mark — α's Drop constants (:361-362). Both conditions are re-observed each
+    # iteration: -TERM is asynchronous, so the port and the group stop at
+    # slightly different moments and either can be the laggard. port_is_free is
+    # the same probe preflight used, so "free" means the same thing at both ends
+    # of the run.
     local waited=0 escalated=0
-    TEARDOWN_FREED=0
+    TEARDOWN_PORT_FREE=0
+    TEARDOWN_GROUP_GONE=0
     while [ "$waited" -lt 100 ]; do
-        if port_is_free "$PORT"; then
-            TEARDOWN_FREED=1
+        if port_is_free "$PORT"; then TEARDOWN_PORT_FREE=1; else TEARDOWN_PORT_FREE=0; fi
+        if group_gone; then TEARDOWN_GROUP_GONE=1; else TEARDOWN_GROUP_GONE=0; fi
+        if [ "$TEARDOWN_PORT_FREE" -eq 1 ] && [ "$TEARDOWN_GROUP_GONE" -eq 1 ]; then
             break
         fi
         if [ "$escalated" -eq 0 ] && [ "$waited" -ge 50 ]; then
@@ -443,29 +526,50 @@ cleanup() {
         waited=$((waited + 1))
     done
 
-    [ -n "$SERVE_JOB" ] && { wait "$SERVE_JOB" 2>/dev/null || true; }
+    # ONLY ONCE THE GROUP IS OBSERVABLY GONE — this guard is load-bearing, not
+    # tidiness. `wait` on a still-running child blocks with NO ceiling, and the
+    # one state in which that happens is the state teardown exists for.
+    # MEASURED against a serve that releases its listener on -TERM and keeps
+    # running: an UNGUARDED `wait` here never returned (killed at 40 s, stray
+    # listener still alive and still holding nothing anyone could see), while
+    # the guarded form exits in ~8 s having reaped it through the -KILL
+    # escalation. A wrapper that hangs forever is strictly worse than one that
+    # reports a leak.
+    if [ "$TEARDOWN_GROUP_GONE" -eq 1 ] && [ -n "$SERVE_JOB" ]; then
+        wait "$SERVE_JOB" 2>/dev/null || true
+    fi
     rm -rf "$SCRATCH" 2>/dev/null || true
 
-    local before="${WRAPPED_RC:-0}"
-    finish_teardown
+    local rc="$pending"
+    if ! finish_teardown; then
+        # A LEAK MUST NOT REPORT SUCCESS — but it must not overwrite a status
+        # that already means something either. A failing wrapped command's
+        # status, a refusal's 1 and a signal handler's 130/143 all stand; only a
+        # run that would otherwise have succeeded is promoted.
+        if [ "$rc" -eq 0 ]; then
+            rc=75
+        fi
+    fi
 
     # `exit N` inside an EXIT trap REPLACES the status the script was exiting
     # with, which is the only way a leak can turn an otherwise-successful run
-    # non-zero — by the time this trap runs, `exit "$WRAPPED_RC"` has already
-    # fixed the status. Re-exiting is guarded on the value actually having
-    # changed, so the ordinary path leaves the status exactly as the wrapped
-    # command set it and the INT/TERM handlers' 130/143 survive untouched.
-    if [ "${WRAPPED_RC:-0}" != "$before" ]; then
-        exit "$WRAPPED_RC"
+    # non-zero. Guarded on the value actually having changed, so the ordinary
+    # path leaves the status exactly as it was and — now that `pending` sees
+    # them — the INT/TERM handlers' 130/143 really do survive untouched.
+    if [ "$rc" != "$pending" ]; then
+        exit "$rc"
     fi
 }
 
-# finish_teardown — SILENT on success, loud only on a leak.
+# finish_teardown — SILENT on success, loud only on a leak. Returns non-zero on
+# a leak; the CALLER decides what that does to the exit status, so this function
+# never touches it.
 #
 # Inherits α's `finish_teardown` split (jcodemunch_session_live.rs:302-333),
-# including the reason the decision rests on `TEARDOWN_FREED` — the OBSERVED
-# outcome — and never on `kill`'s exit status, which is why TERM_STATUS and
-# KILL_STATUS appear only as diagnostic detail on the line above the verdict.
+# including the reason the decision rests on the OBSERVED outcomes — the port
+# and the group — and never on `kill`'s exit status, which is why TERM_STATUS
+# and KILL_STATUS appear only as diagnostic detail on the line above the
+# verdict.
 #
 # ON THE HEALTHY PATH THIS PRINTS NOTHING AT ALL, to either stream. That is not
 # tidiness: it is what leaves a wrapped command's trailing stderr block — a
@@ -475,31 +579,50 @@ cleanup() {
 #
 # A LEAK MUST NOT REPORT SUCCESS. A leaked serve keeps holding $PORT, so the
 # very next invocation refuses E_JC_SERVE_PORT_BUSY with nothing in the log to
-# say why. An otherwise-successful run therefore exits non-zero.
+# say why. An otherwise-successful run therefore exits non-zero — cleanup does
+# that promotion, and only when the status is still 0. That is α's unwinding
+# case at :325-331, which likewise refuses to raise a panic that would swallow
+# the assertion message the reader actually needs.
 #
-# ...BUT IT MUST NOT MASK A REAL FAILURE EITHER. When the wrapped command has
-# already failed, its status is the one that matters and the leak is reported
-# alongside rather than overwriting it — α's unwinding case at :325-331, which
-# refuses to raise a panic that would swallow the assertion message the reader
-# actually needs.
+# The markers below are inline literals on purpose: usage() is a quoted heredoc
+# that carries them as literals too, so a variable here would buy a second
+# spelling rather than any protection. `b1_help_names_markers` in the guard is
+# what actually holds the documented set and the emitted text together.
 finish_teardown() {
-    [ "${TEARDOWN_FREED:-0}" -eq 1 ] && return 0
+    if [ "${TEARDOWN_PORT_FREE:-0}" -eq 1 ] && [ "${TEARDOWN_GROUP_GONE:-0}" -eq 1 ]; then
+        return 0
+    fi
+
+    # NAME WHICH OBSERVATION FAILED, and say the true consequence of THAT one.
+    # The two leak shapes have different costs and different reclaim commands: a
+    # held port blocks the very next invocation and is found with `ss`, while a
+    # surviving group with the port already released is a stray process that
+    # blocks nothing and is found with `ps`. A single blended message would be
+    # wrong for one of them every time it printed.
+    local what why
+    if [ "${TEARDOWN_PORT_FREE:-0}" -ne 1 ] && [ "${TEARDOWN_GROUP_GONE:-0}" -ne 1 ]; then
+        what="port $PORT is still accepting and process group ${SERVE_PGID:-<none>} is still alive"
+        why="it will keep holding the port, so the next invocation will refuse E_JC_SERVE_PORT_BUSY. Find it with 'ss -ltnp | grep $PORT'"
+    elif [ "${TEARDOWN_PORT_FREE:-0}" -ne 1 ]; then
+        what="port $PORT is still accepting"
+        why="the next invocation will refuse E_JC_SERVE_PORT_BUSY. Find it with 'ss -ltnp | grep $PORT'"
+    else
+        what="process group ${SERVE_PGID:-<none>} is still alive (the port was released)"
+        why="it is a stray process outliving this run rather than a blocked port. Find it with 'ps -eo pid,pgid,cmd | awk \$2==${SERVE_PGID:-0}'"
+    fi
 
     printf 'with-jcodemunch-serve: teardown diagnostics for port %s: pgid %s; -TERM: %s; -KILL: %s\n' \
         "$PORT" "${SERVE_PGID:-<none>}" "$TERM_STATUS" "$KILL_STATUS" >&2
-    printf 'with-jcodemunch-serve: %s: port %s is still accepting after teardown — a jcodemunch serve was LEAKED and will keep holding the port, so the next invocation will refuse %s. Find it with '"'"'ss -ltnp | grep %s'"'"' and reclaim it by hand.\n' \
-        "$M_LEAKED_MARKER" "$PORT" "$M_PORT_BUSY_MARKER" "$PORT" >&2
-
-    # Preserve the wrapped command's status wherever it actually ran; only
-    # promote a leak to a failure when the run would otherwise have succeeded.
-    if [ "${WRAPPED_RC:-0}" -eq 0 ]; then
-        WRAPPED_RC=75
-    fi
+    printf 'with-jcodemunch-serve: E_JC_SERVE_LEAKED: %s after teardown — a jcodemunch serve was LEAKED: %s and reclaim it by hand.\n' \
+        "$what" "$why" >&2
+    return 1
 }
 
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+# INTENDED_RC is set BEFORE cleanup runs, so the leak promotion in cleanup can
+# see that 130/143 is already the committed status and leave it alone.
+trap 'INTENDED_RC=130; cleanup; exit 130' INT
+trap 'INTENDED_RC=143; cleanup; exit 143' TERM
 
 # ── Spawn ────────────────────────────────────────────────────────────────────
 #
@@ -595,9 +718,18 @@ probe_once() {
 }
 
 await_ready() {
-    local deadline elapsed=0 status
-    deadline="$READY_TIMEOUT"
-    while [ "$elapsed" -lt "$deadline" ]; do
+    # WALL CLOCK, NOT POLL ITERATIONS. Each iteration ALSO spends up to
+    # `curl --max-time 5` inside probe_once, so charging the deadline one second
+    # per iteration undercounts it by up to ~6x against an endpoint that accepts
+    # TCP and then never answers — a port squatter, a wedged serve, a proxy.
+    # MEASURED here against exactly that stub: REIFY_JC_SERVE_READY_TIMEOUT=3
+    # burned 13 s of wall clock. At the production default of 180 s that is ~13
+    # minutes of apparent hang before E_JC_SERVE_NOT_READY, while both --help
+    # and the refusal itself promise the endpoint "never answered ... within the
+    # readiness deadline". $SECONDS is bash's own second counter, so the honest
+    # accounting costs no date(1) subprocess per poll.
+    local started=$SECONDS elapsed status
+    while [ $((SECONDS - started)) -lt "$READY_TIMEOUT" ]; do
         # A serve that died (bad pin, no network, port taken between preflight
         # and spawn) will NEVER become ready — refuse now rather than burn the
         # whole deadline and then blame a timeout for what was really a spawn
@@ -613,11 +745,11 @@ $(serve_output)"
         probe_once && return 0
 
         sleep "$READY_POLL_INTERVAL"
-        elapsed=$((elapsed + READY_POLL_INTERVAL))
     done
 
+    elapsed=$((SECONDS - started))
     refuse E_JC_SERVE_NOT_READY \
-        "the serve never answered as jcodemunch-mcp at $SERVE_URL within ${READY_TIMEOUT}s; last probe: $LAST_PROBE
+        "the serve never answered as jcodemunch-mcp at $SERVE_URL within ${elapsed}s (deadline ${READY_TIMEOUT}s); last probe: $LAST_PROBE
 $(serve_output)"
 }
 
