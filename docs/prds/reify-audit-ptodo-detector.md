@@ -237,7 +237,13 @@ is to prove the sweep ran, not to police the emitter. **Extensibility: the field
 for additive extension.** `files_scanned` and `markers_examined` are REQUIRED and must parse
 as integers; any further `key=value` token is IGNORED by both consumers. So a later counter
 can be appended without a lockstep edit to either gate, while a missing or unparseable
-required field still fails loud in both.
+required field still fails loud in both. That obliges both to match by **whole token** —
+split on whitespace first, then anchor the key (`strip_prefix` in Rust; `tr`-split plus
+`^files_scanned=` in the shell). A substring match instead reads any token whose name merely
+*ends with* a required key (`skipped_files_scanned=0`), turning the very extension this rule
+blesses into a hard RED; each side therefore pins the adversarial name rather than a generic
+extra field (`parse_scan_line_ignores_unrecognised_tokens`, and fixture (vi) in
+`tests/infra/test_reify_audit_ptodo.sh`).
 
 The floor passes iff that line is present with `files_scanned >= 1`. That oracle is
 **structural, not tuned, and debt-independent**: a repository cannot have zero swept tracked
