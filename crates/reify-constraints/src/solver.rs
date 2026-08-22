@@ -1223,6 +1223,31 @@ fn resolve_bounds(
         .collect()
 }
 
+/// The #5618 constraint-derived SEED box for every `problem.auto_params`
+/// entry: composes each param's [`derive_param_intervals`] interval with its
+/// [`effective_bounds`] via [`resolve_bounds`], with `include_strict = true`
+/// since a seed point may sit anywhere a start vector can legally begin —
+/// unlike a CLAMP target (`resolve_bounds`'s `include_strict = false`
+/// callers), which must never cross a strict inequality boundary.
+///
+/// Shared verbatim by [`multistart_points`] (the multistart corner/midpoint
+/// anchors) and `verify_uniqueness` (the perturbation anchor), per task
+/// #5711: keeping the derivation in exactly one place means a future change
+/// to which constraint set feeds it (e.g. the synthesised robustness floor)
+/// cannot silently diverge between the two call sites.
+fn derived_seed_box(problem: &ResolutionProblem) -> Vec<(f64, f64)> {
+    resolve_bounds(
+        &problem.auto_params,
+        &derive_param_intervals(
+            &problem.auto_params,
+            &problem.constraints,
+            &problem.current_values,
+            &problem.functions,
+        ),
+        true,
+    )
+}
+
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
 /// that has inequality constraints but no explicit user objective.
 ///
@@ -1547,16 +1572,9 @@ fn multistart_points(problem: &ResolutionProblem) -> Vec<Vec<f64>> {
     points.push(extract_initial_point(problem));
 
     // Constraint-derived seed box, one entry per auto param (task #5618).
-    let bounds = resolve_bounds(
-        &problem.auto_params,
-        &derive_param_intervals(
-            &problem.auto_params,
-            &problem.constraints,
-            &problem.current_values,
-            &problem.functions,
-        ),
-        /* include_strict = */ true,
-    );
+    // #5711: shared with `verify_uniqueness` via `derived_seed_box` so the
+    // derivation cannot silently diverge between the two call sites.
+    let bounds = derived_seed_box(problem);
 
     // Per-axis midpoint — shared by the all-midpoint point and as the
     // "other axes" value for every corner anchor below.
@@ -2376,7 +2394,10 @@ fn solutions_agree(
 /// under the applicable objective.
 ///
 /// Wired into [`verify_uniqueness`] as of task #5711 step-5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `PartialEq` only (no `Eq`): `IncumbentSuboptimal` carries `f64` evidence,
+/// which is not `Eq`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum UniquenessVerdict {
     /// The incumbent and perturbed parameter values agree within tolerance —
     /// the first §11.6 test ("uniquely determined by constraints") is
@@ -2396,14 +2417,33 @@ enum UniquenessVerdict {
     /// search settling short — not a §11.6 non-uniqueness one. Callers
     /// suppress this verdict (report "cannot prove non-unique") rather than
     /// `ConstraintNonUnique`.
-    IncumbentSuboptimal,
+    ///
+    /// Carries the two scores that justified the verdict (task #5711
+    /// suggestion 8) rather than making callers re-derive them: the ONLY
+    /// producer is this function's `Some(scores)` arm below, but nothing
+    /// structurally prevented a caller from having to `.expect()` its way
+    /// back to the evidence — a future edit adding an `IncumbentSuboptimal`
+    /// return on some `None`-scores path would have turned that `.expect()`
+    /// into a production panic.
+    IncumbentSuboptimal { incumbent: f64, perturbed: f64 },
 }
 
 /// Classify solution uniqueness per §11.6's two disjunctive well-determinedness
-/// tests. `objective_scores`, when present, is `(incumbent, perturbed)` on the
-/// pure-minimiser scale used by [`eval_objective_set`] (lower is better); pass
-/// `None` when no effective objective exists or either score is incomparable
-/// (`eval_objective_set` already collapses `Undef`/non-finite to `None`).
+/// tests. `objective_scores` is invoked LAZILY — at most once, and only when
+/// the incumbent and perturbed PARAMETERS differ — and must return
+/// `Some((incumbent, perturbed))` on the pure-minimiser scale used by
+/// [`eval_objective_set`] (lower is better), or `None` when no effective
+/// objective exists or either score is incomparable (`eval_objective_set`
+/// already collapses `Undef`/non-finite to `None`).
+///
+/// The laziness is load-bearing, not an optimisation nicety (task #5711
+/// review suggestion 7): it makes "the objective is never consulted when
+/// params agree" a STRUCTURAL guarantee rather than a merely documented one
+/// — a caller building `objective_scores` from a re-solve's value maps can
+/// skip that work entirely on the common well-determined path, instead of
+/// computing it only to have this function discard it.
+/// `classify_uniqueness_params_agree_with_score_returns_unique` enforces
+/// this directly: its closure panics if invoked.
 ///
 /// Deliberately MONOTONE relative to pre-#5711 behaviour: the only new branch
 /// is params-differ + perturbed-strictly-better → `IncumbentSuboptimal`. Every
@@ -2423,16 +2463,16 @@ fn classify_uniqueness(
     auto_params: &[AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
     perturbed_values: &HashMap<ValueCellId, Value>,
-    objective_scores: Option<(f64, f64)>,
+    objective_scores: impl FnOnce() -> Option<(f64, f64)>,
 ) -> UniquenessVerdict {
     if solutions_agree(auto_params, solved_values, perturbed_values) {
         return UniquenessVerdict::Unique;
     }
-    match objective_scores {
+    match objective_scores() {
         Some((incumbent, perturbed))
             if !within_uniqueness_tol(incumbent, perturbed) && perturbed < incumbent =>
         {
-            UniquenessVerdict::IncumbentSuboptimal
+            UniquenessVerdict::IncumbentSuboptimal { incumbent, perturbed }
         }
         _ => UniquenessVerdict::NonUnique,
     }
@@ -2483,6 +2523,34 @@ fn build_perturbation_anchors(
         })
         .collect();
     (perturbed, missing)
+}
+
+/// Score a solved value map against `problem`'s objective, on
+/// [`eval_objective_set`]'s pure-minimiser scale (lower is better).
+///
+/// Keys off `problem.objective` — the USER-authored objective — and NEVER
+/// `effective_objective`'s synthesised fallback, per I3/I4: a
+/// feasibility-only solve must report `FeasibilityOnly` + `None` even when
+/// the solver internally optimised a synthetic centrality objective for
+/// exploration. Returns `None` when there is no explicit objective, or when
+/// [`eval_objective_set`] cannot produce a comparable score at `values`
+/// (a non-numeric or non-finite result).
+///
+/// Shared by [`rank_single`], the multistart scoring loop in
+/// [`ConstraintSolver::solve_ranked`], and `verify_uniqueness`'s
+/// objective-optimality check (task #5711): these were three verbatim
+/// copies of the same `build_scoring_values` + `eval_objective_set` pair,
+/// each restating the "explicit objective only" rule; extracting keeps that
+/// rule in exactly one place.
+fn score_solution(problem: &ResolutionProblem, values: &HashMap<ValueCellId, Value>) -> Option<f64> {
+    let obj = problem.objective.as_ref()?;
+    let full = build_scoring_values(
+        &problem.current_values,
+        values,
+        &problem.dependent_cells,
+        &problem.functions,
+    );
+    eval_objective_set(obj, &full, &problem.functions)
 }
 
 /// Verify solution uniqueness by re-solving from a perturbed starting point.
@@ -2559,6 +2627,20 @@ fn build_perturbation_anchors(
 /// fixture into exactly the silent false-negative #5711 exists to
 /// eliminate. Do NOT "fix" this by adding `.or(synth)` back.
 ///
+/// Objective scoring is also skipped entirely (`objective_scores` closure
+/// returns `None` without evaluating anything) whenever `problem.objective`
+/// carries the γ `cost_robustness_tradeoff` marker (task #4791, review
+/// suggestion 1): [`solve_cost_robustness_tradeoff`]'s final solve minimises
+/// a normalised BLEND of cost and robustness, but the re-solve below always
+/// runs [`solve_core`] on the ORIGINAL `problem` — whose objective is the RAW
+/// cost term, not the blend the incumbent was actually optimised against.
+/// Scoring a blend-optimal incumbent against a raw-cost-optimal perturbed
+/// point on the raw-cost scale would make the perturbed point look strictly
+/// better whenever λ<1 pulls the blend solution off the min-cost point,
+/// firing `IncumbentSuboptimal` systematically and silently disabling this
+/// whole gate for every γ model. Falling back to pure parameter-agreement
+/// semantics here matches this path's pre-#5711 behaviour.
+///
 /// # Per-fixture measurement (task #5711 pre-1, HEAD 8050d728aa, commit
 /// `34cfd26a61`)
 ///
@@ -2603,20 +2685,12 @@ fn verify_uniqueness(
 ) -> bool {
     // Build perturbed initial point: reflect each param to the opposite
     // end of its bounds range from the solution.  #5711 step-5: this is now
-    // the #5618 constraint-derived SEED box (mirrors multistart_points
-    // exactly; include_strict = true since an anchor is a seed point, not a
-    // clamp target) rather than the unconstrained effective_bounds box — see
-    // the header note above for the measured mechanism this fixes.
-    let bounds: Vec<(f64, f64)> = resolve_bounds(
-        &problem.auto_params,
-        &derive_param_intervals(
-            &problem.auto_params,
-            &problem.constraints,
-            &problem.current_values,
-            &problem.functions,
-        ),
-        true,
-    );
+    // the #5618 constraint-derived SEED box (shared with multistart_points
+    // via `derived_seed_box`; include_strict = true since an anchor is a
+    // seed point, not a clamp target) rather than the unconstrained
+    // effective_bounds box — see the header note above for the measured
+    // mechanism this fixes.
+    let bounds = derived_seed_box(problem);
     let (perturbed, missing) =
         build_perturbation_anchors(&problem.auto_params, solved_values, &bounds);
     if !missing.is_empty() {
@@ -2658,40 +2732,34 @@ fn verify_uniqueness(
             // strictly-better centrality score at a different point is
             // evidence FOR non-uniqueness, not a suppression signal. Do NOT
             // "fix" this by adding `.or(synth)`.
-            let objective_scores = problem.objective.as_ref().and_then(|obj| {
-                let incumbent_full = build_scoring_values(
-                    &problem.current_values,
-                    solved_values,
-                    &problem.dependent_cells,
-                    &problem.functions,
-                );
-                let perturbed_full = build_scoring_values(
-                    &problem.current_values,
-                    &perturbed_values,
-                    &problem.dependent_cells,
-                    &problem.functions,
-                );
-                let incumbent_score =
-                    eval_objective_set(obj, &incumbent_full, &problem.functions)?;
-                let perturbed_score =
-                    eval_objective_set(obj, &perturbed_full, &problem.functions)?;
-                Some((incumbent_score, perturbed_score))
-            });
-            match classify_uniqueness(
-                &problem.auto_params,
-                solved_values,
-                &perturbed_values,
-                objective_scores,
-            ) {
+            //
+            // The closure below is invoked at most once, and only if
+            // `classify_uniqueness` finds the params differ — see this
+            // function's doc for why that laziness matters (review
+            // suggestion 7). It also short-circuits to `None` for the γ
+            // `cost_robustness_tradeoff` marker (review suggestion 1): see
+            // this function's doc for the measured self-defeat that skip
+            // prevents.
+            let is_cost_robustness_tradeoff = problem
+                .objective
+                .as_ref()
+                .and_then(|obj| obj.cost_robustness_lambda)
+                .is_some();
+            match classify_uniqueness(&problem.auto_params, solved_values, &perturbed_values, || {
+                if is_cost_robustness_tradeoff {
+                    return None;
+                }
+                score_solution(problem, solved_values)
+                    .zip(score_solution(problem, &perturbed_values))
+            }) {
                 UniquenessVerdict::Unique => true,
-                UniquenessVerdict::IncumbentSuboptimal => {
+                UniquenessVerdict::IncumbentSuboptimal {
+                    incumbent: incumbent_score,
+                    perturbed: perturbed_score,
+                } => {
                     // Suppress: an optimality finding, not a §11.6
                     // non-uniqueness one — see
                     // `UniquenessVerdict::IncumbentSuboptimal`'s doc.
-                    let (incumbent_score, perturbed_score) = objective_scores.expect(
-                        "IncumbentSuboptimal is only reachable via classify_uniqueness's \
-                         Some(scores) arm",
-                    );
                     tracing::warn!(
                         incumbent_score,
                         perturbed_score,
@@ -2801,19 +2869,13 @@ fn rank_single(
     use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
     match result {
         SolveResult::Solved { values, unique } => {
-            // Compute objective score at the solved value map.
-            // Keys off problem.objective (the USER objective), NOT effective_objective,
-            // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
-            // when the solver internally optimized a synthetic centrality objective.
-            let objective_score = problem.objective.as_ref().and_then(|obj| {
-                let full = build_scoring_values(
-                    &problem.current_values,
-                    &values,
-                    &problem.dependent_cells,
-                    &problem.functions,
-                );
-                eval_objective_set(obj, &full, &problem.functions)
-            });
+            // Compute objective score at the solved value map via
+            // `score_solution`, which keys off problem.objective (the USER
+            // objective), NOT effective_objective, per I3/I4: a
+            // feasibility-only solve reports FeasibilityOnly + None even
+            // when the solver internally optimized a synthetic centrality
+            // objective.
+            let objective_score = score_solution(problem, &values);
             // Key optimality off objective_score (not problem.objective.is_some())
             // to preserve I4: BestFound is only emitted when the score is present.
             // In the edge case where eval_objective_set returns None despite
@@ -2944,15 +3006,7 @@ impl ConstraintSolver for DimensionalSolver {
         for (start_index, start) in starts.iter().enumerate() {
             let (result, meta) = solve_core(problem, start);
             if let SolveResult::Solved { values, .. } = result {
-                let objective_score = problem.objective.as_ref().and_then(|obj| {
-                    let full = build_scoring_values(
-                        &problem.current_values,
-                        &values,
-                        &problem.dependent_cells,
-                        &problem.functions,
-                    );
-                    eval_objective_set(obj, &full, &problem.functions)
-                });
+                let objective_score = score_solution(problem, &values);
                 if let Some(score) = objective_score {
                     scored.push((start_index, values, score, meta.iter_limited));
                 }
@@ -4168,9 +4222,10 @@ mod tests {
     // docs/reify-implementation-architecture.md:1140 §11.6's two disjunctive
     // well-determinedness tests: parameter comparison answers "uniquely
     // determined by constraints", objective-score comparison answers
-    // "uniquely optimal under the applicable objective". `objective_scores`
-    // is `(incumbent, perturbed)` on the pure-minimiser scale where LOWER is
-    // better, matching `eval_objective_set`'s convention.
+    // "uniquely optimal under the applicable objective". The
+    // `objective_scores` closure, when invoked, returns `(incumbent,
+    // perturbed)` on the pure-minimiser scale where LOWER is better,
+    // matching `eval_objective_set`'s convention.
 
     #[test]
     fn classify_uniqueness_params_agree_with_score_returns_unique() {
@@ -4186,9 +4241,13 @@ mod tests {
         let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
         perturbed.insert(param_id.clone(), scalar(0.5000001)); // within tolerance
 
-        // Even a score pair that LOOKS like a suboptimality signal must not
-        // matter once the params already agree — there's nothing to suppress.
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((10.0, 1.0)));
+        // The objective_scores closure must not even be INVOKED once the
+        // params already agree — there's nothing to suppress, and the
+        // laziness contract (classify_uniqueness's doc, review suggestion 7)
+        // is structural, not just documented: panic if it's called.
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, || {
+            panic!("objective_scores must not be consulted when params already agree")
+        });
         assert_eq!(
             verdict,
             UniquenessVerdict::Unique,
@@ -4210,7 +4269,7 @@ mod tests {
         let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
         perturbed.insert(param_id.clone(), scalar(0.5000001));
 
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, None);
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, || None);
         assert_eq!(
             verdict,
             UniquenessVerdict::Unique,
@@ -4235,7 +4294,7 @@ mod tests {
         // No effective objective at all (no explicit, no synthesisable) — the
         // ONLY applicable §11.6 test is "uniquely determined by constraints",
         // and the params differ, so NonUnique.
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, None);
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, || None);
         assert_eq!(verdict, UniquenessVerdict::NonUnique);
     }
 
@@ -4256,7 +4315,7 @@ mod tests {
         // Params differ, but the objective ties (flat region) — genuinely
         // NOT uniquely optimal, so NonUnique (the flat-objective /
         // defined_objective_at_fallback_returns_solved mechanism).
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((5.0, 5.0)));
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, || Some((5.0, 5.0)));
         assert_eq!(verdict, UniquenessVerdict::NonUnique);
     }
 
@@ -4278,8 +4337,16 @@ mod tests {
         // Perturbed strictly BETTER (lower, pure-minimiser scale) beyond
         // tolerance: the incumbent was not the argmin, so this is a
         // suboptimality finding, not a non-uniqueness one — suppress.
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((10.0, 5.0)));
-        assert_eq!(verdict, UniquenessVerdict::IncumbentSuboptimal);
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, || Some((10.0, 5.0)));
+        // Asserts the carried evidence too (review suggestion 8), not just
+        // the variant discriminant.
+        assert_eq!(
+            verdict,
+            UniquenessVerdict::IncumbentSuboptimal {
+                incumbent: 10.0,
+                perturbed: 5.0
+            }
+        );
     }
 
     #[test]
@@ -4301,7 +4368,7 @@ mod tests {
         // DELIBERATELY kept at today's NonUnique verdict — see
         // classify_uniqueness's doc comment for why. Pinned here so a later
         // reader cannot mistake this for an oversight.
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((5.0, 10.0)));
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, || Some((5.0, 10.0)));
         assert_eq!(verdict, UniquenessVerdict::NonUnique);
     }
 
@@ -4326,7 +4393,8 @@ mod tests {
         // is numerically lower). The RELATIVE arm (UNIQUENESS_REL_TOL * scale
         // = 1e-6 * 1e8 = 100) correctly treats a 50-unit difference at this
         // magnitude as a tie, so the verdict must be NonUnique.
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, Some((1e8, 1e8 - 50.0)));
+        let verdict =
+            classify_uniqueness(&params, &solved, &perturbed, || Some((1e8, 1e8 - 50.0)));
         assert_eq!(
             verdict,
             UniquenessVerdict::NonUnique,
@@ -4351,7 +4419,7 @@ mod tests {
         let solved: HashMap<ValueCellId, Value> = HashMap::new();
         let perturbed: HashMap<ValueCellId, Value> = HashMap::new();
 
-        let verdict = classify_uniqueness(&params, &solved, &perturbed, None);
+        let verdict = classify_uniqueness(&params, &solved, &perturbed, || None);
         assert_eq!(verdict, UniquenessVerdict::NonUnique);
     }
 
@@ -5984,8 +6052,9 @@ mod tests {
     #[test]
     fn undefined_objective_at_fallback_triggers_no_progress() {
         use crate::DimensionalSolver;
-        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId, hash::ContentHash};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+        use reify_test_support::conditional_expr;
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -6029,19 +6098,7 @@ mod tests {
         let then_branch = CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::dimensionless_scalar());
         let else_branch = x_ref;
 
-        let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
-            .combine(condition.content_hash)
-            .combine(then_branch.content_hash)
-            .combine(else_branch.content_hash);
-        let objective_expr = CompiledExpr {
-            kind: CompiledExprKind::Conditional {
-                condition: Box::new(condition),
-                then_branch: Box::new(then_branch),
-                else_branch: Box::new(else_branch),
-            },
-            result_type: Type::dimensionless_scalar(),
-            content_hash: cond_hash,
-        };
+        let objective_expr = conditional_expr(condition, then_branch, else_branch);
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
 
         // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
@@ -6097,8 +6154,9 @@ mod tests {
     #[test]
     fn defined_objective_at_fallback_returns_solved() {
         use crate::DimensionalSolver;
-        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId, hash::ContentHash};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+        use reify_test_support::conditional_expr;
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
