@@ -10,7 +10,7 @@
 //! Pattern lifted from `standard_stock_tests.rs` (zero-arg `pub fn` returning
 //! a dimensioned scalar).
 
-mod common;
+use crate::common;
 
 use reify_core::{DimensionVector, Type};
 use reify_ir::{CompiledExpr, Value, ValueMap};

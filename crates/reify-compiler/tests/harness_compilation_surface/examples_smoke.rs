@@ -793,7 +793,7 @@ adding its INDEX.md entry are ONE step, never two.\n\
 the idiom it demonstrates (do NOT delete the exemplar to silence this).\n\
   * missing file         -> the index names an exemplar that is not there; \
 restore the file, or drop/repair the stale entry.\n\
-Re-verify with: cargo test -p reify-compiler --test examples_smoke";
+Re-verify with: cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::";
 
 /// Bidirectional filename correspondence between the `examples/best_practices/`
 /// corpus directory and its `INDEX.md`:
