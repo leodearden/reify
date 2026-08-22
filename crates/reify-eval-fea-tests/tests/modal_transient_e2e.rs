@@ -391,10 +391,18 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
     //     because Reify has no ctor checking (it has one: the field-conformance
     //     pass in `crates/reify-compiler/src/conformance/mod.rs`, corpus-gated
     //     by `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`),
-    //     but because the dimensioned-`Scalar` family is deliberately EXCLUDED
-    //     from it (`general_leaf_param_family_is_validated`,
-    //     `conformance/mod.rs:1789`, HELD pending the language-semantics
-    //     ruling). A bare `0.0` at this `Frequency` slot is therefore silent
+    //     but because that pass judges a bare dimensionless literal COMPATIBLE
+    //     with a dimensioned slot. Re-verified first-hand:
+    //     `general_leaf_param_family_is_validated` matches
+    //     `Type::Bool | Type::Int | Type::String | Type::Scalar { .. }`, so a
+    //     `Scalar` slot is on its ALLOWLIST and IS routed through the shared
+    //     `reject_if_incompatible` → `type_compatible` gate — the silence is
+    //     that gate's verdict, not an absent check, so a tightening has to land
+    //     on the compatibility judgement. (An earlier revision of this comment
+    //     called the family "EXCLUDED / HELD" and anchored it at
+    //     `conformance/mod.rs:1789`; both halves were wrong — that line is the
+    //     unrelated `Selector`/`AnySelector` arm. Cite by symbol; the line is a
+    //     hint.) A bare `0.0` at this `Frequency` slot is therefore silent
     //     today; the negative pin that would make it loud is owned by
     //     `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1
     //     invariant I3 (task γ = #5627), not by this task. Reading the

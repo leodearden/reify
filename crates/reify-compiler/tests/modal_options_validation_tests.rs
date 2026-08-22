@@ -343,13 +343,29 @@ fn rayleigh_damping_param_shape() {
 /// `CTOR_FIELD_CONFORMANCE_SEVERITY = Warning`), and the whole example corpus
 /// is gated on it by
 /// `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`.
-/// What is true is that the **dimensioned-`Scalar` family is deliberately
-/// excluded** from that pass: `general_leaf_param_family_is_validated`
-/// (`conformance/mod.rs:1789`) lists it as HELD — supplying a bare
-/// dimensionless literal at a dimensioned slot is idiomatic corpus-wide, and
-/// whether it should stay legal is a language-semantics question whose answer
-/// is position-dependent across six gates. So a bare `Real` at this
-/// `Frequency`/`Time` slot is silent TODAY, not unreachable in principle.
+/// What is NOT true — and an earlier revision of this block asserted it — is
+/// that the dimensioned-`Scalar` family is *excluded* from that pass.
+/// Re-verified first-hand against the predicate itself:
+/// `general_leaf_param_family_is_validated` matches
+/// `Type::Bool | Type::Int | Type::String | Type::Scalar { .. }`, so a
+/// `Scalar` slot is on its ALLOWLIST. The general concrete-leaf arm routes it
+/// into the shared `reject_if_incompatible` → `type_compatible` gate rather
+/// than holding it back from one.
+///
+/// The silence at a dimensioned slot is therefore a downstream COMPATIBILITY
+/// verdict, not an absent check: the bare dimensionless literal is *judged
+/// compatible* with the dimensioned param. That distinction is the load-bearing
+/// part — a future tightening has to land on the compatibility judgement, not
+/// on this predicate's allowlist. Supplying such a literal is idiomatic
+/// corpus-wide, and whether it should stay legal is a language-semantics
+/// question whose answer is position-dependent across six gates. So a bare
+/// `Real` at this `Frequency`/`Time` slot is silent TODAY, not unreachable in
+/// principle.
+///
+/// Every symbol above is cited by NAME, not by `file:line` — house rule, the
+/// line is only ever a hint. The revision this corrects cited
+/// `conformance/mod.rs:1789`, which is the unrelated `Selector`/`AnySelector`
+/// arm; the predicate had moved.
 ///
 /// Measured live at the task's branch point against the release binary:
 ///
