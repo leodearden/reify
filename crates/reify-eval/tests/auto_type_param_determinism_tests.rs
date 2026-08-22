@@ -54,11 +54,7 @@ const EXAMPLE_PATH: &str = concat!(
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
 /// Conservative absolute floor, chosen below current corpus size to leave
-/// headroom for ordinary SKIP_SET churn without flaking this guard — not
-/// deep headroom: an intentional pruning of dozens of examples would still
-/// require raising this constant (examples_smoke.rs's sibling floor is now
-/// derived from its own `MIN_EXERCISED_RI_FILES`, so only two independent
-/// constants — this one and that one — need editing, not three). If the
+/// headroom for ordinary SKIP_SET churn without flaking this guard. If the
 /// corpus is ever intentionally trimmed below this floor, lower the
 /// constant to match — the assertion has no way to distinguish an intended
 /// shrink from a regression.
@@ -69,10 +65,6 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// in lockstep, so any floor derived from paths.len() — subtractive or
 /// proportional — still passes and misses exactly the regression this
 /// check exists to catch.
-///
-/// Also not derived from examples_smoke.rs: that sibling has no analogous
-/// floor to share, and hoisting corpus discovery into a common crate is a
-/// cross-crate change outside this single-file task's scope.
 ///
 /// Discovery-regression TRIPWIRE, not a corpus-size target: see
 /// examples_smoke.rs's `MIN_EXERCISED_RI_FILES` doc comment for the shared
@@ -406,6 +398,30 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The subset of `paths` not present in [`SKIP_SET`] (keyed by
+/// [`relative_to_examples_dir`]), each paired with its precomputed relative
+/// key. The single source of the SKIP_SET-filtered "candidates" quantity —
+/// both `v0_1_example_corpus_compile_and_check_time_is_bounded` and
+/// [`discovery_floor_tracks_the_live_corpus`] call this instead of
+/// re-deriving the filter, so they can never disagree about what
+/// "candidates" means.
+fn skip_filtered_candidates(paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    use std::collections::HashSet;
+
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
+    paths
+        .iter()
+        .filter_map(|p| {
+            let rel = relative_to_examples_dir(p);
+            if skip.contains(rel.as_str()) {
+                None
+            } else {
+                Some((p.clone(), rel))
+            }
+        })
+        .collect()
+}
+
 // ─── step-1: fixture compiles with three Seal candidates ─────────────────────
 
 /// Load `bearing_auto_seal.ri` via `parse_and_compile_with_stdlib`, assert no
@@ -628,11 +644,8 @@ fn per_file_violations(
 /// history/tradeoffs: task 5149.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
-    use std::collections::HashSet;
-
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
 
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
     let paths = discover_ri_files();
 
     // Resolve the skip-filtered candidate list — and fail fast on the
@@ -640,11 +653,7 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     // compile+check loop. Otherwise a misconfigured discover_ri_files()/
     // SKIP_SET would still burn time compiling whatever few files it found
     // before reporting the regression.
-    let candidates: Vec<(&PathBuf, String)> = paths
-        .iter()
-        .map(|path| (path, relative_to_examples_dir(path)))
-        .filter(|(_, rel)| !skip.contains(rel.as_str()))
-        .collect();
+    let candidates = skip_filtered_candidates(&paths);
 
     assert!(
         candidates.len() >= EXPECTED_MIN_FILES,
@@ -659,7 +668,7 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
         candidates.len(),
         EXPECTED_MIN_FILES,
         paths.len(),
-        skip.len()
+        SKIP_SET.len()
     );
 
     let mut measurements: Vec<(String, Duration)> = Vec::new();
@@ -951,22 +960,16 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
 /// value and never gates
 /// [`v0_1_example_corpus_compile_and_check_time_is_bounded`] itself.
 ///
-/// Measures the same SKIP_SET-filtered `candidates` quantity as that gate
-/// (not the raw [`discover_ri_files`] count), so this ratchet can never
-/// disagree with the gate it tracks. Directory walk only — no
-/// `check_source_with_stdlib` — so it adds no measurable time to this
-/// binary.
+/// Measures `candidates` via the same [`skip_filtered_candidates`] helper
+/// that gate calls (not the raw [`discover_ri_files`] count), so this
+/// ratchet can never disagree with the gate it tracks. Directory walk
+/// only — no `check_source_with_stdlib` — so it adds no measurable time to
+/// this binary.
 #[test]
 fn discovery_floor_tracks_the_live_corpus() {
-    use std::collections::HashSet;
-
     let paths = discover_ri_files();
     let total = paths.len();
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
-    let candidates = paths
-        .iter()
-        .filter(|p| !skip.contains(relative_to_examples_dir(p).as_str()))
-        .count();
+    let candidates = skip_filtered_candidates(&paths).len();
 
     assert!(
         EXPECTED_MIN_FILES * 2 >= candidates,
@@ -977,7 +980,7 @@ fn discovery_floor_tracks_the_live_corpus() {
         EXPECTED_MIN_FILES,
         candidates,
         total,
-        skip.len(),
+        SKIP_SET.len(),
         candidates * 4 / 5
     );
 }
