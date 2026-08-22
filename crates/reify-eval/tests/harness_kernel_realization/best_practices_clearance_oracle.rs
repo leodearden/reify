@@ -7,14 +7,10 @@
 //! `harness_kernel_realization.rs` (which needed a new `mod`/`#[path]`
 //! registration to split them out); this module is that follow-up (#5982).
 //!
-//! Takes its read/compile/skip-without-OCCT scaffolding from the neutral
-//! sibling `fixture_scaffolding` module rather than duplicating it — and
-//! rather than reaching into `kernel_queries_intersects_smoke`, which owned
-//! those helpers when #5982 first split this module out: an unrelated pin test
-//! should not become the owner of this one's scaffolding (see
-//! `fixture_scaffolding`'s header).
+//! Read/compile/skip-without-OCCT scaffolding comes from the neutral sibling
+//! `fixture_scaffolding` module rather than being duplicated here — see that
+//! module's header for why it is not owned by an unrelated pin test.
 
-use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ConstraintNodeId, DiagnosticCode, Severity, ValueCellId};
 use reify_eval::CheckResult;
 use reify_ir::{Satisfaction, Value};
@@ -27,15 +23,27 @@ const CLEARANCE_ORACLE_PATH: &str = concat!(
     "/../../examples/best_practices/clearance_oracle.ri"
 );
 
-/// Compiles `clearance_oracle.ri` and runs the PURE check surface over it —
-/// kernel-less `Engine::check`, exactly what `reify check` runs — returning
-/// the whole `CheckResult` so a caller can read diagnostics and constraint
-/// results off ONE compile+check instead of re-deriving each separately.
+/// Total constraints `clearance_oracle.ri` declares: `not fouls`,
+/// `gap > min_gap`, `bore_r > shaft_r`, `min_gap > 0mm`, `offset_x > bore_r`.
 ///
-/// One definition of "the pure check surface for this fixture", shared by both
-/// `#[test]` fns below. Each caller gets its own independently compiled and
-/// checked fixture — no shared state or ordering dependency between the two
-/// tests.
+/// Owned by `clearance_oracle_check_surface_reports_indeterminate_geometry_constraints`,
+/// which pins it UNCONDITIONALLY (no OCCT needed); the build-surface test
+/// asserts the same const so the two surfaces cannot drift, but early-returns
+/// on an OCCT-less runner and so cannot be the owner. A bare count — not a
+/// restatement of the corpus gate's per-constraint satisfaction table — so it
+/// catches an appended trivially-Satisfied constraint or a dropped one, which
+/// `audit_file` (iterating only over reported constraints) has no notion of.
+const EXPECTED_CONSTRAINT_COUNT: usize = 5;
+
+/// Compiles `clearance_oracle.ri` and runs the PURE check surface over it —
+/// kernel-less `Engine::check`, exactly what `reify check` runs, constructed
+/// via the shared `reify_test_support::make_simple_engine()` so this surface
+/// and the corpus gate's are the same engine by construction. Returns the
+/// whole `CheckResult` so a caller can read diagnostics and constraint results
+/// off ONE compile+check instead of re-deriving each separately.
+///
+/// Each caller gets its own independently compiled and checked fixture — no
+/// shared state or ordering dependency between the two tests below.
 fn check_surface_result() -> CheckResult {
     let compiled = read_and_compile_fixture(
         CLEARANCE_ORACLE_PATH,
@@ -44,8 +52,7 @@ fn check_surface_result() -> CheckResult {
 
     // Kernel-less engine: `intersects`/`distance` are geometry-consumer
     // builtins and cannot resolve here, per the fixture's own header.
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_test_support::make_simple_engine();
     engine.check(&compiled)
 }
 
@@ -54,13 +61,17 @@ fn check_surface_result() -> CheckResult {
 /// geometry-gated constraints (`not fouls`, `gap > min_gap`) that cannot
 /// resolve without a kernel.
 ///
+/// Discovering those ids dynamically is the whole point: a hardcoded literal
+/// (`ConstraintNodeId::new("ClearanceOracle", 0)`) would silently start naming
+/// one of the fixture's three ordinary constraints the moment it gains or
+/// reorders one, defeating the regressions these tests exist to catch. Both
+/// tests route through this single definition, so they can never silently
+/// disagree about which ids "the geometry-gated pair" refers to.
+///
 /// Deliberately a function of an existing result rather than one that re-runs
-/// the engine: `clearance_oracle_check_surface_reports_indeterminate_geometry_constraints`
-/// already holds the `CheckResult` it needs, so re-compiling and re-checking
-/// inside this helper (as it did when #5982 first split this module out) was
-/// pure duplicated work. Both tests still route through this single definition,
-/// so a fixture edit that changes *which* constraint is geometry-gated cannot
-/// leave them silently disagreeing about what "the geometry-gated pair" means.
+/// the engine: the check-surface test already holds the `CheckResult` it needs,
+/// so re-compiling and re-checking inside this helper (as it did when #5982
+/// first split this module out) was pure duplicated work.
 fn indeterminate_ids(result: &CheckResult) -> HashSet<ConstraintNodeId> {
     result
         .constraint_results
@@ -148,23 +159,12 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
     // constraints at `Indeterminate` on `build()` while the value cells
     // still populate from the same kernel queries would otherwise leave
     // this test green.
-    //
-    // Deliberately NOT keyed by a hardcoded `ConstraintNodeId` literal (e.g.
-    // `ConstraintNodeId::new("ClearanceOracle", 0)`): the fixture's other
-    // three constraints (`bore_r > shaft_r`, `min_gap > 0mm`, `offset_x >
-    // bore_r`) are ALSO trivially Satisfied on build(), so a hardcoded
-    // position would silently start asserting against one of those the
-    // moment the fixture gains or reorders a constraint — defeating the
-    // very regression this block exists to catch. Asserting the full set's
-    // length AND uniform satisfaction instead catches the
-    // Indeterminate-stall regression and a dropped constraint, and cannot
-    // be defeated by fixture reordering.
     assert_eq!(
         result.constraint_results.len(),
-        5,
-        "ClearanceOracle should report exactly 5 constraint results (not fouls, \
-         gap > min_gap, bore_r > shaft_r, min_gap > 0mm, offset_x > bore_r), \
-         got: {:#?}",
+        EXPECTED_CONSTRAINT_COUNT,
+        "build() should report the same {EXPECTED_CONSTRAINT_COUNT} constraint results \
+         the check surface does (that count is pinned unconditionally by the companion \
+         test — see EXPECTED_CONSTRAINT_COUNT), got: {:#?}",
         result.constraint_results
     );
     assert!(
@@ -180,19 +180,15 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
         result.constraint_results
     );
 
-    // The blanket "all 5 Satisfied" assertion above cannot distinguish a
+    // The blanket "all Satisfied" assertion above cannot distinguish a
     // correctly re-resolved `not fouls`/`gap > min_gap` pair from a fixture
     // edit that swaps in some other geometry-gated constraint while the
     // resolution machinery silently stops covering the *original* pair —
-    // both would still show "5 results, all Satisfied". Bind the specific
-    // identities instead: whichever `ConstraintNodeId`s the pure check
-    // surface reports `Indeterminate` (discovered dynamically via
-    // `indeterminate_ids`, never a hardcoded literal id — same non-fragility
-    // rationale as above) must show up `Satisfied` right here on build(),
-    // pinning the "run it on a surface that can answer it" promise to those
-    // specific constraints. This needs its own kernel-less check run: the
-    // OCCT `result` in hand reports every constraint Satisfied, so it cannot
-    // itself say which of them were geometry-gated.
+    // both would still show the same count, all Satisfied. Bind the specific
+    // identities instead (via `indeterminate_ids`; see its doc comment). This
+    // needs its own kernel-less check run: the OCCT `result` in hand reports
+    // every constraint Satisfied, so it cannot itself say which of them were
+    // geometry-gated.
     let geometry_gated_ids = indeterminate_ids(&check_surface_result());
     assert_eq!(
         geometry_gated_ids.len(),
@@ -240,30 +236,11 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
 ///   `Satisfaction::Indeterminate` — the set the sibling build-surface test
 ///   cross-checks against build()'s results.
 ///
-/// # Scoped deliberately: the corpus gate owns the satisfaction table
-///
-/// `harness_corpus_gates/best_practices_constraint_gate.rs` already pins this
-/// fixture's per-constraint satisfaction on this exact surface — its
-/// `EXPECTED_INDETERMINATE` lists `("clearance_oracle.ri", 0)` and
-/// `("clearance_oracle.ri", 1)` with reasons, checked BIDIRECTIONALLY (an
-/// unexpected `Indeterminate` fails as lost coverage, a listed entry that
-/// became `Satisfied` fails as stale), with every other constraint in the
-/// corpus asserted non-`Violated`/non-`Indeterminate`. So "3 of the 5 are
-/// Satisfied" is that gate's contract, not this test's, and asserting it here
-/// too would be lockstep duplication. What is genuinely unasserted elsewhere,
-/// and what this test therefore keeps, is the pair of `EvalUnresolved`
-/// diagnostics (the corpus gate reads satisfactions only, never diagnostics)
-/// plus the geometry-gated id set the build-surface sibling consumes. The
-/// fixture's total constraint count is pinned once, on the build surface, by
-/// `clearance_oracle_evals_expected_fouls_and_gap`.
-///
-/// The Indeterminate *count* here is pinned by counting, not by a hardcoded
-/// `ConstraintNodeId` literal, for the same reordering-fragility reason as
-/// the sibling build-surface test. The specific *identities* backing that
-/// count come from `indeterminate_ids` (the same helper
-/// `clearance_oracle_evals_expected_fouls_and_gap` uses to cross-check the
-/// build() surface), so the two tests can never silently disagree on which
-/// ids "the geometry-gated pair" refers to — see that helper's doc comment.
+/// Scoped deliberately: per-constraint satisfaction for this fixture is pinned
+/// bidirectionally by `harness_corpus_gates/best_practices_constraint_gate.rs`;
+/// this test owns only the `EvalUnresolved` diagnostics (which that gate never
+/// reads), the geometry-gated id set, and `EXPECTED_CONSTRAINT_COUNT` (a total
+/// that gate has no notion of).
 #[test]
 fn clearance_oracle_check_surface_reports_indeterminate_geometry_constraints() {
     // Compile + check unconditionally (no OCCT needed), matching the
@@ -294,14 +271,22 @@ fn clearance_oracle_check_surface_reports_indeterminate_geometry_constraints() {
         "expected an EvalUnresolved message naming `distance`, got: {unresolved_messages:#?}"
     );
 
+    // Unconditional owner of the fixture's total constraint count (see
+    // EXPECTED_CONSTRAINT_COUNT): catches an appended trivially-Satisfied
+    // constraint, or an engine regression that drops a Satisfied one, on
+    // runners with no OCCT.
+    assert_eq!(
+        result.constraint_results.len(),
+        EXPECTED_CONSTRAINT_COUNT,
+        "ClearanceOracle should report exactly {EXPECTED_CONSTRAINT_COUNT} constraint \
+         results (not fouls, gap > min_gap, bore_r > shaft_r, min_gap > 0mm, \
+         offset_x > bore_r), got: {:#?}",
+        result.constraint_results
+    );
+
     // Computed via the shared helper (see its doc comment) rather than an
     // inline filter, so this test and the build-surface test's cross-check
     // can never define "the geometry-gated pair" two different ways.
-    //
-    // The remaining three constraints' `Satisfied` status, and the
-    // bidirectional "these two and only these two are Indeterminate" pin, are
-    // the corpus gate's contract (see this test's doc comment) — not restated
-    // here.
     let geometry_gated_ids = indeterminate_ids(&result);
     assert_eq!(
         geometry_gated_ids.len(),
