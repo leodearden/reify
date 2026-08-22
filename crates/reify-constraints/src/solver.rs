@@ -1248,6 +1248,56 @@ fn derived_seed_box(problem: &ResolutionProblem) -> Vec<(f64, f64)> {
     )
 }
 
+/// Is EVERY strict (`!p.free`) auto param's derived interval bounded on BOTH
+/// sides by the user's own constraints?
+///
+/// Pure predicate — no solve, no I/O, no mutation. Answers PRD
+/// `docs/reify-implementation-architecture.md:1140` §11.6 test (2) ("uniquely
+/// optimal under the applicable objective") for the γ `cost_robustness_tradeoff`
+/// path, where the perturbation machinery `verify_uniqueness` normally uses is
+/// structurally inapplicable (see that function's doc for the measured ruling).
+///
+/// - Both sides constraint-derived ⇒ the objective's argmin is taken over an
+///   interval the USER authored, so the resolved value is fixed by the user's
+///   model: well-determined.
+/// - A side missing ⇒ that side is supplied by [`default_bounds_for`], a
+///   solver-internal default the user never wrote, so the resolved value is
+///   DEFAULT-BOUNDS-determined rather than model-determined: exactly the
+///   non-determinedness §11.6 exists to catch.
+///
+/// Free params are exempt: they carry no §11.6 obligation at all, and
+/// [`finalise_uniqueness`] only reaches `verify_uniqueness` when at least one
+/// param is strict.
+///
+/// A strict param whose index has no corresponding `intervals` entry reads as
+/// NOT bracketed. A length mismatch is a caller bug, and this preserves
+/// [`solutions_agree`]'s loud-not-silent contract rather than silently
+/// defaulting to "bracketed".
+///
+/// Bound STRICTNESS is deliberately irrelevant — a `>`/`<` bound supplies its
+/// side just as a `>=`/`<=` one does, mirroring [`derived_seed_box`]'s
+/// `include_strict = true`. The question here is "did the user's constraints
+/// supply this side", not "is it a legal clamp target".
+///
+/// Takes `intervals` rather than deriving them, so the caller can pass
+/// [`derive_param_intervals`]' RAW output: composing through [`resolve_bounds`]
+/// (as [`derived_seed_box`] does) substitutes [`effective_bounds`] for a missing
+/// side and would erase exactly the `None`s this predicate keys on.
+fn strict_autos_constraint_bracketed(
+    auto_params: &[AutoParam],
+    intervals: &[DerivedInterval],
+) -> bool {
+    auto_params
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.free)
+        .all(|(i, _)| {
+            intervals
+                .get(i)
+                .is_some_and(|iv| iv.lo.is_some() && iv.hi.is_some())
+        })
+}
+
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
 /// that has inequality constraints but no explicit user objective.
 ///
@@ -2704,6 +2754,45 @@ fn verify_uniqueness(
         return false;
     }
 
+    // #5711 amendment 2: the γ `cost_robustness_tradeoff` path answers §11.6
+    // WITHOUT a re-solve. `solve_cost_robustness_tradeoff` is SEED-DEPENDENT by
+    // construction, so the perturbation machinery below is structurally
+    // inapplicable there — see this function's doc for the measured ruling and
+    // the A/B evidence table. Positioned deliberately: AFTER the
+    // missing/non-numeric guard above, so γ keeps `solutions_agree`'s
+    // loud-not-silent contract, and BEFORE the re-solve, so the inapplicable
+    // solve never runs.
+    //
+    // `derive_param_intervals` is called DIRECTLY rather than via
+    // `derived_seed_box`: that helper composes with `effective_bounds`, which
+    // would substitute a solver-internal default for a missing side and erase
+    // exactly the `None` this predicate keys on.
+    if problem
+        .objective
+        .as_ref()
+        .and_then(|obj| obj.cost_robustness_lambda)
+        .is_some()
+    {
+        let intervals = derive_param_intervals(
+            &problem.auto_params,
+            &problem.constraints,
+            &problem.current_values,
+            &problem.functions,
+        );
+        let bracketed = strict_autos_constraint_bracketed(&problem.auto_params, &intervals);
+        // debug!, deliberately NOT warn!: solver_tracing.rs's
+        // `normal_solve_emits_zero_warns` expectation and step-4's exact-WARN-count
+        // assertion must both stay untouched by this branch.
+        tracing::debug!(
+            bracketed,
+            "uniqueness check: cost_robustness_tradeoff objective — deciding by \
+             constraint-bracketing of the strict autos rather than by perturbation \
+             (the γ dispatch is seed-dependent, so a re-solve from a different anchor \
+             measures the anchor, not the model)"
+        );
+        return bracketed;
+    }
+
     tracing::debug!(
         n_params = problem.auto_params.len(),
         "verifying uniqueness via perturbation"
@@ -2736,19 +2825,11 @@ fn verify_uniqueness(
             // The closure below is invoked at most once, and only if
             // `classify_uniqueness` finds the params differ — see this
             // function's doc for why that laziness matters (review
-            // suggestion 7). It also short-circuits to `None` for the γ
-            // `cost_robustness_tradeoff` marker (review suggestion 1): see
-            // this function's doc for the measured self-defeat that skip
-            // prevents.
-            let is_cost_robustness_tradeoff = problem
-                .objective
-                .as_ref()
-                .and_then(|obj| obj.cost_robustness_lambda)
-                .is_some();
+            // suggestion 7). It carries NO γ special case: #5711 amendment 2
+            // returns for the `cost_robustness_tradeoff` marker before the
+            // re-solve above, so no γ problem can reach this point and a
+            // second γ policy here would be dead code implying a live one.
             match classify_uniqueness(&problem.auto_params, solved_values, &perturbed_values, || {
-                if is_cost_robustness_tradeoff {
-                    return None;
-                }
                 score_solution(problem, solved_values)
                     .zip(score_solution(problem, &perturbed_values))
             }) {
