@@ -1,6 +1,7 @@
     use super::*;
     use reify_compiler::{
-        CompiledGeometryOp, CurveKind, GeomRef, PatternKind, SweepKind, TransformKind,
+        CompiledGeometryOp, CurveKind, GeomRef, PatternKind, ProfileKind, SweepKind,
+        TransformKind,
     };
     use reify_ir::GeometryHandleId;
 
@@ -7396,6 +7397,189 @@
     }
 
     // ---------------------------------------------------------------------------
+    // `polygon`'s VARIADIC 2-D vertex pairs (task 5661, R2 residual)
+    //
+    // `polygon(x1, y1, x2, y2, …)` is arity-open and EVERY position is a
+    // coordinate of a vertex in the XY plane — no direction vector, no count,
+    // no angle, no weight, no knot — so the gate closure is unconditional and
+    // there is no dimensionless neighbour to lock. That makes polygon the
+    // SIMPLEST row in the program and the last `eval_all_args_to_f64` consumer:
+    // gating it retires the bare variadic reader entirely.
+    //
+    // Two things distinguish it from R2's curve rows. It is a PROFILE op form,
+    // not a `Curve` one, so it needs its own builder. And its stride is TWO,
+    // not three — the pairs are the reason `CoordName` carries a per-point
+    // stride at all, and the reason the fixture below is three vertices wide.
+    // ---------------------------------------------------------------------------
+
+    /// Build a variadic `Profile` op of `ProfileKind::Polygon` from a flat
+    /// coordinate stream, under the positional `c0`…`cN` names the compiler
+    /// actually mints.
+    ///
+    /// Mirrors [`variadic_curve`] for the Profile op form, which has no
+    /// `kind`-agnostic builder of its own — the other three `ProfileKind`s take
+    /// NAMED args (`width`/`height`, `radius`, `semi_major`/`semi_minor`), so
+    /// Polygon is the only variadic member of its family.
+    fn polygon_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Profile {
+            kind: ProfileKind::Polygon,
+            args: c
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (format!("c{i}"), e.clone()))
+                .collect(),
+        }
+    }
+
+    /// `polygon`'s row in the shared gate table — THREE vertices, deliberately.
+    ///
+    /// A two-vertex fixture cannot see a STRIDE slip: a renderer still hard-
+    /// coding stride 3 would name a four-position stream `x1, y1, z1, x2`, and
+    /// the only two names such a fixture asserts (`x1`, `y1`) still match. At
+    /// three vertices the stride-3 renderer yields `x1, y1, z1, x2, y2, z2`, so
+    /// the `x2` / `y2` / `x3` / `y3` arms all go red on exactly that bug — and
+    /// three vertices is also the minimum the compiler accepts anyway
+    /// (`reify-compiler/src/geometry.rs:1631`: ">= 6 args for 3 points").
+    const POLYGON_GATE: LengthGateCase = LengthGateCase {
+        label: "polygon",
+        build: polygon_with_coords,
+        // DISPLAY names, not the inert `c0`…`c5` the compiler mints. Stride 2:
+        // `x1, y1` is vertex 1, `x2, y2` is vertex 2, `x3, y3` is vertex 3.
+        gated: &["x1", "y1", "x2", "y2", "x3", "y3"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_polygon_length_gate_rejects_every_coordinate() {
+        assert_length_gated(POLYGON_GATE);
+    }
+
+    /// The ACCEPTED half: six DISTINCT finite Length coordinates build the op
+    /// with no units diagnostic, and land in the IR as PAIRS.
+    ///
+    /// The values are distinct because that is what pins the `chunks_exact(2)`
+    /// grouping — an all-equal fixture could not tell a pair grouping from a
+    /// `chunks_exact(3)` slip. They are also exactly the SI magnitudes the bare
+    /// reader would have misread: written as `12mm, 34mm, …` they are the
+    /// metres below, but a bare `polygon(12, 34, …)` was silently read as 12
+    /// and 34 **metres** — the 1000× hazard this gate closes.
+    #[test]
+    fn compile_geometry_op_polygon_length_vertices_accepted() {
+        let values = ValueMap::new();
+
+        let op = polygon_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::PolygonProfile { points }) => {
+                assert_eq!(
+                    points,
+                    vec![[0.012, 0.034], [0.056, 0.078], [0.090, 0.011]]
+                );
+            }
+            other => panic!(
+                "expected Ok(PolygonProfile) for six Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length coordinates are the fully clean path and must emit \
+             no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The MIXED group on polygon's variadic route — the 2-D mirror of
+    /// [`compile_geometry_op_interp_unresolved_beats_a_later_bare_coordinate`],
+    /// pinning PRD decision D10 / INV-SF-1 for the pair stride.
+    ///
+    /// This is the assertion a plausible hand-rolled 2-D reader fails: one that
+    /// silently CONTINUES on an Undef vertex (treating it as transient and
+    /// substituting a zero) would build the op, and one that reclassified it as
+    /// `Invalid` would hand the author "expects Length" for a cell that is
+    /// merely unresolved mid-solve. Neither shared-contract helper can reach
+    /// this arm — [`assert_length_gated`] makes exactly ONE position bad per
+    /// iteration and [`assert_every_bare_position_reported`] makes every
+    /// position bad the SAME way.
+    #[test]
+    fn compile_geometry_op_polygon_unresolved_beats_a_later_bare_vertex() {
+        let values = ValueMap::new();
+
+        // x1 unresolved, y1 bare (the 1000× hazard), the rest clean Lengths.
+        let op = polygon_with_coords(&[
+            literal_undef(),
+            literal_f64(5.0),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("an unresolved x1 with a bare y1 must drop the polygon op");
+
+        assert!(
+            err.contains("x1") && err.contains("unresolved (Undef)"),
+            "the FIRST failing coordinate wins, so the error must carry x1's \
+             unresolved-Undef wording — polygon's 2-D route mints the same \
+             distinct message the 3-D and named-arg routes do; got: {err:?}"
+        );
+        assert!(
+            !err.contains("y1"),
+            "y1's later Invalid must not mask x1's Unresolved in the \
+             caller-facing error; got: {err:?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("x1")),
+            "an unresolved vertex coordinate degrades QUIETLY at the value level \
+             — its whole report is the caller-facing Err, with no warning of its \
+             own, because an Undef cell mid-solve is not an author error; got: \
+             {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("y1") && d.message.contains("expects Length")),
+            "y1 must STILL be diagnosed in the SAME build even though x1 failed \
+             first — the all-at-once guarantee, which the pre-5661 reader's \
+             `collect::<Option<_>>()` short-circuit could not offer; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Test: ALL FAILURES AT ONCE, across every R1 family
     // ---------------------------------------------------------------------------
 
@@ -7424,6 +7608,7 @@
             INTERP_GATE,
             BEZIER_GATE,
             NURBS_GATE,
+            POLYGON_GATE,
         ] {
             assert_every_bare_position_reported(case);
         }
