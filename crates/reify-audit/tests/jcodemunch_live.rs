@@ -405,22 +405,20 @@ fn live_audit_produces_p1_and_pdead_findings() {
 mod serve_preflight {
     use super::*;
 
-    /// The endpoint the preflight gate probes must be unreachable BY
-    /// CONSTRUCTION — not merely unowned at the instant its URL was minted.
+    /// The endpoint the preflight probes must be unreachable BY CONSTRUCTION —
+    /// not merely unowned at the instant its URL was minted.
     ///
     /// A freed port is only unowned: anything that binds an ephemeral port in
-    /// the meantime can be handed that exact port, at which point the gate
-    /// reports "serve is up" and the `#[ignore]` capstone stops skipping
-    /// cleanly. This test collapses that race into a deterministic single
-    /// shot by binding the exact `host:port` the URL names and holding it
-    /// across the probe.
+    /// the meantime can be handed that exact port, at which point the preflight
+    /// reports "serve is up". This test collapses that race into a
+    /// deterministic single shot by binding the exact `host:port` the URL names
+    /// and holding it across the probe.
     ///
-    /// This is not redundant with cli.rs's regression locks: those go through
-    /// ureq/HTTP inside the child binary, whereas `jcodemunch_serve_reachable`
-    /// is a bare `TcpStream::connect_timeout`, so a mere listener — no HTTP
-    /// responder needed — is enough to defeat it.
+    /// This is #5830's regression lock, repointed from the deleted bare-TCP
+    /// `jcodemunch_serve_reachable` onto the strictly stronger identity probe:
+    /// a listener that merely *accepts* can no longer be mistaken for a serve.
     #[test]
-    fn unreachable_sentinel_is_not_reachable_under_a_racing_binder() {
+    fn identity_probe_rejects_the_unreachable_sentinel_under_a_racing_binder() {
         let url = common::net::unreachable_mcp_url();
         // Play the adversary: occupy the exact address the URL names. Binding
         // `_hijack` (not `_`) keeps any listener that DID land alive across
@@ -428,10 +426,51 @@ mod serve_preflight {
         let (addr, _hijack) = common::net::try_hijack_url(&url);
 
         assert!(
-            !jcodemunch_serve_reachable(&url),
-            "{url} must not be reported as reachable even while a racing \
-             binder holds {addr}"
+            serve_identity_probe(&url).is_err(),
+            "{url} must not be accepted as a jcodemunch serve even while a \
+             racing binder holds {addr}"
         );
+    }
+
+    /// A listener that accepts TCP and never speaks MCP is NOT a serve.
+    ///
+    /// This is the non-vacuity lock the deleted bare-TCP probe could not
+    /// express: `TcpStream::connect` succeeds against ANY listener, so the old
+    /// probe would have reported this squatter as "serve is up" and let the
+    /// capstone proceed against a corpse. The identity probe must reject it.
+    ///
+    /// The squatter accepts the connection and then goes silent, which is
+    /// precisely why the probe's read timeout is load-bearing: without it this
+    /// test would hang rather than fail.
+    #[test]
+    fn identity_probe_rejects_a_bare_tcp_squatter() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind a squatter on an ephemeral port");
+        let addr = listener.local_addr().expect("squatter local_addr");
+        // `listener` stays alive for the whole test: the port must still be
+        // accepting while the probe runs, or this would degenerate into the
+        // connection-refused case the sibling test already covers.
+        let url = format!("http://{addr}/mcp");
+
+        assert!(
+            serve_identity_probe(&url).is_err(),
+            "a bare TCP listener at {addr} that never speaks MCP must not be \
+             accepted as a jcodemunch serve"
+        );
+    }
+
+    /// The capstone's preflight FAILS on a dead endpoint — it does not return
+    /// early.
+    ///
+    /// This is the direct B8 lock. The whole point of this task is that there
+    /// is no graceful-skip path left anywhere in this file, and the preflight
+    /// is where a skip would most naturally re-grow. Splitting the panic into
+    /// its own function is what makes that assertion possible with no serve in
+    /// hand (α's `finish_teardown` pattern).
+    #[test]
+    #[should_panic(expected = "jcodemunch serve preflight FAILED")]
+    fn require_reachable_serve_panics_on_an_unreachable_endpoint() {
+        require_reachable_serve(&common::net::unreachable_mcp_url());
     }
 }
 
