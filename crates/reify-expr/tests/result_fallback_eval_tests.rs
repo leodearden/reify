@@ -233,7 +233,7 @@ fn e2e_result_fallback_ok_with_stdlib() {
         val_5mm(),
         "e2e: fallback(Ok{{value:5mm}}, 0mm) compiled via stdlib must evaluate to 5mm — \
          if the intercept stops firing, the stdlib `{{ dflt }}` placeholder wins and this \
-         yields 0mm (matched candidate is option_recovery.ri's Option overload; see the \
+         yields 0mm (matched candidate is result.ri's Result overload since #5685; see the \
          OVERLOAD NOTE in result_combinator_eval_tests.rs)"
     );
 }
