@@ -417,15 +417,23 @@ fn non_dotted_callee_object_is_rejected_with_a_fitting_diagnostic() {
 // obj.width()` answers `error: sub-component "s" references unknown structure
 // "obj.width"` (exit 1).
 
-/// A rejected qualifier: the enclosing member is DROPPED, one diagnostic spans
-/// exactly the callee, and the message names the offending qualifier, points at
-/// the `import ... as binding` form, and says Reify has no method-call syntax
-/// (the overwhelmingly likely intent behind `obj.width()`).
+/// The kind-INDEPENDENT half of a qualifier rejection, shared by every
+/// rejection case: the enclosing member is DROPPED, one diagnostic spans
+/// exactly the callee, the message names the offending qualifier, refers to
+/// this file's imports, and says Reify has no method-call syntax (the
+/// overwhelmingly likely intent behind `obj.width()`).
+///
+/// Returns the joined diagnostic text so each caller can add the expectation
+/// that fits ITS `ImportKind`. The REMEDY is not kind-independent: "no import
+/// binds this name at all" is fixed by declaring one, while "an import binds
+/// it, but as an entity name" is not — so folding both into a single helper
+/// would either weaken the remedy assertion for the cases it still covers or
+/// assert a remedy that is actively wrong for the others.
 ///
 /// The qualifier is matched BACKTICK-QUOTED so the assertion is not satisfied
 /// incidentally by the echoed callee text: `` `obj` `` does not appear inside
 /// `` `obj.width(...)` ``.
-fn assert_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
+fn assert_qualifier_rejection_core(source: &str, callee: &str, qualifier: &str) -> String {
     let (decls, errors) = parse_decls(source);
     assert!(
         only_structure(&decls).members.is_empty(),
@@ -446,7 +454,8 @@ fn assert_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
     );
     assert!(
         joined.contains("import"),
-        "the diagnostic must point at the `import ... as binding` form; got: {joined}"
+        "every rejection must refer to this file's imports — that is where a qualifier \
+         comes from; got: {joined}"
     );
     assert!(
         joined.contains("method-call"),
@@ -470,6 +479,53 @@ fn assert_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
             .any(|e| e.span.start == start && e.span.end == end),
         "the diagnostic must span the callee `{callee}` ({start}..{end}); got {errors:?}"
     );
+
+    joined
+}
+
+/// A qualifier NO import binds. The remedy is to declare one, so the message
+/// must carry today's `import <path> as <q>` form unchanged.
+fn assert_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
+    let joined = assert_qualifier_rejection_core(source, callee, qualifier);
+    assert!(
+        joined.contains(&format!("import <path> as {qualifier}")),
+        "an UNBOUND qualifier's remedy IS to declare an import, so the message must \
+         still offer `import <path> as {qualifier}` in `{source}`; got: {joined}"
+    );
+}
+
+/// A qualifier an import DOES bind — but as an ENTITY name
+/// (`ImportKind::Entity`, `EntityAliased`, `Destructured`) rather than as a
+/// module namespace.
+///
+/// The unbound remedy is WRONG here, and demonstrably so: `import a.b.Widget` +
+/// `Widget.mk()` would be told to "declare one as `import <path>.Widget`" — the
+/// line the user already wrote. So the message must instead say the import
+/// binds an entity rather than a module namespace, and must NOT echo either
+/// import form back as advice.
+fn assert_entity_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
+    let joined = assert_qualifier_rejection_core(source, callee, qualifier);
+    assert!(
+        joined.contains("entity"),
+        "the diagnostic must say the import binds an ENTITY name in `{source}`; \
+         got: {joined}"
+    );
+    assert!(
+        joined.contains("module namespace"),
+        "the diagnostic must contrast that entity binding with the module namespace a \
+         qualifier needs in `{source}`; got: {joined}"
+    );
+    for already_written in [
+        format!("import <path> as {qualifier}"),
+        format!("import <path>.{qualifier}"),
+    ] {
+        assert!(
+            !joined.contains(&already_written),
+            "the diagnostic must not suggest `{already_written}` — for an entity-bound \
+             qualifier that is the import the user already wrote in `{source}`; \
+             got: {joined}"
+        );
+    }
 }
 
 /// An accepted qualified call lowers to the dot-joined `FunctionCall` with no
@@ -552,19 +608,40 @@ fn import_after_the_structure_still_binds() {
 /// a module namespace. `Widget.mk()` is a method call on an entity — syntax
 /// Reify does not have, and a parse error before μ — so accepting it would
 /// reopen a narrower version of the same hole.
+///
+/// Rejected via `assert_entity_qualifier_rejected`: the name IS bound, so the
+/// "declare an import" remedy would hand the user back `import <path>.Widget`,
+/// which is character-for-character the line already at the top of the file.
 #[test]
 fn entity_import_does_not_bind_a_namespace() {
-    assert_qualifier_rejected(
+    assert_entity_qualifier_rejected(
         "import a.b.Widget\nstructure def S { let f = Widget.mk() }",
         "Widget.mk",
         "Widget",
     );
 }
 
+/// `import a.b.Widget as W` → `ImportKind::EntityAliased`, which binds the
+/// ALIAS as an entity name.
+///
+/// This is the fifth and last `ImportKind` arm, and until now the only one with
+/// no test: `collect_import_bindings` folds it into the same `None` arm as
+/// `Entity`, so a future split that flipped it to `Some(alias)` would reopen the
+/// gate hole for `import a.b.Widget as W` + `W.mk()` with every other test in
+/// this file still green.
+#[test]
+fn entity_aliased_import_does_not_bind_a_namespace() {
+    assert_entity_qualifier_rejected(
+        "import a.b.Widget as W\nstructure def S { let f = W.mk() }",
+        "W.mk",
+        "W",
+    );
+}
+
 /// `import a.b.{C, D}` → `ImportKind::Destructured`, likewise entity names.
 #[test]
 fn destructured_import_does_not_bind_a_namespace() {
-    assert_qualifier_rejected(
+    assert_entity_qualifier_rejected(
         "import a.b.{C, D}\nstructure def S { let f = C.mk() }",
         "C.mk",
         "C",
