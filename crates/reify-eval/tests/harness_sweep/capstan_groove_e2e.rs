@@ -107,7 +107,7 @@
 //! No other gate compiles anything under `prj/`, so this module is currently
 //! also the only regression guard on `dev_capstan.ri` as a whole.
 
-use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::{CheckResult, TessellateResult};
 use reify_ir::{Satisfaction, Value, ValueMap};
 use std::f64::consts::PI;
@@ -281,24 +281,80 @@ fn compile_dev_capstan() -> reify_compiler::CompiledModule {
     compiled
 }
 
+/// Message prefix of the geometry-consumer resolution error the kernel-free
+/// surface raises by construction — see [`check_dev_capstan`].
+const VOLUME_UNRESOLVED_PREFIX: &str = "`volume` could not be resolved";
+
+/// How many of those the design file must produce: exactly one per
+/// `volume()`-consuming cell, i.e. `blank_volume` and `body_volume`
+/// (prj/printer_v01/dev_capstan.ri).
+///
+/// Pinned rather than left open-ended so the exception stays an *enumerated*
+/// one. If a later edit legitimately adds a third `volume()` cell, bump this
+/// with it — a count that drifts on its own would put the exception back to
+/// being a blanket ignore.
+const EXPECTED_VOLUME_UNRESOLVED: usize = 2;
+
 /// Evaluate and constraint-check the design file with no kernel. Use
 /// [`dev_capstan_checked`] rather than calling this directly.
 ///
-/// Deliberately NOT asserted Error-diagnostic-free, unlike
-/// [`tessellate_dev_capstan`]: the file's `blank_volume` / `body_volume` cells
-/// call `volume()`, a geometry-consumer builtin that is only resolvable on the
-/// build()/tessellate() path, so this surface reports exactly two
-/// "`volume` could not be resolved" errors by construction. They are the
-/// OCCT fixture's business — the tests reading THIS result assert on the cells
-/// and constraint results they actually consume, each of which panics with a
-/// pointed message if it failed to evaluate.
+/// Asserted Error-diagnostic-free like [`tessellate_dev_capstan`], but against
+/// a *known-exception* list rather than the empty set: the file's
+/// `blank_volume` / `body_volume` cells call `volume()`, a geometry-consumer
+/// builtin only resolvable on the build()/tessellate() path, so this surface
+/// reports exactly [`EXPECTED_VOLUME_UNRESOLVED`] `EvalUnresolved` errors
+/// naming `volume` by construction. Those are the OCCT fixture's business.
+/// Every other Error is a real evaluation regression and fails here.
+///
+/// Enumerating them rather than dropping all diagnostics is what keeps the
+/// OCCT-less path — the one this fixture exists to serve — covered at all. The
+/// two design-level gates read only the handful of cells they consume, so with
+/// a blanket ignore a cell they never touch (`flange_r`, a `ShuttlePlate` cell,
+/// a later `Fairlead` cell) could stop evaluating and nothing would observe it:
+/// the Error-freedom assertion would live solely in the OCCT-gated
+/// [`tessellate_dev_capstan`], and this module is the only regression guard on
+/// `dev_capstan.ri` as a whole.
 fn check_dev_capstan() -> CheckResult {
     let compiled = compile_dev_capstan();
     let mut engine = reify_eval::Engine::new(
         Box::new(reify_constraints::SimpleConstraintChecker),
         None,
     );
-    engine.check(&compiled)
+    let result = engine.check(&compiled);
+
+    {
+        let (volume_errors, unexpected): (Vec<_>, Vec<_>) = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .partition(|d| {
+                d.code == Some(DiagnosticCode::EvalUnresolved)
+                    && d.message.starts_with(VOLUME_UNRESOLVED_PREFIX)
+            });
+        assert!(
+            unexpected.is_empty(),
+            "unexpected evaluation errors on the kernel-free surface of \
+             {DEV_CAPSTAN}: only the `volume()` geometry-consumer cells may fail \
+             to resolve here. Anything else means a cell of the design stopped \
+             evaluating — the design-level gates below read just a few cells each, \
+             so this is the only place such a regression is caught when OCCT is \
+             absent: {unexpected:#?}"
+        );
+        assert_eq!(
+            volume_errors.len(),
+            EXPECTED_VOLUME_UNRESOLVED,
+            "{DEV_CAPSTAN} must raise exactly {EXPECTED_VOLUME_UNRESOLVED} \
+             `{VOLUME_UNRESOLVED_PREFIX}` errors on the kernel-free surface — one \
+             per `volume()`-consuming cell (`blank_volume`, `body_volume`). Got \
+             {}: fewer means a volume cell was dropped (the OCCT fixture's \
+             stock-removal gate would be gating less than it reads), more means one \
+             was added and `EXPECTED_VOLUME_UNRESOLVED` needs bumping with it: \
+             {volume_errors:#?}",
+            volume_errors.len()
+        );
+    }
+
+    result
 }
 
 /// Load, parse, compile and tessellate `prj/printer_v01/dev_capstan.ri` with a
@@ -875,9 +931,17 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
     // dead_total)` and `band = lead · active_turns`, so only fp slack is needed;
     // it is asserted anyway because it is the statement the project doc makes in
     // prose, and it is what makes (1) and (3) mean what they say.
+    // The residual is scaled by `groove_len`, deliberately NOT by `dead_extent`:
+    // `dead_total` is the one term in this identity that can legitimately go to
+    // zero (a drum wound with no anchor wraps), and a tolerance scaled by the
+    // very term that can vanish would silently collapse to exact float equality
+    // at exactly that edit. `groove_len` cannot vanish while the drum is grooved
+    // at all — the same choice the other assertions here make (`band`,
+    // `band_expected`) — and at the file's defaults the two scales differ by
+    // ~3×, i.e. this is the same fp slack in practice.
     let dead_extent = lead * dead_total;
     assert!(
-        (groove_len - band - dead_extent).abs() <= BAND_IDENTITY_REL_TOL * dead_extent.abs(),
+        (groove_len - band - dead_extent).abs() <= BAND_IDENTITY_REL_TOL * groove_len.abs(),
         "the drum's grooved length must decompose into the active band plus the \
          dead (anchor) wraps: groove_len − band = {:.6} mm − {:.6} mm = {:.6} mm, \
          but lead · dead_total = {:.6} mm × {dead_total} = {:.6} mm. This is the \
