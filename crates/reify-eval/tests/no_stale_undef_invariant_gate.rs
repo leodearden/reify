@@ -1783,10 +1783,10 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
         let end = start + fn_name.len();
         from = start + 1;
 
-        if let Some(prev) = code[..start].chars().next_back() {
-            if prev.is_alphanumeric() || prev == '_' {
-                continue;
-            }
+        if let Some(prev) = code[..start].chars().next_back()
+            && (prev.is_alphanumeric() || prev == '_')
+        {
+            continue;
         }
         if code[end..].trim_start().starts_with('(') {
             return true;
