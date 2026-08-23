@@ -589,26 +589,6 @@ fn registered_kernel_that_cannot_tessellate_is_not_measurement_capable() {
     );
 }
 
-/// The shipped-binary shape at engine level: the remedy `reify build` /
-/// `reify check` / the GUI actually hand a user must match what THIS binary's
-/// inventory registry can do.
-///
-/// `Engine::with_registered_kernel` is the constructor every constraint-
-/// dispatching production surface uses (`cmd_build`, `cmd_check`'s assertion
-/// branch, the GUI session), so this is the one gate that runs the real
-/// selection path rather than a hand-assembled kernel map.  Expected arm is
-/// DERIVED from the registry rather than hardcoded, because the answer legitimately
-/// differs by build mode and pinning either wording unconditionally would
-/// assert something false in the other:
-/// - OCCT build → a BRep-capable adapter is registered → the terminal remedy is
-///   `reify check`, which will register that kernel and measure.
-/// - stub build → no adapter claims any `(_, ReprKind::BRep)` pair, yet the
-///   registry is NOT empty (openvdb here; `"manifold"` on the CLI binary), so
-///   `pick_lexmin_brep_kernel`'s `.or_else(|| registered.values().next())`
-///   fallback still yields `Some(..)`.  RED against the pre-fix
-///   `default_kernel_name.is_none()` discriminator, which read that `Some` as
-///   "a kernel can measure" and offered `reify check` — a remedy that cannot
-///   answer on that binary.
 /// Structural pin for the task 6169 review round: the arm-1 capability
 /// discriminator must NOT be answered by keying the static inventory registry
 /// on this engine's own kernel names.
@@ -659,6 +639,26 @@ fn production_engine_kernel_names_are_absent_from_the_inventory_registry() {
     }
 }
 
+/// The shipped-binary shape at engine level: the remedy `reify build` /
+/// `reify check` / the GUI actually hand a user must match what THIS binary's
+/// inventory registry can do.
+///
+/// `Engine::with_registered_kernel` is the constructor every constraint-
+/// dispatching production surface uses (`cmd_build`, `cmd_check`'s assertion
+/// branch, the GUI session), so this is the one gate that runs the real
+/// selection path rather than a hand-assembled kernel map.  Expected arm is
+/// DERIVED from the registry rather than hardcoded, because the answer legitimately
+/// differs by build mode and pinning either wording unconditionally would
+/// assert something false in the other:
+/// - OCCT build → a BRep-capable adapter is registered → the terminal remedy is
+///   `reify check`, which will register that kernel and measure.
+/// - stub build → no adapter claims any `(_, ReprKind::BRep)` pair, yet the
+///   registry is NOT empty (openvdb here; `"manifold"` on the CLI binary), so
+///   `pick_lexmin_brep_kernel`'s `.or_else(|| registered.values().next())`
+///   fallback still yields `Some(..)`.  RED against the pre-fix
+///   `default_kernel_name.is_none()` discriminator, which read that `Some` as
+///   "a kernel can measure" and offered `reify check` — a remedy that cannot
+///   answer on that binary.
 #[test]
 fn registered_kernel_shape_names_a_remedy_this_binary_can_honour() {
     let compiled = compile_no_errors(OCCT_SOURCE_COARSE_BOUND, "registered_kernel_shape");
