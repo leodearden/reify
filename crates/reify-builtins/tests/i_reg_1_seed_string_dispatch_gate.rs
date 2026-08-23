@@ -5,11 +5,16 @@
 //!
 //! Task #6001 α, `docs/prds/v0_6/builtin-signature-registry.md` §7.2.
 //!
-//! # Scope: seed-scoped, not workspace-wide
+//! # Scope: seed-scoped with a ledger, not workspace-wide
 //!
 //! α migrated two families, so this gate sweeps the SEED names only. The
-//! workspace-wide grep gate (every builtin name, not just the seeds) arrives
-//! at task ω.
+//! residue it finds is REAL string dispatch on registered names, and it is
+//! all outside α's charter — so it is COUNTED in
+//! [`SEED_STRING_DISPATCH_LEDGER`], one entry per site with a one-sentence WHY
+//! naming the leaf that owns re-homing it, rather than hidden by narrowing the
+//! scan or "fixed" by editing a crate this task does not own. An UNLEDGERED
+//! site fails, naming the file, line and seed name. The workspace-wide grep
+//! gate (every builtin name, not just the seeds) arrives at task ω.
 //!
 //! The name list is derived from [`reify_builtins::rows`], never restated —
 //! mirroring `reify-compiler`'s `units.rs` disjointness list — so a row added
@@ -49,6 +54,81 @@ use common::workspace_root;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+// ── the ledger ──────────────────────────────────────────────────────────────
+
+/// A known, accepted string-dispatch site on a registered seed name.
+struct LedgerEntry {
+    /// Workspace-relative path, `/`-separated.
+    file: &'static str,
+    /// The seed name dispatched on.
+    name: &'static str,
+    /// Which leaf OWNS re-homing this site, and why α cannot.
+    why: &'static str,
+}
+
+/// Every seed-name string-dispatch site α leaves standing, one entry each.
+///
+/// Follows the in-tree `EXEMPTION_LEDGER` pattern named by the ratified
+/// amendment (`crates/reify-compiler/tests/mul_div_static_runtime_parity.rs`)
+/// and `registry_drift_tests.rs`'s `QUERY_CALL_LEDGER`: a per-entry WHY
+/// comment, a membership predicate, and an unledgered-divergence failure. The
+/// point is that the residue is COUNTED, not that it is acceptable — every
+/// entry names the leaf that retires it.
+///
+/// Deliberately keyed on (file, name) and NOT on a line number: a line pin
+/// would break on any unrelated edit above the site, turning this gate into
+/// churn. The cost is that moving a site WITHIN its file does not re-trigger
+/// review; the ledger is small enough to read in full whenever it changes.
+const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
+    // ── reify-expr's Field-valued interception arms ─────────────────────────
+    //
+    // These four arms intercept a call whose FIRST ARGUMENT IS A `Value::Field`
+    // and route it to reify-expr's field-aware kernels, falling through to
+    // `eval_builtin` for concrete tensors. That is `BindingKind::ExprIntercept`
+    // territory, but α declares all seven seed rows `EvalBuiltin` — a row has
+    // exactly one binding kind, so re-homing the Field path needs a SECOND
+    // binding kind and its generated sub-enum, which is τ-fea/analysis work,
+    // not α's. Deleting the arms to make this gate pass is NOT an option: it
+    // would change Field-valued analysis behaviour outright.
+    LedgerEntry {
+        file: "crates/reify-expr/src/lib.rs",
+        name: "von_mises",
+        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
+    },
+    LedgerEntry {
+        file: "crates/reify-expr/src/lib.rs",
+        name: "principal_stresses",
+        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
+    },
+    LedgerEntry {
+        file: "crates/reify-expr/src/lib.rs",
+        name: "max_shear",
+        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
+    },
+    LedgerEntry {
+        file: "crates/reify-expr/src/lib.rs",
+        name: "safety_factor",
+        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
+    },
+    // ── reify-expr's re-entrant call back into eval ─────────────────────────
+    //
+    // `compute_safety_factor` evaluates the field's inner lambda down to a
+    // concrete tensor and then re-enters `eval_builtin` BY NAME. The string
+    // cannot go until `CompiledExpr` carries a `BuiltinId` instead of a `&str`,
+    // which is explicitly leaf β (PRD §9).
+    LedgerEntry {
+        file: "crates/reify-expr/src/analysis.rs",
+        name: "safety_factor",
+        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
+    },
+];
+
+fn is_ledgered(file: &str, name: &str) -> bool {
+    SEED_STRING_DISPATCH_LEDGER
+        .iter()
+        .any(|e| e.file == file && e.name == name)
+}
 
 // ── the scan ────────────────────────────────────────────────────────────────
 
@@ -530,19 +610,26 @@ fn seed_names() -> BTreeSet<String> {
 // ── the gate ────────────────────────────────────────────────────────────────
 
 #[test]
-fn no_seed_name_string_dispatch_outside_reify_builtins() {
+fn no_unledgered_seed_name_string_dispatch_outside_reify_builtins() {
     let root = workspace_root();
     let sites = scan(&root, &seed_names());
 
+    let unledgered: Vec<&Site> = sites
+        .iter()
+        .filter(|s| !is_ledgered(&s.file, &s.name))
+        .collect();
+
     assert!(
-        sites.is_empty(),
-        "I-REG-1 violated: {} string dispatch site(s) on a registered builtin \
-         name outside crates/reify-builtins.\n\n{}\n\n\
+        unledgered.is_empty(),
+        "I-REG-1 violated: {} unledgered string dispatch site(s) on a \
+         registered builtin name outside crates/reify-builtins.\n\n{}\n\n\
          `reify_builtins::lookup` is the only sanctioned string\u{2192}builtin \
          resolution. Bind the name to its `BuiltinId` in the owning kind's \
-         exhaustive dispatcher.",
-        sites.len(),
-        sites
+         exhaustive dispatcher, or \u{2014} if re-homing it belongs to a later \
+         leaf \u{2014} add an entry to SEED_STRING_DISPATCH_LEDGER naming that \
+         leaf.",
+        unledgered.len(),
+        unledgered
             .iter()
             .map(|s| format!(
                 "  {}:{} \u{2014} {:?} ({})",
@@ -553,6 +640,48 @@ fn no_seed_name_string_dispatch_outside_reify_builtins() {
             ))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+/// The ledger is a RATCHET, not a suppression list: every entry must name a
+/// site that still exists. A stale entry means the site was retired and the
+/// ledger should SHRINK — which is the whole point of counting the residue
+/// rather than hiding it.
+#[test]
+fn every_ledger_entry_names_a_site_that_still_exists() {
+    let root = workspace_root();
+    let sites = scan(&root, &seed_names());
+
+    let stale: Vec<String> = SEED_STRING_DISPATCH_LEDGER
+        .iter()
+        .filter(|e| !sites.iter().any(|s| s.file == e.file && s.name == e.name))
+        .map(|e| format!("  {} \u{2014} {:?} ({})", e.file, e.name, e.why))
+        .collect();
+
+    assert!(
+        stale.is_empty(),
+        "SEED_STRING_DISPATCH_LEDGER has {} stale entry/entries \u{2014} the \
+         site is gone, so the entry must go too:\n{}",
+        stale.len(),
+        stale.join("\n")
+    );
+}
+
+/// The scan itself must keep its teeth: if it silently stopped SEEING the
+/// sites the ledger accepts, it would report a clean workspace while the
+/// residue sat untouched. Pinning the count means a scanner regression fails
+/// here rather than passing vacuously.
+#[test]
+fn the_scan_still_finds_every_ledgered_site() {
+    let root = workspace_root();
+    let sites = scan(&root, &seed_names());
+    assert_eq!(
+        sites.len(),
+        SEED_STRING_DISPATCH_LEDGER.len(),
+        "expected the scan to find exactly the {} ledgered site(s), found {}: \
+         {sites:#?}",
+        SEED_STRING_DISPATCH_LEDGER.len(),
+        sites.len()
     );
 }
 
