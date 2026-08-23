@@ -419,9 +419,17 @@ fn non_dotted_callee_object_is_rejected_with_a_fitting_diagnostic() {
 
 /// The kind-INDEPENDENT half of a qualifier rejection, shared by every
 /// rejection case: the enclosing member is DROPPED, one diagnostic spans
-/// exactly the callee, the message names the offending qualifier, refers to
-/// this file's imports, and says Reify has no method-call syntax (the
-/// overwhelmingly likely intent behind `obj.width()`).
+/// exactly the callee, and the message names the offending qualifier.
+///
+/// DELIBERATELY THREE ASSERTIONS, not seven. An earlier revision also pinned
+/// that the message contained "import", contained the hyphenated spelling
+/// "method-call", and did NOT contain "full-path qualification". None of those
+/// is behaviour: a reword to "there is no method call syntax in Reify" would
+/// have broken four tests across three helpers with nothing changing, and the
+/// "full-path" negative is structurally unreachable here anyway — that sentence
+/// belongs to the callee-SHAPE guard, which a two-segment callee never enters
+/// (its own tests pin it). What survives is what a caller can actually rely on
+/// (task 5495 μ, amendment).
 ///
 /// Returns the joined diagnostic text so each caller can add the expectation
 /// that fits ITS `ImportKind`. The REMEDY is not kind-independent: "no import
@@ -452,27 +460,17 @@ fn assert_qualifier_rejection_core(source: &str, callee: &str, qualifier: &str) 
         "the diagnostic must name the offending qualifier `{qualifier}` in `{source}`; \
          got: {joined}"
     );
-    assert!(
-        joined.contains("import"),
-        "every rejection must refer to this file's imports — that is where a qualifier \
-         comes from; got: {joined}"
-    );
-    assert!(
-        joined.contains("method-call"),
-        "the diagnostic must say Reify has no method-call syntax — that is the likely \
-         intent behind `{callee}(...)`; got: {joined}"
-    );
-    assert!(
-        !joined.contains("full-path qualification"),
-        "the full-path sentence belongs to the callee-SHAPE guard and must not fire for \
-         a two-segment callee in `{source}`; got: {joined}"
-    );
 
     let start = source
         .find(callee)
         .unwrap_or_else(|| panic!("callee `{callee}` not found in `{source}`"))
         as u32;
     let end = start + callee.len() as u32;
+    assert_eq!(
+        errors.len(),
+        1,
+        "a rejection is ONE diagnostic, not a cascade, in `{source}`; got {errors:?}"
+    );
     assert!(
         errors
             .iter()
@@ -501,19 +499,26 @@ fn assert_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
 /// The unbound remedy is WRONG here, and demonstrably so: `import a.b.Widget` +
 /// `Widget.mk()` would be told to "declare one as `import <path>.Widget`" — the
 /// line the user already wrote. So the message must instead say the import
-/// binds an entity rather than a module namespace, and must NOT echo either
-/// import form back as advice.
-fn assert_entity_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
+/// binds an entity, and must NOT echo either import form back as advice.
+///
+/// `expect_capitalisation_hint` selects the OTHER kind-dependent half. `Entity`
+/// and `EntityAliased` are INFERRED from the capitalisation of the final path
+/// segment, so an author whose module genuinely is `geometry.Shapes` gets a
+/// confidently-worded rejection with no workaround unless the message names that
+/// rule. `Destructured` names its entities explicitly, so capitalisation played
+/// no part and the hint would be noise — asserted ABSENT there, so the hint
+/// cannot quietly become unconditional.
+fn assert_entity_qualifier_rejected(
+    source: &str,
+    callee: &str,
+    qualifier: &str,
+    expect_capitalisation_hint: bool,
+) {
     let joined = assert_qualifier_rejection_core(source, callee, qualifier);
     assert!(
         joined.contains("entity"),
         "the diagnostic must say the import binds an ENTITY name in `{source}`; \
          got: {joined}"
-    );
-    assert!(
-        joined.contains("module namespace"),
-        "the diagnostic must contrast that entity binding with the module namespace a \
-         qualifier needs in `{source}`; got: {joined}"
     );
     for already_written in [
         format!("import <path> as {qualifier}"),
@@ -526,6 +531,12 @@ fn assert_entity_qualifier_rejected(source: &str, callee: &str, qualifier: &str)
              got: {joined}"
         );
     }
+    assert_eq!(
+        joined.contains("capitalisation"),
+        expect_capitalisation_hint,
+        "capitalisation hint expected={expect_capitalisation_hint} in `{source}`; \
+         got: {joined}"
+    );
 }
 
 /// An accepted qualified call lowers to the dot-joined `FunctionCall` with no
@@ -618,6 +629,7 @@ fn entity_import_does_not_bind_a_namespace() {
         "import a.b.Widget\nstructure def S { let f = Widget.mk() }",
         "Widget.mk",
         "Widget",
+        true,
     );
 }
 
@@ -635,6 +647,7 @@ fn entity_aliased_import_does_not_bind_a_namespace() {
         "import a.b.Widget as W\nstructure def S { let f = W.mk() }",
         "W.mk",
         "W",
+        true,
     );
 }
 
@@ -645,7 +658,53 @@ fn destructured_import_does_not_bind_a_namespace() {
         "import a.b.{C, D}\nstructure def S { let f = C.mk() }",
         "C.mk",
         "C",
+        false,
     );
+}
+
+/// A CAPITALISED MODULE SEGMENT IS UNREACHABLE AS A QUALIFIER, and the
+/// diagnostic has to say why (task 5495 μ, amendment; review suggestion #8).
+///
+/// `lower_import` classifies a ≥2-segment import by the capitalisation of its
+/// final segment, so `import geometry.Shapes` is `Entity("Shapes")` and
+/// `import geometry.Shapes as sh` is `EntityAliased` — even when `Shapes` is a
+/// MODULE. Both are rejected here, and the author's code is not in fact wrong.
+/// The heuristic predates μ; μ is the first feature that turns it into a
+/// user-visible hard error, so μ owes the author a next step. Fixing the
+/// heuristic itself needs the module graph and is ν's (task 5505); what is
+/// pinned here is that the message names capitalisation as the cause rather
+/// than asserting entity-ness as if it were established fact.
+#[test]
+fn a_capitalised_module_segment_is_rejected_with_the_capitalisation_rule_named() {
+    for (source, callee, qualifier) in [
+        (
+            "import geometry.Shapes\nstructure def S { let f = Shapes.Circle() }",
+            "Shapes.Circle",
+            "Shapes",
+        ),
+        (
+            "import geometry.Shapes as sh\nstructure def S { let f = sh.Circle() }",
+            "sh.Circle",
+            "sh",
+        ),
+    ] {
+        assert_entity_qualifier_rejected(source, callee, qualifier, true);
+
+        // The hint must name the SEGMENT the heuristic read, not the qualifier:
+        // for the aliased form those differ (`Shapes` vs `sh`), and telling the
+        // author to lowercase `sh` would be advice that fixes nothing.
+        let (_, errors) = parse_decls(source);
+        let joined = errors
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("`Shapes`"),
+            "the hint must name the capitalised path segment `Shapes`, not just the \
+             qualifier `{qualifier}`, in `{source}`; got: {joined}"
+        );
+    }
 }
 
 /// RESIDUAL HOLE, pinned rather than assumed closed (ν / task 5505).

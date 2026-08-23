@@ -345,7 +345,7 @@ TypeAnnotation {
   ":" TypeExpr
 }
 
-// Five-way choice transliterated from tree-sitter-reify grammar.js:1064-1154.
+// Five-way choice transliterated from tree-sitter-reify's `type_expr` rule.
 // The leading token is unique per alternative — `(` for FunctionType, `Name<`
 // for ParameterizedType, `Name::` for QualifiedType, `Name.` for
 // NamespacedName — so no precedence hacks are needed. `auto_type_arg`
@@ -361,22 +361,28 @@ TypeExpr {
 
 // Qualified reference through an import binding: `pp.Pulley`, from
 // `import parts as pp` (task 5495 μ; PRD docs/prds/v0_6/stdlib-namespace.md
-// §3.3 NS-Q1). Transliterated from grammar.js:1150-1154, which uses ONE
-// `namespaced_name` rule for both type position and `sub`'s structure-name
-// slot so the two cannot drift; the same single rule serves both here.
+// §3.3 NS-Q1). Transliterated from grammar.js's `namespaced_name` rule, which
+// upstream uses for BOTH type position and `sub`'s structure-name slot so the
+// two cannot drift; the same single rule serves both here.
 //
 // Putting it on `TypeExpr` rather than on `TypeAnnotation` is what makes it
 // reachable from every type position at once, `List<pp.Pulley>` included
 // (`TypeArgList → typeArg → TypeExpr`) — pinned in
 // reifyGrammarQualifiedRef.test.ts rather than claimed here.
 //
-// EXACTLY TWO SEGMENTS, and NO `("<" TypeArgList ">")?` tail. Qualified
-// GENERIC types (`pp.Box<T>`) are out of scope for μ, and upstream records
-// (grammar.js:1146-1149) that the tail is the one formulation producing an
-// unresolved LR conflict there. Adding it here would make this grammar accept
-// what neither tree-sitter nor the compiler does — the third-dialect failure
-// the AutoTypeArg note already forbids. The corpus test pins that `pp.Box<T>`
-// still errors, so a later widening has to be deliberate.
+// EXACTLY TWO SEGMENTS, and NO `("<" TypeArgList ">")?` tail — a PARSER-CONFLICT
+// artifact, not an enforced scope boundary. The note on grammar.js's
+// `namespaced_name` rule records that the tail is the one formulation producing
+// an unresolved LR conflict there, so upstream omits it and this port must too:
+// adding it here would make the editor accept what neither tree-sitter nor the
+// compiler does — the third-dialect failure the AutoTypeArg note already
+// forbids. The acceptance that results is POSITION-DEPENDENT rather than
+// uniform: `param p : pp.Box<T>` is rejected, while `sub h : pp.Pulley<T>` IS
+// accepted, because the specialization arm carries its own type-argument slot
+// AFTER the structure name (see `subSpecializedName` below). "Qualified
+// generics are out of scope for μ" would describe that as a decision; it is the
+// LR limitation showing through. The corpus test pins `pp.Box<T>` still
+// erroring, so a later widening has to be deliberate.
 NamespacedName {
   Identifier "." Identifier
 }
@@ -721,9 +727,8 @@ JointBody {
 // THE STRUCTURE-NAME SLOT IS NOT A `TypeExpr` in either arm, so widening
 // `TypeExpr` with `NamespacedName` does not reach it — both arms are widened
 // explicitly (see `subInstanceName` / `subSpecializedName` below), exactly as
-// upstream widens all three of its own arms' `structure_name` to
-// `choice($.identifier, $.namespaced_name)` (grammar.js:814, :842, and the
-// specialization arm). `sub p = pp.Pulley()` and `sub p : pp.Pulley` are the
+// upstream widens all three of its own `sub_declaration` arms' `structure_name`
+// to `choice($.identifier, $.namespaced_name)`. `sub p = pp.Pulley()` and `sub p : pp.Pulley` are the
 // two shapes; the collection arm folded into the `:` arm above reaches
 // `List<pp.Pulley>` through `ParameterizedType`.
 SubDeclaration {
@@ -750,8 +755,8 @@ subInstanceName {
 // supplies for the unqualified case — `sub h : pp.Pulley<T>`.
 //
 // MEASURED THREE-SURFACE PARITY, not a speculative widening. Upstream's
-// specialization arm keeps its own `optional(field('type_args', …))` slot
-// (grammar.js:896) AFTER the widened `structure_name` (grammar.js:895), so
+// `sub_declaration` specialization arm keeps its own
+// `optional(field('type_args', …))` slot AFTER the widened `structure_name`, so
 // `sub h : pp.Pulley<T>` parses there with zero ERROR nodes and `lower_sub`
 // builds a valid
 // `SubDecl { structure_name: "pp.Pulley", type_args: [T] }` with no diagnostic.
@@ -1382,7 +1387,7 @@ primaryExpression {
   QualifiedAccess |
   InstanceQualifiedAccess |
   TraitMethodCall |
-  // grammar.js:1609 — the `.` twin of TraitMethodCall (task 5495 μ).
+  // grammar.js's `namespaced_call` — the `.` twin of TraitMethodCall (5495 μ).
   NamespacedCall |
   ListLiteral |
   SetLiteral |
@@ -1595,7 +1600,7 @@ TraitMethodCall {
 // `MemberAccess` already rests on.
 //
 // THE CALLEE IS A FULL `MemberAccess`, not an inline `Identifier "." Identifier`
-// — mirroring grammar.js:1609, where the inline form is recorded as colliding
+// — mirroring grammar.js's `namespaced_call`, where the inline form collides
 // with `member_access` as a reduce-reduce ambiguity. Two consequences worth
 // stating because neither is visible from the rule:
 //   • the callee node is IDENTICAL to the call-LESS `pp.Pulley`, which stays a

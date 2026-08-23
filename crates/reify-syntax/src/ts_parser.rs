@@ -159,11 +159,11 @@ struct Lowering<'a> {
     /// `ImportKind::Module` (the final path segment) contribute — see
     /// `collect_import_bindings` for why the entity-binding kinds do not.
     /// Read by `lower_namespaced_call`'s qualifier gate.
-    import_bindings: HashSet<String>,
+    namespace_bindings: HashSet<String>,
     /// The names this file's imports bind NON-namespace-wise, each mapped to the
     /// `ImportKind` that bound it (task 5495 μ). Populated by the same
     /// `collect_import_bindings` pass, from exactly the three kinds
-    /// `import_bindings` deliberately skips — `Entity`, `EntityAliased` and
+    /// `namespace_bindings` deliberately skips — `Entity`, `EntityAliased` and
     /// `Destructured`.
     ///
     /// This map is what lets `lower_namespaced_call` tell "this name is bound,
@@ -203,7 +203,7 @@ impl<'a> Lowering<'a> {
             declarations: Vec::new(),
             errors: RefCell::new(Vec::new()),
             known_enums,
-            import_bindings: HashSet::new(),
+            namespace_bindings: HashSet::new(),
             entity_bindings: HashMap::new(),
             module_pragmas: Vec::new(),
             declared_module_path: None,
@@ -590,7 +590,7 @@ impl<'a> Lowering<'a> {
             ImportKind::Destructured(_) => None,
         };
         if let Some(binding) = namespace_binding.filter(|b| !b.is_empty()) {
-            self.import_bindings.insert(binding);
+            self.namespace_bindings.insert(binding);
             return;
         }
 
@@ -627,6 +627,37 @@ impl<'a> Lowering<'a> {
             ImportKind::Destructured(_) => "an entity name destructured from it".to_string(),
             ImportKind::Aliased { .. } | ImportKind::Module => "an entity name".to_string(),
         }
+    }
+
+    /// The trailing caveat for the two `ImportKind`s whose entity-ness was
+    /// INFERRED rather than written, so the author whose module happens to have
+    /// a capitalised path segment has a next step (task 5495 μ).
+    ///
+    /// `lower_import` classifies a ≥2-segment import by the CAPITALISATION of
+    /// its final segment: `import geometry.Shapes` is `Entity("Shapes")` and
+    /// `import geometry.Shapes as sh` is `EntityAliased`, so neither binds a
+    /// namespace and `Shapes.Circle()` / `sh.Circle()` are rejected above — with
+    /// a confident explanation that is simply WRONG if `Shapes` is a module.
+    /// Without this sentence the author has no workaround, because their code is
+    /// not in fact wrong. The heuristic predates μ; μ is the first feature that
+    /// turns it into a user-visible hard error. Resolving module-vs-entity from
+    /// the actual module graph instead of from capitalisation is ν's (task 5505)
+    /// — see the `entity_bindings` note and PRD D-7.
+    ///
+    /// `Destructured` gets NO caveat: `import a.b.{C, D}` names its entities
+    /// explicitly, so capitalisation played no part and mentioning it would be
+    /// noise. The two namespace-binding kinds never reach this path.
+    fn entity_binding_capitalisation_hint(kind: &ImportKind) -> String {
+        let segment = match kind {
+            ImportKind::Entity(entity) => entity,
+            ImportKind::EntityAliased { entity, .. } => entity,
+            ImportKind::Destructured(_) | ImportKind::Aliased { .. } | ImportKind::Module => {
+                return String::new();
+            }
+        };
+        format!(
+            ". If `{segment}` names a MODULE rather than an entity, note that the final              path segment is classified by capitalisation — a capitalised one is always              read as an entity name — so it has to be lowercase to bind a namespace"
+        )
     }
 
     fn lower_import(&self, node: tree_sitter::Node) -> Option<ImportDecl> {
@@ -919,18 +950,13 @@ impl<'a> Lowering<'a> {
     /// Returns `None` if `node` is not a `namespaced_name` or is missing either
     /// field (only reachable on an error-recovery tree).
     ///
-    /// **Encoding contract for the resolution phase (task ν; PRD
-    /// `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q1/Q3, D-7).** A qualified
-    /// reference through an import binding (`pp.Pulley`, from `import parts as
-    /// pp`) is carried DOT-JOINED in the existing `String` name slots —
-    /// `TypeExprKind::Named { name }`, `SubDecl::structure_name`, and
-    /// `ExprKind::FunctionCall { name }`. μ deliberately introduces NO new
-    /// `TypeExprKind` / `ExprKind` variant: `.` is not a legal identifier
-    /// character, so `name.contains('.')` is an unambiguous, cheap discriminator
-    /// for ν's resolution-phase rewrite. That mirrors resolution-unification D-9
-    /// exactly (the parse leaves an under-specified form; resolution rewrites
-    /// it), and it is already this AST's convention for module paths
-    /// (`ImportDecl::path` is a dot-joined `String`).
+    /// **Encoding contract for the resolution phase (task ν).** A qualified
+    /// reference rides DOT-JOINED in the existing `String` name slots —
+    /// `TypeExprKind::Named { name }`, `SubDecl::structure_name`,
+    /// `ExprKind::FunctionCall { name }` — with no new AST variant, because `.`
+    /// is not a legal identifier character and `name.contains('.')` is therefore
+    /// an unambiguous discriminator for ν's rewrite. Rationale and alternatives:
+    /// PRD `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q1/Q3, D-7.
     ///
     /// Joining the two FIELDS — rather than reading the node's source text — is
     /// what normalises interior whitespace, so `pp . Pulley` yields exactly
@@ -4479,43 +4505,39 @@ impl<'a> Lowering<'a> {
     /// qualifier to name, so it must reach guard 1 first and keep that guard's
     /// own wording.
     ///
-    /// **Callee-shape guard (D-7 / PRD §9).** The grammar's callee is a full
-    /// `member_access` (grammar.js:1609 — an inline `identifier '.' identifier`
-    /// would collide with `member_access` as a reduce-reduce ambiguity), and
-    /// `member_access.object` is in turn a full `_expression` (grammar.js:1621).
-    /// So the callee's object is not necessarily a binding identifier: a
-    /// 3+-segment path (`a.b.c()`, object = `member_access`) reaches here, and so
-    /// does any other postfix chain (`arr[0].g()`, object = `index_access`;
-    /// `f(1).g()`, object = `function_call`). Every one of those is rejected at
-    /// lowering, and the diagnostic is worded around what is actually checked —
-    /// the callee must be a simple `binding.Name` — with the μ-scope sentence
-    /// (bare full-path qualification is out of scope) appended ONLY for the
-    /// dotted-path case it describes. Rejection is unchanged in kind: every one
-    /// of these forms was an error before μ and still is, now with a message
-    /// instead of an anonymous ERROR node. The rejection lowers nothing, so no
-    /// fabricated multi-segment name ever reaches the AST — and, since
-    /// `lower_binding_value` propagates the `None`, the enclosing member is
-    /// dropped rather than half-built.
+    /// **Callee-shape guard (D-7 / PRD §9).** `grammar.js`'s `namespaced_call`
+    /// rule takes a full `member_access` as its callee (an inline `identifier
+    /// '.' identifier` would collide with `member_access` as a reduce-reduce
+    /// ambiguity), and the `member_access` rule's `object` field is in turn a
+    /// full `_expression`. So the callee's object is not necessarily a binding
+    /// identifier: a 3+-segment path (`a.b.c()`, object = `member_access`)
+    /// reaches here, and so does any other postfix chain (`arr[0].g()`, object =
+    /// `index_access`; `f(1).g()`, object = `function_call`). Every one of those
+    /// is rejected at lowering, worded around what is actually checked — the
+    /// callee must be a simple `binding.Name` — with the out-of-scope sentence
+    /// appended ONLY for the dotted-path case it describes. Rejection is
+    /// unchanged in kind: every one of these forms was an error before μ and
+    /// still is, now with a message instead of an anonymous ERROR node. The
+    /// rejection lowers nothing, so no fabricated multi-segment name reaches the
+    /// AST — and `lower_binding_value` propagates the `None`, so the enclosing
+    /// member is dropped rather than half-built.
     ///
-    /// **Import-binding guard (D-7).** The grammar rule is
-    /// `prec(12, seq(field('callee', $.member_access), callTail($)))`, so it
-    /// captures EVERY two-segment `ident.ident(args)` — not only the
-    /// import-qualified ones. Without this guard μ turns hard parse errors into
-    /// SILENCE: `obj.width()`, `self.w()` and `totally.undefined_thing(1, 2)`
-    /// were all `Parse error … exit 1` before μ, and measured as exit 0 after it,
-    /// because the compiler has no unknown-function diagnostic behind
-    /// `ExprKind::FunctionCall`. Lowering is the first layer that knows the
-    /// import set (`import_bindings`, seeded by `collect_import_bindings` in
+    /// **Import-binding guard (D-7).** `namespaced_call` captures EVERY
+    /// two-segment `ident.ident(args)`, not only the import-qualified ones.
+    /// Without this guard μ turns hard parse errors into SILENCE: `obj.width()`,
+    /// `self.w()` and `totally.undefined_thing(1, 2)` were all `Parse error …
+    /// exit 1` before μ, and measured as exit 0 after it, because the compiler
+    /// has no unknown-function diagnostic behind `ExprKind::FunctionCall`.
+    /// Lowering is the first layer that knows the import set
+    /// (`namespace_bindings`, seeded by `collect_import_bindings` in
     /// `lower_source_file`'s order-independent first pass), so the gate lives
     /// here rather than on any of the three grammar surfaces — none of which
     /// knows the imports, and restricting the callee inline would reintroduce the
     /// reduce-reduce ambiguity with `member_access` described above.
     ///
-    /// This guard runs strictly AFTER the callee-shape guard so that guard's
-    /// diagnostics are untouched, and it uses the same rejection shape: one
-    /// `push_error` spanning the callee, then `return None`, which
-    /// `lower_binding_value` propagates so the enclosing member is dropped rather
-    /// than half-built.
+    /// It runs strictly AFTER the callee-shape guard so that guard's diagnostics
+    /// are untouched, and shares its rejection shape: one `push_error` spanning
+    /// the callee, then `return None`.
     ///
     /// After both guards, exactly one silence remains in expression position: a
     /// DECLARED binding whose module resolves but whose member does not. That is
@@ -4555,7 +4577,7 @@ impl<'a> Lowering<'a> {
         }
 
         let qualifier = self.node_text(object);
-        if !self.import_bindings.contains(qualifier) {
+        if !self.namespace_bindings.contains(qualifier) {
             let callee_text = self.node_text(callee);
             let message = match self.entity_bindings.get(qualifier) {
                 // Bound — but as an ENTITY name, so "declare an import" is not
@@ -4567,8 +4589,9 @@ impl<'a> Lowering<'a> {
                      namespace: an import in this file binds `{qualifier}`, but as \
                      {binding_note}, and the qualifier of a qualified call must be a \
                      module namespace. Reify has no method-call syntax, so this cannot \
-                     be a call on the entity `{qualifier}`",
+                     be a call on the entity `{qualifier}`{capitalisation_hint}",
                     binding_note = Self::entity_binding_note(kind),
+                    capitalisation_hint = Self::entity_binding_capitalisation_hint(kind),
                 ),
                 // Not bound at all — today's message, verbatim.
                 None => format!(

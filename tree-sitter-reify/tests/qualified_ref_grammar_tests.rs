@@ -3,10 +3,10 @@
 //! (task 5495 μ, step-1 RED / step-2 GREEN), plus the EXPRESSION-position call
 //! form `pp.Pulley()` (step-3 RED / step-4 GREEN).
 //!
-//! Step-1 RED: `type_expr` (grammar.js ~1064) is
+//! Step-1 RED: grammar.js's `type_expr` rule was
 //! `choice(function_type, parameterized_type, qualified_type, identifier)` — it
-//! has NO dotted arm, so the `.` in `pp.Pulley` matches no arm and produces an
-//! ERROR subtree.  `sub_declaration` (grammar.js ~805) binds
+//! had NO dotted arm, so the `.` in `pp.Pulley` matched no arm and produced an
+//! ERROR subtree.  Its `sub_declaration` rule bound
 //! `field('structure_name', $.identifier)` in all three arms, so a dotted
 //! structure name likewise ERRORs.
 //!
@@ -126,6 +126,37 @@ fn parse_clean(source: &str) -> tree_sitter::Tree {
     tree
 }
 
+/// Kinds of every node whose span is EXACTLY the first occurrence of `text` in
+/// `source`, outermost first — the Rust twin of `nodeNamesSpanning` in
+/// gui/src/__tests__/reifyGrammarQualifiedRef.test.ts.
+///
+/// `find_node_by_kind(root, "member_access").is_some()` is a WEAKER control than
+/// it reads: on `obj.width` it would still pass if the grammar had wrapped that
+/// `member_access` in something else, or produced one over a different span.
+/// Anchoring the span is what makes a control assert that the shape did not move
+/// (task 5495 μ, amendment). Panics on an absent needle so a typo'd one fails
+/// loudly rather than vacuously.
+fn kinds_spanning(node: tree_sitter::Node, source: &str, text: &str) -> Vec<String> {
+    let from = source
+        .find(text)
+        .unwrap_or_else(|| panic!("no {text:?} in: {source:?}"));
+    let to = from + text.len();
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.start_byte() == from && n.end_byte() == to {
+            out.push(n.kind().to_string());
+        }
+        // Push children reversed so the walk stays outermost-first, depth-first.
+        let children: Vec<_> = n.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    out
+}
+
 /// Text of a node's named field child, for field-level assertions.
 fn field_text<'a>(node: tree_sitter::Node<'a>, field: &str, source: &'a str) -> String {
     node.child_by_field_name(field)
@@ -149,8 +180,7 @@ fn field_text<'a>(node: tree_sitter::Node<'a>, field: &str, source: &'a str) -> 
 /// scenario enforces exactly that. Citing each leaf in full is also what
 /// `tests/prd-gate/README.md` requires of a coupled fixture, and it buys
 /// compile-time drift detection if a fixture is moved or deleted. The sibling
-/// `tree-sitter-reify/tests/indexed_sub_grammar_tests.rs:229-246` uses the same
-/// shape.
+/// `tree-sitter-reify/tests/indexed_sub_grammar_tests.rs` uses the same shape.
 ///
 /// NOTE the differing prefix: `include_str!` resolves relative to THIS SOURCE
 /// FILE (`tree-sitter-reify/tests/`, hence `../../`), whereas the
@@ -292,7 +322,7 @@ fn sub_specialization_arm_accepts_namespaced_structure_name() {
 /// Specialization arm WITH a type-argument tail: `sub h : pp.Pulley<T>`.
 ///
 /// THREE-SURFACE PARITY PIN. The specialization arm's `optional(field(
-/// 'type_args', …))` slot (grammar.js:896) sits AFTER `structure_name` (:895), so
+/// 'type_args', …))` slot sits AFTER `structure_name` in that arm, so
 /// widening `structure_name` to `namespaced_name` made this form parse —
 /// `structure_name` and `type_args` come out as SIBLING fields, not as a
 /// `parameterized_type`. `lower_sub` accordingly builds
@@ -567,9 +597,11 @@ fn plain_member_access_unchanged() {
     let source = "structure def S {\n    let s = obj.width\n}\n";
     let tree = parse_clean(source);
 
-    assert!(
-        find_node_by_kind(tree.root_node(), "member_access").is_some(),
-        "`obj.width` must stay a member_access; got kinds: {:?}",
+    assert_eq!(
+        kinds_spanning(tree.root_node(), source, "obj.width"),
+        vec!["member_access".to_string()],
+        "`obj.width` must be spanned by exactly one member_access and nothing \
+         else; got kinds: {:?}",
         collect_kinds(tree.root_node())
     );
     assert!(
@@ -585,9 +617,11 @@ fn unqualified_call_stays_function_call() {
     let source = "structure def S {\n    let t = plain(1)\n}\n";
     let tree = parse_clean(source);
 
-    assert!(
-        find_node_by_kind(tree.root_node(), "function_call").is_some(),
-        "`plain(1)` must stay a function_call; got kinds: {:?}",
+    assert_eq!(
+        kinds_spanning(tree.root_node(), source, "plain(1)"),
+        vec!["function_call".to_string()],
+        "`plain(1)` must be spanned by exactly one function_call and nothing \
+         else; got kinds: {:?}",
         collect_kinds(tree.root_node())
     );
     assert!(
@@ -602,9 +636,11 @@ fn double_colon_access_stays_qualified_access() {
     let source = "structure def S {\n    let u = Foo::bar\n}\n";
     let tree = parse_clean(source);
 
-    assert!(
-        find_node_by_kind(tree.root_node(), "qualified_access").is_some(),
-        "`Foo::bar` must stay a qualified_access; got kinds: {:?}",
+    assert_eq!(
+        kinds_spanning(tree.root_node(), source, "Foo::bar"),
+        vec!["qualified_access".to_string()],
+        "`Foo::bar` must be spanned by exactly one qualified_access and nothing \
+         else; got kinds: {:?}",
         collect_kinds(tree.root_node())
     );
     assert!(
@@ -613,21 +649,105 @@ fn double_colon_access_stays_qualified_access() {
     );
 }
 
-/// `obj.(Trait::m)(x)` stays a `trait_method_call` — `namespaced_call`'s
-/// `prec(12)` must not steal the instance-qualified call form.
+/// `obj.(Trait::m)(x)` stays a `trait_method_call`.
+///
+/// A plain SHAPE control, deliberately NOT a precedence one. It used to claim
+/// it pinned that "`namespaced_call`'s `prec(12)` must not steal the
+/// instance-qualified call form", which it cannot: `obj.(` can never reduce to
+/// a `member_access` (that rule requires `'.' identifier`), so this source is
+/// shape-disjoint from the precedence question and holds for ANY value of that
+/// prec. `prec(12)` is exercised for real by
+/// `prec12_shifts_the_paren_but_not_the_at_selector` below.
 #[test]
 fn instance_qualified_call_stays_trait_method_call() {
     let source = "structure def S {\n    let v = obj.(Trait::m)(x)\n}\n";
     let tree = parse_clean(source);
 
-    assert!(
-        find_node_by_kind(tree.root_node(), "trait_method_call").is_some(),
-        "`obj.(Trait::m)(x)` must stay a trait_method_call; got kinds: {:?}",
+    assert_eq!(
+        kinds_spanning(tree.root_node(), source, "obj.(Trait::m)(x)"),
+        vec!["trait_method_call".to_string()],
+        "`obj.(Trait::m)(x)` must be spanned by exactly one trait_method_call \
+         and nothing else; got kinds: {:?}",
         collect_kinds(tree.root_node())
     );
     assert!(
         find_node_by_kind(tree.root_node(), "namespaced_call").is_none(),
         "`obj.(Trait::m)(x)` must not produce a namespaced_call node"
+    );
+}
+
+/// The case that GENUINELY exercises `namespaced_call`'s `prec(12)`: the same
+/// `a.b` prefix, with the two postfix tails that sit on either side of it.
+///
+/// `prec(12)` is one level above `member_access`'s `prec.left(11)`, so on
+/// `a.b` followed by `(` the parser SHIFTS the `(` into `namespaced_call`
+/// instead of reducing to a bare `member_access`. The `@` selector is
+/// `prec.left(10)` — BELOW `member_access` — so the same `a.b` prefix followed
+/// by `@ sel(1)` must reduce to `member_access` first and leave the selector
+/// outside. Lower the `namespaced_call` prec to 11 or below and the first half
+/// of this test flips; raise `ad_hoc_selector`'s above 11 and the second half
+/// does. Neither is reachable through `obj.(Trait::m)(x)`.
+#[test]
+fn prec12_shifts_the_paren_but_not_the_at_selector() {
+    let call_src = "structure def S {\n    let v = a.b(1)\n}\n";
+    let call_tree = parse_clean(call_src);
+    assert_eq!(
+        kinds_spanning(call_tree.root_node(), call_src, "a.b(1)"),
+        vec!["namespaced_call".to_string()],
+        "`(` must SHIFT into namespaced_call rather than reduce `a.b` to a bare \
+         member_access; got kinds: {:?}",
+        collect_kinds(call_tree.root_node())
+    );
+    assert_eq!(
+        kinds_spanning(call_tree.root_node(), call_src, "a.b"),
+        vec!["member_access".to_string()],
+        "the callee stays a member_access node in its own right; got kinds: {:?}",
+        collect_kinds(call_tree.root_node())
+    );
+
+    let sel_src = "structure def S {\n    let v = a.b @ sel(1)\n}\n";
+    let sel_tree = parse_clean(sel_src);
+    assert_eq!(
+        kinds_spanning(sel_tree.root_node(), sel_src, "a.b @ sel(1)"),
+        vec!["ad_hoc_selector".to_string()],
+        "`@` is prec 10, BELOW member_access — `a.b` must reduce first and the \
+         selector stay outside; got kinds: {:?}",
+        collect_kinds(sel_tree.root_node())
+    );
+    assert!(
+        find_node_by_kind(sel_tree.root_node(), "namespaced_call").is_none(),
+        "`a.b @ sel(1)` must not produce a namespaced_call node; got kinds: {:?}",
+        collect_kinds(sel_tree.root_node())
+    );
+}
+
+/// A postfix chain whose head is not a bare identifier still reaches
+/// `namespaced_call` — `xs[0].f(1)` — because the rule's callee is a full
+/// `member_access` whose `object` is a full `_expression`. Grammar-level
+/// ACCEPTANCE only: lowering rejects it (the callee is not a simple
+/// `binding.Name`), pinned in
+/// crates/reify-syntax/tests/harness_syntax/namespaced_ref_lowering_tests.rs.
+#[test]
+fn indexed_postfix_chain_still_reaches_namespaced_call() {
+    let source = "structure def S {\n    let v = xs[0].f(1)\n}\n";
+    let tree = parse_clean(source);
+
+    assert_eq!(
+        kinds_spanning(tree.root_node(), source, "xs[0].f(1)"),
+        vec!["namespaced_call".to_string()],
+        "`xs[0].f(1)` must reduce to a namespaced_call at the grammar level; \
+         got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    assert_eq!(
+        field_text(
+            find_node_by_kind(tree.root_node(), "namespaced_call")
+                .expect("expected a namespaced_call node"),
+            "callee",
+            source,
+        ),
+        "xs[0].f",
+        "the callee is the whole member_access, index_access object included"
     );
 }
 
