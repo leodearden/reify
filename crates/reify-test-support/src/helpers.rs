@@ -1725,23 +1725,11 @@ mod tests {
     // ── get_value_cell_in ─────────────────────────────────────────────────
 
     /// get_value_cell_in should return the ValueCellDecl of the named cell in the
-    /// named template, even when the module has multiple templates. Asserts on
-    /// wrapper-only fields (`id.member`, `cell_type`) that get_let_expr_in cannot
-    /// reach, since exposing those fields is the entire motivation for this helper
-    /// — plus the resolved literal value itself, so a wrong-template resolution is
-    /// actually observable rather than merely claimed. Both templates declare a
-    /// cell with the SAME member name ("w") but DIFFERENT values (1.5 vs 2.7): if
-    /// this helper ever resolved the wrong template, the value assertion below
-    /// would catch it directly (Alpha's 1.5 where Beta's 2.7 is expected).
-    ///
-    /// Non-integer literals are used so `cell_type` is asserted independent of any
-    /// Int/Real classification hazard: `classify_number_literal`
-    /// (crates/reify-ast/src/decl.rs) returns `NumberClass::Real` unconditionally
-    /// for any real-form token (one containing `.`, `e`, or `E`, per its `is_real`
-    /// flag), so even a whole-number real literal like `1.0` compiles to
-    /// `Type::Scalar { dimension: DIMENSIONLESS }` (Display: "Real"), never
-    /// `Type::Int` — the distinct 1.5/2.7 values above are purely to make
-    /// wrong-template resolution observable, not to dodge a type hazard.
+    /// named template, asserting on `kind`/`cell_type` — fields get_let_expr_in
+    /// cannot reach — plus the resolved literal. Alpha and Beta both declare `w`
+    /// with different values (1.5 vs 2.7) so a wrong-template resolution is
+    /// observable; real-form literals stay `Real` regardless of whole-number
+    /// value (see `classify_number_literal` in reify-ast).
     #[test]
     fn test_get_value_cell_in_returns_cell_from_named_template() {
         use reify_ir::{CompiledExprKind, Value};
@@ -1752,7 +1740,13 @@ mod tests {
         "#;
         let module = super::compile_source(source);
         let cell = super::get_value_cell_in(&module, "Beta", "w");
-        assert_eq!(cell.id.member, "w");
+        assert_eq!(
+            cell.kind,
+            reify_compiler::ValueCellKind::Let,
+            "expected cell.kind == ValueCellKind::Let for Beta.w (pins that the \
+             helper returns the full declaration, not just an expr), got {:?}",
+            cell.kind
+        );
         assert_eq!(
             cell.cell_type,
             reify_core::Type::dimensionless_scalar(),
@@ -1832,7 +1826,10 @@ mod tests {
     }
 
     /// get_let_expr_in should panic with "no template named" when the template
-    /// name does not match any template in the module.
+    /// name does not match any template in the module. This panic is now raised
+    /// by get_value_cell_in (see its own tests above); kept here too as a
+    /// deliberate API-contract guard on get_let_expr_in's own public panic
+    /// behaviour, independent of its current delegating implementation.
     #[test]
     #[should_panic(expected = "no template named")]
     fn test_get_let_expr_in_panics_on_missing_template() {
@@ -1842,7 +1839,9 @@ mod tests {
     }
 
     /// get_let_expr_in should panic with "no value cell named" when the cell
-    /// name does not match any value cell in the named template.
+    /// name does not match any value cell in the named template. Same
+    /// deliberate API-contract guard rationale as the "no template named" test
+    /// above.
     #[test]
     #[should_panic(expected = "no value cell named")]
     fn test_get_let_expr_in_panics_on_missing_cell() {
