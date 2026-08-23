@@ -478,6 +478,16 @@ fn assert_qualifier_rejection_core(source: &str, callee: &str, qualifier: &str) 
         "the diagnostic must name the offending qualifier `{qualifier}` in `{source}`; \
          got: {joined}"
     );
+    // A user-facing diagnostic is one paragraph of prose, so a RUN of spaces is
+    // always a typo — in practice a `\`-continuation that got collapsed while the
+    // literal was edited, which leaves the indentation baked into the message and
+    // is invisible in every `contains(...)` assertion above. Caught once for real
+    // on the capitalisation hint (task 5495 μ, amendment).
+    assert!(
+        !joined.contains("  "),
+        "the diagnostic must not contain a run of spaces (a collapsed line \
+         continuation) in `{source}`; got: {joined:?}"
+    );
 
     let start = source
         .find(callee)

@@ -656,7 +656,10 @@ impl<'a> Lowering<'a> {
             }
         };
         format!(
-            ". If `{segment}` names a MODULE rather than an entity, note that the final              path segment is classified by capitalisation — a capitalised one is always              read as an entity name — so it has to be lowercase to bind a namespace"
+            ". If `{segment}` names a MODULE rather than an entity, note that the \
+             final path segment is classified by capitalisation — a capitalised one \
+             is always read as an entity name — so it has to be lowercase to bind a \
+             namespace"
         )
     }
 
