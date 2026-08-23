@@ -70,7 +70,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (151, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (152, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -127,6 +127,7 @@ test_nextest_slow_priority.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
 test_no_new_wallclock_upper_bounds.sh pool
 test_npm_ci_hardening.sh pool
+test_occt_deps_preflight.sh pool
 test_occt_flock_gate_bounds.sh pool
 test_occt_flock_gate.sh pool
 test_occt_gated_scope.sh pool
