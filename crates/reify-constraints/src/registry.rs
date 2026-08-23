@@ -175,6 +175,11 @@ impl SolverRegistry {
 
         // Collect value-refs from ALL objective terms for objective-aware decomposition.
         // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
+        //
+        // RETAINED, not discarded (task #5467 amendment): the expansion's reach
+        // delta is handed to the decomposition below so it need not re-derive
+        // the identical set. See the `obj_reach` note at that call.
+        let mut obj_reach: Vec<ValueCellId> = Vec::new();
         let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
             problem.objective.as_ref().map(|obj: &ObjectiveSet| {
                 let mut refs = std::collections::HashSet::new();
@@ -187,19 +192,15 @@ impl SolverRegistry {
                 // #5467 layer 2) rather than hand-rolled here — the same helper
                 // the decomposition's own constraint and objective sides use,
                 // so the three cannot drift out of lock-step (G7).
-                // The returned reach-delta is only of interest to the
-                // decomposition's own domain widening; here the widened set is
-                // the whole point.
-                //
                 // This expansion exists for the `objective_component` FIRST-MATCH
                 // LOOKUP below, not for `decompose_into_components_with_reads` —
                 // that function widens `objective_refs` itself and never needed a
-                // pre-expanded input. Handing it the already-widened set is free:
-                // the expansion is idempotent, and the decompose side now consumes
-                // a reach DELTA rather than cloning the ref set (task #5467
-                // amendment), so the second pass is a handful of hash lookups that
-                // find nothing new.
-                let _ = crate::decompose::expand_refs_through_dependent_cells(
+                // pre-expanded input. Handing it the already-widened set is
+                // behaviourally free (the expansion is idempotent), but it is not
+                // COST-free: re-deriving the delta there re-clones every reached
+                // id, two `String` allocations apiece. So the delta is kept here
+                // and passed down instead of dropped on the floor.
+                obj_reach = crate::decompose::expand_refs_through_dependent_cells(
                     &mut refs,
                     &dependent_auto_reads,
                 );
@@ -229,10 +230,17 @@ impl SolverRegistry {
         // at all and being skipped. `_with_reads` is called directly with the
         // map built once above — the 4-arg `decompose_into_components` wrapper
         // would rebuild it, a second transitive walk on the solve hot path.
+        //
+        // `obj_reach` is the delta the pre-expansion above already computed and
+        // already folded into `obj_refs`; passing it spares the objective-union
+        // step a second full `dependent_cell_reach_delta` walk over the same
+        // map. It is empty (and the parameter inert) whenever there is no
+        // objective or no dependent cell — the D1/B2 identity path.
         let components = crate::decompose::decompose_into_components_with_reads(
             &problem.auto_params,
             &problem.constraints,
             obj_refs.as_ref(),
+            Some(&obj_reach),
             &dependent_auto_reads,
         );
 

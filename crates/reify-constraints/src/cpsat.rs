@@ -52,11 +52,23 @@ fn collect_constraint_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
 ///
 /// Answering "can it?" by asking "did it?" is the only formulation that cannot
 /// drift: a new accepted or rejected shape in `build_variable_domain` changes
-/// this predicate in the same commit, by construction. The cost is bounded by
-/// `MAX_INT_DOMAIN` (1000 `Value::Int`s in the worst case, discarded
-/// immediately) and is paid once per auto reached THROUGH a dependent cell
-/// during decomposition — never on a direct-only model, where the caller's
-/// `reached` set is empty (PRD2 D1/B2 identity).
+/// this predicate in the same commit, by construction.
+///
+/// # Cost, and why the caller MEMOIZES it
+///
+/// Not free, and not uniformly cheap: the `Type::Int`-with-bounds arm
+/// materialises up to `MAX_INT_DOMAIN` (1000) `Value::Int`s and drops them
+/// immediately, the `Type::Enum` arm walks EVERY expression tree in
+/// `constraints`, and every rejecting arm allocates a throwaway `format!`
+/// String.
+///
+/// `decompose_into_components_with_reads` therefore caches the verdict PER AUTO
+/// PARAM INDEX across its constraint loop, so a decomposition performs at most
+/// one probe per auto param rather than one per (constraint × dependent-cell
+/// read × auto behind it) — which, with the enum arm's whole-slice scan, was
+/// quadratic in the constraint count. On a direct-only model the caller's
+/// `reached` set is empty and the probe never runs at all (PRD2 D1/B2
+/// identity).
 pub(crate) fn can_enumerate(
     param: &AutoParam,
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -333,20 +345,21 @@ impl ConstraintSolver for CpSatSolver {
         // The parenthetical is load-bearing, so it is ENFORCED rather than
         // merely intended (task #5467): every auto id is stripped back out
         // below. `current_values` is the engine's whole value map
-        // (`values.clone()`, engine_eval.rs:2326) and DOES carry same-scope
+        // (`build_solver_problem`'s `current_values = values.clone()`) and DOES
+        // carry same-scope
         // auto entries, so without the strip an unassigned auto holds a STALE
         // CONCRETE value instead of being absent — and `backtrack`'s
         // forward-check then prunes a feasible branch off a value the search
         // had not chosen yet. Three real sources, (iii) first because it needs
         // no eval layer at all and so is reachable purely inside this crate:
         //
-        //  (iii) `solve_lexicographic` (registry.rs:668,717-720) warm-starts
-        //        stage N+1 from stage N's solution INSIDE one `solve()` call.
-        //  (i)   A second `eval_cached` at the same `VersionId` serves a
-        //        previously-SOLVED auto straight back from cache into `values`
-        //        (engine_eval.rs:6949-6962), which is then cloned to here.
-        //  (ii)  A `param_override` on an auto cell (engine_eval.rs:7075-7080),
-        //        written as `Determined` yet still admitted to `auto_params`.
+        //  (iii) `SolverRegistry::solve_lexicographic` warm-starts stage N+1
+        //        from stage N's solution INSIDE one `solve()` call.
+        //  (i)   A second `Engine::eval_cached` at the same `VersionId` serves a
+        //        previously-SOLVED auto straight back from cache into `values`,
+        //        which is then cloned to here.
+        //  (ii)  A `param_override` on an auto cell, written as `Determined` yet
+        //        still admitted to `auto_params` by `build_auto_param_list`.
         //
         // (ii) is NOT staleness and is not described as such: it is a user's
         // explicit pin, and stripping it means CP-SAT searches that auto's whole
@@ -363,7 +376,8 @@ impl ConstraintSolver for CpSatSolver {
         //
         // Strip ONLY the auto ids: `current_values` is the sole channel by
         // which a CP-SAT constraint sees a NON-auto base value (pinned
-        // connector autos land there at engine_eval.rs:2327), so starting from
+        // connector autos are inserted there by `build_solver_problem`), so
+        // starting from
         // an empty map instead would silently break every such model.
         //
         // Clone-then-`remove` rather than a filtered rebuild: `ValueMap`
@@ -430,15 +444,14 @@ impl ConstraintSolver for CpSatSolver {
 // because it needs no eval layer at all and so is reachable purely inside
 // reify-constraints:
 //
-//  (iii) `registry.rs:668,717-720` — lexicographic multi-rank solving clones
-//        `base.current_values` once and then WARM-STARTS stage N+1 from stage
-//        N's solution INSIDE a single `solve()` call.
-//  (i)   `engine_eval.rs:6949-6962` — a second `eval_cached` at the same
-//        `VersionId` serves a previously-SOLVED auto from cache straight back
-//        into `values`, which `build_solver_problem` clones wholesale into
-//        `current_values` at engine_eval.rs:2326.
-//  (ii)  `engine_eval.rs:7075-7080` — a `param_override` on an auto cell, which
-//        is written as `Determined` yet is still admitted to `auto_params`.
+//  (iii) `SolverRegistry::solve_lexicographic` — lexicographic multi-rank
+//        solving clones `base.current_values` once and then WARM-STARTS stage
+//        N+1 from stage N's solution INSIDE a single `solve()` call.
+//  (i)   `Engine::eval_cached` — a second call at the same `VersionId` serves a
+//        previously-SOLVED auto from cache straight back into `values`, which
+//        `build_solver_problem` clones wholesale into `current_values`.
+//  (ii)  A `param_override` on an auto cell, which is written as `Determined`
+//        yet is still admitted to `auto_params` by `build_auto_param_list`.
 //        The odd one out: a deliberate user pin, not staleness. It is stripped
 //        anyway, for consistency with `DimensionalSolver`, and
 //        `an_overridden_auto_is_searched_rather_than_pinned_to_its_seed` pins
@@ -458,13 +471,13 @@ mod dependent_cell_forward_check_tests {
     /// The value a stale same-scope auto entry carries into the search.
     ///
     /// Named rather than inlined — mirroring `STALE_SIDE` in
-    /// `tests/joint_drive_per_trial_recompute.rs:998` — so a mixed-up assertion
+    /// `tests/joint_drive_per_trial_recompute.rs` — so a mixed-up assertion
     /// cannot pass by coincidence: every lock-2 fixture is built so that the
     /// STALE answer and the CORRECT answer are opposites, and naming the stale
     /// side makes that opposition explicit at the call site.
     ///
     /// A real one arrives via any of the three sources named in this module's
-    /// header; `registry.rs:717-720`'s lexicographic warm-start is the one that
+    /// header; `SolverRegistry::solve_lexicographic`'s warm-start is the one that
     /// needs no eval layer at all.
     const STALE_SEED: bool = true;
 
@@ -774,7 +787,8 @@ mod dependent_cell_forward_check_tests {
     /// longer sees an earlier one — would leave them all green. `solver.rs`'s
     /// fold consumes the list in `build_dependent_cells`' STORED topological
     /// order with the context rebuilt against the RUNNING map each iteration
-    /// (solver.rs:222-224, 262-266); this is the CP-SAT-side pin on that.
+    /// (`DimensionalSolver`'s `build_trial_values`, via the shared
+    /// `fold_dependent_cells`); this is the CP-SAT-side pin on that.
     ///
     /// `n : Int` bounded `[0, 5]`; CHAINED cells `let f = n * 2` then
     /// `let g = f + 1`, stored in that order; `constraint g == 7` plus the
@@ -831,7 +845,7 @@ mod dependent_cell_forward_check_tests {
     /// Source (ii) in this module's header is the odd one out: unlike the
     /// lexicographic warm start and the `eval_cached` replay, a `param_override`
     /// on an auto cell is a user's explicit pin, written as
-    /// `DeterminacyState::Determined` (engine_eval.rs:7075-7080). Stripping it
+    /// `DeterminacyState::Determined`. Stripping it
     /// from the seed means CP-SAT searches that auto's whole domain and can
     /// return a value the override did not name.
     ///
@@ -951,7 +965,7 @@ mod dependent_cell_forward_check_tests {
     ///
     /// This is the guard that matters most. `current_values` is the ONLY
     /// channel by which a CP-SAT constraint sees a non-auto base value (pinned
-    /// connector autos are written into it at engine_eval.rs:2327), so an
+    /// connector autos are written into it by `build_solver_problem`), so an
     /// over-broad "just start from `ValueMap::new()`" strip would satisfy the
     /// two units above while silently breaking every such model.
     ///

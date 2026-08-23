@@ -344,16 +344,45 @@ pub(crate) fn dependent_cell_reach_delta(
 /// returns `Err` and `solve_inner` fails the ENTIRE component with
 /// `NoProgress`.
 ///
-/// So the safe default is "contribute the numeric flag", which forces
-/// `CrossDomain` on any `Logical` classification and routes to the FALLBACK
-/// slot. `None` — the answer that lets a component stay `Logical` — is returned
-/// only for autos [`crate::cpsat::can_enumerate`] says CP-SAT can actually
-/// enumerate. Consulting that predicate rather than re-deriving a type list
-/// here is the point: the routing decision and the enumeration capability are
-/// now the same fact, so a new rejection in `build_variable_domain` re-routes
-/// in the same commit (the same G7 no-lockstep-duplication argument
+/// So the safe default is "contribute a flag that cannot leave the component
+/// at a solver which rejects one of its autos". `None` — the answer that lets a
+/// component stay `Logical` — is returned only for autos
+/// [`crate::cpsat::can_enumerate`] says CP-SAT can actually enumerate.
+/// Consulting that predicate rather than re-deriving a type list here is the
+/// point: the routing decision and the enumeration capability are now the same
+/// fact, so a new rejection in `build_variable_domain` re-routes in the same
+/// commit (the same G7 no-lockstep-duplication argument
 /// `fold_dependent_cells` and `expand_refs_through_dependent_cells` already
 /// make).
+///
+/// # Why the non-`None` answers are the auto's OWN domain, not a blanket flag
+///
+/// A blanket `Dimensional` is safe ONLY when the base classification is
+/// `Logical`, because `widen_domain(Logical, Dimensional) == CrossDomain`. It
+/// is a NO-OP against a `Dimensional` base — and `Dimensional` is also the
+/// classifier's EMPTY DEFAULT for a flagless expression (see the
+/// FLAGLESS-EXPRESSION CAVEAT at the widening site). So
+/// `let w = if fit == Fit::Tight { 1.0mm } else { 2.0mm }; constraint w == 1.0mm`
+/// over an `Enum` auto `fit` classifies `Dimensional`, reaches `fit`,
+/// contributes `Dimensional`, stays `Dimensional`, and routes the whole
+/// component at `DimensionalSolver` — which maps any non-`Type::Scalar` param
+/// to `DimensionVector::DIMENSIONLESS` and writes a `Value::Scalar` back for a
+/// `String`/`Enum`/`Geometry` auto. That is the same misrouting class this
+/// function exists to close, just on the other side of the base classification.
+///
+/// Answering with the auto's own domain makes the widening a forcing function
+/// regardless of the base:
+///   * `Bool` → `Logical` (see below);
+///   * `Geometry`/`Feature` → `Geometric`, which `widen_domain` already has
+///     arms for, rather than fabricating the numeric flag this doc block opens
+///     by warning against;
+///   * `Int`/`Scalar` → `Dimensional`, genuinely numeric;
+///   * everything else → `CrossDomain`, which NO base classification can
+///     absorb, so an auto no solver slot can represent always reaches the
+///     fallback.
+///
+/// Pinned in the `Dimensional`-base direction by
+/// `a_numeric_cell_over_a_string_auto_does_not_stay_dimensional`.
 ///
 /// Concretely, the shapes this now routes to the fallback that the earlier
 /// hand-written `_ => None` catch-all silently routed at a solver that rejects
@@ -365,9 +394,10 @@ pub(crate) fn dependent_cell_reach_delta(
 ///   * `Type::Int` whose bounds are non-finite, out of `i64` range, or span
 ///     more than `MAX_INT_DOMAIN` values.
 ///   * `Type::Enum` with no variant literal anywhere in `constraints`.
-///   * `Type::String`/`List`/`Set`/`Map`/`Option`/`Geometry`/`Feature`/
-///     `StructureRef`/`TraitObject`/`Field`/… — everything under
-///     `build_variable_domain`'s `other =>` catch-all.
+///   * `Type::String`/`List`/`Set`/`Map`/`Option`/`Keyed`/`StructureRef`/
+///     `TraitObject`/`Field`/… — everything under `build_variable_domain`'s
+///     `other =>` catch-all except the two geometry types, which answer
+///     `Geometric` (the domain they actually belong to) instead.
 ///
 /// # Why `Type::Bool` is checked BEFORE the predicate
 ///
@@ -411,10 +441,24 @@ fn domain_of_auto(
         // CP-SAT can build a domain for this auto, so letting the component
         // stay `Logical` is safe — contribute nothing.
         _ if crate::cpsat::can_enumerate(param, constraints) => None,
-        // Everything else: `Dimensional` forces `CrossDomain` on a `Logical`
-        // classification and routes to the fallback slot. A `Scalar` auto lands
-        // here too, which is what the previous explicit `Scalar` arm did.
-        _ => Some(ConstraintDomain::Dimensional),
+        // A geometry handle is GEOMETRIC, not numeric. `widen_domain` already
+        // carries both `Geometric` arms; answering `Dimensional` here would
+        // fabricate exactly the numeric flag this function's doc opens by
+        // refusing to fabricate.
+        reify_core::Type::Geometry | reify_core::Type::Feature => {
+            Some(ConstraintDomain::Geometric)
+        }
+        // `Int` (unbounded, out of `i64` range, or spanning more than
+        // `MAX_INT_DOMAIN`) and `Scalar`: genuinely numeric, so `Dimensional`
+        // IS this auto's own domain rather than a stand-in for one.
+        t if t.is_numeric() => Some(ConstraintDomain::Dimensional),
+        // Everything else — `String`/`Enum`/`List`/`Set`/`Map`/`Option`/
+        // `Keyed`/`StructureRef`/`TraitObject`/`Field`/… — is representable by
+        // NO solver slot. `CrossDomain` is the only answer no base
+        // classification can absorb, so it forces the fallback even when the
+        // constraint classified `Dimensional` (including via the classifier's
+        // flagless empty default).
+        _ => Some(ConstraintDomain::CrossDomain),
     }
 }
 
@@ -487,7 +531,13 @@ pub fn decompose_into_components(
     dependent_cells: &[(ValueCellId, CompiledExpr)],
 ) -> Vec<SubProblem> {
     let auto_reads = dependent_cell_auto_reads(dependent_cells, auto_params);
-    decompose_into_components_with_reads(auto_params, constraints, objective_refs, &auto_reads)
+    decompose_into_components_with_reads(
+        auto_params,
+        constraints,
+        objective_refs,
+        None,
+        &auto_reads,
+    )
 }
 
 /// [`decompose_into_components`] over an ALREADY-BUILT
@@ -497,19 +547,31 @@ pub fn decompose_into_components(
 /// fail-safe cycle semantics (a cell on or downstream of a back edge is
 /// OMITTED rather than published with a partial set).
 ///
-/// # `objective_refs` is expanded HERE
+/// # `objective_refs` is expanded HERE — unless the caller already did it
 ///
-/// Callers pass their RAW objective ref set; this function widens it through
-/// `auto_reads` itself, so pre-expanding is never required for the
-/// decomposition's sake. `SolverRegistry::solve_inner` pre-expands anyway
+/// Callers may pass their RAW objective ref set and let this function widen it
+/// through `auto_reads`, so pre-expanding is never required for the
+/// decomposition's sake. `SolverRegistry::solve_inner` pre-expands anyway,
 /// because its own `objective_component` first-match lookup needs the widened
-/// set, and passing the already-widened set here is harmless: the expansion is
-/// IDEMPOTENT (`auto_reads` is transitive), and since the amendment above it
-/// costs one `Vec` of reached ids rather than a `HashSet` clone.
+/// set.
+///
+/// `objective_reach` is how such a caller AVOIDS PAYING TWICE (task #5467
+/// amendment): it is the reach delta `objective_refs` gets through
+/// `auto_reads`, when the caller has already computed it — typically as the
+/// return value of [`expand_refs_through_dependent_cells`], in which case it is
+/// also already folded into `objective_refs`. `None` means "not computed;
+/// compute it here". Re-deriving it instead is not the "handful of hash lookups
+/// that find nothing new" this comment used to claim: every dependent-cell id
+/// is still present in the widened `refs` (the expansion only ADDS), so the
+/// second pass re-clones the WHOLE delta — |delta| `ValueCellId` allocations,
+/// each two `String`s. Behaviourally the two are interchangeable (`UnionFind`
+/// is idempotent and the chain below tolerates duplicates), so the parameter is
+/// a pure cost knob.
 pub(crate) fn decompose_into_components_with_reads(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     objective_refs: Option<&HashSet<ValueCellId>>,
+    objective_reach: Option<&[ValueCellId]>,
     auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
 ) -> Vec<SubProblem> {
     if constraints.is_empty() {
@@ -526,6 +588,28 @@ pub(crate) fn decompose_into_components_with_reads(
 
     let n_params = auto_params.len();
     let mut uf = UnionFind::new(n_params);
+
+    // MEMOIZED `domain_of_auto` verdict, one slot per auto param (task #5467
+    // amendment). `Some(v)` = probed, `None` = not probed yet; the inner
+    // `Option` is the verdict itself.
+    //
+    // Both of `domain_of_auto`'s arguments — `auto_params[pi]` and the whole
+    // `constraints` slice — are invariant across the loop below, so the answer
+    // is a pure function of the param INDEX. Without this cache the probe runs
+    // once per (constraint × dependent cell read × auto behind it): C × K × A
+    // calls, and `dependent_cell_reach_delta` explicitly may return DUPLICATES,
+    // so even a single constraint can probe one auto repeatedly. Each call
+    // delegates to `cpsat::can_enumerate` → `build_variable_domain`, whose
+    // `Type::Enum` arm walks EVERY expression tree in `constraints` — making
+    // the uncached form O(C² × K × A × tree_size) on the solve hot path, for a
+    // verdict that cannot change between calls. Cached, it is at most A probes
+    // per decomposition.
+    //
+    // D1/B2 IDENTITY: with an empty `auto_reads` no constraint reaches
+    // anything, so no slot is ever filled and the `vec![None; n_params]`
+    // allocation is the only cost — the same order as the `param_ids` vector
+    // already built above.
+    let mut auto_domain: Vec<Option<Option<ConstraintDomain>>> = vec![None; n_params];
 
     // For each constraint, find which auto params it references
     // and union them together. Also track the constraint→params mapping.
@@ -610,10 +694,12 @@ pub(crate) fn decompose_into_components_with_reads(
         // this loop never runs and the domain is bit-identical to pre-α.
         let mut domain = ConstraintClassifier::classify(expr);
         for id in &reached {
-            if let Some(&pi) = param_index.get(id)
-                && let Some(d) = domain_of_auto(&auto_params[pi], constraints)
-            {
-                domain = widen_domain(domain, d);
+            if let Some(&pi) = param_index.get(id) {
+                let verdict = *auto_domain[pi]
+                    .get_or_insert_with(|| domain_of_auto(&auto_params[pi], constraints));
+                if let Some(d) = verdict {
+                    domain = widen_domain(domain, d);
+                }
             }
         }
 
@@ -644,7 +730,20 @@ pub(crate) fn decompose_into_components_with_reads(
         // is non-empty exactly when the clone was most expensive; an empty
         // `auto_reads` now yields an empty delta and allocates nothing either
         // way, so the D1/B2 path is still zero-cost.
-        let reached = dependent_cell_reach_delta(refs, auto_reads);
+        //
+        // And when the caller ALREADY computed that delta — `solve_inner` does,
+        // to widen `refs` for its own `objective_component` lookup — it hands it
+        // over rather than making this side re-clone the whole thing (see
+        // `objective_reach` in the fn doc). `computed` exists only to own the
+        // fallback `Vec` for the borrow below.
+        let computed;
+        let reached: &[ValueCellId] = match objective_reach {
+            Some(delta) => delta,
+            None => {
+                computed = dependent_cell_reach_delta(refs, auto_reads);
+                &computed
+            }
+        };
 
         let obj_param_indices: Vec<usize> = refs
             .iter()
@@ -1129,41 +1228,25 @@ mod tests {
     /// catch-all, and the siblings alone would pass on `_ => Some(Dimensional)`.
     #[test]
     fn an_int_auto_behind_a_bool_cell_stays_logical() {
-        let params = vec![AutoParam {
-            id: ValueCellId::new("S", "n"),
-            param_type: Type::Int,
-            bounds: Some((0.0, 10.0)),
-            free: true,
-        }];
-        let constraints = vec![(
-            ConstraintNodeId::new("S", 0),
-            eq_true(bool_cell_ref("S", "ok")),
-        )];
-        let dependent_cells = vec![(
-            ValueCellId::new("S", "ok"),
+        // Shares `bool_cell_over` with its three NEGATIVE siblings below (items
+        // are order-free inside a module, so the helper's later declaration is
+        // immaterial): identical scaffolding, so the ONLY thing that differs
+        // between the positive and negative cases is the auto itself.
+        let components = bool_cell_over(
+            AutoParam {
+                id: ValueCellId::new("S", "n"),
+                param_type: Type::Int,
+                bounds: Some((0.0, 10.0)),
+                free: true,
+            },
             CompiledExpr::binop(
                 BinOp::Gt,
                 CompiledExpr::value_ref(ValueCellId::new("S", "n"), Type::Int),
                 CompiledExpr::literal(Value::Int(5), Type::Int),
                 Type::Bool,
             ),
-        )];
-
-        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
-
-        assert_eq!(
-            components.len(),
-            1,
-            "fixture integrity: `constraint ok == true` must reach `S.n` \
-             through `let ok = n > 5`, or the domain assertion below is \
-             vacuous; got {components:?}",
         );
-        assert!(
-            components[0].auto_params.contains(&ValueCellId::new("S", "n")),
-            "fixture integrity: the component must actually hold the Int auto \
-             whose routing is under test; got {:?}",
-            components[0].auto_params,
-        );
+
         assert_eq!(
             components[0].domain,
             ConstraintDomain::Logical,
@@ -1319,6 +1402,150 @@ mod tests {
              answered from `Type::Enum` alone instead of asking \
              `cpsat::can_enumerate`, which needs the constraints to answer",
         );
+    }
+
+    /// A `Dimensional`-BASE constraint reaching a non-enumerable auto must not
+    /// stay `Dimensional` — `let w = 1.0mm + f(name); constraint w == 1.0mm`
+    /// over a `Type::String` auto `S.name`.
+    ///
+    /// Every other domain unit in this module builds its constraint as
+    /// `eq_true(bool_cell_ref(..))`, i.e. a `Logical` base — and against a
+    /// `Logical` base ANY numeric-flavoured contribution widens to
+    /// `CrossDomain`, so all of them pass on a `domain_of_auto` that answers a
+    /// blanket `Dimensional`. This is the case that does not:
+    /// `widen_domain(Dimensional, Dimensional) == Dimensional` (the `a == b`
+    /// fast path), so a blanket answer is a NO-OP here and the component keeps
+    /// the classifier's numeric verdict.
+    ///
+    /// That verdict routes the whole component at `DimensionalSolver`, which
+    /// maps any non-`Type::Scalar` param to `DimensionVector::DIMENSIONLESS`
+    /// and writes a `Value::Scalar` back — for a `String` auto. Latent today
+    /// (`production()` leaves both the `Logical` and the `CrossDomain` slot
+    /// `None`, so every spelling lands on `DimensionalSolver` anyway) and live
+    /// at PRD2 γ; the classification is wrong either way, which is what this
+    /// pins.
+    ///
+    /// The dependent cell's `default_expr` is built as IR directly rather than
+    /// compiled, so its node types are declarative: what the decomposition
+    /// actually consumes is (i) the CONSTRAINT's syntactic types, which drive
+    /// `ConstraintClassifier`, and (ii) the `ValueRef` edge from `S.w` to
+    /// `S.name`, which drives the reach. A real model would spell the cell
+    /// `let w = if name == "m5" { 1.0mm } else { 2.0mm }`.
+    #[test]
+    fn a_numeric_cell_over_a_string_auto_does_not_stay_dimensional() {
+        let params = vec![AutoParam {
+            id: ValueCellId::new("S", "name"),
+            param_type: Type::String,
+            bounds: None,
+            free: true,
+        }];
+        let constraints = vec![(
+            ConstraintNodeId::new("S", 0),
+            eq_lit(alpha_vref("S", "w"), 1.0),
+        )];
+        let dependent_cells = vec![(
+            ValueCellId::new("S", "w"),
+            add(
+                CompiledExpr::literal(Value::Real(1.0), Type::length()),
+                CompiledExpr::value_ref(ValueCellId::new("S", "name"), Type::String),
+            ),
+        )];
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(
+            components.len(),
+            1,
+            "fixture integrity: `constraint w == 1.0` must reach `S.name` \
+             through `let w = …`, or the domain assertion below is vacuous; \
+             got {components:?}",
+        );
+        assert!(
+            components[0].auto_params.contains(&ValueCellId::new("S", "name")),
+            "fixture integrity: the component must actually hold the String \
+             auto whose routing is under test; got {:?}",
+            components[0].auto_params,
+        );
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::CrossDomain,
+            "the constraint classifies `Dimensional` (a length cell compared \
+             with a length literal) and reaches a `Type::String` auto that NO \
+             solver slot can represent. Getting `Dimensional` means \
+             `domain_of_auto` answered a blanket numeric flag, which \
+             `widen_domain` absorbs into an already-`Dimensional` base — \
+             leaving a String auto routed at `DimensionalSolver`, which writes \
+             a `Value::Scalar` back for it",
+        );
+    }
+
+    /// A `Type::Geometry` auto reached through a derived cell contributes
+    /// `Geometric`, not a fabricated numeric flag.
+    ///
+    /// Same `Dimensional` base as the sibling above, so the contribution is
+    /// visible rather than absorbed. `Geometric` is what `widen_domain`'s
+    /// `(Geometric, Dimensional)` arm exists for — and the arm had no coverage
+    /// at all before this test and
+    /// `widen_domain_absorbs_dimensional_into_geometric` below.
+    #[test]
+    fn a_geometry_auto_behind_a_numeric_cell_widens_to_geometric() {
+        let params = vec![AutoParam {
+            id: ValueCellId::new("S", "solid"),
+            param_type: Type::Geometry,
+            bounds: None,
+            free: true,
+        }];
+        let constraints = vec![(
+            ConstraintNodeId::new("S", 0),
+            eq_lit(alpha_vref("S", "v"), 1.0),
+        )];
+        let dependent_cells = vec![(
+            ValueCellId::new("S", "v"),
+            add(
+                CompiledExpr::literal(Value::Real(1.0), Type::length()),
+                CompiledExpr::value_ref(ValueCellId::new("S", "solid"), Type::Geometry),
+            ),
+        )];
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(components.len(), 1, "fixture integrity; got {components:?}");
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::Geometric,
+            "a geometry handle is GEOMETRIC. Getting `Dimensional` means \
+             `domain_of_auto` fabricated the numeric flag its own doc refuses \
+             to fabricate; getting `CrossDomain` means it fell through to the \
+             no-solver-can-represent-this arm instead of naming the domain \
+             `widen_domain` already has arms for",
+        );
+    }
+
+    /// Direct coverage of `widen_domain`'s two `Geometric` arms.
+    ///
+    /// The exhaustive-match doc argues at length that a catch-all would let a
+    /// future `ConstraintDomain` variant collapse SILENTLY to `Dimensional`.
+    /// That argument is only worth the verbosity if the arms it forces are
+    /// actually exercised — and until this unit, 2 of the 5 were dead in the
+    /// suite. Both ORDERS of every mixed pair are asserted: `widen_domain` is
+    /// documented as a least-upper-bound, so asymmetry would be a bug.
+    #[test]
+    fn widen_domain_absorbs_dimensional_into_geometric() {
+        use ConstraintDomain::{CrossDomain, Dimensional, Geometric, Logical};
+
+        // Geometric absorbs numeric (the classifier reports `Geometric` for a
+        // geometry call over numeric leaves).
+        assert_eq!(widen_domain(Geometric, Dimensional), Geometric);
+        assert_eq!(widen_domain(Dimensional, Geometric), Geometric);
+        // The `a == b` fast path, which is what makes the equal-pair arms
+        // unreachable at runtime.
+        assert_eq!(widen_domain(Geometric, Geometric), Geometric);
+        // Logical mixed with ANYTHING else is cross-domain.
+        assert_eq!(widen_domain(Geometric, Logical), CrossDomain);
+        assert_eq!(widen_domain(Logical, Geometric), CrossDomain);
+        // CrossDomain is the top of the lattice and absorbs everything.
+        assert_eq!(widen_domain(Geometric, CrossDomain), CrossDomain);
+        assert_eq!(widen_domain(CrossDomain, Geometric), CrossDomain);
     }
 
     // --- dependent_cell_auto_reads (task #5720) ---
