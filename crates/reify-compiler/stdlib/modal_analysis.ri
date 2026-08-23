@@ -128,6 +128,18 @@ structure def NoDamping : DampingDescriptor { }
 //           frequencies more than low. Useful for suppressing
 //           high-frequency numerical noise from explicit time integration.
 //
+// ANGULAR-RATE TRAP (read before writing an `Hz` literal here): the solver
+// consumes α as an ANGULAR rate. `rayleigh_damping_ratio` (reify-stdlib,
+// modal::free_vibration) evaluates (α + β·ω²)/(2·ω) with ω in rad/s, so α
+// must be the s⁻¹ magnitude on that same rad/s scale. `Hz` at this slot
+// therefore denotes plain s⁻¹, NOT cycles/s: `alpha: 2.0Hz` is consumed as
+// 2 rad/s, not 2·2π rad/s. Reify does carry the distinction
+// (`DimensionVector::ANGULAR_VELOCITY` is rad·s⁻¹, distinct from
+// `FREQUENCY`), and `Frequency` is declared here to match PRD §4.2's
+// stated "units 1/s"; a caller thinking in cycles/s must pre-multiply by
+// 2π itself, because nothing downstream will. (Inert across today's
+// corpus — every call site is `alpha: 0.0Hz`.)
+//
 // Explicitly NOT constrained: alpha / beta are conventionally non-negative
 // but physically meaningful at zero ("stiffness-only" damping with α=0; or
 // "mass-only" damping with β=0). Imposing `alpha >= 0` or `beta >= 0` at
