@@ -682,28 +682,27 @@ fn stdlib_seeded_unit_registry() -> UnitRegistry {
 fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
     let registry = stdlib_seeded_unit_registry();
 
-    // Drive from the canonical emission ladders, plus the two symbols reachable
-    // only through a caller-supplied hint (`in`, `g`) — a hint is honoured on
-    // exactly the same terms as a rung, so it is exposed to the same drift.
-    let mut symbols: Vec<&'static str> = Vec::new();
-    for dim in [
-        DimensionVector::LENGTH,
-        DimensionVector::ANGLE,
-        DimensionVector::MASS,
-        DimensionVector::TIME,
-        DimensionVector::TEMPERATURE,
-        DimensionVector::CURRENT,
-        DimensionVector::AMOUNT_OF_SUBSTANCE,
-        DimensionVector::LUMINOUS_INTENSITY,
-    ] {
-        symbols.extend_from_slice(reify_core::ri_emittable_units(&dim));
-    }
-    symbols.extend_from_slice(&["in", "g"]);
-
+    // Driven from the built-in table ITSELF, not reconstructed by looping the
+    // emission ladders and appending a hand-listed tail. A caller-supplied hint
+    // is honoured on exactly the same terms as a ladder rung, so EVERY built-in
+    // is hint-reachable and every built-in must be exposed to registry drift —
+    // there is no such thing as a symbol this guard may skip.
+    //
+    // The old reconstruction happened to name all 13 symbols today, but it had
+    // exactly the defect removed from `reify-core::units` in this same task: add
+    // a built-in whose dimension ALREADY has a ladder — say
+    // `("ft", 0.3048, LENGTH)` — and the ladder loop would not name it and the
+    // hardcoded `["in", "g"]` tail would not either, so it would silently never
+    // be compared against the registry. Since the compiler resolves a bare unit
+    // as `lookup_unit_in_registry(..).or_else(|| unit_to_scalar(..))`, the
+    // registry's factor is the one a rewritten literal is actually multiplied
+    // by, so `std.units` shadowing that symbol with a different factor would
+    // void `value_to_ri_literal`'s bit-exactness proof for it — with every test
+    // in this file green.
     let mut compared = 0usize;
     let mut builtin_only: Vec<&'static str> = Vec::new();
 
-    for sym in symbols {
+    for &(sym, _, _) in reify_core::BUILTIN_UNITS {
         let (builtin_factor, builtin_dim) = reify_core::unit_symbol_to_si(sym)
             .unwrap_or_else(|| panic!("emittable symbol {sym:?} must be a bare built-in"));
 
@@ -782,9 +781,13 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
 /// localises a drift to a specific symbol and factor, which a round-trip
 /// failure would only hint at.
 ///
-/// The case list covers every symbol the cross-guard compares — the eight
-/// canonical ladder rungs plus the two hint-only ones (`in`, `g`) — so a
-/// registry shadow on ANY emittable symbol fails here.
+/// The case list covers every symbol the cross-guard actually compares — the
+/// eleven canonical ladder rungs plus `in` and `g`, which are reachable only
+/// through a caller-supplied hint — so a registry shadow on ANY of them fails
+/// here. It is hand-written rather than driven from `BUILTIN_UNITS` because
+/// each case needs a magnitude and a declared `.ri` type, not just a symbol;
+/// the cross-guard above is the table-driven half, and the two are meant to be
+/// read together.
 #[test]
 fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
     let cases = vec![
