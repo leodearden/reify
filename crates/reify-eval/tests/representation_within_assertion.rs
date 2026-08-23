@@ -609,6 +609,56 @@ fn registered_kernel_that_cannot_tessellate_is_not_measurement_capable() {
 ///   `default_kernel_name.is_none()` discriminator, which read that `Some` as
 ///   "a kernel can measure" and offered `reify check` — a remedy that cannot
 ///   answer on that binary.
+/// Structural pin for the task 6169 review round: the arm-1 capability
+/// discriminator must NOT be answered by keying the static inventory registry
+/// on this engine's own kernel names.
+///
+/// `Engine::with_registered_kernel` is the constructor every production
+/// constraint-dispatching surface uses (reify-cli `cmd_check` / `cmd_build`,
+/// the GUI `EngineSession`), and it forwards through `Engine::with_prelude`,
+/// which files the picked adapter under the SYNTHETIC
+/// `Engine::DEFAULT_KERNEL_NAME` key — never under the adapter's real registry
+/// name. This test pins that fact: every name a production-shaped engine holds
+/// is ABSENT from the registry. A lookup-only discriminator therefore misses on
+/// every shipped binary and silently degrades to its unregistered-kernel
+/// default (benefit-of-the-doubt `true`), making arm 1 dead code on exactly the
+/// surfaces it was written for.
+///
+/// The behavioural consequence is stub-mode-only (on an OCCT build the two
+/// answers coincide), so `registered_kernel_shape_names_a_remedy_this_binary_can_honour`
+/// below cannot go RED here. This pin makes the underlying reason observable on
+/// EVERY build: if it ever turns green-by-accident (i.e. the names DO resolve),
+/// the lookup shape has become viable and this pin should be revisited
+/// together with `Engine::has_repr_capable_kernel`.
+#[test]
+fn production_engine_kernel_names_are_absent_from_the_inventory_registry() {
+    let engine = reify_eval::Engine::with_registered_kernel(Box::new(
+        reify_constraints::SimpleConstraintChecker,
+    ));
+    let registry = reify_eval::kernel_registry::registry();
+    let names: Vec<String> = engine
+        .registered_kernel_names()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "no adapter is registered in this binary at all — the premise of the \
+         capability discriminator does not apply and the rest of this pin is \
+         vacuous. Registry size: {}",
+        registry.len()
+    );
+    for name in &names {
+        assert!(
+            registry.get(name.as_str()).is_none(),
+            "kernel name {name:?} DOES resolve in the inventory registry. \
+             `with_registered_kernel` is documented to file its pick under the \
+             synthetic `DEFAULT_KERNEL_NAME`; if that changed, \
+             `Engine::has_repr_capable_kernel`'s construction-recorded answer \
+             and its fallback scan need re-deriving together."
+        );
+    }
+}
+
 #[test]
 fn registered_kernel_shape_names_a_remedy_this_binary_can_honour() {
     let compiled = compile_no_errors(OCCT_SOURCE_COARSE_BOUND, "registered_kernel_shape");

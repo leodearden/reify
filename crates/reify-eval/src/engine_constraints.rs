@@ -827,27 +827,40 @@ impl Engine {
     /// section for why kernel PRESENCE is the wrong question (manifold
     /// registers unconditionally, so no shipped binary has an empty registry).
     ///
-    /// ## Why the descriptor is fetched from the static registry
+    /// ## Why the answer is RECORDED at construction, not looked up here
     ///
     /// `self.geometry_kernels` is a `BTreeMap<String, Box<dyn GeometryKernel>>`
     /// and [`reify_ir::GeometryKernel`] is a purely behavioural trait
     /// (`execute` / `execute_with_history` / `query`) with no capability
     /// accessor — the descriptor lives on the `KernelRegistration` record, not
-    /// on the kernel object.  Keying the memoized registry by this engine's own
-    /// kernel NAMES therefore asks the capability question about the kernels
-    /// THIS engine actually holds, while still reading the answer from the one
-    /// place adapters declare it.  Adding a descriptor field to `Engine` would
-    /// say the same thing at the cost of a construction-site change in every
-    /// `Engine::with_*` constructor.
+    /// on the kernel object.  Keying the static registry by this engine's own
+    /// kernel NAMES looks like it asks the capability question about the
+    /// kernels THIS engine holds, but it does NOT on any shipped binary:
+    /// [`Engine::with_registered_kernel`] — the constructor every production
+    /// constraint-dispatching surface uses (reify-cli `cmd_check` /
+    /// `cmd_build`, the GUI `EngineSession`) — forwards through
+    /// `Engine::with_prelude`, which files the picked adapter under the
+    /// synthetic `Engine::DEFAULT_KERNEL_NAME` key, NEVER under its real
+    /// registry name.  That key resolves to `None` in the registry, so a
+    /// lookup-only implementation hands back the benefit-of-the-doubt `true`
+    /// unconditionally and arm 1 of [`Engine::unmeasured_reason`] is dead on
+    /// exactly the surfaces it was written for (task 6169 review round).
     ///
-    /// ## An unregistered kernel is not evidence of INcapacity
+    /// So the inventory-driven constructors record the picked registration's
+    /// declared capability into `Engine::repr_capable_kernel` while they still
+    /// hold it, and this method reads that first.  One `Engine` field is what
+    /// that costs; the lookup shape cannot be made to work from here.
     ///
-    /// A kernel whose name is absent from the static registry counts as
-    /// capable.  The only shape that produces one is `Engine::new` /
+    /// ## An UNRECORDED kernel is not evidence of INcapacity
+    ///
+    /// When nothing was recorded (`repr_capable_kernel == None`) a kernel whose
+    /// name is absent from the static registry counts as capable.  The only
+    /// shape that produces one is `Engine::new` /
     /// `with_prelude` with a caller-supplied `Some(kernel)`, which inserts
     /// under the synthetic `Engine::DEFAULT_KERNEL_NAME` key documented to
     /// collide with no real adapter name — a unit-test seam, never a CLI or
-    /// GUI surface (both build via `with_registered_kernel`).  Such an adapter
+    /// GUI surface (both build via `with_registered_kernel`, which DOES
+    /// record).  Such an adapter
     /// has DECLARED nothing, so reading it as incapable would have the engine
     /// assert a fact it has not established — the same INV-SF-4 sin ζ removes.
     /// The rule is therefore: judge a kernel by the capabilities it declared,
@@ -856,8 +869,9 @@ impl Engine {
     /// measurement-capable `reify build` engine in tests that must run in both
     /// kernel modes.
     ///
-    /// An EMPTY `geometry_kernels` still yields `false` — there is no adapter
-    /// to extend any benefit to — preserving the stub-mode semantics the
+    /// An EMPTY `geometry_kernels` still yields `false` on both paths (the
+    /// recorded path stores `false` when the picker yielded nothing) — there
+    /// is no adapter to extend any benefit to — preserving the stub-mode semantics the
     /// previous discriminator had for `Engine::new(checker, None)`.
     ///
     /// ## Cost
@@ -869,6 +883,18 @@ impl Engine {
     /// Indeterminate with an empty map, never on the C2 hot path, which returns
     /// before any of this.
     fn has_repr_capable_kernel(&self) -> bool {
+        // Construction-recorded answer wins: the inventory-driven constructors
+        // are the only sites that hold the `KernelRegistration` the capability
+        // is declared on, and `with_registered_kernel` (the constructor EVERY
+        // production surface uses) files its pick under the synthetic
+        // `DEFAULT_KERNEL_NAME`, which no registry lookup can resolve.
+        if let Some(capable) = self.repr_capable_kernel {
+            return capable;
+        }
+        // Fallback: the caller-supplied-kernel seam (`Engine::new` /
+        // `with_prelude` with `Some(kernel)`), which records nothing. An
+        // adapter that declared nothing gets the benefit of the doubt; an
+        // EMPTY map still yields `false` (no adapter to extend it to).
         let registry = crate::kernel_registry::registry();
         self.geometry_kernels.keys().any(|name| {
             registry

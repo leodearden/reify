@@ -1070,6 +1070,25 @@ pub struct Engine {
     /// Mirrors the `capture_undef_causes` / `set_capture_undef_causes` pattern:
     /// default-false, always-present field, setter in `engine_admin.rs`.
     capture_repr_tol: bool,
+    /// Whether the geometry kernel(s) this engine holds DECLARED the ability to
+    /// produce a BRep representation — i.e. at least one `(_, ReprKind::BRep)`
+    /// pair on the picked adapter's `CapabilityDescriptor`.
+    ///
+    /// Recorded at CONSTRUCTION by the inventory-driven constructors
+    /// (`Engine::with_registered_kernel` / `with_registered_kernels*`), which
+    /// are the only sites that still hold the `KernelRegistration` records the
+    /// capability lives on. This exists because `with_registered_kernel`
+    /// forwards through `with_prelude`, which files the picked adapter under
+    /// the synthetic [`Engine::DEFAULT_KERNEL_NAME`] key rather than its real
+    /// registry name — so the adapter's declared capability is NOT recoverable
+    /// afterwards by keying the static registry on `geometry_kernels`' names
+    /// (task 6169 review round: that lookup misses on every shipped binary).
+    ///
+    /// `None` means "not recorded" — the caller-supplied-kernel seam
+    /// (`Engine::new` / `with_prelude` with `Some(kernel)`), where the adapter
+    /// has declared nothing. [`Engine::has_repr_capable_kernel`] falls back to
+    /// its benefit-of-the-doubt scan there; see that method for why.
+    repr_capable_kernel: Option<bool>,
     /// Per-cell `UndefCause` map from the most recent `eval()` call.
     ///
     /// Rebuilt from scratch on each `eval()` call when `capture_undef_causes`
