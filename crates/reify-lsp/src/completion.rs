@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
 };
@@ -226,40 +228,51 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
 
 /// Push user-declared type aliases as CLASS-kind completions.
 ///
-/// Reads `CompiledModule.type_aliases`, which holds only the OPEN DOCUMENT's own
+/// Iterates the PARSED declarations and keeps only those whose name is also in
+/// `CompiledModule.type_aliases`. That set holds only the OPEN DOCUMENT's own
 /// aliases — prelude-seeded aliases are filtered out by the compiler's
-/// `TypeAliasRegistry::into_compiled`, so no stdlib alias can leak into the list.
+/// `TypeAliasRegistry::into_compiled` — so the membership test is exactly the
+/// document-scoping filter, and no stdlib alias can leak into the list.
 ///
-/// `detail` reuses the hover formatter so both surfaces render the same signature
-/// string. That formatter needs the parsed declaration (for `type_params` and the
-/// `type_expr` surface spelling), so the parsed list is searched by name first;
-/// the two fallbacks cover a compiled alias with no matching parsed declaration.
+/// Driving the loop from the parse rather than from `compiled.type_aliases` buys
+/// three things:
+///
+/// 1. **Determinism.** `into_compiled` drains a `HashMap`, so its `Vec` order
+///    varies per process under std's `RandomState`. Source order does not, and
+///    these items carry no `sort_text` to re-impose an order downstream.
+/// 2. **A single signature source.** `format_type_alias_signature` needs the
+///    parsed declaration (for `type_params` and the `type_expr` surface
+///    spelling), so it is always available here — keeping the completion
+///    `detail` byte-identical to hover with no divergent fallback. Rendering
+///    from the compiled entry instead would drop the type-parameter list
+///    (`type Rate = Q / Time` where hover says `type Rate<Q: Dimension> = Q / Time`),
+///    and compiled `type_expr` is `Some` only for PARAMETERIZED aliases —
+///    precisely the case that would render wrong.
+/// 3. **O(D + A) instead of O(D × A).** Completion fires per keystroke, and the
+///    previous shape rescanned every declaration once per alias.
+///
 /// Task #6341.
 fn push_type_alias_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
-    for alias in &ctx.compiled.type_aliases {
-        let detail = ctx
-            .parsed
-            .declarations
-            .iter()
-            .find_map(|d| match d {
-                reify_ast::Declaration::TypeAlias(t) if t.name == alias.name => {
-                    Some(crate::hover::format_type_alias_signature(t))
-                }
-                _ => None,
-            })
-            .or_else(|| {
-                alias
-                    .type_expr
-                    .as_ref()
-                    .map(|e| format!("type {} = {e}", alias.name))
-            })
-            .unwrap_or_else(|| format!("type {}", alias.name));
-        items.push(CompletionItem {
-            label: alias.name.clone(),
-            kind: Some(CompletionItemKind::CLASS),
-            detail: Some(detail),
-            ..Default::default()
-        });
+    if ctx.compiled.type_aliases.is_empty() {
+        return;
+    }
+    let in_document: HashSet<&str> = ctx
+        .compiled
+        .type_aliases
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    for decl in &ctx.parsed.declarations {
+        if let reify_ast::Declaration::TypeAlias(t) = decl
+            && in_document.contains(t.name.as_str())
+        {
+            items.push(CompletionItem {
+                label: t.name.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(crate::hover::format_type_alias_signature(t)),
+                ..Default::default()
+            });
+        }
     }
 }
 
