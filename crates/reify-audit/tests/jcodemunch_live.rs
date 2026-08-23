@@ -150,6 +150,122 @@ fn write_synthetic_done_task(
 }
 
 // -----------------------------------------------------------------------
+// Throwaway corpus (real git; no network, no serve)
+// -----------------------------------------------------------------------
+
+/// A throwaway two-commit git repo for the capstone to index and audit.
+///
+/// Why a throwaway corpus instead of the reify checkout: the capstone this
+/// file used to carry derived `--project-root` from `CARGO_MANIFEST_DIR`, so
+/// in a warm lane it refused with exit 125 / `E_JC_INDEX_EMPTY` — its own doc
+/// conceded that "running the capstone from a warm lane rather than the
+/// primary checkout is therefore expected to refuse". That makes the capstone
+/// unrunnable exactly where tasks execute, which is how an evidence layer goes
+/// inert. A throwaway corpus is portable, self-contained, mutates no
+/// host-global state, and is still a REAL freshly-indexed corpus rather than a
+/// mock.
+struct CorpusRepo {
+    /// Canonicalized repo root. Canonical, not as-given: jcodemunch applies
+    /// `Path(p).expanduser().resolve()` before hashing, β applies
+    /// `readlink -f`, and `expected_repo_id` applies `fs::canonicalize`. All
+    /// three must agree or the binary probes a different DB than β wrote.
+    root: std::path::PathBuf,
+    /// The `local/<basename>-<sha1(abs)[..8]>` identity β will write under and
+    /// the binary will derive from `--project-root`.
+    repo_id: String,
+    /// HEAD (commit 2).
+    head: String,
+    /// `HEAD^1` (commit 1) — the `since` end of P1's `commit^1..commit` range.
+    prev: String,
+    /// Repo-relative path of the Rust file genuinely modified in `prev..head`.
+    touched_file: String,
+}
+
+/// Build a real two-commit git repo under `dir` and return its [`CorpusRepo`].
+///
+/// Commit 1 seeds `Cargo.toml` + `src/lib.rs` with public symbols; commit 2
+/// appends one more `pub fn` to `src/lib.rs`, so `touched_file` is genuinely
+/// inside `prev..head` rather than merely present at HEAD.
+///
+/// Every git call goes through [`common::git_env::git_cmd`] and identity plus
+/// `commit.gpgsign` are pinned the way `common::index_fixture::
+/// init_git_repo_with_one_commit` pins them, so this works on a host with no
+/// git identity configured and cannot be redirected by an ambient
+/// `GIT_DIR`/`GIT_INDEX_FILE` (the hook-environment hazard `git_env`'s module
+/// doc records).
+///
+/// Deliberately LOCAL to this file rather than added to `tests/common/`:
+/// `tests/common/` is compiled into EVERY integration-test binary in the crate
+/// (see the partial-consumer note in `index_fixture.rs`), and this capstone is
+/// the only consumer.
+fn build_corpus_repo(dir: &std::path::Path) -> CorpusRepo {
+    let root = dir.join("corpus");
+    std::fs::create_dir_all(root.join("src")).expect("create corpus src dir");
+
+    let run = |args: &[&str]| {
+        let out = common::git_env::git_cmd(&root)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} exited {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let rev_parse = |rev: &str| -> String {
+        let out = common::git_env::git_cmd(&root)
+            .args(["rev-parse", rev])
+            .output()
+            .unwrap_or_else(|e| panic!("git rev-parse {rev} failed to spawn: {e}"));
+        assert!(
+            out.status.success(),
+            "git rev-parse {rev} exited {:?}",
+            out.status.code()
+        );
+        let sha = String::from_utf8(out.stdout).expect("utf8 sha").trim().to_string();
+        assert_eq!(sha.len(), 40, "expected a full 40-char sha, got {sha:?}");
+        sha
+    };
+
+    run(&["init", "--initial-branch=main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["config", "commit.gpgsign", "false"]);
+
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"corpus\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write corpus Cargo.toml");
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "pub fn corpus_alpha() -> u32 {\n    1\n}\n\
+         \npub fn corpus_beta() -> u32 {\n    2\n}\n",
+    )
+    .expect("write corpus src/lib.rs");
+    run(&["add", "."]);
+    run(&["commit", "-m", "corpus: seed"]);
+    let prev = rev_parse("HEAD");
+
+    // Commit 2 APPENDS, so `src/lib.rs` really is in `prev..head`.
+    let touched_file = "src/lib.rs".to_string();
+    let mut lib = std::fs::read_to_string(root.join(&touched_file)).expect("read corpus lib.rs");
+    lib.push_str("\npub fn corpus_gamma() -> u32 {\n    3\n}\n");
+    std::fs::write(root.join(&touched_file), lib).expect("append to corpus lib.rs");
+    run(&["add", "."]);
+    run(&["commit", "-m", "corpus: add corpus_gamma"]);
+    let head = rev_parse("HEAD");
+
+    // Canonicalize BEFORE deriving the identity — see `CorpusRepo::root`.
+    let root = std::fs::canonicalize(&root).expect("canonicalize corpus root");
+    let repo_id = reify_audit::jcodemunch_index::resolve_repo_id(&root);
+
+    CorpusRepo { root, repo_id, head, prev, touched_file }
+}
+
+// -----------------------------------------------------------------------
 // Findings well-formedness (pure; no serve needed)
 // -----------------------------------------------------------------------
 
