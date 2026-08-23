@@ -1,8 +1,26 @@
 //! Shared tracing test utilities for reify crates.
+//!
+//! # Test-only: the subscriber constructors install a process-global default
+//!
+//! [`warn_counting_subscriber`], [`CountingSubscriberBuilder::build`] and
+//! [`CapturingSubscriberBuilder::build`] each call
+//! [`prime_tracing_callsite_cache`] as their first statement, which installs a
+//! process-global tracing subscriber via `set_global_default`.  That install is
+//! irreversible for the life of the process and makes every later
+//! `set_global_default` (including `tracing_subscriber::fmt().init()`) fail, so
+//! calling one of these constructors from non-test code would permanently
+//! silence that binary's real tracing setup.
+//!
+//! Nothing in the type system stops that: `reify-test-support` is a *normal*,
+//! not `dev-`, dependency (a deliberate choice recorded in its `Cargo.toml`,
+//! carried for `reify-audit`), so these constructors are reachable from
+//! shipping code.  **Call them only from `#[cfg(test)]` code.**  Every call
+//! site in the workspace is `#[cfg(test)]`- or `#[cfg(all(test, …))]`-gated
+//! today; the invariant is load-bearing rather than enforced.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Install a permissive global tracing subscriber once per process, so
 /// thread-local `with_default` event-counting tests work reliably under
@@ -64,9 +82,19 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// global exists anywhere in this workspace today — there is no
 /// `set_global_default` / `fmt().init()` / `try_init()` call site outside this
 /// function — so the hazard is latent, not live. If one ever appears, this
-/// helper prints a loud diagnostic to stderr rather than silently no-opping,
-/// because the failure mode it degrades into (an intermittent count of zero)
-/// is expensive to rediagnose from scratch.
+/// helper does not silently no-op: it prints a diagnostic to stderr **and**
+/// sets a process-wide flag that every assertion helper in this module appends
+/// to its panic message.
+///
+/// Both channels are needed, and the flag is the load-bearing one. libtest
+/// captures stderr per test thread and replays it only for a *failing* test,
+/// while `INIT.call_once` runs on whichever test happens to touch a
+/// constructor first — which is virtually never the test that later fails with
+/// a count of zero. The stderr copy alone would therefore be written into a
+/// passing test's buffer and discarded, leaving the operator with a bare
+/// count-of-zero panic and no hint: exactly the expensive-to-rediagnose
+/// failure the diagnostic exists to prevent. It surfaces on its own only under
+/// `--nocapture`.
 ///
 /// # Usage
 ///
@@ -154,6 +182,10 @@ pub fn prime_tracing_callsite_cache() {
         // non-fatal, because the competing global may well be benign and
         // panicking here would take down every test in the process.
         if tracing::subscriber::set_global_default(Priming).is_err() {
+            // Flag first, then print. The flag is what actually reaches the
+            // operator: see `# Precondition` above for why the stderr copy
+            // alone is usually swallowed by libtest's per-test capture.
+            PRIMING_INACTIVE.store(true, Ordering::Release);
             eprintln!(
                 "reify-test-support: prime_tracing_callsite_cache() could not install its \
                  global tracing subscriber — another global default was installed first. \
@@ -164,6 +196,37 @@ pub fn prime_tracing_callsite_cache() {
             );
         }
     });
+}
+
+/// Set when [`prime_tracing_callsite_cache`] lost the `set_global_default`
+/// race, i.e. callsite-interest priming is INACTIVE in this process.
+///
+/// Never cleared: the losing install is irreversible, so the condition is
+/// monotonic for the life of the process.
+static PRIMING_INACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// A trailing note for assertion panic messages — non-empty only when callsite
+/// priming is inactive in this process (see [`PRIMING_INACTIVE`]).
+///
+/// Attaching it to the panic is what makes the diagnostic reach the operator:
+/// the stderr copy emitted at install time lands in the libtest buffer of
+/// whichever test first touched a constructor, which is replayed only if *that*
+/// test fails. Priming being inactive is exactly the state in which some
+/// *other* test intermittently observes zero events, so this note is appended
+/// to the panic that is actually read.
+///
+/// Reads `Acquire`, pairing with the `Release` store in
+/// [`prime_tracing_callsite_cache`], so a thread that never called the priming
+/// helper itself still observes the flag.
+fn priming_inactive_note() -> &'static str {
+    if PRIMING_INACTIVE.load(Ordering::Acquire) {
+        "\nNOTE: tracing callsite priming is INACTIVE in this process (a competing global \
+         tracing default was installed before prime_tracing_callsite_cache() ran), so this \
+         event may have been elided at the macro gate rather than never emitted — see \
+         prime_tracing_callsite_cache's docs, task 6273."
+    } else {
+        ""
+    }
 }
 
 /// Assert that `counter` has advanced by exactly `expected_delta` since the
@@ -205,9 +268,10 @@ pub fn assert_warn_count_delta(
         "warn counter went backwards (before={before}, after={after}): {context}"
     );
     let actual_delta = after - before;
+    let note = priming_inactive_note();
     assert_eq!(
         actual_delta, expected_delta,
-        "expected warn delta of {expected_delta} (before={before}, after={after}): {context}"
+        "expected warn delta of {expected_delta} (before={before}, after={after}): {context}{note}"
     );
 }
 
@@ -249,6 +313,10 @@ pub fn assert_warn_count(counter: &AtomicUsize, expected: usize, context: &str) 
 /// subscriber-less sibling test thread can no longer poison a counted
 /// callsite's cached `Interest` to `never`.
 ///
+/// **Test-only.** That priming installs a process-global tracing subscriber,
+/// which is irreversible and blocks any later `set_global_default` — call this
+/// only from `#[cfg(test)]` code. See the module-level docs.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -278,6 +346,10 @@ pub fn warn_counting_guard() -> (tracing::subscriber::DefaultGuard, Arc<AtomicUs
 /// returns, by which time the global `Priming` dispatch is already installed
 /// and `NoSubscriber` (whose `register_callsite` returns `Interest::never`)
 /// is out of the callsite-registration path.
+///
+/// **Test-only.** Priming installs a process-global tracing subscriber, which
+/// is irreversible and blocks any later `set_global_default` — call this only
+/// from `#[cfg(test)]` code. See the module-level docs for the full rationale.
 ///
 /// # Span ID uniqueness
 ///
@@ -352,6 +424,10 @@ impl CountingSubscriberBuilder {
     /// subscriber returns `Interest::sometimes()` from `register_callsite`,
     /// which defers the per-event decision to `enabled()` on the *current
     /// thread's* default — i.e. this subscriber's own level/target filter.
+    ///
+    /// **Test-only.** Priming installs a process-global tracing subscriber, which
+    /// is irreversible and blocks any later `set_global_default` — call this only
+    /// from `#[cfg(test)]` code. See the module-level docs for the full rationale.
     pub fn build(
         self,
     ) -> (
@@ -557,7 +633,11 @@ impl WarnCapture {
     /// Panics if the count does not equal `expected`.
     pub fn assert_count(&self, expected: usize) {
         let n = self.count();
-        assert_eq!(n, expected, "expected {expected} WARN events, got {n}");
+        let note = priming_inactive_note();
+        assert_eq!(
+            n, expected,
+            "expected {expected} WARN events, got {n}{note}"
+        );
     }
 
     /// Assert that exactly `expected` WARN events were emitted **and** that at
@@ -569,9 +649,10 @@ impl WarnCapture {
     pub fn assert_count_and_any_message_contains(&self, expected: usize, substring: &str) {
         self.assert_count(expected);
         let msgs = self.messages();
+        let note = priming_inactive_note();
         assert!(
             msgs.iter().any(|m| m.contains(substring)),
-            "no WARN message contained {substring:?}; captured messages: {msgs:?}"
+            "no WARN message contained {substring:?}; captured messages: {msgs:?}{note}"
         );
     }
 
@@ -623,9 +704,10 @@ impl WarnCapture {
     /// diagnostics.
     pub fn assert_any_message_equals(&self, expected: &str) {
         let messages = self.messages();
+        let note = priming_inactive_note();
         assert!(
             messages.iter().any(|m| m == expected),
-            "no WARN message equaled {expected:?}; captured messages: {messages:?}"
+            "no WARN message equaled {expected:?}; captured messages: {messages:?}{note}"
         );
     }
 
@@ -663,10 +745,11 @@ impl WarnCapture {
         });
         if !found {
             let msgs = self.messages();
+            let note = priming_inactive_note();
             panic!(
                 "no WARN event had all expected fields {pairs:?};\n  \
                  fields_by_event: {all_fields:?}\n  \
-                 messages: {msgs:?}"
+                 messages: {msgs:?}{note}"
             );
         }
     }
@@ -697,10 +780,11 @@ impl WarnCapture {
         });
         if !found {
             let msgs = self.messages();
+            let note = priming_inactive_note();
             panic!(
                 "no WARN event had a field {key:?} containing {substring:?};\n  \
                  fields_by_event: {all_fields:?}\n  \
-                 messages: {msgs:?}"
+                 messages: {msgs:?}{note}"
             );
         }
     }
@@ -718,6 +802,10 @@ impl WarnCapture {
 /// This delegates to [`CapturingSubscriberBuilder::build`], which calls
 /// [`prime_tracing_callsite_cache`] internally, so callers do **not** need an
 /// explicit priming call.
+///
+/// **Test-only.** That priming installs a process-global tracing subscriber,
+/// which is irreversible and blocks any later `set_global_default` — call this
+/// only from `#[cfg(test)]` code. See the module-level docs.
 pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
     let (subscriber, inner) = CapturingSubscriberBuilder::new(tracing::Level::WARN).build();
     (subscriber, WarnCapture { inner })
@@ -818,6 +906,10 @@ impl CapturingSubscriberBuilder {
     /// subscriber returns `Interest::sometimes()` from `register_callsite`,
     /// which defers the per-event decision to `enabled()` on the *current
     /// thread's* default — i.e. this subscriber's own level/target filter.
+    ///
+    /// **Test-only.** Priming installs a process-global tracing subscriber, which
+    /// is irreversible and blocks any later `set_global_default` — call this only
+    /// from `#[cfg(test)]` code. See the module-level docs for the full rationale.
     pub fn build(self) -> (impl tracing::Subscriber + Send + Sync, Capture) {
         prime_tracing_callsite_cache();
 
