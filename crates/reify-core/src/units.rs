@@ -11,43 +11,70 @@
 
 use crate::DimensionVector;
 
+/// The built-in unit symbols, as DATA rather than control flow — one physical
+/// table, one edit site.
+///
+/// Each entry is `(symbol, si_factor, dimension)` such that
+/// `si_value = magnitude * si_factor`. [`unit_symbol_to_si`] is a lookup over
+/// this slice and nothing else; the values are those copied verbatim from the
+/// pre-extraction `reify-compiler::units::unit_to_scalar` match arms (task
+/// #4535), which now delegates here.
+///
+/// It is `pub` because two guards outside this crate iterate it: `reify-core`'s
+/// own `every_builtin_symbol_has_an_emission_ladder` (the reverse-coupling
+/// guard for [`ri_emittable_units`]) and, more importantly,
+/// `reify-compiler`'s `stdlib_unit_declarations_agree_bit_for_bit_with_the_
+/// builtin_table`, which compares every entry against the per-module
+/// `UnitRegistry` that actually WINS at resolution time. Both previously kept
+/// hand-mirrored symbol lists; driving them from this slice is what removes the
+/// possibility of a new symbol silently dodging either check (task #5095).
+///
+/// Two properties are pinned by tests, both load-bearing rather than tidiness:
+/// symbols are UNIQUE (the linear lookup silently shadows a duplicate, where
+/// the old `match` gave `unreachable_patterns`), and the table is non-vacuous
+/// (every guard that iterates it passes trivially over an empty one).
+pub const BUILTIN_UNITS: &[(&str, f64, DimensionVector)] = &[
+    ("mm", 0.001, DimensionVector::LENGTH),
+    ("cm", 0.01, DimensionVector::LENGTH),
+    ("m", 1.0, DimensionVector::LENGTH),
+    ("in", 0.0254, DimensionVector::LENGTH),
+    ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
+    ("rad", 1.0, DimensionVector::ANGLE),
+    ("kg", 1.0, DimensionVector::MASS),
+    ("g", 0.001, DimensionVector::MASS),
+    ("s", 1.0, DimensionVector::TIME),
+    // Kelvin needs a hardcoded fallback because `std.units` itself uses
+    // `1K` in `BOLTZMANN_CONSTANT()`s body — fn bodies in std.units load
+    // with no unit_registry seeded, so the K declared at units.ri can't
+    // satisfy the same file's own quantity literals. Mirrors the kg/s/m
+    // self-bootstrap entries above.
+    ("K", 1.0, DimensionVector::TEMPERATURE),
+    // Bare SI base units completing the standard set (factor 1.0).
+    // A/mol/cd are the SI bases for Current/AmountOfSubstance/LuminousIntensity;
+    // they need the same hardcoded fallback as kg/s/K so that stdlib fn bodies
+    // and other unseeded-registry scopes can resolve these unit literals
+    // (PRD §2.2 / decision D5).
+    ("A", 1.0, DimensionVector::CURRENT),
+    ("mol", 1.0, DimensionVector::AMOUNT_OF_SUBSTANCE),
+    ("cd", 1.0, DimensionVector::LUMINOUS_INTENSITY),
+];
+
 /// Look up a built-in unit symbol's SI conversion factor and dimension.
 ///
 /// Returns `Some((factor, dimension))` such that `si_value = value * factor`,
 /// or `None` if `unit` is not one of the hardcoded built-in symbols.
 ///
-/// This is the single source of truth copied verbatim (values and all) from
-/// the pre-extraction `reify-compiler::units::unit_to_scalar` match arms;
-/// that function now delegates here. Does not resolve user-declared units
+/// A faithful view of [`BUILTIN_UNITS`] and nothing more — the single source of
+/// truth for the built-in symbols, carrying the values copied verbatim from the
+/// pre-extraction `reify-compiler::units::unit_to_scalar` match arms; that
+/// function now delegates here. Does not resolve user-declared units
 /// (e.g. `km`, `ft`, `thou`) — those live only in the compiler's per-module
 /// `UnitRegistry`, which has no equivalent at this layer.
 pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
-    match unit {
-        "mm" => Some((0.001, DimensionVector::LENGTH)),
-        "cm" => Some((0.01, DimensionVector::LENGTH)),
-        "m" => Some((1.0, DimensionVector::LENGTH)),
-        "in" => Some((0.0254, DimensionVector::LENGTH)),
-        "deg" => Some((std::f64::consts::PI / 180.0, DimensionVector::ANGLE)),
-        "rad" => Some((1.0, DimensionVector::ANGLE)),
-        "kg" => Some((1.0, DimensionVector::MASS)),
-        "g" => Some((0.001, DimensionVector::MASS)),
-        "s" => Some((1.0, DimensionVector::TIME)),
-        // Kelvin needs a hardcoded fallback because `std.units` itself uses
-        // `1K` in `BOLTZMANN_CONSTANT()`s body — fn bodies in std.units load
-        // with no unit_registry seeded, so the K declared at units.ri can't
-        // satisfy the same file's own quantity literals. Mirrors the kg/s/m
-        // self-bootstrap entries above.
-        "K" => Some((1.0, DimensionVector::TEMPERATURE)),
-        // Bare SI base units completing the standard set (factor 1.0).
-        // A/mol/cd are the SI bases for Current/AmountOfSubstance/LuminousIntensity;
-        // they need the same hardcoded fallback as kg/s/K so that stdlib fn bodies
-        // and other unseeded-registry scopes can resolve these unit literals
-        // (PRD §2.2 / decision D5).
-        "A" => Some((1.0, DimensionVector::CURRENT)),
-        "mol" => Some((1.0, DimensionVector::AMOUNT_OF_SUBSTANCE)),
-        "cd" => Some((1.0, DimensionVector::LUMINOUS_INTENSITY)),
-        _ => None,
-    }
+    BUILTIN_UNITS
+        .iter()
+        .find(|(symbol, ..)| *symbol == unit)
+        .map(|&(_, factor, dimension)| (factor, dimension))
 }
 
 /// Ordered `.ri`-**emittable** unit symbols for a dimension, most-preferred

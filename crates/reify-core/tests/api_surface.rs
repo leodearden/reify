@@ -74,9 +74,10 @@ use reify_core::primitives::{
 };
 
 // ── units ────────────────────────────────────────────────────────────────────
-use reify_core::{ri_emittable_units, unit_symbol_to_si};
+use reify_core::{BUILTIN_UNITS, ri_emittable_units, unit_symbol_to_si};
 use reify_core::units::{
-    ri_emittable_units as ri_emittable_units_mod, unit_symbol_to_si as unit_symbol_to_si_mod,
+    BUILTIN_UNITS as BUILTIN_UNITS_MOD, ri_emittable_units as ri_emittable_units_mod,
+    unit_symbol_to_si as unit_symbol_to_si_mod,
 };
 
 // ── flat PortDirection ────────────────────────────────────────────────────────
@@ -291,4 +292,18 @@ fn units_flat_and_module_path() {
     assert!(!ladder.is_empty(), "LENGTH must have an emission ladder");
     assert_eq!(ri_emittable_units_mod(&DimensionVector::LENGTH), ladder);
     assert!(ri_emittable_units(&DimensionVector::DIMENSIONLESS).is_empty());
+
+    // The built-in table itself, in both spellings. `reify-compiler`'s
+    // stdlib/built-in cross-guard iterates this slice to decide which symbols
+    // to check for registry drift, so its reachability from OUTSIDE the crate
+    // is load-bearing, not incidental (task #5095).
+    //
+    // Same remit boundary as the ladder above: the annotation below is the
+    // assertion — it fails to compile if the entry shape moves (to a struct, an
+    // owned form, or a different factor type), which would silently change what
+    // every table-driven guard iterates. The table's CONTENTS stay in
+    // `units.rs`, where the entries and their four guards live.
+    let table: &'static [(&'static str, f64, DimensionVector)] = BUILTIN_UNITS;
+    assert!(!table.is_empty(), "the built-in unit table must be reachable");
+    assert_eq!(BUILTIN_UNITS_MOD, table);
 }
