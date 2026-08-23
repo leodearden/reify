@@ -76,8 +76,10 @@
 //! `band ≤ stroke ≤ band + lead` over the file's evaluated cells — reading the
 //! instance-scoped spelling the DSL constraint resolves against, and separately
 //! asserting it agrees with the bare template the rest of this module reads (see
-//! [`sub_entity`]); the second pins that `CapstanDrive` states the relation in
-//! the DSL itself, so a plain `reify check` catches a divergence too. Neither reads geometry, so both go
+//! [`sub_entity`]); the second pins that `CapstanDrive` states that relation in
+//! the DSL itself — matched by the datums the compiled constraint actually reads
+//! (see [`sub_cell_reads`]), not merely by *a* constraint being present — so a
+//! plain `reify check` catches a divergence too. Neither reads geometry, so both go
 //! through [`dev_capstan_checked`] (no kernel) rather than the OCCT fixture —
 //! a gate whose whole point is "this must bite outside a full OCCT run" must
 //! not itself be skipped when OCCT is absent.
@@ -109,7 +111,7 @@
 
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::{CheckResult, TessellateResult};
-use reify_ir::{Satisfaction, Value, ValueMap};
+use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value, ValueMap};
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
@@ -147,6 +149,34 @@ const SHUTTLE_SUB: &str = "shuttle";
 /// separately asserts the two agree.
 fn sub_entity(sub: &str) -> String {
     format!("{CAPSTAN_DRIVE_ENTITY}.{sub}")
+}
+
+/// Every `<sub>.<cell>` datum a compiled expression reads, as
+/// `(entity path, cell name)` pairs in traversal order.
+///
+/// A cross-sub field reference does NOT compile to one `ValueRef`: the
+/// compiler emits `IndexAccess { object: ValueRef(CapstanDrive.shuttle),
+/// index: Literal(String("stroke")) }`, so
+/// [`CompiledExpr::collect_value_refs`] on its own reports which SUBS a
+/// constraint touches and not which of their cells. Re-pairing the two is what
+/// lets `capstan_drive_constrains_the_shuttle_to_cover_the_band` pin the
+/// relation's SHAPE rather than merely its presence — without it, swapping the
+/// coverage constraint for any other `CapstanDrive`-scoped one leaves that gate
+/// green while its message goes on describing `shuttle.stroke >= capstan.band`.
+///
+/// Built on the canonical [`CompiledExpr::walk`] traversal rather than a local
+/// match, so a future expression variant cannot quietly hide a read from it.
+fn sub_cell_reads(expr: &CompiledExpr) -> Vec<(String, String)> {
+    let mut reads = Vec::new();
+    expr.walk(&mut |node| {
+        if let CompiledExprKind::IndexAccess { object, index } = &node.kind
+            && let CompiledExprKind::ValueRef(id) = &object.kind
+            && let CompiledExprKind::Literal(Value::String(cell)) = &index.kind
+        {
+            reads.push((id.entity.clone(), cell.clone()));
+        }
+    });
+    reads
 }
 
 /// Relative tolerance on `ΔV` against the ideal half-round swept solid
@@ -1152,25 +1182,40 @@ fn capstan_surfaces_only_the_finished_drum() {
 /// should be loud for anyone opening the file, which means it has to be stated
 /// in the DSL.
 ///
-/// Two claims:
-///   1. `CapstanDrive` declares constraints at all. The relation is
-///      cross-structure — it reads a cell of `capstan` against a cell of
-///      `shuttle` — so the assembly that owns both `sub`s is the only scope it
-///      CAN be stated in. Deriving `Fairlead.stroke` from the capstan instead
-///      would need a parameter override through `sub shuttle = Fairlead(…)`,
-///      which is precisely the override drop (task 4147) the design file's own
-///      header records as not working: only `at` poses come through. So the
-///      stroke stays a hand-set param and the assembly asserts it stays honest;
-///   2. every one of those results is `Satisfied`.
+/// Three claims:
+///   1. `CapstanDrive` declares a constraint that reads `shuttle.stroke`
+///      against `capstan.band` — the relation's SHAPE, over the compiled
+///      template, not merely "some constraint exists". Presence alone would be
+///      satisfied by any `CapstanDrive`-scoped constraint (a pose or clearance
+///      check, say), leaving this gate green while its failure message went on
+///      naming a coverage relation the file no longer carries. The relation is
+///      cross-structure — a cell of `capstan` against a cell of `shuttle` — so
+///      the assembly that owns both `sub`s is the only scope it CAN be stated
+///      in. Deriving `Fairlead.stroke` from the capstan instead would need a
+///      parameter override through `sub shuttle = Fairlead(…)`, which is
+///      precisely the override drop (task 4147) the design file's own header
+///      records as not working: only `at` poses come through. So the stroke
+///      stays a hand-set param and the assembly asserts it stays honest;
+///   2. the checker actually EVALUATED what the template declares — one result
+///      per declared constraint. A declared-but-unevaluated relation would
+///      leave (3) below quantifying over an empty set, i.e. vacuously green;
+///   3. every one of those results is `Satisfied`.
 ///
-/// (2) is asserted positively rather than as "nothing is `Violated`" — the same
+/// The direction of the comparison is deliberately NOT pinned: `capstan.band <=
+/// shuttle.stroke` is the same relation spelled the other way round, and a gate
+/// that rejected it would be pinning source phrasing rather than design intent.
+/// What (1) pins is that both datums are still the ones the coverage claim is
+/// about.
+///
+/// (3) is asserted positively rather than as "nothing is `Violated`" — the same
 /// reason `capstan_surfaces_only_the_finished_drum` gives for `Capstan`, and it
 /// matters more here. A cross-sub field reference that fails to resolve
 /// evaluates to `Indeterminate`, not `Violated`, so a `!= Violated` filter would
 /// stay green on exactly the failure mode this constraint is most exposed to,
 /// and the file-wide `violated.is_empty()` check in that test is likewise
 /// vacuous on it. That combination — an empty result set and an indeterminate
-/// one both reading as green — is the gap this test closes.
+/// one both reading as green — is the gap this test closes; (2) is what keeps
+/// the "empty result set" half of it closed.
 #[test]
 fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     // Kernel-free surface deliberately: this gate's whole claim is that the
@@ -1178,22 +1223,77 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     // when OCCT is absent (module doc §3).
     let result = dev_capstan_checked();
 
-    // ---- (1) The assembly states the relation ----
+    // ---- (1) The assembly states THIS relation, not merely some constraint ----
+    // Read off the compiled template rather than the check results: a
+    // `ConstraintCheckEntry` carries only an id and a satisfaction, so the
+    // evaluated side cannot tell `shuttle.stroke >= capstan.band` apart from any
+    // other `CapstanDrive`-scoped constraint. The template still holds the
+    // expression, and `sub_cell_reads` recovers the `<sub>.<cell>` datums out of
+    // it.
+    let compiled = compile_dev_capstan();
+    let drive_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == CAPSTAN_DRIVE_ENTITY)
+        .unwrap_or_else(|| {
+            panic!(
+                "{DEV_CAPSTAN} must declare the `{CAPSTAN_DRIVE_ENTITY}` assembly \
+                 that owns both `sub`s; templates compiled: {:?}",
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    let stroke_read = (sub_entity(SHUTTLE_SUB), "stroke".to_string());
+    let band_read = (sub_entity(CAPSTAN_SUB), "band".to_string());
+    let states_coverage = drive_template.constraints.iter().any(|c| {
+        let reads = sub_cell_reads(&c.expr);
+        reads.contains(&stroke_read) && reads.contains(&band_read)
+    });
+    assert!(
+        states_coverage,
+        "`{CAPSTAN_DRIVE_ENTITY}` must carry the shuttle-covers-the-band constraint \
+         — one relating `{}.{}` to `{}.{}` (the file spells it `shuttle.stroke >= \
+         capstan.band`; either order is fine, both datums are not). No declared \
+         constraint reads both. That relation reads a `{CAPSTAN_ENTITY}` cell \
+         against a `{FAIRLEAD_ENTITY}` cell, so the assembly owning both `sub`s is \
+         the ONLY scope it can live in: deriving `{FAIRLEAD_ENTITY}.stroke` from \
+         the capstan would need a parameter override through `sub shuttle = \
+         {FAIRLEAD_ENTITY}(…)`, and that is the override drop (task 4147) \
+         {DEV_CAPSTAN}'s own header records as not working — only `at` poses come \
+         through. If the relation was deliberately re-expressed, this gate and its \
+         message have to move with it. Datums each `{CAPSTAN_DRIVE_ENTITY}` \
+         constraint reads: {:?}",
+        stroke_read.0,
+        stroke_read.1,
+        band_read.0,
+        band_read.1,
+        drive_template
+            .constraints
+            .iter()
+            .map(|c| (&c.id, sub_cell_reads(&c.expr)))
+            .collect::<Vec<_>>()
+    );
+
+    // ---- (2) …the checker evaluated every constraint the template declares ----
     let drive_constraints: Vec<_> = result
         .constraint_results
         .iter()
         .filter(|c| c.id.entity == CAPSTAN_DRIVE_ENTITY)
         .collect();
-    assert!(
-        !drive_constraints.is_empty(),
-        "`{CAPSTAN_DRIVE_ENTITY}` must carry the shuttle-covers-the-band constraint \
-         (`shuttle.stroke >= capstan.band`), but it declares none. That relation \
-         reads a `{CAPSTAN_ENTITY}` cell against a `{FAIRLEAD_ENTITY}` cell, so the \
-         assembly owning both `sub`s is the ONLY scope it can live in: deriving \
-         `{FAIRLEAD_ENTITY}.stroke` from the capstan would need a parameter \
-         override through `sub shuttle = {FAIRLEAD_ENTITY}(…)`, and that is the \
-         override drop (task 4147) {DEV_CAPSTAN}'s own header records as not \
-         working — only `at` poses come through. Entities checked: {:?}",
+    assert_eq!(
+        drive_constraints.len(),
+        drive_template.constraints.len(),
+        "the checker must report one result per `{CAPSTAN_DRIVE_ENTITY}` constraint \
+         the template declares ({} declared, {} reported). A declared relation that \
+         never reaches the check surface is not enforcing anything, and claim (3) \
+         below would quantify over an empty set and pass vacuously. Entities \
+         checked: {:?}",
+        drive_template.constraints.len(),
+        drive_constraints.len(),
         result
             .constraint_results
             .iter()
@@ -1201,7 +1301,7 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
             .collect::<Vec<_>>()
     );
 
-    // ---- (2) …and it holds at the file's defaults ----
+    // ---- (3) …and it holds at the file's defaults ----
     let unsatisfied: Vec<_> = drive_constraints
         .iter()
         .filter(|c| c.satisfaction != Satisfaction::Satisfied)
