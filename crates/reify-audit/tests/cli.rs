@@ -319,8 +319,17 @@ mod cli {
     /// the id. A gate that requires either signal is structurally unable to
     /// fire on the transition it exists to guard.
     ///
-    /// The control task pins the other direction: a task with no declared
-    /// deliverable (research / ops / escalation work) must never be refused.
+    /// The control tasks pin the other two directions: a task with no declared
+    /// deliverable (research / ops / escalation work) must never be refused,
+    /// and a task whose deliverable IS on main must pass cleanly.
+    ///
+    /// Control (c) is what makes (a) non-vacuous. `path_tracked_on` fail-safes
+    /// to `false` on ANY git error, so (a)'s refusal would still be asserted if
+    /// `git ls-tree main` were broken for every path in this environment
+    /// (missing `main` ref, sanitised `GIT_DIR`, shallow checkout) — and (b)
+    /// returns before any git call at all. (c) fails loudly the moment real git
+    /// stops resolving `main`, which is the property `repo_root()`'s doc
+    /// comment claims but nothing previously pinned.
     #[test]
     fn pre_done_gate_refuses_unlanded_task_without_provenance() {
         let tmp = tempfile::tempdir().expect("create tempdir");
@@ -338,6 +347,14 @@ mod cli {
             ),
             // (b) control: no declared deliverable — must flip freely.
             task_fixture_with_files("63452", "in-progress", None, None, &[]),
+            // (c) positive control: a deliverable that IS tracked on main.
+            task_fixture_with_files(
+                "63453",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit/src/lib.rs"],
+            ),
         ];
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
@@ -398,6 +415,89 @@ mod cli {
             out.status.code(),
             Some(0),
             "empty-files control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (c) The positive control: this file is tracked on main, so the
+        // healthy-flip leg must close the gate WITHOUT reaching any rescue.
+        // If real git ever stops resolving `main` here, this is the assertion
+        // that fails — which is precisely what keeps (a) honest.
+        let out = run("63453");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a deliverable tracked on main must pass the pre-done gate cleanly — a \
+             finding here means `git ls-tree {} -- crates/reify-audit/src/lib.rs` did \
+             not resolve, which would also make case (a)'s refusal vacuous; got:\n{:#}",
+            "main",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "tracked-on-main control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY` is scoped to the pre-done landing
+    /// refusal ONLY — it must never mute a sweep High.
+    ///
+    /// The break-glass exists so an operator can soak a fail-closed gate
+    /// without a red-tier fused-memory restart. If it leaked into the sweep it
+    /// would become a general P5 mute, silently disarming the phantom-done
+    /// detector for every task on the box that inherits the env var.
+    #[test]
+    fn pre_done_warn_only_env_does_not_mute_sweep_high() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A done/merged task with an empty `events` table: the classic sweep
+        // High, reached through the provenance path, not the pre-done leg.
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "3242",
+                "--pattern",
+                "P5",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1")
+            .output()
+            .expect("invoke reify-audit sweep with the break-glass set");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            high.is_some(),
+            "the pre-done break-glass must not downgrade a SWEEP High — that would \
+             make it a general P5 mute; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(0) >= 1,
+            "a sweep High must still exit non-zero with the break-glass set; got {:?}\n\
+             stdout: {}\nstderr: {}",
+            out.status.code(),
             String::from_utf8_lossy(&out.stdout),
             stderr
         );
