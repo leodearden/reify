@@ -574,7 +574,11 @@ pub(crate) fn diagnose_unsupported_geometry_list(
 #[derive(Debug)]
 pub(crate) enum GeometryListArg {
     /// Statically unrolled to these element expressions (possibly empty).
-    Elements(Vec<reify_ast::Expr>),
+    ///
+    /// Shared rather than owned so the NAMED-list arm hands back
+    /// `scope.geometry_list_elements`' entry as a refcount bump; the inline arm
+    /// wraps its freshly expanded `Vec` to match.
+    Elements(std::rc::Rc<Vec<reify_ast::Expr>>),
     /// The argument IS a collection, but not one whose elements are geometry
     /// (or not one that can be unrolled at compile time). The caller reports
     /// this specifically rather than falling through to the arity message.
@@ -642,7 +646,7 @@ pub(crate) fn resolve_geometry_list_arg(
         if scope.geometry_list_binding_is_live(name.as_str())
             && let Some(elements) = scope.geometry_list_elements.get(name.as_str())
         {
-            return GeometryListArg::Elements(elements.clone());
+            return GeometryListArg::Elements(std::rc::Rc::clone(elements));
         }
         // A let whose own classification already failed loudly: stay silent.
         if scope.geometry_list_was_rejected(name.as_str()) {
@@ -721,7 +725,7 @@ pub(crate) fn resolve_geometry_list_arg(
     // and expr come from the same `classify_…` call, as they do here).
     let mut unused = Vec::new();
     match expand_geometry_list_elements(arg, &shape, arg.span, &mut unused) {
-        Some(elements) => GeometryListArg::Elements(elements),
+        Some(elements) => GeometryListArg::Elements(std::rc::Rc::new(elements)),
         None => GeometryListArg::NotGeometry,
     }
 }
@@ -1288,6 +1292,41 @@ mod expand_tests {
             ident_uses(&out, "i"),
             0,
             "no use of `i` survives when nothing rebinds it: {out:?}"
+        );
+
+        // The zero above is the ONE unmitigated negative rendering probe in this
+        // module, and on its own it passes vacuously for a substituter that
+        // returned a degenerate or emptied tree — and for any future change to
+        // `ExprKind`'s derived `Debug` (review esc-5385-7). Pair it with the
+        // structural positive: both sides must actually carry the literal `7`
+        // that replaced `i`, in the shape `forall h in slice(xs, 7): 7 > 0`.
+        let reify_ast::ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } = &out.kind
+        else {
+            panic!("substitution must preserve the Quantifier shape: {out:?}");
+        };
+        let reify_ast::ExprKind::FunctionCall { args, .. } = &collection.kind else {
+            panic!("the collection must stay a `slice(..)` call: {collection:?}");
+        };
+        assert!(
+            matches!(
+                &args[1].kind,
+                reify_ast::ExprKind::NumberLiteral { value, .. } if *value == 7.0
+            ),
+            "the collection's index argument must BE the substituted literal: {collection:?}"
+        );
+        let reify_ast::ExprKind::BinOp { left, .. } = &predicate.kind else {
+            panic!("the predicate must stay a comparison: {predicate:?}");
+        };
+        assert!(
+            matches!(
+                &left.kind,
+                reify_ast::ExprKind::NumberLiteral { value, .. } if *value == 7.0
+            ),
+            "the predicate's left operand must BE the substituted literal: {predicate:?}"
         );
     }
 }

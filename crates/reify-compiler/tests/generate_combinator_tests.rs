@@ -1169,19 +1169,258 @@ fn lambda_param_shadowing_a_geometry_list_let_is_not_expanded_by_union_all() {
     );
 }
 
+/// A geometry list mixed into a MULTI-argument fold must be diagnosed, not
+/// silently lowered to nothing (review esc-5385-7).
+///
+/// `union_all(holes, box(…))` clears the `>= 2` arity gate, so the single-argument
+/// list expansion never runs; `resolve_boolean_arg` then reaches
+/// `compile_geometry_call`'s `Ident` arm, which returns `None` with NO diagnostic
+/// for a name absent from `geometry_lets`. Before this guard the enclosing let
+/// emitted no realization AND no error — silent no-lowering, the same class
+/// #5385 exists to eliminate, made reachable by this very task (it is what makes
+/// `holes` a plausible thing to write in that position).
+#[test]
+fn a_geometry_list_mixed_into_a_multi_argument_fold_is_a_loud_error() {
+    let compiled = compile_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let combined = union_all(holes, box(1mm, 1mm, 1mm))
+        }
+    "#,
+    );
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("takes a geometry list only as its SOLE argument")),
+        "mixing a geometry list into a multi-argument fold must be diagnosed; \
+         got {errors:?}",
+    );
+    // The declaring let is untouched — only the malformed fold is refused.
+    assert_eq!(
+        list_realizations(template(&compiled, "S"), "holes").len(),
+        3,
+    );
+
+    // Positive control: an ordinary multi-argument fold over two scalar geometry
+    // lets is unaffected — the new arm must not fire on anything the
+    // single-argument form would have rejected as `NotAList`.
+    let ordinary = compile_source(
+        r#"
+        structure S {
+            let a = box(1mm, 1mm, 1mm)
+            let b = cylinder(5mm, 20mm)
+            let combined = union_all(a, b)
+        }
+    "#,
+    );
+    assert!(
+        error_messages(&ordinary).is_empty(),
+        "control: a plain multi-argument fold must still compile clean; got {:?}",
+        error_messages(&ordinary),
+    );
+    assert_eq!(
+        total_boolean_ops(&ordinary, "S"),
+        1,
+        "control: `union_all(a, b)` still emits its single Union op",
+    );
+}
+
+/// The `self.`-qualified spelling of the `.count` fold resolves to the same
+/// literal as the bare one (review esc-5385-7).
+///
+/// `self.holes.count` is the form examples/ uses (`self.members.count`,
+/// `self.children.count`). Folding only the bare `Ident` receiver left it
+/// falling through to the ordinary aggregation path, where it reads the
+/// pre-hydration `List([Undef; n])` placeholder and yields `Undef` with no
+/// diagnostic — one AST arm away from the seam this fold exists to close.
+#[test]
+fn self_qualified_geometry_list_count_folds_to_the_same_literal() {
+    let compiled = compile_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let n = self.holes.count
+            let m = holes.count
+        }
+    "#,
+    );
+    assert!(
+        error_messages(&compiled).is_empty(),
+        "compile errors: {:?}",
+        error_messages(&compiled),
+    );
+    for member in ["n", "m"] {
+        let expr = default_expr(&compiled, "S", member);
+        assert!(
+            matches!(&expr.kind, CompiledExprKind::Literal(Value::Int(3))),
+            "`{member}` must constant-fold to the list's length 3, not read the \
+             pre-hydration placeholder; got {expr:#?}",
+        );
+    }
+}
+
+/// A QUANTIFIER VARIABLE that shadows a geometry-list let must not expand to
+/// that let's elements either (review esc-5385-7) — and the MEASURED reason it
+/// cannot is not the guard.
+///
+/// Shadowing coverage was asymmetric across the two wired consumers: lambda
+/// binders were pinned for both `.count` (generate_eval.rs) and the `union_all`
+/// expansion, quantifier variables only for `.count` and for
+/// `substitute_index_ident` (geometry_list.rs). Closing that hole turned up why:
+/// the expansion's quantifier leg is STRUCTURALLY UNREACHABLE. The expansion
+/// lives in `resolve_geometry_list_arg`, reached only from
+/// `compile_geometry_call` — the geometry-lowering path — and geometry lowering
+/// never descends into a quantifier predicate. Measured on the fixture below:
+/// `forall holes in xs: union_all(holes) == union_all(holes)` emits ZERO Boolean
+/// ops with or without the shadow, and the predicate's `union_all` stays an
+/// ordinary value-level `FunctionCall(std::union_all)`.
+///
+/// (The lambda leg is different, and genuinely reaches the expansion:
+/// `let combined = generate(2, |holes| union_all(holes))` classifies as a
+/// geometry-LIST let, so its substituted bodies ARE lowered as geometry.)
+///
+/// So this test pins the two things that are true here: the quantifier binder
+/// shadows at the VALUE level (the predicate's argument resolves to the
+/// quantifier's own `$quantN` cell, never to `S.holes`), and no realization-level
+/// fold occurs on this path at all. The control doubles as a TRIPWIRE — its
+/// zero-Boolean-op assertion is the unreachability measurement, so if geometry
+/// inside a quantifier ever becomes lowerable it fails, and the guard's
+/// quantifier leg becomes live and needs a real witness.
+#[test]
+fn quantifier_variable_shadowing_a_geometry_list_let_is_not_expanded_by_union_all() {
+    let compiled = compile_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let xs = [1, 2]
+            let ok = forall holes in xs: union_all(holes) == union_all(holes)
+        }
+    "#,
+    );
+    assert!(
+        error_messages(&compiled).is_empty(),
+        "compile errors: {:?}",
+        error_messages(&compiled),
+    );
+
+    assert_eq!(
+        total_boolean_ops(&compiled, "S"),
+        0,
+        "no Boolean op may be emitted — the only geometry in S is the outer \
+         list's three cylinders, and the shadowed fold must not reach them; \
+         got {:#?}",
+        template(&compiled, "S")
+            .realizations
+            .iter()
+            .map(|r| (&r.name, r.operations.len()))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        list_realizations(template(&compiled, "S"), "holes").len(),
+        3,
+        "the declaring let is untouched",
+    );
+
+    // …and the predicate's `union_all` argument is the quantifier's OWN binder
+    // cell, never the outer geometry-list cell. Read off the tree, not off its
+    // `Debug` rendering (review esc-5385-6).
+    let shadowed_arg = quantified_union_all_arg(default_expr(&compiled, "S", "ok"));
+    assert!(
+        shadowed_arg.entity.starts_with("$quant"),
+        "the predicate's fold argument must resolve to the quantifier's own \
+         binder cell; got {shadowed_arg:?}",
+    );
+    assert_ne!(
+        *shadowed_arg,
+        ValueCellId::new("S", "holes"),
+        "…never to the OUTER geometry-list cell",
+    );
+
+    // Discriminating control: rename the variable `j` so nothing is shadowed.
+    // The argument then IS `S.holes` — proving the assertion above tracks the
+    // binder rather than holding vacuously — while the Boolean-op count stays
+    // zero, which is the unreachability measurement described in the doc above.
+    let unshadowed = compile_source(
+        r#"
+        structure S {
+            let holes = generate(3, |i| cylinder(5mm, 20mm))
+            let xs = [1, 2]
+            let ok = forall j in xs: union_all(holes) == union_all(holes)
+        }
+    "#,
+    );
+    let control_arg = quantified_union_all_arg(default_expr(&unshadowed, "S", "ok"));
+    assert_eq!(
+        *control_arg,
+        ValueCellId::new("S", "holes"),
+        "control: with nothing shadowed the SAME source text resolves to the \
+         outer geometry-list cell; got {control_arg:?}",
+    );
+    assert_eq!(
+        total_boolean_ops(&unshadowed, "S"),
+        0,
+        "TRIPWIRE: geometry lowering does not descend into a quantifier \
+         predicate, so even an UNshadowed `union_all(holes)` there emits no \
+         Boolean op. When this fails, geometry inside a quantifier became \
+         lowerable — `resolve_geometry_list_arg`'s quantifier leg is then live \
+         and this test must be rewritten to witness the guard directly; got {:#?}",
+        template(&unshadowed, "S")
+            .realizations
+            .iter()
+            .map(|r| (&r.name, r.operations.len()))
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// The `ValueCellId` that `union_all`'s sole argument resolves to inside
+/// `forall <v> in xs: union_all(<v>) == union_all(<v>)`.
+fn quantified_union_all_arg(ok: &reify_ir::CompiledExpr) -> &ValueCellId {
+    let CompiledExprKind::Quantifier { predicate, .. } = &ok.kind else {
+        panic!("expected `ok` to compile to a Quantifier; got {ok:#?}");
+    };
+    let CompiledExprKind::BinOp { left, .. } = &predicate.kind else {
+        panic!("expected the predicate to be a comparison; got {predicate:#?}");
+    };
+    let CompiledExprKind::FunctionCall { function, args } = &left.kind else {
+        panic!("expected the comparison's left side to be a call; got {left:#?}");
+    };
+    assert_eq!(function.name, "union_all", "got {left:#?}");
+    assert_eq!(args.len(), 1, "the fold keeps its single argument: {left:#?}");
+    let CompiledExprKind::ValueRef(cell) = &args[0].kind else {
+        panic!("the fold's argument must be a ValueRef; got {:#?}", args[0]);
+    };
+    cell
+}
+
 /// A MATCH-ARM PAYLOAD BINDER that shadows a geometry-list let must not expand
 /// to that let's elements either — the third derived-scope leg (`$matcharmN`),
 /// which review esc-5385-4 S5 found unpinned at every level.
 ///
-/// What fires TODAY is the geometry-typed-match rejection (task 3418), which
-/// sits upstream of the fold: `compile_geometry_call` refuses the whole `match`
-/// before `resolve_geometry_list_arg` is ever consulted, so the arm's
-/// `union_all(holes)` never expands anything. That is a diagnostic, not a
-/// silently-wrong fold, which is the contract this test exists to pin — and it
-/// is deliberately asserted at the contract level (an Error exists, zero
-/// Boolean ops, no reference to the outer cell) so that if geometry `match`
-/// ever becomes supported, the guard in `resolve_geometry_list_arg` becomes the
-/// thing holding this test up rather than the test needing to be rewritten.
+/// WHAT ACTUALLY FIRES, AND WHAT THIS TEST THEREFORE PINS (review esc-5385-7).
+/// The geometry-typed-match rejection (task 3418) sits UPSTREAM of the fold:
+/// `compile_geometry_call` refuses the whole `match` before
+/// `resolve_geometry_list_arg` is ever consulted. So this test does NOT witness
+/// `geometry_list_binding_is_live` — every assertion below still holds with that
+/// gate deleted, and the control at the end of this test measures exactly that
+/// pre-emption rather than leaving it as a claim. The earlier doc here implied
+/// the opposite and was wrong.
+///
+/// It is still worth keeping, at the contract level it really does pin: the
+/// outcome of a shadowed fold in a match arm is a DIAGNOSTIC and zero Boolean
+/// ops — never a silent expansion over the outer list — and the arm's compiled
+/// argument resolves to the arm's own `$matcharmN` binder cell, never to
+/// `S.holes`. The guard itself IS witnessed for the `$matcharm` scope by the
+/// `.count` sibling below, which reaches it because `.count` has no upstream
+/// geometry-match rejection to trip.
+///
+/// TRIPWIRE: the control compares the shadowed compile against one with nothing
+/// shadowed. They are identical today because 3418 pre-empts both. If geometry
+/// `match` ever becomes supported, the control goes clean while the shadowed
+/// case must keep its Error — and the equality assertion fails, which is the
+/// signal to invert it and let this test start witnessing the guard for real.
 #[test]
 fn match_arm_binder_shadowing_a_geometry_list_let_is_not_expanded_by_union_all() {
     let compiled = compile_source(
@@ -1244,6 +1483,34 @@ fn match_arm_binder_shadowing_a_geometry_list_let_is_not_expanded_by_union_all()
         ValueCellId::new("S", "holes"),
         "the compiled arm must not reference the OUTER geometry-list cell",
     );
+
+    // Pre-emption control (review esc-5385-7): the SAME fixture with the outer
+    // let renamed, so the arm binder `holes` shadows nothing. The fold's guard
+    // is therefore irrelevant to this compile — and it produces the identical
+    // diagnostics, which is the measurement proving task 3418 pre-empts the
+    // fold and that the assertions above cannot be crediting the guard.
+    let unshadowed = compile_source(
+        r#"
+        enum Mode { Fold { parts: Solid }, Plain }
+        structure S {
+            param m : Mode = Mode.Plain
+            let ring = generate(3, |i| cylinder(5mm, 20mm))
+            let combined = match m {
+                Fold { parts: holes } => union_all(holes),
+                Plain => box(1mm, 1mm, 1mm),
+            }
+        }
+    "#,
+    );
+    assert_eq!(
+        error_messages(&unshadowed),
+        errors,
+        "control: with NOTHING shadowed the same diagnostics are produced, so \
+         the geometry-match rejection — not the shadow guard — is what fires \
+         here. When this stops holding (geometry `match` became supported), \
+         invert it: the shadowed case must then error where the control does \
+         not.",
+    );
 }
 
 /// The `.count` leg of the same match-arm binder — the one derived scope that
@@ -1253,7 +1520,7 @@ fn match_arm_binder_shadowing_a_geometry_list_let_is_not_expanded_by_union_all()
 /// Unlike the two `union_all` tests above, this one reaches
 /// `geometry_list_binding_is_live` for real. The arm body is compiled by
 /// `compile_expr` in a cloned `$matcharm0.S` scope that inherits
-/// `geometry_list_lens` VERBATIM and registers the binder in `names` only, so a
+/// `geometry_list_elements` VERBATIM and registers the binder in `names` only, so a
 /// bare-name lookup keyed on `"holes"` finds the outer let's length. Without
 /// the gate the arm body folds to `Literal(Int(3))` — the OUTER list's length,
 /// silently, for a binder the caller supplied as a `List<Int>`.

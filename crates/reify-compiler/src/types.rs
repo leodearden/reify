@@ -1256,7 +1256,8 @@ pub struct GeometryListBinding {
     /// and two of those returns are diagnostic-free. Counting emitted
     /// realizations would make a dropped element look like a complete shorter
     /// list, which would then disagree with the `<list>.count` already
-    /// constant-folded from `geometry_list_lens` — silently, and in exactly
+    /// constant-folded from `scope.geometry_list_elements[name].len()` —
+    /// silently, and in exactly
     /// the silent-wrong-value class task #5385 exists to eliminate (review
     /// esc-5385-3).
     pub len: usize,

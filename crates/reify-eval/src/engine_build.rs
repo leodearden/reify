@@ -12023,8 +12023,8 @@ struct GeometryListCellAccumulator {
     /// loop drops an element whenever `compile_geometry_call` returns `None`
     /// (two of those returns are diagnostic-free), so a tally would make a
     /// dropped element look like a complete shorter list and silently diverge
-    /// from the `<list>.count` already folded from `geometry_list_lens`
-    /// (review esc-5385-3).
+    /// from the `<list>.count` already folded from the compiler's
+    /// `scope.geometry_list_elements[name].len()` (review esc-5385-3).
     declared: BTreeMap<(String, String), usize>,
     /// `(entity, list_name)` → `index` → resolved handle value.
     resolved: BTreeMap<(String, String), BTreeMap<usize, reify_ir::Value>>,
@@ -13535,5 +13535,120 @@ mod reset_per_build_state_tests {
             );
             assert_must_survive(&engine, surface);
         }
+    }
+}
+
+#[cfg(test)]
+mod geometry_list_cell_accumulator_tests {
+    use super::GeometryListCellAccumulator;
+    use reify_compiler::{GeometryListBinding, RealizationDecl};
+    use reify_core::{RealizationNodeId, SourceSpan};
+
+    /// One list-bound `RealizationDecl` for element `index` of `list` in `entity`,
+    /// declaring the list's compile-time length as `len`.
+    fn element(entity: &str, list: &str, index: usize, len: usize) -> RealizationDecl {
+        RealizationDecl {
+            id: RealizationNodeId::new(entity, index as u32),
+            name: Some(format!("{list}#{index}")),
+            is_aux: false,
+            list_binding: Some(GeometryListBinding {
+                list_name: list.to_string(),
+                index,
+                len,
+            }),
+            operations: Vec::new(),
+            span: SourceSpan::new(0, 0),
+        }
+    }
+
+    /// The happy path, so the two negatives below are pinning the guard and not
+    /// an accumulator that never emits anything.
+    #[test]
+    fn every_declared_element_resolving_emits_the_list_in_index_order() {
+        let mut acc = GeometryListCellAccumulator::default();
+        for k in 0..3 {
+            let r = element("S", "holes", k, 3);
+            assert!(acc.declare(&r), "a list-bound realization must report true");
+            acc.resolve(&r, reify_ir::Value::Int(k as i64));
+        }
+
+        let entries = acc.into_entries();
+        assert_eq!(entries.len(), 1, "one cell per list; got {entries:?}");
+        assert_eq!(entries[0].0.member, "holes");
+        assert_eq!(
+            entries[0].1,
+            reify_ir::Value::List(vec![
+                reify_ir::Value::Int(0),
+                reify_ir::Value::Int(1),
+                reify_ir::Value::Int(2),
+            ]),
+            "elements must come back in ascending index order",
+        );
+    }
+
+    /// ALL-OR-NOTHING (review esc-5385-7): one unresolved element drops the whole
+    /// list, leaving the cell at its `[Undef; n]` placeholder rather than emitting
+    /// a silently short list. This is the central safety property justifying
+    /// `GeometryListBinding::len` carrying the COMPILE-TIME count, and it had no
+    /// test at any level.
+    #[test]
+    fn a_single_unresolved_element_drops_the_whole_list() {
+        let mut acc = GeometryListCellAccumulator::default();
+        for k in 0..3 {
+            acc.declare(&element("S", "holes", k, 3));
+        }
+        // Index 1 never resolves — e.g. its realization was skipped as
+        // hash-exempt, or `compile_geometry_call` dropped it.
+        for k in [0usize, 2] {
+            acc.resolve(&element("S", "holes", k, 3), reify_ir::Value::Int(k as i64));
+        }
+
+        assert!(
+            acc.into_entries().is_empty(),
+            "a partially-resolved list must emit NO cell — a 2-element list here \
+             would be silently wrong, and `holes.count` already folded to 3",
+        );
+    }
+
+    /// The exact-index-set check, not a count check: `{0, 1, 7}` against an
+    /// expected 3 has the right CARDINALITY but the wrong indices, and emitting it
+    /// would put index 7's handle at position 2 (`BTreeMap::values` walks ascending
+    /// key order whatever the keys are). Unreachable today — `index` comes from
+    /// `enumerate()` in the compiler's unroll — which is precisely why it needs a
+    /// test rather than a reader's trust.
+    #[test]
+    fn a_compensating_index_set_of_the_right_length_is_still_dropped() {
+        let mut acc = GeometryListCellAccumulator::default();
+        for k in 0..3 {
+            acc.declare(&element("S", "holes", k, 3));
+        }
+        for k in [0usize, 1, 7] {
+            acc.resolve(&element("S", "holes", k, 3), reify_ir::Value::Int(k as i64));
+        }
+
+        assert!(
+            acc.into_entries().is_empty(),
+            "three resolved elements at indices {{0, 1, 7}} are NOT the list's \
+             elements 0..3 — a count-only check would have emitted a wrong list",
+        );
+    }
+
+    /// A realization with no `list_binding` is not this accumulator's business:
+    /// `declare` reports false (so the caller still writes it as a scalar geometry
+    /// cell) and `resolve` is a no-op.
+    #[test]
+    fn a_non_list_realization_is_declined_and_never_emitted() {
+        let mut acc = GeometryListCellAccumulator::default();
+        let scalar = RealizationDecl {
+            list_binding: None,
+            ..element("S", "body", 0, 1)
+        };
+
+        assert!(
+            !acc.declare(&scalar),
+            "declare must report false so the caller writes the scalar cell itself",
+        );
+        acc.resolve(&scalar, reify_ir::Value::Int(0));
+        assert!(acc.into_entries().is_empty());
     }
 }

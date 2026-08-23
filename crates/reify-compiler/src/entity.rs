@@ -1529,11 +1529,8 @@ pub(crate) fn compile_entity(
                     ) {
                         Some(elements) => {
                             scope
-                                .geometry_list_lens
-                                .insert(let_decl.name.clone(), elements.len());
-                            scope
                                 .geometry_list_elements
-                                .insert(let_decl.name.clone(), elements);
+                                .insert(let_decl.name.clone(), std::rc::Rc::new(elements));
                             known_geometry_list_lets.insert(let_decl.name.as_str());
                         }
                         None => {

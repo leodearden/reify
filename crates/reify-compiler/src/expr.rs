@@ -3904,12 +3904,29 @@ fn compile_expr_guarded_with_expected_inner(
             // realizations emitted for that let (both come from the same
             // `GeometryListShape`), so the two can never disagree.
             //
-            // SHADOWING (review esc-5385-3): `geometry_list_lens` is inherited
-            // verbatim by every derived scope (lambda body, quantifier
+            // SHADOWING (review esc-5385-3): `geometry_list_elements` is
+            // inherited verbatim by every derived scope (lambda body, quantifier
             // predicate, match arm with payload binders), each of which
             // registers its binder in `names` only. Gate the fold on the name
             // still resolving to THIS entity's list let, or a binder that
             // shadows one is silently folded to the OUTER list's length.
+            //
+            // BOTH SPELLINGS (review esc-5385-7). `self.holes.count` names the
+            // same let as `holes.count` and is the form examples/ actually uses
+            // (`self.members.count`, `self.children.count`). Folding only the
+            // bare `Ident` receiver left the `self.`-qualified alias falling
+            // through to the ordinary aggregation path, where it reads the
+            // pre-hydration `List([Undef; n])` placeholder and yields `Undef`
+            // with no diagnostic — the exact silent-undef this fold exists to
+            // remove, reachable by adding four characters.
+            //
+            // The `self.` arm reuses the same `geometry_list_binding_is_live`
+            // gate, which is deliberately CONSERVATIVE for it: inside a lambda
+            // whose param shadows `holes`, `self.holes` is unambiguous but the
+            // gate still declines, so the fold is skipped rather than made
+            // wrong. Skipping costs an `Undef` on a path that is already
+            // `Undef` today; folding through a shadowed lookup would cost a
+            // silently-wrong constant.
             //
             // WIRED CONSUMERS (review esc-5385-3): this `.count` fold and the
             // `union_all` / `intersection_all` expansion in geometry_boolean.rs
@@ -3928,12 +3945,34 @@ fn compile_expr_guarded_with_expected_inner(
             // is the eval-side `UndefCause`-provenance half, task #5402 —
             // deliberately NOT a compile-time rejection here, which would risk
             // refusing programs the full pipeline resolves correctly.
-            if member == "count"
-                && let reify_ast::ExprKind::Ident(list_name) = &object.kind
-                && scope.geometry_list_binding_is_live(list_name.as_str())
-                && let Some(&len) = scope.geometry_list_lens.get(list_name.as_str())
+            // The count is read from `geometry_list_elements[name].len()` — the
+            // ONE source of truth, the elements pass 1 actually unrolled and the
+            // emission loop actually emits a realization for. A separately-stored
+            // length was removed as a drift risk (review esc-5385-7).
+            let geometry_list_count_receiver: Option<&str> = if member == "count" {
+                match &object.kind {
+                    reify_ast::ExprKind::Ident(list_name) => Some(list_name.as_str()),
+                    reify_ast::ExprKind::MemberAccess {
+                        object: receiver,
+                        member: list_name,
+                    } if scope.is_entity_scope
+                        && matches!(
+                            &receiver.kind,
+                            reify_ast::ExprKind::Ident(n) if n == "self"
+                        ) =>
+                    {
+                        Some(list_name.as_str())
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(list_name) = geometry_list_count_receiver
+                && scope.geometry_list_binding_is_live(list_name)
+                && let Some(elements) = scope.geometry_list_elements.get(list_name)
             {
-                return CompiledExpr::literal(Value::Int(len as i64), Type::Int);
+                return CompiledExpr::literal(Value::Int(elements.len() as i64), Type::Int);
             }
 
             // ── compiler-type-hygiene ε1: PART A — name-directed pre-pass ───────

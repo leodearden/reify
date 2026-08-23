@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 // --- Compilation context ---
 
@@ -65,27 +66,35 @@ pub(crate) struct CompilationScope<'u> {
     /// `collection_sub_names` / `purpose_param_names` — a dedicated typed set for a
     /// category-specific lookup rather than overloading `names`.
     pub(crate) geometry_realization_names: HashSet<String>,
-    /// Geometry-LIST let name → statically-known element count (task #5385).
-    ///
-    /// A `let holes = generate(3, |i| cylinder(…))` lowers to N sibling
-    /// `RealizationDecl`s rather than a value the ordinary expression compiler
-    /// can see, so `holes.count` is constant-folded from this map instead of
-    /// compiling to a `MethodCall` — see the fold in `expr.rs`'s
-    /// `MemberAccess` name-directed pre-pass for why.
-    ///
-    /// Exactly the names in `known_geometry_list_lets` (entity.rs pass 1),
-    /// each mapped to the number of list-bound realizations emitted for it.
-    pub(crate) geometry_list_lens: HashMap<String, usize>,
     /// Geometry-LIST let name → its statically-unrolled element expressions
     /// (task #5385), owned so no AST lifetime is threaded through the ~40
     /// `compile_geometry_call` call sites.
     ///
+    /// A `let holes = generate(3, |i| cylinder(…))` lowers to N sibling
+    /// `RealizationDecl`s rather than a value the ordinary expression compiler
+    /// can see, so `holes.count` is constant-folded from `self[name].len()`
+    /// instead of compiling to a `MethodCall` — see the fold in `expr.rs`'s
+    /// `MemberAccess` name-directed pre-pass for why.
+    ///
     /// Expanded exactly ONCE, in entity.rs pass 1, so the element-cap
-    /// diagnostic fires once and the realization-emission loop and
-    /// `union_all`/`intersection_all` list expansion read the same elements.
-    /// `geometry_list_elements[n].len() == geometry_list_lens[n]` by
-    /// construction.
-    pub(crate) geometry_list_elements: HashMap<String, Vec<reify_ast::Expr>>,
+    /// diagnostic fires once and all three consumers — the realization-emission
+    /// loop, that `.count` fold, and the `union_all`/`intersection_all` list
+    /// expansion — read the same elements. Exactly the names in
+    /// `known_geometry_list_lets`.
+    ///
+    /// THE COUNT LIVES HERE AND NOWHERE ELSE (review esc-5385-7). A sibling
+    /// name→count map was removed: it duplicated `self[name].len()` for the
+    /// sole benefit of the `.count` fold, and entity.rs's own registration
+    /// comment argues at length against exactly such a second count.
+    ///
+    /// `Rc` because `CompilationScope` is DEEP-CLONED per lambda body, per
+    /// quantifier predicate and per match arm with payload binders (expr.rs),
+    /// and a list may hold up to [`crate::geometry_list::GEOMETRY_LIST_MAX_ELEMENTS`]
+    /// fully-owned geometry subtrees. Sharing makes every one of those clones —
+    /// and both consumers' `.cloned()` — a refcount bump instead of a 256-subtree
+    /// AST copy. The elements are never mutated after pass 1, so nothing needs
+    /// `Rc::make_mut`.
+    pub(crate) geometry_list_elements: HashMap<String, Rc<Vec<reify_ast::Expr>>>,
     /// Geometry-LIST let names that were REJECTED at classification time and
     /// already carry their own Error (task #5385).
     ///
@@ -96,9 +105,8 @@ pub(crate) struct CompilationScope<'u> {
     /// pointing at the fold rather than at the real defect — the very cascade
     /// entity.rs's registration comment claims to avoid (review esc-5385-3).
     ///
-    /// Disjoint from `geometry_list_lens` / `geometry_list_elements` by
-    /// construction: a let is either expanded into those maps or rejected into
-    /// this set, never both.
+    /// Disjoint from `geometry_list_elements` by construction: a let is either
+    /// expanded into that map or rejected into this set, never both.
     pub(crate) geometry_list_rejected: HashSet<String>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
@@ -278,7 +286,6 @@ impl<'u> CompilationScope<'u> {
             collection_sub_names: HashSet::new(),
             keyed_sub_keys: HashMap::new(),
             geometry_realization_names: HashSet::new(),
-            geometry_list_lens: HashMap::new(),
             geometry_list_elements: HashMap::new(),
             geometry_list_rejected: HashSet::new(),
             trait_members: HashMap::new(),
@@ -410,12 +417,12 @@ impl<'u> CompilationScope<'u> {
     /// True iff `name` still names THIS entity's geometry-LIST let — i.e. it has
     /// not been shadowed by a binder introduced in a derived scope (task #5385).
     ///
-    /// `geometry_list_lens` / `geometry_list_elements` are populated exactly once,
-    /// in entity.rs pass 1, and are then inherited VERBATIM by every derived
+    /// `geometry_list_elements` is populated exactly once,
+    /// in entity.rs pass 1, and is then inherited VERBATIM by every derived
     /// scope: `expr.rs` clones `scope` for a lambda body, for a quantifier
     /// predicate, and for a `match` arm carrying `VariantBind` payload binders.
     /// Each of those registers its binder in `names` ONLY, leaving the inherited
-    /// geometry-list maps intact — so a bare-name lookup in those maps resolves a
+    /// geometry-list map intact — so a bare-name lookup in that map resolves a
     /// SHADOWING binder to the outer let's data, yielding a silently-wrong
     /// compile-time constant (`holes.count` folded to the outer length, or
     /// `union_all(holes)` expanded over the outer let's elements). Every

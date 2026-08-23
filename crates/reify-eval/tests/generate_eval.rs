@@ -552,7 +552,7 @@ fn generate_with_index_arithmetic_in_geometry_args_evaluates() {
 /// A LAMBDA PARAM that shadows a geometry-list let must NOT inherit that let's
 /// statically-folded length.
 ///
-/// `geometry_list_lens` is populated once in entity.rs pass 1 and then inherited
+/// `geometry_list_elements` is populated once in entity.rs pass 1 and then inherited
 /// verbatim by the cloned lambda scope, which registers its binder in `names`
 /// only. Keying the `.count` fold on the raw identifier text therefore folded the
 /// INNER `holes` to the OUTER list's length.
@@ -562,11 +562,18 @@ fn generate_with_index_arithmetic_in_geometry_args_evaluates() {
 /// lambda actually received. That is a silently-wrong compile-time CONSTANT,
 /// exactly the class this task exists to eliminate.
 ///
-/// The assertion is deliberately negative-only. Once the fold is correctly
+/// Asserted as a CONCRETE SHAPE, not merely as "no `Int(3)` anywhere" (review
+/// esc-5385-7). A bare negative is satisfied by the silent-undef outcome this
+/// task exists to eliminate, and by `List([])` — so it could not tell "the shadow
+/// guard works" from "the lambda body produced nothing at all". Pinning
+/// `[Undef, Undef]` exactly makes BOTH a regression to the folded `Int(3)` and a
+/// regression to a degenerate/empty list fail.
+///
+/// `Undef` is today's contract, not an aspiration: once the fold is correctly
 /// suppressed the body is a genuine `MethodCall` on an `Int`-typed binder, and
-/// what a `.count` on a non-collection should yield is #5402's (eval-side
-/// provenance) question, not this task's. Pinning `Int(3)` as forbidden is the
-/// whole regression.
+/// `.count` on a non-collection evaluates to `Undef`. Making THAT loud is the
+/// eval-side provenance question, task #5402 — so if #5402 turns these into a
+/// diagnostic, this expectation is the thing it must update, deliberately.
 #[test]
 fn lambda_param_shadowing_a_geometry_list_let_does_not_inherit_its_count() {
     let result = eval_source(
@@ -581,15 +588,28 @@ fn lambda_param_shadowing_a_geometry_list_let_does_not_inherit_its_count() {
     let Some(Value::List(elems)) = ns else {
         panic!("`ns` must evaluate to a List; got {ns:?}");
     };
+    assert_eq!(
+        elems.len(),
+        2,
+        "the lambda still runs once per index — a shorter list means the body \
+         degenerated rather than being un-folded; got {ns:?}",
+    );
     assert!(
         !elems.iter().any(|e| *e == Value::Int(3)),
         "the lambda's `holes.count` must NOT fold to the OUTER geometry list's \
          length 3 — the param shadows it; got {ns:?}",
     );
+    assert_eq!(
+        elems,
+        &vec![Value::Undef, Value::Undef],
+        "…and each element must be exactly `Undef` — `.count` on the Int-typed \
+         binder the lambda really received (see the doc comment: #5402 owns \
+         making this loud); got {ns:?}",
+    );
 }
 
 /// The same for a QUANTIFIER VARIABLE, which `expr.rs` binds through a second,
-/// independent `scope.clone()` that likewise leaves `geometry_list_lens` intact.
+/// independent `scope.clone()` that likewise leaves `geometry_list_elements` intact.
 ///
 /// RED before the shadow guard: the predicate's `holes.count` folded to
 /// `Literal(Int(3))`, so `holes.count == 2` was decided at COMPILE time and `ok`

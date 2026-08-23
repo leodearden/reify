@@ -196,7 +196,7 @@ pub(crate) fn compile_boolean_op(
             // change to the whole boolean-arg path — and only worthwhile there,
             // since scoping it to geometry lists alone would leave the identical
             // duplication in place for every other operand shape.
-            let expanded: Vec<reify_ast::Expr>;
+            let expanded: std::rc::Rc<Vec<reify_ast::Expr>>;
             let mut args = args;
             let mut expanded_from_list = false;
             if args.len() == 1 {
@@ -249,6 +249,51 @@ pub(crate) fn compile_boolean_op(
                     // Not a collection at all (e.g. `union_all(box(…))`) — fall
                     // through to the unchanged arity diagnostic below.
                     GeometryListArg::NotAList => {}
+                }
+            }
+            // A geometry list MIXED INTO a multi-argument fold (review
+            // esc-5385-7): `union_all(holes, box(1mm,1mm,1mm))` clears the >= 2
+            // arity gate, then `resolve_boolean_arg` reaches
+            // `compile_geometry_call`'s `Ident` arm, which returns `None` with NO
+            // diagnostic for a name absent from `geometry_lets`. The enclosing
+            // let then emits no realization and no error whatsoever. The
+            // behaviour predates this task, but this task is what makes `holes` a
+            // plausible thing to write there, so say so rather than lower nothing
+            // silently.
+            //
+            // Diagnose rather than flatten: splicing a list into a
+            // partially-written fold guesses at an ordering the user did not
+            // write, and the fold is not commutative for `difference`-shaped
+            // future operators. `NotGeometry` / `NotAList` are deliberately NOT
+            // caught — a non-geometry collection here keeps its existing
+            // behaviour, so this arm can only fire on an argument the
+            // single-argument form would have accepted.
+            //
+            // Cost is bounded: `resolve_geometry_list_arg` returns `NotAList`
+            // immediately for anything that is not an `Ident`, a `ListLiteral` or
+            // a `generate(…)` call, so an ordinary `union_all(a, b, c)` pays one
+            // cheap scope lookup per argument and expands nothing.
+            if !expanded_from_list && args.len() > 1 {
+                for arg in args {
+                    match resolve_geometry_list_arg(arg, scope, functions) {
+                        GeometryListArg::Elements(_) | GeometryListArg::OverCap { .. } => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "{name}() takes a geometry list only as its SOLE \
+                                     argument; fold this list on its own, or write out \
+                                     its elements alongside the other arguments"
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    arg.span,
+                                    "this geometry list is mixed with other arguments",
+                                )),
+                            );
+                            return None;
+                        }
+                        // The declaring let already reported its own Error.
+                        GeometryListArg::AlreadyDiagnosed => return None,
+                        GeometryListArg::NotGeometry | GeometryListArg::NotAList => {}
+                    }
                 }
             }
             // A list that expanded to exactly ONE element folds to that element
