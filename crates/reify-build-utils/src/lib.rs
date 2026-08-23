@@ -150,12 +150,21 @@ fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBu
 
 /// Resolution core of [`find_dir`] with the override passed in as a value, so
 /// precedence is testable without `env::set_var` racing libtest's threads.
+///
+/// An EMPTY override counts as UNSET. `env::var(..).ok()` hands back
+/// `Some("")` for an exported-but-empty var, and taking that on trust would
+/// resolve the dir to the empty path, still set `has_occt`, and link against
+/// nothing — while `scripts/check-manifold-deps.sh`'s OCCT preflight, reading
+/// the same environment, fell through to the candidate list and went green
+/// describing a resolution this function would not perform. Both halves of
+/// that mirror now agree; the bash half is the `[ -n "$override" ]` test in
+/// that script's `occt_find_dir`.
 fn find_dir_with_override(
     override_dir: Option<&str>,
     candidates: &[&str],
     sentinel: &str,
 ) -> Option<PathBuf> {
-    if let Some(dir) = override_dir {
+    if let Some(dir) = override_dir.filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }
     for p in candidates {
@@ -359,8 +368,8 @@ mod tests {
         assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.9.3".to_string()));
     }
 
-    /// An override outranks a candidate that would otherwise match, and is
-    /// taken on trust — it is returned even without the sentinel present,
+    /// A non-empty override outranks a candidate that would otherwise match,
+    /// and is taken on trust — it is returned even without the sentinel present,
     /// which is what lets an operator point a build at a lib dir we do not
     /// know about.
     #[test]
@@ -383,6 +392,28 @@ mod tests {
         );
 
         assert_eq!(found.as_deref(), Some(override_dir));
+    }
+
+    /// An exported-but-EMPTY override counts as unset here, matching the
+    /// `[ -n "$override" ]` half of the mirror in
+    /// `scripts/check-manifold-deps.sh`'s `occt_find_dir`. Without the filter
+    /// this resolved to the empty path and set `has_occt` while the preflight,
+    /// reading the same environment, went green — exactly the guard/build
+    /// disagreement that arm exists to prevent.
+    #[test]
+    fn find_dir_ignores_exported_but_empty_override() {
+        let guard = tempdir();
+        let tmp = guard.path();
+        fs::write(tmp.join("libgmsh.so"), b"").unwrap();
+
+        let tmp_str = tmp.to_string_lossy().into_owned();
+        let found = find_dir_with_override(Some(""), &[tmp_str.as_str()], "libgmsh.so");
+
+        assert_eq!(
+            found.as_deref(),
+            Some(tmp),
+            "empty override must fall through"
+        );
     }
 
     #[test]

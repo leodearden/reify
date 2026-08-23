@@ -171,10 +171,26 @@ OCCT_LIB_SENTINEL=libTKernel.so
 OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
 # END occt-candidates
 
-# Accepted OCCT SONAME versions — the suffix of the FIRST-level `libTKernel.so`
-# symlink target, i.e. exactly what reify_build_utils::read_soname_version()
-# extracts and what crates/reify-kernel-occt/build.rs splices into its
+# Accepted OCCT versions, compared at MAJOR.MINOR. The value under test is the
+# suffix of the FIRST-level `libTKernel.so` symlink target — exactly what
+# reify_build_utils::read_soname_version() extracts and what
+# crates/reify-kernel-occt/build.rs splices into its
 # `dylib:+verbatim=libTK*.so.<ver>` link directives.
+#
+# WHY MAJOR.MINOR RATHER THAN THE VERBATIM SEGMENT: the segment's SHAPE is a
+# packaging detail, not a compatibility one. Debian points the dev symlink at
+# `libTKernel.so.7.8` (two hops), conda-forge points it straight at
+# `libTKernel.so.7.9.3` (one hop), and a repackaging that moves Debian's link
+# one hop further (`-> libTKernel.so.7.8.1`) changes the segment without
+# changing the OCCT. Exact-matching the segment would turn that non-event into
+# a hard stop on EVERY RUN_RUST=1 verify — instructing the operator to
+# re-validate the STEP/geometry pins — while build.rs would have spliced
+# `libTKernel.so.7.8.1`, a file that exists and links. So both sides are
+# projected through occt_majmin() before comparison. The VERBATIM segment
+# still appears in the [ok] line and in every error, because that is the exact
+# string build.rs links against. The projection also frees this array to hold
+# either shape: widening it with a conda-shaped `7.9.3` yields `7.9`, which is
+# what a resolved `7.9.3` projects to as well.
 #
 # WHY THIS IS A HARD PIN, not a warning: reify pins OCCT nowhere else in-tree
 # (there is no version constraint in any Cargo.toml, and nothing else in the
@@ -192,9 +208,18 @@ OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
 # suites). An array rather than a scalar so an operator can accept two
 # versions during a migration; either way, widening it is a one-line diff a
 # reviewer sees. scripts/setup-dev.sh's OCCT block provisions from the same
-# expectation, and tests/infra/test_occt_deps_preflight.sh asserts its dpkg
-# version stays a member of this set — bump the two together.
+# expectation (at major.minor — its dpkg parse is `grep -oP '\d+\.\d+'`), and
+# tests/infra/test_occt_deps_preflight.sh asserts that value still projects
+# into this set — bump the two together.
 OCCT_ACCEPTED_SONAMES=(7.8)
+
+# occt_majmin <version> — the MAJOR.MINOR projection acceptance compares on.
+# BOTH the resolved SONAME and every OCCT_ACCEPTED_SONAMES entry go through it,
+# so the two may be written in different shapes and still compare correctly. A
+# version with fewer than two dot-separated segments projects to itself.
+occt_majmin() {
+    printf '%s' "$1" | cut -d. -f1,2
+}
 
 occt_install_hint() {
     err "Install the OCCT ${OCCT_ACCEPTED_SONAMES[0]} dev packages — scripts/setup-dev.sh's OCCT block does exactly this:"
@@ -203,6 +228,15 @@ occt_install_hint() {
     err "                            libocct-modeling-data-dev libocct-data-exchange-dev"
     err "Or point OCCT_INCLUDE_DIR / OCCT_LIB_DIR at an existing install."
 }
+
+# Root of OCCT's numbered-snap fallback, mirroring the literal in
+# find_dir_with_override's `std::fs::read_dir("/snap/freecad")`. A DEFAULTED
+# variable rather than an inline literal so the branch is reachable from a
+# fixture on a host that has no system OCCT to short-circuit it, and so the
+# root itself is a named declaration the parity test can compare against the
+# Rust literal. The default IS the production value — overriding it changes
+# nothing any pipeline caller does.
+OCCT_SNAP_ROOT="${OCCT_SNAP_ROOT:-/snap/freecad}"
 
 occt_hint() {
     occt_install_hint
@@ -226,6 +260,16 @@ occt_hint() {
 # strictness never rejects a real install: anything shipping OCCT headers also
 # ships the unversioned dev symlink.
 #
+# EMPTY-OVERRIDE RULE (shared, NOT a divergence): an exported-but-EMPTY
+# OCCT_LIB_DIR / OCCT_INCLUDE_DIR counts as UNSET on both sides and falls
+# through to the candidate list. `[ -n "$override" ]` below is the bash half;
+# `override_dir.filter(|d| !d.is_empty())` in find_dir_with_override is the
+# Rust half, pinned by its `find_dir_ignores_exported_but_empty_override` unit
+# test. Before that filter existed, the build resolved such a var to the EMPTY
+# PATH, still set has_occt, and linked against nothing — while this guard,
+# reading the same environment, went green describing a resolution the build
+# would not perform.
+#
 # Prints the resolved dir on stdout and returns 0; returns 1 with no output
 # when nothing resolves.
 occt_find_dir() {
@@ -244,8 +288,13 @@ occt_find_dir() {
         fi
     done
     # OCCT's numbered-snap fallback, mirroring find_dir_with_override's
-    # snap_subdir match. Absolute-path-rooted, so this branch is not
-    # hermetically testable and exists purely for parity with the build.
+    # snap_subdir match. On any host that HAS system OCCT the candidate loop
+    # above short-circuits before this runs, so its runtime behaviour is
+    # unexercised there; what IS pinned by
+    # tests/infra/test_occt_deps_preflight.sh is the DECLARATION parity of
+    # both halves — OCCT_SNAP_ROOT's default against the Rust read_dir literal,
+    # and the sentinel -> subdir mapping below against the Rust match arms,
+    # order included.
     local snap_subdir=""
     case "$sentinel" in
         Standard_Failure.hxx) snap_subdir="usr/include/opencascade" ;;
@@ -253,7 +302,7 @@ occt_find_dir() {
     esac
     if [ -n "$snap_subdir" ]; then
         local rev
-        for rev in /snap/freecad/*/; do
+        for rev in "$OCCT_SNAP_ROOT"/*/; do
             [ -d "$rev" ] || continue
             if [ -e "$rev$snap_subdir/$sentinel" ]; then
                 printf '%s' "$rev$snap_subdir"
@@ -345,17 +394,19 @@ if [ -z "$OCCT_SONAME_VER" ]; then
     exit 1
 fi
 
+OCCT_SONAME_MAJMIN="$(occt_majmin "$OCCT_SONAME_VER")"
 occt_soname_accepted=0
 for v in "${OCCT_ACCEPTED_SONAMES[@]}"; do
-    if [ "$v" = "$OCCT_SONAME_VER" ]; then
+    if [ "$(occt_majmin "$v")" = "$OCCT_SONAME_MAJMIN" ]; then
         occt_soname_accepted=1
         break
     fi
 done
 
 if [ "$occt_soname_accepted" -ne 1 ]; then
-    err "manifold-deps guard: OCCT SONAME drift — resolved $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED,"
-    err "                     but the accepted set is: ${OCCT_ACCEPTED_SONAMES[*]}"
+    err "manifold-deps guard: OCCT SONAME drift — resolved $OCCT_SONAME_VER (major.minor"
+    err "                     $OCCT_SONAME_MAJMIN) at $OCCT_LIB_RESOLVED, but the accepted"
+    err "                     set is: ${OCCT_ACCEPTED_SONAMES[*]}"
     err "                     (read from $OCCT_SONAME_PATH -> $OCCT_SONAME_TARGET)."
     err "If this move was NOT intended, install an accepted version:"
     occt_install_hint

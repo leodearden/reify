@@ -18,48 +18,78 @@
 #
 # Assertions:
 #   1. scripts/check-manifold-deps.sh exists and is executable.
-#   2. BASELINE: with no OCCT env overrides the guard exits 0 on this host
-#      (doubles as the live "is OCCT actually installed here" probe).
-#   3. ABSENCE: both override dirs empty => non-zero, output names OCCT.
-#   4. LIB-ONLY MISSING: headers present, libs absent => non-zero, output
+#   2. ABSENCE: both override dirs empty => non-zero, output names OCCT.
+#   3. LIB-ONLY MISSING: headers present, libs absent => non-zero, output
 #      names libTKernel.so and the offending lib dir.
-#   5. INCLUDE-ONLY MISSING: libs present, headers absent => non-zero, output
+#   4. INCLUDE-ONLY MISSING: libs present, headers absent => non-zero, output
 #      names Standard_Failure.hxx and the offending include dir. This is the
 #      mixed case that silently produces a stub build.
-#   6. PARITY (anti-drift): the marker-delimited OCCT declarations in
+#   5. PARITY, DATA (anti-drift): the marker-delimited OCCT declarations in
 #      scripts/check-manifold-deps.sh equal `NativeDep::Occt`'s arms in
 #      crates/reify-build-utils/src/lib.rs — both candidate lists INCLUDING
 #      ORDER (system paths must stay ahead of /opt/reify-deps' OCCT 7.9) and
 #      both sentinel names. Rust is the source of truth; bash is a declared
 #      mirror. Both parses must yield a non-empty result, so a renamed anchor
 #      fails loudly instead of passing vacuously.
-#   7. ACCEPTED SONAME: a Debian-shaped chain whose first-level link target
-#      carries the FIRST value of OCCT_ACCEPTED_SONAMES => exit 0.
-#   8. UNACCEPTED SONAME: version 0.0 (never a real OCCT release, so this case
+#   6. PARITY, SNAP FALLBACK: the same mirror one layer down — the default of
+#      the guard's OCCT_SNAP_ROOT equals the literal in
+#      find_dir_with_override's `read_dir(..)`, and the guard's
+#      sentinel -> subdir `case` equals that fn's `match sentinel` arms, order
+#      included. Declaration-level, because on a host that HAS system OCCT the
+#      candidate loop short-circuits before either side's fallback ever runs.
+#   7. ACCEPTED SONAME + RECORDING: a Debian-shaped chain whose first-level
+#      link target carries the FIRST value of OCCT_ACCEPTED_SONAMES => exit 0,
+#      AND the guard prints the resolved version and both resolved dirs. That
+#      [ok] line is the arm's "which OCCT produced this green result" half, so
+#      it is asserted rather than left to `>/dev/null`.
+#   8. PATCH-SHAPED SONAME: `libTKernel.so -> libTKernel.so.<accepted>.1` — a
+#      repackaging that moves the dev symlink one hop further on a
+#      functionally identical OCCT => still exit 0, and the verbatim segment
+#      is still recorded. The pin is on MAJOR.MINOR precisely so this
+#      non-event cannot hard-stop every RUN_RUST=1 verify; build.rs splices
+#      the verbatim segment, which names a file that exists.
+#   9. UNACCEPTED SONAME: version 0.0 (never a real OCCT release, so this case
 #      survives any future pin bump) => non-zero, output names OCCT, the
 #      resolved version, and the accepted set.
-#   9. CONDA-SHAPED ONE-LEVEL SYMLINK: `libTKernel.so -> libTKernel.so.7.9.3`,
+#  10. CONDA-SHAPED ONE-LEVEL SYMLINK: `libTKernel.so -> libTKernel.so.7.9.3`,
 #      the exact layout live at /opt/reify-deps/lib => resolves to `7.9.3`,
-#      not accepted, non-zero naming 7.9.3. Pins that the guard takes the
-#      trailing segment VERBATIM, exactly as read_soname_version documents.
-#  10. UNDETERMINABLE SONAME: `libTKernel.so` as a REGULAR FILE => non-zero.
+#      whose major.minor 7.9 is not accepted, so non-zero naming 7.9.3
+#      VERBATIM. Pins that the guard takes the trailing segment as-is for the
+#      record, exactly as read_soname_version documents, and projects only for
+#      the comparison.
+#  11. UNDETERMINABLE SONAME: `libTKernel.so` as a REGULAR FILE => non-zero.
 #      This is the state where find() still reports the dir resolved (it only
 #      tests .exists()), has_occt IS set, and build.rs silently falls back to
 #      the literal string "7.8" — i.e. links a version nobody verified.
-#  11. CROSS-ARTIFACT PIN: the version scripts/setup-dev.sh's OCCT block
-#      expects from dpkg is a MEMBER of OCCT_ACCEPTED_SONAMES.
+#  12. CROSS-ARTIFACT PIN: the version scripts/setup-dev.sh's OCCT block
+#      expects from dpkg projects (major.minor) into OCCT_ACCEPTED_SONAMES.
+#      Both sides are projected, so the accepted set stays free to hold a
+#      three-segment SONAME even though setup-dev.sh's `grep -oP '\d+\.\d+'`
+#      can only ever yield major.minor.
 #
 # The accepted-SONAME value is DERIVED from the guard, never hardcoded here, so
 # a legitimate future pin bump stays a one-line diff in one file. Every derived
 # parse asserts non-empty first.
 #
-# Hermeticity: `pool`. Pure bash + filesystem. Every negative case is driven
-# through the OCCT_LIB_DIR / OCCT_INCLUDE_DIR overrides the BUILD already
-# honours, pointed at `mktemp -d` fixtures under $_TMPDIR — no bespoke
-# test-only env seam, no cargo, no npm, no network, no host mutation. The
-# guard is deliberately stricter than `find_dir_with_override` here (it
-# demands the sentinel inside an override rather than trusting the path),
-# which is exactly what makes these cases drivable.
+# Hermeticity: `pool`. Pure bash + filesystem — no cargo, no npm, no network.
+# Every OCCT case is driven through the OCCT_LIB_DIR / OCCT_INCLUDE_DIR
+# overrides the BUILD already honours, pointed at `mktemp -d` fixtures under
+# $_TMPDIR, so no bespoke test-only env seam is added to production code. The
+# guard is deliberately stricter than `find_dir_with_override` here (it demands
+# the sentinel inside an override rather than trusting the path), which is
+# exactly what makes those cases drivable.
+#
+# KNOWN, DELIBERATE CAVEAT: check-manifold-deps.sh is ONE script, and its
+# manifold-prebuilt and tbb-pin arms run ahead of the OCCT arm on every
+# invocation — including the tbb arm's `mkdir -p /opt/reify-deps/tbb-pin`
+# self-heal, which writes outside $_TMPDIR. So the two positive controls below
+# also depend on a healthy /opt/reify-deps, and a broken one surfaces here as
+# an OCCT-preflight failure. Every NEGATIVE case pairs its exit-code assert
+# with an output assert naming an OCCT-specific string, so those stay
+# attributable. There is deliberately no unqualified live-host probe in this
+# file: scripts/verify.sh already emits this guard as a plan entry on every
+# RUN_RUST=1 verify, which is where "is OCCT actually installed on this host"
+# is answered for real.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -107,6 +137,19 @@ _mk_lib_fixture() {
     : > "$d/libTKernel.so.$v.1"
     ln -sfn "libTKernel.so.$v.1" "$d/libTKernel.so.$v"
     ln -sfn "libTKernel.so.$v" "$d/libTKernel.so"
+    printf '%s' "$d"
+}
+
+# _mk_patchlink_lib_fixture <name> <majmin> — a repackaging that points the
+# dev symlink ONE HOP FURTHER than Debian's, `libTKernel.so ->
+# libTKernel.so.<majmin>.1`, so the first-level target's suffix is
+# `<majmin>.1` on a functionally identical OCCT. The pin is on major.minor
+# exactly so this shape stays green.
+_mk_patchlink_lib_fixture() {
+    local d="$_TMPDIR/$1" v="$2"
+    mkdir -p "$d"
+    : > "$d/libTKernel.so.$v.1"
+    ln -sfn "libTKernel.so.$v.1" "$d/libTKernel.so"
     printf '%s' "$d"
 }
 
@@ -168,6 +211,17 @@ _guard_output_names() {
     return 0
 }
 
+# _majmin_lines — MAJOR.MINOR projection of each non-empty line on stdin,
+# mirroring the guard's occt_majmin(). Used for the cross-artifact pin so both
+# sides are compared the way the guard itself compares them.
+_majmin_lines() {
+    local _v
+    while IFS= read -r _v; do
+        [ -n "$_v" ] || continue
+        printf '%s\n' "$_v" | cut -d. -f1,2
+    done
+}
+
 # ---------------------------------------------------------------------------
 # Parity parsers
 #
@@ -205,6 +259,58 @@ _rust_occt_scalar() {
             exit
         }
     ' "$RUST_SRC"
+}
+
+# _rust_snap_root — the literal dir find_dir_with_override's snap fallback
+# scans (`std::fs::read_dir("/snap/freecad")`). Anchored INSIDE the
+# snap_subdir block so an unrelated read_dir elsewhere cannot satisfy it.
+_rust_snap_root() {
+    awk '
+        index($0, "let snap_subdir = match sentinel") { insnap = 1; next }
+        insnap && /^}/ { exit }
+        insnap && index($0, "read_dir(") {
+            n = split($0, parts, "\"")
+            if (n >= 2) print parts[2]
+            exit
+        }
+    ' "$RUST_SRC"
+}
+
+# _rust_snap_map — `<sentinel> <subdir>` pairs from that same `match sentinel`,
+# one per line, in arm order.
+_rust_snap_map() {
+    awk '
+        index($0, "let snap_subdir = match sentinel") { insnap = 1; next }
+        insnap && /^[[:space:]]*};/ { exit }
+        insnap {
+            n = split($0, parts, "\"")
+            if (n >= 4) print parts[2], parts[4]
+        }
+    ' "$RUST_SRC"
+}
+
+# _bash_snap_root — the DEFAULT of the guard's OCCT_SNAP_ROOT assignment.
+_bash_snap_root() {
+    sed -n 's/^OCCT_SNAP_ROOT="${OCCT_SNAP_ROOT:-\(.*\)}"$/\1/p' "$GUARD" | head -1
+}
+
+# _bash_snap_map — `<sentinel> <subdir>` pairs from occt_find_dir's
+# `case "$sentinel"`, one per line, in arm order.
+_bash_snap_map() {
+    awk '
+        index($0, "case \"$sentinel\" in") { incase = 1; next }
+        incase && index($0, "esac") { exit }
+        incase && index($0, "snap_subdir=") {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            p = index(line, ")")
+            if (p == 0) next
+            pat = substr(line, 1, p - 1)
+            rest = substr(line, p + 1)
+            n = split(rest, parts, "\"")
+            if (n >= 2) print pat, parts[2]
+        }
+    ' "$GUARD"
 }
 
 # _extract_bash_array <VAR> — elements of the named bash array, one per line,
@@ -301,20 +407,10 @@ assert "scripts/check-manifold-deps.sh is executable" \
     test -x "$GUARD"
 
 # ---------------------------------------------------------------------------
-# 2. BASELINE — the guard passes on this host with no OCCT overrides.
-#    This IS the live "is OCCT installed" probe the task exists to add.
+# 2. ABSENCE — neither headers nor libs resolvable
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- 2: baseline — guard exits 0 on the real host (OCCT present) ---"
-
-assert "guard exits 0 with no OCCT env overrides (real host OCCT install)" \
-    env -u OCCT_LIB_DIR -u OCCT_INCLUDE_DIR bash "$GUARD"
-
-# ---------------------------------------------------------------------------
-# 3. ABSENCE — neither headers nor libs resolvable
-# ---------------------------------------------------------------------------
-echo ""
-echo "--- 3: absence — both OCCT dirs empty => red gate naming OCCT ---"
+echo "--- 2: absence — both OCCT dirs empty => red gate naming OCCT ---"
 
 _EMPTY_LIB="$(_mk_empty_fixture absent-lib)"
 _EMPTY_INC="$(_mk_empty_fixture absent-include)"
@@ -326,10 +422,10 @@ assert "guard output NAMES OCCT when neither half resolves" \
     _guard_output_names "$_EMPTY_LIB" "$_EMPTY_INC" "OCCT"
 
 # ---------------------------------------------------------------------------
-# 4. LIB-ONLY MISSING — headers resolve, libs do not
+# 3. LIB-ONLY MISSING — headers resolve, libs do not
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- 4: lib-only missing => red gate naming libTKernel.so and the dir ---"
+echo "--- 3: lib-only missing => red gate naming libTKernel.so and the dir ---"
 
 _INC_OK="$(_mk_include_fixture libonly-include)"
 _LIB_MISSING="$(_mk_empty_fixture libonly-lib)"
@@ -341,12 +437,12 @@ assert "guard output NAMES libTKernel.so and the offending lib dir" \
     _guard_output_names "$_LIB_MISSING" "$_INC_OK" "libTKernel.so" "$_LIB_MISSING"
 
 # ---------------------------------------------------------------------------
-# 5. INCLUDE-ONLY MISSING — libs resolve, headers do not.
+# 4. INCLUDE-ONLY MISSING — libs resolve, headers do not.
 #    find() returns None when EITHER half is unresolved, so this mixed case
 #    is a silent stub build today.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- 5: include-only missing => red gate naming Standard_Failure.hxx ---"
+echo "--- 4: include-only missing => red gate naming Standard_Failure.hxx ---"
 
 # Built at an ACCEPTED version: the SONAME pin is never reached by the
 # include-only case (presence resolution fails first), but the positive control
@@ -365,10 +461,10 @@ assert "guard exits 0 when BOTH override dirs carry their sentinels (positive co
     _guard_exits_zero "$_LIB_OK" "$_INC_OK"
 
 # ---------------------------------------------------------------------------
-# 6. PARITY — the bash mirror equals NativeDep::Occt, order included
+# 5. PARITY — the bash mirror equals NativeDep::Occt, order included
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- 6: parity — bash occt-candidates block mirrors NativeDep::Occt ---"
+echo "--- 5: parity — bash occt-candidates block mirrors NativeDep::Occt ---"
 
 _RUST_LIB_CANDS="$(_rust_occt_list lib_candidates)"
 _RUST_INC_CANDS="$(_rust_occt_list include_candidates)"
@@ -428,27 +524,84 @@ assert "bash OCCT_LIB_SENTINEL ('$_BASH_LIB_SENT') equals NativeDep::Occt lib_se
 assert "bash OCCT_INCLUDE_SENTINEL ('$_BASH_INC_SENT') equals NativeDep::Occt include_sentinel ('$_RUST_INC_SENT')" \
     test "$_BASH_INC_SENT" = "$_RUST_INC_SENT"
 
+# --- 6: the same mirror one layer down — the snap-fallback ALGORITHM.
+#
+# The candidate lists above are DATA; the numbered-/snap/freecad fallback is
+# duplicated LOGIC, and on any host with system OCCT the candidate loop
+# short-circuits before either side's fallback runs, so nothing exercises it.
+# These asserts pin it by declaration instead: a change to the scanned root, to
+# the sentinel -> subdir mapping, or to arm order on the Rust side fails here
+# rather than silently diverging.
+_RUST_SNAP_ROOT="$(_rust_snap_root)"
+_BASH_SNAP_ROOT="$(_bash_snap_root)"
+_RUST_SNAP_MAP="$(_rust_snap_map)"
+_BASH_SNAP_MAP="$(_bash_snap_map)"
+
+assert "Rust parse of the snap-fallback root is non-empty (anchor 'let snap_subdir = match sentinel' found)" \
+    test -n "$_RUST_SNAP_ROOT"
+assert "bash parse of OCCT_SNAP_ROOT's default is non-empty (defaulted assignment found)" \
+    test -n "$_BASH_SNAP_ROOT"
+assert "Rust parse of the snap sentinel -> subdir map is non-empty" \
+    test -n "$_RUST_SNAP_MAP"
+assert "bash parse of the snap sentinel -> subdir case is non-empty (occt_find_dir's case found)" \
+    test -n "$_BASH_SNAP_MAP"
+
+assert "OCCT_SNAP_ROOT's default ('$_BASH_SNAP_ROOT') equals find_dir_with_override's read_dir literal ('$_RUST_SNAP_ROOT')" \
+    test "$_BASH_SNAP_ROOT" = "$_RUST_SNAP_ROOT"
+
+_SNAP_MAP_DIFF="$(_parity_diff "$_RUST_SNAP_MAP" "$_BASH_SNAP_MAP")"
+if [ -n "$_SNAP_MAP_DIFF" ]; then
+    echo "  OCCT snap sentinel->subdir drift (< reify-build-utils, > check-manifold-deps.sh):"
+    printf '%s\n' "$_SNAP_MAP_DIFF" | sed 's/^/    /'
+fi
+assert "bash snap sentinel->subdir case equals find_dir_with_override's match arms, order included" \
+    test -z "$_SNAP_MAP_DIFF"
+
+# The override-precedence rule the two sides also share (an exported-but-EMPTY
+# override counts as UNSET) is pinned on the Rust side by
+# find_dir_ignores_exported_but_empty_override; it is not drivable from here
+# without falling back to live host state, which this file deliberately avoids.
+
 # ---------------------------------------------------------------------------
-# 7. SONAME pin — the resolved version must be a declared, accepted one.
+# 6. SONAME pin — the resolved version must be a declared, accepted one.
 #
 # All fixtures pair their lib dir with an include dir that DOES carry the
 # header sentinel, so the presence arm is satisfied and the SONAME rule is the
 # only thing under test.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- 7: SONAME pin — accepted / unaccepted / conda-shaped / undeterminable ---"
+echo "--- 6: SONAME pin — accepted / unaccepted / conda-shaped / undeterminable ---"
 
 assert "OCCT_ACCEPTED_SONAMES parses non-empty from the guard (anchor found, pin not vacuous)" \
     test -n "$_ACCEPTED_SONAMES"
 
 _SON_INC="$(_mk_include_fixture soname-include)"
 
-# 7 — accepted.
+# 7 — accepted, and RECORDED.
 _SON_OK="$(_mk_lib_fixture soname-accepted "$_ACCEPTED_FIRST")"
 assert "guard exits 0 for an accepted SONAME ('$_ACCEPTED_FIRST', Debian two-hop chain)" \
     _guard_exits_zero "$_SON_OK" "$_SON_INC"
 
-# 8 — unaccepted. 0.0 can never be a legitimate OCCT release, so this case
+# The RECORDING half of the arm. Every other green-path assert runs through
+# _guard_exits_zero, which discards stdout — so without this one, deleting the
+# guard's [ok] line (or regressing it to name the wrong dir) leaves the whole
+# suite passing. That is the same "a passing suite and a deleted suite are
+# indistinguishable from outside" failure this task exists to close.
+assert "guard RECORDS the resolved OCCT version and both resolved dirs on the green path" \
+    _guard_output_names "$_SON_OK" "$_SON_INC" "OCCT $_ACCEPTED_FIRST" "$_SON_OK" "$_SON_INC"
+
+# 8 — patch-shaped: the dev symlink points one hop further on a functionally
+# identical OCCT. Exact-matching the verbatim segment would make this a red
+# gate on every RUN_RUST=1 verify; the major.minor projection keeps it green,
+# and build.rs links the verbatim `libTKernel.so.<v>.1`, which exists.
+_SON_PATCH="$(_mk_patchlink_lib_fixture soname-patchlink "$_ACCEPTED_FIRST")"
+assert "guard exits 0 for a patch-shaped link target ('$_ACCEPTED_FIRST.1' — same OCCT, different packaging)" \
+    _guard_exits_zero "$_SON_PATCH" "$_SON_INC"
+
+assert "guard RECORDS the verbatim patch-shaped segment ('$_ACCEPTED_FIRST.1'), not just the accepted major.minor" \
+    _guard_output_names "$_SON_PATCH" "$_SON_INC" "OCCT $_ACCEPTED_FIRST.1"
+
+# 9 — unaccepted. 0.0 can never be a legitimate OCCT release, so this case
 # survives any future widening of the accepted set.
 _SON_BAD="$(_mk_lib_fixture soname-unaccepted 0.0)"
 assert "guard exits NON-zero for an unaccepted SONAME (0.0)" \
@@ -457,7 +610,7 @@ assert "guard exits NON-zero for an unaccepted SONAME (0.0)" \
 assert "guard output NAMES OCCT, the resolved version (0.0) and the accepted set" \
     _guard_output_names "$_SON_BAD" "$_SON_INC" "OCCT" "0.0" "$_ACCEPTED_FIRST"
 
-# 9 — conda-shaped one-level symlink, the exact layout at /opt/reify-deps/lib.
+# 10 — conda-shaped one-level symlink, the exact layout at /opt/reify-deps/lib.
 _SON_CONDA="$(_mk_conda_lib_fixture soname-conda 7.9.3)"
 assert "guard exits NON-zero for the conda one-level layout (libTKernel.so -> libTKernel.so.7.9.3)" \
     _guard_exits_nonzero "$_SON_CONDA" "$_SON_INC"
@@ -465,7 +618,7 @@ assert "guard exits NON-zero for the conda one-level layout (libTKernel.so -> li
 assert "guard output NAMES the verbatim trailing segment 7.9.3 (not 7.9, not 7)" \
     _guard_output_names "$_SON_CONDA" "$_SON_INC" "7.9.3"
 
-# 10 — undeterminable: sentinel present but not a symlink. find() resolves the
+# 11 — undeterminable: sentinel present but not a symlink. find() resolves the
 # dir, has_occt IS set, and build.rs silently substitutes a hard-coded version.
 _SON_PLAIN="$(_mk_plainfile_lib_fixture soname-plainfile)"
 assert "guard exits NON-zero when libTKernel.so is a regular file (no readable SONAME)" \
@@ -475,14 +628,14 @@ assert "guard output says the SONAME could not be determined and names the path"
     _guard_output_names "$_SON_PLAIN" "$_SON_INC" "could not determine" "$_SON_PLAIN/libTKernel.so"
 
 # ---------------------------------------------------------------------------
-# 8. CROSS-ARTIFACT PIN — setup-dev.sh's dpkg expectation vs. the accepted set.
+# 7. CROSS-ARTIFACT PIN — setup-dev.sh's dpkg expectation vs. the accepted set.
 #
 # setup-dev.sh installs OCCT out of band and is not part of the verify plan, so
 # nothing else forces the two to agree. If they drift, setup-dev.sh provisions
 # a version the gate will then reject.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- 8: cross-artifact pin — setup-dev.sh's OCCT version is in the accepted set ---"
+echo "--- 7: cross-artifact pin — setup-dev.sh's OCCT version is in the accepted set ---"
 
 _SETUP_DEV_VER="$(_setup_dev_occt_version)"
 
@@ -492,11 +645,21 @@ assert "scripts/setup-dev.sh exists" \
 assert "setup-dev.sh's OCCT block yields a version (anchor '# ---------- OCCT' + installed_ver found)" \
     test -n "$_SETUP_DEV_VER"
 
-if ! printf '%s\n' "$_ACCEPTED_SONAMES" | grep -qxF -- "$_SETUP_DEV_VER"; then
-    echo "  OCCT version drift: setup-dev.sh provisions '$_SETUP_DEV_VER', accepted set is:"
-    printf '%s\n' "$_ACCEPTED_SONAMES" | sed 's/^/    /'
+# Compared the way the GUARD compares: both sides projected to major.minor.
+# setup-dev.sh's dpkg parse is `grep -oP '\d+\.\d+'`, so its value can only
+# ever be major.minor — matching it against a raw accepted set would forbid the
+# set from ever holding a three-segment SONAME (the conda-shaped `7.9.3` the
+# guard itself demonstrates) without editing setup-dev.sh to a string its regex
+# cannot produce.
+_ACCEPTED_MAJMIN="$(printf '%s\n' "$_ACCEPTED_SONAMES" | _majmin_lines)"
+_SETUP_DEV_MAJMIN="$(printf '%s\n' "$_SETUP_DEV_VER" | _majmin_lines)"
+
+if ! printf '%s\n' "$_ACCEPTED_MAJMIN" | grep -qxF -- "$_SETUP_DEV_MAJMIN"; then
+    echo "  OCCT version drift: setup-dev.sh provisions '$_SETUP_DEV_VER' (major.minor"
+    echo "  $_SETUP_DEV_MAJMIN), accepted set projects to:"
+    printf '%s\n' "$_ACCEPTED_MAJMIN" | sed 's/^/    /'
 fi
-assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') is a member of OCCT_ACCEPTED_SONAMES" \
-    bash -c 'printf "%s\n" "$1" | grep -qxF -- "$2"' _ "$_ACCEPTED_SONAMES" "$_SETUP_DEV_VER"
+assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') projects (major.minor) into OCCT_ACCEPTED_SONAMES" \
+    bash -c 'printf "%s\n" "$1" | grep -qxF -- "$2"' _ "$_ACCEPTED_MAJMIN" "$_SETUP_DEV_MAJMIN"
 
 test_summary
