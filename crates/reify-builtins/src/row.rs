@@ -13,9 +13,11 @@ use reify_core::Type;
 
 /// Which builtin family a row belongs to.
 ///
-/// The family column is what lets a per-family dispatcher (reify-stdlib's
-/// `eval_parse` / `eval_analysis` shims) gate on "is this one of mine?"
-/// without re-deriving membership from a name list.
+/// The family column groups rows for reporting and for the per-family
+/// migration order the PRD lays out; it is deliberately NOT a dispatch key.
+/// Dispatch is keyed on [`BindingKind`] (via the generated per-kind sub-enums),
+/// which is what lets an owning crate bind its rows exhaustively without
+/// re-deriving membership from a name list.
 ///
 /// α seeds two families; each later τ migration adds its own variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

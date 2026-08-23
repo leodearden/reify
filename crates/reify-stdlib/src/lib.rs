@@ -212,6 +212,7 @@ mod orientation;
 mod parse;
 mod snapshot;
 mod stackup;
+mod registry_dispatch;
 mod supports;
 mod sweep;
 mod tensegrity;
@@ -223,6 +224,16 @@ mod trig;
 ///
 /// Returns `Value::Undef` for unknown functions or wrong argument types/counts.
 pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
+    // Registry FIRST (PRD §7.3(3)): a name registered as a
+    // `BindingKind::EvalBuiltin` row resolves here, ahead of the surviving
+    // family dispatchers. `None` falls through exactly as any other family's
+    // decline does — the same registry-first coexistence shape the compiler
+    // ladder already uses. Hoisting cannot shadow a later arm: no other member
+    // of this chain claims a registered name, pinned row-derived by
+    // `tests/registry_dispatch_seed_parity.rs`'s no-shadowing sweep.
+    if let Some(v) = registry_dispatch::try_dispatch(name, args) {
+        return v;
+    }
     if let Some(v) = numeric::eval_numeric(name, args) {
         return v;
     }
@@ -248,9 +259,6 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = construct::eval_construct(name, args) {
-        return v;
-    }
-    if let Some(v) = analysis::eval_analysis(name, args) {
         return v;
     }
     if let Some(v) = joints::eval_joints(name, args) {
@@ -295,10 +303,31 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = tensegrity::eval_tensegrity(name, args) {
         return v;
     }
-    if let Some(v) = parse::eval_parse(name, args) {
-        return v;
-    }
     Value::Undef
+}
+
+/// Expose the registry-keyed eval dispatcher to the registry seam test without
+/// widening reify-stdlib's public API.
+///
+/// Taking an `EvalBuiltinId` — not a `&str` — is the point: it lets
+/// `tests/registry_dispatch_seed_parity.rs` observe that eval dispatch is
+/// genuinely keyed on the registry, which a test routed through the public
+/// `eval_builtin(name, args)` alone could not distinguish from the old string
+/// matchers.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated eval-seam shim,
+// consumed by tests/registry_dispatch_seed_parity.rs (the §7.3(3) I-REG-2
+// dispatch-parity pin).
+pub fn __registry_dispatch_for_test(id: reify_builtins::EvalBuiltinId, args: &[Value]) -> Value {
+    registry_dispatch::dispatch(id, args)
 }
 
 #[cfg(test)]

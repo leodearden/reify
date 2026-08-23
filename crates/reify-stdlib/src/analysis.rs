@@ -1,5 +1,10 @@
 //! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor,
 //! stress_invariants.
+//!
+//! Since registry α (task #6001) this module holds KERNELS ONLY — the
+//! `eval_analysis(name, args)` string matcher that used to front them is gone,
+//! and each kernel is reached through the exhaustive `EvalBuiltinId` match in
+//! `crate::registry_dispatch`.
 
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
@@ -19,21 +24,6 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 use crate::helpers::{binary, sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
-
-/// Evaluate a stress-analysis builtin by name.
-///
-/// Returns `Some(value)` if the name is a recognised analysis function,
-/// `None` otherwise (so the dispatch chain in `lib.rs` can fall through).
-pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
-    Some(match name {
-        "von_mises" => von_mises(args),
-        "principal_stresses" => principal_stresses(args),
-        "max_shear" => max_shear(args),
-        "safety_factor" => safety_factor(args),
-        "stress_invariants" => stress_invariants(args),
-        _ => return None,
-    })
-}
 
 /// Compute von Mises equivalent stress for a 3×3 row-major stress window.
 ///
@@ -93,7 +83,7 @@ pub fn compute_von_mises_3x3(d: &[f64]) -> f64 {
 ///
 /// Wraps `compute_von_mises_3x3` for the dynamic-Value entry point used by
 /// the `eval_builtin("von_mises", ...)` dispatch path.
-fn von_mises(args: &[Value]) -> Value {
+pub(crate) fn von_mises(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
             Some(v) if v.0 == 3 && v.1 == 3 => v,
@@ -302,7 +292,7 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
 /// closed because an entry it reads is non-finite (INV-FEA-3, task #6376).
 /// Before that guard the non-finite case produced `List([Undef, Undef, Undef])`;
 /// `principal_stresses_all_nan_tensor_returns_undef` pins the current contract.
-fn principal_stresses(args: &[Value]) -> Value {
+pub(crate) fn principal_stresses(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
             Some(v) if v.0 == 3 && v.1 == 3 => v,
@@ -327,7 +317,7 @@ fn principal_stresses(args: &[Value]) -> Value {
 /// Delegates to [`compute_max_shear_3x3`] so the formula has a single home
 /// shared with the cross-crate MaxShear field reduction in
 /// `crates/reify-expr/src/field_reductions.rs`.
-fn max_shear(args: &[Value]) -> Value {
+pub(crate) fn max_shear(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
             Some(v) if v.0 == 3 && v.1 == 3 => v,
@@ -344,7 +334,7 @@ fn max_shear(args: &[Value]) -> Value {
 ///
 /// Returns a dimensionless Real. If von_mises is zero (e.g. hydrostatic stress),
 /// the division produces infinity which sanitize_value converts to Undef.
-fn safety_factor(args: &[Value]) -> Value {
+pub(crate) fn safety_factor(args: &[Value]) -> Value {
     binary(args, |tensor, yield_val| {
         let yield_f64 = match yield_val.as_f64() {
             Some(v) => v,
@@ -490,7 +480,7 @@ pub(crate) fn rotate_stress_3x3(sigma: &[f64], r: &[f64]) -> [f64; 9] {
 /// Returns a `Value::StructureInstance` with `type_name = "StressInvariants"` and
 /// fields `i1` (PRESSURE), `i2` (PRESSURE²), `i3` (PRESSURE³) — or `Value::Real`
 /// for dimensionless inputs.
-fn stress_invariants(args: &[Value]) -> Value {
+pub(crate) fn stress_invariants(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
             Some(v) if v.0 == 3 && v.1 == 3 => v,
@@ -536,18 +526,42 @@ fn stress_invariants(args: &[Value]) -> Value {
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
+    // Registry α: `eval_analysis` no longer exists — the family's entry point
+    // is the public `eval_builtin`, which resolves the name through
+    // `reify_builtins::lookup` and lands in `registry_dispatch::dispatch`.
+    // Re-pointing these tests there keeps them exercising the SAME kernels
+    // through the path a `.ri` author actually takes.
+    use crate::eval_builtin;
 
     #[test]
-    fn unknown_function_returns_none() {
-        assert!(eval_analysis("foo", &[]).is_none());
+    fn unknown_function_returns_undef() {
+        assert!(eval_builtin("foo", &[]).is_undef());
     }
 
+    /// Name recognition is now the REGISTRY's answer, not a sub-dispatcher's
+    /// `Option`. Before registry α these names were "recognised" by
+    /// `eval_analysis` returning `Some` at any arity; the registry is
+    /// argc-keyed, so membership is asserted at each row's DECLARED arity via
+    /// `lookup`. What a caller observes is unchanged — a non-declared arity
+    /// still yields `Value::Undef`, pinned by the `*_wrong_arg_count_*` tests
+    /// below and, row-derived, by
+    /// `tests/registry_dispatch_seed_parity.rs`.
     #[test]
-    fn known_function_returns_some() {
-        assert!(eval_analysis("von_mises", &[]).is_some());
-        assert!(eval_analysis("principal_stresses", &[]).is_some());
-        assert!(eval_analysis("max_shear", &[]).is_some());
-        assert!(eval_analysis("safety_factor", &[]).is_some());
+    fn analysis_names_are_registered_at_their_declared_arity() {
+        for (name, argc) in [
+            ("von_mises", 1),
+            ("principal_stresses", 1),
+            ("max_shear", 1),
+            ("safety_factor", 2),
+            ("stress_invariants", 1),
+        ] {
+            assert!(
+                reify_builtins::lookup(name, argc)
+                    .and_then(reify_builtins::BuiltinId::as_eval_builtin)
+                    .is_some(),
+                "'{name}' must resolve to an EvalBuiltinId at arity {argc}"
+            );
+        }
     }
 
     // ── test helpers ────────────────────────────────────────────────────────
@@ -586,7 +600,7 @@ mod tests {
         // Uniaxial stress [[σ,0,0],[0,0,0],[0,0,0]] → von Mises = σ
         let sigma = 100.0;
         let tensor = make_matrix(&[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
-        let result = eval_analysis("von_mises", &[tensor]).unwrap();
+        let result = eval_builtin("von_mises", &[tensor]);
         assert_real_approx!(result, sigma);
     }
 
@@ -598,7 +612,7 @@ mod tests {
             &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("von_mises", &[tensor]).unwrap();
+        let result = eval_builtin("von_mises", &[tensor]);
         assert_scalar_approx!(result, sigma, DimensionVector::PRESSURE);
     }
 
@@ -610,7 +624,7 @@ mod tests {
             &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("von_mises", &[tensor]).unwrap();
+        let result = eval_builtin("von_mises", &[tensor]);
         assert_scalar_approx!(result, 0.0, DimensionVector::PRESSURE);
     }
 
@@ -622,36 +636,28 @@ mod tests {
             &[&[0.0, tau, 0.0], &[tau, 0.0, 0.0], &[0.0, 0.0, 0.0]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("von_mises", &[tensor]).unwrap();
+        let result = eval_builtin("von_mises", &[tensor]);
         let expected = tau * 3.0_f64.sqrt();
         assert_scalar_approx!(result, expected, DimensionVector::PRESSURE);
     }
 
     #[test]
     fn von_mises_wrong_arg_count_returns_undef() {
-        assert!(eval_analysis("von_mises", &[]).unwrap().is_undef());
+        assert!(eval_builtin("von_mises", &[]).is_undef());
         let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
-        assert!(
-            eval_analysis("von_mises", &[t.clone(), t])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_builtin("von_mises", &[t.clone(), t]).is_undef());
     }
 
     #[test]
     fn von_mises_non_matrix_returns_undef() {
-        assert!(
-            eval_analysis("von_mises", &[Value::Real(42.0)])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_builtin("von_mises", &[Value::Real(42.0)]).is_undef());
     }
 
     #[test]
     fn von_mises_non_3x3_returns_undef() {
         // 2x2 matrix
         let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
-        assert!(eval_analysis("von_mises", &[m2x2]).unwrap().is_undef());
+        assert!(eval_builtin("von_mises", &[m2x2]).is_undef());
     }
 
     // ── principal_stresses tests ────────────────────────────────────────────
@@ -660,7 +666,7 @@ mod tests {
     fn principal_stresses_diagonal_dimensionless() {
         // Diagonal tensor [[100,0,0],[0,50,0],[0,0,25]] → sorted [25, 50, 100]
         let tensor = make_matrix(&[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]]);
-        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        let result = eval_builtin("principal_stresses", &[tensor]);
         match result {
             Value::List(items) => {
                 assert_eq!(items.len(), 3);
@@ -679,7 +685,7 @@ mod tests {
             &[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        let result = eval_builtin("principal_stresses", &[tensor]);
         match result {
             Value::List(items) => {
                 assert_eq!(items.len(), 3);
@@ -695,7 +701,7 @@ mod tests {
     fn principal_stresses_symmetric_tensor() {
         // Symmetric tensor [[2,1,0],[1,3,1],[0,1,2]] → eigenvalues [1, 2, 4]
         let tensor = make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
-        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        let result = eval_builtin("principal_stresses", &[tensor]);
         match result {
             Value::List(items) => {
                 assert_eq!(items.len(), 3);
@@ -715,7 +721,7 @@ mod tests {
             &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        let result = eval_builtin("principal_stresses", &[tensor]);
         match result {
             Value::List(items) => {
                 assert_eq!(items.len(), 3);
@@ -729,18 +735,10 @@ mod tests {
 
     #[test]
     fn principal_stresses_wrong_args_return_undef() {
-        assert!(eval_analysis("principal_stresses", &[]).unwrap().is_undef());
-        assert!(
-            eval_analysis("principal_stresses", &[Value::Real(1.0)])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_builtin("principal_stresses", &[]).is_undef());
+        assert!(eval_builtin("principal_stresses", &[Value::Real(1.0)]).is_undef());
         let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
-        assert!(
-            eval_analysis("principal_stresses", &[m2x2])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_builtin("principal_stresses", &[m2x2]).is_undef());
     }
 
     // ── max_shear tests ─────────────────────────────────────────────────────
@@ -753,7 +751,7 @@ mod tests {
             &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("max_shear", &[tensor]).unwrap();
+        let result = eval_builtin("max_shear", &[tensor]);
         assert_scalar_approx!(result, 0.0, DimensionVector::PRESSURE);
     }
 
@@ -766,7 +764,7 @@ mod tests {
             &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("max_shear", &[tensor]).unwrap();
+        let result = eval_builtin("max_shear", &[tensor]);
         assert_scalar_approx!(result, sigma / 2.0, DimensionVector::PRESSURE);
     }
 
@@ -778,18 +776,14 @@ mod tests {
             &[&[sigma, 0.0, 0.0], &[0.0, -sigma, 0.0], &[0.0, 0.0, 0.0]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("max_shear", &[tensor]).unwrap();
+        let result = eval_builtin("max_shear", &[tensor]);
         assert_scalar_approx!(result, sigma, DimensionVector::PRESSURE);
     }
 
     #[test]
     fn max_shear_wrong_args_return_undef() {
-        assert!(eval_analysis("max_shear", &[]).unwrap().is_undef());
-        assert!(
-            eval_analysis("max_shear", &[Value::Real(1.0)])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_builtin("max_shear", &[]).is_undef());
+        assert!(eval_builtin("max_shear", &[Value::Real(1.0)]).is_undef());
     }
 
     // ── compute_max_shear_3x3 kernel tests ──────────────────────────────────
@@ -841,7 +835,7 @@ mod tests {
             ],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("max_shear", &[nan_tensor]).unwrap();
+        let result = eval_builtin("max_shear", &[nan_tensor]);
         assert!(
             result.is_undef(),
             "max_shear(all-NaN window) must return Undef without panicking, got {:?}",
@@ -1113,7 +1107,7 @@ mod tests {
         let sigma = 100.0;
         let yield_strength = Value::Real(250.0);
         let tensor = make_matrix(&[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
-        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        let result = eval_builtin("safety_factor", &[tensor, yield_strength]);
         assert_real_approx!(result, 2.5);
     }
 
@@ -1129,7 +1123,7 @@ mod tests {
             &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        let result = eval_builtin("safety_factor", &[tensor, yield_strength]);
         // Result is dimensionless (pressure / pressure)
         assert_real_approx!(result, 2.5);
     }
@@ -1146,7 +1140,7 @@ mod tests {
             &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        let result = eval_builtin("safety_factor", &[tensor, yield_strength]);
         assert_real_approx!(result, 0.5);
     }
 
@@ -1162,15 +1156,15 @@ mod tests {
             &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        let result = eval_builtin("safety_factor", &[tensor, yield_strength]);
         assert!(result.is_undef());
     }
 
     #[test]
     fn safety_factor_wrong_arg_count_returns_undef() {
-        assert!(eval_analysis("safety_factor", &[]).unwrap().is_undef());
+        assert!(eval_builtin("safety_factor", &[]).is_undef());
         let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
-        assert!(eval_analysis("safety_factor", &[t]).unwrap().is_undef());
+        assert!(eval_builtin("safety_factor", &[t]).is_undef());
     }
 
     // ── stress_invariants tests ─────────────────────────────────────────────
@@ -1187,17 +1181,21 @@ mod tests {
         }
     }
 
-    /// `stress_invariants` is a recognised name: `eval_analysis` must return `Some`
-    /// (even with no args — the function is known, dispatch returns `Some(Undef)`).
+    /// `stress_invariants` is a registered name (at its declared arity 1), and
+    /// a zero-arg call still yields `Value::Undef` — the argc decline moved
+    /// from `helpers::unary` to `reify_builtins::lookup`, but the observable
+    /// did not.
     #[test]
     fn stress_invariants_name_is_recognised() {
         assert!(
-            eval_analysis("stress_invariants", &[]).is_some(),
-            "stress_invariants must be a recognised analysis name (returns Some)"
+            reify_builtins::lookup("stress_invariants", 1)
+                .and_then(reify_builtins::BuiltinId::as_eval_builtin)
+                .is_some(),
+            "stress_invariants must be a registered EvalBuiltin row at arity 1"
         );
         assert!(
-            eval_analysis("stress_invariants", &[]).unwrap().is_undef(),
-            "stress_invariants([]) must return Some(Undef) (wrong arity)"
+            eval_builtin("stress_invariants", &[]).is_undef(),
+            "stress_invariants([]) must return Undef (wrong arity)"
         );
     }
 
@@ -1210,7 +1208,7 @@ mod tests {
     fn stress_invariants_diagonal_dimensionless() {
         let tensor =
             make_matrix(&[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]]);
-        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        let result = eval_builtin("stress_invariants", &[tensor]);
         match &result {
             Value::StructureInstance(data) => {
                 assert_eq!(
@@ -1237,7 +1235,7 @@ mod tests {
             &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        let result = eval_builtin("stress_invariants", &[tensor]);
         match &result {
             Value::StructureInstance(data) => {
                 assert_eq!(data.type_name, "StressInvariants");
@@ -1262,7 +1260,7 @@ mod tests {
     fn stress_invariants_general_symmetric_dimensionless() {
         let tensor =
             make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
-        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        let result = eval_builtin("stress_invariants", &[tensor]);
         match &result {
             Value::StructureInstance(data) => {
                 assert_eq!(data.type_name, "StressInvariants");
@@ -1280,24 +1278,18 @@ mod tests {
         // Too many args
         let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]]);
         assert!(
-            eval_analysis("stress_invariants", &[t.clone(), t.clone()])
-                .unwrap()
-                .is_undef(),
+            eval_builtin("stress_invariants", &[t.clone(), t.clone()]).is_undef(),
             "two args must return Undef"
         );
         // Non-matrix arg
         assert!(
-            eval_analysis("stress_invariants", &[Value::Real(42.0)])
-                .unwrap()
-                .is_undef(),
+            eval_builtin("stress_invariants", &[Value::Real(42.0)]).is_undef(),
             "scalar arg must return Undef"
         );
         // 2×2 matrix
         let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
         assert!(
-            eval_analysis("stress_invariants", &[m2x2])
-                .unwrap()
-                .is_undef(),
+            eval_builtin("stress_invariants", &[m2x2]).is_undef(),
             "2×2 matrix must return Undef"
         );
     }

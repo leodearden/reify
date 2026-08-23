@@ -77,11 +77,7 @@ fn dimensioned_matrix(rows_f64: &[[f64; 3]; 3], dim: DimensionVector) -> Value {
 /// The uniaxial 100 MPa stress tensor every analysis probe is fed.
 fn uniaxial_stress() -> Value {
     dimensioned_matrix(
-        &[
-            [SIGMA, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-        ],
+        &[[SIGMA, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
         DimensionVector::PRESSURE,
     )
 }

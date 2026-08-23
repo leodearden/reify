@@ -4748,6 +4748,7 @@ dependencies = [
  "reify-core",
  "reify-gcode",
  "reify-ir",
+ "reify-stdlib",
  "reify-test-support",
  "tracing",
 ]
