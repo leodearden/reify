@@ -200,8 +200,9 @@ checkout and a task worktree. **Every seeded line must be hand-inspected before 
 — a false positive seeded here is permanent by design, and worse, teaches later readers
 that the cite is real debt.
 
-**Vacuity floor on the live set (2026-08-11, task #6127, esc-6087-3).** *This paragraph is
-the single home for the floor's rationale — `test_reify_audit_ptodo.sh` and
+**Vacuity floor on generator-emitted SCAN EVIDENCE (2026-08-11, task #6127, esc-6087-3;
+rebased off the live finding count by task #6241).** *This paragraph is the single home for
+the floor's rationale — `test_reify_audit_ptodo.sh` and
 `test_reify_audit_ptodo_ratchet_vacuity.sh` point here rather than restating it.*
 
 The ratchet's oracle is `comm -23 <live> <baseline>` — subset-of — and the empty set is a
@@ -210,40 +211,91 @@ it trivially, and the check reports green having asserted nothing. That is not h
 a stale or reverted `ptodo-baseline-gen` produces exactly that, and mtime is a weak oracle
 against it because the freshness guard's epoch only tracks commits under
 `crates/reify-audit/` (`scripts/reify-audit-freshness.sh`, SCOPE LIMITATION). The check
-therefore runs **two** assertions in order: a non-emptiness floor on the live set, then the
-subset check. Measured basis at the time of writing: **4** structural fingerprints in the
-degraded no-task-DB mode the assertion runs under, against a committed baseline of **5**
-entries (4 structural + 1 `orphaned`) — the floor is a structural "did the detector report
-anything at all" oracle, not a tuned threshold.
+therefore runs **two** assertions in order: a floor proving the detector RAN, then the
+subset check.
 
-**Self-disarm keys on the STRUCTURAL baseline count, not on total baseline size**
-(#6127 review). Scenario (a) runs the generator with no task DB, where §6.7 drops every
-liveness-derived kind, so only *structural* baseline entries can ever have a live
-counterpart. Counting the total instead would hard-RED the exact commit the shrink-only
-ratchet exists to produce: a burn-down that fixes the last structural markers and shrinks
-them out of `ptodo-baseline.txt` leaves a non-empty baseline (the `orphaned` entry survives,
-because subset-of never forces it out) against a legitimately empty live set. The shell
-check therefore subtracts entries whose fingerprint `kind` field is DB-dependent
-(`orphaned`, `unknown-id`, `g-allow-orphaned`, `g-allow-unknown-id`, `parked-on-anchor`,
-`task-cites-deleted-path`) and disarms when the remainder is 0. An **unrecognised** kind
-counts as structural, keeping the floor ARMED: a kind added after that list was written
-should produce a loud false-RED, never a silent disarm back into vacuous green. This is a
-field read on an already-produced fingerprint, not a re-derivation, so the "derivation lives
-only in `ptodo-baseline-gen`" invariant above holds.
+The floor keys on evidence of the RUN, not on what the run FOUND. `ptodo-baseline-gen`
+emits, on **stderr**, exactly one machine-readable line per run — unconditionally, on the
+normal exit path, including when stdout is empty:
+
+```text
+@@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>
+```
+
+Both counters come from `ptodo::check_with_stats`, accumulated **inside the single existing
+sweep** (a second walk would be a second derivation — the very drift this section exists to
+prevent). `files_scanned` counts tracked paths that survived `is_swept_ext && !is_allowlisted`
+and were read successfully; `markers_examined` counts `scan_file`-classified marker lines
+across exactly those files. The line never goes to stdout, which is the baseline stream: a
+leak there would corrupt `ptodo-baseline.txt` on the next regen.
+
+Two rules make that grammar a contract rather than a shape, and both consumers implement
+them. **Multiplicity: exactly one line per run.** The Rust contract test
+(`crates/reify-audit/tests/ptodo_baseline.rs`) is the strict consumer and asserts it; the
+shell floor is the tolerant one and reads only the first match (`grep -m1`), because its job
+is to prove the sweep ran, not to police the emitter. **Extensibility: the field list is OPEN
+for additive extension.** `files_scanned` and `markers_examined` are REQUIRED and must parse
+as integers; any further `key=value` token is IGNORED by both consumers. So a later counter
+can be appended without a lockstep edit to either gate, while a missing or unparseable
+required field still fails loud in both. That obliges both to match by **whole token** —
+split on whitespace first, then anchor the key (`strip_prefix` in Rust; `tr`-split plus
+`^files_scanned=` in the shell). A substring match instead reads any token whose name merely
+*ends with* a required key (`skipped_files_scanned=0`), turning the very extension this rule
+blesses into a hard RED; each side therefore pins the adversarial name rather than a generic
+extra field (`parse_scan_line_ignores_unrecognised_tokens`, and fixture (vi) in
+`tests/infra/test_reify_audit_ptodo.sh`).
+
+The floor passes iff that line is present with `files_scanned >= 1`. That oracle is
+**structural, not tuned, and debt-independent**: a repository cannot have zero swept tracked
+files, so no amount of burning the debt down can make it fire — while a binary predating this
+contract emits no such line at all, so a stale or reverted generator goes RED on *evidence*
+rather than on the weak mtime heuristic. It is also the only shape that separates the two
+states a live-count floor conflates: "detector ran, tree is clean" (must be GREEN) and
+"detector did not run" (must be RED). A malformed count falls to the firing branch
+deliberately — loud over silent-disarm.
+
+**Self-disarm and its DB-dependent kind list: RETIRED by task #6241.** The floor used to
+key on the live finding count, which forced a compensating self-disarm in the shell: it
+subtracted baseline entries whose fingerprint `kind` was DB-dependent (`orphaned`,
+`unknown-id`, `g-allow-orphaned`, `g-allow-unknown-id`, `parked-on-anchor`,
+`task-cites-deleted-path` — §6.7 drops those in the no-task-DB mode scenario (a) runs under)
+and disarmed once the structural remainder hit 0. That existed for one reason: without it,
+the burn-down commit this shrink-only ratchet exists to produce — the one that fixes the
+last structural markers and shrinks them out of `ptodo-baseline.txt`, leaving a non-empty
+baseline against a legitimately empty live set — would hard-RED (#6127 review). It was the
+reachable mitigation for a floor coupled to the debt level.
+
+Both the disarm and the kind list are now gone. The floor does not read
+`ptodo-baseline.txt` at all, so a burn-down commit cannot false-RED it by construction, and
+no detector-kind knowledge remains in bash — which restores the "derivation lives only in
+`ptodo-baseline-gen`" invariant above **in full**. The surviving helper reads two fields off
+a line the generator emitted; it derives nothing.
 
 **Cross-file contract.** The floor prints `@@RATCHET_VACUITY_FIRED@@` as the first line of
 its diagnostic, in the same idiom as the `@@HARDGATE_*_PASSED@@` sentinels; the wiring
 meta-test greps that token. Grepping the English text instead is wrong in both directions —
 a short anchor was observed matching the assert *descriptions* that `assert()` echoes into
 the same stream, and a longer sentence merely trades that false match for a false RED on the
-next rewording.
+next rewording. A **second** token now flows the other way, generator → shell:
+`@@PTODO_SCAN@@` (grammar above). The wiring meta-test pins BOTH directions of the floor —
+it fires without scan evidence, and stays silent (exit 0, `0 failed`, token absent) with it —
+because a one-directional wiring test cannot tell a live floor from one wired to a constant
+failure.
 
-**Residual limitation.** Even so, the floor keys on evidence the detector *found* something,
-not on evidence it *ran*; the two coincide only while structural debt remains. The principled
-fix is for `ptodo-baseline-gen` to emit scan evidence of its own (files scanned / markers
-examined, e.g. behind `--stats`) and for the floor to assert on that, which decouples the
-check from the debt level entirely and needs no kind list in the shell. That is a generator
-change, out of scope for #6127, and is filed as a follow-up.
+**Residual limitation: RESOLVED by task #6241.** The #6127 floor keyed on evidence the
+detector *found* something rather than on evidence it *ran*, and the two coincide only while
+structural debt remains. What landed: `ptodo::check_with_stats` returns a `ScanStats`
+counted inside the one existing sweep, `ptodo-baseline-gen` emits it as the `@@PTODO_SCAN@@`
+stderr line every run, and the shell floor asserts on `files_scanned >= 1` — decoupling the
+check from the debt level entirely and removing the kind list from the shell.
+
+One residual genuinely remains: scan evidence proves the sweep ran and enumerated files, not
+that every downstream lane produced *correct* findings. `files_scanned >= 1` would still be
+satisfied by a detector that walked the tree and misclassified everything. That property is
+covered elsewhere and deliberately not folded in here — by the hermetic scenarios (b)–(f) in
+`test_reify_audit_ptodo.sh`, which drive known fixtures through the real binary and assert
+its classifications and exit codes, and by the Rust integration tests in
+`crates/reify-audit/tests/`.
 
 ### 6.7 Degradation contract — **fail-soft, mirroring the 4109 jcodemunch contract**
 
