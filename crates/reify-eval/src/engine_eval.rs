@@ -684,11 +684,26 @@ fn build_combined_param_let_graph(
 /// redundant because it is already present in `cell_id`.  This is intentional for
 /// discoverability (grep/log searches on the scope name alone hit this message)
 /// and the redundancy is pinned by existing tests.
-fn detect_underdetermined(
-    templates: &[reify_compiler::TopologyTemplate],
+fn detect_underdetermined<'t>(
+    templates: &'t [reify_compiler::TopologyTemplate],
+    read_index: &std::cell::OnceCell<CellReadIndex<'t>>,
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
 ) -> Vec<Diagnostic> {
+    // EARLY RETURN before any index work (task #5467 amendment, review
+    // suggestion 4). The loop at the tail can only emit for a STRICTLY-auto
+    // (non-`auto(free)`) cell, so a module with none — every solver-free model,
+    // and every model whose autos are all `auto(free)` — would otherwise build
+    // the read closure and walk it only to emit nothing. Checked FIRST so the
+    // shared `OnceCell` is not forced on this consumer's behalf either.
+    if !templates
+        .iter()
+        .flat_map(|t| &t.value_cells)
+        .any(|c| c.kind.is_auto() && !c.kind.is_auto_free())
+    {
+        return Vec::new();
+    }
+
     // Build the global read-set from ALL templates' constraint expressions AND
     // objective terms.  An auto cell referenced only by an objective (e.g.
     // η/θ centrality designs) is determined by that objective — exclude it.
@@ -708,8 +723,13 @@ fn detect_underdetermined(
             }
         }
     }
-    let global_reads =
-        CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes).read_closure(seeds);
+    // SHARED with layers 1 and 3 (task #5467 amendment): the caller owns one
+    // `OnceCell` per eval and every consumer draws from it, so the template
+    // sweep and the budgeted instance-path unfold are paid ONCE per eval. This
+    // consumer used to build its own throwaway index right here.
+    let global_reads = read_index
+        .get_or_init(|| CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes))
+        .read_closure(seeds);
 
     // Emit W_UNDERDETERMINED for each STRICTLY-auto cell (not auto(free)) absent
     // from the global read-set.  auto(free) cells are intentionally free by
@@ -1494,7 +1514,7 @@ fn write_solved_pinned_connector_autos(
 /// probes only ever ADMIT, never drop.
 fn filter_constraints_reading_autos(
     constraints: &[reify_compiler::CompiledConstraint],
-    auto_ids: &HashSet<&ValueCellId>,
+    auto_ids: &HashSet<ValueCellId>,
     reaching: &HashSet<ValueCellId>,
     index: &CellReadIndex<'_>,
 ) -> Vec<(ConstraintNodeId, CompiledExpr)> {
@@ -1505,7 +1525,13 @@ fn filter_constraints_reading_autos(
             trace.reads.iter().any(|r| auto_ids.contains(r))
                 || (!reaching.is_empty()
                     && trace.reads.iter().any(|r| {
-                        reaching.contains(r) || reaching.contains(&index.normalize(r.clone()))
+                        // `normalize_ref` allocates NOTHING when `r` is already
+                        // canonical, which is the common spelling; the raw
+                        // probe has already answered for that case anyway.
+                        reaching.contains(r)
+                            || index
+                                .normalize_ref(r)
+                                .is_some_and(|norm| reaching.contains(&norm))
                     }))
         })
         .map(|c| (c.id.clone(), c.expr.clone()))
@@ -1717,10 +1743,20 @@ impl<'t> CellReadIndex<'t> {
         }
     }
 
-    /// Identity for an already-template-keyed id (`normalize_cell_id` returns
-    /// `None` when `entity` is not a known instance path).
-    fn normalize(&self, id: ValueCellId) -> ValueCellId {
-        crate::resolve_order::normalize_cell_id(&id, &self.path_map).unwrap_or(id)
+    /// The NON-IDENTITY half of normalisation: `Some(normalised)` only when the
+    /// normalised spelling genuinely DIFFERS from `id`; `None` when `id` is
+    /// already canonical (`normalize_cell_id` itself returns `None` when
+    /// `entity` is not a known instance path, and `Some(id)` when an instance
+    /// path happens to share its structure's name).
+    ///
+    /// Phrased as "is there a DIFFERENT spelling?" rather than "give me the
+    /// spelling", because `ValueCellId` owns two `String`s — every clone is two
+    /// heap allocations — and the overwhelmingly common id on every walk here is
+    /// template-keyed, i.e. its own normalisation. Both walks can then skip the
+    /// clone outright in that case, and each `norm != raw` re-test at the call
+    /// sites collapses to `is_some()`.
+    fn normalize_ref(&self, id: &ValueCellId) -> Option<ValueCellId> {
+        crate::resolve_order::normalize_cell_id(id, &self.path_map).filter(|norm| norm != id)
     }
 
     /// FORWARD: every id transitively read by `seeds`, following each in-map
@@ -1745,11 +1781,12 @@ impl<'t> CellReadIndex<'t> {
 
         // ADDITIVE normalisation, at BOTH insert sites (task #5467 step-17).
         //
-        // Normalising DESTRUCTIVELY (`let id = self.normalize(id)`) drops the
+        // Normalising DESTRUCTIVELY (`let id = self.normalize_ref(&id).unwrap_or(id)`)
+        // drops the
         // raw spelling, and LAYER 4 (`detect_underdetermined`) matches the RAW
         // declaration id against this closure. The compiler mints instance-path
-        // keyed auto decls at `reify-compiler/src/entity.rs:3025` (construction
-        // named-arg) and `:3130` (sub-override), e.g. `Parent.b.bore`, while a
+        // keyed auto decls for a construction named-arg and for a sub-override
+        // (`reify-compiler/src/entity.rs`), e.g. `Parent.b.bore`, while a
         // constraint's read of that same cell normalises to `Bearing.bore` — so
         // a normalise-only closure can NEVER match such a declaration and
         // reports every instance-path auto free.
@@ -1782,16 +1819,21 @@ impl<'t> CellReadIndex<'t> {
         // `cell_map.get(id)` at stage (e) and always miss `reaches_auto`.
         // `dependent_cells` is unchanged by CONSTRUCTION, not by luck.
         //
-        // `normalize` is the identity for an already-template-keyed id, so the
-        // second `insert` is a no-op in the common case and costs one hash probe.
+        // An already-template-keyed id IS its own normalisation, so
+        // `normalize_ref` answers `None` and the second insert is skipped
+        // entirely rather than performed as a known no-op — one `ValueCellId`
+        // clone (two `String` allocations) per read edge on the common path
+        // instead of three.
         let push = |closure: &mut HashSet<ValueCellId>,
                         frontier: &mut Vec<ValueCellId>,
                         id: ValueCellId| {
-            let norm = self.normalize(id.clone());
+            let norm = self.normalize_ref(&id);
             if closure.insert(id.clone()) {
                 frontier.push(id);
             }
-            if closure.insert(norm.clone()) {
+            if let Some(norm) = norm
+                && closure.insert(norm.clone())
+            {
                 frontier.push(norm);
             }
         };
@@ -1835,9 +1877,9 @@ impl<'t> CellReadIndex<'t> {
         // spellings, but every caller seeds THIS walk with RAW declaration ids
         // (`build_solver_problem` passes `regular_auto_cells.iter().map(|c|
         // c.id.clone())`), and the compiler mints instance-path-keyed auto
-        // decls — `ValueCellId("Holder.b", "bore")` at
-        // `reify-compiler/src/entity.rs:3025` (construction named-arg) and
-        // `:3130` (sub-override). A `let` reading that same cell normalises its
+        // decls — `ValueCellId("Holder.b", "bore")`, for a construction
+        // named-arg and for a sub-override (`reify-compiler/src/entity.rs`).
+        // A `let` reading that same cell normalises its
         // dep to `Bearing.bore`, so a normalise-only key set can NEVER be hit
         // by the raw seed: `reverse.get()` misses, `reaches` comes back empty,
         // layer 1 drops the let-indirected constraint, and the auto is never
@@ -1856,22 +1898,57 @@ impl<'t> CellReadIndex<'t> {
             let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
             for (id, expr) in &self.cell_map {
                 for dep in crate::deps::extract_value_deps(expr) {
-                    let norm = self.normalize(dep.clone());
-                    if norm != dep {
-                        reverse.entry(dep).or_default().push(id.clone());
+                    // `normalize_ref` answers `None` for an already-canonical
+                    // dep, so the common path adds ONE key and clones nothing
+                    // it does not keep; the differing case adds both.
+                    if let Some(norm) = self.normalize_ref(&dep) {
+                        reverse.entry(norm).or_default().push(id.clone());
                     }
-                    reverse.entry(norm).or_default().push(id.clone());
+                    reverse.entry(dep).or_default().push(id.clone());
                 }
             }
             reverse
         });
-        let mut reaches: HashSet<ValueCellId> = HashSet::new();
-        let mut frontier: Vec<ValueCellId> = auto_ids.iter().cloned().collect();
+        // ADDITIVE SEEDING, for the same reason the KEYING above is additive
+        // and completing the same bridge (task #5467 amendment, review
+        // suggestion 6). Additive keys alone leave one hole: a dependent cell
+        // whose read is ALREADY canonical (`normalize_ref` → `None`) adds only
+        // the one key, so when the auto is declared under an instance-path
+        // spelling the raw seed still misses. That is exactly the shape where
+        // the reading `let` lives in the DECLARING CHILD template —
+        // `Bearing.fit = Bearing.bore * 2` under `sub b : Bearing { bore = auto }`,
+        // whose decl the compiler mints as `ValueCellId("Holder.b", "bore")`.
+        // `reverse.get(&"Holder.b".bore)` misses, `reaches` comes back empty,
+        // layer 1 drops the pinning constraint — while layer 4's additive
+        // FORWARD closure has already suppressed the `W_UNDERDETERMINED`
+        // warning. Same "loud correct warning becomes a silent `Undef`" failure
+        // the additive keying exists to prevent, one seam over. Locked by
+        // `cells_reaching_seeds_both_spellings_of_an_instance_path_auto`.
+        //
+        // Purely additive, so it cannot perturb D1: an empty `auto_ids` still
+        // returns above; a template-keyed seed normalises to itself and adds
+        // nothing; and layer 1 only ever ADMITS constraints. The normalisation
+        // is MANY-TO-ONE, so a normalised seed can also surface a SIBLING
+        // instance's readers — an over-approximation in the conservative
+        // direction (an extra constraint admitted, an extra derived cell
+        // re-folded per trial, both of which recompute to the same values),
+        // never a missed pin.
+        let normalized_seeds: Vec<ValueCellId> = auto_ids
+            .iter()
+            .filter_map(|id| self.normalize_ref(id))
+            .collect();
+        // The frontier and visited set hold BORROWS: every reader comes from
+        // the memoised `reverse` map, which outlives this walk, so the only
+        // `ValueCellId` clones paid are the ones actually returned — rather
+        // than two per traversed edge.
+        let mut reaches: HashSet<&ValueCellId> = HashSet::new();
+        let mut frontier: Vec<&ValueCellId> =
+            auto_ids.iter().chain(normalized_seeds.iter()).collect();
         while let Some(id) = frontier.pop() {
-            if let Some(readers) = reverse.get(&id) {
+            if let Some(readers) = reverse.get(id) {
                 for reader in readers {
-                    if reaches.insert(reader.clone()) {
-                        frontier.push(reader.clone());
+                    if reaches.insert(reader) {
+                        frontier.push(reader);
                     }
                 }
             }
@@ -1880,8 +1957,11 @@ impl<'t> CellReadIndex<'t> {
         // (stage (a) skips autos), but a caller may pass an id that is both an
         // auto and a reader in a malformed model — drop it defensively so the
         // documented "non-auto cells only" contract holds unconditionally.
-        reaches.retain(|id| !auto_ids.contains(id));
         reaches
+            .into_iter()
+            .filter(|id| !auto_ids.contains(*id))
+            .cloned()
+            .collect()
     }
 }
 
@@ -1993,6 +2073,7 @@ fn build_dependent_cells(
     seed_exprs: &[&CompiledExpr],
     index: &CellReadIndex<'_>,
     auto_ids: &HashSet<ValueCellId>,
+    reaches_auto: &HashSet<ValueCellId>,
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(ValueCellId, CompiledExpr)> {
@@ -2010,14 +2091,23 @@ fn build_dependent_cells(
     let closure = index.read_closure(seed_exprs.iter().copied());
 
     // (d) REVERSE auto-reachability: which non-auto cells transitively READ an
-    //     auto. The index computes this over the whole `cell_map` rather than
+    //     auto — `index.cells_reaching(auto_ids)`, but SUPPLIED BY THE CALLER
+    //     (task #5467 amendment) rather than recomputed here. Both callers
+    //     already hold the identical answer: they compute it over the same
+    //     auto-id set for LAYER 1's `reaching` argument to
+    //     `filter_constraints_reading_autos`, a few statements before
+    //     assembling these seeds. Only the reverse MAP is memoised inside the
+    //     index; the BFS over it and its visited set are not, so recomputing
+    //     meant walking it twice per scope (and again per cluster, via
+    //     `build_merged_solver_problem`).
+    //
+    //     The index computes this over the whole `cell_map` rather than
     //     restricted to `closure` as this stage once did — the two agree on
     //     every closure member (any X on an `auto → X → Y` path with `Y ∈
     //     closure` is itself in `closure`, because stage (c) follows reads
-    //     DOWNWARD), and stage (e) below iterates `closure` regardless. The
-    //     index also omits the autos themselves, which stage (e)'s
+    //     DOWNWARD), and stage (e) below iterates `closure` regardless. It
+    //     also omits the autos themselves, which stage (e)'s
     //     `auto_ids.contains(id)` disjunct already excluded.
-    let reaches_auto = index.cells_reaching(auto_ids);
 
     // (e) Restrict to surviving cells (non-auto, in-map, transitively reads an
     //     auto) and topologically sort the induced sub-DAG via the same
@@ -2439,16 +2529,23 @@ fn build_solver_problem<'t>(
     // `filter_constraints_reading_autos`/`build_auto_param_list` — amendment,
     // task #5014; the connector-pin partitioning above remains this
     // function's own, site-specific step.)
-    let auto_ids: HashSet<&ValueCellId> =
-        regular_auto_cells.iter().map(|cell| &cell.id).collect();
+    // ONE set, not two (task #5467 amendment, review suggestion 5). This used
+    // to be a borrowed `HashSet<&ValueCellId>` for
+    // `filter_constraints_reading_autos` ALONGSIDE an owned
+    // `HashSet<ValueCellId>` for `cells_reaching`, both built from
+    // `regular_auto_cells` — a full clone of every auto id per scope, paid
+    // purely because two callees wanted different borrow shapes.
+    // `filter_constraints_reading_autos` probes with `&ValueCellId`, which an
+    // owned set answers just as well.
+    let auto_ids: HashSet<ValueCellId> =
+        regular_auto_cells.iter().map(|cell| cell.id.clone()).collect();
 
     // LAYER 1 (task #5467 / PRD2 α): the auto-reaching non-auto cells for THIS
     // scope's autos, so a constraint reading an auto only through a `let` is
     // still admitted. Genuinely shared with the `build_dependent_cells` call
     // below, which takes the same `read_index` rather than building a second
-    // one. `owned_auto_ids` is likewise built once and reused as
-    // `build_dependent_cells`' reachability target — the two sets were literally
-    // the same `map(|c| c.id.clone())` over `regular_auto_cells`.
+    // one — and, since the amendment, this very `reaching` set rather than an
+    // identical recomputation of it.
     //
     // HOISTED, and LAZY (task #5467 amendment, review suggestion 4). The index
     // is a pure function of `(all_templates, max_unfold_depth,
@@ -2469,9 +2566,7 @@ fn build_solver_problem<'t>(
     // scope that actually reaches this line.
     let read_index = read_index
         .get_or_init(|| CellReadIndex::build(all_templates, max_unfold_depth, max_unfold_nodes));
-    let owned_auto_ids: HashSet<ValueCellId> =
-        regular_auto_cells.iter().map(|cell| cell.id.clone()).collect();
-    let reaching = read_index.cells_reaching(&owned_auto_ids);
+    let reaching = read_index.cells_reaching(&auto_ids);
 
     let mut filtered_constraints =
         filter_constraints_reading_autos(&template.constraints, &auto_ids, &reaching, read_index);
@@ -2527,7 +2622,8 @@ fn build_solver_problem<'t>(
         build_dependent_cells(
             &seed_exprs,
             read_index,
-            &owned_auto_ids,
+            &auto_ids,
+            &reaching,
             &functions,
             diagnostics,
         )
@@ -2672,7 +2768,10 @@ fn build_merged_solver_problem<'t>(
 
     // Membership set for O(1) constraint-filter reads; never iterated for
     // ordering (that stays on the Vec built above).
-    let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
+    // ONE owned set, shared by `filter_constraints_reading_autos`,
+    // `cells_reaching` and `build_dependent_cells` — see the same collapse in
+    // `build_solver_problem`.
+    let auto_ids: HashSet<ValueCellId> = auto_cells.iter().map(|cell| cell.id.clone()).collect();
 
     // LAYER 1 (task #5467 / PRD2 α): resolved ONCE outside the per-member loop
     // below, over the CLUSTER-WIDE auto union — the same #5014 semantics the
@@ -2689,9 +2788,7 @@ fn build_merged_solver_problem<'t>(
     // `get_or_init` does fire; the laziness is inherited, not needed here.
     let read_index = read_index
         .get_or_init(|| CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes));
-    let owned_auto_ids: HashSet<ValueCellId> =
-        auto_cells.iter().map(|cell| cell.id.clone()).collect();
-    let reaching = read_index.cells_reaching(&owned_auto_ids);
+    let reaching = read_index.cells_reaching(&auto_ids);
 
     // Shared per-scope tail with `build_solver_problem` (amendment, task
     // #5014): filtered once per member so each member's OWN constraints are
@@ -2892,7 +2989,8 @@ fn build_merged_solver_problem<'t>(
         build_dependent_cells(
             &seed_exprs,
             read_index,
-            &owned_auto_ids,
+            &auto_ids,
+            &reaching,
             &functions,
             diagnostics,
         )
@@ -5261,6 +5359,35 @@ impl Engine {
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
+
+        // LAYERS 1/3/4 shared read index (task #5467 amendment, review
+        // suggestions 4 and 5). `CellReadIndex` is a pure function of
+        // `(module.templates, self.max_unfold_depth, self.max_unfold_nodes)` —
+        // all three invariant for the rest of this function — but building it
+        // sweeps every template's `value_cells`, runs the budgeted
+        // `build_instance_path_structure_map` unfold, and (on the first
+        // `cells_reaching`) an `extract_value_deps` pass over the whole
+        // `cell_map`. Built per consumer, that is O(#consumers × #cells) of
+        // pure repetition on a path that runs on every eval.
+        //
+        // Declared OUTSIDE the `has_active_solver` gate, not inside the
+        // `ro.order` loop, because `detect_underdetermined` (LAYER 4) is
+        // deliberately ungated — it must warn on `reify check` too — and needs
+        // the same index. Keeping the cell inside the gate left that one
+        // consumer building a second, throwaway index on every eval, so the
+        // "one index per eval" architecture was only half-realised.
+        //
+        // LAZY, via `OnceCell` rather than an eager build: a module with no
+        // auto cells anywhere reaches neither `build_solver_problem`'s
+        // `get_or_init` nor `detect_underdetermined`'s, and keeps paying
+        // exactly ZERO — as it did when the build sat below
+        // `build_solver_problem`'s `auto_cells.is_empty()` early return.
+        //
+        // It borrows `module`, never `self`, so it does not collide with the
+        // `&mut self` calls below; the same immutable borrow of
+        // `module.templates` is already live across the dispatch loop via
+        // `let template = &module.templates[idx]`.
+        let read_index = std::cell::OnceCell::new();
         if has_active_solver {
             // γ (#4824): build ContainmentIndex + per-template governance once before
             // the centrality/objectives loop so inherited scopes can be excluded from
@@ -5339,28 +5466,6 @@ impl Engine {
                 .flat_map(|(ci, c)| c.scopes.iter().map(move |&s| (s, ci)))
                 .collect();
             let mut cluster_dispatched = vec![false; ro.clusters.len()];
-
-            // LAYER 1/3 shared read index (task #5467 amendment, review
-            // suggestion 4). `CellReadIndex` is a pure function of
-            // `(module.templates, max_unfold_depth, max_unfold_nodes)` — every
-            // one of which is invariant across this loop — but building it
-            // sweeps every template's `value_cells`, runs the budgeted
-            // `build_instance_path_structure_map` unfold, and (on the first
-            // `cells_reaching`) an `extract_value_deps` pass over the whole
-            // `cell_map`. Built per scope, that is O(#scopes × #cells) of pure
-            // repetition on a path that runs on every eval.
-            //
-            // Hoisted here, LAZILY: `OnceCell` rather than an eager build so a
-            // module with no auto cells anywhere — which never reaches the
-            // `get_or_init` inside `build_solver_problem` — keeps paying
-            // exactly ZERO, as it did when the build sat below that function's
-            // `auto_cells.is_empty()` early return.
-            //
-            // It borrows `module`, never `self`, so it does not collide with
-            // the `&mut self` calls in this loop body; the same immutable
-            // borrow of `module.templates` is already live across the loop via
-            // `let template = &module.templates[idx]` below.
-            let read_index = std::cell::OnceCell::new();
 
             for &idx in &ro.order {
                 if let Some(&cluster_idx) = cluster_of_scope.get(&idx) {
@@ -6239,6 +6344,7 @@ impl Engine {
         // TRANSITIVELY since task #5467, so an auto pinned only through a `let` is not flagged.
         diagnostics.extend(detect_underdetermined(
             &module.templates,
+            &read_index,
             self.max_unfold_depth,
             self.max_unfold_nodes,
         ));
@@ -11717,6 +11823,79 @@ mod cell_read_index_tests {
         );
     }
 
+    /// The fixture for (g). The MIRROR of `instance_path_templates` below: the
+    /// instance path is on the AUTO DECLARATION rather than on the read.
+    ///
+    /// ```text
+    /// Holder.b : sub Bearing
+    /// Holder.b.bore : auto        ← `sub b : Bearing { bore = auto }`, minted
+    ///                                on the PARENT, keyed by INSTANCE PATH
+    /// Bearing.fit = Bearing.bore * 2.0   ← the reading `let` lives in the
+    ///                                       DECLARING CHILD, so its dep is
+    ///                                       already canonical
+    /// ```
+    ///
+    /// The combination is what matters: because `Bearing.fit`'s dep normalises
+    /// to ITSELF, the reverse map's additive KEYING adds nothing here — it has
+    /// exactly one key, `Bearing.bore`. So the raw seed `Holder.b.bore` is the
+    /// only spelling the walk ever looks up, and it is the one spelling that
+    /// misses.
+    fn child_side_let_templates() -> Vec<reify_compiler::TopologyTemplate> {
+        let parent = TopologyTemplateBuilder::new("Holder")
+            .sub_component("b", "Bearing", vec![])
+            .auto_param("Holder.b", "bore", Type::dimensionless_scalar())
+            .build();
+        let child = TopologyTemplateBuilder::new("Bearing")
+            .let_binding(
+                "Bearing",
+                "fit",
+                Type::dimensionless_scalar(),
+                binop(BinOp::Mul, value_ref("Bearing", "bore"), literal(mm(2.0))),
+            )
+            .build();
+        vec![parent, child]
+    }
+
+    /// (g) REVERSE, SEEDING — the third and last site where the two-namespace
+    /// bridge has to be additive (task #5467 amendment, review suggestion 6).
+    ///
+    /// `cells_reaching` seeded its frontier with the RAW auto ids and leaned
+    /// entirely on the reverse map's additive KEYING to bridge the namespaces.
+    /// That covers a dependent cell whose read is instance-path spelled — the
+    /// (d)/(e) shape — but NOT this one, where the read is already canonical
+    /// (`norm == dep`, so only ONE key is added) while the DECLARATION is
+    /// instance-path spelled.
+    ///
+    /// The consequence is the exact failure the additive keying exists to
+    /// prevent, one seam over: `reverse.get(&"Holder.b".bore)` misses, layer 1
+    /// drops the constraint that pins the auto, and the auto is never solved —
+    /// while the FORWARD walk, additive since step-19, has already let layer 4
+    /// suppress the `W_UNDERDETERMINED` warning. A loud, correct warning
+    /// becomes a silent `Undef`.
+    #[test]
+    fn cells_reaching_seeds_both_spellings_of_an_instance_path_auto() {
+        let templates = child_side_let_templates();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        let autos: HashSet<ValueCellId> = [ValueCellId::new("Holder.b", "bore")]
+            .into_iter()
+            .collect();
+        let reaching = index.cells_reaching(&autos);
+
+        assert!(
+            reaching.contains(&ValueCellId::new("Bearing", "fit")),
+            "the auto is DECLARED as `Holder.b.bore` (instance-path keyed, the \
+             shape `sub b : Bearing {{ bore = auto }}` mints) while the `let` \
+             that reads it lives in the declaring child and so names \
+             `Bearing.bore`. The reverse map therefore holds ONE key, and the \
+             raw seed is not it — the frontier has to carry the NORMALISED \
+             spelling too. Getting an empty set here is layer 1 dropping the \
+             one constraint that pins this auto, with layer 4's additive \
+             forward closure already suppressing the warning that would have \
+             said so; got {reaching:?}",
+        );
+    }
+
     /// The shared fixture for (d)–(f). A parent whose `total` let reads its sub
     /// THROUGH an INSTANCE PATH, so the two `read_closure` insert sites — the
     /// seed loop and the mid-walk hop — can each be pinned on their own:
@@ -11772,8 +11951,7 @@ mod cell_read_index_tests {
     /// has to survive alongside the normalised one. `detect_underdetermined`
     /// (LAYER 4) tests `!global_reads.contains(&cell.id)` against the RAW
     /// declaration id, and the compiler mints instance-path-keyed auto decls at
-    /// `reify-compiler/src/entity.rs:3025` (construction named-arg) and `:3130`
-    /// (sub-override). If the seed loop REPLACES the raw id with its normalised
+    /// `reify-compiler/src/entity.rs` (construction named-arg, sub-override). If the seed loop REPLACES the raw id with its normalised
     /// form, the declared id can never match and every instance-path auto draws
     /// a false-positive `W_UNDERDETERMINED`.
     ///
@@ -11806,8 +11984,9 @@ mod cell_read_index_tests {
             closure.contains(&ValueCellId::new("RivetedPanel.rivets", "line_cost")),
             "the RAW instance-path spelling of the seed must ALSO survive: \
              normalisation is ADDITIVE, not a replacement. LAYER 4 matches a \
-             raw, instance-path-keyed auto DECLARATION id (entity.rs:3025 / \
-             :3130) against this closure, so dropping the raw spelling makes \
+             raw, instance-path-keyed auto DECLARATION id (entity.rs, \
+             construction named-arg / sub-override) against this closure, so \
+             dropping the raw spelling makes \
              every such auto look untouched and draws a false-positive \
              W_UNDERDETERMINED; got {closure:?}",
         );
@@ -11978,9 +12157,10 @@ mod transitive_constraint_admission_tests {
         reaching: &HashSet<ValueCellId>,
         index: &CellReadIndex<'_>,
     ) -> Vec<u32> {
-        let a = ValueCellId::new("S", "a");
-        let b = ValueCellId::new("S", "b");
-        let auto_ids: HashSet<&ValueCellId> = [&a, &b].into_iter().collect();
+        let auto_ids: HashSet<ValueCellId> =
+            [ValueCellId::new("S", "a"), ValueCellId::new("S", "b")]
+                .into_iter()
+                .collect();
         filter_constraints_reading_autos(&templates[0].constraints, &auto_ids, reaching, index)
             .into_iter()
             .map(|(id, _)| id.index)
@@ -12091,7 +12271,84 @@ mod transitive_constraint_admission_tests {
         vec![parent, child]
     }
 
-    /// THE NAMESPACE BRIDGE, at layer 1. Deleting the `index.normalize(..)`
+    /// The MIRROR of `cross_template_let_fixture`: the instance path is on the
+    /// AUTO DECLARATION rather than only on the read (task #5467 amendment,
+    /// review suggestion 6).
+    ///
+    /// ```text
+    /// Holder.b : sub Bearing
+    /// Holder.b.bore : auto                       ← `sub b : Bearing { bore = auto }`
+    /// Holder constraint[0]: Holder.b.fit == 20.0 ← instance-path READ
+    /// Bearing.fit = Bearing.bore * 2.0           ← the `let` is in the CHILD,
+    ///                                               so its dep is canonical
+    /// ```
+    ///
+    /// Both namespaces appear on BOTH sides here, which is what makes it the
+    /// end-to-end pin for the whole bridge at this layer: the seed needs
+    /// normalising to find the reader, and the trace read needs normalising to
+    /// match it.
+    fn child_side_let_fixture() -> Vec<reify_compiler::TopologyTemplate> {
+        let parent = TopologyTemplateBuilder::new("Holder")
+            .sub_component("b", "Bearing", vec![])
+            .auto_param("Holder.b", "bore", Type::dimensionless_scalar())
+            .constraint(
+                "Holder",
+                0,
+                None,
+                eq(value_ref("Holder.b", "fit"), literal(mm(20.0))),
+            )
+            .build();
+        let child = TopologyTemplateBuilder::new("Bearing")
+            .let_binding(
+                "Bearing",
+                "fit",
+                Type::dimensionless_scalar(),
+                binop(BinOp::Mul, value_ref("Bearing", "bore"), literal(mm(2.0))),
+            )
+            .build();
+        vec![parent, child]
+    }
+
+    /// THE NAMESPACE BRIDGE, at layer 1, with the auto declared under an
+    /// INSTANCE PATH (task #5467 amendment, review suggestion 6).
+    ///
+    /// `a_parent_constraint_reading_a_childs_let_through_an_instance_path_is_admitted`
+    /// below declares its auto TEMPLATE-keyed, so `cells_reaching`'s seed
+    /// spelling is never in question there and only the trace-read probe is
+    /// exercised. Here the seed is the one that has to bridge, so a
+    /// raw-seeded `cells_reaching` returns an EMPTY `reaching` and this
+    /// constraint is dropped whatever the probe does.
+    #[test]
+    fn a_constraint_pinning_an_instance_path_declared_auto_through_a_child_let_is_admitted() {
+        let templates = child_side_let_fixture();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let autos: HashSet<ValueCellId> = [ValueCellId::new("Holder.b", "bore")]
+            .into_iter()
+            .collect();
+        let reaching = index.cells_reaching(&autos);
+
+        let got: Vec<u32> = filter_constraints_reading_autos(
+            &templates[0].constraints,
+            &autos,
+            &reaching,
+            &index,
+        )
+        .into_iter()
+        .map(|(id, _)| id.index)
+        .collect();
+
+        assert_eq!(
+            got,
+            vec![0],
+            "`constraint self.b.fit == 20.0` pins the auto `Holder.b.bore` \
+             through the child's `let fit = bore * 2.0`. Dropping it leaves \
+             the auto unsolved while layer 4 stays quiet about it — the \
+             silent-`Undef` failure mode, not a loud one; got {got:?} with \
+             reaching={reaching:?}",
+        );
+    }
+
+    /// THE NAMESPACE BRIDGE, at layer 1. Deleting the `index.normalize_ref(..)`
     /// probe from the `reaching` disjunct turns this red while leaving every
     /// other test in this module green.
     #[test]
@@ -12111,7 +12368,7 @@ mod transitive_constraint_admission_tests {
              got {reaching:?}",
         );
 
-        let auto_ids: HashSet<&ValueCellId> = [&auto].into_iter().collect();
+        let auto_ids: HashSet<ValueCellId> = [auto.clone()].into_iter().collect();
         let got: Vec<u32> = filter_constraints_reading_autos(
             &templates[0].constraints,
             &auto_ids,
@@ -12140,8 +12397,9 @@ mod transitive_constraint_admission_tests {
     fn an_empty_reaching_set_drops_the_instance_path_constraint_too() {
         let templates = cross_template_let_fixture();
         let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
-        let auto = ValueCellId::new("Rivet", "quantity_produced");
-        let auto_ids: HashSet<&ValueCellId> = [&auto].into_iter().collect();
+        let auto_ids: HashSet<ValueCellId> = [ValueCellId::new("Rivet", "quantity_produced")]
+            .into_iter()
+            .collect();
 
         let got: Vec<u32> = filter_constraints_reading_autos(
             &templates[0].constraints,
@@ -12317,10 +12575,12 @@ mod dependent_cells_admissibility_tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let index =
             CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let reaching = index.cells_reaching(&auto_ids);
         let cells = build_dependent_cells(
             &seed_exprs,
             &index,
             &auto_ids,
+            &reaching,
             &no_fns,
             &mut diagnostics,
         );
@@ -12422,10 +12682,12 @@ mod dependent_cells_admissibility_tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let index =
             CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let reaching = index.cells_reaching(&auto_ids);
         let cells = build_dependent_cells(
             &seed_exprs,
             &index,
             &auto_ids,
+            &reaching,
             &no_fns,
             &mut diagnostics,
         );
@@ -12527,10 +12789,12 @@ mod dependent_cells_admissibility_tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let index =
             CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let reaching = index.cells_reaching(&auto_ids);
         let cells = build_dependent_cells(
             &seed_exprs,
             &index,
             &auto_ids,
+            &reaching,
             &no_fns,
             &mut diagnostics,
         );
