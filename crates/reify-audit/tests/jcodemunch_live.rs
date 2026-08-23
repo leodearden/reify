@@ -150,6 +150,110 @@ fn write_synthetic_done_task(
 }
 
 // -----------------------------------------------------------------------
+// β's index primitive: invocation + verdict consumption
+// -----------------------------------------------------------------------
+
+/// β, the SINGLE `watch --once` index primitive
+/// (`scripts/jcodemunch-index-reify.sh`, task 6107).
+///
+/// Resolved from `CARGO_MANIFEST_DIR` (`crates/reify-audit` → two parents →
+/// repo root) so the capstone finds β from whatever checkout it was compiled
+/// in. `the_index_script_this_capstone_names_actually_exists` asserts this
+/// path resolves — the antidote to `L-SMOKE` naming a script that never
+/// existed (PRD §2.4).
+const JC_INDEX_SCRIPT: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/jcodemunch-index-reify.sh");
+
+/// Folder-file cap handed to β for the throwaway corpus.
+///
+/// MEASURED necessity, not padding. β resolves its cap by parsing
+/// `$CODE_INDEX_PATH/config.jsonc` with `jq`, but jcodemunch's serve WRITES a
+/// JSONC template there (26 KB of `//`-commented config at the pinned
+/// 1.108.54) on startup. On the serve-then-index ordering this capstone uses,
+/// β therefore refuses before reaching the indexer:
+///
+/// ```text
+/// jcodemunch-index-reify: cannot parse <dir>/config.jsonc — fix it, or set
+/// JCODEMUNCH_MAX_FOLDER_FILES to override the cap explicitly
+/// ```
+///
+/// `JCODEMUNCH_MAX_FOLDER_FILES` is β's OWN documented escape hatch, so
+/// setting it consumes the contract rather than working around it. Tracked as
+/// task #6486 (a β-side defect, out of scope here). 2000 is far above the
+/// corpus's 3 files, so `E_JC_INDEX_TRUNCATED` cannot fire.
+const JC_MAX_FOLDER_FILES: &str = "2000";
+
+/// The exact β invocation for one index pass over `corpus` into `index_dir`.
+///
+/// Built as a `Command` and returned UNRUN so the `index_invocation` tests can
+/// assert its shape with no uvx, no network and no serve — α's seam-splitting
+/// pattern, applied to the half of the capstone that would otherwise only be
+/// checked when somebody deliberately passes `--ignored`.
+///
+/// `--project-root` is passed explicitly because β DEFAULTS to the canonical
+/// `/home/leo/src/reify` checkout, and `CODE_INDEX_PATH` because otherwise the
+/// pass writes into host-global `~/.code-index`.
+///
+/// `JCODEMUNCH_GIT_ROOT_IDENTITY` is deliberately NOT set here: β applies that
+/// lever itself (`JC_IDENTITY_ENV=(env JCODEMUNCH_GIT_ROOT_IDENTITY=0)`), and
+/// duplicating it at a second site is exactly how PRD §4.2's "every invocation
+/// site carries this obligation" drifts.
+fn index_pass_command(
+    corpus: &std::path::Path,
+    index_dir: &std::path::Path,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(JC_INDEX_SCRIPT)
+        .arg("--project-root")
+        .arg(corpus)
+        .env("CODE_INDEX_PATH", index_dir)
+        .env("JCODEMUNCH_MAX_FOLDER_FILES", JC_MAX_FOLDER_FILES);
+    cmd
+}
+
+/// Run one β index pass and CONSUME ITS VERDICT. Panics unless β succeeded.
+///
+/// A pass is accepted only if the child exits 0 **and** its output carries β's
+/// own `INDEX-OK` success token. Both halves matter: β owns the "present,
+/// non-empty, not silently truncated" gate and refuses with
+/// `E_JC_INDEX_MISSING` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_TRUNCATED` /
+/// `E_JC_INDEX_RUN_FAILED`, and consuming that verdict instead of re-deriving
+/// one here is the whole point of the ε→β edge.
+///
+/// Returns the captured stdout+stderr so the capstone can print β's
+/// `INDEX-OK … N sym` line as operator-facing acceptance evidence.
+fn run_index_pass(corpus: &std::path::Path, index_dir: &std::path::Path) -> String {
+    let out = index_pass_command(corpus, index_dir)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to invoke {JC_INDEX_SCRIPT}: {e}"));
+
+    let combined = format!(
+        "--- stdout ---\n{}--- stderr ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        out.status.success(),
+        "β refused to index the throwaway corpus at {} (exit {:?}).\n\
+         β's refusal markers are the diagnosis — E_JC_INDEX_MISSING / _EMPTY / \
+         _TRUNCATED / _RUN_FAILED each carry their own remedy.\n{combined}",
+        corpus.display(),
+        out.status.code()
+    );
+    assert!(
+        combined.contains("INDEX-OK"),
+        "β exited 0 but never printed its own INDEX-OK success token for {}. \
+         Exit status alone is not the contract: INDEX-OK is the token β derives \
+         and owns, and scraping for it is what keeps this edge from accepting a \
+         silently-degraded pass.\n{combined}",
+        corpus.display()
+    );
+
+    combined
+}
+
+// -----------------------------------------------------------------------
 // Throwaway corpus (real git; no network, no serve)
 // -----------------------------------------------------------------------
 
