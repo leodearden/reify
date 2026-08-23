@@ -584,8 +584,7 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
     let mut still_absent = absent.clone();
     let siblings = task_referencing_commits(ctx, &meta.task_id);
     let mut contributing: Vec<&GitCommit> = Vec::new();
-    let mut scanned = 0usize;
-    for c in &siblings {
+    for (scanned, c) in siblings.iter().enumerate() {
         if still_absent.is_empty() {
             break;
         }
@@ -599,7 +598,6 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
             );
             break;
         }
-        scanned += 1;
         let covered = changed_paths_for_claim(ctx, &c.sha);
         let before = still_absent.len();
         still_absent.retain(|p| !covered.contains(p));
