@@ -363,6 +363,75 @@ ts_last_offset_of() {
     printf '%s' "${#pre}"
 }
 
+# ts_masked_path_dir <name-to-mask>
+#
+# Print a shim directory holding symlinks to every executable currently
+# resolvable on PATH EXCEPT <name-to-mask>, so `PATH=$shim` reproduces this
+# host minus exactly one binary. PATH dirs are walked in order and the first
+# occurrence of a basename wins (`[ -e "$shim/$b" ] && continue`), so
+# resolution order is preserved exactly. Registers its own cleanup through
+# CLEANUP_ACTIONS.
+#
+# MASKING BY OMISSION, NOT BY SHADOWING — load-bearing. The obvious shim
+# (a `sha256sum` stub that exits 1, placed first on PATH) drives a DIFFERENT
+# code path than the one under test: build.rs's `try_hasher` maps ENOENT to
+# `Ok(None)` — "not on this host, fall through to the next binary" — but a
+# present-but-failing binary to `Err(())` — "transient, retry". A stub
+# therefore exercises the retry loop and never reaches the shasum fallback.
+# Only genuine absence does.
+#
+# PRIOR ART, and why this is a new helper rather than a widening of it:
+# tests/infra/nextest_absent_lib.sh (task 5602, lifted from task 5599) already
+# implements a symlink-farm PATH shim, and its header records the measured trap
+# this helper must not re-step in — the naive `PATH="$STUB:/usr/bin:/bin"`
+# recipe strips unrelated toolchain wholesale (the tree-sitter CLI lives in the
+# cargo bin dir) and cost that task 5 spurious FAILs. The PATTERN is reused
+# here; the LIB is not, deliberately:
+#   - it simulates exactly one variable ("cargo-nextest is not installed"),
+#     whereas this masks an arbitrary named binary;
+#   - its temp-HOME / `env -u CARGO_HOME` machinery targets cargo SUBCOMMAND
+#     resolution and would work AGAINST this test, which needs the real cargo,
+#     rustup toolchain and cc all functioning under the mask;
+#   - it is nest-sensitive and shared by three suites, so widening it would
+#     charge unrelated tests for this one.
+#
+# Deliberately NOT named test_* (see the block header above).
+ts_masked_path_dir() {
+    local mask="${1:-}"
+    if [ -z "$mask" ]; then
+        echo "  ts_masked_path_dir: usage: ts_masked_path_dir <name-to-mask>" >&2
+        return 1
+    fi
+    local shim
+    shim=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$shim'")
+
+    local -a dirs=()
+    IFS=':' read -r -a dirs <<< "$PATH"
+    local d f b
+    local had_nullglob=0
+    shopt -q nullglob && had_nullglob=1
+    shopt -s nullglob
+    for d in "${dirs[@]}"; do
+        # An empty PATH element means "the current directory" — deliberately not
+        # mirrored: the shim must reproduce the TOOLCHAIN, not the cwd.
+        [ -n "$d" ] || continue
+        [ -d "$d" ] || continue
+        for f in "$d"/*; do
+            b="${f##*/}"
+            [ "$b" = "$mask" ] && continue
+            [ -d "$f" ] && continue
+            [ -x "$f" ] || continue
+            # First-wins: preserve the real PATH's resolution order.
+            [ -e "$shim/$b" ] && continue
+            ln -s "$f" "$shim/$b" 2>/dev/null || true
+        done
+    done
+    [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
+
+    printf '%s' "$shim"
+}
+
 # mk_verify_fixture
 #
 # A throwaway git repo holding a copy of scripts/ and .config/, enough for
@@ -2103,9 +2172,13 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     #       survives deleting both `command -v` arms outright;
     #   (c) `grep -q` for a Rust string literal proves the literal appears
     #       somewhere in the file, never that `sha256_of` is reached.
-    # It also violated this file's OWN standard: :790 refuses to grep for
-    # `set -euo pipefail` and :1876 refuses to grep for an env-var name, both on
-    # exactly this reasoning. So the guard is replaced, not merely repaired.
+    # It also violated this file's OWN established standard: this suite has twice
+    # REFUSED a source-text assertion on exactly this reasoning and said so in
+    # place — test_freshness_script_exists_and_executable declines to grep for
+    # `set -euo pipefail` (and extracts and RUNS the helper instead), and
+    # test_freshness_target_dir_override_is_a_clean_noop declines to grep for an
+    # env-var name (and observes the value in a grandchild process instead). So
+    # the guard is replaced by a behavioural one, not merely repaired.
     #
     # MASKING BY OMISSION, not by shadowing, is load-bearing: build.rs's
     # `try_hasher` maps ENOENT to Ok(None) (fall through to the next binary) but
@@ -2264,74 +2337,6 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
         echo "  scripts/tree-sitter-freshness.sh --print-fingerprint (sha256sum)."
         echo "  --- stamp ($stamp) ---"; cat "$stamp"
         echo "  --- shell fingerprint ---"; bash "$FRESHNESS_SCRIPT" --print-fingerprint
-        return 1
-    fi
-}
-
-test_build_rs_hasher_matches_the_shell_fallbacks() {
-    # The two halves of the attestation contract must agree on WHAT can hash.
-    # build.rs writes $OUT_DIR/tree_sitter_inputs.stamp; the freshness script
-    # recomputes the same manifest via compute_sha256 -> portable_sha256, which
-    # tries `sha256sum` and then `shasum -a 256`.
-    #
-    # With only sha256sum on the Rust side the two disagree on a shasum-only host
-    # (macOS is the canonical one): build.rs writes the literal UNAVAILABLE into
-    # every stamp while the script computes a real fingerprint. Every archive is
-    # then permanently unattestable, `check` prints PARTIAL and exits 0, and the
-    # guard is silently a no-op for that whole checkout — which propagates, since
-    # dormant fingerprint dirs are never rebuilt and target/ is CoW-cloned into
-    # every lane seeded from that base.
-    #
-    # DERIVED from portable_sha256 rather than restated, so adding a hasher there
-    # fails here instead of quietly re-splitting the contract.
-    #
-    # scripts/lib_portable.sh is deliberately NOT added to
-    # scripts/verify-pipeline-infra-tests.txt for this. Routing it would pull this
-    # whole suite — four serial cargo checks — into any task-scope verify that
-    # touches that shared lib, a cost paid by unrelated tasks. The merge gate runs
-    # with --include-infra and so always evaluates this arm; the exposure is one
-    # task-scope run going green before the gate catches it, not a coverage hole.
-    local build_rs="$TS_DIR/build.rs"
-    local portable="$REPO_ROOT/scripts/lib_portable.sh"
-    assert_file_exists "$build_rs" || return 1
-    assert_file_exists "$portable" || return 1
-
-    local body
-    body=$(sed -n '/^portable_sha256() {/,/^}/p' "$portable")
-    if [ -z "$body" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: could not extract portable_sha256 from $portable —"
-        echo "  this guard derives its expected hasher set from that function, so it"
-        echo "  cannot silently pass when the function moves. Re-point it."
-        return 1
-    fi
-
-    local bin found=0
-    for bin in sha256sum shasum; do
-        [[ "$body" == *"$bin"* ]] || continue
-        found=$(( found + 1 ))
-        if ! grep -q "\"$bin\"" "$build_rs"; then
-            echo ""
-            echo "  ASSERTION FAILED: portable_sha256 hashes with '$bin', but build.rs never"
-            echo "  names it. On a host where '$bin' is the ONLY hasher, build.rs stamps"
-            echo "  UNAVAILABLE while the freshness script computes a real fingerprint, so"
-            echo "  every archive becomes unattestable and the guard is a silent no-op."
-            return 1
-        fi
-    done
-    if [ "$found" -lt 2 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: portable_sha256 no longer names both sha256sum and shasum"
-        echo "  ($found of 2 found) — this guard's premise has moved; re-derive it."
-        return 1
-    fi
-
-    # `shasum` alone hashes SHA-1; the algorithm selector is load-bearing.
-    if ! grep -A3 '"shasum"' "$build_rs" | grep -q '256'; then
-        echo ""
-        echo "  ASSERTION FAILED: build.rs invokes 'shasum' without selecting SHA-256."
-        echo "  Bare 'shasum' defaults to SHA-1, so every hash would differ from the"
-        echo "  script's and every archive would read as stale, forever."
         return 1
     fi
 }
