@@ -3234,19 +3234,28 @@ mod freshness_gate {
             "audit_foundation": null,
             "done_at": 1_700_000_000_u64
         }]);
-        std::fs::write(path, serde_json::to_string_pretty(&tasks).expect("serialize"))
-            .expect("overwrite tasks.json with a P1-eligible done task");
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&tasks).expect("serialize"),
+        )
+        .expect("overwrite tasks.json with a P1-eligible done task");
     }
 
     /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
     ///
-    /// This is the anti-rot lock for `jcodemunch_live.rs`'s
-    /// `PDEAD_CALL_BREADCRUMBS`. The seam tests over there prove
-    /// `assert_live_leg` FIRES on a given literal; they cannot prove that
-    /// literal is what the binary actually emits. This test observes the
-    /// breadcrumb come out of the REAL binary on the ordinary merge gate, so a
-    /// reword of the `eprintln!` at `src/jcodemunch_client.rs:1135` turns THIS
-    /// test red instead of silently reverting the capstone to vacuous.
+    /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via its
+    /// `PDEAD_CALL_BREADCRUMBS` constant. This test is the anti-rot lock for
+    /// that literal. The seam tests over there prove `assert_live_leg` FIRES
+    /// on a given string; they cannot prove that string is what the binary
+    /// actually emits. This test observes the breadcrumb come out of the REAL
+    /// binary on the ordinary merge gate, so a reword of the `eprintln!` at
+    /// `src/jcodemunch_client.rs:1135` turns THIS test red instead of silently
+    /// reverting the capstone to vacuous.
+    ///
+    /// If you reword that `eprintln!`, you must carry the new literal to
+    /// `jcodemunch_live.rs::PDEAD_CALL_BREADCRUMBS` as well — fixing only this
+    /// test restores the green build while leaving the capstone vacuous, which
+    /// is the precise failure mode PRD §2.4 describes.
     ///
     /// The sibling below (`serve_down_fail_soft_takes_precedence_over_a_stale_index`,
     /// above) pins the CONSTRUCTION layer; this pins the PER-CALL layer. They
@@ -3313,6 +3322,11 @@ mod freshness_gate {
 
     /// PER-CALL FAIL-SOFT, P1 leg — the anti-rot lock for the load-bearing
     /// half of `jcodemunch_live.rs`'s `P1_CALL_BREADCRUMBS`.
+    ///
+    /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
+    /// `P1_CALL_BREADCRUMBS`. A reword of the `eprintln!` at
+    /// `src/jcodemunch_client.rs:1074` must be carried to that constant too,
+    /// not just to this test.
     ///
     /// `find_references` is deliberately NOT asserted: it runs once per symbol
     /// returned by `get_changed_symbols` (`src/p1_producer_orphan.rs:131/146`),

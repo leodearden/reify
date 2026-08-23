@@ -66,11 +66,22 @@
 //! `get_changed_symbols` runs unconditionally and is the load-bearing half.
 //!
 //! The per-call layer is pinned at TWO levels, neither of which needs a serve:
-//! behaviourally against the REAL binary on the ordinary merge gate
-//! (`tests/cli.rs`, a mock MCP endpoint that completes `initialize` and then
-//! errors the `tools/call`), and at the seam against synthetic stderr
-//! (`live_leg_seam` below, including a positive control proving the check is
-//! not unconditional).
+//!
+//! * BEHAVIOURALLY, against the REAL binary on the ordinary merge gate —
+//!   `tests/cli.rs`'s
+//!   `freshness_gate::per_call_fail_soft_is_a_vacuous_pass_the_capstone_must_catch`
+//!   and `::per_call_fail_soft_on_the_p1_pair`, which stand a mock MCP
+//!   endpoint that completes `initialize` and then errors the `tools/call`,
+//!   and assert the breadcrumb is PRESENT. That is what stops the literals
+//!   below from rotting if the `eprintln!` is reworded.
+//! * AT THE SEAM, against synthetic stderr — `live_leg_seam` below, which
+//!   asserts `assert_live_leg` FIRES on each literal, and includes a POSITIVE
+//!   CONTROL proving the check is not unconditional.
+//!
+//! Neither level subsumes the other: the first proves the string is real, the
+//! second proves the capstone reacts to it. The one gap, recorded rather than
+//! papered over: `find_references` is unreachable under the mock (its caller
+//! errored), so its literal has only the seam-level lock.
 //!
 //! ## What the capstone does NOT assert
 //!
@@ -998,6 +1009,14 @@ const RUN_COMMAND: &str = "  CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcod
 /// `RealJCodemunchOps::get_dead_code`. `--pattern PDEAD` reaches exactly one
 /// jcodemunch op (`src/pdead_dead_code.rs:35`), which is why this slice has
 /// exactly one entry.
+///
+/// WHY THIS LITERAL CANNOT SILENTLY ROT: `tests/cli.rs`'s
+/// `freshness_gate::per_call_fail_soft_is_a_vacuous_pass_the_capstone_must_catch`
+/// observes this exact string coming out of the REAL binary, hermetically, on
+/// the ordinary merge gate. The seam tests in `live_leg_seam` below prove
+/// `assert_live_leg` FIRES on this literal; they cannot prove the binary emits
+/// it. Reword the `eprintln!` and that cli.rs test goes red — carry the new
+/// literal here rather than deleting the assertion.
 const PDEAD_CALL_BREADCRUMBS: &[&str] = &["jcodemunch get_dead_code_v2:"];
 
 /// The per-call fail-soft breadcrumbs `--pattern P1` can emit.
@@ -1019,6 +1038,22 @@ const PDEAD_CALL_BREADCRUMBS: &[&str] = &["jcodemunch get_dead_code_v2:"];
 /// (`:1152`, `:1168`). Neither op is reachable from PDEAD or P1, so asserting
 /// their breadcrumbs would be decorative — a check that can never fire reads
 /// like coverage while providing none.
+///
+/// WHY THESE LITERALS CANNOT SILENTLY ROT — with one recorded ASYMMETRY:
+/// `tests/cli.rs`'s `freshness_gate::per_call_fail_soft_on_the_p1_pair`
+/// observes `"jcodemunch get_changed_symbols:"` coming out of the REAL binary,
+/// hermetically, on the ordinary merge gate; reword the `eprintln!` at
+/// `src/jcodemunch_client.rs:1074` and that test goes red.
+///
+/// `"jcodemunch find_references("` gets NO such production-level lock, and
+/// that is a deliberate consequence of its conditional reachability rather
+/// than an oversight: under the mock, `get_changed_symbols` errors, so no
+/// symbol is returned and `find_references` is never called — a cli.rs
+/// assertion on it could never fire. Its literal is therefore pinned by
+/// `live_leg_seam::live_leg_rejects_the_find_references_per_call_fail_soft`
+/// alone, i.e. against SYNTHETIC stderr. A reword of `:1117` would leave both
+/// halves green; the `get_changed_symbols` half is the one carrying real
+/// weight.
 const P1_CALL_BREADCRUMBS: &[&str] = &[
     "jcodemunch get_changed_symbols:",
     "jcodemunch find_references(",
