@@ -150,40 +150,185 @@ fn write_synthetic_done_task(
 }
 
 // -----------------------------------------------------------------------
-// Serve-availability preflight (pure TCP connect; no MCP handshake)
+// Serve preflight: a real MCP `initialize`, i.e. an IDENTITY check
 // -----------------------------------------------------------------------
 
-/// Returns true iff the jcodemunch-serve process is accepting TCP connections
-/// at the address encoded in `url`.
+/// How long the preflight will wait to connect, and then to read a reply.
 ///
-/// Extracts `host:port` from the URL and resolves it via [`ToSocketAddrs`] so
-/// both IP literals (`127.0.0.1:8901`) and hostnames (`localhost:8901`) work.
-/// Attempts [`TcpStream::connect_timeout`] (2-second limit) against each
-/// resolved address; returns true on the first successful connect.  A bare TCP
-/// connect is sufficient to distinguish "serve process listening" from "serve
-/// down" for the skip gate; the binary's own MCP handshake does the deeper
-/// protocol check on the live legs.
+/// Load-bearing, not a nicety. `identity_probe_rejects_a_bare_tcp_squatter`
+/// drives a listener that ACCEPTS and then never writes a byte; without a
+/// bounded read timeout that test would hang forever instead of failing, and
+/// an operator pointing the capstone at a wedged endpoint would see the run
+/// stall rather than refuse.
+const PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Ask `url` to prove it is a jcodemunch serve, via a real MCP `initialize`.
 ///
-/// Returns false on resolution failure, connection refused, or timeout.
-fn jcodemunch_serve_reachable(url: &str) -> bool {
-    use std::net::ToSocketAddrs;
-    // Strip scheme to get "host:port[/path]"
-    let without_scheme = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
-    // Take just the "host:port" part (before any slash)
-    let host_port = without_scheme.split('/').next().unwrap_or("");
-    // to_socket_addrs resolves hostnames (e.g. localhost) as well as IP literals.
-    let addrs = match host_port.to_socket_addrs() {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-    for addr in addrs {
-        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2)).is_ok() {
-            return true;
+/// Returns `Ok(())` only when ALL THREE conjuncts hold:
+///
+/// 1. HTTP 200,
+/// 2. `result.serverInfo.name == "jcodemunch-mcp"`,
+/// 3. a non-empty server-assigned `Mcp-Session-Id` **response** header.
+///
+/// # Identity, not liveness
+///
+/// This replaces a bare `TcpStream::connect_timeout` that this file used to
+/// call `jcodemunch_serve_reachable`. A bare connect is answered happily by
+/// ANY listener, so its "serve is up" verdict proved nothing about the seam
+/// under test — the same reasoning `scripts/with-jcodemunch-serve.sh` records
+/// in its header ("READINESS IS AN IDENTITY CHECK, NOT A LIVENESS CHECK") and
+/// that `jcodemunch_session_live.rs`'s `await_ready` already applies.
+///
+/// Conjunct 3 folds in #6106's hardening: a serve that answers `initialize`
+/// without assigning a session cannot carry a session-scoped `tools/call`, so
+/// accepting it here would declare live a seam the binary is about to fail on.
+///
+/// # No request-side session id
+///
+/// The `initialize` POST deliberately carries NO `mcp-session-id` header (PRD
+/// §4.1.1): the server MINTS the session, and a client that mints its own is
+/// rejected with 404 (B2, pinned live in `jcodemunch_session_live.rs`).
+///
+/// # No redirect following
+///
+/// `/mcp/` (trailing slash) 307-redirects and the redirect DROPS the
+/// `mcp-session-id` header — pinned at `src/bin/reify-audit.rs:185-188` and in
+/// δ's header. `redirects(0)` makes such a response fail conjunct 1 loudly
+/// here rather than silently losing the session downstream.
+fn serve_identity_probe(url: &str) -> Result<(), String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(PREFLIGHT_TIMEOUT)
+        .timeout_read(PREFLIGHT_TIMEOUT)
+        .redirects(0)
+        .build();
+
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "reify-audit-jcodemunch-live-capstone",
+                "version": "1"
+            }
         }
+    });
+
+    let sent = agent
+        .post(url)
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json, text/event-stream")
+        .send_json(payload);
+
+    // ureq surfaces every non-2xx as `Err(Error::Status(..))`, so conjunct 1
+    // has to be judged in BOTH arms or the redirect diagnostic below would be
+    // unreachable prose.
+    let response = match sent {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, _)) => {
+            return Err(status_conjunct_failure(url, code));
+        }
+        Err(e) => return Err(format!("no MCP `initialize` reply from {url}: {e}")),
+    };
+
+    let status = response.status();
+    if status != 200 {
+        // 2xx-but-not-200 — e.g. the bare `202` responder B3 names.
+        return Err(status_conjunct_failure(url, status));
     }
-    false
+
+    let session = response
+        .header("mcp-session-id")
+        .unwrap_or_default()
+        .to_string();
+    let ctype = response.header("content-type").unwrap_or("").to_string();
+    let body = response
+        .into_string()
+        .map_err(|e| format!("could not read {url}'s `initialize` reply: {e}"))?;
+
+    let parsed = parse_mcp_body(&ctype, &body)
+        .map_err(|e| format!("{url} did not answer `initialize` with MCP JSON: {e}"))?;
+
+    let name = parsed["result"]["serverInfo"]["name"].as_str();
+    if name != Some("jcodemunch-mcp") {
+        return Err(format!(
+            "{url} answered `initialize` as serverInfo.name={name:?}, not \
+             \"jcodemunch-mcp\" — something else is listening there. Body:\n{body}"
+        ));
+    }
+
+    if session.is_empty() {
+        return Err(format!(
+            "{url} answered `initialize` as jcodemunch-mcp but assigned NO \
+             mcp-session-id response header; a session-scoped tools/call \
+             cannot follow (see #6106)"
+        ));
+    }
+
+    Ok(())
+}
+
+/// Conjunct-1 ("HTTP 200") failure text, shared by both arms above.
+///
+/// Names the redirect case explicitly: `/mcp/` (trailing slash) 307s, and the
+/// redirect DROPS `mcp-session-id`, so a probe that quietly followed it would
+/// declare live a seam whose session contract is already broken.
+fn status_conjunct_failure(url: &str, code: u16) -> String {
+    format!(
+        "{url} answered `initialize` with HTTP {code}, not 200 — a 307 here \
+         means the URL carries a trailing slash, and `/mcp/` redirects in a way \
+         that DROPS the mcp-session-id header (pinned at \
+         src/bin/reify-audit.rs:185-188 and in scripts/with-jcodemunch-serve.sh)"
+    )
+}
+
+/// Decode an MCP reply body, which may arrive as bare JSON or as SSE.
+///
+/// The streamable-HTTP transport answers `Accept: text/event-stream` with an
+/// `event:`/`data:` frame rather than a bare object, so a plain
+/// `serde_json::from_str` on the body would reject a perfectly good serve.
+/// Mirrors `jcodemunch_session_live.rs`'s `parse_mcp_body`, but returns
+/// `Result` instead of panicking: here a malformed body is a legitimate
+/// *verdict* about the endpoint (it is not a jcodemunch serve), not a harness
+/// fault.
+fn parse_mcp_body(content_type: &str, body: &str) -> Result<serde_json::Value, String> {
+    if content_type.contains("text/event-stream") {
+        for line in body.lines() {
+            if let Some(rest) = line.strip_prefix("data:") {
+                return serde_json::from_str(rest.trim())
+                    .map_err(|e| format!("parse SSE data line: {e}; body={body}"));
+            }
+        }
+        return Err(format!("no SSE data line in response body: {body}"));
+    }
+    serde_json::from_str(body).map_err(|e| format!("parse JSON body: {e}; body={body}"))
+}
+
+/// [`serve_identity_probe`], but a failure is FATAL.
+///
+/// This is the B8 seam. The capstone must not skip when the serve is missing
+/// — a PASS-shaped absence is the exact defect this file exists to remove — so
+/// the preflight's only two outcomes are "proceed" and "panic". Split out as
+/// its own function purely so `require_reachable_serve_panics_on_an_unreachable_endpoint`
+/// can assert the panic with no serve in hand, the same seam-splitting
+/// `jcodemunch_session_live.rs` applied to `finish_teardown`.
+fn require_reachable_serve(url: &str) {
+    serve_identity_probe(url).unwrap_or_else(|e| {
+        panic!(
+            "jcodemunch serve preflight FAILED for {url}: {e}\n\
+             \n\
+             This capstone does NOT skip when the serve is absent — that is the \
+             whole point of it (PRD B8). Bring a serve up and re-run through δ's \
+             lifecycle wrapper, which spawns, readiness-polls, exports \
+             JCODEMUNCH_URL and tears down on every exit path:\n\
+             \n\
+             \x20 CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcodemunch-serve.sh \
+             --port 8917 -- \\\n\
+             \x20   cargo test -p reify-audit --test jcodemunch_live -- --ignored --nocapture\n"
+        )
+    });
 }
 
 /// Returns true iff `v` is a P1ProducerOrphan finding.
@@ -275,14 +420,9 @@ fn live_audit_produces_p1_and_pdead_findings() {
     let serve_url = std::env::var("JCODEMUNCH_URL")
         .unwrap_or_else(|_| DEFAULT_SERVE_URL.to_string());
 
-    // Preflight: skip gracefully if serve is not running.
-    if !jcodemunch_serve_reachable(&serve_url) {
-        eprintln!(
-            "live_audit_produces_p1_and_pdead_findings: jcodemunch-serve not reachable \
-             at {serve_url} — skipping (run with serve up to exercise live assertions)"
-        );
-        return;
-    }
+    // Preflight: an unreachable or non-jcodemunch endpoint is FATAL, never a
+    // silent early return (B8). The last caller of the deleted bare-TCP probe.
+    require_reachable_serve(&serve_url);
 
     // Resolve repo root from CARGO_MANIFEST_DIR (crates/reify-audit → two parents).
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
