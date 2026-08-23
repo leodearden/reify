@@ -890,6 +890,102 @@ mod corpus_fixture {
 }
 
 #[cfg(test)]
+mod index_invocation {
+    use super::*;
+
+    /// Argv of `cmd`, as lossy strings.
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The env `cmd` OVERRIDES, as `(name, value)` pairs. Cleared vars are
+    /// dropped — this fixture sets none.
+    fn envs(cmd: &std::process::Command) -> Vec<(String, String)> {
+        cmd.get_envs()
+            .filter_map(|(k, v)| {
+                v.map(|v| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+            })
+            .collect()
+    }
+
+    /// The script this capstone names must EXIST.
+    ///
+    /// This is the direct antidote to the disease. The prior PRD's `L-SMOKE`
+    /// binding named `scripts/smoke-jcodemunch-audit.sh`, WHICH DOES NOT
+    /// EXIST, and nothing noticed for ten weeks (PRD §2.4). A gate-resident
+    /// existence assertion makes a rename or deletion of β loud immediately,
+    /// instead of only when somebody deliberately runs the `#[ignore]`d
+    /// capstone.
+    #[test]
+    fn the_index_script_this_capstone_names_actually_exists() {
+        let script = std::path::Path::new(JC_INDEX_SCRIPT);
+        assert!(
+            script.is_file(),
+            "{JC_INDEX_SCRIPT} does not exist. This capstone consumes β's index \
+             primitive and its INDEX-OK / E_JC_INDEX_* verdict; if β moved, \
+             repoint JC_INDEX_SCRIPT — do not re-derive the verdict here."
+        );
+    }
+
+    /// The invocation targets the THROWAWAY corpus and the THROWAWAY index dir.
+    ///
+    /// Guards against the capstone silently indexing into host-global
+    /// `~/.code-index` (which holds 917 DBs on this host). β defaults
+    /// `--project-root` to the canonical `/home/leo/src/reify` checkout, so
+    /// passing it explicitly is not optional.
+    #[test]
+    fn index_pass_command_targets_the_corpus_and_the_throwaway_index_dir() {
+        let corpus = std::path::Path::new("/tmp/does-not-need-to-exist/corpus");
+        let index_dir = std::path::Path::new("/tmp/does-not-need-to-exist/index");
+        let cmd = index_pass_command(corpus, index_dir);
+
+        let args = argv(&cmd);
+        let root_at = args
+            .iter()
+            .position(|a| a == "--project-root")
+            .unwrap_or_else(|| panic!("argv must carry --project-root; got {args:?}"));
+        assert_eq!(
+            args.get(root_at + 1).map(String::as_str),
+            corpus.to_str(),
+            "--project-root must name the throwaway corpus; got {args:?}"
+        );
+
+        let env = envs(&cmd);
+        assert!(
+            env.iter().any(|(k, v)| k == "CODE_INDEX_PATH" && Some(v.as_str()) == index_dir.to_str()),
+            "CODE_INDEX_PATH must name the throwaway index dir, or the pass \
+             writes into host-global ~/.code-index; got {env:?}"
+        );
+    }
+
+    /// The invocation OVERRIDES the folder-file cap.
+    ///
+    /// MEASURED necessity, not defensive padding. β resolves its cap by
+    /// parsing `$CODE_INDEX_PATH/config.jsonc` with `jq`, but jcodemunch's own
+    /// serve WRITES a JSONC template there (with `//` comments) on startup, so
+    /// on the serve-then-index ordering this capstone uses, β dies with
+    /// `cannot parse … config.jsonc — fix it, or set
+    /// JCODEMUNCH_MAX_FOLDER_FILES to override the cap explicitly`. Without
+    /// this override the capstone cannot index at all. Filed as follow-up
+    /// against β; the escape hatch is β's own documented one.
+    #[test]
+    fn index_pass_command_overrides_the_folder_file_cap() {
+        let cmd = index_pass_command(
+            std::path::Path::new("/tmp/does-not-need-to-exist/corpus"),
+            std::path::Path::new("/tmp/does-not-need-to-exist/index"),
+        );
+        let env = envs(&cmd);
+        assert!(
+            env.iter().any(|(k, v)| k == "JCODEMUNCH_MAX_FOLDER_FILES" && !v.is_empty()),
+            "JCODEMUNCH_MAX_FOLDER_FILES must be set, or β refuses to parse the \
+             serve-written config.jsonc and never reaches the indexer; got {env:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod finding_shape {
     use super::*;
 
