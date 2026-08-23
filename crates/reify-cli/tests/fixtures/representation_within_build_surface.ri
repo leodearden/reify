@@ -49,6 +49,13 @@
 //
 // Every mode satisfies the standing gate invariants: exit 0 AND stdout has no
 // "VIOLATED".
+//
+// Declares its module explicitly, matching the sibling
+// representation_within_no_realization.ri: without it `reify build`/`reify check`
+// also emit W_MODULE_DECL_MISSING (spec §7.1), and a committed fixture should not
+// carry an avoidable warning.
+
+module representation_within_build_surface
 
 #precision(0.3mm)
 
