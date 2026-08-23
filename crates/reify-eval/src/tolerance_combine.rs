@@ -27,6 +27,7 @@
 //! by Gate 3 of `match_representation_within_shape` (widened in task #3467).
 
 use crate::graph::ConstraintNodeData;
+use reify_compiler::CompiledModule;
 use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Type, ValueCellId};
 use reify_ir::value::GeometryHandleRef;
 use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
@@ -312,6 +313,50 @@ pub fn eval_representation_within(
     }
 }
 
+// ── C-BOUND (task β, #6167) ──────────────────────────────────────────────────
+//
+// The three halves of C-BOUND live together here, next to the shared
+// `match_representation_within_shape` gate they all delegate recognition to:
+// the subject→realization predicate, its in-module consumer
+// (`resolve_repr_tol_key`'s type-name scan), and the static bound pre-pass.
+
+/// C-BOUND's shared subject → realization predicate: does `entity_path` name a
+/// realization of the structure `struct_name`?
+///
+/// Extracted verbatim (semantically) from [`resolve_repr_tol_key`]'s type-name
+/// fallback, which now CALLS it. Both that fallback and — from #6171 (γ1) and
+/// #6168 (δ) — the refine/measure site use this one predicate, so the set the
+/// refine loop refines and the set the assertion reads can never drift
+/// (C-BOUND-1, INV-SF-5). See
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §5.
+///
+/// # Grammar
+///
+/// The match is **prefix-anchored** on the `"{struct_name}#realization["`
+/// marker — byte-equivalent to the
+/// `k.starts_with(&format!("{struct_name}#realization["))` test it replaces,
+/// but allocation-free (it drops the one `format!` per resolve call rather
+/// than adding one per map key).
+///
+/// It is deliberately **not** the [`reify_core::RealizationNodeId`] `FromStr`
+/// grammar (reify-core/src/identity.rs), which splits on the LAST occurrence of
+/// the marker (`rsplit_once`). Adopting last-occurrence semantics would change
+/// which key `resolve_repr_tol_key` selects for entity names containing the
+/// marker — i.e. change assertion verdicts — and β is a no-behaviour-change
+/// task.
+///
+/// # Accepted under-coverage (C-BOUND-2)
+///
+/// A sub-scoped `entity_path` such as `"Asm.part#realization[0]"` does NOT
+/// belong to `"part"`. That is the safe direction: an occurrence the static
+/// scan misses is simply not refined, so the assertion evaluates an unrefined
+/// mesh and reports today's verdict — never a false pass.
+pub(crate) fn realization_belongs_to(entity_path: &str, struct_name: &str) -> bool {
+    entity_path
+        .strip_prefix(struct_name)
+        .is_some_and(|rest| rest.starts_with("#realization["))
+}
+
 /// Resolve the `RepresentationWithin` subject `vcid` to an
 /// `achieved_repr_tol` map key (a `"{entity}#realization[{idx}]"` string).
 ///
@@ -340,20 +385,115 @@ fn resolve_repr_tol_key(
     }
 
     // — Type-name scan fallback (hydration-independent) ————————————————————
-    // Scan achieved_repr_tol keys for the prefix "{struct_name}#realization[".
+    // Scan achieved_repr_tol keys for realizations belonging to `struct_name`,
+    // via the shared `realization_belongs_to` predicate (C-BOUND-1: one
+    // predicate, no lock-step copy — the refine site in #6171/#6168 calls the
+    // same function).
     // If multiple keys match, take the one with the MAXIMUM achieved value
     // (conservative — guards against a false Satisfied when a module has
-    // multiple realizations of the same type with varying quality).
-    let prefix = format!("{}#realization[", struct_name);
+    // multiple realizations of the same type with varying quality). The
+    // NEG_INFINITY seed with a strict `v > best_val` is also what keeps a NaN
+    // achieved value from ever being selected.
     let mut best_key: Option<String> = None;
     let mut best_val: f64 = f64::NEG_INFINITY;
     for (k, &v) in achieved_repr_tol.iter() {
-        if k.starts_with(&prefix) && v > best_val {
+        if realization_belongs_to(k, struct_name) && v > best_val {
             best_val = v;
             best_key = Some(k.clone());
         }
     }
     best_key
+}
+
+/// C-BOUND (PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`
+/// §5): the **tightest declared `RepresentationWithin` bound per SUBJECT
+/// structure name**, in SI metres.
+///
+/// # How the table is built
+///
+/// Scans the module's constraints and delegates every candidate expression to
+/// the shared [`match_representation_within_shape`] gate — the same recognizer
+/// used by `recognize_representation_within`, `eval_representation_within` and
+/// `extract_output_tolerance_bound`, so the recognition half cannot drift. The key is the returned `struct_name` (the
+/// SUBJECT's declared `StructureRef` type, statically available pre-tessellation
+/// — *not* the template that declares the constraint); the subject vcid is
+/// discarded.
+///
+/// Duplicate bounds on one subject **min-fold**: tighter satisfies looser, the
+/// same partial order as [`combine_demanded_tolerance`] and
+/// `tolerance_scope::merge_with_min`.
+///
+/// # Emptiness is F's scoping predicate
+///
+/// The table is empty **exactly when** the module declares no bound — which is
+/// the negation of reify-cli's `module_has_representation_within`
+/// (crates/reify-cli/src/main.rs:2462), F's routing gate. Both delegate to the
+/// same matcher and must keep the **same traversal**: a change to one is a
+/// change to the other. Keeping the mirror is a **lockstep requirement of
+/// C-BOUND, not a coincidence**.
+///
+/// The traversal, term for term with that gate, is
+///
+/// ```text
+/// module.templates × ( t.constraints
+///                    ∪ t.guarded_groups[*].constraints
+///                    ∪ t.guarded_groups[*].else_constraints )
+/// ```
+///
+/// ALL of `module.templates` is iterated (including `@test` templates — *not*
+/// `non_test_templates()`), and **both** guarded-group branches are scanned with
+/// the guard neither evaluated nor filtered on: this table is computed before
+/// any guard cell is evaluated, so the union over both branches is the static,
+/// conservative reading.
+///
+/// The equivalence is load-bearing, not tidiness: a narrower scan would let a
+/// module route into the kernel-backed check path (the CLI gate says `true`)
+/// while carrying an empty bound table, and under δ (#6168) an empty table means
+/// that realization is never measured — silently degrading a real
+/// Satisfied/Violated verdict to Indeterminate.
+///
+/// # Silent-skip posture
+///
+/// Inherited wholesale from the matcher: malformed, non-LENGTH, negative and
+/// non-`StructureRef` shapes contribute no key, with no panic and no diagnostic.
+///
+/// # Independence from the demanded-tolerance budget
+///
+/// This table is an **independent static scan** of the module's declared
+/// constraints. It is never sourced from, and never written back into, the
+/// demanded-tolerance budget — see PRD §4.8; do not couple it to
+/// [`extract_output_tolerance_bound`], which is owned by
+/// `docs/prds/v0_2/per-purpose-tolerance.md`.
+// TODO(#6171): first production consumer — the measure-and-refine loop threads
+// this table into the tessellate callback; #6168 (δ) reuses it to narrow
+// measurement. Until one of those lands there is no non-`cfg(test)` caller, and
+// `scripts/verify.sh` runs `cargo clippy --workspace --all-targets -- -D
+// warnings`, which builds the lib WITHOUT `cfg(test)` — so the unit tests in
+// `tolerance_combine/compute_representation_bounds_tests.rs` do not keep this alive.
+#[allow(dead_code)]
+pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
+    let mut bounds: BTreeMap<String, f64> = BTreeMap::new();
+    for template in &module.templates {
+        // Guards are NEITHER evaluated NOR filtered on: the table is a static
+        // pre-pass computed before any guard cell exists, so both branches are
+        // unioned. Same containers, same order, as the CLI gate.
+        let guarded = template.guarded_groups.iter().flat_map(|g| {
+            g.constraints
+                .iter()
+                .chain(g.else_constraints.iter())
+        });
+        for constraint in template.constraints.iter().chain(guarded) {
+            if let Some((_subject_vcid, struct_name, si_value)) =
+                match_representation_within_shape(&constraint.expr)
+            {
+                bounds
+                    .entry(struct_name)
+                    .and_modify(|b| *b = b.min(si_value))
+                    .or_insert(si_value);
+            }
+        }
+    }
+    bounds
 }
 
 /// Extract the tightest `RepresentationWithin` tolerance bound declared on
@@ -655,6 +795,19 @@ pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> 
         step_schema,
     })
 }
+
+// ── compute_representation_bounds unit tests (task β, #6167 — C-BOUND) ───────
+//
+// The C-BOUND bound pre-pass: tightest declared `RepresentationWithin` bound
+// per SUBJECT structure name. Fixtures are real compiled IR via
+// `reify_test_support::parse_and_compile`; the assertions cover the key
+// (subject struct, not declaring template), the min-fold, the member-access
+// subject shape, the silent-skip posture, the stdlib-resolved IR variant, and
+// — load-bearing — that `bounds.is_empty()` is exactly F's scoping predicate.
+// No OCCT kernel is required: compiled IR plus plain BTreeMaps only.
+
+#[cfg(test)]
+mod compute_representation_bounds_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2164,6 +2317,195 @@ mod tests {
             extract_output_export_spec(&step_default).map(|s| s.step_schema),
             Some(StepSchema::Ap214),
             "absent version → StepSchema::Ap214 (DSL default)"
+        );
+    }
+
+    // ── C-BOUND: shared subject→realization predicate (task β, #6167) ─────────
+
+    /// `realization_belongs_to`'s truth table — the match is PREFIX-ANCHORED on
+    /// the `"{struct_name}#realization["` marker, byte-equivalent to the
+    /// `k.starts_with(&format!("{struct_name}#realization["))` test it was
+    /// extracted from.
+    ///
+    /// The prefix-collision row (`"CurvedBall#realization[0]"` vs `"Curved"`) is
+    /// the load-bearing one: the `#realization[` marker is what makes the prefix
+    /// unambiguous, and a bare `starts_with(struct_name)` would wrongly say
+    /// `true`.
+    ///
+    /// The sub-scoped row (`"Asm.part#realization[0]"` vs `"part"` → `false`)
+    /// documents C-BOUND-2's accepted under-coverage: such an occurrence is
+    /// simply not refined, which can never produce a false pass.
+    #[test]
+    fn realization_belongs_to_matches_only_marker_anchored_prefix() {
+        assert!(
+            realization_belongs_to("Curved#realization[0]", "Curved"),
+            "exact struct name + marker → belongs"
+        );
+        assert!(
+            realization_belongs_to("Curved#realization[12]", "Curved"),
+            "multi-digit realization index → belongs (index is not parsed)"
+        );
+        assert!(
+            !realization_belongs_to("CurvedBall#realization[0]", "Curved"),
+            "prefix collision: 'CurvedBall' must NOT belong to 'Curved' — the \
+             '#realization[' marker anchors the prefix"
+        );
+        assert!(
+            !realization_belongs_to("Other#realization[0]", "Curved"),
+            "unrelated struct name → does not belong"
+        );
+        assert!(
+            !realization_belongs_to("Asm.part#realization[0]", "part"),
+            "sub-scoped entity path does NOT belong to the bare member name — \
+             C-BOUND-2's accepted under-coverage (not refined, never a false pass)"
+        );
+        assert!(
+            !realization_belongs_to("Curved", "Curved"),
+            "no '#realization[' marker at all → does not belong"
+        );
+        assert!(
+            realization_belongs_to("#realization[0]", ""),
+            "degenerate empty struct_name matches today's format!(\"{{}}#realization[\", \"\") \
+             behaviour verbatim"
+        );
+    }
+
+    /// C-BOUND-1 no-drift lock: `resolve_repr_tol_key`'s type-name scan and
+    /// `realization_belongs_to` are ONE predicate, not two copies.
+    ///
+    /// The expectation is computed IN THE TEST as the argmax over
+    /// `{k : realization_belongs_to(k, "Curved")}` — deriving it from the shared
+    /// predicate is what makes the property observable rather than a
+    /// spelling check. The map plants a HIGHER-valued prefix collider
+    /// (`"CurvedBall#realization[0]" → 9e-3`): any divergent, looser copy of the
+    /// predicate (e.g. a bare `starts_with(struct_name)`) selects the collider
+    /// and this test fails.
+    ///
+    /// The `ValueMap` is empty so the value-based path cannot fire and the
+    /// type-name scan is the path under test.
+    ///
+    /// The paired `eval_representation_within` assertion locks the same property
+    /// at the layer a user observes: with bound 1e-5 the verdict is `Satisfied`
+    /// (max achieved among belonging keys is 5e-6), which holds only while the
+    /// 9e-3 collider stays out of the scan. This is β's "no behaviour change"
+    /// half and must hold both before and after the predicate extraction.
+    #[test]
+    fn resolve_repr_tol_key_type_name_scan_agrees_with_realization_belongs_to() {
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 1e-6);
+        achieved.insert("Curved#realization[1]".to_string(), 5e-6); // true max among belonging keys
+        achieved.insert("CurvedBall#realization[0]".to_string(), 9e-3); // higher-valued collider
+        achieved.insert("Other#realization[0]".to_string(), 2e-3);
+
+        // Empty value map → value-based resolution cannot fire.
+        let values = ValueMap::new();
+        let vcid = ValueCellId::new("subject", "self");
+
+        // Expectation derived FROM the shared predicate (argmax over belonging keys).
+        let expected = achieved
+            .iter()
+            .filter(|(k, _)| realization_belongs_to(k, "Curved"))
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(k, _)| k.clone());
+        assert_eq!(
+            expected,
+            Some("Curved#realization[1]".to_string()),
+            "sanity: the predicate-derived argmax is the 5e-6 key, not the 9e-3 collider"
+        );
+
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &achieved),
+            expected,
+            "resolve_repr_tol_key's type-name scan must select exactly the \
+             predicate-derived argmax — one predicate, no drift (C-BOUND-1)"
+        );
+
+        // End-to-end verdict lock: the 9e-3 collider must not leak into the result.
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-5);
+        let (sat, _) = eval_representation_within(&id, &expr, &values, &achieved)
+            .expect("RepresentationWithin shape must be recognised");
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "max achieved among 'Curved' realizations (5e-6) ≤ bound (1e-5) → Satisfied; \
+             a looser predicate would pick the 9e-3 collider and report Violated"
+        );
+    }
+
+    /// C-BOUND soundness pin: `resolve_repr_tol_key`'s type-name scan never
+    /// selects a NaN achieved value.
+    ///
+    /// The mechanism is the `NEG_INFINITY` seed plus the STRICT `v > best_val`
+    /// comparison: every comparison against NaN is false, so a NaN-valued key
+    /// can never displace the seed and never becomes `best_key`. The scan's
+    /// comment asserts this property; this test is what guards it (house norm —
+    /// normative claims are pinned in code and tests, not in comments).
+    ///
+    /// Why it matters: a selected NaN would flow into
+    /// `eval_representation_within`'s step 4, where `NaN <= eff` is false — so
+    /// the assertion would report **Violated** with a diagnostic printing
+    /// `NaN m exceeds bound`, a spurious failure attributed to a measurement
+    /// that never produced a number. Excluding it yields the honest
+    /// `Indeterminate` (C1: "no achieved value for this subject") instead.
+    ///
+    /// All three orderings are covered, because the guard has to hold whichever
+    /// side of the finite key the NaN is iterated on (`BTreeMap` iterates by key,
+    /// so `…realization[0]` precedes `…realization[1]`):
+    /// NaN alone, NaN before a finite key, and NaN after a finite key.
+    #[test]
+    fn resolve_repr_tol_key_never_selects_nan_achieved_value() {
+        // Empty value map → value-based resolution cannot fire; the type-name
+        // scan is the path under test (same setup as the no-drift lock above).
+        let values = ValueMap::new();
+        let vcid = ValueCellId::new("subject", "self");
+
+        // (1) NaN is the ONLY belonging key → no key resolves at all.
+        let mut nan_only = BTreeMap::new();
+        nan_only.insert("Curved#realization[0]".to_string(), f64::NAN);
+        nan_only.insert("Other#realization[0]".to_string(), 2e-3); // does not belong
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &nan_only),
+            None,
+            "NaN fails the strict `v > best_val` against the NEG_INFINITY seed, so it \
+             never becomes best_key; with no other belonging key the scan yields None"
+        );
+
+        // End-to-end verdict lock for (1): Indeterminate, not a spurious Violated.
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-5);
+        let (sat, diag) = eval_representation_within(&id, &expr, &values, &nan_only)
+            .expect("RepresentationWithin shape must be recognised");
+        assert_eq!(
+            sat,
+            Satisfaction::Indeterminate,
+            "a NaN-only achieved map must read as 'not measured' (Indeterminate, C1); \
+             had the NaN been selected, `NaN <= eff` is false and the verdict would be \
+             a spurious Violated"
+        );
+        assert!(
+            diag.is_none(),
+            "Indeterminate carries no diagnostic — in particular not one printing NaN"
+        );
+
+        // (2) NaN iterated BEFORE a finite belonging key → the finite key wins.
+        let mut nan_first = BTreeMap::new();
+        nan_first.insert("Curved#realization[0]".to_string(), f64::NAN);
+        nan_first.insert("Curved#realization[1]".to_string(), 5e-6);
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &nan_first),
+            Some("Curved#realization[1]".to_string()),
+            "NaN seen first leaves best_key unset, so the finite 5e-6 key is selected"
+        );
+
+        // (3) NaN iterated AFTER a finite belonging key → the finite key still wins.
+        let mut nan_last = BTreeMap::new();
+        nan_last.insert("Curved#realization[0]".to_string(), 5e-6);
+        nan_last.insert("Curved#realization[1]".to_string(), f64::NAN);
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &nan_last),
+            Some("Curved#realization[0]".to_string()),
+            "NaN seen second cannot displace an established best_val (NaN > 5e-6 is false)"
         );
     }
 }
