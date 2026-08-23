@@ -116,67 +116,101 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 mod tests {
     use super::*;
 
-    /// Every bare symbol [`unit_symbol_to_si`] resolves — the ONE edit site a
-    /// new arm needs, shared by the forward tests below and by the reverse
-    /// coupling guard `every_builtin_symbol_has_an_emission_ladder`.
+    /// Anti-vacuity floor for every guard in this module that ITERATES
+    /// [`BUILTIN_UNITS`].
     ///
-    /// Completeness is not a convention here: `builtin_symbol_list_is_complete`
-    /// re-derives the arm list from this very file's own source text and fails
-    /// if the two disagree, so a symbol cannot be added to (or removed from)
-    /// the match without landing here too.
-    const BUILTIN_UNIT_SYMBOLS: &[&str] = &[
-        "mm", "cm", "m", "in", "deg", "rad", "kg", "g", "s", "K", "A", "mol", "cd",
-    ];
-
-    /// The `BUILTIN_UNIT_SYMBOLS` list is exactly [`unit_symbol_to_si`]'s arms.
+    /// `builtin_units_is_the_table_unit_symbol_to_si_reads`,
+    /// `every_builtin_symbol_resolves`, `builtin_unit_symbols_are_unique` and
+    /// `every_builtin_symbol_has_an_emission_ladder` all pass trivially over an
+    /// emptied or gutted table. This is the one assertion that cannot.
     ///
-    /// Rust cannot iterate a `match`'s arms, and a hand-maintained mirror list
-    /// that only *forward*-checks (every listed symbol resolves) would happily
-    /// go stale when a NEW arm is added — which is precisely the regression the
-    /// reverse-coupling guard exists to catch. So this re-derives the arm set
-    /// from the module's source with `include_str!`, which is resolved relative
-    /// to this file at compile time and therefore needs no runtime path.
-    ///
-    /// A reformat of the match (splitting an arm across lines) fails this test
-    /// loudly rather than silently weakening the guard — that is the intended
-    /// trade, and the panic message says what to do.
+    /// 13 is the count when the floor was set. Deleting a genuine unit is a
+    /// deliberate act, so this is `>=`, not `==`: a floor against accidental
+    /// erosion, not a second mirror of the table's length.
     #[test]
-    fn builtin_symbol_list_is_complete() {
-        let src = include_str!("units.rs");
-        let (_, after) = src
-            .split_once("pub fn unit_symbol_to_si")
-            .expect("this file defines unit_symbol_to_si");
-        let (body, _) = after
-            .split_once("\npub fn ")
-            .expect("another `pub fn` follows unit_symbol_to_si and bounds its body");
-
-        let mut derived: Vec<&str> = body
-            .lines()
-            .filter_map(|line| {
-                let rest = line.trim_start().strip_prefix('"')?;
-                let (symbol, tail) = rest.split_once('"')?;
-                tail.trim_start().starts_with("=> Some((").then_some(symbol)
-            })
-            .collect();
-        derived.sort_unstable();
-
-        let mut listed: Vec<&str> = BUILTIN_UNIT_SYMBOLS.to_vec();
-        listed.sort_unstable();
-
-        assert_eq!(
-            derived, listed,
-            "BUILTIN_UNIT_SYMBOLS has drifted from unit_symbol_to_si's arms. \
-             Derived from source: {derived:?}; listed: {listed:?}. Add (or drop) \
-             the symbol in the const, and give any NEW dimension an emission \
-             ladder in ri_emittable_units — see \
-             every_builtin_symbol_has_an_emission_ladder."
+    fn builtin_units_is_not_vacuous() {
+        assert!(
+            BUILTIN_UNITS.len() >= 13,
+            "BUILTIN_UNITS has {} entries, fewer than the 13 built-in symbols \
+             present when this floor was set — every table-iterating guard in \
+             this module weakens silently as entries disappear",
+            BUILTIN_UNITS.len()
         );
     }
 
-    /// Forward: every listed symbol still resolves. Catches a deleted arm.
+    /// [`BUILTIN_UNITS`] is exactly the table [`unit_symbol_to_si`] reads.
+    ///
+    /// The lookup is a `.find()` over the table, so this holds by construction
+    /// today — the point is to keep it holding if the lookup ever grows a
+    /// special case, an alias arm, or a normalisation step in front of the
+    /// table. Bit-equality on the factor, not a tolerance: the serializer's
+    /// `exact_magnitude` reproduces the compiler's single multiply against
+    /// exactly these bits, so a one-ULP shift here voids its proof.
+    ///
+    /// This replaces the source-scanning `builtin_symbol_list_is_complete`,
+    /// deleted along with the hand-mirrored `BUILTIN_UNIT_SYMBOLS` const it
+    /// existed to police. That guard `include_str!`d this very file and re-derived
+    /// the arm set by looking for lines shaped `"sym" => Some((` — and silently
+    /// DROPPED any arm it could not parse. An or-pattern arm (`"ft" | "foot" =>
+    /// …`), or an arm with `=>` broken onto its own line, was simply invisible to
+    /// it, so it passed VACUOUSLY in precisely the add-an-arm direction it claimed
+    /// to protect, while the reverse-coupling guard never saw the new symbol
+    /// either. Iterating entries cannot skip one.
+    #[test]
+    fn builtin_units_is_the_table_unit_symbol_to_si_reads() {
+        for &(sym, factor, dim) in BUILTIN_UNITS {
+            let (found_factor, found_dim) = unit_symbol_to_si(sym)
+                .unwrap_or_else(|| panic!("BUILTIN_UNITS entry {sym:?} must resolve"));
+            assert_eq!(
+                found_factor.to_bits(),
+                factor.to_bits(),
+                "unit_symbol_to_si({sym:?}) returned factor {found_factor:?} \
+                 (bits {:#018x}) but BUILTIN_UNITS holds {factor:?} (bits \
+                 {:#018x}) — the lookup is no longer a faithful view of the table",
+                found_factor.to_bits(),
+                factor.to_bits()
+            );
+            assert_eq!(
+                found_dim,
+                dim,
+                "unit_symbol_to_si({sym:?}) returned dimension {:?} but \
+                 BUILTIN_UNITS holds {:?}",
+                found_dim.canonical_name(),
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// No symbol appears twice in [`BUILTIN_UNITS`] — a NEW obligation created
+    /// by making the table data rather than control flow, and load-bearing.
+    ///
+    /// A duplicated `match` arm was a compiler diagnostic
+    /// (`unreachable_patterns`). A duplicated table row is not: the linear
+    /// `.find()` returns the FIRST and silently shadows the rest, so a stray
+    /// `("mm", 0.01, LENGTH)` row would be a silent PHYSICAL change — every `mm`
+    /// literal off by 10× — with no diagnostic anywhere and every other guard in
+    /// this module still green.
+    #[test]
+    fn builtin_unit_symbols_are_unique() {
+        for (i, entry) in BUILTIN_UNITS.iter().enumerate() {
+            for (j, other) in BUILTIN_UNITS.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    entry.0, other.0,
+                    "symbol {:?} appears at both index {i} and index {j} in \
+                     BUILTIN_UNITS. unit_symbol_to_si's `.find()` returns the \
+                     first (factor {:?}) and silently shadows the second (factor \
+                     {:?}) — a duplicate row is a silent physical change, not a \
+                     lint.",
+                    entry.0, entry.1, other.1
+                );
+            }
+        }
+    }
+
+    /// Forward: every table symbol still resolves. Catches a deleted entry.
     #[test]
     fn every_builtin_symbol_resolves() {
-        for sym in BUILTIN_UNIT_SYMBOLS {
+        for &(sym, _, _) in BUILTIN_UNITS {
             assert!(
                 unit_symbol_to_si(sym).is_some(),
                 "built-in symbol {sym:?} no longer resolves"
@@ -296,8 +330,9 @@ mod tests {
     ///
     /// So this walks BACKWARD, from the symbol table to the ladders. It is green
     /// today for all 13 symbols by construction; it exists to fire on exactly the
-    /// regression above. `BUILTIN_UNIT_SYMBOLS` is kept honest by
-    /// `builtin_symbol_list_is_complete`, so a new arm cannot dodge it.
+    /// regression above. It iterates [`BUILTIN_UNITS`] directly — the one physical
+    /// table `unit_symbol_to_si` reads — so there is no mirror list in between and
+    /// a new entry cannot dodge it.
     ///
     /// Deliberately asserts only NON-EMPTINESS, not membership: `g` and `in` are
     /// resolvable built-ins that are correctly absent from their canonical
@@ -305,7 +340,7 @@ mod tests {
     /// that their *dimension* is writable at all.
     #[test]
     fn every_builtin_symbol_has_an_emission_ladder() {
-        for sym in BUILTIN_UNIT_SYMBOLS {
+        for &(sym, _, _) in BUILTIN_UNITS {
             let (_factor, dim) =
                 unit_symbol_to_si(sym).unwrap_or_else(|| panic!("{sym:?} must resolve"));
             assert!(
