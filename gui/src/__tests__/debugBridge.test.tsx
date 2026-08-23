@@ -2706,7 +2706,15 @@ describe('debug bridge tree-node expand/collapse', () => {
   // (j) closes the coverage gap under driveTreeNode's CSS escape — one of the
   // TWO escape call sites in bridge.ts that had no test of its own, the other
   // being `resolveByTestId`'s testId arm, now pinned by (n)/(o) in the
-  // resolveByTestId block. (f) above reaches the same not-found branch but with
+  // resolveByTestId block.
+  //
+  // INVENTORY CAVEAT — that pair completes the ESCAPED sites, not every
+  // caller-supplied interpolation in bridge.ts. `open_menu` builds
+  // `[data-testid="menu-trigger-${name}"]` WITHOUT `escapeAttrValue` and so has
+  // no case here: it is a deliberate exception resting on a caller-side naming
+  // convention (see its own comment), not an oversight, and closing it would be
+  // a behaviour change rather than a dedupe. Do not read this block as proof
+  // that every selector interpolation in the file is covered. (f) above reaches the same not-found branch but with
   // a metacharacter-free path, so nothing else would notice if the escape were
   // dropped here: an unescaped quote or backslash interpolated into the
   // `[data-testid="…"]` selector makes document.querySelector THROW a
@@ -4918,8 +4926,10 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
   // covers only the sibling VIEWPORTID arm.
   //
   // Measured, not assumed: replacing `escapeAttrValue(testId)` with a raw
-  // `${testId}` in `resolveByTestId` left all 284 tests in this file plus
-  // waitFor.test.ts green before (n) existed. An unescaped quote or backslash
+  // `${testId}` in `resolveByTestId` left every test in this file plus
+  // waitFor.test.ts green before (n) existed. (No absolute pass count: it goes
+  // stale the next time a case is added to either suite, and the claim that
+  // matters is "nothing failed", not the cardinality.) An unescaped quote or backslash
   // makes document.querySelectorAll THROW a DOMException, which the dispatcher
   // surfaces as an opaque `{error: '<CSS parser message>'}` — a typo'd or
   // hostile testId reading as a bridge malfunction rather than as "no such

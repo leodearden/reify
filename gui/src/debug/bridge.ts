@@ -913,8 +913,16 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const name = params.name as string;
       if (!name) return { error: 'name is required' };
 
-      // Menu names are simple lowercase identifiers — no CSS-escaping needed,
-      // and CSS.escape is absent in jsdom (unit-test environment).
+      // The one caller-supplied interpolation in this file NOT run through
+      // `escapeAttrValue`: menu names are simple lowercase identifiers by
+      // convention. That convention is caller-side and this tool boundary does
+      // not enforce it, so a `name` carrying a quote or backslash makes
+      // querySelector THROW a DOMException, which the dispatcher surfaces as an
+      // opaque CSS-parser message instead of `menu trigger not found` below.
+      // Closing that is a behaviour change, not a dedupe; `escapeAttrValue(name)`
+      // is the one-line fix if it is ever wanted. (jsdom's missing CSS.escape is
+      // NOT a reason to skip it — escapeAttrValue's fallback arm covers exactly
+      // that case.)
       const el = document.querySelector(`[data-testid="menu-trigger-${name}"]`);
       if (!el) return { error: `menu trigger not found: ${name}` };
 
