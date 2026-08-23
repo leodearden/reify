@@ -492,7 +492,16 @@ impl Engine {
                     // diagnostic.  In particular the C1 case (tessellation ran,
                     // but this subject's key is unresolvable) keeps its existing
                     // silent Indeterminate, which is what keeps `reify check`
-                    // output unchanged.
+                    // output unchanged — for a DEFINED subject.  An UNBOUND one
+                    // never reaches this arm: the decline arm above it fires
+                    // first regardless of `achieved_repr_tol`, pushing the entry
+                    // to `rest` so the checker attributes the real cause.  That
+                    // is the one shape whose `reify check` output does differ
+                    // from pre-ζ (silent Indeterminate -> `undefined inputs`),
+                    // and it is deliberate: gating the decline on `is_empty()`
+                    // would restore the silence only by reinstating the
+                    // misattribution ζ removes.  Pinned by
+                    // `measuring_surface_with_unbound_subject_still_attributes_the_undefined_input`.
                     //
                     // That gate is MODULE-wide rather than per-subject, so a
                     // module which measures at least one subject still leaves an

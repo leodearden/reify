@@ -909,6 +909,77 @@ fn measuring_surface_indeterminate_carries_no_attribution_diagnostic() {
     );
 }
 
+/// The combination neither measuring-surface guard covers: a MEASURING surface
+/// (non-empty `achieved_repr_tol`) whose subject key does not resolve AND whose
+/// subject operand is genuinely UNBOUND.
+///
+/// The decline arm is deliberately NOT gated on `achieved_repr_tol.is_empty()`:
+/// an undefined operand is the true cause on either surface, so the entry is
+/// pushed to `rest` and the language-level checker attributes it to
+/// `Checker.subject` here exactly as it does on the non-measuring surface that
+/// [`unbound_subject_keeps_the_undefined_input_attribution`] pins.
+///
+/// This is the ONE shape where `reify check` output differs from pre-ζ: a bare
+/// silent Indeterminate became an attributed `undefined inputs` diagnostic.
+/// Gating the decline on the map being empty would restore the old silence at
+/// the cost of reinstating the misattribution ζ exists to remove, so the
+/// divergence is intended — pinned here rather than left untested.  Note the
+/// severity is the checker's own Warning, not the Info this task standardises
+/// on for SURFACE attribution, because this is not a surface problem.
+#[test]
+fn measuring_surface_with_unbound_subject_still_attributes_the_undefined_input() {
+    let compiled = parse_and_compile(INTERCEPTION_SOURCE);
+    let mut engine = make_simple_engine();
+
+    // The same injection `measuring_surface_indeterminate_carries_no_attribution_diagnostic`
+    // uses — non-empty, does NOT resolve "MyGeom" — so the ONLY difference from
+    // that guard is the unbound subject.
+    engine.set_achieved_repr_tol_for_test(BTreeMap::from([(
+        "Unrelated#realization[0]".to_string(),
+        1e-9_f64,
+    )]));
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "an unbound subject cannot be decided either way → Indeterminate"
+    );
+
+    let messages: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("undefined inputs") && m.contains("Checker.subject")),
+        "the cause is the unbound param; a surface that happens to have measured \
+         something ELSE must not hide it. Got: {messages:#?}"
+    );
+
+    let attributions = attribution_diagnostics(&result);
+    assert!(
+        attributions.is_empty(),
+        "a measuring surface must never gain the surface-level attribution, \
+         unbound subject or not. Got: {attributions:#?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m.contains("operator undefined for these operand kinds")),
+        "the misattribution ζ removes must stay gone on this surface too. \
+         Got: {messages:#?}"
+    );
+}
+
 /// Regression guard: a MEASURING surface with a resolvable, under-bound subject
 /// is `Satisfied` and gains no attribution diagnostic.
 ///
