@@ -241,6 +241,24 @@ fn first_let_value(source: &str) -> Expr {
     }
 }
 
+/// `first_let_value`'s twin for sources that error BY CONSTRUCTION — an
+/// argument-position rejection always pushes a diagnostic, so the clean-parse
+/// assertion cannot hold, but the enclosing `let` must still be built (task
+/// 5495 μ, amendment). Deliberately separate rather than a flag on
+/// `first_let_value`, so no existing caller loses its clean-parse guarantee.
+fn only_let_value_ignoring_errors(source: &str) -> Expr {
+    let (decls, errors) = parse_decls(source);
+    assert!(
+        !errors.is_empty(),
+        "this helper is for sources that DO error; `{source}` parsed clean"
+    );
+    let structure = only_structure(&decls);
+    match &structure.members[0] {
+        MemberDecl::Let(l) => l.value.clone(),
+        other => panic!("expected MemberDecl::Let, got {other:?}"),
+    }
+}
+
 /// Unwrap an `ExprKind::FunctionCall` arm, panicking on mismatch.
 fn as_function_call(expr: &Expr) -> (&str, &[Expr], &[Option<String>]) {
     match &expr.kind {
@@ -802,4 +820,68 @@ fn enum_access_lowering_unchanged() {
         }
         other => panic!("expected ExprKind::EnumAccess, got {other:?}"),
     }
+}
+
+/// A REJECTED QUALIFIED CALL IN ARGUMENT POSITION KEEPS ITS SLOT (task 5495 μ,
+/// amendment; review suggestion #7).
+///
+/// The drop-on-`None` walk in `lower_call_arguments` predates μ, but μ newly
+/// routes every two-segment `ident.ident(args)` through it, so a rejection now
+/// lands inside argument lists that previously never saw one. Before the fix
+/// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` with `3`
+/// slid into position 1 — a silent arity corruption.
+///
+/// It is NOT protected by "the parse errored anyway": `reify_compiler`'s
+/// `forward_parse_errors` downgrades every parse error to a WARNING, so a
+/// library consumer that compiles and reads diagnostics gets the mis-arity'd
+/// call with no error to bail on.
+#[test]
+fn a_rejected_argument_keeps_its_position_in_the_enclosing_call() {
+    // Rejected by the callee-SHAPE guard (3-segment path). `first_let_value`
+    // cannot be used here — it asserts a clean parse, and these sources error
+    // by construction.
+    let value = only_let_value_ignoring_errors("structure def S { let f = plain(1, a.b.c(), 3) }");
+    let (name, args, arg_names) = as_function_call(&value);
+    assert_eq!(name, "plain");
+    assert_eq!(args.len(), 3, "arity must survive the rejection; got {args:?}");
+    assert_eq!(arg_names.len(), 3, "the two vectors must stay length-matched");
+    assert!(
+        matches!(args[1].kind, ExprKind::Undef),
+        "the rejected argument's slot must hold a placeholder; got {:?}",
+        args[1].kind
+    );
+    assert!(
+        matches!(args[2].kind, ExprKind::NumberLiteral { value, .. } if value == 3.0),
+        "the argument AFTER the rejection must keep position 2; got {:?}",
+        args[2].kind
+    );
+
+    // Rejected by the import-BINDING guard (`obj` binds nothing), and in a
+    // NAMED slot — the label parsed fine, so it must not silently become
+    // positional.
+    let value =
+        only_let_value_ignoring_errors("structure def S { let f = plain(1, k: obj.width(), 3) }");
+    let (_, args, arg_names) = as_function_call(&value);
+    assert_eq!(args.len(), 3, "arity must survive here too; got {args:?}");
+    assert_eq!(
+        arg_names,
+        vec![None, Some("k".to_string()), None],
+        "the rejected argument's LABEL must survive alongside its slot"
+    );
+}
+
+/// THE CONTROL that keeps the fix from over-firing. A comment inside an
+/// argument list is an `extras` node that `lower_call_argument` skips with NO
+/// diagnostic, so it must keep dropping out — otherwise a CLEAN parse of
+/// `plain(1, /* c */ 2)` would grow a third, undefined argument.
+#[test]
+fn a_comment_between_arguments_does_not_become_an_argument() {
+    let source = "structure def S { let f = plain(1, /* c */ 2) }";
+    let (_, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "control must parse clean; got {errors:?}");
+
+    let value = first_let_value(source);
+    let (_, args, arg_names) = as_function_call(&value);
+    assert_eq!(args.len(), 2, "the comment must not occupy a slot; got {args:?}");
+    assert_eq!(arg_names, vec![None, None]);
 }

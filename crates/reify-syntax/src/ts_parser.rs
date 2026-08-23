@@ -4465,6 +4465,27 @@ impl<'a> Lowering<'a> {
     /// cannot land on one and miss the other. Pinned by
     /// `qualified_call_named_and_positional_args_at_parity` in
     /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// **A REJECTED ARGUMENT KEEPS ITS SLOT.** Dropping it would silently shift
+    /// the arity of the enclosing call and re-label every argument after it:
+    /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` before
+    /// this was fixed, with `3` sliding into position 1. That matters even
+    /// though the enclosing parse always carries an error, because
+    /// `reify_compiler`'s `forward_parse_errors` downgrades every parse error to
+    /// a WARNING — so a library consumer that compiles and reads diagnostics
+    /// sees the mis-arity'd call with no error at all. The slot is filled with
+    /// `ExprKind::Undef`, whose documented job is exactly this (it absorbs the
+    /// type cascade via `Type::Error`), and any label the argument carried is
+    /// preserved so `args`/`arg_names` stay length-matched and aligned.
+    ///
+    /// The placeholder is pushed ONLY when the failed lowering also pushed a
+    /// DIAGNOSTIC. A `None` with no diagnostic is a silent skip — a `line_comment`
+    /// or `block_comment` extra sitting inside the parens, or a node kind
+    /// `lower_expr` does not dispatch — and those must keep dropping out, or
+    /// `f(1, /* c */ 2)` would become a three-argument call on a CLEAN parse.
+    /// Measuring the diagnostic count around each argument is what separates the
+    /// two cases without a second "is this an argument slot" predicate that could
+    /// drift from the grammar (task 5495 μ, amendment; review suggestion #7).
     fn lower_call_arguments(&self, node: tree_sitter::Node) -> (Vec<Expr>, Vec<Option<String>>) {
         let mut args = Vec::new();
         let mut arg_names = Vec::new();
@@ -4473,14 +4494,35 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
+                    let errors_before = self.errors.borrow().len();
                     if let Some((arg_name, expr)) = self.lower_call_argument(arg_child) {
                         arg_names.push(arg_name);
                         args.push(expr);
+                    } else if self.errors.borrow().len() > errors_before {
+                        arg_names.push(self.call_argument_label(arg_child));
+                        args.push(Expr {
+                            kind: ExprKind::Undef,
+                            span: self.span(arg_child),
+                        });
                     }
                 }
             }
         }
         (args, arg_names)
+    }
+
+    /// The label of an `argument_list` child that FAILED to lower, so a
+    /// placeholder can keep both parallel vectors aligned (task 5495 μ).
+    ///
+    /// `Some(name)` for a `named_argument` whose `value` was rejected — the
+    /// label itself parsed fine and dropping it would turn a named argument into
+    /// a positional one — and `None` for everything else.
+    fn call_argument_label(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "named_argument" {
+            return None;
+        }
+        node.child_by_field_name("name")
+            .map(|name| self.node_text(name).to_string())
     }
 
     /// Lower a `namespaced_call` — a call through an import binding,
