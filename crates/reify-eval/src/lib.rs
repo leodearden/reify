@@ -917,10 +917,11 @@ pub struct Engine {
     ///
     /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
     /// and `edit_source` delegate to [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
-    /// near function entry, mirroring the established `feature_tag_table` /
-    /// `topology_attribute_table` reset-at-hook-point pattern
-    /// (engine_build.rs:531/406). That mutator flushes the existing cache in
-    /// place via [`RealizationCache::clear`] (task 4152) rather than
+    /// near function entry, mirroring the `topology_attribute_table`
+    /// reset-at-hook-point pattern (`TopologyAttributeTable::default()`
+    /// reset in `Engine::reset_per_build_state`, engine_build.rs). That
+    /// mutator flushes the existing cache in place via
+    /// [`RealizationCache::clear`] (task 4152) rather than
     /// reseating it to a fresh `RealizationCache::new()` (see that method's
     /// doc for why an in-place clear rather than a reseat). After an edit,
     /// the next `build()` / `build_snapshot()` cold-misses on every
