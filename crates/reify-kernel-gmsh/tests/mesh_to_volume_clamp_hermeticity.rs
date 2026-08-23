@@ -16,12 +16,21 @@
 //! calls; cargo runs one binary's tests in a single process across parallel
 //! threads with no ordering guarantee, so a clamp measurement there would race
 //! siblings writing the same process-global pair — the false-pass mode
-//! `refine_volume_tests.rs:19-38` documents — and adding this file's
-//! `CLAMP_TEST_ORDER` mutex there would serialise thirteen unrelated tests as
-//! a side effect. `refine_volume_tests.rs` is topically the wrong home: its
-//! subject is the consumer. A separate `tests/*.rs` is its own compiled binary
-//! and therefore its own process, so no sibling suite can perturb the option
-//! table between a baseline and its re-measure.
+//! `clamp_probe::CLAMP_TEST_ORDER` documents — and adding that mutex there
+//! would serialise thirteen unrelated tests as a side effect.
+//! `refine_volume_tests.rs` is topically the wrong home: its subject is the
+//! consumer. A separate `tests/*.rs` is its own compiled binary and therefore
+//! its own process, so no OTHER suite can perturb the option table between a
+//! baseline and its re-measure.
+//!
+//! Isolation *within* this binary is a separate mechanism and is not free
+//! either: `CLAMP_TEST_ORDER` serialises the two test bodies but restores
+//! nothing, and the second test calls `refine_volume_with_size_field`, which
+//! leaves `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+//! `MeshSizeExtendFromBoundary` behind (task #6212's open leak). That is why
+//! `clamp_probe::probe_triangle_count` pins those three to gmsh's defaults
+//! itself — see its docstring — so the numbers recorded below are a function
+//! of the clamp alone rather than of which test won cargo's thread race.
 //!
 //! Only compiled and run when `cfg(has_gmsh)` is set by `build.rs` (i.e. when
 //! libgmsh was found at build time). On stub builds this file is empty and the
@@ -32,79 +41,18 @@
 
 mod common;
 
-use std::sync::Mutex;
+// The clamp probe and its serialising mutex are shared verbatim with
+// `tests/refine_volume_tests.rs`, the other half of this discipline. Declared
+// by path rather than through `common/mod.rs`, whose stated scope is the #6200
+// geometry fixtures; see `common/clamp_probe.rs` for why one copy matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
 
-use reify_ir::ElementOrderTag;
-use reify_kernel_gmsh::mesh_size_clamp::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
-use reify_kernel_gmsh::{
-    GmshKernel, MeshingOptions, ffi, init, mesh_plane_2d, refine_volume_with_size_field,
+use clamp_probe::{
+    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, probe_triangle_count, set_global_mesh_size_clamp,
 };
-
-/// Whole-test-body serialisation, layered *above* `init::GMSH_LOCK`.
-///
-/// Every test here manipulates the process-global gmsh mesh-size clamp across
-/// MULTIPLE lock acquisitions — set the clamp, then call `mesh_to_volume` or
-/// `mesh_plane_2d` (each of which takes `GMSH_LOCK` itself). `GMSH_LOCK` is
-/// released between those steps, so cargo's parallel test threads can
-/// interleave inside the gap.
-///
-/// That interleave cannot produce a false FAILURE, only a false PASS, which is
-/// the worse direction for a regression guard: once the fix restores the clamp
-/// to gmsh's defaults on every exit, a sibling landing in the gap *erases* the
-/// state under measurement and the two legs compare equal for the wrong
-/// reason.
-///
-/// Taking this mutex as the first statement of every test makes each
-/// baseline → perturb → re-measure sequence atomic with respect to its
-/// siblings. `GMSH_LOCK` is strictly finer-grained (always acquired while this
-/// one is held, never the reverse), so the nesting order is fixed and adds no
-/// deadlock risk. Poison recovery matches the crate convention at
-/// `mesh_profile_2d.rs`: a panicking test must not cascade into "lock
-/// poisoned" failures for every sibling.
-static CLAMP_TEST_ORDER: Mutex<()> = Mutex::new(());
-
-/// Unit square in the XY plane — the defaults-relying 2D probe's outline.
-const PROBE_OUTER: [[f64; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-
-/// Gmsh's documented defaults for the `Mesh.MeshSizeMin`/`MeshSizeMax` pair —
-/// no floor, effectively no cap. This is the state a caller that writes no
-/// clamp of its own (e.g. `mesh_plane_2d` with no requested size) expects.
-///
-/// Built from the production constants rather than from literals so the two
-/// cannot drift: if the production notion of gmsh's defaults is ever
-/// corrected, a private copy here would keep asserting against the stale pair
-/// and this file's "from gmsh's defaults" baseline would quietly stop being
-/// from gmsh's defaults — weakening the assertion instead of failing it.
-const GMSH_CLAMP_DEFAULTS: (f64, f64) = (GMSH_MESH_SIZE_MIN_DEFAULT, GMSH_MESH_SIZE_MAX_DEFAULT);
-
-/// Write the process-global gmsh mesh-size clamp.
-///
-/// gmsh's option table is process-global and is **not** reset by `gmshClear()`,
-/// so `Mesh.MeshSizeMin` / `Mesh.MeshSizeMax` written by one call survive into
-/// every later call in the same process. Acquires `GMSH_LOCK` for the duration
-/// of the two writes and releases it before returning, so the subsequent
-/// measuring call can take the lock itself.
-fn set_global_mesh_size_clamp((min, max): (f64, f64)) {
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    init::ensure_initialized();
-    ffi::option_set_number("Mesh.MeshSizeMin", min).expect("set MeshSizeMin");
-    ffi::option_set_number("Mesh.MeshSizeMax", max).expect("set MeshSizeMax");
-}
-
-/// Triangle count of the defaults-relying 2D probe.
-///
-/// `mesh_size: None` is the whole point: `mesh_plane_2d` puts its
-/// `Mesh.MeshSizeMin/Max` writes behind `if let Some(s) = mesh_size && s > 0.0`
-/// (`mesh_profile_2d.rs:90-95`), and `geo_add_point` passes meshSize `0.0` —
-/// "no prescribed size here" — so this call writes no clamp and reports
-/// whatever `Mesh.MeshSizeMax` the process happens to be carrying.
-fn probe_triangle_count() -> usize {
-    mesh_plane_2d(&PROBE_OUTER, &[], None, false, true)
-        .expect("mesh_plane_2d must succeed for a unit square")
-        .triangle_indices
-        .len()
-        / 3
-}
+use reify_ir::ElementOrderTag;
+use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
 
 /// Mesh the unit cube through `GmshKernel::mesh_to_volume` at `size` and
 /// return the P1 tet count.
@@ -147,28 +95,46 @@ fn mesh_to_volume_tet_count(size: f64) -> usize {
 ///
 /// 1. **Warm-up `mesh_to_volume`.** Not decoration: that function also writes
 ///    `General.NumThreads`, `Mesh.Algorithm3D` and `Mesh.ElementOrder`, none of
-///    which `mesh_plane_2d` sets. Running one first puts all three in their
+///    which `mesh_plane_2d` sets and none of which
+///    [`probe_triangle_count`] pins. Running one first puts all three in their
 ///    post-`mesh_to_volume` state for BOTH measurements, so the clamp is the
 ///    only free variable. `ElementOrderTag::P1` throughout — a leaked
 ///    `Mesh.ElementOrder = 2` would make gmsh emit 6-node triangles and the
 ///    probe's element readback would return nothing, a confound unrelated to
-///    the clamp.
+///    the clamp. The `MeshSizeFromPoints` / `FromCurvature` /
+///    `ExtendFromBoundary` trio is NOT this warm-up's job — `mesh_to_volume`
+///    never writes it, so the probe pins it itself.
 /// 2. **Baseline**, from an explicitly-defaulted clamp.
 /// 3. **A fine `mesh_to_volume`** — `FINE` is 10x finer than the probe's own
 ///    extent.
 /// 4. **Re-measure.** Must equal the baseline exactly.
 ///
-/// # Measured, on unmodified main at 89df46b9ae (pre-fix)
+/// # Measured, with `MeshSizeClampReset::armed` commented out of `mesh_to_volume`
 ///
 /// baseline = **162** triangles, after `mesh_to_volume(FINE = 0.1)` = **242**
-/// triangles — a +49% jump, deterministic across repeats and identical with or
-/// without the warm-up. (The 3D mesh itself is 4575 P1 tets at 0.1 and 194 at
-/// the 0.5 warm-up, so the test stays fast.) That 162 → 242 difference IS the
-/// defect. It is smaller than the "orders of magnitude" a naive reading of the
-/// cap would predict, because the probe is not unconstrained at gmsh's
-/// defaults either — but the assertion is an exact equality between two runs of
-/// one function, not a threshold, so the margin only has to be non-zero and
-/// repeatable, and 80 triangles is far outside any rounding.
+/// triangles — a +49% jump. That 162 → 242 difference IS the defect. It is
+/// smaller than the "orders of magnitude" a naive reading of the cap would
+/// predict, because the probe is not unconstrained at gmsh's defaults either —
+/// but the assertion is an exact equality between two runs of one function, not
+/// a threshold, so the margin only has to be non-zero and repeatable, and 80
+/// triangles is far outside any rounding.
+///
+/// Both numbers are reproducible rather than incidental to one test ordering,
+/// which is what [`probe_triangle_count`]'s trio pinning buys. The same
+/// `162 / 242` came back from three different process states: this test alone
+/// via `--exact`; this whole binary; and this binary under `--test-threads=1`.
+/// The same `162` baseline also came back from
+/// `refine_volume_tests.rs::refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
+/// — a different binary, whose probe runs after a refine has written the trio
+/// to `1 / 0 / 0` (that run measured `162 → 944` with `refine_volume.rs`'s own
+/// guard commented out). Before the pinning, the reviewer of #6298 measured
+/// `48 / 246` from one interleaving of this binary against `162 / 242` from
+/// another.
+///
+/// The 3D meshes in between are ~4.5k P1 tets at `FINE` and ~200 at the 0.5
+/// warm-up, so the test stays fast. Those two counts are a cost note, not an
+/// assertion, and unlike the probe they ARE order-sensitive: `mesh_to_volume`
+/// inherits the size-source trio rather than pinning it (#6212).
 ///
 /// Why the probe observes the leak's EFFECT rather than reading the option
 /// table back: this crate's FFI surface exposes `option_set_number` but no
