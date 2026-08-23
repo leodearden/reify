@@ -150,6 +150,95 @@ fn write_synthetic_done_task(
 }
 
 // -----------------------------------------------------------------------
+// Findings well-formedness (pure; no serve needed)
+// -----------------------------------------------------------------------
+
+/// Assert every element of `findings` is a well-formed audit finding, or
+/// panic naming `leg`, the element's index, and the offending element.
+///
+/// Required of each element: it is a JSON **object** carrying
+///
+/// * `pattern`  — non-empty string,
+/// * `severity` — string,
+/// * `task_id`  — string, possibly EMPTY (`PDeadCode` is repo-wide and belongs
+///   to no task, so it carries `""`; the field must be present and a string,
+///   but its emptiness says nothing),
+/// * `summary`  — non-empty string,
+/// * `evidence` — array.
+///
+/// # It asserts NOTHING about the array's LENGTH — deliberately
+///
+/// Zero findings is a legitimate, PASSING outcome. P1's one recorded live run
+/// (2026-06-09) produced zero findings, and PDEAD's detector is repo-shape
+/// dependent, so a `>=N` bound has no achievability basis: it would pass only
+/// under a premise nobody ever validated, which is §2.4's vacuity reproduced
+/// in mirror image (PRD §6/ε: *Explicitly NOT asserted: ">=1 P1 finding"*).
+///
+/// What makes the capstone non-vacuous is therefore NOT this predicate on its
+/// own — `[]` satisfies it, and `[]` is exactly what the broken handshake
+/// emitted for ten weeks. It is one link in a four-part chain: exit 0, no
+/// `E_JC_INDEX_` refusal marker, no `jcodemunch unreachable at` fail-soft
+/// breadcrumb, and an independently-read `count_symbols(...) > 0`. No link in
+/// that chain is satisfiable by a vacuous run.
+fn assert_well_formed_findings(findings: &[serde_json::Value], leg: &str) {
+    for (i, finding) in findings.iter().enumerate() {
+        let render = || {
+            serde_json::to_string_pretty(finding)
+                .unwrap_or_else(|_| format!("{finding:?}"))
+        };
+
+        let obj = finding.as_object().unwrap_or_else(|| {
+            panic!(
+                "{leg} leg: findings[{i}] is not a JSON object:\n{}",
+                render()
+            )
+        });
+
+        let string_field = |name: &str| -> &str {
+            obj.get(name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{leg} leg: findings[{i}] has no `{name}` field:\n{}",
+                        render()
+                    )
+                })
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{leg} leg: findings[{i}]'s `{name}` is not a string:\n{}",
+                        render()
+                    )
+                })
+        };
+
+        for name in ["pattern", "summary"] {
+            assert!(
+                !string_field(name).is_empty(),
+                "{leg} leg: findings[{i}]'s `{name}` is an empty string:\n{}",
+                render()
+            );
+        }
+        // `severity` must be a string; `task_id` must be a string but MAY be
+        // empty — see the doc above on PDeadCode.
+        let _ = string_field("severity");
+        let _ = string_field("task_id");
+
+        assert!(
+            obj.get("evidence")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{leg} leg: findings[{i}] has no `evidence` field:\n{}",
+                        render()
+                    )
+                })
+                .is_array(),
+            "{leg} leg: findings[{i}]'s `evidence` is not an array:\n{}",
+            render()
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
 // Serve preflight: a real MCP `initialize`, i.e. an IDENTITY check
 // -----------------------------------------------------------------------
 
