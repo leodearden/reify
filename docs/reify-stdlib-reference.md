@@ -336,8 +336,8 @@ and Jacobian columns uniformly.
 | `linear` dimension       | accepted? | notes                                                                            |
 |--------------------------|-----------|----------------------------------------------------------------------------------|
 | `Length`                 | ✓         | canonical — matches the `Twist` type                                             |
-| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Warning` naming the offending dimension    |
-| `Angle`, `Mass`, …       | ✗         | same rejection + `Warning`                                                        |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension      |
+| `Angle`, `Mass`, …       | ✗         | same rejection + `Error`                                                          |
 
 Rejection is uniform: every non-`Length` dimension takes the same branch.
 
@@ -352,9 +352,16 @@ unaffected: `transform3_identity` builds `Length` zeros.
 > `docs/prds/v0_6/units-length-gate-completion.md` — after the `Real` →
 > `Scalar{Dimensionless}` unification, "also admits `Dimensionless`" means "also
 > admits bare numbers". This closes the last `Length | Dimensionless` disjunction
-> **on this seam**, which is the whole of the ruling's scope. The rejection is a
-> `Warning` (the op degrades to `Undef` within one primitive), so `reify eval`
-> still exits 0.
+> **on this seam**, which is the whole of the ruling's scope.
+>
+> **Severity amendment** (Leo, 2026-08-19, via esc-6080-6): the rejection is a
+> `Severity::Error`, so `reify eval` exits 1. A wrong dimension is a
+> design-correctness fault rather than a degradation to tolerate, and the sibling
+> angular half of the same builtin family (#6080) reports its equivalent fault at
+> the same severity — so one fault class does not report two ways across one
+> seam. The diagnostic stays code-less; minting
+> `DiagnosticCode::ArgDimensionMismatch` is owned by
+> `docs/prds/v0_6/dimension-checked-readers.md` §6.
 
 **Scope: this seam only.** The gate above is *not* evidence that the transform
 family is uniformly `Length`-only. `transform3`'s signature above declares
