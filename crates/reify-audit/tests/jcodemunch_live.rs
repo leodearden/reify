@@ -331,20 +331,6 @@ fn require_reachable_serve(url: &str) {
     });
 }
 
-/// Returns true iff `v` is a P1ProducerOrphan finding.
-///
-/// Mirrors cli.rs's pattern-string comparison: `Pattern` serializes to its
-/// bare variant name (`"P1ProducerOrphan"`) with no serde rename, so we
-/// compare against the raw string.
-fn is_p1_finding(v: &serde_json::Value) -> bool {
-    v["pattern"].as_str() == Some("P1ProducerOrphan")
-}
-
-/// Returns true iff `v` is a PDeadCode finding.
-fn is_pdead_finding(v: &serde_json::Value) -> bool {
-    v["pattern"].as_str() == Some("PDeadCode")
-}
-
 // -----------------------------------------------------------------------
 // Pinned live constants
 // -----------------------------------------------------------------------
@@ -467,19 +453,11 @@ fn live_audit_produces_p1_and_pdead_findings() {
          all findings: {:#}",
         serde_json::Value::Array(pdead_findings.clone())
     );
-    let pdead_matched: Vec<&serde_json::Value> =
-        pdead_findings.iter().filter(|f| is_pdead_finding(f)).collect();
-    assert!(
-        !pdead_matched.is_empty(),
-        "PDEAD leg: expected ≥1 PDeadCode finding from get_dead_code_v2 over reify corpus; \
-         got 0\nAll findings: {:#}",
-        serde_json::Value::Array(pdead_findings.clone())
-    );
-    println!(
-        "PDEAD leg: {} PDeadCode finding(s) matched — first:\n{:#}",
-        pdead_matched.len(),
-        pdead_matched[0]
-    );
+    // The per-pattern count assertion that used to stand here is GONE, along
+    // with the `is_pdead_finding` predicate that existed only to serve it: a
+    // ">=1 PDeadCode finding" premise was never validated (PRD §2.5) and is
+    // the mirror image of §2.4's vacuity. The count is reported, never asserted.
+    println!("PDEAD leg: {} finding(s)", pdead_findings.len());
 
     // -------------------------------------------------------------------
     // P1 leg: --pattern P1 over ONE pinned done-task commit
@@ -516,21 +494,8 @@ fn live_audit_produces_p1_and_pdead_findings() {
          all findings: {:#}",
         serde_json::Value::Array(p1_findings.clone())
     );
-    let p1_matched: Vec<&serde_json::Value> =
-        p1_findings.iter().filter(|f| is_p1_finding(f)).collect();
-    assert!(
-        !p1_matched.is_empty(),
-        "P1 leg: expected ≥1 P1ProducerOrphan finding for pinned commit {PINNED_P1_COMMIT}; \
-         got 0\nAll findings: {:#}\n\
-         Hint: if the pinned commit's diff has no orphan symbol after corpus churn, \
-         update PINNED_P1_COMMIT to a later reify commit that introduced new public symbols.",
-        serde_json::Value::Array(p1_findings.clone())
-    );
-    println!(
-        "P1 leg: {} P1ProducerOrphan finding(s) matched — first:\n{:#}",
-        p1_matched.len(),
-        p1_matched[0]
-    );
+    // Same removal as the PDEAD leg above: no count premise, count reported only.
+    println!("P1 leg: {} finding(s)", p1_findings.len());
 }
 
 // -----------------------------------------------------------------------
@@ -618,57 +583,81 @@ mod serve_preflight {
 mod finding_shape {
     use super::*;
 
-    /// `P1ProducerOrphan` satisfies `is_p1_finding` and NOT `is_pdead_finding`.
+    /// A helper the capstone leans on: `[]` is WELL FORMED.
+    ///
+    /// This is the mechanical expression of this file's central discipline,
+    /// and the direct inverse of the non-empty-findings assertions the old
+    /// capstone carried. P1's one recorded live run (2026-06-09) produced ZERO
+    /// findings (PRD §2.5), so a `>=N` bound has no achievability basis and
+    /// would reproduce §2.4's vacuity in mirror image — a test that passes only
+    /// under a premise nobody ever validated.
+    ///
+    /// Pinning it behaviourally rather than as a comment is what stops it
+    /// rotting: the capstone genuinely depends on this call not panicking.
     #[test]
-    fn p1_finding_classified_correctly() {
-        let v = serde_json::json!({
-            "pattern": "P1ProducerOrphan",
-            "severity": "Low",
-            "task_id": "t",
-            "summary": "s",
-            "evidence": []
-        });
-        assert!(is_p1_finding(&v), "P1ProducerOrphan must satisfy is_p1_finding");
-        assert!(!is_pdead_finding(&v), "P1ProducerOrphan must not satisfy is_pdead_finding");
+    fn empty_findings_array_is_well_formed() {
+        assert_well_formed_findings(&[], "leg");
     }
 
-    /// `PDeadCode` satisfies `is_pdead_finding` and NOT `is_p1_finding`.
+    /// Both shapes the capstone's two legs can emit pass the predicate.
+    ///
+    /// `PDeadCode` carries `task_id: ""` — it is repo-wide and belongs to no
+    /// task — so the predicate must accept an EMPTY task id while still
+    /// requiring the field to be present and a string.
     #[test]
-    fn pdead_finding_classified_correctly() {
-        let v = serde_json::json!({
+    fn p1_and_pdead_shaped_findings_are_well_formed() {
+        let findings = vec![
+            serde_json::json!({
+                "pattern": "P1ProducerOrphan",
+                "severity": "Low",
+                "task_id": "synthetic-capstone-p1",
+                "summary": "orphaned public symbol",
+                "evidence": []
+            }),
+            serde_json::json!({
+                "pattern": "PDeadCode",
+                "severity": "Low",
+                "task_id": "",
+                "summary": "dead fn foo",
+                "evidence": []
+            }),
+        ];
+        assert_well_formed_findings(&findings, "mixed");
+    }
+
+    /// A finding with no `pattern` is not a finding.
+    #[test]
+    #[should_panic(expected = "pattern")]
+    fn finding_with_no_pattern_field_is_rejected() {
+        let findings = vec![serde_json::json!({
+            "severity": "Low",
+            "task_id": "t",
+            "summary": "no pattern field",
+            "evidence": []
+        })];
+        assert_well_formed_findings(&findings, "PDEAD");
+    }
+
+    /// `evidence` is the array an operator drills into; a scalar there means
+    /// the wire shape drifted, which is exactly what this file exists to catch.
+    #[test]
+    #[should_panic(expected = "evidence")]
+    fn finding_with_a_non_array_evidence_field_is_rejected() {
+        let findings = vec![serde_json::json!({
             "pattern": "PDeadCode",
             "severity": "Low",
             "task_id": "",
             "summary": "dead fn foo",
-            "evidence": []
-        });
-        assert!(is_pdead_finding(&v), "PDeadCode must satisfy is_pdead_finding");
-        assert!(!is_p1_finding(&v), "PDeadCode must not satisfy is_p1_finding");
+            "evidence": "oops"
+        })];
+        assert_well_formed_findings(&findings, "PDEAD");
     }
 
-    /// `P5PhantomDone` is classified as NEITHER.
+    /// A bare scalar in the array is not a finding object.
     #[test]
-    fn p5_finding_classified_as_neither() {
-        let v = serde_json::json!({
-            "pattern": "P5PhantomDone",
-            "severity": "High",
-            "task_id": "3242",
-            "summary": "phantom",
-            "evidence": []
-        });
-        assert!(!is_p1_finding(&v), "P5PhantomDone must not satisfy is_p1_finding");
-        assert!(!is_pdead_finding(&v), "P5PhantomDone must not satisfy is_pdead_finding");
-    }
-
-    /// A Value with no `pattern` field is classified as NEITHER.
-    #[test]
-    fn missing_pattern_field_classified_as_neither() {
-        let v = serde_json::json!({
-            "severity": "Low",
-            "task_id": "t",
-            "summary": "no pattern field"
-        });
-        assert!(!is_p1_finding(&v), "missing pattern must not satisfy is_p1_finding");
-        assert!(!is_pdead_finding(&v), "missing pattern must not satisfy is_pdead_finding");
+    #[should_panic(expected = "JSON object")]
+    fn non_object_array_element_is_rejected() {
+        let findings = vec![serde_json::json!(42)];
+        assert_well_formed_findings(&findings, "P1");
     }
 }
