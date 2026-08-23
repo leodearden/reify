@@ -143,11 +143,14 @@ those must NOT be dimensioned. Only the control-point coordinates in the middle 
 
 ## Interference & Clearance Queries
 
-<!-- SYNC: the five query NAMES here, and the compile-acceptance of the ```reify fences below, are
-     verified by crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs. That guard
-     covers names + parse/compile only. The RUNTIME claims in "Clearance-query traps" are pinned
-     (where they are pinned at all) by the eval/CLI tests mapped in the SYNC block at that
-     subsection — read it before relying on a trap, and before changing one of those behaviours. -->
+<!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs verifies, for all
+     five query names: that this section documents each as a call form, that each is a real registry
+     entry, that the ```reify fences below COMPILE, and that each `name(...) -> Type` signature here
+     is exercised by a fence call at the SAME arity. So editing an arity in this section without
+     editing the matching fence is RED. It still covers names/arity/parse only — argument DIMENSION
+     is unchecked. The RUNTIME claims in "Clearance-query traps" are pinned (where they are pinned at
+     all) by the eval/CLI tests mapped in the SYNC block at that subsection — read it before relying
+     on a trap, and before changing one of those behaviours. -->
 
 Reify **does** have a static interference/clearance oracle. Never hand-roll a bounding-box overlap
 test or hand-compute a gap from parameters — ask the kernel. Two forms; prefer FORM B unless you
@@ -206,6 +209,11 @@ structure def PosedClearance {
     // and yields INDETERMINATE "operator undefined for these operand kinds: Map".
     let clr = min_clearance(s, id_a, id_b)
     constraint clr > 2mm
+
+    // The other two FORM A queries, same let-bind-first rule: a Bool for one
+    // named pair, and the whole upper-triangular pair list for the mechanism.
+    let fouls = interferes_with(s, id_a, id_b)
+    let pairs = interferes(s)
 }
 ```
 

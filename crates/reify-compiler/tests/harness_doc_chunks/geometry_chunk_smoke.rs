@@ -23,73 +23,42 @@
 //!
 //! # What is NOT established
 //!
-//! THE CANONICAL SCOPE STATEMENT FOR THIS FILE. Everything below is stated
-//! once, here; the individual test docstrings point back rather than restating,
-//! so there is exactly one place to correct when the compiler gets stricter.
+//! THE CANONICAL SCOPE STATEMENT FOR THIS FILE — the test docstrings point back
+//! here rather than restating it, so there is exactly one place to correct.
 //!
-//! The compile-acceptance assertions here (both `assert_compiles` and the
-//! ```` ```reify ````-fence scrape) establish PARSE + COMPILE ACCEPTANCE and
-//! nothing stronger. Specifically:
-//!
-//! - **Arity is not enforced** for the interference/clearance query names.
-//!   Mutation-verified against the live fences: rewriting them to
-//!   `min_clearance(s)`, `intersects(housing)` and `distance(housing)` leaves
-//!   this whole suite GREEN. A wrong-arity documented call form would not be
-//!   caught here.
-//! - **Argument dimension/type is not enforced** for those names either — none
-//!   of the five has a checkable slot in `builtin_signatures`'s arg-slot table,
-//!   so the `(Snapshot, Int, Int)` contract the chunk documents is a convention
-//!   the fences FOLLOW but nothing in this file checks.
-//! - **An unknown call name is not, by itself, an error.** A `structure def`
-//!   body silently accepts an unresolved function and types the call from its
+//! - **The compiler checks nothing about the five oracle names.** None has an
+//!   arg-slot entry in the private `builtin_signatures` table, so neither arity
+//!   nor argument dimension is rejected; and an unknown call NAME is not itself
+//!   an error, because a `structure def` body types an unresolved call from its
 //!   FIRST argument's `result_type` (the same permissive fallback noted at the
-//!   `line_segment`/`arc`/`polygon` block below). What discriminating power the
-//!   fence guard has is INCIDENTAL and downstream: mutating `distance(` →
-//!   `distanceZZZ(` makes the call type as `Geometry`, so the fence's own
-//!   `constraint gap > 1mm` then fails `CmpOperandKind`. Mutating
-//!   `intersects(` → `intersectsZZZ(` produces NO error at all, because the
-//!   fence only feeds that result to `not`.
-//!   `bogus_query_name_feeding_a_comparison_is_an_error` is the negative
-//!   control that pins the part that does work, so it cannot silently rot away.
-//!
-//! STALENESS CAVEAT — the first two bullets are HAND-VERIFIED mutation results,
-//! not executed assertions, so they can go quietly false. Their shared cause is
-//! that `builtin_signatures`'s arg-slot table has no entry for any of the five
-//! names; the day one gains a checkable slot, both bullets stop being true.
-//! They are not asserted for two reasons: `builtin_signatures` is a private
-//! module (`mod builtin_signatures;` in `reify-compiler/src/lib.rs`), so a test
-//! cannot read the table; and an assertion of the form "the mutated arity still
-//! compiles clean" would go RED the day the hole is FIXED, which is exactly the
-//! wrong incentive. Re-verify these two bullets by hand whenever
-//! `builtin_signatures.rs` gains geometry-query entries. What IS executed:
-//! `bogus_query_name_feeding_a_comparison_is_an_error` asserts on the
-//! `CmpOperandKind` diagnostic identity, so the third bullet's mechanism is
-//! pinned rather than merely asserted.
+//!   `line_segment`/`arc`/`polygon` block below). Compile-acceptance of a fence
+//!   is therefore a parse/shape result, not a signature check.
+//! - **Arity is pinned anyway — by cross-check, not by the compiler.**
+//!   `documented_oracle_arities_are_exercised_by_a_compiling_fence` requires
+//!   every documented `name(…) -> Type` signature to be matched by a fence call
+//!   at the SAME arity, so a doc-side arity edit that the fences do not mirror is
+//!   RED here even though `min_clearance(s)` compiles clean. Argument DIMENSION
+//!   stays unchecked in both directions. (Adopted from the sibling suite's
+//!   `every_documented_geometry_op_form_is_exercised_by_the_fixture`.)
+//! - **The fence guard's residual power over call NAMES is indirect and narrow.**
+//!   Mutating `distance(` → `distanceZZZ(` is caught only downstream, by the
+//!   fence's own `constraint gap > 1mm` (`CmpOperandKind`); the same typo on a
+//!   name whose result merely feeds `not` produces no error at all.
+//!   `bogus_query_name_feeding_a_comparison_is_an_error` is the negative control
+//!   pinning the half that works, so it cannot rot away silently.
 //!
 //! The registry-membership assertions in
-//! `interference_oracle_names_documented_in_geometry_chunk` are what actually
-//! close the phantom-name direction; the fence compile is a parse/shape guard.
+//! `interference_oracle_names_documented_in_geometry_chunk` are what close the
+//! phantom-NAME direction; the fence compile is a parse/shape guard.
 //!
-//! # Known duplication (out of scope here)
+//! # Known duplication
 //!
-//! `harness_doc_chunks` compiles this module and
-//! `stdlib_chunk_geometry_ops_smoke.rs` into one test binary, and the two now
-//! carry near-identical scaffolding: a `geometry.md` path const (here
-//! `CHUNK_PATH`, there `GEOMETRY_CHUNK_PATH`), a loud-panic-never-skip
-//! `read_chunk`, and a `## `-heading section scanner. Worse than mere
-//! duplication, the two scanners DISAGREE — the one here is fence-aware (a
-//! `## ` line inside a fence is content, not a boundary) and matches headings by
-//! normalised words, while the sibling's is neither, so which slicing semantics
-//! you get depends on which module's test fires.
-//!
-//! The right fix is a shared `chunk_io` module declared from
-//! `tests/harness_doc_chunks.rs`, holding the path consts, `read_chunk(path)`
-//! and the fence-aware `section_body`. That needs edits to
-//! `tests/harness_doc_chunks.rs` and `stdlib_chunk_geometry_ops_smoke.rs`,
-//! neither of which is in task 5389's locked file set, so it is deferred rather
-//! than done here — filed as ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` (curator
-//! runs asynchronously, so that is a ticket id, not yet a task id). Delete this
-//! section when the extraction lands.
+//! This module and `stdlib_chunk_geometry_ops_smoke.rs` (same test binary) carry
+//! near-identical chunk-scraping scaffolding, and their section scanners
+//! disagree. Extracting a shared `chunk_io` needs edits to
+//! `tests/harness_doc_chunks.rs` and to the sibling, neither of which is in task
+//! 5389's locked file set; ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` is the
+//! authoritative record. Delete this section when the extraction lands.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
@@ -343,9 +312,8 @@ const CHUNK_PATH: &str = concat!(
 /// SECTION existing, so the section is what gets scanned. Mirrors
 /// `stdlib_chunk_geometry_ops_smoke.rs`'s `CHUNK_SECTION`.
 ///
-/// Matched by NORMALISED WORDS, not byte equality — see [`heading_matches`]. This
-/// is a discoverability guard, so retitling the section (reordering the two nouns,
-/// changing `&` to `and`, changing case) must not fail it.
+/// Matched CASE-INSENSITIVELY as a substring, not by byte equality — see
+/// [`heading_matches`].
 const ORACLE_SECTION: &str = "## Interference & Clearance Queries";
 
 fn read_chunk() -> String {
@@ -354,42 +322,24 @@ fn read_chunk() -> String {
     })
 }
 
-/// Significant words of a markdown heading: lowercased, `#` markers stripped,
-/// split on every non-alphanumeric run. `"## Interference & Clearance Queries"` →
-/// `["interference", "clearance", "queries"]`.
-fn heading_words(line: &str) -> Vec<String> {
-    line.trim()
-        .trim_start_matches('#')
-        .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// Does `line` name the section `heading` refers to?
+/// Does `line` head the section [`ORACLE_SECTION`] names?
 ///
-/// NORMALISED-WORD CONTAINMENT, deliberately not byte equality: every word of
-/// `heading` must appear somewhere in `line`, in any order, ignoring case and
-/// punctuation. So `"## Clearance & Interference Queries"` and
-/// `"## Interference and Clearance Queries"` both still match.
+/// CASE-INSENSITIVE SUBSTRING, deliberately not byte equality. This file's
+/// subject is DISCOVERABILITY — whether the chunk documents the oracle at all —
+/// never the chunk's wording, and the sibling `stdlib_chunk_geometry_ops_smoke.rs`
+/// states the house rule these scans inherit: they are name-existence checks
+/// against code registries, "deliberately NOT a wording/content pin on the
+/// chunk's prose". Byte equality would break that — a purely cosmetic re-case
+/// would go RED with a panic claiming the oracle is undocumented when it plainly
+/// is.
 ///
-/// The reason is that this file's subject is DISCOVERABILITY — whether the chunk
-/// documents the oracle at all — never the chunk's wording. The sibling
-/// `stdlib_chunk_geometry_ops_smoke.rs` states the house rule: these are name-
-/// existence checks against code registries, "deliberately NOT a wording/content
-/// pin on the chunk's prose". Byte equality would break that: a purely cosmetic
-/// retitle would go RED and the panic would then tell the author the oracle is
-/// undocumented when it plainly is.
-///
-/// Residual sensitivity, stated so it is not mistaken for robustness: DROPPING a
-/// word (retitling to `"## Interference & Clearance"`) still fails, because
-/// containment cannot distinguish that from the section being gone. The panic
-/// message names `ORACLE_SECTION` as the knob for exactly that case.
+/// Residual sensitivity, stated so it is not mistaken for robustness: any edit
+/// beyond case — reordering the nouns, `&` → `and`, dropping a word — still
+/// fails. `ORACLE_SECTION` is the single knob for a deliberate retitle, and
+/// [`section_body`]'s panic message names it.
 fn heading_matches(line: &str, heading: &str) -> bool {
-    let wanted = heading_words(heading);
-    let present = heading_words(line);
-    !wanted.is_empty() && wanted.iter().all(|word| present.contains(word))
+    let wanted = heading.trim_start_matches('#').trim().to_lowercase();
+    !wanted.is_empty() && line.to_lowercase().contains(&wanted)
 }
 
 /// The body of the `## `-level section headed by `heading`, from that heading
@@ -411,8 +361,11 @@ fn section_body(markdown: &str, heading: &str) -> String {
 
     for line in markdown.lines() {
         // Any ```-prefixed line toggles fence state (opening tags carry a
-        // language, closing tags do not — both are just toggles here).
-        if line.trim_start().starts_with("```") {
+        // language, closing tags do not — both are just toggles here). Matched at
+        // COLUMN 0, deliberately: `reify_tagged_fences` below matches its
+        // delimiters exactly, so an indented fence must be invisible to both
+        // scanners rather than to only one of them.
+        if line.starts_with("```") {
             in_fence = !in_fence;
             if in_section {
                 body.push(line);
@@ -643,12 +596,24 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
          protection.",
         fences.len()
     );
+    // ALL FIVE oracle names, so coverage is symmetric. Before task 5389's
+    // amendment pass, `interferes(`/`interferes_with(` appeared only in the FORM A
+    // bullet list, so their sole guard was a `section.contains(...)` string match —
+    // which the module doc characterises as establishing essentially nothing. They
+    // are now bound in the FORM A fence and sentinelled here like the rest.
+    //
     // `distance(` is included even though the module doc singles it out as the
     // only name with (indirect) discriminating power — precisely BECAUSE of
     // that: without a sentinel the FORM B fence could lose its `distance(` call
     // and the scrape would still pass, quietly retiring the one claim
     // `bogus_query_name_feeding_a_comparison_is_an_error` is the control for.
-    for sentinel in ["min_clearance(", "intersects(", "distance("] {
+    for sentinel in [
+        "min_clearance(",
+        "interferes(",
+        "interferes_with(",
+        "intersects(",
+        "distance(",
+    ] {
         assert!(
             fences.iter().any(|fence| fence.contains(sentinel)),
             "anti-vacuity: no ```reify fence in {CHUNK_PATH} contains `{sentinel}` — the worked \
@@ -662,6 +627,136 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
             &format!("{CHUNK_PATH} ```reify fence #{}", index + 1),
             fence,
         );
+    }
+}
+
+/// Every call to `name` in `text`, as `(arity, byte offset just past the closing
+/// paren)`, in document order.
+///
+/// Arity is TOP-LEVEL commas + 1 over the balanced argument list, so a nested
+/// call (`translate(box(a, b, c), …)`) contributes ONE argument and an empty list
+/// is arity 0. Two things are skipped rather than guessed at: a `name(` whose
+/// parens never balance (a call form wrapped across a markdown line), and a match
+/// preceded by an identifier character, so `min_clearance(` is not harvested out
+/// of a hypothetical `xmin_clearance(`.
+fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
+    let needle = format!("{name}(");
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(rel) = text[cursor..].find(&needle) {
+        let ident_start = cursor + rel;
+        let open = ident_start + needle.len() - 1; // byte index of the `(`
+        cursor = open + 1;
+
+        if text[..ident_start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+
+        let mut depth = 0usize;
+        let mut close = None;
+        for (i, c) in text[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { continue };
+
+        let inner = &text[open + 1..close];
+        if inner.trim().is_empty() {
+            out.push((0, close + 1));
+            continue;
+        }
+        // Only `(`/`[` nest here. `<`/`>` are deliberately NOT treated as
+        // brackets: they appear in this chunk as comparisons far more often than
+        // as type parameters, and an unbalanced `>` would silently swallow the
+        // commas after it.
+        let mut depth = 0usize;
+        let mut arity = 1usize;
+        for c in inner.chars() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => arity += 1,
+                _ => {}
+            }
+        }
+        out.push((arity, close + 1));
+    }
+    out
+}
+
+/// The arities `name` is DOCUMENTED at in `section`, read off its
+/// `name(<args>) -> <Type>` signature forms.
+///
+/// The `->` is what separates a SIGNATURE from a mere mention, and the
+/// distinction is load-bearing: the traps subsection deliberately writes
+/// `min_clearance(a, b)` (the unsupported 2-arg overload) and
+/// `min_clearance(s, id, id)` (the self-pair rider) as prose. Neither is a
+/// contract the fences should be held to.
+fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
+    call_sites(section, name)
+        .into_iter()
+        .filter(|(_, after)| section[*after..].trim_start().starts_with("->"))
+        .map(|(arity, _)| arity)
+        .collect()
+}
+
+/// Every arity the oracle section DOCUMENTS must be exercised by a fence that
+/// compiles.
+///
+/// This is the doc↔fence half of the arity story; the compiler half does not
+/// exist (see the module doc). Adopted from the sibling suite's
+/// `every_documented_geometry_op_form_is_exercised_by_the_fixture`, which pairs
+/// documented (name, arity) forms against fixture calls for exactly this reason:
+/// a documented signature and the worked example that is supposed to demonstrate
+/// it must not be able to drift apart, since a designer copies whichever one they
+/// read first.
+#[test]
+fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
+    let markdown = read_chunk();
+    let section = section_body(&markdown, ORACLE_SECTION);
+    let fences = reify_tagged_fences(&markdown);
+
+    for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
+        let documented = documented_signature_arities(&section, name);
+        // Anti-vacuity. A signature form that loses its `-> <Type>` annotation
+        // would otherwise drop out of this check silently instead of failing it.
+        assert!(
+            !documented.is_empty(),
+            "{CHUNK_PATH}'s `{ORACLE_SECTION}` section documents no `{name}(…) -> <Type>` \
+             signature form, so nothing pins that name's arity and this check would pass \
+             vacuously for it. Restore the `-> <Type>` return annotation on the call form."
+        );
+
+        let in_fences: Vec<usize> = fences
+            .iter()
+            .flat_map(|fence| call_sites(fence, name))
+            .map(|(arity, _)| arity)
+            .collect();
+
+        for arity in &documented {
+            assert!(
+                in_fences.contains(arity),
+                "{CHUNK_PATH} documents `{name}` at {arity} argument(s), but no ```reify fence \
+                 calls it at that arity (fence call arities for `{name}`: {in_fences:?}). Either \
+                 the documented signature is a phantom the compiler was never shown, or a fence \
+                 drifted off the form it demonstrates. The fences are what actually compile, so \
+                 fix whichever of the two is wrong — a designer copies whichever they read first."
+            );
+        }
     }
 }
 
