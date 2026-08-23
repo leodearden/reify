@@ -55,6 +55,14 @@ impl NativeDep {
     }
 
     /// Canonical include-dir candidates in priority order.
+    ///
+    /// The OCCT arm below is MIRRORED verbatim — order included — in the
+    /// `occt-candidates` marker block of `scripts/check-manifold-deps.sh`,
+    /// whose preflight has to reach the same verdict this function feeds into
+    /// `has_occt`. This side stays the single source of truth; parity is
+    /// pinned by `tests/infra/test_occt_deps_preflight.sh`, so an edit here
+    /// without the matching bash edit fails that guard rather than silently
+    /// leaving the gate and the build disagreeing.
     fn include_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[
@@ -76,6 +84,12 @@ impl NativeDep {
     /// while we want to link the system OCCT 7.8 — and gmsh/openvdb list
     /// `/opt/reify-deps/lib` first because that's where their canonical install
     /// lives via `scripts/setup-dev.sh`.
+    ///
+    /// That ordering is precisely what the bash mirror in
+    /// `scripts/check-manifold-deps.sh`'s `occt-candidates` block must
+    /// preserve, which is why `tests/infra/test_occt_deps_preflight.sh`
+    /// compares the two lists order-sensitively. See the note on the
+    /// include-dir candidates above.
     fn lib_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[
