@@ -116,6 +116,74 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 mod tests {
     use super::*;
 
+    /// Every bare symbol [`unit_symbol_to_si`] resolves — the ONE edit site a
+    /// new arm needs, shared by the forward tests below and by the reverse
+    /// coupling guard `every_builtin_symbol_has_an_emission_ladder`.
+    ///
+    /// Completeness is not a convention here: `builtin_symbol_list_is_complete`
+    /// re-derives the arm list from this very file's own source text and fails
+    /// if the two disagree, so a symbol cannot be added to (or removed from)
+    /// the match without landing here too.
+    const BUILTIN_UNIT_SYMBOLS: &[&str] = &[
+        "mm", "cm", "m", "in", "deg", "rad", "kg", "g", "s", "K", "A", "mol", "cd",
+    ];
+
+    /// The `BUILTIN_UNIT_SYMBOLS` list is exactly [`unit_symbol_to_si`]'s arms.
+    ///
+    /// Rust cannot iterate a `match`'s arms, and a hand-maintained mirror list
+    /// that only *forward*-checks (every listed symbol resolves) would happily
+    /// go stale when a NEW arm is added — which is precisely the regression the
+    /// reverse-coupling guard exists to catch. So this re-derives the arm set
+    /// from the module's source with `include_str!`, which is resolved relative
+    /// to this file at compile time and therefore needs no runtime path.
+    ///
+    /// A reformat of the match (splitting an arm across lines) fails this test
+    /// loudly rather than silently weakening the guard — that is the intended
+    /// trade, and the panic message says what to do.
+    #[test]
+    fn builtin_symbol_list_is_complete() {
+        let src = include_str!("units.rs");
+        let (_, after) = src
+            .split_once("pub fn unit_symbol_to_si")
+            .expect("this file defines unit_symbol_to_si");
+        let (body, _) = after
+            .split_once("\npub fn ")
+            .expect("another `pub fn` follows unit_symbol_to_si and bounds its body");
+
+        let mut derived: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim_start().strip_prefix('"')?;
+                let (symbol, tail) = rest.split_once('"')?;
+                tail.trim_start().starts_with("=> Some((").then_some(symbol)
+            })
+            .collect();
+        derived.sort_unstable();
+
+        let mut listed: Vec<&str> = BUILTIN_UNIT_SYMBOLS.to_vec();
+        listed.sort_unstable();
+
+        assert_eq!(
+            derived, listed,
+            "BUILTIN_UNIT_SYMBOLS has drifted from unit_symbol_to_si's arms. \
+             Derived from source: {derived:?}; listed: {listed:?}. Add (or drop) \
+             the symbol in the const, and give any NEW dimension an emission \
+             ladder in ri_emittable_units — see \
+             every_builtin_symbol_has_an_emission_ladder."
+        );
+    }
+
+    /// Forward: every listed symbol still resolves. Catches a deleted arm.
+    #[test]
+    fn every_builtin_symbol_resolves() {
+        for sym in BUILTIN_UNIT_SYMBOLS {
+            assert!(
+                unit_symbol_to_si(sym).is_some(),
+                "built-in symbol {sym:?} no longer resolves"
+            );
+        }
+    }
+
     #[test]
     fn mm_converts_to_length_with_milli_factor() {
         let (factor, dim) = unit_symbol_to_si("mm").expect("mm should be recognized");
@@ -211,6 +279,41 @@ mod tests {
             assert!(
                 ri_emittable_units(&dim).is_empty(),
                 "dimension {:?} must have no bare-symbol emission ladder",
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// (b2) REVERSE COUPLING — every built-in symbol's dimension is emittable.
+    ///
+    /// Tests (a)–(c) all walk FORWARD: from a ladder to the symbols on it. That
+    /// direction cannot see the hole `ri_emittable_units`'s `_ => &[]` catch-all
+    /// leaves — add a dimension to [`unit_symbol_to_si`] and forget its ladder,
+    /// and the serializer silently starts REFUSING a value it could write
+    /// perfectly well, with every forward test still green. (The failure mode is
+    /// a refusal, not a corruption, which is why this is a coverage guard rather
+    /// than a correctness one — but a refusal γ cannot explain is still a bug.)
+    ///
+    /// So this walks BACKWARD, from the symbol table to the ladders. It is green
+    /// today for all 13 symbols by construction; it exists to fire on exactly the
+    /// regression above. `BUILTIN_UNIT_SYMBOLS` is kept honest by
+    /// `builtin_symbol_list_is_complete`, so a new arm cannot dodge it.
+    ///
+    /// Deliberately asserts only NON-EMPTINESS, not membership: `g` and `in` are
+    /// resolvable built-ins that are correctly absent from their canonical
+    /// ladders (reachable only through a caller-supplied hint). What must hold is
+    /// that their *dimension* is writable at all.
+    #[test]
+    fn every_builtin_symbol_has_an_emission_ladder() {
+        for sym in BUILTIN_UNIT_SYMBOLS {
+            let (_factor, dim) =
+                unit_symbol_to_si(sym).unwrap_or_else(|| panic!("{sym:?} must resolve"));
+            assert!(
+                !ri_emittable_units(&dim).is_empty(),
+                "built-in symbol {sym:?} has dimension {:?}, which ri_emittable_units \
+                 gives no ladder for — the `_ => &[]` catch-all swallowed it, so \
+                 value_to_ri_literal now refuses every value of that dimension even \
+                 though a bare symbol for it exists. Add the ladder.",
                 dim.canonical_name()
             );
         }
