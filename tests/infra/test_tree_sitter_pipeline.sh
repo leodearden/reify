@@ -2683,10 +2683,37 @@ test_verify_plan_includes_freshness_after_generation() {
     # Negative: a docs-only scope classifies RUN_RUST=0 and must keep ZERO
     # command leaves — the freshness leaf has to be RUN_RUST-guarded exactly as
     # the generate leaf is, or every docs-only landing grows a command.
-    local fix
+    #
+    # NON-VACUITY IS ASSERTED FIRST (#5629 review round 4). This arm used to
+    # stage with `git add ... || true` and then assert nothing about the index.
+    # MEASURED with the same fixture and NOTHING staged, the plan reads
+    # `# scope decision — RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0` and
+    # `# (no commands — nothing to verify for this action/scope)` with ZERO
+    # `tree-sitter-freshness` matches — so an EMPTY index satisfies BOTH
+    # assertions below, and the RUN_RUST guarding of the two freshness leaves
+    # could be completely broken while this arm stayed green. A fixture that
+    # cannot stage is a broken fixture, not a passing test: the staging failure
+    # is fatal now, and the index is inspected before the plan is reasoned about.
+    local fix add_out staged
     fix=$(mk_verify_fixture) || return 1
+    add_out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$add_out'")
     printf 'docs\n' > "$fix/docs/note.md"
-    git -C "$fix" add docs/note.md >/dev/null 2>&1 || true
+    if ! git -C "$fix" add docs/note.md >"$add_out" 2>&1; then
+        echo ""
+        echo "  ASSERTION FAILED: could not stage docs/note.md in the fixture ($fix)"
+        echo "  --- git add output ---"; cat "$add_out"; echo "  --- end output ---"
+        return 1
+    fi
+    staged=$(git -C "$fix" diff --cached --name-only)
+    if [[ "$staged" != *"docs/note.md"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the fixture index does not contain docs/note.md, so this"
+        echo "  arm would be asserting on a plan classified from an EMPTY staged set —"
+        echo "  which yields RUN_RUST=0 and no commands whatever the guard does."
+        echo "  --- staged ---"; printf '%s\n' "$staged"
+        return 1
+    fi
     capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
         bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null' \
         _ "$fix" || true
@@ -2706,6 +2733,66 @@ test_verify_plan_includes_freshness_after_generation() {
         echo ""
         echo "  ASSERTION FAILED: docs-only (RUN_RUST=0) plan contains the freshness leaf"
         echo "  — it must be guarded on RUN_RUST like tree-sitter-generate is."
+        return 1
+    fi
+
+    # POSITIVE CONTROL — the same fixture, one variable changed: a Rust file is
+    # added to the index. Without it the negative arm above can still pass for
+    # the trivial reason that nothing was classified at all; with it, this
+    # fixture is PROVEN to emit both freshness leaves the moment RUN_RUST=1, so
+    # the RUN_RUST=0 result is the guard working rather than the classifier
+    # idling. Staged AFTER the docs-only arm has been asserted, so the two index
+    # states cannot mask each other. mk_verify_fixture itself needs no change —
+    # only the mkdir -p is new — and the capture reuses capture_print_plan /
+    # plan_capture_complete exactly as the first one does, inheriting the same
+    # retry-on-truncation guarantee.
+    mkdir -p "$fix/crates/probe/src"
+    printf 'pub fn probe() -> u8 {\n    0\n}\n' > "$fix/crates/probe/src/lib.rs"
+    if ! git -C "$fix" add crates/probe/src/lib.rs >"$add_out" 2>&1; then
+        echo ""
+        echo "  ASSERTION FAILED: could not stage crates/probe/src/lib.rs in the fixture ($fix)"
+        echo "  --- git add output ---"; cat "$add_out"; echo "  --- end output ---"
+        return 1
+    fi
+    staged=$(git -C "$fix" diff --cached --name-only)
+    if [[ "$staged" != *"crates/probe/src/lib.rs"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the fixture index does not contain crates/probe/src/lib.rs,"
+        echo "  so the positive control cannot classify RUN_RUST=1 and proves nothing."
+        echo "  --- staged ---"; printf '%s\n' "$staged"
+        return 1
+    fi
+    capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null' \
+        _ "$fix" || true
+    if ! plan_capture_complete "$plan"; then
+        echo ""
+        echo "  ASSERTION FAILED: positive-control --print-plan capture truncated after retries"
+        return 1
+    fi
+    if [[ "$plan" != *"RUN_RUST=1"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: staging a Rust file did not classify RUN_RUST=1, so the"
+        echo "  negative arm above is not evidence of anything — this fixture never"
+        echo "  reaches the state the freshness leaves are emitted in."
+        echo "$plan"
+        return 1
+    fi
+    cmds="${plan#*# --- commands}"
+    if [[ "$cmds" != *"./scripts/tree-sitter-freshness.sh ensure"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: RUN_RUST=1 staged-scope plan has no"
+        echo "  './scripts/tree-sitter-freshness.sh ensure' leaf — a Rust change would be"
+        echo "  verified without the stale-archive repair the docs-only arm excuses."
+        echo "$cmds"
+        return 1
+    fi
+    if [[ "$cmds" != *"./scripts/tree-sitter-freshness.sh check"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: RUN_RUST=1 staged-scope plan has no"
+        echo "  './scripts/tree-sitter-freshness.sh check' leaf — the repair would be"
+        echo "  attempted and never asserted."
+        echo "$cmds"
         return 1
     fi
 }
