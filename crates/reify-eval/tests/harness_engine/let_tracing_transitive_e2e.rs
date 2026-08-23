@@ -82,10 +82,13 @@ const ALPHA_FIXTURE_PATH: &str = "docs/prds/v0_6/fixtures/discrete_let_cont.ri";
 /// both sanctioned repairs, the exact file list, and the
 /// do-not-leave-a-copy-behind constraint, so the follow-up is scheduled rather
 /// than left for a reader of this comment to rediscover. Deliberately NOT
-/// written as a `TODO(#NNNN)`: the curator assigns the task id
-/// asynchronously, and the house PTODO grammar requires a cite to resolve to a
-/// LIVE task — a placeholder would land as `malformed-cite` and fail
-/// `reify-audit --pattern PTODO`.
+/// written as a `TODO` marker carrying a `#NNNN` cite: the curator assigns the
+/// task id asynchronously, and the house PTODO grammar requires a cite to
+/// resolve to a LIVE task — a placeholder would land as `malformed-cite` and
+/// fail `reify-audit --pattern PTODO`. The spelling just used is deliberate
+/// too: §8.1's marker grammar keys on the keyword being immediately followed
+/// by `(` or `:`, so writing the marker form even in this explanation would
+/// itself land as an `untracked` finding — please do not "fix" it back.
 ///
 /// What IS done here is making the failure self-describing: the panic names the
 /// missing path, the two sanctioned repairs, and the fact that a docs-only
