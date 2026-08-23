@@ -269,6 +269,17 @@ scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_w
 # watcher.py::sync_folders never prints).
 scripts/jcodemunch-index-reify.sh    tests/infra/test_jcodemunch_index_reify.sh
 
+# Task 6109 (δ): the transient-serve lifecycle wrapper. Its guard is hermetic
+# (stdlib-only stub serve behind REIFY_JC_SERVE_CMD, ephemeral ports it picks
+# itself, no uvx and no network), so it is cheap enough to run as a per-task
+# fail-fast pole — and it needs to, because every regression this wrapper can
+# suffer is SILENT at the call site: a drifted teardown still exits with the
+# wrapped command's status while leaking a serve that squats 8901 and makes the
+# NEXT invocation refuse, and any wrapper chatter appended to stderr after the
+# wrapped command silently breaks the trailing-findings-array extraction every
+# reify-audit consumer depends on.
+scripts/with-jcodemunch-serve.sh    tests/infra/test_with_jcodemunch_serve.sh
+
 # Task 6320: the merge-worker trivial-pass oracle and its static manifest had
 # NO row here at all, so a guard-only or manifest-only task-scope verify
 # selected ZERO infra poles (select_infra_tests() matches artifact paths
