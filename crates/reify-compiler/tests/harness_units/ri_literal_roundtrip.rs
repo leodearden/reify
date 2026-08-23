@@ -31,10 +31,21 @@
 //! That is the *unshadowed* case, and it is the weaker half of what a real
 //! caller needs. γ's edit path splices into user modules, which usually DO
 //! `import std.units`, and the compiler consults the per-module `UnitRegistry`
-//! BEFORE the built-in table. Section (d) below closes that half: it rebuilds
-//! the stdlib-seeded registry and asserts the two tables agree bit-for-bit on
-//! every emittable symbol, so the exactness proof still holds for the table
-//! that actually wins at resolution time.
+//! BEFORE the built-in table. Section (d) below closes that half, at two
+//! altitudes:
+//!
+//!   - `emitted_literals_round_trip_under_the_stdlib_unit_registry` runs the
+//!     same batched round-trip through `compile_with_stdlib`, so an emitted
+//!     literal is actually resolved registry-first. This is the direct
+//!     property.
+//!   - `stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table`
+//!     compares the two tables symbol by symbol. This is the canary: it
+//!     localises a drift to a named symbol and factor, which a round-trip
+//!     failure would only hint at.
+//!
+//! Neither subsumes the other — a table comparison cannot see the `import`,
+//! the seeding order or the literal lowering; a round-trip cannot say which
+//! table entry moved.
 
 use reify_compiler::{UnitEntry, UnitRegistry, stdlib_loader};
 use reify_core::DimensionVector;
@@ -104,13 +115,42 @@ fn ri_type_name(v: &Value) -> &'static str {
     }
 }
 
+/// Which unit-resolution regime the spliced source is compiled under.
+///
+/// The compiler resolves a bare unit as `scope.lookup_unit_in_registry(..)
+/// .or_else(|| unit_to_scalar(..))`, so these are the two sides of that
+/// `or_else` — and a round-trip proof under one is not a proof under the other.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Prelude {
+    /// No stdlib. Nothing seeds the `UnitRegistry`, so every emitted symbol
+    /// resolves through the compiler's unconditional `unit_to_scalar`
+    /// fallback — the table the serializer's exactness proof is actually
+    /// against. The UNSHADOWED case.
+    None,
+    /// Full stdlib prelude, plus an explicit `import std.units`. Every stdlib
+    /// `pub unit` is seeded into the `UnitRegistry`, which is consulted FIRST,
+    /// so the factor a literal is multiplied by comes from `units.ri` /
+    /// `si_units.rs` rather than from `unit_symbol_to_si`. The SHADOWED case —
+    /// and the one γ's edit path actually splices into.
+    Stdlib,
+}
+
 /// Serialize every case, splice them into ONE `structure def`, evaluate it
 /// ONCE, and assert every value came back identical.
 ///
 /// Batching matters: a per-case compile would make a 260-case sweep slow
 /// enough that nobody runs it.
 fn assert_round_trips(cases: &[Case]) {
-    let mut source = String::from("structure def S {\n");
+    assert_round_trips_under(cases, Prelude::None);
+}
+
+/// [`assert_round_trips`], under an explicit unit-resolution regime.
+fn assert_round_trips_under(cases: &[Case], prelude: Prelude) {
+    let mut source = String::new();
+    if prelude == Prelude::Stdlib {
+        source.push_str("import std.units\n");
+    }
+    source.push_str("structure def S {\n");
     let mut literals: Vec<String> = Vec::with_capacity(cases.len());
 
     for (i, case) in cases.iter().enumerate() {
@@ -135,12 +175,36 @@ fn assert_round_trips(cases: &[Case]) {
     }
     source.push_str("}\n");
 
-    let result = eval_source(&source);
+    let result = match prelude {
+        Prelude::None => eval_source(&source),
+        Prelude::Stdlib => eval_source_with_stdlib(&source),
+    };
 
     for (i, case) in cases.iter().enumerate() {
         let got = cell_value(&result, "S", &format!("x{i}"));
         assert_identical(&case.value, &got, &literals[i], i, &case.label);
     }
+}
+
+/// `eval_source`, but compiled through `compile_with_stdlib` so the stdlib
+/// prelude's `pub unit` declarations are seeded into the `UnitRegistry`.
+///
+/// Inlined here rather than added to `reify-test-support` as an
+/// `eval_source_with_stdlib` sibling of the existing `check_source_with_stdlib`:
+/// `crates/reify-test-support/src/helpers.rs` is outside task #5095's locked
+/// scope. Everything it uses is already public API, so the only cost of
+/// keeping it local is this comment.
+fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+    let mut engine = reify_test_support::make_engine();
+    let result = engine.eval(&compiled);
+    let errors: Vec<&reify_core::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "eval-phase errors: {errors:?}");
+    result
 }
 
 /// `original` and `got` must be the same variant, the same dimension, and —
@@ -221,6 +285,27 @@ fn fixed_regression_values_round_trip_exactly() {
             .emitting("-55.66166674539299cm"),
         Case::new("zero length", Value::length(0.0)).emitting("0mm"),
         Case::new("negative length", Value::length(-0.08)).emitting("-80mm"),
+        // NEGATIVE ZERO. The contract is stated in terms of raw f64 BITS, and
+        // `-0.0` and `0.0` are the one pair that compares equal while differing
+        // in bits — so `assert_identical`'s `to_bits()` comparison is the only
+        // assertion in this file that can tell them apart. Both forms go
+        // through a `unary_expression` wrapping a zero literal, so this also
+        // pins that the negation survives constant folding.
+        Case::new("negative-zero length", Value::length(-0.0)).emitting("-0mm"),
+        Case::new("negative-zero real", Value::Real(-0.0)).emitting("-0.0"),
+        // The `g` rung is reachable only through a caller hint — it is
+        // deliberately absent from the canonical Mass ladder (`kg` is the SI
+        // base and the exact terminator). It is named in section (d)'s
+        // cross-guard symbol list, so it must also be round-tripped somewhere.
+        Case::new(
+            "mass hinted g",
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::MASS,
+            },
+        )
+        .with_hint("g")
+        .emitting("250g"),
         // Exponent-form magnitudes adjacent to a unit — legal per the corpus.
         Case::new("tiny length", Value::length(1e-9)),
         Case::new("huge length", Value::length(1e12)),
@@ -262,6 +347,13 @@ fn fixed_regression_values_round_trip_exactly() {
         Case::new("bool false", Value::Bool(false)).emitting("false"),
         Case::new("string", Value::String("PLA".into())).emitting("\"PLA\""),
         Case::new("string with a dot", Value::String("M3x0.5".into())).emitting("\"M3x0.5\""),
+        // The two string shapes where "lower_string_literal performs NO escape
+        // decoding, so these are verbatim-safe" is LEAST self-evident. That
+        // premise is about the LEXER, and a unit test in `ri_literal.rs` can
+        // only check what the serializer emits — only a parse-back reaches the
+        // lexer, so the claim is unpinned unless it is made here.
+        Case::new("empty string", Value::String(String::new())).emitting("\"\""),
+        Case::new("non-ASCII string", Value::String("naïve—Ω".into())).emitting("\"naïve—Ω\""),
     ];
     assert_round_trips(&cases);
 }
@@ -296,15 +388,49 @@ impl XorShift64Star {
     }
 
     /// An arbitrary finite normal `f64` with |v| in roughly [1e-9, 2e9),
-    /// assembled straight from random bits. These are almost never exactly
-    /// recoverable at a scaled rung, so they drive the ladder down to its
-    /// factor-1.0 terminator — the fallback path.
+    /// assembled straight from random bits.
+    ///
+    /// MEASURED, not assumed: these land on the FIRST rung the large majority
+    /// of the time. `ri_literal`'s module doc measures naive-division failure
+    /// at only ~2% for `mm` and ~9% for `deg`, and the acceptance test here is
+    /// exactly that division — so an arbitrary Length is mm-exact ~98% of the
+    /// time. This generator is therefore broad *value* coverage (awkward
+    /// mantissas, wide exponent range), NOT a fallback-path generator. An
+    /// earlier version of this comment claimed the opposite and was wrong by
+    /// the module's own numbers; reaching the fallback path reliably needs
+    /// [`Self::inexact_at`].
     fn arbitrary_f64(&mut self) -> f64 {
         let bits = self.next_u64();
         let sign = bits & (1u64 << 63);
         let mantissa = bits & 0x000F_FFFF_FFFF_FFFF;
         let exponent = ((bits >> 52) & 0x7FF) % 61 + (1023 - 30);
         f64::from_bits(sign | (exponent << 52) | mantissa)
+    }
+
+    /// An `f64` the rung with SI factor `factor` CANNOT recover exactly, so
+    /// the ladder is forced to walk past it.
+    ///
+    /// Reject-and-retry over [`Self::arbitrary_f64`] against the serializer's
+    /// own acceptance predicate. Sampling FOR the fallback path rather than
+    /// hoping to stumble into it is what turns the coverage guard below into a
+    /// real floor instead of an accident of the seed.
+    ///
+    /// Only meaningful for a factor that is not `1.0`: `mag * 1.0 == si_value`
+    /// holds by IEEE identity, so a factor-1.0 rung has no inexact values to
+    /// find and this would spin. Callers gate on a multi-rung ladder for
+    /// exactly that reason. The draw bound is a hang-guard, not an expected
+    /// path — at a ~2% hit rate a draw succeeds within a few dozen tries.
+    fn inexact_at(&mut self, factor: f64) -> f64 {
+        for _ in 0..10_000 {
+            let si = self.arbitrary_f64();
+            if (si / factor) * factor != si {
+                return si;
+            }
+        }
+        panic!(
+            "no value inexact at factor {factor} found in 10000 draws — either the \
+             generator collapsed or {factor} is 1.0 (which has no inexact values)"
+        );
     }
 }
 
@@ -327,16 +453,36 @@ fn deterministic_sweep_round_trips_exactly() {
     let mut cases: Vec<Case> = Vec::new();
 
     for (dimension, factors, count) in plan {
+        let ladder = reify_core::ri_emittable_units(&dimension);
+        // Mass/Time/Temperature ladders are a single factor-1.0 rung, which is
+        // exact for EVERY finite value: there is no later rung to reach and no
+        // inexact value to construct. So the forced-fallback generator is
+        // gated on a multi-rung ladder (Length, Angle).
+        let multi_rung = ladder.len() > 1;
+        let first_factor = reify_core::unit_symbol_to_si(ladder[0])
+            .expect("every ladder rung is a bare built-in")
+            .0;
+
         for i in 0..count {
-            // Alternate the two generators so both the accept path (a human
-            // magnitude landing on an early rung) and the fallback path (an
-            // arbitrary f64 forced down to the factor-1.0 terminator) get
-            // real coverage.
-            let si_value = if i % 2 == 0 {
-                let factor = factors[(rng.next_u64() as usize) % factors.len()];
-                rng.human_magnitude() * factor
-            } else {
-                rng.arbitrary_f64()
+            // Cycle THREE generators so each path gets sampled coverage rather
+            // than incidental coverage:
+            let si_value = match i % 3 {
+                //   0 — a "human" magnitude scaled by a real rung factor: the
+                //       accept path, landing on an early rung.
+                0 => {
+                    let factor = factors[(rng.next_u64() as usize) % factors.len()];
+                    rng.human_magnitude() * factor
+                }
+                //   1 — an arbitrary f64: broad value coverage. These mostly
+                //       land on the FIRST rung too (~98% for Length), which is
+                //       why they cannot serve as the fallback sample.
+                1 => rng.arbitrary_f64(),
+                //   2 — constructed to MISS the first rung, so the ladder is
+                //       forced to walk. This is the fallback path, and it is
+                //       what gives the coverage guard below a floor to assert.
+                _ if multi_rung => rng.inexact_at(first_factor),
+                //       Single-rung dimension: nothing to fall through to.
+                _ => rng.arbitrary_f64(),
             };
             assert!(
                 si_value.is_finite(),
@@ -357,28 +503,60 @@ fn deterministic_sweep_round_trips_exactly() {
     // BOTH the first rung and a later one. Deterministic seed ⇒ these counts
     // are fixed, so a regression that collapses the ladder shows up here as a
     // coverage failure even before an exactness failure.
+    //
+    // Counted over MULTI-RUNG dimensions ONLY. Mass/Time/Temperature have a
+    // single rung, so their 60 cases satisfy `unit == ladder[0]`
+    // unconditionally — no matter what the ladder code does. Including them
+    // made the `first_rung > 0` half of this assertion vacuous, which is the
+    // hole this counts around.
     let mut first_rung = 0usize;
     let mut later_rung = 0usize;
+    let mut multi_rung_cases = 0usize;
     for case in &cases {
+        let dim = case.value.dimension();
+        let ladder = reify_core::ri_emittable_units(&dim);
+        if ladder.len() < 2 {
+            continue;
+        }
+        multi_rung_cases += 1;
         let literal = value_to_ri_literal(&case.value).expect("sweep value is serializable");
-        let unit = trailing_unit(&literal);
-        let ladder = reify_core::ri_emittable_units(&case.value.dimension());
-        if unit == ladder[0] {
+        if trailing_unit(&literal) == ladder[0] {
             first_rung += 1;
         } else {
             later_rung += 1;
         }
     }
     println!(
-        "sweep ladder coverage: {first_rung} first-rung, {later_rung} later-rung \
-         out of {} cases",
+        "sweep ladder coverage (multi-rung dimensions only): {first_rung} first-rung, \
+         {later_rung} later-rung out of {multi_rung_cases} multi-rung cases \
+         ({} total)",
         cases.len()
     );
+
+    // FLOORS, not `> 0`. One case in three on a multi-rung dimension is
+    // *constructed* to miss the first rung (`inexact_at`), so a healthy sweep
+    // clears LATER_RUNG_FLOOR by a wide margin. MEASURED at this seed:
+    // 129 first-rung, 71 later-rung out of 200 multi-rung cases — 67 of those
+    // 71 are the forced-inexact draws (40 Length + 27 Angle), the other 4 are
+    // incidental. Both floors are 50, so neither is close to tripping on
+    // healthy code, and neither is satisfiable by a collapsed ladder.
+    //
+    // Two distinct ladder regressions are caught here before any exactness
+    // assertion fires: a ladder collapsed to its factor-1.0 terminator drives
+    // later_rung to 0, and a ladder that lost its terminator makes the
+    // forced-inexact cases unserializable, which the `expect` above turns into
+    // a panic.
+    const LATER_RUNG_FLOOR: usize = 50;
+    const FIRST_RUNG_FLOOR: usize = 50;
     assert!(
-        first_rung > 0 && later_rung > 0,
-        "sweep did not exercise both ladder paths: {first_rung} first-rung, \
-         {later_rung} later-rung out of {}",
-        cases.len()
+        later_rung >= LATER_RUNG_FLOOR,
+        "sweep barely exercised the ladder-fallback path: {later_rung} later-rung \
+         (floor {LATER_RUNG_FLOOR}) out of {multi_rung_cases} multi-rung cases"
+    );
+    assert!(
+        first_rung >= FIRST_RUNG_FLOOR,
+        "sweep barely exercised the first-rung accept path: {first_rung} first-rung \
+         (floor {FIRST_RUNG_FLOOR}) out of {multi_rung_cases} multi-rung cases"
     );
 
     assert_round_trips(&cases);
@@ -585,6 +763,93 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
          compared, got {compared} (built-in-only: {builtin_only:?}) — did the \
          stdlib module set or the seeding shape change?"
     );
+}
+
+/// DIRECT: a serializer-emitted literal, spliced into a module that imports
+/// `std.units`, re-parses bit-exactly through the registry-FIRST path.
+///
+/// The cross-guard above compares two TABLES. That is one step removed from
+/// the property that matters: it pins that `units.ri`'s factors equal
+/// `unit_symbol_to_si`'s, not that a literal `value_to_ri_literal` actually
+/// wrote survives `expr.rs`'s `lookup_unit_in_registry(..).or_else(..)`
+/// resolution. Everything between the two — the `import` declaration, prelude
+/// seeding order, `UnitEntry`'s factor plumbing, the quantity-literal lowering
+/// — is unexercised by a table comparison and is exactly where γ's edit path
+/// lives, since user modules usually DO `import std.units`.
+///
+/// So this runs the same `assert_identical` the unshadowed sweep runs, over
+/// the shadowed regime. Keep the table cross-guard as the cheap canary: it
+/// localises a drift to a specific symbol and factor, which a round-trip
+/// failure would only hint at.
+///
+/// The case list covers every symbol the cross-guard compares — the eight
+/// canonical ladder rungs plus the two hint-only ones (`in`, `g`) — so a
+/// registry shadow on ANY emittable symbol fails here.
+#[test]
+fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
+    let cases = vec![
+        // Length: all four symbols. `m` and `in` need a hint (canonical would
+        // be `1000mm` and `25.4mm`).
+        Case::new("stdlib mm", Value::length(0.08)).emitting("80mm"),
+        Case::new("stdlib cm", Value::length(0.05))
+            .with_hint("cm")
+            .emitting("5cm"),
+        Case::new("stdlib m", Value::length(1.0))
+            .with_hint("m")
+            .emitting("1m"),
+        Case::new("stdlib in", Value::length(0.0254))
+            .with_hint("in")
+            .emitting("1in"),
+        // The mm-inexact witness, so the ladder-fallback rung is resolved
+        // through the registry too, not just the first rung.
+        Case::new("stdlib cm via fallback", Value::length(-0.5566166674539299))
+            .emitting("-55.66166674539299cm"),
+        // Angle: `deg` is THE drift risk — `units.ri` declares it as
+        // `3.141592653589793 / 180`, which matches `PI / 180.0` only because
+        // those are the same digits divided the same way.
+        Case::new("stdlib deg", Value::angle(std::f64::consts::FRAC_PI_2)).emitting("90deg"),
+        Case::new("stdlib rad", Value::angle(std::f64::consts::FRAC_PI_2))
+            .with_hint("rad")
+            .emitting("1.5707963267948966rad"),
+        // Mass: the SI base and the hint-only sub-unit.
+        Case::new(
+            "stdlib kg",
+            Value::Scalar {
+                si_value: 2.75,
+                dimension: DimensionVector::MASS,
+            },
+        )
+        .emitting("2.75kg"),
+        Case::new(
+            "stdlib g",
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::MASS,
+            },
+        )
+        .with_hint("g")
+        .emitting("250g"),
+        Case::new(
+            "stdlib s",
+            Value::Scalar {
+                si_value: -0.125,
+                dimension: DimensionVector::TIME,
+            },
+        )
+        .emitting("-0.125s"),
+        // `K` is the one to watch for an AFFINE shadow: `degC` lives beside it
+        // in units.ri with an offset, and `si = mag * factor + offset` is not
+        // the arithmetic the serializer proves against.
+        Case::new(
+            "stdlib K",
+            Value::Scalar {
+                si_value: 293.15,
+                dimension: DimensionVector::TEMPERATURE,
+            },
+        )
+        .emitting("293.15K"),
+    ];
+    assert_round_trips_under(&cases, Prelude::Stdlib);
 }
 
 // ─── (e) rejections are never spliced ────────────────────────────────────────
