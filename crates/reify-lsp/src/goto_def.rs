@@ -192,13 +192,23 @@ pub fn compute_goto_definition_cross_file_with_parsed(
 
 /// Find a top-level declaration by name in a source string and return its Location.
 ///
-/// Thin wrapper over [`find_declaration_name_span`], falling back to
-/// [`find_type_alias_name_span`] so cross-file goto-def also resolves a `type`
-/// alias (#6341), and pairing the located name-token span with `uri` as an LSP
+/// Parses `source` ONCE and scans it via [`decl_name_span_in`] with
+/// `include_aliases = true`, so cross-file goto-def also resolves a `type`
+/// alias (#6341), then pairs the located name-token span with `uri` as an LSP
 /// [`Location`].
+///
+/// The single parse is load-bearing, not incidental: the cross-file caller
+/// probes each import's target in turn, so a MISS is the common case, and the
+/// target file is not covered by the server's per-document parse cache (that
+/// cache holds only the primary document). Chaining an alias-only second pass
+/// behind `.or_else` would therefore re-run a full tree-sitter parse + AST
+/// lowering of the same string on every miss, doubling the cost of an
+/// interactive, per-keystroke-adjacent path.
 fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Location> {
-    let span = find_declaration_name_span(source, name)
-        .or_else(|| find_type_alias_name_span(source, name))?;
+    // Prelude-aware parse for AST-shape consistency across reify-lsp;
+    // see task 2525.
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
+    let span = decl_name_span_in(&parsed, source, name, true)?;
     Some(Location {
         uri: uri.clone(),
         range: span_to_range(source, span),
@@ -208,10 +218,8 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// Find the **name-token span** of a top-level declaration named `name`.
 ///
 /// Parses `source` (prelude-aware, for AST-shape consistency across reify-lsp;
-/// see task 2525), scans Structure / Occurrence / Function / Enum / Trait /
-/// Field declarations for a matching name, and returns the byte
-/// [`SourceSpan`] of just the NAME identifier (located via
-/// [`find_name_offset_in_decl`]). Returns `None` when no declaration matches.
+/// see task 2525) and delegates to [`decl_name_span_in`] with
+/// `include_aliases = false`. Returns `None` when no declaration matches.
 ///
 /// Factored from [`find_declaration_in_source`] so the cross-file
 /// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
@@ -221,7 +229,35 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
+    decl_name_span_in(&parsed, source, name, false)
+}
 
+/// Scan an already-parsed module for the name-token span of the declaration
+/// named `name`, returning the byte [`SourceSpan`] of just the NAME identifier
+/// (located via [`find_name_offset_in_decl`]).
+///
+/// Takes `&ParsedModule` rather than `&str` so a caller that needs more than one
+/// declaration shape pays for exactly one parse; `source` is still required
+/// because the AST carries whole-declaration spans, not name-token spans.
+///
+/// `include_aliases` gates the `TypeAlias` arm, and the gate is a safety
+/// boundary, not a convenience. The shared [`find_declaration_name_span`] passes
+/// `false` because the cross-file rename/reference collectors use it to decide
+/// what is renameable: classifying an alias as a renameable home declaration
+/// would move the declaration token while silently missing every
+/// `param x : Alias` use site — those collectors walk *expressions*, not type
+/// expressions — corrupting the user's file. Goto-def is read-only and has no
+/// such hazard, so only [`find_declaration_in_source`] passes `true`.
+/// Task #6341.
+///
+/// Declarations are scanned in source order, so in the (ill-formed) case of an
+/// alias and a structure sharing one name, the earlier declaration wins.
+fn decl_name_span_in(
+    parsed: &reify_ast::ParsedModule,
+    source: &str,
+    name: &str,
+    include_aliases: bool,
+) -> Option<SourceSpan> {
     for decl in &parsed.declarations {
         let (decl_name, span) = match decl {
             reify_ast::Declaration::Structure(s) => (s.name.as_str(), s.span),
@@ -230,6 +266,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
             reify_ast::Declaration::Enum(e) => (e.name.as_str(), e.span),
             reify_ast::Declaration::Trait(t) => (t.name.as_str(), t.span),
             reify_ast::Declaration::Field(f) => (f.name.as_str(), f.span),
+            reify_ast::Declaration::TypeAlias(t) if include_aliases => (t.name.as_str(), t.span),
             _ => continue,
         };
         if decl_name == name {
@@ -237,36 +274,6 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
             // Find the name's byte position within the declaration text.
             let name_offset = find_name_offset_in_decl(source, span.start, name);
             return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
-        }
-    }
-    None
-}
-
-/// Find the **name-token span** of a top-level `type` alias declaration named `name`.
-///
-/// Deliberately SEPARATE from [`find_declaration_name_span`], which is `pub(crate)`
-/// and shared with the cross-file rename/reference collectors. Adding a TypeAlias
-/// arm there would classify a locally-declared alias as a renameable home
-/// declaration — but those collectors walk *expressions*, not type expressions, so
-/// a rename would move the declaration token and silently miss every
-/// `param x : Alias` use site, corrupting the user's file. Goto-def is read-only
-/// and has no such hazard, so the widening lives here, in the goto_def-private
-/// wrapper's fallback. Task #6341.
-fn find_type_alias_name_span(source: &str, name: &str) -> Option<SourceSpan> {
-    // Prelude-aware parse for AST-shape consistency across reify-lsp;
-    // see task 2525.
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
-
-    for decl in &parsed.declarations {
-        if let reify_ast::Declaration::TypeAlias(t) = decl
-            && t.name == name
-        {
-            // Point to the name within the declaration, not the entire span.
-            let name_offset = find_name_offset_in_decl(source, t.span.start, name);
-            return Some(SourceSpan::new(
-                name_offset,
-                name_offset + name.len() as u32,
-            ));
         }
     }
     None
