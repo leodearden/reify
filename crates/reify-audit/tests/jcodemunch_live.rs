@@ -30,15 +30,47 @@
 //!   satisfy.
 //! * Per leg (PDEAD, P1): exit 0; no `E_JC_INDEX_` marker in stderr, i.e. the
 //!   §4.3 freshness gate ADMITTED the run rather than refusing it; no
-//!   `jcodemunch unreachable at` breadcrumb, i.e. the client completed a real
-//!   session instead of degrading to `NoopJCodemunchOps`; and a well-formed
-//!   findings array.
+//!   `jcodemunch unreachable at` CONSTRUCTION breadcrumb, i.e. the client
+//!   completed a real handshake instead of degrading wholesale to
+//!   `NoopJCodemunchOps`; no `jcodemunch <tool>:` PER-CALL breadcrumb, i.e.
+//!   every `tools/call` the leg reached actually ANSWERED rather than erroring
+//!   into `Vec::new()`; and a well-formed findings array.
 //!
-//! The breadcrumb assertion is the load-bearing one. The degraded path still
-//! exits 0 and still serializes a perfectly well-formed EMPTY array — that is
-//! precisely how §2.3 survived. No link in the chain
-//! (exit 0 / no refusal marker / no fail-soft / symbols > 0) is satisfiable by
-//! a vacuous run.
+//! The two breadcrumb assertions are the load-bearing ones, and they are
+//! INDEPENDENT layers — the second is not implied by the first. Both degraded
+//! paths still exit 0 and still serialize a perfectly well-formed EMPTY array;
+//! that is precisely how §2.3 survived ten weeks.
+//!
+//! No link in the five-part chain is satisfiable by a vacuous run:
+//!
+//! 1. exit 0;
+//! 2. no `E_JC_INDEX_` refusal marker (the §4.3 gate admitted the run);
+//! 3. no CONSTRUCTION fail-soft — `reify-audit: jcodemunch unreachable at
+//!    '<url>': …`, `src/bin/reify-audit.rs:797`, emitted when
+//!    `JcodemunchClient::initialize` fails and the ENTIRE run degrades;
+//! 4. no PER-CALL fail-soft — `jcodemunch <tool>: …`,
+//!    `src/jcodemunch_client.rs:1074`/`:1117`/`:1135`, emitted when ONE
+//!    `tools/call` errors after a SUCCESSFUL handshake and that single op
+//!    returns `Vec::new()`;
+//! 5. `count_symbols(index_dir, repo_id) > 0`.
+//!
+//! Link 4 is genuinely independent of links 1-3 and 5, which is why omitting
+//! it left a hole: a per-call failure happens AFTER the handshake, so the
+//! construction breadcrumb is silent, the §4.3 gate has already admitted, the
+//! exit code is 0, and `[]` is well-formed. `count_symbols > 0` does not close
+//! it either — that reads the index DB directly and says nothing about whether
+//! the serve answered the call. Caveat carried from the constants: within P1,
+//! `find_references` is only reachable per symbol returned by
+//! `get_changed_symbols`, so if that call legitimately returns zero symbols
+//! its breadcrumb cannot appear and its absence proves nothing;
+//! `get_changed_symbols` runs unconditionally and is the load-bearing half.
+//!
+//! The per-call layer is pinned at TWO levels, neither of which needs a serve:
+//! behaviourally against the REAL binary on the ordinary merge gate
+//! (`tests/cli.rs`, a mock MCP endpoint that completes `initialize` and then
+//! errors the `tools/call`), and at the seam against synthetic stderr
+//! (`live_leg_seam` below, including a positive control proving the check is
+//! not unconditional).
 //!
 //! ## What the capstone does NOT assert
 //!
@@ -512,10 +544,19 @@ fn build_corpus_repo(dir: &std::path::Path) -> CorpusRepo {
 ///
 /// What makes the capstone non-vacuous is therefore NOT this predicate on its
 /// own — `[]` satisfies it, and `[]` is exactly what the broken handshake
-/// emitted for ten weeks. It is one link in a four-part chain: exit 0, no
-/// `E_JC_INDEX_` refusal marker, no `jcodemunch unreachable at` fail-soft
-/// breadcrumb, and an independently-read `count_symbols(...) > 0`. No link in
-/// that chain is satisfiable by a vacuous run.
+/// emitted for ten weeks. It is one link in a FIVE-part chain: exit 0; no
+/// `E_JC_INDEX_` refusal marker; no `jcodemunch unreachable at` CONSTRUCTION
+/// fail-soft breadcrumb (`src/bin/reify-audit.rs:797`, the whole run
+/// degraded); no `jcodemunch <tool>:` PER-CALL fail-soft breadcrumb
+/// (`src/jcodemunch_client.rs:1074`/`:1117`/`:1135`, one op errored after a
+/// successful handshake and returned `Vec::new()`); and an independently-read
+/// `count_symbols(...) > 0`. No link in that chain is satisfiable by a vacuous
+/// run.
+///
+/// The per-call link is the one this predicate is most often confused with,
+/// and the confusion is exactly backwards: an EMPTY-BY-FAILURE array is just
+/// as well-formed as an empty-by-fact one. Well-formedness cannot distinguish
+/// them; only the breadcrumb can.
 fn assert_well_formed_findings(findings: &[serde_json::Value], leg: &str) {
     for (i, finding) in findings.iter().enumerate() {
         let render =
@@ -924,13 +965,7 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         "--runs-db",
         runs_db,
     ]);
-    assert_live_leg(
-        "P1",
-        p1_code,
-        &p1_findings,
-        &p1_stderr,
-        P1_CALL_BREADCRUMBS,
-    );
+    assert_live_leg("P1", p1_code, &p1_findings, &p1_stderr, P1_CALL_BREADCRUMBS);
 
     // ---------------------------------------------------------------
     // 8. Operator-facing acceptance evidence. PRINTED, never asserted.
@@ -989,15 +1024,40 @@ const P1_CALL_BREADCRUMBS: &[&str] = &[
     "jcodemunch find_references(",
 ];
 
-/// The four-part per-leg assertion, in the order that makes a failure
+/// The FIVE-part per-leg assertion, in the order that makes a failure
 /// self-diagnosing.
 ///
-/// Order matters. The exit code is checked first because a non-zero exit
-/// subsumes everything after it; the `E_JC_INDEX_` check comes next so a §4.3
-/// REFUSAL is never misread as a seam failure; the fail-soft breadcrumb comes
-/// third because it is the one that distinguishes "a real session happened"
-/// from "the run degraded and emitted a well-formed empty array"; and only
-/// then is the payload's shape judged.
+/// Order matters, and each step is chosen to subsume the ones after it:
+///
+/// 1. the exit code, because a non-zero exit subsumes everything below;
+/// 2. the `E_JC_INDEX_` marker, so a §4.3 REFUSAL is never misread as a seam
+///    failure;
+/// 3. the CONSTRUCTION fail-soft (`jcodemunch unreachable at`,
+///    `src/bin/reify-audit.rs:797`) — the handshake never completed and the
+///    ENTIRE run degraded to `NoopJCodemunchOps`;
+/// 4. the PER-CALL fail-soft (`jcodemunch <tool>:`,
+///    `src/jcodemunch_client.rs:1074`/`:1117`/`:1135`) — the handshake DID
+///    complete, but one `tools/call` errored and that op returned
+///    `Vec::new()`;
+/// 5. only then, the payload's shape.
+///
+/// 3 before 4 because a construction failure subsumes a per-call one: if the
+/// session never opened, no call could have been made. Both before 5 because
+/// either failure explains an empty array, and an empty array is well-formed
+/// under any of them.
+///
+/// Steps 3 and 4 are INDEPENDENT layers. A per-call failure occurs after a
+/// SUCCESSFUL handshake, so step 3 is silent, step 2 has already admitted the
+/// run, step 1 sees exit 0, and step 5 sees a perfectly well-formed `[]` —
+/// every assertion that predates step 4 passes on a run that produced nothing.
+/// `count_symbols(...) > 0`, asserted by the caller, does not close it either:
+/// it reads the index DB directly and says nothing about whether the serve
+/// answered the call.
+///
+/// `call_breadcrumbs` is per-leg because the reachable op set is — see
+/// `PDEAD_CALL_BREADCRUMBS` / `P1_CALL_BREADCRUMBS`, including the caveat that
+/// P1's `find_references` breadcrumb is only reachable when
+/// `get_changed_symbols` returned at least one symbol.
 ///
 /// Shared by both legs rather than written twice, so the two cannot drift into
 /// asserting different things about the same contract.
