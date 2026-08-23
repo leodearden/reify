@@ -38,9 +38,13 @@
 # flagged, and `// nan-safe:allow — <reason>` is the sanctioned response.
 # Pinned by block (hJ) of tests/infra/test_nan_safe_ordering_guard_wired.sh.
 #
-# COVERED SCOPE (exactly — mirrors the task 5093 spec): the FEA numeric crates
-# reify-solver-elastic, reify-kernel-gmsh, reify-fdm, reify-shell-extract,
-# reify-mesh-morph, plus reify-eval's compute_targets/ and modal_ops.rs.
+# COVERED SCOPE (exactly): the FEA numeric crates reify-solver-elastic,
+# reify-kernel-gmsh, reify-fdm, reify-shell-extract, reify-mesh-morph, plus
+# reify-eval's compute_targets/ and modal_ops.rs — the task 5093 spec — AND
+# reify-stdlib, added by task #6376 once its four class-A sites were hardened
+# and its three class-B sites annotated. That widening was HALF of decision
+# 9's trigger: reify-constraints is named by the same trigger and is still
+# excluded, pending its own follow-up ticket.
 #
 # THE RULE behind that list (so a new crate can be judged, not guessed): the
 # covered scope is the PHYSICAL/GEOMETRIC NUMERIC SOLVE PATH. Cache-eviction
@@ -58,9 +62,11 @@
 #
 # WARNING: this scope is NARROWER than INV-FEA-3's registry wording used to
 # suggest ("numeric crates"), and decision 9's 2026-08-20 census found
-# genuinely UNGUARDED sites outside it (reify-stdlib, reify-constraints,
-# reify-eval's engine_build.rs) owned by filed follow-up hardening, NOT by
-# this gate. Do not read this gate's green as evidence that they are safe.
+# genuinely UNGUARDED sites outside it (reify-constraints and reify-eval's
+# engine_build.rs — reify-stdlib was on this list until task #6376 hardened
+# it and brought it into scope above) owned by filed follow-up hardening,
+# NOT by this gate. Do not read this gate's green as evidence that they are
+# safe.
 #
 # PRODUCTION-CODE VIEW: each raw line is reduced to its production code by a
 # single LEFT-TO-RIGHT LEXER (`_strip_line`), not a comment-tail regex strip.
@@ -149,6 +155,7 @@ SCOPE_PATHSPECS=(
     'crates/reify-mesh-morph/*.rs'
     'crates/reify-eval/src/compute_targets/*.rs'
     'crates/reify-eval/src/modal_ops.rs'
+    'crates/reify-stdlib/*.rs'
 )
 
 # Tracked .rs sources in scope, minus integration-test dirs (tests/ excluded per

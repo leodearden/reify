@@ -38,7 +38,8 @@ use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_core::{DiagnosticCode, Severity, SourceSpan};
 use reify_ir::Satisfaction;
 use reify_test_support::{
-    MockConstraintChecker, check_source_with_stdlib, parse_and_compile_with_stdlib,
+    MockConstraintChecker, check_source_with_stdlib, missing_paths_under,
+    parse_and_compile_with_stdlib,
 };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -794,24 +795,17 @@ fn compile_correctness_skips_still_fail_to_compile() {
 /// Return the subset of `entries`' relative paths that do not exist under
 /// `examples_dir`, regardless of [`SkipKind`].
 ///
-/// Pure and deterministic (no I/O beyond `Path::exists`) — the single source
-/// of truth for the SKIP_SET dead-key check, unit-tested directly by
-/// `missing_skip_set_paths_contract` below.
+/// Existence filter: [`reify_test_support::missing_paths_under`], where its
+/// contract is documented and unit-tested.
 ///
-/// Known duplication, recorded rather than fixed: `examples_smoke.rs`'s
-/// `skip_set_entries_exist_under_examples_dir` inlines the same
-/// `Path::exists` filter over its own two-tuple `SKIP_SET`. Hoisting a
-/// shared helper into `reify_test_support` is out of scope for this task
-/// (locked to this one file); tracked as a follow-up task (#5667).
+/// Kept as a named adapter rather than inlined so `missing_skip_set_paths_contract`
+/// below can pin the one piece of behaviour the shared helper cannot see: that
+/// the projection discards [`SkipKind`].
 fn missing_skip_set_paths<'a>(
     entries: &'a [(&'a str, SkipKind, &'a str)],
     examples_dir: &Path,
 ) -> Vec<&'a str> {
-    entries
-        .iter()
-        .map(|(rel, _, _)| *rel)
-        .filter(|rel| !examples_dir.join(rel).exists())
-        .collect()
+    missing_paths_under(examples_dir, entries.iter().map(|(rel, _, _)| *rel))
 }
 
 /// Sanity guard: every entry in [`SKIP_SET`] must name a relative path that
@@ -819,12 +813,11 @@ fn missing_skip_set_paths<'a>(
 /// assertion message below for why this matters most for `SkipKind::PerfBudget`
 /// keys specifically.
 ///
-/// Mirrors the guard of the same name in
-/// `crates/reify-compiler/tests/examples_smoke.rs`
-/// (`skip_set_entries_exist_under_examples_dir`, which performs the same
-/// check inline against its own two-tuple `SKIP_SET`) so the shape stays
-/// recognisable across the two files; this asserts nothing about that
-/// file's contents.
+/// A guard of the same name in
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// covers that crate's own skip list. Only the existence filter is shared —
+/// this asserts nothing about that file's contents, and no fixed relation
+/// between the two skip lists is claimed (see the `SKIP_SET` doc above).
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
     let missing = missing_skip_set_paths(SKIP_SET, Path::new(EXAMPLES_DIR));
@@ -845,14 +838,19 @@ fn skip_set_entries_exist_under_examples_dir() {
 
 // ─── SKIP_SET existence guard unit test: missing_skip_set_paths contract ──
 
-/// `missing_skip_set_paths` must flag entries whose relative path does not
-/// exist under `examples_dir`, regardless of [`SkipKind`], and must not flag
-/// entries that do exist. Fixture mixes one present + one missing entry of
-/// each kind, with the two missing entries bracketing the two present ones,
-/// so neither an ignore-`SkipKind` bug nor a stop-at-first-miss bug can pass
-/// by accident.
+/// `missing_skip_set_paths` must discard [`SkipKind`] when projecting entries
+/// into the shared existence filter. That projection is the adapter's whole
+/// job, and the one behaviour [`reify_test_support::missing_paths_under`]
+/// structurally cannot see — it never receives a `SkipKind`.
 ///
-/// Hermetic by construction: the "present" fixtures live in a fresh
+/// The fixture pairs each path against BOTH kinds, so `SkipKind` is the only
+/// dimension that varies within a pair: an implementation that filtered on
+/// kind would return one copy of the missing path where two are expected, or
+/// flag one copy of the present one. Present/missing semantics, input order
+/// and the no-short-circuit contract belong to the shared helper and are
+/// unit-tested there rather than restated here.
+///
+/// Hermetic by construction: the "present" fixture lives in a fresh
 /// `tempfile::TempDir` rather than the real `examples/` corpus, so an
 /// unrelated example rename/deletion can't fail this pure-helper unit test —
 /// that live-corpus signal belongs to `skip_set_entries_exist_under_examples_dir`
@@ -860,57 +858,25 @@ fn skip_set_entries_exist_under_examples_dir() {
 #[test]
 fn missing_skip_set_paths_contract() {
     let dir = tempfile::TempDir::new().expect("tempdir creation should succeed");
-    std::fs::create_dir(dir.path().join("trajectory")).expect("create trajectory/ subdir");
-    std::fs::create_dir(dir.path().join("auto")).expect("create auto/ subdir");
-    std::fs::write(
-        dir.path().join("trajectory/present.ri"),
-        "// present fixture, PerfBudget\n",
-    )
-    .expect("write trajectory/present.ri fixture");
-    std::fs::write(
-        dir.path().join("auto/present.ri"),
-        "// present fixture, CompileError\n",
-    )
-    .expect("write auto/present.ri fixture");
+    std::fs::write(dir.path().join("present.ri"), "// present fixture\n")
+        .expect("write present.ri fixture");
 
     let entries: &[(&str, SkipKind, &str)] = &[
-        (
-            "trajectory/present.ri",
-            SkipKind::PerfBudget,
-            "present, PerfBudget",
-        ),
-        (
-            "trajectory/deleted_by_a_rename.ri",
-            SkipKind::PerfBudget,
-            "bogus, PerfBudget",
-        ),
-        (
-            "auto/present.ri",
-            SkipKind::CompileError,
-            "present, CompileError",
-        ),
-        (
-            "auto/never_existed.ri",
-            SkipKind::CompileError,
-            "bogus, CompileError",
-        ),
+        ("present.ri", SkipKind::PerfBudget, "present, perf"),
+        ("present.ri", SkipKind::CompileError, "present, compile"),
+        ("gone.ri", SkipKind::PerfBudget, "absent, perf"),
+        ("gone.ri", SkipKind::CompileError, "absent, compile"),
     ];
 
-    let mut names = missing_skip_set_paths(entries, dir.path());
+    let names = missing_skip_set_paths(entries, dir.path());
 
-    // Sort before comparing: `missing_skip_set_paths` is documented as a
-    // filter with no order-preservation guarantee (mirroring
-    // `per_file_violations` above), so pin the offending *set* rather than
-    // incidental iteration order.
-    names.sort_unstable();
     assert_eq!(
         names,
-        vec!["auto/never_existed.ri", "trajectory/deleted_by_a_rename.ri"],
-        "expected both bogus paths (one per SkipKind) to be flagged as missing against a \
-         hermetic tempdir fixture — confirming the helper flags missing paths regardless \
-         of SkipKind and returns the full offending set rather than short-circuiting on \
-         the first miss; the two synthetic, present files (one per SkipKind) must not be \
-         flagged, got: {names:?}"
+        vec!["gone.ri", "gone.ri"],
+        "expected both entries naming the absent path to be flagged and both naming the \
+         materialised one to be skipped, the two members of each pair differing only in \
+         SkipKind — a projection that did not discard SkipKind would split a pair; \
+         got: {names:?}"
     );
 }
 

@@ -167,21 +167,23 @@ fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
     }
 }
 
-/// Build positional BARE coordinate args (`c0`, `c1`, …) from a slice of f64.
-/// The production reader iterates `args` in Vec order (names are inert), so
-/// this is how a variadic builtin receives its flat coordinate stream.
+/// Build positional LENGTH coordinate args (`c0`, `c1`, …) from a slice of SI
+/// metres. The production reader iterates `args` in Vec order (names are
+/// inert), so this is how a variadic builtin receives its flat coordinate
+/// stream.
 ///
-/// After task 5658 the only remaining BARE variadic reader is
-/// `eval_all_args_to_f64`, used by `profile_polygon`'s 2-D vertex pairs (task
-/// 5661's residual) — so Polygon is this helper's only wholesale user.
-/// InterpCurve/BezierCurve go through the length-gated
-/// `accept_variadic_length_args` and NurbsCurve gates only its pole span, so
-/// those arms are written out explicitly below.
+/// Every position minted here is DIMENSIONED, because this helper's only
+/// wholesale user is Polygon: every `polygon` argument is a LENGTH-gated 2-D
+/// vertex coordinate in the XY plane (task 5661), at every arity, with no
+/// dimensionless neighbour to leave bare. The curve arms are written out
+/// explicitly below instead of calling this: InterpCurve/BezierCurve are also
+/// wholesale-gated but interleave nothing, while NurbsCurve gates ONLY its pole
+/// span and so cannot be swapped wholesale at all.
 fn coord_args(coords: &[f64]) -> Vec<(String, CompiledExpr)> {
     coords
         .iter()
         .enumerate()
-        .map(|(i, &v)| (format!("c{i}"), lit(v)))
+        .map(|(i, &v)| (format!("c{i}"), lit_len(v)))
         .collect()
 }
 
@@ -2615,10 +2617,10 @@ fn profile_case(k: ProfileKind) -> CompiledGeometryOp {
             ("height".to_string(), lit_len(0.03)),
         ],
         ProfileKind::Circle => vec![("radius".to_string(), lit_len(0.01))],
-        // 3 points → 6 coords (chunks of 2). Deliberately still BARE: polygon
-        // routes its variadic list through `eval_all_args_to_f64`, which has no
-        // `ArgSpec` to check against, so its coords are out of task 5743's
-        // slice (they belong to 5661).
+        // 3 points → 6 coords (chunks of 2). EVERY position is a vertex
+        // coordinate in the XY plane and so is LENGTH-gated (task 5661), which
+        // is why `coord_args` mints dimensioned literals. The golden below is
+        // unchanged: `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         ProfileKind::Polygon => coord_args(&[0.0, 0.0, 0.01, 0.0, 0.005, 0.01]),
         ProfileKind::Ellipse => vec![
             ("semi_major".to_string(), lit_len(0.02)),

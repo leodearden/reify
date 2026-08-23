@@ -188,7 +188,7 @@ repeating.
 
 5. **Verify before you commit:**
    ```sh
-   cargo test -p reify-compiler --test examples_smoke
+   cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::
    ```
    Also run `reify eval` on the new file, not just `reify check` — check is
    silent about several classes of geometry error (see the note at the end of

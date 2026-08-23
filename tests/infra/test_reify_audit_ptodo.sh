@@ -2,8 +2,8 @@
 # tests/infra/test_reify_audit_ptodo.sh
 #
 # Infra gate for the PTODO detector (task e / #4557):
-#   (a) RATCHET  — TWO assertions, in this order: a non-emptiness FLOOR on
-#                  the live fingerprint set, then the subset check — live
+#   (a) RATCHET  — TWO assertions, in this order: a RUN-EVIDENCE floor on the
+#                  generator's stderr, then the subset check — live
 #                  ptodo-baseline-gen fingerprints must be a subset of the
 #                  committed crates/reify-audit/ptodo-baseline.txt
 #                  (live - baseline = empty).  Subset-of alone is trivially
@@ -61,17 +61,27 @@
 #     actually executed.
 # Both are pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh.
 #
-# RATCHET VACUITY FLOOR (task #6127, esc-6087-3).  The scenario-(a)-level
-# analogue of the block above: that floor stops a run which executed no
-# SCENARIOS from reporting green; this one stops a scenario that executed with
-# no DETECTOR OUTPUT from doing the same, since subset-of is trivially
-# satisfied by the empty set.  _ratchet_check_nonempty below is that floor,
+# RATCHET VACUITY FLOOR (task #6127, rebased onto scan evidence by #6241).  The
+# scenario-(a)-level analogue of the block above: that floor stops a run which
+# executed no SCENARIOS from reporting green; this one stops a scenario whose
+# DETECTOR NEVER RAN from doing the same, since subset-of is trivially
+# satisfied by the empty set.  _ratchet_check_scan_evidence below is that floor,
 # asserted BEFORE the subset check so the precondition is reported before the
-# thing it conditions.  Its rationale, self-disarm rule and known limits live
-# in ONE place — PRD 6.6, "Vacuity floor on the live set"
-# (docs/prds/reify-audit-ptodo-detector.md); do not restate them here.  The
+# thing it conditions.
+#
+# It keys on the generator's own `@@PTODO_SCAN@@ files_scanned=<N> …` stderr
+# line — evidence the sweep RAN — not on how many findings it produced, so a
+# clean tree passes and an ordinary burn-down commit can never false-RED it.
+# That is why no detector-kind knowledge lives in this file any more, and why
+# the PRD 6.6 derivation invariant above holds in full: the helper reads a
+# field off generator-emitted text, it derives nothing.  Rationale and known
+# limits live in ONE place — PRD §6.6
+# (docs/prds/reify-audit-ptodo-detector.md); do not restate them here.  Cited by
+# SECTION NUMBER only, deliberately: a bolded paragraph title is not a stable
+# anchor (#6241's retitle stranded six such cites at once), a section number is.  The
 # in-file meta-test below pins its SEMANTICS; the WIRING into scenario (a),
-# which that meta-test cannot observe, is pinned by
+# which that meta-test cannot observe, is pinned in BOTH directions (fires
+# without scan evidence, silent with it) by
 # tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
 #
 # ACCEPTED UNCOVERED SKIP: the required-tool loop below still exits 0 before
@@ -130,77 +140,96 @@ _ratchet_check_subset() {
 }
 
 # -----------------------------------------------------------------------
-# Vacuity floor (task #6127, esc-6087-3).  _ratchet_check_subset above can
-# only ever report "no NEW fingerprints"; it says nothing about whether the
-# generator produced ANY, and the empty set is a subset of everything.  This
-# is the precondition that makes that subset assertion meaningful.
-# WHY, when it retires, and what it does not cover: PRD 6.6, "Vacuity floor
-# on the live set" — the single home for that argument, not restated here.
+# Vacuity floor, scan-evidence form (task #6241).  _ratchet_check_subset above
+# can only ever report "no NEW fingerprints"; it says nothing about whether the
+# generator RAN at all, and the empty set is a subset of everything.  This is
+# the precondition that makes that subset assertion meaningful.
+# WHY it keys on run evidence rather than on the live finding count, and what
+# it does not cover: PRD §6.6 (section number, not a paragraph title — the
+# latter is not a stable anchor) — the single home
+# for that argument, not restated here.
 #
 # Local contract:
-#   _ratchet_check_nonempty <live-content> <baseline-content>, both
-#   newline-joined STRINGS (matching _ratchet_check_subset's argument
-#   convention) so it can be passed straight to assert() and land its
-#   diagnostic in the on-FAIL captured-output dump.  Silent + rc0 on the
-#   passing path so an all-green suite stays byte-for-byte unchanged
-#   (test_helpers.sh:48-51); stderr diagnostic + rc1 otherwise.
+#   _ratchet_check_scan_evidence <generator-stderr>, ONE newline-joined STRING
+#   (matching _ratchet_check_subset's argument convention) so it can be passed
+#   straight to assert() and land its diagnostic in the on-FAIL captured-output
+#   dump.  The committed baseline is NOT an input: the floor is independent of
+#   ptodo-baseline.txt content by construction.
 #
-#   @@RATCHET_VACUITY_FIRED@@ on the failing path is a MACHINE TOKEN — the
-#   deliberate contract with test_reify_audit_ptodo_ratchet_vacuity.sh, in the
-#   same idiom as the @@HARDGATE_*_PASSED@@ sentinels below.  Grep for the
-#   token, never for the prose; the prose is free to change.
+#   rc0 + BYTE-FOR-BYTE SILENT iff the stderr carries a
+#   `@@PTODO_SCAN@@ files_scanned=<N> …` line whose N is a well-formed integer
+#   >= 1 (silence keeps an all-green suite unchanged — test_helpers.sh:48-51).
+#   Otherwise rc1 with a stderr diagnostic naming which of the three failure
+#   shapes fired: line ABSENT, files_scanned=0, or a MALFORMED count.  A
+#   matched-but-unparseable count falls to the firing branch DELIBERATELY —
+#   loud over silent-disarm, the discipline the retired kind list applied to an
+#   unrecognised kind.
 #
-# No fingerprints are re-derived here: this counts lines and reads the `kind`
-# field of an already-produced fingerprint, so the PRD 6.6 invariant in this
-# file's header (derivation lives ONLY in ptodo-baseline-gen) is preserved.
+#   MULTIPLICITY + EXTENSIBILITY (PRD §6.6 grammar).  The generator emits
+#   EXACTLY ONE scan line per run; this helper reads only the FIRST (grep -m1)
+#   rather than policing that count — the strict consumer is the Rust contract
+#   test crates/reify-audit/tests/ptodo_baseline.rs, which asserts exactly one.
+#   The field list is OPEN for additive extension, and this parse honours that
+#   by construction: it reads the files_scanned= token and ignores every other
+#   token on the line, so a future counter cannot turn the gate RED.
+#
+#   @@RATCHET_VACUITY_FIRED@@ leads the failing diagnostic and is a MACHINE
+#   TOKEN — the deliberate contract with
+#   test_reify_audit_ptodo_ratchet_vacuity.sh, in the same idiom as the
+#   @@HARDGATE_*_PASSED@@ sentinels below.  Grep for the token, never for the
+#   prose; the prose is free to change.
+#
+# No fingerprints are re-derived here: this reads two fields off a line the
+# GENERATOR emitted, so the PRD 6.6 invariant in this file's header
+# (derivation lives ONLY in ptodo-baseline-gen) is preserved in full.
 # -----------------------------------------------------------------------
+_ratchet_check_scan_evidence() {
+    local _stderr="$1"
+    local _line _count _shape
 
-# Kinds the liveness/inverse lanes derive from the task DB, which PRD 6.7
-# DROPS in the degraded no-task-DB mode scenario (a) runs under.  A baseline
-# entry of one of these kinds can never appear in that live set, so it must
-# not keep the floor armed.  Anything else — INCLUDING a kind added after this
-# line was written — counts as structural, so an unrecognised kind keeps the
-# floor ARMED (loud) rather than silently disarming it, which would reopen the
-# vacuous-green hole this floor exists to close.
-_PTODO_DB_DEPENDENT_KINDS_RE=' :: (orphaned|unknown-id|g-allow-orphaned|g-allow-unknown-id|parked-on-anchor|task-cites-deleted-path) :: '
-
-_ratchet_check_nonempty() {
-    local _live="$1"
-    local _baseline="${2:-}"
-    local _live_n _baseline_n _dbdep_n _struct_n
-    _live_n="$(printf '%s\n' "$_live" | grep -c . || true)"
-    _baseline_n="$(printf '%s\n' "$_baseline" | grep -c . || true)"
-    _dbdep_n="$(printf '%s\n' "$_baseline" | grep -cE "$_PTODO_DB_DEPENDENT_KINDS_RE" || true)"
-    _struct_n=$((_baseline_n - _dbdep_n))
-
-    # AUTO-DISARM once no STRUCTURAL baseline entry remains — the point at
-    # which a 0-fingerprint live set becomes the CORRECT end state rather than
-    # a vacuous pass, so the floor must retire itself instead of false-REDding
-    # forever.  Keyed on the STRUCTURAL count, not on total baseline size:
-    # a baseline drained down to DB-dependent kinds only is already that end
-    # state, and gating on the total would hard-RED an ordinary burn-down
-    # commit (#6127 review).
-    if [ "$_struct_n" -le 0 ]; then
-        return 0
-    fi
-
-    if [ "$_live_n" -ge 1 ]; then
-        return 0
+    _line="$(printf '%s\n' "$_stderr" | grep -m1 -F '@@PTODO_SCAN@@' || true)"
+    if [ -z "$_line" ]; then
+        _shape='the generator emitted NO @@PTODO_SCAN@@ line at all'
+    else
+        # Pure field read: take the files_scanned=<value> token verbatim, then
+        # test it for well-formedness.  Anything unparseable stays visible in
+        # the diagnostic rather than being coerced to a number.
+        #
+        # Split on whitespace FIRST, then anchor the key with `^`, mirroring the
+        # Rust consumer's `split_whitespace()` + `strip_prefix("files_scanned=")`
+        # (crates/reify-audit/tests/ptodo_baseline.rs::parse_scan_line) so the
+        # two implementations of one grammar cannot drift.  An unanchored
+        # `.*files_scanned=` would match any token whose name merely ENDS WITH
+        # the key (`skipped_files_scanned=0`) and read its value instead —
+        # turning an additive extension into a hard RED, the precise false-RED
+        # the EXTENSIBILITY rule rules out.  Pinned by fixture (vi) above.
+        _count="$(printf '%s\n' "$_line" | tr ' \t' '\n\n' \
+            | sed -n 's/^files_scanned=\(.*\)$/\1/p' | head -n1)"
+        if [ -z "$_count" ]; then
+            _shape='the @@PTODO_SCAN@@ line carries no files_scanned field'
+        elif ! printf '%s\n' "$_count" | grep -qE '^[0-9]+$'; then
+            _shape="the @@PTODO_SCAN@@ line carries a MALFORMED files_scanned count: '$_count'"
+        elif [ "$_count" -lt 1 ]; then
+            _shape="the detector ran but walked NOTHING (files_scanned=$_count)"
+        else
+            return 0
+        fi
     fi
 
     {
         printf '@@RATCHET_VACUITY_FIRED@@\n'
-        printf 'RATCHET VACUITY — ptodo-baseline-gen emitted 0 fingerprints (structural baseline entries: %s).\n' \
-            "$_struct_n"
+        printf 'RATCHET VACUITY — no usable scan evidence from ptodo-baseline-gen: %s.\n' "$_shape"
         printf '  NOT a pass: the oracle below is subset-of and the empty set is a subset\n'
-        printf '  of everything, so it would observe nothing.  Two hypotheses, in order:\n'
-        printf '  (1) target/release/ptodo-baseline-gen is STALE or reverted — run\n'
-        printf '      `cargo build --release -p reify-audit`, then re-run.  mtime is a weak\n'
-        printf '      oracle here (scripts/reify-audit-freshness.sh, SCOPE LIMITATION).\n'
-        printf '  (2) the debt was genuinely burned down but crates/reify-audit/\n'
-        printf '      ptodo-baseline.txt was not shrunk with it — drop the fixed entries\n'
-        printf '      from the baseline and this floor retires itself.\n'
-        printf '  Background and exit condition: PRD 6.6, "Vacuity floor on the live set".\n'
+        printf '  of everything, so without proof the detector RAN it would observe nothing.\n'
+        printf '  A generator that ran over a clean tree still emits the line (with\n'
+        printf '  files_scanned >= 1), so zero fingerprints alone is NOT this failure.\n'
+        printf '  Most likely cause: target/release/ptodo-baseline-gen is STALE or reverted\n'
+        printf '  — a binary predating the contract emits no scan line at all.  Rebuild with\n'
+        printf '  `cargo build --release -p reify-audit`, then re-run.\n'
+        printf '  Generator stderr as captured:\n'
+        printf '%s\n' "$_stderr" | sed 's/^/    | /'
+        printf '  Background and the emitted grammar: PRD §6.6\n'
+        printf '  (docs/prds/reify-audit-ptodo-detector.md).\n'
     } >&2
     return 1
 }
@@ -222,10 +251,11 @@ assert "ratchet check is silent + rc0 when live set is empty" \
     bash -c '[ -z "$1" ]' -- "$_EMPTY"
 
 # -----------------------------------------------------------------------
-# VACUITY-FLOOR meta-test (task #6127, esc-6087-3) — pins what
-# _ratchet_check_nonempty DOES.  Why the floor exists at all: PRD 6.6,
-# "Vacuity floor on the live set".  Its WIRING into scenario (a), which this
-# hermetic block cannot see, is pinned by
+# VACUITY-FLOOR meta-test (task #6241) — pins what
+# _ratchet_check_scan_evidence DOES.  Why the floor exists at all, and why it
+# keys on generator-emitted SCAN EVIDENCE rather than on the live fingerprint
+# count: PRD §6.6 — not restated here.  Its
+# WIRING into scenario (a), which this hermetic block cannot see, is pinned by
 # tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
 #
 # Same properties as the block above — unconditional, hermetic, driven by
@@ -234,47 +264,94 @@ assert "ratchet check is silent + rc0 when live set is empty" \
 # single EXIT trap below (see "Single EXIT trap covers all temp paths") is
 # registered later, and a second `trap` here would silently replace it.
 #
-# Baseline fixtures use the real `path :: kind :: text` fingerprint shape so
-# the structural / DB-dependent split is genuinely exercised; the text field
-# is inert prose (SELF-MATCH SAFETY: no swept marker token).
+# Fixtures are synthetic GENERATOR STDERR strings using the real emitted shape
+# (`@@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>`), so the parse is
+# genuinely exercised.  The committed baseline is NOT an input to the helper —
+# these asserts therefore also pin that the floor is independent of
+# ptodo-baseline.txt content, which is the debt coupling #6241 removes.
+#
+# Asserts go through the machine token, the rc, and values DERIVED FROM THE
+# INPUTS (the echoed count) rather than the diagnostic's wording — the prose is
+# free to change, the contract is not.
 # -----------------------------------------------------------------------
-_FAKE_BL_STRUCT='crates/foo/src/a.rs :: untracked :: synthetic structural entry'
-_FAKE_BL_DBDEP='crates/foo/src/b.rs :: orphaned :: synthetic liveness-derived entry'
 
-# Assert on the machine token and on a count DERIVED FROM THE INPUTS (one of
-# the two given entries is structural) rather than on the diagnostic's
-# wording — the prose is free to change, the contract is not.
-_VAC_DIAG="$(_ratchet_check_nonempty "" "$_FAKE_BL_STRUCT"$'\n'"$_FAKE_BL_DBDEP" 2>&1 1>/dev/null || true)"
-assert "vacuity floor fires on an empty live set, emitting its machine token + the structural baseline count" \
-    bash -c 'case "$1" in *"@@RATCHET_VACUITY_FIRED@@"*) ;; *) exit 1 ;; esac
-             case "$1" in *"structural baseline entries: 1"*) exit 0 ;; *) exit 1 ;; esac' -- "$_VAC_DIAG"
+# (i) FIRES when there is NO scan line at all — a generator that never ran, or
+# a stale/reverted binary predating the contract.  The fixture is exactly what
+# such a pre-#6241 binary prints.
+_SCAN_ERR_ABSENT='ptodo-baseline-gen: 0 fingerprint(s) emitted'
+_SCAN_ABSENT_RC=0
+_SCAN_ABSENT_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_ABSENT" 2>&1 1>/dev/null)" \
+    || _SCAN_ABSENT_RC=$?
+assert "vacuity floor fires (rc1 + machine token) when the generator emitted no scan line" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ]' \
+    -- "$_SCAN_ABSENT_DIAG" "$_SCAN_ABSENT_RC"
 
-# Positive control — a detector, not a constant failure: a non-empty live set
-# must be byte-for-byte silent and rc0, so an all-green suite's output is
-# unchanged (test_helpers.sh:48-51).
-_VAC_RC=0
-_VAC_OUT="$(_ratchet_check_nonempty "$_FAKE_FP" "$_FAKE_BL_STRUCT" 2>&1)" || _VAC_RC=$?
-assert "vacuity floor is silent + rc0 when the live set is non-empty" \
-    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_OUT" "$_VAC_RC"
+# (ii) FIRES when the line is present but reports files_scanned=0 — the
+# detector started and walked NOTHING (a broken `git ls-files` seam).
+_SCAN_ERR_ZERO='@@PTODO_SCAN@@ files_scanned=0 markers_examined=0'
+_SCAN_ZERO_RC=0
+_SCAN_ZERO_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_ZERO" 2>&1 1>/dev/null)" \
+    || _SCAN_ZERO_RC=$?
+assert "vacuity floor fires when the scan line reports files_scanned=0 (walked nothing)" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
+             case "$1" in *"files_scanned=0"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_SCAN_ZERO_DIAG" "$_SCAN_ZERO_RC"
 
-# BASELINE axis — the floor must AUTO-DISARM once no structural entry remains,
-# which is when a 0-fingerprint live set becomes the correct end state rather
-# than a vacuous pass (PRD 6.6).  Two sub-cases, both disarms:
-#   (i) the baseline is fully drained;
-#  (ii) it holds only DB-dependent kinds, which PRD 6.7 drops in the degraded
-#       no-task-DB mode scenario (a) runs under — so live=0 is legitimate.
-# (ii) is the one an ordinary burn-down commit reaches: gating the disarm on
-# TOTAL baseline size would hard-RED that commit and force whoever wrote it to
-# hand-delete an assertion in another file (#6127 review).
-_VAC_DRAINED_RC=0
-_VAC_DRAINED_OUT="$(_ratchet_check_nonempty "" "" 2>&1)" || _VAC_DRAINED_RC=$?
-assert "vacuity floor auto-disarms (silent + rc0) when the committed baseline is itself empty" \
-    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_DRAINED_OUT" "$_VAC_DRAINED_RC"
+# (iii) THE DECOUPLING ASSERT — a working detector over a CLEAN tree passes,
+# byte-for-byte silent and rc0, even though it emitted zero fingerprints.  That
+# partition is exactly what a floor on the live finding count got wrong, and
+# what its bash-side kind list existed to paper over (PRD 6.6).  Silence keeps
+# an all-green suite's output unchanged (test_helpers.sh:48-51).
+_SCAN_ERR_CLEAN='@@PTODO_SCAN@@ files_scanned=1755 markers_examined=0'
+_SCAN_CLEAN_RC=0
+_SCAN_CLEAN_OUT="$(_ratchet_check_scan_evidence "$_SCAN_ERR_CLEAN" 2>&1)" || _SCAN_CLEAN_RC=$?
+assert "vacuity floor is silent + rc0 on scan evidence from a clean tree (zero fingerprints)" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_SCAN_CLEAN_OUT" "$_SCAN_CLEAN_RC"
 
-_VAC_DBONLY_RC=0
-_VAC_DBONLY_OUT="$(_ratchet_check_nonempty "" "$_FAKE_BL_DBDEP" 2>&1)" || _VAC_DBONLY_RC=$?
-assert "vacuity floor auto-disarms when the baseline holds only DB-dependent (liveness) kinds" \
-    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_DBONLY_OUT" "$_VAC_DBONLY_RC"
+# (iv) FIRES on a MALFORMED count — fail LOUD rather than silently disarm, the
+# same discipline the retired kind list applied to an unrecognised kind.
+_SCAN_ERR_MALFORMED='@@PTODO_SCAN@@ files_scanned=abc markers_examined=0'
+_SCAN_MALFORMED_RC=0
+_SCAN_MALFORMED_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_MALFORMED" 2>&1 1>/dev/null)" \
+    || _SCAN_MALFORMED_RC=$?
+assert "vacuity floor fires on a malformed files_scanned count (loud, never silent-disarm)" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
+             case "$1" in *"abc"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_SCAN_MALFORMED_DIAG" "$_SCAN_MALFORMED_RC"
+
+# (v) FIRES when the line is present but carries NO files_scanned field at all
+# — the helper's fifth branch, distinct from (iv): the sed yields the EMPTY
+# string rather than an unparseable one, and without its own guard that empty
+# would fall through to the numeric `-lt` test and emit a raw bash error while
+# the branch itself shipped untested.
+_SCAN_ERR_NOFIELD='@@PTODO_SCAN@@ markers_examined=0'
+_SCAN_NOFIELD_RC=0
+_SCAN_NOFIELD_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_NOFIELD" 2>&1 1>/dev/null)" \
+    || _SCAN_NOFIELD_RC=$?
+assert "vacuity floor fires when the scan line carries no files_scanned field" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
+             case "$1" in *"no files_scanned field"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_SCAN_NOFIELD_DIAG" "$_SCAN_NOFIELD_RC"
+
+# (vi) THE EXTENSIBILITY ASSERT — an ADDITIVE third token must be ignored, even
+# when its name ENDS WITH the required field's name.  The §6.6 grammar is open
+# for extension and both consumers promise a future counter "cannot turn the
+# gate RED"; a parse that matched `files_scanned=` as a SUBSTRING would read
+# `skipped_files_scanned`'s 0 here and hard-RED the whole tests/infra PTODO
+# gate — the exact false-RED the contract rules out.  Hence the fixture pins
+# the adversarial name, not merely an unrelated extra token.  Its Rust
+# counterpart (same grammar, other consumer) is
+# `parse_scan_line_ignores_unrecognised_tokens` in
+# crates/reify-audit/tests/ptodo_baseline.rs.
+_SCAN_ERR_EXTRA='@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 skipped_files_scanned=0'
+_SCAN_EXTRA_RC=0
+_SCAN_EXTRA_OUT="$(_ratchet_check_scan_evidence "$_SCAN_ERR_EXTRA" 2>&1)" || _SCAN_EXTRA_RC=$?
+assert "vacuity floor ignores an additive third counter and stays silent + rc0" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_SCAN_EXTRA_OUT" "$_SCAN_EXTRA_RC"
 
 # -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
@@ -390,6 +467,7 @@ FIX_D=""       # scenario (d) orphaned-cite fixture temp dir
 FIX_C_TASKS="" # scenario (c) tasks-file bypass (empty JSON array, avoids MCP loading)
 _err_tmp=""    # stderr capture file for run_audit (task #4800 defense-in-depth)
 FIX_E=""       # scenario (e) G-allow orphaned-cite fixture temp dir
+GEN_ERR_TMP="" # scenario (a) generator stderr capture (6.6 scan evidence, #6241)
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
@@ -403,6 +481,7 @@ cleanup_all() {
     [ -n "$FIX_D"       ] && rm -rf "$FIX_D"        || true
     [ -n "$_err_tmp"    ] && rm -f  "$_err_tmp"     || true
     [ -n "$FIX_E"       ] && rm -rf "$FIX_E"        || true
+    [ -n "$GEN_ERR_TMP" ] && rm -f  "$GEN_ERR_TMP"  || true
 }
 trap cleanup_all EXIT
 
@@ -478,6 +557,7 @@ run_audit() {
 if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
     RAN=1
     LIVE_TMP="$(mktemp)"
+    GEN_ERR_TMP="$(mktemp)"
 
     # -----------------------------------------------------------------------
     # (a) RATCHET: live fingerprints (degraded-structural) must be a subset
@@ -491,22 +571,24 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
     echo "--- (a) Ratchet: live fingerprints subset of committed baseline ---"
 
     # Run the generator in degraded-structural mode (no task DB).
-    # Stderr may emit a breadcrumb about missing DB — that is expected and ignored.
+    # Stderr is CAPTURED, not discarded: it carries the §6.6 scan-evidence line
+    # the floor below reads (alongside an expected missing-DB breadcrumb).
     # Do NOT use || true here: a non-zero exit from the generator signals a broken
     # detector binary, not a missing DB.  The generator exits 0 regardless of
     # finding count; a non-zero exit is an infrastructure failure that must go red.
-    env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null
+    env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" \
+        >"$LIVE_TMP" 2>"$GEN_ERR_TMP"
 
-    # VACUITY FLOOR (task #6127, esc-6087-3) — the precondition that makes the
-    # subset assertion below meaningful (PRD 6.6, "Vacuity floor on the live
-    # set").  Reported FIRST, deliberately: a reader who saw only the subset
-    # assert fail would draw the wrong conclusion about why.  The wiring here
-    # (not just the helper) is pinned by
-    # tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+    # VACUITY FLOOR (task #6241) — the precondition that makes the subset
+    # assertion below meaningful (PRD §6.6).
+    # Reported FIRST, deliberately: a reader who saw only the subset assert fail
+    # would draw the wrong conclusion about why.  The wiring here (not just the
+    # helper) is pinned by tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh,
+    # in BOTH directions.
     # $(cat ...) strips trailing newlines — correct and irrelevant, since the
-    # helper only counts non-blank lines.
-    assert "live generator emitted at least one fingerprint (subset oracle is not vacuous)" \
-        _ratchet_check_nonempty "$(cat "$LIVE_TMP")" "$(cat "$BASELINE")"
+    # helper reads one field off one line.
+    assert "generator emitted scan evidence (subset oracle is not vacuous)" \
+        _ratchet_check_scan_evidence "$(cat "$GEN_ERR_TMP")"
 
     # comm -23 requires both inputs sorted; the generator sorts internally but
     # sort -u here is defensive.

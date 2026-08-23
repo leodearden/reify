@@ -49,6 +49,7 @@ pub mod pdssentinel;
 pub mod pdoccover;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
+pub mod jcodemunch_index;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -651,6 +652,36 @@ impl RealGitOps {
             ));
         }
         String::from_utf8(out.stdout).map_err(|_| "git output not valid UTF-8".to_string())
+    }
+
+    /// `git rev-parse HEAD` — the working tree's current commit sha.
+    ///
+    /// Routed through `run` (hence `spawn_with_retry`) rather than spawning
+    /// `git` directly, so a transient OS-level spawn failure — the EAGAIN /
+    /// ENOMEM class that was the root cause of the #4800 flake, and that this
+    /// project's CPU-load management makes a live possibility — is retried
+    /// instead of surfacing to the caller as a hard failure. The caller (the
+    /// jcodemunch §4.3 freshness gate) turns an `Err` here into a refusal of
+    /// the whole run, so an unretried fork failure would abort an audit with a
+    /// message blaming index freshness — a misleading diagnosis for a
+    /// transient the retry absorbs.
+    ///
+    /// `run` also inherits `git_env::command`'s sanitization, which is
+    /// load-bearing here: an inherited `GIT_DIR` / `GIT_WORK_TREE` makes
+    /// `git -C <root>` report a DIFFERENT repository, and a HEAD read from the
+    /// wrong repo would make the freshness comparison silently meaningless.
+    ///
+    /// Errors on a failed rev-parse (not a repo, unborn HEAD) and on an empty
+    /// sha, which no healthy invocation produces.
+    pub fn head_sha(&self) -> Result<String, String> {
+        let sha = self.run(&["rev-parse", "HEAD"])?.trim().to_string();
+        if sha.is_empty() {
+            return Err(format!(
+                "`git rev-parse HEAD` produced no sha in {}",
+                self.project_root.display()
+            ));
+        }
+        Ok(sha)
     }
 
     /// Run a git command, emitting a `reify-audit:` breadcrumb on failure and

@@ -6,9 +6,11 @@ replaces. They are reference material for authoring designs, not designs
 themselves — nothing here is meant to be a useful part.
 
 **Everything in this directory is compile-gated.** `examples/` is walked
-recursively by `crates/reify-compiler/tests/examples_smoke.rs`, so every file
-here must parse and compile with the stdlib prelude at zero Error severity, and
-is additionally evaluated by the corpus-wide eval gates in `crates/reify-eval/`.
+recursively by
+`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`, so
+every file here must parse and compile with the stdlib prelude at zero Error
+severity, and is additionally evaluated by the corpus-wide eval gates in
+`crates/reify-eval/`.
 A file that cannot reach a clean compile does **not** belong here — an exemplar
 that does not work is worse than no exemplar. Do not add a `SKIP_SET` entry to
 exempt one.
@@ -38,7 +40,7 @@ probes".
 Verify both with:
 
 ```sh
-cargo test -p reify-compiler --test examples_smoke
+cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::
 ```
 
 ## Idioms

@@ -4,8 +4,8 @@
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
 //! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
 //! Contract C — the LENGTH-semantic args (task 5214, extended by 5350, 5623,
-//! 5658 and 5743): `geometry_ops`' `eval_named_arg_length`, its raw-`Value`
-//! wrapper `required_length_value`, and `resolve_length_scalar_arg`
+//! 5658, 5661 and 5743): `geometry_ops`' `eval_named_arg_length`, its
+//! raw-`Value` wrapper `required_length_value`, and `resolve_length_scalar_arg`
 //! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
 //! [`length_spec`] so both emit identical rejection text.
 //!
@@ -15,7 +15,11 @@
 //! byte-identical by construction: the NAMED-ARG route
 //! (`eval_named_arg_length`) and, since task 5658, the VARIADIC route
 //! (`accept_variadic_length_args`, for the arity-open positional coordinate
-//! streams whose args the compiler names inertly `c0`…`cN`).
+//! streams whose args the compiler names inertly `c0`…`cN`). Since task 5661
+//! that route carries 2-D vertex PAIRS as well as 3-D triples, which is why its
+//! coordinate renderer (`CoordName`) carries a per-point STRIDE: at stride 3 a
+//! pair stream would be named `x1,y1,z1,x2,…`, misdirecting the author on both
+//! the axis letter and the vertex number.
 //!
 //! | family    | builtin / position                                   | task |
 //! |-----------|------------------------------------------------------|------|
@@ -25,6 +29,7 @@
 //! | sweep     | `revolve` axis origin `ox`/`oy`/`oz`                 | 5623 |
 //! | curve     | `line_segment` endpoints `x1`…`z2`; `arc` centre `cx`/`cy`/`cz` + `radius`; `helix` `radius`/`pitch`/`height` | 5623 |
 //! | curve     | `interp` + `bezier` variadic coordinate triples (EVERY position); `nurbs` pole coordinates (`2 .. 2 + 3·n_points`) — via the variadic route | 5658 |
+//! | profile   | `polygon` variadic 2-D vertex pairs (EVERY position) — via the variadic route | 5661 |
 //! | primitive | `box` width/height/depth, `cylinder` radius/height, `sphere` radius, `tube` outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge` width/depth/height/top_width, `torus` major/minor_radius, `half_space` POINT `px`/`py`/`pz` (21 fields) | 5743 |
 //! | profile   | `rectangle` width/height, `circle` radius, `ellipse` semi_major/semi_minor (5 fields) | 5743 |
 //!
@@ -44,12 +49,6 @@
 //! guard of task 5752 replaces it with a pointer. What remains un-gated, and
 //! who owns it:
 //!
-//! - `eval_all_args_to_f64`, now the BARE variadic reader, used by
-//!   `profile_polygon`'s 2-D vertex pairs ALONE — task 5661. Task 5658 took its
-//!   other three callers (`interp`/`bezier`/`nurbs`), so gating that one
-//!   remaining call site retires the helper's length-semantic role entirely.
-//!   Deliberately NOT swept up by task 5743 alongside the other profile fields:
-//!   the vertex list is arity-open and has no `ArgSpec` to check against.
 //! - `point3_components` (`geometry_ops.rs`) and the decoded value-form routes
 //!   — `decode_plane` / `decode_axis` origins, and NurbsSurface control points
 //!   (the SURFACE sibling of the curve poles 5658 gated) — task 5745.
@@ -187,16 +186,19 @@ pub fn density_spec() -> ArgSpec {
 ///   arbitrary-pattern offsets;
 /// - a POINT in space — `rotate_around`'s pivot, `revolve`'s and
 ///   `circular_pattern`'s axis origin, the mirror plane's origin,
-///   `line_segment`'s endpoints, `arc`'s centre;
+///   `line_segment`'s endpoints, `arc`'s centre, the variadic coordinate
+///   streams (`interp`/`bezier`/`nurbs` control points, and `polygon`'s
+///   vertices — a point in the XY PLANE, which is a plane in space);
 /// - a standalone EXTENT — `arc`'s radius, `helix`'s radius/pitch/height,
 ///   `edges_at_height`'s z/tol.
 ///
 /// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
 /// **metres** by `Value::as_f64` (the `10` vs `10mm` = 1000× hazard); this spec
 /// drives the eval-layer rejection that closes that hole (task 5214; the
-/// circular-pattern axis origin was added by 5350, and the transform / sweep /
-/// curve families by 5623). See the module doc for the full position table and
-/// for what stays deliberately un-gated.
+/// circular-pattern axis origin was added by 5350, the transform / sweep /
+/// curve families by 5623, the variadic curve coordinates by 5658 and
+/// `polygon`'s vertex pairs by 5661). See the module doc for the full position
+/// table and for what stays deliberately un-gated.
 pub fn length_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Length",

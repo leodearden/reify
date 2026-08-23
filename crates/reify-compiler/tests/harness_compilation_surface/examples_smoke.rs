@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+use reify_test_support::missing_paths_under;
+
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
@@ -320,18 +322,38 @@ one diagnostic.";
 /// Sanity guard: every entry in SKIP_SET must name a relative path that actually
 /// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
+///
+/// Existence filter: [`reify_test_support::missing_paths_under`], where its
+/// contract is documented and unit-tested.
+///
+/// Every stale entry is reported in one panic rather than failing fast on the
+/// first, matching the corpus-wide-visibility principle this file applies to its
+/// other bulk guards.
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
-    for (rel_path, reason) in SKIP_SET {
-        let path = Path::new(EXAMPLES_DIR).join(rel_path);
-        assert!(
-            path.exists(),
-            "SKIP_SET entry '{}' (reason: {}) does not exist under {}",
-            rel_path,
-            reason,
-            EXAMPLES_DIR,
-        );
+    let missing = missing_paths_under(
+        Path::new(EXAMPLES_DIR),
+        SKIP_SET.iter().map(|(rel, _)| *rel),
+    );
+    if missing.is_empty() {
+        return;
     }
+    // Build the report by walking SKIP_SET and keeping the flagged entries,
+    // rather than looking each flagged path back up in SKIP_SET: the reason
+    // string stays in hand, so there is no lookup that cannot fail and hence no
+    // unreachable "reason missing" branch to justify.
+    let lines: Vec<String> = SKIP_SET
+        .iter()
+        .filter(|(rel, _)| missing.contains(rel))
+        .map(|(rel, reason)| format!("  '{rel}' (reason: {reason})"))
+        .collect();
+    panic!(
+        "SKIP_SET entry/entries name a relative path that does not exist under {}:\n{}\n\
+         A stale key silently disables coverage for a file that is no longer skipped — \
+         delete the entry or fix the path.",
+        EXAMPLES_DIR,
+        lines.join("\n")
+    );
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -793,7 +815,7 @@ adding its INDEX.md entry are ONE step, never two.\n\
 the idiom it demonstrates (do NOT delete the exemplar to silence this).\n\
   * missing file         -> the index names an exemplar that is not there; \
 restore the file, or drop/repair the stale entry.\n\
-Re-verify with: cargo test -p reify-compiler --test examples_smoke";
+Re-verify with: cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::";
 
 /// Bidirectional filename correspondence between the `examples/best_practices/`
 /// corpus directory and its `INDEX.md`:

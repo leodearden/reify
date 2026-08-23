@@ -424,6 +424,8 @@ fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
 // current compiler form: polygon(x1, y1, x2, y2, ...) — variadic flat
 // coordinate pairs, at least 6 args (3 points), even count; see geometry.rs:1570
+// EVERY coordinate is a Length, at every arity, per the section note above:
+// polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm) — a bare number is rejected.
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
