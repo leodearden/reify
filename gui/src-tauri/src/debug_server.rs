@@ -1088,12 +1088,15 @@ fn is_image_tool(name: &str) -> bool {
 /// Two properties are load-bearing and neither is arbitrary:
 ///
 /// 1. ORDER — the image block stays at `content[0]`, diagnostics are APPENDED.
-///    `parseRpcResponse` (gui/test/visual/rpc.ts, branch table :33) is POSITIONAL
-///    (`content[0].type === "image"`) and gui/test/visual/run.ts:202-211 feeds
-///    `value.data` straight into `Buffer.from(…, "base64")`, so a prepended text
-///    block would be decoded as PNG bytes and corrupt the visual-regression
-///    harness. `normalizeRpcEnvelope` (rpcEnvelope.mjs) instead SEARCHES for the
-///    text block, so appending is invisible to it.
+///    Branch 3 of `parseRpcResponse`'s branch table (gui/test/visual/rpc.ts) is
+///    POSITIONAL (`content[0].type === "image"`) and `run.ts`'s `screenshot`
+///    capture feeds `value.data` straight into its `Buffer.from(…, "base64")`
+///    decode, so a prepended text block would be decoded as PNG bytes and
+///    corrupt the visual-regression harness. The sibling decoder
+///    `normalizeRpcEnvelope` (rpcEnvelope.mjs) is unperturbed by the append for a
+///    reason of its own, deliberately NOT restated here:
+///    docs/debug-mcp-contract.md §2 "JS-side decoders" → "The §2d divergence —
+///    canonical statement" is that rationale's single home.
 ///
 /// 2. GATING — the diagnostics block is emitted only when the residual (every
 ///    top-level key except `data`) is a non-empty object with no top-level string
@@ -1102,10 +1105,11 @@ fn is_image_tool(name: &str) -> bool {
 ///    — and every scoped or single-match `element_screenshot` bit-for-bit
 ///    unchanged, mirroring the bridge-side `paneDiagnostics` gate one layer down
 ///    rather than inventing a second condition that can drift. The `error`
-///    exclusion upholds the CROSS-LANGUAGE INVARIANT documented at
-///    gui/test/visual/rpcEnvelope.mjs:54-58: `isInBandError` reads any top-level
-///    string `error` as a tool FAILURE, so emitting one beside a successful image
-///    would make every driver report a working screenshot as broken.
+///    exclusion upholds the CROSS-LANGUAGE INVARIANT paragraph in
+///    `isInBandError`'s docblock (gui/test/visual/rpcEnvelope.mjs):
+///    `isInBandError` reads any top-level string `error` as a tool FAILURE, so
+///    emitting one beside a successful image would make every driver report a
+///    working screenshot as broken.
 ///
 /// Anything else — a non-image tool, or an image tool whose result carries no
 /// string `data` (every `element_screenshot` error shape) — falls through to
@@ -3221,15 +3225,16 @@ mod tests {
             "an unscoped multi-match crop must yield the image block PLUS a diagnostics block; got {out}"
         );
 
-        // The image block stays at index 0. `gui/test/visual/rpc.ts:33` branch 3 is
-        // POSITIONAL — `content[0].type === "image"` — and `run.ts:202-211` feeds
-        // `value.data` straight into `Buffer.from(…, "base64")`, so prepending the
-        // text block would decode pretty-printed JSON as PNG bytes and corrupt the
+        // The image block stays at index 0. Branch 3 of `parseRpcResponse`'s branch
+        // table (`gui/test/visual/rpc.ts`) is POSITIONAL — `content[0].type ===
+        // "image"` — and `run.ts`'s `screenshot` capture feeds `value.data` straight
+        // into its `Buffer.from(…, "base64")` decode, so prepending the text block
+        // would decode pretty-printed JSON as PNG bytes and corrupt the
         // visual-regression harness.
         assert_eq!(
             content[0]["type"].as_str(),
             Some("image"),
-            "the image block must stay at content[0] (rpc.ts:33 branch 3 is positional); got {out}"
+            "the image block must stay at content[0] (rpc.ts branch 3 is positional); got {out}"
         );
         assert_eq!(
             content[0],
@@ -3335,9 +3340,10 @@ mod tests {
 
     #[test]
     fn mcp_content_blocks_suppresses_a_residual_carrying_an_in_band_error() {
-        // CROSS-LANGUAGE INVARIANT (gui/test/visual/rpcEnvelope.mjs:54-58): no success
-        // payload may carry a top-level string `error`, because `isInBandError` (:81-83)
-        // reads one as a tool FAILURE. Emitting such a residual beside a successful
+        // CROSS-LANGUAGE INVARIANT (the paragraph of that name in `isInBandError`'s
+        // docblock, gui/test/visual/rpcEnvelope.mjs): no success payload may carry a
+        // top-level string `error`, because `isInBandError` itself reads one as a
+        // tool FAILURE. Emitting such a residual beside a successful
         // image would make every driver report a working screenshot as broken —
         // strictly worse than omitting a key no handler produces today.
         let out = mcp_content_blocks(

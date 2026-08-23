@@ -229,10 +229,10 @@ describe("normalizeRpcEnvelope — the two failure dialects folded into one shap
     // instead of "nothing to interpret". That is what makes the trailing block
     // free on this side: no branch changed for #5891.
     //
-    // The sibling decoder disagrees ON PURPOSE — parseRpcResponse (./rpc.ts) is
-    // positional and answers with the IMAGE for this same envelope, because
-    // ./run.ts feeds its base64 to Buffer.from. Both verdicts are pinned side by
-    // side in ./rpc.test.ts; do not reconcile them.
+    // The sibling decoder disagrees ON PURPOSE. The rationale is NOT restated
+    // here — docs/debug-mcp-contract.md §2 "JS-side decoders" → "The §2d
+    // divergence — canonical statement" is its single home. Both verdicts are
+    // pinned side by side in ./rpc.test.ts case 4b; do not reconcile them.
     const { transportError, payload } = normalizeRpcEnvelope({
       result: {
         content: [
