@@ -402,8 +402,7 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
 #[cfg(has_gmsh)]
 #[test]
 fn classify_surfaces_frac_pi_4_over_decomposes_unit_cube() {
-    use reify_kernel_gmsh::{ffi, init};
-    use std::f64::consts::FRAC_PI_4;
+    use reify_kernel_gmsh::{ffi, init, CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE};
 
     let surface = subdivided_unit_cube_surface();
     let n_verts = surface.vertices.len() / 3;
@@ -427,8 +426,12 @@ fn classify_surfaces_frac_pi_4_over_decomposes_unit_cube() {
     let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
     ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags).expect("add_elements_2d");
 
-    // Same classify_surfaces params as the producer (mesh_boundary.rs lines ~276-282).
-    ffi::classify_surfaces(FRAC_PI_4, 1, 1, FRAC_PI_4, 0).expect("classify_surfaces");
+    // Same classify_surfaces params as the producer (mesh_boundary.rs): the
+    // shared CLASSIFY_FEATURE_ANGLE / CLASSIFY_CURVE_ANGLE constants
+    // (kernel_real.rs, re-exported at the crate root), not a re-typed literal
+    // that could silently drift from the production value.
+    ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)
+        .expect("classify_surfaces");
     ffi::create_geometry(&[]).expect("create_geometry");
 
     let n0 = ffi::get_entity_tags(0).expect("get_entity_tags(0)").len();
