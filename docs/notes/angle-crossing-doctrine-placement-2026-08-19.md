@@ -13,11 +13,16 @@
 
 **What this note is not.** This is a DECISION record — it explains why
 `units.md` was left unedited and what was landed instead. It is not an
-invariant and does not belong in `CLAUDE.md`'s Pointers table; the two guard
-tests named below are the durable, executable artifact. A reader who wants
-the enforcement mechanism should go straight to
-`crates/reify-mcp/src/tools/language_chunks.rs`'s test module; this note is
-for the reader who wants to know why no lever was pulled.
+invariant and does not belong in `CLAUDE.md`'s Pointers table. The durable
+artifact of this ticket is the decision itself, plus the measured evidence
+in §1 — **not** an executable guard. An earlier revision of this note
+pointed a reader here to `crates/reify-mcp/src/tools/language_chunks.rs`'s
+test module as "the enforcement mechanism"; that pointer is retracted —
+comprehensive review rejected the two guard tests it named as
+documentation meta-tests, and they do not ship (§4). This note is for the
+reader who wants to know why no lever was pulled — and, per §4, for the
+reader asking what (if anything) currently enforces hard constraints 3 and
+4.
 
 ## 1. Measurements (prerequisite P1; re-run at merge-base `2e3f228d2d`, post-rebase)
 
@@ -170,8 +175,7 @@ editorially high.** Mechanical cost is ~6 sites:
 3. an entry in `TOPICS`
 4. a `get_chunk` match arm
 5. the `available_topics_returns_17_entries` count in `language_chunks.rs`'s
-   tests (and, after S2, the `chunk_corpus().len() == TOPICS.len()`
-   assertion riding along with it)
+   tests
 6. the duplicated `ALL_TOPICS` list at
    `crates/reify-mcp/tests/reference_tools_tests.rs:14`, plus the
    hand-maintained roster at `.claude/skills/reify-design/SKILL.md:14`
@@ -200,71 +204,126 @@ transcript, to reclaim at most 1042 bytes in a docs chunk with no measured
 consumer harm. Cost and regression risk both exceed the payoff.
 **Recommended against.**
 
-## 4. What holds the line now
+## 4. What holds the line — and what still does not
 
 This residual has consumed four filings (#6181 → #6267 → esc-6267-2/-3 →
 #6290) because nothing executable held hard constraints 3 and 4 — both were
 hand-run greps, and constraint 4 had *already* been breached once
-(esc-6267-3 caught the `Hz`/`rad/s` removal by eye, after the fact). S1–S4
-converted both into permanent tests in
-`crates/reify-mcp/src/tools/language_chunks.rs`'s existing
-`#[cfg(test)] mod tests`, which runs at the DEFAULT `cargo test` gate
-(unlike opt-in PDOCCOVER):
+(esc-6267-3 caught the `Hz`/`rad/s` removal by eye, after the fact).
 
-- **`angle_crossing_goal_vocabulary_survives_in_the_corpus`** (S1/S2) —
-  asserts `Hz` and `rad/s` each survive somewhere in the whole chunk corpus
-  via the new `pub fn chunk_corpus()` accessor. Replaces the Q4 hand-run
-  `grep -rn "Hz"|"rad/s"` instrument.
-- **`field_operator_names_keep_a_chunk_mention`** (S3/S4) — asserts
-  `gradient`/`divergence`/`curl`/`laplacian` each have a word-boundary
-  mention somewhere in the corpus, via a new private `corpus_contains_word`
-  helper that mirrors `reify_audit::pdoccover::contains_word`'s semantics
-  (including its char-stepped-retry fix for multi-byte chunk prose) without
-  adding a `reify-audit` or regex dependency to `reify-mcp`. Replaces the
-  hand-run `grep -rnwE "gradient|divergence|curl|laplacian"` instrument.
-  Covered in isolation by `contains_word_matches_word_boundaries_only`.
+S1–S4 attempted to close that gap by converting both hand-run greps into
+permanent tests in `crates/reify-mcp/src/tools/language_chunks.rs`'s
+existing `#[cfg(test)] mod tests`:
+`angle_crossing_goal_vocabulary_survives_in_the_corpus` and
+`field_operator_names_keep_a_chunk_mention`, backed by a new
+`pub fn chunk_corpus()` accessor and a private `corpus_contains_word`
+matcher mirroring `reify_audit::pdoccover::contains_word`'s semantics.
 
-Both guards are asserted over the *whole* corpus, not just the `units`
-chunk alone, so a future task may legitimately relocate this vocabulary to
-another chunk (were lever (a) ever taken) without tripping either guard —
-only an outright drop from the corpus fails them.
+**Comprehensive review rejected both, twice, as documentation
+meta-tests, and S8–S9 removed them** along with the test-only
+infrastructure that existed solely to back them (`chunk_corpus()`,
+`CORPUS`, and three matcher helpers) — the crate is byte-identical to
+`main` again (§5). The rejection is not re-litigated here: both tests
+asserted on the *prose* of `include_str!`-embedded markdown constants —
+that a handful of hand-picked words survive somewhere in the corpus —
+which pins wording, not behaviour, and cannot detect whether the
+documentation is correct or findable. `field_operator_names_keep_a_chunk_mention`
+additionally duplicated `reify_audit::pdoccover::documented_names`
+(`crates/reify-audit/src/pdoccover.rs`), which computes the identical
+word-boundary-mention question against the *live* nine-member
+`FIELD_OP_NAMES` registry; this guard's hard-coded four-of-nine copy
+verified strictly *less* than the tool it mirrored, and would silently go
+stale the moment that registry gained or lost a member.
 
-## 5. Re-verification (S6/S7, at merge-base `2e3f228d2d`)
+**So: as of this branch, hard constraints 3 and 4 are enforced by nothing
+but a human re-running the greps in §1 by hand — the same gap that has
+now caused four filings.** That gap is real, and it is currently **OPEN**;
+this note does not close it. The correct owner is PDOCCOVER
+(`crates/reify-audit/src/pdoccover.rs`), which already computes
+registry-name-vs-chunk word-boundary coverage against the live
+`FIELD_OP_NAMES` registry — exactly the check S3/S4 tried to
+re-implement — but it is opt-in and un-baselined
+(`crates/reify-audit/pdoccover-baseline.txt` does not exist), so it is not
+part of the default `cargo test` sweep and would not have caught the
+esc-6267-3 regression either. Baselining PDOCCOVER and wiring it into the
+default sweep is filed as a follow-up rather than done here: fused-memory
+ticket **`tkt_0RSS7P2AHEMW2RSYGCHV7DNMQX`** (spawned from #6290,
+pre-curation — a *ticket* id, not a `#NNNN` task number). It is
+deliberately not inline in this task: it lands in `reify-audit`, not
+`reify-mcp`, and is likely to touch verify-pipeline files, which per
+`CLAUDE.md` forces the full `--scope all --profile both` gate — a
+high-risk gate change has no place on a branch whose entire verdict is
+"change nothing."
 
-The original post-S1–S4 re-verification pass was genuine but, like P1, was
-measured before the branch was rebased onto `2e3f228d2d`; its branch-tip
-SHA does not resolve post-rebase (see the Branch row in Provenance) so it
-is not cited here. This section is the pass that replaces it — S6's
-comment fix and S7's refresh of this note are docs/comment-only, so §1's
-numbers, measured at this same merge-base, apply unchanged; this section
-records the non-byte-census checks alongside them.
+## 5. Re-verification (S6–S10)
 
-The `Hz`/`rad/s` and PDOCCOVER-name grep instruments reproduce
-byte-for-byte against the §1 blocks above (same hits, same lines —
-`units.md:94` and `units.md:92` respectively, nothing in `INDEX.md` or
-`SKILL.md`). The PDOCCOVER suite:
+S6 and S7 were docs/comment-only passes that did not change this section's
+conclusions. **S8 and S9 did**: they deleted the two guard tests S1–S4
+built (rejected on review, §4) and the now-unused `chunk_corpus()`/`CORPUS`
+infrastructure that backed them, so the counts below are lower than every
+earlier pass recorded, on purpose. S10 is this repair itself.
+
+The `Hz`/`rad/s` and PDOCCOVER-name grep instruments still reproduce
+byte-for-byte against the §1 blocks above — re-run fresh for this section,
+not assumed unchanged, since neither S8 nor S9 touched any chunk `.md`
+file (same hits, same lines — `units.md:94` and `units.md:92`
+respectively, nothing in `INDEX.md` or `SKILL.md`). The PDOCCOVER suite:
 
 ```
 $ cargo test -p reify-audit --test pdoccover
 PASS: 22 | FAIL: 0 | SKIP: 0
 ```
 
-`cargo test -p reify-mcp` is green at 113/113 — the same count S1–S4
-established; S6's comment-only fix adds no test, and this note's own
-docs-only refresh (S7) cannot affect it.
+`cargo test -p reify-mcp` is green at **110/110** — down from the
+113/113 S1–S4 established, which is the expected delta: exactly the three
+tests S8 deleted (the two rejected guards plus
+`contains_word_matches_word_boundaries_only`, which existed only to cover
+one of them).
 
-And directly, rather than inferred from unchanged instrument output — the
-chunk corpus itself has zero diff against `main`:
+```
+$ cargo clippy -p reify-mcp --all-targets -- -D warnings
+BUILD OK | warnings: 0 | errors: 0
+```
+
+And directly, rather than inferred from instrument output — the chunk
+corpus itself has zero diff against `main`, and after S9,
+`language_chunks.rs` itself is byte-identical to `main` too:
 
 ```
 $ git diff --stat main -- crates/reify-mcp/src/tools/chunks/
 (no output)
-$ git diff --stat -- crates/reify-mcp/src/tools/chunks/
+$ git diff --stat main -- crates/reify-mcp/
+(no output)
+$ git diff main -- crates/reify-mcp/src/tools/language_chunks.rs
 (no output)
 ```
 
 This is what discharges hard constraints 1, 3 and 4, and keeps #5790 (ξ)'s
-L1–53 seam untouched: this task's entire diff is
-`crates/reify-mcp/src/tools/language_chunks.rs` (S1–S4's guards, plus S6's
-comment fix) plus this note (S5, refreshed by S7) — no chunk `.md` file,
-and in particular not `units.md`, was touched.
+L1–53 seam untouched.
+
+**One honestly-reported wrinkle.** An unscoped `git diff --stat main` is
+*not* this note alone right now, and pasting it as if it were would repeat
+the exact defect S7 fixed: `main` has independently advanced since this
+branch's own base — a `task/6376` merge (NaN-safe-ordering / FEA
+hardening, touching `reify-expr`/`reify-stdlib`/`docs/prds/compute-fea-hardening.md`/
+`scripts/check-nan-safe-ordering.sh` and its test) plus a same-day
+"nightly trickle sightings" docs commit — none of which this task touched
+or is responsible for; it is base drift, exactly like the sibling-chunk
+byte-census drift §1 already documents, just at the whole-repo scope
+instead of one directory. The instrument that actually isolates *this
+task's own diff* from that drift is the merge-base-anchored one, not a
+diff against `main`'s constantly-moving tip:
+
+```
+$ git merge-base HEAD main
+862be2ebfe8bbde7264de3b06ffe74fd9f4f6bae
+$ git diff --stat "$(git merge-base HEAD main)" HEAD
+ ...angle-crossing-doctrine-placement-2026-08-19.md | 270 +++++++++++++++++++++
+ 1 file changed, 270 insertions(+)
+```
+
+That is the true count: this task's entire diff, relative to where it
+actually branched, is this note — 270 insertions, 0 deletions, one file.
+`crates/reify-mcp/src/tools/language_chunks.rs` nets to zero change (S1–S4
+added the rejected guards, S8–S9 removed them again), and no chunk `.md`
+file, in particular not `units.md`, was ever touched.
