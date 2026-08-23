@@ -41,6 +41,28 @@
 //! probe rather than reading the option table back, for the no-getter reason
 //! above.
 //!
+//! # Known non-compliant writers
+//!
+//! The invariant above is the crate's stated rule, not yet its measured state.
+//! Two entry points still write the pair and never restore it, so a later
+//! defaults-relying call in the same process inherits their size:
+//!
+//! * [`crate::mesh_profile_2d::mesh_plane_2d`] — `mesh_profile_2d.rs`, the
+//!   `Mesh.MeshSizeMin`/`MeshSizeMax` writes behind
+//!   `if let Some(s) = mesh_size && s > 0.0`.
+//! * `mesh_boundary::mesh_surface_to_volume_with_attribution` — the same guard
+//!   shape on `options.mesh_size`, inside its
+//!   `run_meshing_with_entity_queries` helper. Named rather than linked
+//!   because `mesh_boundary` is `#[cfg(feature = "mesh-morph")]`, so an
+//!   intra-doc link to it is unresolvable in a default-feature `cargo doc`.
+//!
+//! Both are named, with file and line, in task **#6212**'s description and
+//! appear in its `files_to_modify`, so bringing them onto this seam is that
+//! task's to close — not an unowned gap. Listing them here rather than only in
+//! `refine_volume.rs`'s inline comment is deliberate: this module is what a
+//! future author reads before adding a THIRD writer, and an invariant stated
+//! without its live exceptions is how the leak stays open by accident.
+//!
 //! # Scope
 //!
 //! This module covers the `MeshSizeMin`/`MeshSizeMax` pair only. The
@@ -89,14 +111,25 @@ pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
 /// `let _guard = …` line, and because this type has a `Drop` impl (no
 /// `#[may_dangle]`) dropck requires the borrow to still be live when it drops
 /// — which forces the writes to land *before* the lock is released.
-pub(crate) struct MeshSizeClampReset<'g>(
-    std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>,
-);
+///
+/// # Why `pub`
+///
+/// `pub` rather than `pub(crate)` because three PUBLIC doc surfaces name this
+/// type as the mechanism enforcing their stated contract — this module's own
+/// doc, `refine_volume`'s module doc, and `GmshKernel::mesh_to_volume`'s. A
+/// `pub(crate)` target makes each of those an unresolvable
+/// `rustdoc::private_intra_doc_links` link that renders as dead text, so the
+/// reader of `mesh_to_volume`'s docs is pointed at a type they cannot navigate
+/// to. Exporting it costs nothing in encapsulation: [`Self::armed`] needs a
+/// live `&MutexGuard` borrowed from [`crate::init::GMSH_LOCK`] (itself `pub`
+/// for the same order of reason), so the only way to construct one is to
+/// already hold the lock this crate serialises every gmsh call on.
+pub struct MeshSizeClampReset<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
 
 impl<'g> MeshSizeClampReset<'g> {
     /// Arm the reset. Takes the live `GMSH_LOCK` guard by reference purely for
     /// its lifetime — the guard itself is never touched.
-    pub(crate) fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
+    pub fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
         Self(std::marker::PhantomData)
     }
 }
