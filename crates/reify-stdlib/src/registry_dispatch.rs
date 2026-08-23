@@ -7,6 +7,63 @@
 //! `reify_builtins::EvalBuiltinId` with **no `_` arm**, and the absence of
 //! that arm is the entire mechanism behind invariant I-REG-2.
 //!
+//! # Negative-test proof recipe (PRD §8 boundary #6)
+//!
+//! Verified by temporary MUTATION-THEN-REVERT (task #6001 α, step-16); no
+//! mutating test is committed — the point of this recipe is precisely that the
+//! property needs no test, because a violation is UNREPRESENTABLE and fails
+//! the BUILD. The error text below was observed, not guessed.
+//!
+//! **The property.** A registry row whose `BindingKind` is `EvalBuiltin` but
+//! which has no arm in [`dispatch`] cannot exist in a compiling tree.
+//!
+//! 1. **Edit.** Add an eighth row to the `EvalBuiltin` group in
+//!    `crates/reify-builtins/src/registry.rs`, without adding its arm here:
+//!
+//!    ```text
+//!    ProbeEighthRow {
+//!        name: "probe_eighth_row",
+//!        family: Parse,
+//!        arity: Exact(1),
+//!        arg_slots: [Any],
+//!        result: Const(Type::dimensionless_scalar()),
+//!        basis: Artifact
+//!    },
+//!    ```
+//!
+//! 2. **Command.** `cargo check -p reify-stdlib`
+//!
+//! 3. **Expected failure.** The build FAILS — verbatim:
+//!
+//!    ```text
+//!    error[E0004]: non-exhaustive patterns: `EvalBuiltinId::ProbeEighthRow` not covered
+//!      --> crates/reify-stdlib/src/registry_dispatch.rs:80:11
+//!       |
+//!    80 |     match id {
+//!       |           ^^ pattern `EvalBuiltinId::ProbeEighthRow` not covered
+//!       |
+//!    note: `EvalBuiltinId` defined here
+//!      --> crates/reify-builtins/src/macros.rs:99:13
+//!       = note: the matched value is of type `EvalBuiltinId`
+//!    ```
+//!
+//!    rustc even names the fix (`EvalBuiltinId::ProbeEighthRow => todo!()`).
+//!    Note WHAT this proves: registration drift is caught by the COMPILER, at
+//!    the point of the omission, not by a test that has to remember to look.
+//!
+//! 4. **Revert.** Delete the added row.
+//!
+//! **The converse direction needs no recipe at all.** An eval arm with no row
+//! has no variant to match on — `EvalBuiltinId::WhateverYouMeant` simply does
+//! not exist — so it cannot be written in the first place. The two directions
+//! together are what make "every `BuiltinId` is bound exactly once in its
+//! kind's owning dispatcher" a property of the type system rather than a
+//! convention.
+//!
+//! **What would break it.** Adding a `_ => …` arm to [`dispatch`], or marking
+//! `EvalBuiltinId` `#[non_exhaustive]` (which would force downstream crates to
+//! write one). Neither is present, deliberately.
+//!
 //! [`BindingKind::EvalBuiltin`]: reify_builtins::BindingKind::EvalBuiltin
 
 use reify_builtins::{BuiltinId, EvalBuiltinId};

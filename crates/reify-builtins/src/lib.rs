@@ -37,8 +37,13 @@
 //! - **I-REG-2**: every `BuiltinId` is bound exactly once in its
 //!   [`BindingKind`]'s owning dispatcher, via an exhaustive match with no `_`
 //!   arm. The per-kind sub-enums this crate generates (`EvalBuiltinId`, …) are
-//!   what give that requirement teeth — see the negative-test proof recipe on
-//!   `reify-stdlib`'s `registry_dispatch` module.
+//!   what give that requirement teeth: a row added to a group adds a variant
+//!   to its sub-enum and stops the owning crate compiling until it is bound,
+//!   and an arm with no row has no variant to match, so it cannot be written
+//!   at all. Drift is therefore UNREPRESENTABLE rather than test-caught — see
+//!   the "Negative-test proof recipe" section on `reify-stdlib`'s
+//!   `registry_dispatch` module, whose E0004 text was observed by temporary
+//!   mutation-then-revert, not guessed.
 //! - **I-REG-7**: every row carries a `basis`; the `Artifact` count is a
 //!   visible, reviewed ratchet toward zero (see [`artifact_basis_rows`]).
 //!
