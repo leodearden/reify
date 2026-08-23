@@ -43,9 +43,11 @@
 //   - FEAMaterialInput(material: mat) → mi.material (ElasticMaterial coercion).
 //   - boundary_conditions accepts the List<FixedSupport> value for its
 //     List<Support> param (structure ctors do not type-check args).
-//   - ModalOptions args are POSITIONAL (name: labels are cosmetic, bound in
-//     declaration order); every param up to `element_order` is spelled out so the
-//     trailing reference_direction / element_order land in the right slots.
+//   - ModalOptions args bind BY NAME (task-4522's by-name ctor binder resolves
+//     each `name:` label against the declared params; only UNLABELLED args fill
+//     the remaining slots in declaration order). Every param is still spelled
+//     out because a MISSPELLED label is silently lenient — appended as
+//     `__arg{i}` with no diagnostic, leaving the real param at its default.
 
 structure CantileverStepResponse {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.

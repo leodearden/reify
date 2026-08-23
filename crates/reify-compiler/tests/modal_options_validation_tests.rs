@@ -232,9 +232,18 @@ fn no_damping_marker_structure() {
 ///
 /// Assertions:
 ///   (a) exactly 2 params, (b) the two params are (alpha, beta) with their
-///       registered named dimensions, in declaration order — declaration
-///       order is load-bearing because constructor arg binding is positional
-///       (labels are cosmetic; see examples/modal/printer_gantry_modes.ri),
+///       registered named dimensions. What this pins is the declared
+///       (name, dimension) PAIRS: structure-ctor args bind BY NAME (the
+///       by-name binder `expr.rs` grew in task-4522 — a `name:` label is
+///       resolved against the template's param cells, and positional args
+///       only fill the slots no label claimed), so `RayleighDamping(beta:
+///       …, alpha: …)` binds correctly and a caller is not order-bound.
+///       Declaration order appears here only because the assertion loop
+///       below walks `params` positionally. It is still worth pinning,
+///       for a different reason: the MISLABEL path is silently lenient —
+///       an unknown label is appended as `__arg{i}` with no diagnostic
+///       (only a DUPLICATE label is diagnosed) and the real param falls
+///       back to its default, so a renamed param fails quietly,
 ///   (c) neither carries a `default_expr` (input-only fields without a
 ///       canonical default — PRD §4.2 lists no defaults),
 ///   (d) no constraints — alpha and beta are conventionally non-negative
@@ -328,6 +337,104 @@ fn rayleigh_damping_param_shape() {
     );
 }
 
+// ─── task-6093 amendment: ctor args bind BY NAME ─────────────────────────────
+
+/// Structure-ctor arguments bind BY NAME, not positionally.
+///
+/// The guard for a claim three example files in this task's scope state in
+/// prose (`printer_gantry_modes.ri`, `transient_step_response.ri`,
+/// `printer_print_envelope.ri`) — all three previously asserted the OPPOSITE
+/// ("binding is POSITIONAL; `name:` labels are cosmetic"), which task-4522's
+/// by-name binder in `expr.rs` had already made false. A prose-only correction
+/// would rot the same way, so it is pinned here.
+///
+/// Compiles `RayleighDamping(beta: …, alpha: …)` — labels in REVERSE
+/// declaration order — and asserts the lowered `ordered_args` re-key the args
+/// to `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`. A positional binder would
+/// instead produce alpha = 0.0003 s and beta = 0.0 s⁻¹, i.e. the same two
+/// names carrying each other's value.
+#[test]
+fn structure_ctor_args_bind_by_name_not_positionally() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure CtorBindByNameProbe {
+    let damping = RayleighDamping(beta: 0.0003s, alpha: 0.0Hz)
+}
+"#,
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "reverse-labelled ctor must compile clean, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "CtorBindByNameProbe")
+        .expect("CtorBindByNameProbe template should be compiled");
+    let damping_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "damping")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `damping` let cell should carry its ctor expression");
+
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &damping_expr.kind else {
+        panic!(
+            "`damping` should lower to a StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+
+    let bound: Vec<(&str, Option<&Value>)> = ordered_args
+        .iter()
+        .map(|(name, e)| {
+            (
+                name.as_str(),
+                match &e.kind {
+                    CompiledExprKind::Literal(v) => Some(v),
+                    _ => None,
+                },
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        bound.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        vec!["alpha", "beta"],
+        "ordered_args must be re-keyed into template declaration order, \
+         with each label routed to its OWN param; got: {:?}",
+        bound
+    );
+
+    let expected: &[(&str, f64, DimensionVector)] = &[
+        ("alpha", 0.0, DimensionVector::FREQUENCY),
+        ("beta", 0.0003, DimensionVector::TIME),
+    ];
+    for (i, (name, si, dim)) in expected.iter().enumerate() {
+        match bound[i].1 {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert_eq!(
+                    (*si_value, *dimension),
+                    (*si, *dim),
+                    "`{}` must carry the value written against ITS OWN label \
+                     (a positional binder would swap the two)",
+                    name
+                );
+            }
+            other => panic!(
+                "`{}` should bind a dimensioned Scalar literal, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
+
 // ─── task-6093: declared dimensions propagate to field reads ─────────────────
 
 /// The retype's **user-observable** consequence, pinned as a behavioural test
@@ -336,66 +443,34 @@ fn rayleigh_damping_param_shape() {
 /// # Why this test and not a constructor-argument diagnostic
 ///
 /// Task #6093's stated acceptance signal was "a bare-`Real` construction now
-/// produces the standard structure-field dimension diagnostic". That signal
-/// **cannot be delivered by this task**, and the reason is narrower than "no
-/// ctor checking exists". A struct-ctor field-conformance pass DOES exist
-/// (`crates/reify-compiler/src/conformance/mod.rs`, emitting at
-/// `CTOR_FIELD_CONFORMANCE_SEVERITY = Warning`), and the whole example corpus
-/// is gated on it by
-/// `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`.
-/// What is NOT true — and an earlier revision of this block asserted it — is
-/// that the dimensioned-`Scalar` family is *excluded* from that pass.
-/// Re-verified first-hand against the predicate itself:
+/// produces the standard structure-field dimension diagnostic". It is not
+/// deliverable here — but not because ctor checking is absent. The struct-ctor
+/// field-conformance pass (`crates/reify-compiler/src/conformance/mod.rs`,
+/// emitting at `CTOR_FIELD_CONFORMANCE_SEVERITY = Warning`, corpus-gated by
+/// `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`)
+/// ALLOWLISTS the dimensioned-`Scalar` family:
 /// `general_leaf_param_family_is_validated` matches
-/// `Type::Bool | Type::Int | Type::String | Type::Scalar { .. }`, so a
-/// `Scalar` slot is on its ALLOWLIST. The general concrete-leaf arm routes it
-/// into the shared `reject_if_incompatible` → `type_compatible` gate rather
-/// than holding it back from one.
+/// `Type::Bool | Type::Int | Type::String | Type::Scalar { .. }`, routing a
+/// `Scalar` slot through the shared `reject_if_incompatible` →
+/// `type_compatible` gate. The silence is therefore that gate's downstream
+/// COMPATIBILITY verdict — the bare dimensionless literal is *judged
+/// compatible* — not a missing check, so a future tightening has to land on
+/// the compatibility judgement, not on the allowlist. Confirmed live at the
+/// branch point: `Probe(a: 5.0mm, b: 0.0003kg)` into `Frequency`/`Time` params
+/// passes `check` clean, as does the already-tightened stdlib
+/// `Mode(frequency: 5.0mm, …)` from task 4548.
 ///
-/// The silence at a dimensioned slot is therefore a downstream COMPATIBILITY
-/// verdict, not an absent check: the bare dimensionless literal is *judged
-/// compatible* with the dimensioned param. That distinction is the load-bearing
-/// part — a future tightening has to land on the compatibility judgement, not
-/// on this predicate's allowlist. Supplying such a literal is idiomatic
-/// corpus-wide, and whether it should stay legal is a language-semantics
-/// question whose answer is position-dependent across six gates. So a bare
-/// `Real` at this `Frequency`/`Time` slot is silent TODAY, not unreachable in
-/// principle.
-///
-/// Every symbol above is cited by NAME, not by `file:line` — house rule, the
-/// line is only ever a hint. The revision this corrects cited
-/// `conformance/mod.rs:1789`, which is the unrelated `Selector`/`AnySelector`
-/// arm; the predicate had moved.
-///
-/// Measured live at the task's branch point against the release binary:
-///
-///   - `Probe(a: 5.0mm, b: 0.0003kg)` into `Frequency`/`Time` params passes
-///     `check` clean, and `eval` then stores the values verbatim.
-///   - The already-tightened stdlib `Mode(frequency: 5.0mm, ...)` from task
-///     4548 is equally silent — the sibling precedent has the same gap.
-///
-/// # Who owns the ctor-side gate (not this task, and not the readers PRD)
-///
-/// The bare-arg-at-a-dimensioned-slot negative pin is owned by
+/// That negative pin is owned by
 /// `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1 (invariant I3,
-/// task γ = #5627), which introduces it as a value floor rather than by
-/// inverting the existing probe in place. That existing probe —
-/// `struct_ctor_field_conformance_tests.rs::family_dimensioned_scalar_given_unit_literal_arg_is_silent`
-/// — pins only the accepted FIX form (a dimensioned unit literal at a
-/// dimensioned slot emits zero ctor-conformance diagnostics), which is exactly
-/// the form step-5 of this task migrated the five RayleighDamping call sites
-/// to. `docs/prds/v0_6/dimension-checked-readers.md` owns a different seam
-/// entirely: the EVAL-side reader (`modal_ops::read_scalar_si`), which this
-/// task deliberately leaves tolerant.
+/// task γ = #5627), not by this task; the eval-side reader
+/// (`modal_ops::read_scalar_si`) is a different seam again, owned by
+/// `docs/prds/v0_6/dimension-checked-readers.md` and deliberately left
+/// tolerant here. Symbols are cited by NAME, not `file:line` — house rule.
 ///
-/// What the declaration change *does* produce is this: the declared type
-/// propagates into expression type-checking on field **reads**. So a bare
-/// `Real` construction stays silent, but every downstream *use* of
-/// `damping.alpha` / `damping.beta` now carries the dimension. That is a
-/// genuine, testable consequence of the declaration change alone.
-///
-/// Asserted on diagnostic substance ("dimension mismatch in addition"), not
-/// exact prose, so wording churn does not make this brittle.
+/// What the declaration change *does* produce is the field-**read** half: a
+/// bare-`Real` construction stays silent, but every downstream use of
+/// `damping.alpha` / `damping.beta` now carries the dimension. Asserted on
+/// diagnostic substance ("dimension mismatch in addition"), not exact prose.
 ///
 /// RED before the retype (both arms):
 ///   (i)  `damping.beta + 1.0s`  -> `dimension mismatch in addition: Real vs Scalar[s]`
