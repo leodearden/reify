@@ -3900,37 +3900,63 @@
         }
     }
 
-    /// SCOPE BOUNDARY: `polygon`'s coordinate pairs are NOT gated by this leaf.
+    /// SCOPE BOUNDARY, INVERTED AT THE MERGE: `polygon`'s coordinate pairs are
+    /// gated — by task 5661's VARIADIC route, NOT by this leaf's raw-`Value`
+    /// one — and that rejection now carries THIS leaf's shared code.
     ///
-    /// `profile_polygon` is the one profile that does not read named args at
-    /// all — it routes its whole variadic list through `eval_all_args_to_f64`,
-    /// which flattens to raw `f64` and has no `ArgSpec` to check against.
-    /// Gating a variadic coordinate list is a different shape of change (it
-    /// needs a per-pair accept loop and its own corpus migration) and belongs
-    /// to task 5661, not here.
+    /// This assertion deliberately flipped. β authored it as negative space
+    /// (`..._coords_are_not_gated_by_this_leaf`, asserting bare polygon
+    /// coordinates compiled with ZERO diagnostics) while `profile_polygon`
+    /// still read its whole variadic list through the bare
+    /// `eval_all_args_to_f64`, which had no `ArgSpec` to check against. Task
+    /// 5661 then landed on main, routed `profile_polygon` through
+    /// `accept_variadic_length_args`, and retired that helper. Merging main
+    /// therefore made the old assertion FALSE — it is re-aimed here, not
+    /// suppressed, and this note exists so a reader cannot mistake the flip for
+    /// a regression that was quietly papered over.
     ///
-    /// So `polygon(0,0, 10,0, 10,10)` must still compile with bare coordinates
-    /// and ZERO diagnostics. This assertion exists so that an over-broad gate —
-    /// one that reached into `eval_all_args_to_f64` on the theory that "a
-    /// profile coordinate is a length too" — is caught HERE, at the leaf that
-    /// drew the boundary, rather than in review or by 5661's own tests.
+    /// What it asserts INSTEAD is the merge's dividend, and the invariant β
+    /// exists to establish. 5661's commit message states that routing polygon
+    /// through `accept_length_value` "is exactly what makes polygon inherit
+    /// task 5743's shared code when it lands and retrofits the SINGLE minting
+    /// site (PRD D9 / INV-SF-6)". So a bare polygon vertex must now be
+    /// rejected at `Severity::Error` carrying `DimensionedArgRejected`: D9 /
+    /// INV-SF-6 holds across the WHOLE merged Contract C surface — named-arg,
+    /// variadic AND R7 raw-`Value` — rather than only the half this leaf gated.
+    /// It is the 2-D stride-2 sibling of
+    /// [`compile_geometry_op_variadic_pole_rejection_is_error_with_the_shared_code`],
+    /// which pins the same claim on the 3-D triples.
+    ///
+    /// The NEGATIVE-SPACE half is kept, because the boundary β drew still
+    /// holds — only its consequence changed. Polygon is gated by the ARITY-OPEN
+    /// variadic route, and must NOT be pulled into β's `required_length_value`
+    /// `ArgSpec` chokepoint, which reads args BY NAME. Two independent
+    /// witnesses catch that over-broad edit:
+    ///   (i) the message names the DISPLAY coordinate `x1`, which only the
+    ///       variadic renderer mints; the named-arg route would surface the
+    ///       compiler's inert `c0` verbatim, since it has no vertex numbering
+    ///       to recover;
+    ///   (ii) `ProfileKind::Polygon` stays absent from [`BETA_PROFILE_SLOTS`],
+    ///       the table an author would have to extend to route it that way.
     #[test]
     fn compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf() {
         let values = ValueMap::new();
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let op = CompiledGeometryOp::Profile {
-            kind: reify_compiler::ProfileKind::Polygon,
-            args: vec![
-                ("x1".into(), literal_f64(0.0)),
-                ("y1".into(), literal_f64(0.0)),
-                ("x2".into(), literal_f64(0.01)),
-                ("y2".into(), literal_f64(0.0)),
-                ("x3".into(), literal_f64(0.01)),
-                ("y3".into(), literal_f64(0.01)),
-            ],
-        };
-        let compiled = compile_geometry_op(
+        // BARE x1; every other coordinate is a proper Length, so the rejection
+        // under test is the only one. Three vertices, matching POLYGON_GATE —
+        // the minimum the compiler accepts, and the minimum that can see a
+        // stride slip.
+        let op = polygon_with_coords(&[
+            literal_f64(0.0),
+            literal_length(0.0),
+            literal_length(0.01),
+            literal_length(0.0),
+            literal_length(0.005),
+            literal_length(0.01),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
             &op,
             &values,
             &[],
@@ -3938,20 +3964,50 @@
             &HashMap::new(),
             &HashMap::new(),
             &mut diagnostics,
-        )
-        .expect("polygon coordinates are out of this leaf's slice (task 5661) and must compile");
-
-        let reify_ir::GeometryOp::PolygonProfile { points } = compiled else {
-            panic!("expected GeometryOp::PolygonProfile, got {compiled:?}");
-        };
-        assert_eq!(
-            points,
-            vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01]],
-            "polygon must keep flattening its bare coordinate pairs unchanged"
         );
         assert!(
-            diagnostics.is_empty(),
-            "bare polygon coordinates must push ZERO diagnostics; got: {diagnostics:?}"
+            result.is_err(),
+            "a bare polygon vertex coordinate must drop the op (task 5661); \
+             got: {result:?}"
+        );
+
+        // The `ArgRejection` diagnostic SPECIFICALLY, not "some Error naming
+        // the arg": the accompanying op-compile Error also contains the arg
+        // name and the word "Length", so the looser shape would have passed
+        // before 5743's promotion too.
+        let rej = diagnostics
+            .iter()
+            .find(|d| d.message.contains("argument expects Length"))
+            .unwrap_or_else(|| panic!("expected a Length rejection; got: {diagnostics:?}"));
+        assert_eq!(
+            rej.severity,
+            reify_core::Severity::Error,
+            "5743 promoted the ONE shared `accept_length_value` rejection arm, \
+             so polygon's variadic route inherits Error severity: {rej:?}"
+        );
+        assert_eq!(
+            rej.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "INV-SF-6: every `ArgSpec`-backed rejection carries the shared code, \
+             on the variadic route as well as the named-arg and raw-`Value` \
+             ones: {rej:?}"
+        );
+        assert!(
+            rej.message.contains("x1") && !rej.message.contains("c0"),
+            "NEGATIVE SPACE (i): polygon must stay on the VARIADIC route, whose \
+             stride-2 renderer mints the DISPLAY name `x1`. The inert `c0` would \
+             mean the arity-open vertex list had been pulled into β's \
+             `required_length_value` named-arg chokepoint: {:?}",
+            rej.message
+        );
+
+        assert!(
+            !BETA_PROFILE_SLOTS
+                .iter()
+                .any(|(kind, _)| *kind == reify_compiler::ProfileKind::Polygon),
+            "NEGATIVE SPACE (ii): `Polygon` must stay out of β's `ArgSpec` slot \
+             table — its vertex list is arity-open and has no per-slot `ArgSpec` \
+             to check against, which is why 5661 gated it by stride instead"
         );
     }
 
