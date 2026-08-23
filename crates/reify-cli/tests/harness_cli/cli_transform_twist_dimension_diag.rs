@@ -7,14 +7,18 @@
 //! arms land, they print only the generic
 //! `note: … op contract failed (OpContractViolation)`, which never names the
 //! offending dimension. These tests pin the user-observable end of that contract:
-//! a stderr Warning naming both the required dimension (`Length`) and the offending
-//! one, with `reify eval` still exiting 0.
+//! a stderr `Error` naming both the required dimension (`Length`) and the offending
+//! one, and a NON-ZERO `reify eval` exit.
+//!
+//! The severity is an `Error` per Leo's severity amendment (2026-08-19, via
+//! esc-6080-6): a wrong dimension is a design-correctness fault, not a degradation
+//! to tolerate, so it must fail the build rather than scroll past on stderr.
 
 use crate::common;
 
 // ── The needles, shared by the positive tests AND the over-narrowing guard ────────
 //
-// The guard below asserts the dimension Warning is ABSENT. A negative assertion
+// The guard below asserts the dimension diagnostic is ABSENT. A negative assertion
 // coupled to prose that nothing else pins is the classic silently-vacuous test: reword
 // the message and the positive tests (asserting on other tokens) still pass, while the
 // guard becomes vacuously true and stops guarding, with nothing going red. Routing all
@@ -25,24 +29,24 @@ use crate::common;
 // trailing `:` so they match the diagnostic's own `"<builtin>: …"` opening and not a
 // bare mention of the builtin name elsewhere on stderr.
 
-/// The ruling citation every RULING #6126 dimension Warning carries.
+/// The ruling citation every RULING #6126 dimension diagnostic carries.
 const RULING_TAG: &str = "RULING #6126";
-/// The opening of the `transform_log` dimension Warning.
+/// The opening of the `transform_log` dimension diagnostic.
 const LOG_DIAG_PREFIX: &str = "transform_log:";
-/// The opening of the `transform_exp` dimension Warning.
+/// The opening of the `transform_exp` dimension diagnostic.
 const EXP_DIAG_PREFIX: &str = "transform_exp:";
 
 /// `reify eval` on a dimensionless Transform translation emits the
-/// Vector3<Length>-requirement Warning on stderr via the post-Undef geometry
-/// diagnose hook, and still exits 0.
+/// Vector3<Length>-requirement `Error` on stderr via the post-Undef geometry
+/// diagnose hook, and exits NON-ZERO.
 #[test]
-fn eval_transform_log_dimensionless_warns_length_required() {
+fn eval_transform_log_dimensionless_errors_length_required() {
     let path = common::fixture_path("transform_log_dimensionless.ri");
     let (status, stdout, stderr) = common::run_subcommand("eval", &path);
 
     assert!(
-        status.success(),
-        "a dimension rejection is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "a dimension rejection is an Error, so reify eval must exit non-zero;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains(LOG_DIAG_PREFIX),
@@ -64,16 +68,17 @@ fn eval_transform_log_dimensionless_warns_length_required() {
 }
 
 /// `reify eval` on a dimensionless twist `linear` half emits the
-/// Vector3<Length>-requirement Warning on stderr, and still exits 0 — the mirror
-/// of the `transform_log` case, so both ends of the seam explain their rejection.
+/// Vector3<Length>-requirement `Error` on stderr and exits NON-ZERO — the mirror
+/// of the `transform_log` case, so both ends of the seam explain their rejection
+/// AND fail with the same exit code.
 #[test]
-fn eval_transform_exp_dimensionless_warns_length_required() {
+fn eval_transform_exp_dimensionless_errors_length_required() {
     let path = common::fixture_path("transform_exp_dimensionless.ri");
     let (status, stdout, stderr) = common::run_subcommand("eval", &path);
 
     assert!(
-        status.success(),
-        "a dimension rejection is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "a dimension rejection is an Error, so reify eval must exit non-zero;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains(EXP_DIAG_PREFIX),

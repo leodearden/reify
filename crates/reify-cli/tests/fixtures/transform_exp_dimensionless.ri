@@ -4,11 +4,13 @@
 // RULING #6126: a twist is Map { angular: Vector3<…>, linear: Vector3<Length> }.
 // vec3(1.0, 2.0, 3.0) is dimensionless, so transform_exp returns Value::Undef and
 // the post-Undef geometry diagnose hook must emit on stderr:
-//   warning: transform_exp: a twist's `linear` must be Vector3<Length>; got dimensionless ...
-// `reify eval` still exits 0 (the diagnostic is a Warning, not an Error).
+//   error: transform_exp: a twist's `linear` must be Vector3<Length>; got dimensionless ...
+// `reify eval` exits NON-ZERO: a wrong dimension is a design-correctness fault, so
+// the diagnostic is a Severity::Error (Leo's severity amendment, 2026-08-19, via
+// esc-6080-6), not a Warning.
 //
 // Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
-// runtime Warning diagnostic.
+// runtime Error diagnostic and a non-zero exit.
 //
 // The `module` declaration is load-bearing for the test, not decoration: without
 // it, W_MODULE_DECL_MISSING quotes the expected module name (= the file stem,

@@ -5627,9 +5627,12 @@ mod tests {
             .expect("a dimensionless translation must produce a diagnostic");
         assert_eq!(
             diag.severity,
-            reify_core::Severity::Warning,
-            "the dimension rejection degrades to Undef within one primitive, so it is a \
-             Warning (not an Error)"
+            reify_core::Severity::Error,
+            "a wrong dimension is a design-correctness fault, so RULING #6126 reports it as \
+             an Error — NEVER a Warning — and both halves of the transform_log/transform_exp \
+             family must report this fault class with the SAME exit code (#6080 plans \
+             Error/exit-1 for the angular half). Leo's severity amendment, 2026-08-19, via \
+             esc-6080-6."
         );
         for needle in ["transform_log", "Length", "dimensionless"] {
             assert!(
@@ -5716,9 +5719,12 @@ mod tests {
             .expect("a dimensionless linear must produce a diagnostic");
         assert_eq!(
             diag.severity,
-            reify_core::Severity::Warning,
-            "the dimension rejection degrades to Undef within one primitive, so it is a \
-             Warning (not an Error)"
+            reify_core::Severity::Error,
+            "a wrong dimension is a design-correctness fault, so RULING #6126 reports it as \
+             an Error — NEVER a Warning — and both halves of the transform_log/transform_exp \
+             family must report this fault class with the SAME exit code (#6080 plans \
+             Error/exit-1 for the angular half). Leo's severity amendment, 2026-08-19, via \
+             esc-6080-6."
         );
         for needle in ["transform_exp", "linear", "Length", "dimensionless"] {
             assert!(
