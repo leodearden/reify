@@ -663,6 +663,10 @@ fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
             match c {
                 '(' => depth += 1,
                 ')' => {
+                    // Cannot underflow: this scan starts AT the `(`, so `depth`
+                    // is already >= 1 by the time any `)` is reached. Saturating
+                    // here would be WRONG, not safer — it would make the
+                    // `== 0` test fire on a stray `)` and report a short arity.
                     depth -= 1;
                     if depth == 0 {
                         close = Some(open + i);
