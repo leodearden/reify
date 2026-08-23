@@ -1,33 +1,131 @@
-//! Live integration smoke test: real `reify-audit` binary vs live jcodemunch serve.
+//! The non-vacuous live capstone: the real `reify-audit` binary completes a
+//! REAL MCP session against a REAL freshly-indexed corpus (PRD
+//! `docs/prds/jcodemunch-substrate-restoration.md`, task ε; B6 + B8).
 //!
-//! Exercises the full wire: binary → `RealJCodemunchOps` → jcodemunch-serve MCP
-//! and asserts ≥1 well-formed `P1ProducerOrphan` finding AND ≥1 `PDeadCode`
-//! finding from the reify corpus.  The point is to catch a wire/trait/detector
-//! mismatch that mock tests cannot.
+//! ## The defect this file exists to close
 //!
-//! ## On-demand run command (serve must be up)
+//! For ten weeks the jcodemunch seam was broken — `JcodemunchClient` could not
+//! complete an MCP handshake (§2.3) — and nothing noticed, because the
+//! capstone that lived here was PASS-SHAPED WHETHER OR NOT THE CHAIN WORKED
+//! (§2.4, the PRD's central claim: 2.1–2.3 are symptoms, 2.4 is the disease).
+//! It failed in three compounding ways, all now removed:
+//!
+//! * it graceful-skipped on a bare `TcpStream::connect` probe — a verdict any
+//!   port squatter satisfies;
+//! * it asserted `>=1 PDeadCode` and `>=1 P1ProducerOrphan`, a count premise
+//!   nobody had ever validated; and
+//! * it derived `--project-root` from `CARGO_MANIFEST_DIR`, so in a warm lane
+//!   it refused with exit 125 — unrunnable exactly where tasks execute.
+//!
+//! ## What the capstone ASSERTS
+//!
+//! * The endpoint PROVES it is jcodemunch: a real `initialize` returning HTTP
+//!   200, `serverInfo.name == "jcodemunch-mcp"`, and a server-assigned
+//!   `Mcp-Session-Id`. Identity, not liveness.
+//! * β (`scripts/jcodemunch-index-reify.sh`) indexed a throwaway two-commit
+//!   corpus and printed its own `INDEX-OK` token.
+//! * `count_symbols(index_dir, repo_id) > 0`, read INDEPENDENTLY against the
+//!   index the binary is about to be pointed at — this is what realizes B6's
+//!   "over a non-empty symbol set" in a way an empty findings array cannot
+//!   satisfy.
+//! * Per leg (PDEAD, P1): exit 0; no `E_JC_INDEX_` marker in stderr, i.e. the
+//!   §4.3 freshness gate ADMITTED the run rather than refusing it; no
+//!   `jcodemunch unreachable at` breadcrumb, i.e. the client completed a real
+//!   session instead of degrading to `NoopJCodemunchOps`; and a well-formed
+//!   findings array.
+//!
+//! The breadcrumb assertion is the load-bearing one. The degraded path still
+//! exits 0 and still serializes a perfectly well-formed EMPTY array — that is
+//! precisely how §2.3 survived. No link in the chain
+//! (exit 0 / no refusal marker / no fail-soft / symbols > 0) is satisfiable by
+//! a vacuous run.
+//!
+//! ## What the capstone does NOT assert
+//!
+//! **Any finding count, on either leg.** P1's one recorded live run
+//! (2026-06-09) produced ZERO findings (§2.5), so a `>=N` bound has no
+//! achievability basis: it would pass only under an unvalidated premise, which
+//! is §2.4's vacuity reproduced in mirror image. Count 0 is a legitimate,
+//! PASSING outcome — pinned behaviourally by
+//! `finding_shape::empty_findings_array_is_well_formed`, which the capstone
+//! genuinely depends on, so it cannot rot into a comment. Counts are PRINTED
+//! as operator-facing evidence and never asserted.
+//!
+//! ## There is NO skip path (B8)
+//!
+//! Every failure in the capstone body is a panic; the body contains no
+//! `return`. `JCODEMUNCH_URL` and `CODE_INDEX_PATH` CONFIGURE the run — their
+//! absence is a hard failure naming the sanctioned invocation, not a silent
+//! success.
+//!
+//! ### Why `#[ignore]` is the gate, and why an env flag CANNOT be one
+//!
+//! `#[ignore]` is the SOLE gate. An env flag cannot gate the run without
+//! reintroducing the defect being removed: if the flag is unset the test must
+//! either return early (a graceful skip — forbidden by B8) or panic (which
+//! reddens any `cargo test -- --ignored` sweep just as much as having no flag
+//! at all). Both branches are strictly worse than `#[ignore]` alone. Verified
+//! that `#[ignore]` genuinely excludes it: `grep -rn -- "--ignored" scripts/`
+//! finds no verify-pipeline step that runs ignored tests. So env vars are
+//! demoted to configuration, and "invoked" stays load-bearing — you must
+//! deliberately pass `--ignored`.
+//!
+//! ### Why this is a `cargo test`, not a `tests/infra/` shell test (OQ3)
+//!
+//! `tests/infra/run-all-classification.manifest` has exactly three buckets —
+//! `pool`, `intra-run-serial`, `host-exclusive` — and ALL THREE run under
+//! `run_all.sh` on the merge gate. There is no "excluded" bucket, so a
+//! hard-failing live capstone placed there would be gate-resident by
+//! construction and would turn main RED for every merge on any host without
+//! uvx, network or jcodemunch — the Error-on-a-healthy-path outcome the
+//! capability manifest's `capstone-must-not-become-gate-resident` forbids
+//! (jcodemunch is legitimately absent in task worktrees, PRD §9). The two
+//! jcodemunch infra tests confirm the boundary: `test_jcodemunch_index_reify.sh`
+//! and `test_with_jcodemunch_serve.sh` are both `pool` and both deliberately
+//! hermetic. Two further reasons: the capstone must invoke the `reify-audit`
+//! BINARY, which `env!("CARGO_BIN_EXE_reify-audit")` hands a cargo test for
+//! free and a shell test would have to build itself; and
+//! `jcodemunch_session_live.rs` (#6106) already established the
+//! `#[ignore]` + hard-fail live-test pattern in this same crate.
+//!
+//! `tests/infra/run-all-classification.manifest` is therefore DELIBERATELY
+//! UNTOUCHED by this change, and the esc-4914-162 same-diff-registration
+//! hazard does not arise at all.
+//!
+//! ## The seams are gate-resident even though the capstone is not
+//!
+//! The preflight verdict, the findings-shape predicate, the corpus builder and
+//! the β invocation are each tested WITHOUT a serve, in the `serve_preflight`,
+//! `finding_shape`, `corpus_fixture` and `index_invocation` modules. Only
+//! their COMPOSITION is `#[ignore]`d. This is the pattern
+//! `jcodemunch_session_live.rs` recorded for `finish_teardown`: leaving the
+//! machinery of an opt-in test untested "would reproduce the exact failure
+//! mode this file exists to close, one layer down". The sharpest instance is
+//! `index_invocation::the_index_script_this_capstone_names_actually_exists` —
+//! the prior PRD's `L-SMOKE` binding named `scripts/smoke-jcodemunch-audit.sh`,
+//! which never existed, and nothing noticed.
+//!
+//! ## Running it
 //!
 //! ```sh
-//! # Default URL (http://127.0.0.1:8901/mcp):
-//! cargo test -p reify-audit --test jcodemunch_live -- --ignored
-//!
-//! # Custom serve URL:
-//! JCODEMUNCH_URL=http://127.0.0.1:8901/mcp \
-//!   cargo test -p reify-audit --test jcodemunch_live -- --ignored
+//! CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcodemunch-serve.sh --port 8917 -- \
+//!   cargo test -p reify-audit --test jcodemunch_live -- --ignored --nocapture
 //! ```
 //!
-//! ## Serve prerequisite
+//! δ (`scripts/with-jcodemunch-serve.sh`) owns the serve lifecycle — spawn,
+//! readiness identity-poll, `JCODEMUNCH_URL` export, and unconditional
+//! teardown with leak detection — so this file spawns nothing and tears down
+//! nothing. `CODE_INDEX_PATH` must be set OUTSIDE the wrapper because both
+//! halves need it: the serve reads its own index directory, and so does the
+//! capstone. A throwaway one keeps the run off host-global `~/.code-index`.
 //!
-//! Start jcodemunch-serve before running the ignored test, e.g.:
-//! ```sh
-//! cd /path/to/jcodemunch && npm run serve -- --port 8901
-//! ```
+//! Requires `uvx` and network. From a landlock-sandboxed agent also export
+//! `UV_TOOL_DIR=/tmp/<dir>`: the write-set denies `~/.local/share/uv`, so δ's
+//! `uvx` spawn otherwise fails `E_JC_SERVE_SPAWN_FAILED`. `~/.cache/uv` is
+//! writable, so the package cache stays warm.
 //!
-//! When the serve is not up the ignored test gracefully skips (prints a note
-//! to stderr and returns early) rather than hard-failing.  The hermetic unit
-//! tests in the `finding_shape` and `serve_preflight` modules (not `#[ignore]`)
-//! always run as part of standard `cargo test` and catch compile-time drift
-//! in the wire shape.
+//! A plain `cargo test -p reify-audit` runs the 14 hermetic tests and skips
+//! the capstone.
 
 mod common;
 
@@ -168,8 +266,10 @@ fn write_synthetic_done_task(
 /// in. `the_index_script_this_capstone_names_actually_exists` asserts this
 /// path resolves — the antidote to `L-SMOKE` naming a script that never
 /// existed (PRD §2.4).
-const JC_INDEX_SCRIPT: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/jcodemunch-index-reify.sh");
+const JC_INDEX_SCRIPT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../scripts/jcodemunch-index-reify.sh"
+);
 
 /// Folder-file cap handed to β for the throwaway corpus.
 ///
@@ -335,7 +435,10 @@ fn build_corpus_repo(dir: &std::path::Path) -> CorpusRepo {
             "git rev-parse {rev} exited {:?}",
             out.status.code()
         );
-        let sha = String::from_utf8(out.stdout).expect("utf8 sha").trim().to_string();
+        let sha = String::from_utf8(out.stdout)
+            .expect("utf8 sha")
+            .trim()
+            .to_string();
         assert_eq!(sha.len(), 40, "expected a full 40-char sha, got {sha:?}");
         sha
     };
@@ -373,7 +476,13 @@ fn build_corpus_repo(dir: &std::path::Path) -> CorpusRepo {
     let root = std::fs::canonicalize(&root).expect("canonicalize corpus root");
     let repo_id = reify_audit::jcodemunch_index::resolve_repo_id(&root);
 
-    CorpusRepo { root, repo_id, head, prev, touched_file }
+    CorpusRepo {
+        root,
+        repo_id,
+        head,
+        prev,
+        touched_file,
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -409,10 +518,8 @@ fn build_corpus_repo(dir: &std::path::Path) -> CorpusRepo {
 /// that chain is satisfiable by a vacuous run.
 fn assert_well_formed_findings(findings: &[serde_json::Value], leg: &str) {
     for (i, finding) in findings.iter().enumerate() {
-        let render = || {
-            serde_json::to_string_pretty(finding)
-                .unwrap_or_else(|_| format!("{finding:?}"))
-        };
+        let render =
+            || serde_json::to_string_pretty(finding).unwrap_or_else(|_| format!("{finding:?}"));
 
         let obj = finding.as_object().unwrap_or_else(|| {
             panic!(
@@ -777,7 +884,9 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         "--project-root",
         corpus_root,
         "--tasks-file",
-        empty_tasks.to_str().expect("tasks.json path is valid UTF-8"),
+        empty_tasks
+            .to_str()
+            .expect("tasks.json path is valid UTF-8"),
         "--runs-db",
         runs_db,
     ]);
@@ -803,7 +912,9 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         "--project-root",
         corpus_root,
         "--tasks-file",
-        synthetic_tasks.to_str().expect("tasks.json path is valid UTF-8"),
+        synthetic_tasks
+            .to_str()
+            .expect("tasks.json path is valid UTF-8"),
         "--runs-db",
         runs_db,
     ]);
@@ -819,8 +930,14 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         "capstone: repo_id={} symbols={symbols} range={}..{}",
         corpus.repo_id, corpus.prev, corpus.head
     );
-    println!("capstone: PDEAD leg exit={pdead_code:?} findings={}", pdead_findings.len());
-    println!("capstone: P1    leg exit={p1_code:?} findings={}", p1_findings.len());
+    println!(
+        "capstone: PDEAD leg exit={pdead_code:?} findings={}",
+        pdead_findings.len()
+    );
+    println!(
+        "capstone: P1    leg exit={p1_code:?} findings={}",
+        p1_findings.len()
+    );
 }
 
 /// The sanctioned way to run the capstone, quoted verbatim into every
@@ -840,12 +957,7 @@ const RUN_COMMAND: &str = "  CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcod
 ///
 /// Shared by both legs rather than written twice, so the two cannot drift into
 /// asserting different things about the same contract.
-fn assert_live_leg(
-    leg: &str,
-    code: Option<i32>,
-    findings: &[serde_json::Value],
-    stderr: &str,
-) {
+fn assert_live_leg(leg: &str, code: Option<i32>, findings: &[serde_json::Value], stderr: &str) {
     assert_eq!(
         code,
         Some(0),
@@ -964,8 +1076,18 @@ mod corpus_fixture {
             corpus.head, corpus.prev,
             "a two-commit corpus must have head != prev"
         );
-        assert_eq!(corpus.head.len(), 40, "head must be a full sha: {:?}", corpus.head);
-        assert_eq!(corpus.prev.len(), 40, "prev must be a full sha: {:?}", corpus.prev);
+        assert_eq!(
+            corpus.head.len(),
+            40,
+            "head must be a full sha: {:?}",
+            corpus.head
+        );
+        assert_eq!(
+            corpus.prev.len(),
+            40,
+            "prev must be a full sha: {:?}",
+            corpus.prev
+        );
 
         let out = common::git_env::git_cmd(&corpus.root)
             .args(["rev-parse", "HEAD^1"])
@@ -976,7 +1098,10 @@ mod corpus_fixture {
             "HEAD must have a parent; git rev-parse HEAD^1 exited {:?}",
             out.status.code()
         );
-        let parent = String::from_utf8(out.stdout).expect("utf8 sha").trim().to_string();
+        let parent = String::from_utf8(out.stdout)
+            .expect("utf8 sha")
+            .trim()
+            .to_string();
         assert_eq!(parent, corpus.prev, "CorpusRepo::prev must BE git's HEAD^1");
     }
 
@@ -1065,7 +1190,12 @@ mod index_invocation {
     fn envs(cmd: &std::process::Command) -> Vec<(String, String)> {
         cmd.get_envs()
             .filter_map(|(k, v)| {
-                v.map(|v| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+                v.map(|v| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.to_string_lossy().into_owned(),
+                    )
+                })
             })
             .collect()
     }
@@ -1114,7 +1244,8 @@ mod index_invocation {
 
         let env = envs(&cmd);
         assert!(
-            env.iter().any(|(k, v)| k == "CODE_INDEX_PATH" && Some(v.as_str()) == index_dir.to_str()),
+            env.iter()
+                .any(|(k, v)| k == "CODE_INDEX_PATH" && Some(v.as_str()) == index_dir.to_str()),
             "CODE_INDEX_PATH must name the throwaway index dir, or the pass \
              writes into host-global ~/.code-index; got {env:?}"
         );
@@ -1138,7 +1269,8 @@ mod index_invocation {
         );
         let env = envs(&cmd);
         assert!(
-            env.iter().any(|(k, v)| k == "JCODEMUNCH_MAX_FOLDER_FILES" && !v.is_empty()),
+            env.iter()
+                .any(|(k, v)| k == "JCODEMUNCH_MAX_FOLDER_FILES" && !v.is_empty()),
             "JCODEMUNCH_MAX_FOLDER_FILES must be set, or β refuses to parse the \
              serve-written config.jsonc and never reaches the indexer; got {env:?}"
         );
