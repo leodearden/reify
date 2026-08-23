@@ -3703,8 +3703,12 @@
     // ---- units-length β (task 5743 step-11): the 5 profile slots ----
 
     /// The β slice's three gated profiles, as `(kind, &[arg name])` in the op's
-    /// own field order. `Polygon` is deliberately ABSENT — see
-    /// `compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf`.
+    /// own field order. `Polygon` is deliberately ABSENT: its vertex list is
+    /// arity-open and has no per-slot `ArgSpec`, so task 5661 gates it by
+    /// STRIDE on the variadic route instead. See
+    /// `compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf`, which
+    /// asserts both halves of that — the shared code reaching 5661's route,
+    /// and `Polygon` staying out of this table.
     ///
     /// Arg names are the compiler's, read from the lowering arms in
     /// `reify-compiler/src/geometry.rs`: `ellipse` takes `semi_major` /
