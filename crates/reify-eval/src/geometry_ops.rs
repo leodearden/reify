@@ -388,8 +388,9 @@ pub(crate) fn accept_length_value(
             // origin, the arbitrary-pattern offsets, and 5623's transform / sweep /
             // curve positions. VARIADIC route ([`accept_variadic_length_args`], task
             // 5658): the `interp` / `bezier` coordinate triples and the `nurbs` pole
-            // span. Task 5743 then gated the raw-`Value` primitive/profile fields on
-            // top of both. Picking the promotion up for the variadic route is a
+            // span, joined by `polygon`'s 2-D vertex PAIRS when task 5661 landed.
+            // Task 5743 then gated the raw-`Value` primitive/profile fields on top of
+            // both. Picking the promotion up for the variadic route is a
             // BONUS of landing after 5658 rather than a cost: it is what makes
             // INV-SF-6 (a `DiagnosticCode` on every `ArgSpec`-backed rejection) hold
             // across the WHOLE merged Contract C surface, not just the half this
