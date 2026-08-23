@@ -2714,13 +2714,15 @@ describe('debug bridge tree-node expand/collapse', () => {
   // no case here: it is a deliberate exception resting on a caller-side naming
   // convention (see its own comment), not an oversight, and closing it would be
   // a behaviour change rather than a dedupe. Do not read this block as proof
-  // that every selector interpolation in the file is covered. (f) above reaches the same not-found branch but with
-  // a metacharacter-free path, so nothing else would notice if the escape were
-  // dropped here: an unescaped quote or backslash interpolated into the
-  // `[data-testid="…"]` selector makes document.querySelector THROW a
-  // DOMException, which the dispatcher surfaces as an opaque
-  // `{error: '<parser message>'}` — a hostile or simply typo'd path
-  // reading as a bridge malfunction rather than as "no such node".
+  // that every selector interpolation in the file is covered.
+  //
+  // (f) above reaches the same not-found branch but with a metacharacter-free
+  // path, so nothing else would notice if the escape were dropped here: an
+  // unescaped quote or backslash interpolated into the `[data-testid="…"]`
+  // selector makes document.querySelector THROW a DOMException, which the
+  // dispatcher surfaces as an opaque `{error: '<parser message>'}` — a hostile
+  // or simply typo'd path reading as a bridge malfunction rather than as "no
+  // such node".
   //
   // Same hostile-input list and same "not-found rather than parser-throw"
   // assertion as (s) in the set_fea_channel block, which pins the sibling ladder
