@@ -33,6 +33,25 @@
 #      both sentinel names. Rust is the source of truth; bash is a declared
 #      mirror. Both parses must yield a non-empty result, so a renamed anchor
 #      fails loudly instead of passing vacuously.
+#   7. ACCEPTED SONAME: a Debian-shaped chain whose first-level link target
+#      carries the FIRST value of OCCT_ACCEPTED_SONAMES => exit 0.
+#   8. UNACCEPTED SONAME: version 0.0 (never a real OCCT release, so this case
+#      survives any future pin bump) => non-zero, output names OCCT, the
+#      resolved version, and the accepted set.
+#   9. CONDA-SHAPED ONE-LEVEL SYMLINK: `libTKernel.so -> libTKernel.so.7.9.3`,
+#      the exact layout live at /opt/reify-deps/lib => resolves to `7.9.3`,
+#      not accepted, non-zero naming 7.9.3. Pins that the guard takes the
+#      trailing segment VERBATIM, exactly as read_soname_version documents.
+#  10. UNDETERMINABLE SONAME: `libTKernel.so` as a REGULAR FILE => non-zero.
+#      This is the state where find() still reports the dir resolved (it only
+#      tests .exists()), has_occt IS set, and build.rs silently falls back to
+#      the literal string "7.8" — i.e. links a version nobody verified.
+#  11. CROSS-ARTIFACT PIN: the version scripts/setup-dev.sh's OCCT block
+#      expects from dpkg is a MEMBER of OCCT_ACCEPTED_SONAMES.
+#
+# The accepted-SONAME value is DERIVED from the guard, never hardcoded here, so
+# a legitimate future pin bump stays a one-line diff in one file. Every derived
+# parse asserts non-empty first.
 #
 # Hermeticity: `pool`. Pure bash + filesystem. Every negative case is driven
 # through the OCCT_LIB_DIR / OCCT_INCLUDE_DIR overrides the BUILD already
@@ -57,6 +76,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 GUARD="$REPO_ROOT/scripts/check-manifold-deps.sh"
 RUST_SRC="$REPO_ROOT/crates/reify-build-utils/src/lib.rs"
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 
 _TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$_TMPDIR"' EXIT
@@ -87,6 +107,28 @@ _mk_lib_fixture() {
     : > "$d/libTKernel.so.$v.1"
     ln -sfn "libTKernel.so.$v.1" "$d/libTKernel.so.$v"
     ln -sfn "libTKernel.so.$v" "$d/libTKernel.so"
+    printf '%s' "$d"
+}
+
+# _mk_conda_lib_fixture <name> <version> — dir under $_TMPDIR reproducing the
+# conda-forge / /opt/reify-deps layout: ONE level, `libTKernel.so ->
+# libTKernel.so.<v>` where <v> is itself the full three-segment version. The
+# first-level target's suffix is therefore the whole version verbatim.
+_mk_conda_lib_fixture() {
+    local d="$_TMPDIR/$1" v="$2"
+    mkdir -p "$d"
+    : > "$d/libTKernel.so.$v"
+    ln -sfn "libTKernel.so.$v" "$d/libTKernel.so"
+    printf '%s' "$d"
+}
+
+# _mk_plainfile_lib_fixture <name> — dir whose libTKernel.so is a REGULAR FILE,
+# not a symlink. The sentinel exists (so find() resolves the dir and has_occt
+# IS set) but no SONAME can be read from it.
+_mk_plainfile_lib_fixture() {
+    local d="$_TMPDIR/$1"
+    mkdir -p "$d"
+    : > "$d/libTKernel.so"
     printf '%s' "$d"
 }
 
@@ -165,14 +207,11 @@ _rust_occt_scalar() {
     ' "$RUST_SRC"
 }
 
-# _bash_occt_array <VAR> — elements of the named bash array declared inside
-# scripts/check-manifold-deps.sh's `occt-candidates` marker block, one per
-# line, in declaration order. Handles both one-line and multi-line array forms.
-_bash_occt_array() {
+# _extract_bash_array <VAR> — elements of the named bash array, one per line,
+# in declaration order, from shell source on stdin. Handles both the one-line
+# `VAR=(a b c)` and the multi-line form.
+_extract_bash_array() {
     awk -v var="$1" '
-        index($0, "# BEGIN occt-candidates") { inblk = 1; next }
-        index($0, "# END occt-candidates") { exit }
-        !inblk { next }
         !inarr && $0 ~ ("^[[:space:]]*" var "=\\(") {
             inarr = 1
             sub(/^[^(]*\(/, "")
@@ -187,7 +226,21 @@ _bash_occt_array() {
             for (i = 1; i <= n; i++) if (toks[i] != "") print toks[i]
             if (closed) exit
         }
-    ' "$GUARD"
+    '
+}
+
+# _bash_guard_array <VAR> — the named array declared anywhere in
+# scripts/check-manifold-deps.sh.
+_bash_guard_array() {
+    _extract_bash_array "$1" < "$GUARD"
+}
+
+# _bash_occt_array <VAR> — the named array as declared INSIDE the
+# `occt-candidates` marker block, so a same-named array elsewhere in the file
+# can never satisfy the parity parse.
+_bash_occt_array() {
+    sed -n '/# BEGIN occt-candidates/,/# END occt-candidates/p' "$GUARD" \
+        | _extract_bash_array "$1"
 }
 
 # _bash_occt_scalar <VAR> — value of the named scalar assignment inside the
@@ -208,6 +261,32 @@ _bash_occt_scalar() {
         }
     ' "$GUARD"
 }
+
+# _setup_dev_occt_version — the version scripts/setup-dev.sh's OCCT block
+# expects back from dpkg. Anchored to that section's `# ---------- OCCT`
+# banner and bounded by the next banner, so the parse cannot drift onto an
+# unrelated `installed_ver` comparison elsewhere in the script.
+_setup_dev_occt_version() {
+    awk '
+        index($0, "# ---------- OCCT") { insec = 1; next }
+        insec && /^# ---------- / { exit }
+        insec && index($0, "installed_ver") {
+            if (match($0, /"\$installed_ver"[[:space:]]*=[[:space:]]*"[^"]+"/)) {
+                seg = substr($0, RSTART, RLENGTH)
+                n = split(seg, parts, "\"")
+                print parts[4]
+                exit
+            }
+        }
+    ' "$SETUP_DEV"
+}
+
+# Derived once, up here, because section 5's positive-control fixture also has
+# to carry an ACCEPTED version once the SONAME pin exists — hardcoding it in
+# two places would turn a legitimate pin bump into a multi-file edit. The
+# non-empty assert lives with the SONAME section below.
+_ACCEPTED_SONAMES="$(_bash_guard_array OCCT_ACCEPTED_SONAMES)"
+_ACCEPTED_FIRST="$(printf '%s\n' "$_ACCEPTED_SONAMES" | head -1)"
 
 # ---------------------------------------------------------------------------
 # 1. Guard script exists and is executable
@@ -269,10 +348,11 @@ assert "guard output NAMES libTKernel.so and the offending lib dir" \
 echo ""
 echo "--- 5: include-only missing => red gate naming Standard_Failure.hxx ---"
 
-# 7.8 is the measured first-level SONAME suffix on this host. The SONAME pin
-# is never reached by this case (presence resolution fails first), so the value
-# is incidental here — it just keeps the fixture shaped like a real install.
-_LIB_OK="$(_mk_lib_fixture inconly-lib 7.8)"
+# Built at an ACCEPTED version: the SONAME pin is never reached by the
+# include-only case (presence resolution fails first), but the positive control
+# at the end of this section runs the guard to completion and must stay green
+# across a legitimate future pin bump.
+_LIB_OK="$(_mk_lib_fixture inconly-lib "$_ACCEPTED_FIRST")"
 _INC_MISSING="$(_mk_empty_fixture inconly-include)"
 
 assert "guard exits NON-zero when only the OCCT include dir lacks Standard_Failure.hxx" \
@@ -347,5 +427,76 @@ assert "bash OCCT_LIB_SENTINEL ('$_BASH_LIB_SENT') equals NativeDep::Occt lib_se
 
 assert "bash OCCT_INCLUDE_SENTINEL ('$_BASH_INC_SENT') equals NativeDep::Occt include_sentinel ('$_RUST_INC_SENT')" \
     test "$_BASH_INC_SENT" = "$_RUST_INC_SENT"
+
+# ---------------------------------------------------------------------------
+# 7. SONAME pin — the resolved version must be a declared, accepted one.
+#
+# All fixtures pair their lib dir with an include dir that DOES carry the
+# header sentinel, so the presence arm is satisfied and the SONAME rule is the
+# only thing under test.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 7: SONAME pin — accepted / unaccepted / conda-shaped / undeterminable ---"
+
+assert "OCCT_ACCEPTED_SONAMES parses non-empty from the guard (anchor found, pin not vacuous)" \
+    test -n "$_ACCEPTED_SONAMES"
+
+_SON_INC="$(_mk_include_fixture soname-include)"
+
+# 7 — accepted.
+_SON_OK="$(_mk_lib_fixture soname-accepted "$_ACCEPTED_FIRST")"
+assert "guard exits 0 for an accepted SONAME ('$_ACCEPTED_FIRST', Debian two-hop chain)" \
+    _guard_exits_zero "$_SON_OK" "$_SON_INC"
+
+# 8 — unaccepted. 0.0 can never be a legitimate OCCT release, so this case
+# survives any future widening of the accepted set.
+_SON_BAD="$(_mk_lib_fixture soname-unaccepted 0.0)"
+assert "guard exits NON-zero for an unaccepted SONAME (0.0)" \
+    _guard_exits_nonzero "$_SON_BAD" "$_SON_INC"
+
+assert "guard output NAMES OCCT, the resolved version (0.0) and the accepted set" \
+    _guard_output_names "$_SON_BAD" "$_SON_INC" "OCCT" "0.0" "$_ACCEPTED_FIRST"
+
+# 9 — conda-shaped one-level symlink, the exact layout at /opt/reify-deps/lib.
+_SON_CONDA="$(_mk_conda_lib_fixture soname-conda 7.9.3)"
+assert "guard exits NON-zero for the conda one-level layout (libTKernel.so -> libTKernel.so.7.9.3)" \
+    _guard_exits_nonzero "$_SON_CONDA" "$_SON_INC"
+
+assert "guard output NAMES the verbatim trailing segment 7.9.3 (not 7.9, not 7)" \
+    _guard_output_names "$_SON_CONDA" "$_SON_INC" "7.9.3"
+
+# 10 — undeterminable: sentinel present but not a symlink. find() resolves the
+# dir, has_occt IS set, and build.rs silently substitutes a hard-coded version.
+_SON_PLAIN="$(_mk_plainfile_lib_fixture soname-plainfile)"
+assert "guard exits NON-zero when libTKernel.so is a regular file (no readable SONAME)" \
+    _guard_exits_nonzero "$_SON_PLAIN" "$_SON_INC"
+
+assert "guard output says the SONAME could not be determined and names the path" \
+    _guard_output_names "$_SON_PLAIN" "$_SON_INC" "could not determine" "$_SON_PLAIN/libTKernel.so"
+
+# ---------------------------------------------------------------------------
+# 8. CROSS-ARTIFACT PIN — setup-dev.sh's dpkg expectation vs. the accepted set.
+#
+# setup-dev.sh installs OCCT out of band and is not part of the verify plan, so
+# nothing else forces the two to agree. If they drift, setup-dev.sh provisions
+# a version the gate will then reject.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 8: cross-artifact pin — setup-dev.sh's OCCT version is in the accepted set ---"
+
+_SETUP_DEV_VER="$(_setup_dev_occt_version)"
+
+assert "scripts/setup-dev.sh exists" \
+    test -f "$SETUP_DEV"
+
+assert "setup-dev.sh's OCCT block yields a version (anchor '# ---------- OCCT' + installed_ver found)" \
+    test -n "$_SETUP_DEV_VER"
+
+if ! printf '%s\n' "$_ACCEPTED_SONAMES" | grep -qxF -- "$_SETUP_DEV_VER"; then
+    echo "  OCCT version drift: setup-dev.sh provisions '$_SETUP_DEV_VER', accepted set is:"
+    printf '%s\n' "$_ACCEPTED_SONAMES" | sed 's/^/    /'
+fi
+assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') is a member of OCCT_ACCEPTED_SONAMES" \
+    bash -c 'printf "%s\n" "$1" | grep -qxF -- "$2"' _ "$_ACCEPTED_SONAMES" "$_SETUP_DEV_VER"
 
 test_summary
