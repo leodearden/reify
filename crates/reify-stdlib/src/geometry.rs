@@ -205,7 +205,7 @@ const TWIST_LINEAR_DIM: DimensionVector = DimensionVector::LENGTH;
 /// The deferral is only correct while it agrees with the gate. Re-spelling the literal
 /// at both sites made that agreement unenforced, and the failure is SILENT in the
 /// dangerous direction: widen the eval gate alone and the classifier keeps requiring
-/// DIMENSIONLESS, so it stops emitting the #6126 linear Warning for every twist whose
+/// DIMENSIONLESS, so it stops emitting the #6126 linear Error for every twist whose
 /// angular half is newly-valid — a diagnostic regression no test that hardcodes
 /// DIMENSIONLESS can see. `diagnose_transform_exp_deferral_tracks_evals_angular_gate`
 /// is the behavioural pin: it builds its angular half FROM this const, so it follows
@@ -1603,12 +1603,23 @@ fn dimension_label(dim: DimensionVector) -> String {
 /// failure to a dimension problem. Concretely: only emit when the decomposition
 /// SUCCEEDS and the recovered dimension differs from the admitted one.
 ///
-/// Severity is `Warning` with no `DiagnosticCode`, mirroring the existing
-/// degenerate-scale rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
-/// (A dimension rejection degrades to `Undef` within one primitive, which is the
-/// discriminator `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 uses to
-/// assign Warning rather than Error; that PRD also owns minting
-/// `DiagnosticCode::ArgDimensionMismatch`, so no code is minted here.)
+/// Severity is split by fault class, and the split is deliberate:
+///
+/// - The `affine_scale` arms are `Warning`, mirroring the existing degenerate-scale
+///   rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
+/// - The two RULING #6126 dimension arms (`transform_log`, `transform_exp`) are
+///   `Severity::Error`, per Leo's severity amendment (2026-08-19, via esc-6080-6): a
+///   wrong dimension is a design-correctness fault, so `reify eval` must EXIT 1 rather
+///   than print and continue. `cmd_eval` gates its exit code on
+///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
+///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
+///   half, so one fault class does not report two ways across one builtin family.
+///
+/// Every arm stays code-less (no `DiagnosticCode`): minting
+/// `DiagnosticCode::ArgDimensionMismatch` is owned by
+/// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
+/// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
+/// this same hook is the standing in-crate precedent.
 /// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
@@ -1645,7 +1656,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if t_dim == TWIST_LINEAR_DIM {
                 return None;
             }
-            Some(reify_core::Diagnostic::warning(format!(
+            Some(reify_core::Diagnostic::error(format!(
                 "transform_log: a Transform's translation must be Vector3<Length>; got {} \
                  (a twist's `linear` half carries Length — RULING #6126)",
                 dimension_label(t_dim)
@@ -1688,7 +1699,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if lin_dim == TWIST_LINEAR_DIM {
                 return None;
             }
-            Some(reify_core::Diagnostic::warning(format!(
+            Some(reify_core::Diagnostic::error(format!(
                 "transform_exp: a twist's `linear` must be Vector3<Length>; got {} \
                  (RULING #6126)",
                 dimension_label(lin_dim)
