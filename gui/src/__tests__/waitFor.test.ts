@@ -481,36 +481,46 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     });
   }
 
+  interface MountPanesOpts {
+    inPane1?: boolean;
+    visible?: 'all' | 'design-main' | 'pane-1';
+  }
+
   /**
-   * `design-main` ALWAYS holds a visible `scoped-el`; `pane-1` holds one only when
-   * `inPane1`. That asymmetry is the discriminator for every negative case below:
-   * a predicate still falling back to the document-wide lookup would be satisfied
-   * by design-main's element no matter which pane was actually asked for.
+   * The single two-pane fixture for this block. `design-main` comes FIRST in
+   * document order and always holds a `scoped-el`; the two axes vary
+   * independently around that:
+   *
+   * - `inPane1` (default true) — whether `pane-1` holds one at all. With it
+   *   false, design-main's element is the ONLY match, which is the
+   *   discriminator for every scoped negative case: a predicate still falling
+   *   back to the document-wide lookup would be satisfied by design-main's
+   *   element no matter which pane was asked for.
+   * - `visible` (default `'all'`) — which pane's element gets a non-zero rect.
+   *   Naming ONE pane leaves the other's at jsdom's default all-zero rect, which
+   *   isElementVisible() reads as hidden; `{visible: 'pane-1'}` therefore puts
+   *   the HIDDEN element first in document order, the fixture case (i) needs for
+   *   the false-negative half of the unscoped trap.
+   *
+   * ONE markup template on purpose. Split across two near-copy helpers, a change
+   * to the pane markup — a wrapper element, a third pane, a different viewport
+   * id — has to be applied twice, and a drift between the copies would leave (h)
+   * and (i) testing subtly different DOMs while both stayed green.
    */
-  function mountPanes(inPane1: boolean) {
+  function mountPanes({ inPane1 = true, visible = 'all' }: MountPanesOpts = {}): HTMLElement {
     root = document.createElement('div');
     root.innerHTML = `
       <div data-viewport-id="design-main"><div data-testid="scoped-el"></div></div>
       <div data-viewport-id="pane-1">${inPane1 ? '<div data-testid="scoped-el"></div>' : ''}</div>
     `;
     document.body.appendChild(root);
-    root.querySelectorAll('[data-testid="scoped-el"]').forEach(makeVisible);
-  }
-
-  /**
-   * BOTH panes hold a `scoped-el`, but only pane-1's is visible: design-main's
-   * keeps jsdom's default all-zero rect, which isElementVisible() reads as
-   * hidden. Document order therefore puts the HIDDEN one first — the fixture for
-   * case (i), the false-negative half of the unscoped trap.
-   */
-  function mountPanesFirstHidden() {
-    root = document.createElement('div');
-    root.innerHTML = `
-      <div data-viewport-id="design-main"><div data-testid="scoped-el"></div></div>
-      <div data-viewport-id="pane-1"><div data-testid="scoped-el"></div></div>
-    `;
-    document.body.appendChild(root);
-    makeVisible(root.querySelector('[data-viewport-id="pane-1"] [data-testid="scoped-el"]')!);
+    const sel = visible === 'all'
+      ? '[data-testid="scoped-el"]'
+      : `[data-viewport-id="${visible}"] [data-testid="scoped-el"]`;
+    const targets = root.querySelectorAll(sel);
+    expect(targets.length).toBeGreaterThan(0); // a fixture that made nothing visible is a typo, not a test
+    targets.forEach(makeVisible);
+    return root;
   }
 
   /** Settle pending microtasks WITHOUT advancing any fake timer. */
@@ -562,7 +572,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   });
 
   it('(a) scoped wait_for_selector resolves {ok:true} when the element is visible IN THAT PANE', async () => {
-    mountPanes(true);
+    mountPanes();
 
     const { result } = await dispatchDrained(20, 'wait_for_selector', {
       testId: 'scoped-el', state: 'visible', viewportId: 'pane-1', timeout_ms: 100,
@@ -575,7 +585,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   it('(b) scoped: an element visible only in ANOTHER pane never satisfies the wait', async () => {
     // THE discriminating case. design-main holds a visible 'scoped-el'; pane-1 does
     // not. A document-wide fallback would resolve {ok:true} off the wrong pane.
-    mountPanes(false);
+    mountPanes({ inPane1: false });
 
     const { result } = await dispatchDrained(21, 'wait_for_selector', {
       testId: 'scoped-el', state: 'visible', viewportId: 'pane-1', timeout_ms: 100,
@@ -587,7 +597,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   it('(c) scoped state:"gone": an element still present in ANOTHER pane counts as GONE', async () => {
     // The mirror of (b): scoping has to cut both ways. Unscoped, design-main's
     // still-visible element would keep the 'gone' predicate false until timeout.
-    mountPanes(false);
+    mountPanes({ inPane1: false });
 
     const { result } = await dispatchDrained(22, 'wait_for_selector', {
       testId: 'scoped-el', state: 'gone', viewportId: 'pane-1', timeout_ms: 100,
@@ -597,7 +607,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   });
 
   it('(d) non-string viewportId is rejected BEFORE any polling', async () => {
-    mountPanes(true);
+    mountPanes();
 
     const { result, settledBeforePolling } = await dispatchDrained(23, 'wait_for_selector', {
       testId: 'scoped-el', state: 'visible', viewportId: 5, timeout_ms: 100,
@@ -610,7 +620,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   });
 
   it('(e) wait_for selector arm: predicate.viewportId scopes it the same way', async () => {
-    mountPanes(true);
+    mountPanes();
 
     const { result } = await dispatchDrained(24, 'wait_for', {
       predicate: { kind: 'selector', testId: 'scoped-el', state: 'visible', viewportId: 'pane-1' },
@@ -621,7 +631,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   });
 
   it('(e) wait_for selector arm: an element only in ANOTHER pane never satisfies it', async () => {
-    mountPanes(false);
+    mountPanes({ inPane1: false });
 
     const { result } = await dispatchDrained(25, 'wait_for', {
       predicate: { kind: 'selector', testId: 'scoped-el', state: 'visible', viewportId: 'pane-1' },
@@ -635,7 +645,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     // Asserted separately from (d) because the two tools reach the shared
     // predicate through DIFFERENT call sites — hoisting the validation out of
     // one closure and not the other would leave this arm polling to timeout.
-    mountPanes(true);
+    mountPanes();
 
     const { result, settledBeforePolling } = await dispatchDrained(26, 'wait_for', {
       predicate: { kind: 'selector', testId: 'scoped-el', state: 'visible', viewportId: 5 },
@@ -647,7 +657,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   });
 
   it('(f) UNSCOPED multi-match keeps the unchanged {ok:true, waited_ms} shape — no pane keys', async () => {
-    mountPanes(true); // two matches — a DRIVING tool would report its guess here
+    mountPanes(); // two matches — a DRIVING tool would report its guess here
 
     const { result } = await dispatchDrained(27, 'wait_for_selector', {
       testId: 'scoped-el', state: 'visible', timeout_ms: 100,
@@ -658,7 +668,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   });
 
   it('(f) UNSCOPED timeout keeps the unchanged {error:"timeout"} shape', async () => {
-    mountPanes(true);
+    mountPanes();
 
     const { result } = await dispatchDrained(28, 'wait_for_selector', {
       testId: 'no-such-el', state: 'visible', timeout_ms: 100,
@@ -676,7 +686,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   // requiring the pane to still exist would make "wait for this pane to
   // disappear" un-expressible and turn a correct green into a timeout.
   it('(g) state:"gone" against a pane that does not exist resolves IMMEDIATELY — vacuously gone', async () => {
-    mountPanes(true); // design-main and pane-1 exist; 'pane-typo' does not
+    mountPanes(); // design-main and pane-1 exist; 'pane-typo' does not
 
     const { result, settledBeforePolling } = await dispatchDrained(29, 'wait_for_selector', {
       testId: 'scoped-el', state: 'gone', viewportId: 'pane-typo', timeout_ms: 100,
@@ -693,7 +703,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     // The contrast that makes (g) safe to keep: a typo is only invisible on the
     // 'gone' arm. Documenting the asymmetry is the whole mitigation, so pin that
     // it IS an asymmetry and not a blanket "absent pane always succeeds".
-    mountPanes(true);
+    mountPanes();
 
     const { result } = await dispatchDrained(30, 'wait_for_selector', {
       testId: 'scoped-el', state: 'visible', viewportId: 'pane-typo', timeout_ms: 100,
@@ -728,7 +738,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   it('(h) UNSCOPED wait is satisfied by the FIRST matching pane, so it cannot gate on a LATER pane being ready', async () => {
     // design-main holds a visible `scoped-el`; pane-1 holds nothing — i.e. the
     // exact "pane 1 is still mounting" state.
-    mountPanes(false);
+    mountPanes({ inPane1: false });
 
     const unscoped = await dispatchDrained(31, 'wait_for_selector', {
       testId: 'scoped-el', state: 'visible', timeout_ms: 100,
@@ -758,7 +768,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     // design-main's `scoped-el` keeps jsdom's zero rect (hidden); pane-1's is
     // visible. matches[0] is design-main's, so the predicate re-resolves to the
     // hidden element on every tick and never consults pane-1's.
-    mountPanesFirstHidden();
+    mountPanes({ visible: 'pane-1' });
 
     const unscoped = await dispatchDrained(33, 'wait_for_selector', {
       testId: 'scoped-el', state: 'visible', timeout_ms: 100,
