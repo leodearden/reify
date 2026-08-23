@@ -573,12 +573,13 @@ fn task_referencing_commits(ctx: &AuditContext, task_id: &str) -> Vec<GitCommit>
 
 /// Per-invocation memo for `git merge-base --is-ancestor <commit> <MAIN_BASE>`.
 ///
-/// [`changed_paths_for_claim`] stays the single ancestry decision point, but
-/// the same SHA is otherwise re-forked: the merged-arm rescue tests
-/// `prov.commit` and then the primary git-diff leg tests it again, and a sibling
-/// SHA can repeat across legs. One `HashMap` lookup replaces a ~57 ms fork,
-/// which matters most on the pre-done path (held inside fused-memory's
-/// per-project write lock).
+/// The single place the `is_ancestor` fork is issued within one [`check_one`],
+/// so the same SHA is never re-forked: the merged-arm rescue tests
+/// `prov.commit` and then the primary git-diff leg (via
+/// [`changed_paths_for_claim`], which remains the sole ancestry *policy*
+/// decision point) tests it again, and a sibling SHA can repeat across legs.
+/// One `HashMap` lookup replaces a ~57 ms fork, which matters most on the
+/// pre-done path (held inside fused-memory's per-project write lock).
 ///
 /// Deliberately NOT pre-seeded with `true` for `log_grep`-derived SHAs even
 /// though `git log <MAIN_BASE> --grep=…` only lists commits reachable from
@@ -745,11 +746,7 @@ fn check_pre_done_landing(
         // never appears verbatim in a `--name-only` delta, which lists the
         // individual files beneath it — matching by exact string equality alone
         // would refuse that flip.
-        still_absent.retain(|p| {
-            !covered
-                .iter()
-                .any(|c| c == p || c.starts_with(&format!("{p}/")))
-        });
+        still_absent.retain(|p| !covered.iter().any(|c| covers_path(c, p)));
         if still_absent.len() < before {
             contributing.push(c);
         }
@@ -766,6 +763,24 @@ fn check_pre_done_landing(
             "incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP before exhausting candidates",
         ),
     ))
+}
+
+/// True iff the changed path `changed` accounts for the declared entry
+/// `declared` — either verbatim, or as a file beneath it when `declared` names
+/// a directory.
+///
+/// Mirrors [`crate::GitOps::path_tracked_on`]'s directory handling
+/// (`git ls-tree main -- <dir>` resolves a directory entry). A `--name-only`
+/// delta lists the individual files under a removed directory and never the
+/// directory itself, so exact string equality alone would miss it. The `/`
+/// check anchors the prefix: `crates/x/gone_too/a.rs` must NOT satisfy a
+/// declared `crates/x/gone`. Allocation-free on purpose — this runs inside the
+/// per-sibling loop on the write-lock-held pre-done path.
+fn covers_path(changed: &str, declared: &str) -> bool {
+    changed == declared
+        || (changed.len() > declared.len()
+            && changed.starts_with(declared)
+            && changed.as_bytes()[declared.len()] == b'/')
 }
 
 /// One-fork probe that `MAIN_BASE` resolves in this repository:
