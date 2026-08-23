@@ -405,3 +405,137 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
         "Point3 component types are not checked (so this pins nothing)",
     );
 }
+
+// ── The 0 °C not-observed sentinel (task #6301) ─────────────────────────────
+
+/// Read a named field off a `StructureInstance` Value, asserting both the
+/// structure's `type_name` and the field's presence.
+fn struct_field<'a>(v: &'a Value, type_name: &str, field: &str) -> &'a Value {
+    match v {
+        Value::StructureInstance(d) => {
+            assert_eq!(
+                d.type_name, type_name,
+                "expected a `{type_name}` StructureInstance, got type_name {}",
+                d.type_name
+            );
+            d.fields.get(field).unwrap_or_else(|| {
+                panic!(
+                    "`{type_name}` must carry a `{field}` field; has: {:?}",
+                    d.fields.keys().collect::<Vec<_>>()
+                )
+            })
+        }
+        other => panic!("expected a `{type_name}` StructureInstance, got {other:?}"),
+    }
+}
+
+/// A one-bead `Toolpath` whose bead never saw an `M104`/`M109` — i.e. carries
+/// `Sweep::new()`'s untouched `temp: 0.0` accumulator
+/// (`reify-fdm/src/toolpath.rs`). Every other field is arbitrary-but-plausible;
+/// only `nominal_temp` is load-bearing here.
+fn temperature_less_toolpath() -> reify_fdm::Toolpath {
+    reify_fdm::Toolpath {
+        beads: vec![reify_fdm::Bead {
+            centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+            width: 0.45,
+            height: 0.2,
+            role: reify_fdm::BeadRole::Perimeter,
+            layer_index: 0,
+            layer_z: 0.2,
+            // THE point of the fixture: no M104/M109 was ever seen.
+            nominal_temp: 0.0,
+            speed: 1800.0,
+        }],
+        layers: vec![reify_fdm::Layer {
+            index: 0,
+            z: 0.2,
+            bead_indices: vec![0],
+        }],
+        in_layer_adjacency: Vec::new(),
+        inter_layer_adjacency: Vec::new(),
+    }
+}
+
+/// The "no temperature was ever observed" sentinel means the SAME Value on both
+/// sides of the marshalling boundary.
+///
+/// `reify_fdm`'s sweep initialises its temperature accumulator to `0.0` °C and
+/// never distinguishes "no `M104`/`M109` was seen" from a genuine 0 °C setpoint
+/// (`crates/reify-fdm/src/toolpath.rs`, `Sweep::new`), so a temperature-less
+/// G-code yields beads reporting 0 °C. `nominal_temp` is the ONE field where
+/// that sentinel could silently disagree with the stdlib's default, because
+/// `degC` is the only AFFINE conversion in the regime — under `Length` or
+/// `Velocity` a zero stays a zero whatever the declared default's unit is,
+/// whereas `0degC` and `0K` are 273.15 K apart. This test pins the two halves
+/// together:
+///
+///   * (a) MARSHALLER SIDE — `toolpath_to_value` maps a `nominal_temp: 0.0`
+///     bead to `Scalar { si_value: 273.15, dimension: TEMPERATURE }`; and
+///   * (b) DECLARATION SIDE — a default-constructed `Bead()` in the DSL, whose
+///     `nominal_temp` default `fdm_slice.ri` declares as `0degC`, evaluates to
+///     that IDENTICAL Value.
+///
+/// Both sides are exactly `273.15` — `0.0 + DEG_C_TO_K_OFFSET` in the
+/// marshaller, `0 * 1.0 + 273.15` for `0degC` per `stdlib/units.ri`'s
+/// `pub unit degC : Temperature = 1 offset 273.15` — and adding to zero is
+/// exact in f64, so the agreement is BITWISE. It is asserted as Value equality
+/// rather than against an invented tolerance. Declaring the default `0K`
+/// instead breaks half (b) by the full 273.15 K.
+///
+/// Kernel-free (`make_simple_engine`, no body, no beads to slice), so like the
+/// declared-regime test above it carries no `OCCT_AVAILABLE` / `slicer_on_path`
+/// guard and runs everywhere.
+#[test]
+fn nominal_temp_zero_celsius_sentinel_agrees_across_the_marshalling_boundary() {
+    // ── (a) marshaller side ────────────────────────────────────────────────
+    let marshalled = toolpath_to_value(&temperature_less_toolpath());
+    let beads = toolpath_beads(&marshalled);
+    assert_eq!(beads.len(), 1, "fixture must marshal to exactly one bead");
+    let marshalled_temp = struct_field(&beads[0], "Bead", "nominal_temp").clone();
+
+    assert_eq!(
+        marshalled_temp,
+        Value::Scalar {
+            si_value: 273.15,
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        "a bead that never saw an M104/M109 must marshal its 0 °C sentinel to \
+         273.15 K, dimensioned TEMPERATURE"
+    );
+
+    // ── (b) declaration side ───────────────────────────────────────────────
+    let source = r#"
+structure def TempSentinelProbe {
+    let t : Temperature = Bead().nominal_temp
+}
+"#;
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+    let mut engine = reify_test_support::make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected zero Error diagnostics evaluating the sentinel probe, got: {eval_errors:#?}"
+    );
+
+    let id = ValueCellId::new("TempSentinelProbe", "t");
+    let declared_temp = result.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "TempSentinelProbe.t not found in eval result; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+
+    // ── the agreement itself ───────────────────────────────────────────────
+    assert_eq!(
+        *declared_temp, marshalled_temp,
+        "the stdlib `Bead.nominal_temp` default and the marshalled not-observed \
+         sentinel must be the SAME Value — declaring the default `0K` instead of \
+         `0degC` puts them 273.15 K apart, so a default-constructed Bead and a \
+         bead parsed from temperature-less G-code would silently disagree"
+    );
+}
