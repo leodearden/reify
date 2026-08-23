@@ -7,7 +7,7 @@
 | PRD | `docs/prds/v0_6/angle-dimension-completion.md` (leaf γ, docs-truth four-pack — the same leaf #6181/#6267 landed into) |
 | Task | #6290 |
 | Spun out of | esc-6267-1 / esc-6267-2 on #6267, which itself compressed the section #6181 (leaf γ) wrote |
-| Branch | `task/6290`, anchored to merge-base `2e3f228d2d` ("Merge task/5982 into main") — the branch was rebased after both the P1 and the post-S1–S4 measurement passes, so neither pass's branch-tip SHA resolves post-rebase; branch-tip SHAs are the wrong thing to cite here for exactly that reason. See §5 for the pass that replaces both, re-run at this merge-base. |
+| Branch | `task/6290`, measurements anchored to ancestor commit `2e3f228d2d` ("Merge task/5982 into main" — this branch's merge-base when that pass ran; still resolvable, though the branch has been rebased again since) — the branch was rebased after both the P1 and the post-S1–S4 measurement passes, so neither pass's branch-tip SHA resolves post-rebase; branch-tip SHAs are the wrong thing to cite here for exactly that reason. See §5 for the pass that replaces both. |
 | Date | 2026-08-19 |
 | Instrument | Byte census: `wc -c`/`wc -l` over `crates/reify-mcp/src/tools/chunks/*.md`, plus `sed -n` slices of `units.md`. Discoverability walk's instrument, unchanged from `docs/notes/angle-crossing-discoverability-2026-08-10.md`: `grep -rn <term> crates/reify-mcp/src/tools/chunks examples/best_practices/INDEX.md .claude/skills/reify-design/SKILL.md`, plus `grep -rnwE "gradient|divergence|curl|laplacian" crates/reify-mcp/src/tools/chunks/`. |
 
@@ -24,10 +24,13 @@ reader who wants to know why no lever was pulled — and, per §4, for the
 reader asking what (if anything) currently enforces hard constraints 3 and
 4.
 
-## 1. Measurements (prerequisite P1; re-run at merge-base `2e3f228d2d`, post-rebase)
+## 1. Measurements (prerequisite P1; re-run at ancestor commit `2e3f228d2d`, post-rebase)
 
 **This was executed, not asserted** — every number below is real stdout,
-re-run at the current merge-base `2e3f228d2d` after the branch was rebased.
+re-run at commit `2e3f228d2d`, which was this branch's merge-base at the time
+of that pass. The branch has been rebased again since, so `2e3f228d2d` is a
+resolvable historical anchor rather than today's merge-base — it is cited
+that way, not as a live one, and the numbers below still reproduce.
 The original P1 stdout and the post-S1–S4 re-verification stdout are
 superseded by this pass; both were genuine at the time, but their
 branch-tip provenance SHAs do not resolve post-rebase (see the Branch row
@@ -315,15 +318,18 @@ task's own diff* from that drift is the merge-base-anchored one, not a
 diff against `main`'s constantly-moving tip:
 
 ```
-$ git merge-base HEAD main
-862be2ebfe8bbde7264de3b06ffe74fd9f4f6bae
-$ git diff --stat "$(git merge-base HEAD main)" HEAD
- ...angle-crossing-doctrine-placement-2026-08-19.md | 270 +++++++++++++++++++++
- 1 file changed, 270 insertions(+)
+$ git diff --name-only "$(git merge-base HEAD main)" HEAD
+docs/notes/angle-crossing-doctrine-placement-2026-08-19.md
 ```
 
-That is the true count: this task's entire diff, relative to where it
-actually branched, is this note — 270 insertions, 0 deletions, one file.
-`crates/reify-mcp/src/tools/language_chunks.rs` nets to zero change (S1–S4
-added the rejected guards, S8–S9 removed them again), and no chunk `.md`
-file, in particular not `units.md`, was ever touched.
+Deliberately `--name-only`, not `--stat`: an insertion count for a diff
+whose only file *is this note* is self-referential — every later edit to
+§5 changes the number §5 quotes, so a pasted line count is falsified by
+the act of pasting it. The path list is edit-stable and carries the whole
+claim: this task's entire diff, relative to where it actually branched, is
+this note and nothing else. `crates/reify-mcp/` nets to zero change —
+S1–S4 added the rejected guards, S8–S9 removed them again, per the empty
+`git diff --stat main -- crates/reify-mcp/` above — and no chunk `.md`
+file, in particular not `units.md`, was ever touched. The merge-base SHA
+is likewise not pasted: it moves on every rebase, exactly like the
+branch-tip SHAs the Provenance row already warns about.
