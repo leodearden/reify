@@ -1,4 +1,10 @@
-//! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
+//! Shared test helpers.
+//!
+//! Most of this module is the `eval-helpers`-gated pipeline for parsing,
+//! compiling, and evaluating Reify source in tests. Alongside it sit un-gated
+//! helpers that need no engine: [`collect_value_ref_members`], which inspects
+//! an already-compiled expression, and [`missing_paths_under`], a filesystem
+//! path-existence filter shared by the test suites' skip-list guards.
 
 use std::path::Path;
 
@@ -41,13 +47,9 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
 /// This is the single source of truth for the SKIP_SET dead-key check — the
 /// guard that catches a skip-list entry naming a file that has since been
 /// renamed or deleted, which would otherwise silently disable coverage
-/// forever. It is the canonical replacement for the per-file copies of this
-/// `Path::exists` filter that existed in
-/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
-/// and `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`; both now
-/// route their guard through this function. Those guards keep their own skip
-/// lists private, and this doc is the only place their shared contract is
-/// stated — the call sites carry a pointer back here, not a copy.
+/// forever. It replaced the per-file copies of this `Path::exists` filter that
+/// each such guard used to open-code. This doc is the only place their shared
+/// contract is stated: a call site carries a pointer back here, not a copy.
 ///
 /// # Contracts callers may rely on
 ///
@@ -69,9 +71,14 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
 /// # Filesystem semantics
 ///
 /// Existence is [`Path::exists`], which follows symlinks and does not
-/// distinguish a file from a directory. A broken symlink, or a path whose
-/// parent cannot be read, therefore reports as *missing* — pinned by
+/// distinguish a file from a directory. A broken symlink therefore reports as
+/// *missing* — pinned by
 /// `test_missing_paths_under_reports_dangling_symlink_as_missing` below.
+///
+/// Any other condition under which `Path::exists` answers `false` — an
+/// unreadable parent directory, say — likewise reports as *missing*. That is a
+/// consequence of `Path::exists`, not a separately pinned behaviour: no test
+/// below exercises it.
 pub fn missing_paths_under<'a>(
     dir: &Path,
     rel_paths: impl IntoIterator<Item = &'a str>,
@@ -2125,9 +2132,10 @@ mod tests {
         );
     }
 
-    /// missing_paths_under: an empty input iterator yields an empty `Vec` with
-    /// no panic and no filesystem access — which is why `dir` here is a path
-    /// that does not exist and could not be read if it were touched.
+    /// missing_paths_under: an empty input iterator yields an empty `Vec`
+    /// rather than panicking, even when `dir` names a path that does not
+    /// exist. (Whether the call touches the filesystem at all is not something
+    /// this test can observe, so it does not claim it.)
     #[test]
     fn test_missing_paths_under_empty_input_yields_empty_vec() {
         let empty: [&str; 0] = [];
@@ -2136,8 +2144,8 @@ mod tests {
 
         assert!(
             missing.is_empty(),
-            "expected an empty input iterator to yield an empty Vec without touching the \
-             filesystem, even for a `dir` that does not exist; got {missing:?}"
+            "expected an empty input iterator to yield an empty Vec, even for a `dir` that \
+             does not exist; got {missing:?}"
         );
     }
 
