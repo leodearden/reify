@@ -669,6 +669,111 @@ mod serve_preflight {
 }
 
 #[cfg(test)]
+mod corpus_fixture {
+    use super::*;
+
+    /// HEAD must have a PARENT, or the P1 leg is unrunnable.
+    ///
+    /// P1 maps a done task's `done_provenance.commit` to the range
+    /// `commit^1..commit` and feeds it to jcodemunch's `get_changed_symbols`.
+    /// A single-commit corpus has no `HEAD^1`, so the leg could not even be
+    /// constructed — the assertion is on the fixture's SHAPE precisely because
+    /// the capstone that consumes it is `#[ignore]`d and would never notice.
+    #[test]
+    fn corpus_repo_has_two_commits_so_head_has_a_parent() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let corpus = build_corpus_repo(tmp.path());
+
+        assert_ne!(
+            corpus.head, corpus.prev,
+            "a two-commit corpus must have head != prev"
+        );
+        assert_eq!(corpus.head.len(), 40, "head must be a full sha: {:?}", corpus.head);
+        assert_eq!(corpus.prev.len(), 40, "prev must be a full sha: {:?}", corpus.prev);
+
+        let out = common::git_env::git_cmd(&corpus.root)
+            .args(["rev-parse", "HEAD^1"])
+            .output()
+            .expect("git rev-parse HEAD^1");
+        assert!(
+            out.status.success(),
+            "HEAD must have a parent; git rev-parse HEAD^1 exited {:?}",
+            out.status.code()
+        );
+        let parent = String::from_utf8(out.stdout).expect("utf8 sha").trim().to_string();
+        assert_eq!(parent, corpus.prev, "CorpusRepo::prev must BE git's HEAD^1");
+    }
+
+    /// HEAD carries a Rust file with public symbols.
+    ///
+    /// This is what makes `count_symbols(index_dir, repo_id) > 0` achievable
+    /// at all: an empty or symbol-free corpus would index to a husk and the
+    /// §4.3 gate would refuse, so the capstone would fail for a fixture reason
+    /// rather than a seam reason.
+    #[test]
+    fn corpus_repo_head_carries_a_rust_file_with_public_symbols() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let corpus = build_corpus_repo(tmp.path());
+
+        assert!(
+            corpus.touched_file.ends_with(".rs"),
+            "touched_file must be Rust source: {:?}",
+            corpus.touched_file
+        );
+
+        let out = common::git_env::git_cmd(&corpus.root)
+            .args(["show", &format!("HEAD:{}", corpus.touched_file)])
+            .output()
+            .expect("git show HEAD:<touched_file>");
+        assert!(
+            out.status.success(),
+            "git show HEAD:{} exited {:?} — the touched file must exist AT HEAD",
+            corpus.touched_file,
+            out.status.code()
+        );
+        let content = String::from_utf8(out.stdout).expect("utf8 source");
+        assert!(
+            content.contains("pub fn "),
+            "HEAD:{} must declare at least one `pub fn`; got:\n{content}",
+            corpus.touched_file
+        );
+    }
+
+    /// The corpus's repo id is the one the OPERATOR would predict.
+    ///
+    /// Checked twice on purpose: against the tests' deliberately-independent
+    /// `expected_repo_id` (which re-derives `local/<basename>-<sha1(abs)[..8]>`
+    /// by hand) AND against the production `resolve_repo_id` the binary uses.
+    /// If those two ever disagree, β writes one DB and the binary probes
+    /// another — the §4.3 gate then refuses a fully-indexed tree and sends the
+    /// operator to re-index a phantom.
+    ///
+    /// Measured ground truth from planning: an indexed `/tmp/…/corpus`
+    /// produced exactly `local/corpus-72879e30`.
+    #[test]
+    fn corpus_repo_id_matches_the_operator_derivation() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let corpus = build_corpus_repo(tmp.path());
+
+        assert_eq!(
+            corpus.repo_id,
+            common::index_fixture::expected_repo_id(&corpus.root),
+            "repo id must match the operator's independent derivation"
+        );
+        assert_eq!(
+            corpus.repo_id,
+            reify_audit::jcodemunch_index::resolve_repo_id(&corpus.root),
+            "repo id must match what the binary derives from --project-root"
+        );
+        assert!(
+            corpus.repo_id.starts_with("local/"),
+            "per-path identity is `local/…`, not a git identity: {:?}",
+            corpus.repo_id
+        );
+    }
+}
+
+#[cfg(test)]
 mod finding_shape {
     use super::*;
 
