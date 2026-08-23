@@ -20,8 +20,9 @@
 //! This file is the CI-visible pin for PRD `docs/prds/v0_6/stdlib-namespace.md`
 //! §7 boundary #15: `tree-sitter parse --quiet` and `tree-sitter test` are never
 //! invoked by any gate or hook, so the two prd-gate fixtures would otherwise be
-//! silently unverified.  The fixtures are read via `CARGO_MANIFEST_DIR` (the
-//! idiom at `crates/reify-compiler/tests/buckling_stdlib_compile.rs:709`).
+//! silently unverified.  Each fixture is supplied by `include_str!` at its FULL
+//! repo-relative leaf path — see `assert_prd_gate_fixture_parses_clean` for why
+//! naming the fixtures DIRECTORY is not an option here.
 //!
 //! The harness (make_parser / count_errors / collect_kinds / find_node_by_kind /
 //! find_all_nodes_by_kind) mirrors
@@ -136,13 +137,36 @@ fn field_text<'a>(node: tree_sitter::Node<'a>, field: &str, source: &'a str) -> 
 
 // ── (a) The two prd-gate fixtures — boundary #15's CI-visible pin ────────────
 
-/// Read a fixture from `tests/prd-gate/fixtures/` relative to this crate.
-fn read_prd_gate_fixture(name: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../tests/prd-gate/fixtures")
-        .join(name);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read prd-gate fixture {}: {e}", path.display()))
+/// Assert a prd-gate fixture parses with 0 ERROR/MISSING nodes, naming it by
+/// its full repo-relative path in the failure message.
+///
+/// The content arrives via `include_str!` at each call site rather than being
+/// read at runtime from a `CARGO_MANIFEST_DIR`-joined DIRECTORY. That is not a
+/// style preference: `scripts/verify.sh`'s prd-gate carve-out rests on the
+/// premise that nothing globs `tests/prd-gate/fixtures/`, so ADDING a fixture
+/// provably cannot change any Rust target's inputs — and a bare reference to the
+/// directory voids it. `tests/infra/test_verify_scope.sh`'s PG-DRIFT-DIR
+/// scenario enforces exactly that. Citing each leaf in full is also what
+/// `tests/prd-gate/README.md` requires of a coupled fixture, and it buys
+/// compile-time drift detection if a fixture is moved or deleted. The sibling
+/// `tree-sitter-reify/tests/indexed_sub_grammar_tests.rs:229-246` uses the same
+/// shape.
+///
+/// NOTE the differing prefix: `include_str!` resolves relative to THIS SOURCE
+/// FILE (`tree-sitter-reify/tests/`, hence `../../`), whereas the
+/// `CARGO_MANIFEST_DIR` it replaces was the crate root (`../`).
+fn assert_prd_gate_fixture_parses_clean(path: &str, source: &str) {
+    let mut parser = make_parser();
+    let tree = parser
+        .parse(source.as_bytes(), None)
+        .expect("parse returned None");
+    assert_eq!(
+        count_errors(tree.root_node()),
+        0,
+        "prd-gate fixture {path} must parse with 0 ERROR/MISSING nodes \
+         (PRD §7 boundary #15); got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
 }
 
 /// `tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri` (`param p : pp.Pulley`)
@@ -152,17 +176,9 @@ fn read_prd_gate_fixture(name: &str) -> String {
 /// GREEN (step-2): the `namespaced_name` arm accepts it.
 #[test]
 fn prd_gate_qualified_type_fixture_parses_with_zero_errors() {
-    let source = read_prd_gate_fixture("stdlib_ns_qualified_type.ri");
-    let mut parser = make_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse returned None");
-    assert_eq!(
-        count_errors(tree.root_node()),
-        0,
-        "prd-gate fixture stdlib_ns_qualified_type.ri must parse with 0 \
-         ERROR/MISSING nodes (PRD §7 boundary #15); got kinds: {:?}",
-        collect_kinds(tree.root_node())
+    assert_prd_gate_fixture_parses_clean(
+        "tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri",
+        include_str!("../../tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri"),
     );
 }
 
@@ -173,17 +189,9 @@ fn prd_gate_qualified_type_fixture_parses_with_zero_errors() {
 /// GREEN (step-2): `choice($.identifier, $.namespaced_name)` accepts it.
 #[test]
 fn prd_gate_qualified_expr_fixture_parses_with_zero_errors() {
-    let source = read_prd_gate_fixture("stdlib_ns_qualified_expr.ri");
-    let mut parser = make_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse returned None");
-    assert_eq!(
-        count_errors(tree.root_node()),
-        0,
-        "prd-gate fixture stdlib_ns_qualified_expr.ri must parse with 0 \
-         ERROR/MISSING nodes (PRD §7 boundary #15); got kinds: {:?}",
-        collect_kinds(tree.root_node())
+    assert_prd_gate_fixture_parses_clean(
+        "tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri",
+        include_str!("../../tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri"),
     );
 }
 
