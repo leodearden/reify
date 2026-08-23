@@ -5676,11 +5676,16 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545; severity revised #5196):** a non-zero count surfaces as
+    /// a `Severity::Info` diagnostic carrying
+    /// [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`], emitted by
+    /// `reify-eval`'s `Engine::execute_realization_ops` — accumulated per-op and
+    /// flushed once per realization via `TopologyCorrespondenceDropTally`
+    /// (task #5196 L4). Was `Warning`-severity under #4545; downgraded to
+    /// `Info` by #5196 because routine bookkeeping noise on healthy models was
+    /// flooding the Warning tier. The geometry is valid; only persistent-naming
+    /// correspondence tracking is degraded. See the linked variant's docs for
+    /// the full contract.
     ///
     /// A future per-kind or per-operand counter split (face vs. edge, left vs.
     /// right operand) remains an option if finer-grained diagnostics are needed;
@@ -5785,11 +5790,16 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545; severity revised #5196):** a non-zero count surfaces as
+    /// a `Severity::Info` diagnostic carrying
+    /// [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`], emitted by
+    /// `reify-eval`'s `Engine::execute_realization_ops` — accumulated per-op and
+    /// flushed once per realization via `TopologyCorrespondenceDropTally`
+    /// (task #5196 L4). Was `Warning`-severity under #4545; downgraded to
+    /// `Info` by #5196 because routine bookkeeping noise on healthy models was
+    /// flooding the Warning tier. The geometry is valid; only persistent-naming
+    /// correspondence tracking is degraded. See the linked variant's docs for
+    /// the full contract.
     ///
     /// A future per-kind counter split (face vs. edge) remains an option if
     /// finer-grained diagnostics are needed; the current single counter matches
