@@ -94,21 +94,26 @@ fn compile_linear_pattern_produces_realization() {
     );
 }
 
-/// A geometry-let `linear_pattern` target resolves to `GeomRef::Sub("elem")`
-/// rather than degrading to the positional `GeomRef::Step(0)` fallback, read
-/// straight off the public `CompiledGeometryOp::Pattern` surface. Task 5389 —
-/// this is the durable guard behind `examples/pattern_composition.ri`'s corrected
-/// claim that geometry lets ARE valid pattern targets (task 1715 + task 5009).
+/// A geometry-let `linear_pattern` lowers a NAMED `target` argument slot typed
+/// `Geometry`, read straight off the public `CompiledGeometryOp::Pattern`
+/// surface. Task 5389.
 ///
-/// The same structural fact, with its `circular_pattern`/`mirror` siblings, is
-/// the canonical coverage in
+/// DELIBERATELY NARROW — this asserts the ARG-SLOT fact and nothing else. The
+/// neighbouring structural fact (the target resolves to the geometry let by
+/// name rather than degrading to the positional `GeomRef::Step(0)` fallback) is
+/// ALREADY pinned by variant AND by name in
 /// `tests/harness_langcore/let_scope_tests.rs::linear_pattern_let_bound_ops`,
-/// which is what that example's header cites; this one exists only because it
-/// reads `GeomRef` off the public API instead of through the `ExpectedOp`/`Tgt`
-/// harness, which abstracts it away. Spacing is `20mm`, not a bare `20` — same
-/// task-5652 LENGTH-slot reason as the fixtures above.
+/// together with its `circular_pattern`/`mirror` siblings: that file's
+/// `tgt_matches` discriminator has a `(GeomRef::Sub(name), Tgt::Sub(ename))` arm
+/// comparing the bound names, so the `ExpectedOp`/`Tgt` harness does NOT abstract
+/// `GeomRef` away. That is the canonical coverage, and the one
+/// `examples/pattern_composition.ri` cites; re-asserting it here would only
+/// couple two files to a single lowering change.
+///
+/// Spacing is `20mm`, not a bare `20` — same task-5652 LENGTH-slot reason as the
+/// fixtures above.
 #[test]
-fn geometry_let_pattern_target_resolves_to_geom_ref_sub() {
+fn geometry_let_pattern_lowers_a_named_geometry_target_slot() {
     let source = r#"structure S {
     let elem = box(10mm, 10mm, 10mm)
     let row = linear_pattern(elem, 1, 0, 0, 4, 20mm)
@@ -132,29 +137,38 @@ fn geometry_let_pattern_target_resolves_to_geom_ref_sub() {
         errors
     );
 
+    // Every step down to the arg slot goes through `.first()`, never bare
+    // indexing. A lowering regression that empties one of these vecs is exactly
+    // the case these messages are worded for, and a bare `[0]` would panic with
+    // `index out of bounds` BEFORE the wording could fire.
+    let Some(template) = compiled.templates.first() else {
+        panic!("expected `structure S` to lower to at least one template, got none");
+    };
     // Each geometry let compiles to its OWN realization, so `elem` is not inlined
     // into `row`'s operations — hence the lookup by name rather than by index.
-    let realizations = &compiled.templates[0].realizations;
+    let realizations = &template.realizations;
     let row = realizations
         .iter()
         .find(|r| r.name.as_deref() == Some("row"))
         .unwrap_or_else(|| panic!("expected a realization named `row`, got {:?}", realizations));
-    let CompiledGeometryOp::Pattern { target, args, .. } = &row.operations[0] else {
+    let Some(op) = row.operations.first() else {
         panic!(
-            "expected `row` to lower to a Pattern op, got {:?}",
-            row.operations[0]
+            "expected `row` to lower to at least one operation, got {:?}",
+            row.operations
+        );
+    };
+    let CompiledGeometryOp::Pattern { args, .. } = op else {
+        panic!("expected `row` to lower to a Pattern op, got {:?}", op);
+    };
+    let Some((arg_name, arg)) = args.first() else {
+        panic!(
+            "expected the Pattern op to carry a named `target` arg slot, got no args: {:?}",
+            op
         );
     };
 
     assert_eq!(
-        target,
-        &GeomRef::Sub("elem".to_string()),
-        "expected `row`'s pattern target to resolve to the geometry let `elem` by NAME; \
-         `GeomRef::Step(0)` is the silent fallback whose runtime symptom is an \
-         unresolvable-step crash"
-    );
-    assert_eq!(
-        (args[0].0.as_str(), &args[0].1.result_type),
+        (arg_name.as_str(), &arg.result_type),
         ("target", &reify_core::Type::Geometry),
         "expected args[0] to be the named `target` slot typed as Geometry"
     );
