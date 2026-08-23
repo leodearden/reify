@@ -327,6 +327,53 @@ ts_inputs() {
     } | awk 'NF && !seen[$0]++'
 }
 
+# ts_hash_file
+#
+# Print the bare sha256 of ONE existing file, or return 1 having printed nothing.
+#
+# This is the shell counterpart of build.rs's `sha256_of`, and it exists for the
+# same reason: the hasher can be present on PATH and still fail on a given call —
+# an unreadable mode, or a transient fork/EMFILE spike spawning the subprocess
+# under the parallel-cargo load this host routinely runs at (the same trigger
+# already documented for `sha256_of` in FAIL POLICY above).  A bare
+# `hash=$(compute_sha256 "$f" | awk '{print $1}')` cannot see that: command
+# substitution reports only awk's status, awk happily succeeds on empty input,
+# and `set -e` is disabled inside this function anyway because BOTH call sites
+# invoke it in a `||` list.  The result was an EMPTY hash field in the manifest
+# and a 0 exit — which `check` renders as a spurious STALE naming a file that is
+# in fact unchanged, and which `ensure` writes verbatim into the ledger, so every
+# later run mismatches it and pays another full parser.c force.
+#
+# So: retry a present-but-failing hasher on the same 3-attempt / 100ms-linear-
+# backoff ladder build.rs uses, then concede.  Conceding is `return 1`, never an
+# empty hash: an empty field is indistinguishable from a real mismatch, and this
+# script's whole job is to keep "changed" and "could not tell" apart.
+ts_hash_file() {
+    local abs="$1"
+    local attempt raw hash
+
+    for attempt in 1 2 3; do
+        # stderr is suppressed per-attempt so a retry that later SUCCEEDS stays
+        # quiet; the caller emits the single authoritative diagnostic on failure.
+        if raw=$(compute_sha256 "$abs" 2>/dev/null); then
+            hash=$(printf '%s\n' "$raw" | awk '{print $1}')
+            if [ -n "$hash" ]; then
+                printf '%s\n' "$hash"
+                return 0
+            fi
+        fi
+        # Plain `if`, not `[ ... ] && sleep`: as the LAST statement in the loop
+        # body the short-circuit form evaluates to 1 on the final attempt, which
+        # would make the function's exit status depend on arithmetic rather than
+        # on the explicit `return 1` below.
+        if [ "$attempt" -lt 3 ]; then
+            sleep "0.$attempt"
+        fi
+    done
+
+    return 1
+}
+
 # ts_fingerprint
 #
 # Print the per-file sha256 manifest for the input set: '<hash>  <relpath>'
@@ -335,7 +382,8 @@ ts_inputs() {
 # independent and byte-reproducible by build.rs from a different cwd.
 #
 # Returns $TS_RC_UNAVAILABLE (printing the single literal line UNAVAILABLE) when
-# the host has no hasher; returns 1 naming the path when an input is missing.
+# the host has no hasher; returns 1 naming the path when an input is missing, or
+# when an input exists but could not be hashed (see ts_hash_file).
 ts_fingerprint() {
     if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
         printf 'UNAVAILABLE\n'
@@ -353,9 +401,21 @@ ts_fingerprint() {
             echo "       can be fingerprinted." >&2
             return 1
         fi
-        # compute_sha256 -> '<hash>  <path-as-given>'; keep the hash, substitute
-        # the normalised relpath.
-        hash=$(compute_sha256 "$abs" | awk '{print $1}')
+        # ts_hash_file -> bare '<hash>'; pair it with the normalised relpath.
+        # A failure here is NOT degradable: unlike a missing hasher (which is
+        # global, and fails OPEN as a whole-run skip), one unhashable file leaves
+        # the rest of the manifest perfectly valid-LOOKING, so emitting it would
+        # assert a comparison this script cannot actually make.
+        if ! hash=$(ts_hash_file "$abs"); then
+            echo "ERROR: tree-sitter freshness input could not be hashed: $abs" >&2
+            echo "       sha256sum/shasum is on PATH but failed on this file after 3" >&2
+            echo "       attempts — check its permissions, or retry if the host was" >&2
+            echo "       under fork/EMFILE pressure.  Refusing to emit a partial" >&2
+            echo "       fingerprint: an empty hash field is indistinguishable from a" >&2
+            echo "       real content change and would red the gate (or poison the" >&2
+            echo "       ledger) for a file that has not changed." >&2
+            return 1
+        fi
         printf '%s  %s\n' "$hash" "$rel"
     done < <(ts_inputs)
 }

@@ -2847,5 +2847,124 @@ test_freshness_guard_is_routed_by_infra_test_map() {
     return "$rc"
 }
 
+test_freshness_refuses_partial_fingerprint_on_unhashable_input() {
+    # A file that EXISTS but cannot be hashed must never yield a manifest line
+    # with an empty hash field.
+    #
+    # The original defect: `hash=$(compute_sha256 "$abs" | awk '{print $1}')`
+    # tested nothing.  Command substitution reports only awk's status, awk
+    # succeeds on empty input, and `set -e` is disabled inside ts_fingerprint
+    # because BOTH call sites invoke it in a `||` list.  So an unreadable mode —
+    # or a transient fork/EMFILE failure spawning the hasher, the same trigger
+    # build.rs's sha256_of already retries against — produced the line
+    # "  src/scanner.c" and STILL exited 0.  Downstream that is not a cosmetic
+    # blemish: `check` renders it as a STALE verdict naming a file that has not
+    # changed (a spurious merge-gate RED asserting a defect that does not exist),
+    # and `ensure` writes the corrupt fingerprint into the ledger, so every later
+    # run mismatches it and pays another full ~5 MB parser.c force.
+    #
+    # The contract asserted here is the one this whole script exists to hold:
+    # "changed" and "could not tell" must stay distinguishable.  Failing closed
+    # with a named diagnostic is correct; a silent empty field is not.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: no sha256sum/shasum on PATH — the guard degrades to UNAVAILABLE here"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    # chmod back first: a mode-0 file in the tree is fine for rm -rf (the DIR is
+    # writable) but restoring keeps the cleanup robust under any umask/FS.
+    CLEANUP_ACTIONS+=("chmod -R u+rw '$tmp' 2>/dev/null; rm -rf '$tmp'")
+
+    local ts="$tmp/ts" target="$tmp/target"
+    mkdir -p "$ts/src/tree_sitter" "$target"
+    cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
+    cp "$TS_DIR/src/parser.c"  "$ts/src/parser.c"
+    cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
+    cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
+
+    # scanner.c is the sharpest choice: it is the hand-written input whose
+    # staleness this task exists to close, so a false verdict about it is the
+    # exact failure mode under test.
+    chmod a-r "$ts/src/scanner.c"
+
+    # root (and some FS/capability configurations) ignore the mode bit entirely,
+    # which would make every assertion below vacuously pass. Detect and skip.
+    if head -c 1 "$ts/src/scanner.c" >/dev/null 2>&1; then
+        echo "  SKIP: cannot make a file unreadable here (running as root, or FS ignores the mode bit)"
+        return 0
+    fi
+
+    local rc=0 out
+    out=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" REIFY_TS_FRESHNESS_TARGET_DIR="$target" \
+        bash "$FRESHNESS_SCRIPT" --print-fingerprint 2>&1) || rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: '--print-fingerprint' exited 0 with an unhashable input"
+        echo "  Expected a non-zero exit: an input that cannot be hashed is NOT a"
+        echo "  successfully-computed fingerprint."
+        echo "  --- captured output ---"; echo "$out"; echo "  --- end output ---"
+        return 1
+    fi
+
+    # The load-bearing assertion: no manifest line may carry an empty hash field.
+    # Checked with a bash-native regex over the captured text rather than `grep -q`
+    # in a pipe — `grep -q` exits early and SIGPIPEs its writer, which under
+    # `set -o pipefail` yields 141 and silently inverts the verdict.
+    local line
+    while IFS= read -r line; do
+        # Manifest lines are '<64-hex><2 spaces><relpath>'. Anything that looks
+        # like a manifest line (ends in a known relpath) but lacks the hash is the
+        # corruption. Diagnostics are prose and never match.
+        if [[ "$line" =~ ^[[:space:]]*(src/[^[:space:]]+)$ ]]; then
+            echo ""
+            echo "  ASSERTION FAILED: emitted a manifest line with an EMPTY hash field:"
+            printf '  %q\n' "$line"
+            echo "  An empty hash is indistinguishable from a real content change; it"
+            echo "  reds the gate for an unchanged file and poisons the ledger."
+            return 1
+        fi
+    done <<< "$out"
+
+    # The diagnostic must NAME the offending file, matching the missing-input
+    # branch's behaviour — an operator has to know which file to chmod.
+    if [[ "$out" != *"scanner.c"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: failure diagnostic does not name the unhashable file"
+        echo "  --- captured output ---"; echo "$out"; echo "  --- end output ---"
+        return 1
+    fi
+
+    # `ensure` must not record a fingerprint it could not compute. A poisoned
+    # ledger is the persistent half of this defect: it survives the run and makes
+    # every subsequent invocation re-force.
+    local ensure_rc=0 ensure_out
+    ensure_out=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" REIFY_TS_FRESHNESS_TARGET_DIR="$target" \
+        bash "$FRESHNESS_SCRIPT" ensure 2>&1) || ensure_rc=$?
+
+    if [ "$ensure_rc" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: 'ensure' exited 0 with an unhashable input"
+        echo "  --- captured output ---"; echo "$ensure_out"; echo "  --- end output ---"
+        return 1
+    fi
+
+    local ledger="$target/.tree-sitter-freshness.ledger"
+    if [ -e "$ledger" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: 'ensure' wrote a ledger from an uncomputable fingerprint:"
+        echo "  $ledger"
+        echo "  --- ledger content (cat -A) ---"; cat -A "$ledger"; echo "  --- end ---"
+        return 1
+    fi
+
+    return 0
+}
+
+
 # --- Main ---
 run_tests
