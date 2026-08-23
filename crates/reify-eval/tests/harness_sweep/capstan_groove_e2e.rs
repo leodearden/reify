@@ -975,8 +975,8 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
         "the drum's grooved length must decompose into the active band plus the \
          dead (anchor) wraps: groove_len − band = {:.6} mm − {:.6} mm = {:.6} mm, \
          but lead · dead_total = {:.6} mm × {dead_total} = {:.6} mm. This is the \
-         \"sized for the full per-axis feed … plus the base wraps\" claim in \
-         docs/projects/printer_v01.md, stated over the cells.",
+         \"sized for the full per-axis feed … plus 4 dead (anchor) wraps\" claim \
+         in docs/projects/printer_v01.md, stated over the cells.",
         groove_len * 1e3,
         band * 1e3,
         (groove_len - band) * 1e3,
