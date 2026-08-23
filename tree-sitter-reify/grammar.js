@@ -1641,6 +1641,19 @@ module.exports = grammar({
     //
     // `callTail($)` is reused verbatim so the argument syntax cannot drift from
     // `function_call`'s.
+    //
+    // ITEM-BOUNDARY CONSEQUENCE, measured and pinned rather than left latent.
+    // In a body whose repeat has NO separator — `constraint_def_predicate` and
+    // `relate_block`'s `relation_member` — greedy shift joins an item ending in
+    // `.name` with a following item opening `(`: `constraint def C { a.b ⏎ (x)
+    // > 0 }` is ONE predicate, not two. The hazard CLASS predates μ, because
+    // `function_call`'s prec 11 already joins a BARE trailing `ident` with a
+    // following `(` the same way — so μ widens an accepted trade rather than
+    // inventing one — and it stays latent: no committed `.ri` under examples/
+    // or tests/prd-gate/fixtures/ has a line ending in `.ident` directly above
+    // a line opening with `(`. All three joined readings are pinned in
+    // test/corpus/namespaced_ref.txt ("item boundary") and mirrored on the
+    // lezer surface in gui/src/__tests__/reifyGrammarQualifiedRef.test.ts.
     namespaced_call: $ => prec(12, seq(
       field('callee', $.member_access),
       callTail($),

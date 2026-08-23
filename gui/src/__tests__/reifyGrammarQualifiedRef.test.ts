@@ -344,3 +344,51 @@ describe('reify.grammar — qualified-ref negative controls', () => {
     expect(nodeNamesSpanning(src, 'Foo::bar')).toEqual(['QualifiedAccess']);
   });
 });
+
+
+// ── Item-boundary trade (separator-less repeats) ────────────────────────────
+//
+// `namespaced_call`'s `prec(12)` (`NamespacedCall` here) makes the parser
+// prefer SHIFT over reduce when an item that ends in `.name` is followed by an
+// item that opens with `(`, in a body whose repeat has no separator. The two
+// such bodies are `ConstraintDefinition`'s and `RelateBlock`'s; in both, the
+// two source lines collapse into ONE item whose head is a qualified call.
+//
+// This is pinned, not merely tolerated. The hazard CLASS predates task 5495 μ:
+// `function_call`'s prec 11 already joins a BARE `ident` with a following `(`
+// the same way — the control below measures it — so μ WIDENS an accepted trade
+// rather than inventing one. It is latent in practice: no committed `.ri`
+// under examples/ or tests/prd-gate/fixtures/ has a line ending in `.ident`
+// directly above a line opening with `(`. The trade itself is priced on the
+// `itemStart`/`postfix` precedence block in reify.grammar.
+//
+// The tree-sitter twin of this block is
+// tree-sitter-reify/test/corpus/namespaced_ref.txt's three "item boundary"
+// cases — the same three sources, the same joined readings. Both surfaces must
+// move together or the editor becomes a fourth dialect.
+
+describe('reify.grammar — item boundary in separator-less repeats', () => {
+  it('joins a predicate ending `.name` with the next parenthesised predicate', () => {
+    const src = 'constraint def C {\n  a.b\n  (x) > 0\n}\n';
+    expect(countErrorNodes(src)).toBe(0);
+    // ONE predicate, not two — that IS the sacrifice.
+    expect(countNodesNamed(src, 'ConstraintDefPredicate')).toBe(1);
+    expect(nodeNamesSpanning(src, 'a.b\n  (x)')).toEqual(['NamespacedCall']);
+  });
+
+  it('CONTROL: a bare ident joins the same way, so the class predates 5495', () => {
+    const src = 'constraint def C {\n  a\n  (x) > 0\n}\n';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'ConstraintDefPredicate')).toBe(1);
+    expect(nodeNamesSpanning(src, 'a\n  (x)')).toEqual(['FunctionCall']);
+    expect(countNodesNamed(src, 'NamespacedCall')).toBe(0);
+  });
+
+  it("joins the same way in relate's RelationMember repeat", () => {
+    const src = 'structure def S {\n  relate {\n    a.b\n    (x)\n  }\n}\n';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'RelationMember')).toBe(1);
+    // `RelationMember` is span-identical here — the member IS the joined call.
+    expect(nodeNamesSpanning(src, 'a.b\n    (x)')).toEqual(['RelationMember', 'NamespacedCall']);
+  });
+});

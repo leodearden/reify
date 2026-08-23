@@ -1730,12 +1730,24 @@ ReservedWord {
   // THE TRADE, stated rather than left to be rediscovered: being tightest,
   // greedy SHIFT always wins. That preserves `Box<T>`, `Tensor<2, 3, Force>`,
   // `auto(free)`, `auto(seed = 5mm)` and `#pragma(a = 1)`, every one of them
-  // attested in a pinned file. It sacrifices only the mirror image — a
-  // predicate whose FIRST token is `<` (the one-sided RangeExpression arm) or
-  // `(` on the line directly after a param/let/pragma item — a shape attested
-  // in none of the 330 committed `.ri`. All five preserved readings are pinned
-  // by node-name assertions in reifyGrammarCorpus.test.ts, not by error counts,
-  // because a precedence edit reshapes a tree in silence.
+  // attested in a pinned file. It sacrifices the mirror image: a predicate whose
+  // FIRST token is `<` (the one-sided RangeExpression arm) or `(`, on the line
+  // directly after an item the parser can still extend. All five preserved
+  // readings are pinned by node-name assertions in reifyGrammarCorpus.test.ts,
+  // not by error counts, because a precedence edit reshapes a tree in silence.
+  //
+  // THE SACRIFICED SET IS WIDER THAN `itemStart` ALONE. It is not only the
+  // param/let/pragma items whose tail `itemStart` shifts: any item the parser
+  // can still extend swallows a following `(` line. `FunctionCall` does it via
+  // `postfix` after a BARE trailing ident (`a` ⏎ `(x) > 0` is one predicate,
+  // not two — measured, and it predates task 5495), and since μ
+  // `NamespacedCall` does it after a trailing `.name` (`a.b` ⏎ `(x) > 0`
+  // likewise). μ WIDENS this accepted trade rather than inventing it. Still
+  // unattested: no committed `.ri` has a line ending in `.ident` directly above
+  // a line opening with `(`. All three joined readings are pinned in
+  // reifyGrammarQualifiedRef.test.ts and in tree-sitter-reify's
+  // test/corpus/namespaced_ref.txt, so the shape is visible rather than
+  // rediscovered.
   //
   // Note this is the OPPOSITE instrument to the one `~poseWhere` uses on a
   // conflict that looks similar. Precedence is right here only because the
