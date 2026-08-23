@@ -122,14 +122,20 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// a gate: if that consumer goes away, demote or delete this item in the same
 /// change, because no sweep will say so.
 ///
-/// The exclusion assumes a test-support crate's publics are reached only from
-/// test files. Two items now break that assumption — this one and
+/// That exclusion was written assuming a test-support crate's publics are
+/// reached only from test files. Two items break that assumption — this one and
 /// `crate::ignore_hygiene::extract_ignore_reason` — both reached from
-/// `reify-audit`'s PRODUCTION path. Whether that warrants a dep-free
-/// `reify-git-env` leaf crate the sweep does cover, or a narrower
-/// `EXCLUDE_CRATES`, is tracked as follow-up ticket
-/// `tkt_0RSN6D9381MSERHKK41GP3GE72` (filed from task 5657's review); decide it
-/// there rather than re-deriving an answer at each new item.
+/// `reify-audit`'s PRODUCTION path. The script's own comment above the
+/// exclusion now records that as an accepted blind spot rather than an
+/// assumed-safe one, and both manifests on the edge — `crates/reify-audit`'s
+/// and this crate's — state the fact in one line each. All three point HERE,
+/// and this paragraph is the one full account: a reader arriving from any of
+/// them should need nothing further.
+///
+/// Whether the arrangement warrants a dep-free `reify-git-env` leaf crate the
+/// sweep does cover, or a narrower `EXCLUDE_CRATES`, is tracked as follow-up
+/// ticket `tkt_0RSN6D9381MSERHKK41GP3GE72` (filed from task 5657's review);
+/// decide it there rather than re-deriving an answer at each new item.
 pub fn sanitize(cmd: &mut Command) -> &mut Command {
     for var in REPO_REDIRECT_VARS {
         cmd.env_remove(var);
