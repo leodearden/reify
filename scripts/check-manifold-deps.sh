@@ -13,14 +13,18 @@
 #
 #   2. tbb pin dir (task #5192, mechanism A''). See that arm's own banner.
 #
-#   3. OCCT presence (task #6343). A missing OCCT is not merely cryptic, it is
+#   3. OCCT presence + SONAME (task #6343). A missing OCCT is not merely cryptic, it is
 #      SILENT: `reify_build_utils::find(NativeDep::Occt)` returns None,
 #      `crates/reify-kernel-occt/build.rs` emits a `cargo:warning` and returns
 #      without setting `has_occt`, and the crate degrades to stub types — which
 #      also deletes its `#[cfg(all(test, has_occt))]` module and its ~25
 #      `#![cfg(has_occt)]` integration binaries. The suite then reports ZERO
 #      tests rather than zero failures, so the gate stays green over a kernel
-#      nothing exercised. This arm makes that state red here.
+#      nothing exercised. This arm makes that state red here. It also pins the
+#      resolved SONAME, because reify pins OCCT nowhere else in-tree: a distro
+#      upgrade that moves the version relinks the kernel with nothing louder
+#      than a `cargo:warning`, and the has_occt suite that would have caught
+#      the regression is exactly what disappears when OCCT goes missing.
 #
 # verify.sh runs this as the first plan entry when Rust work is in scope.
 #
@@ -31,6 +35,11 @@ set -euo pipefail
 
 err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
+# stdout, not stderr: this is the RECORDING half of the OCCT arm — it puts the
+# resolved version in the verify log so a reviewer reading a green
+# reify-kernel-occt result can see WHICH OCCT produced it. add_tool() only
+# executes plan entries, so nothing parses this script's stdout.
+ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCKFILE="$REPO_ROOT/Cargo.lock"
@@ -162,12 +171,41 @@ OCCT_LIB_SENTINEL=libTKernel.so
 OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
 # END occt-candidates
 
-occt_hint() {
-    err "Install the OCCT 7.8 dev packages — scripts/setup-dev.sh's OCCT block does exactly this:"
+# Accepted OCCT SONAME versions — the suffix of the FIRST-level `libTKernel.so`
+# symlink target, i.e. exactly what reify_build_utils::read_soname_version()
+# extracts and what crates/reify-kernel-occt/build.rs splices into its
+# `dylib:+verbatim=libTK*.so.<ver>` link directives.
+#
+# WHY THIS IS A HARD PIN, not a warning: reify pins OCCT nowhere else in-tree
+# (there is no version constraint in any Cargo.toml, and nothing else in the
+# verify plan looks at OCCT at all), so a plain distro `apt upgrade` silently
+# relinks the kernel against a new OCCT. That is the exact event build.rs's
+# read_soname_version fallback anticipates — and if the move instead lands
+# reify in stub mode, the has_occt suite that would have caught the resulting
+# geometry regressions is itself deleted by the same cfg. A passing suite and
+# a DELETED suite are indistinguishable from outside, which is why this has to
+# be caught before the compile rather than inferred from test results.
+#
+# ON A LEGITIMATE BUMP: widening this array is the sanctioned response — but
+# only AFTER re-validating the OCCT-sensitive pins against the new version
+# (task 6184's STEP plane-angle unit pin, and the reify-kernel-occt geometry
+# suites). An array rather than a scalar so an operator can accept two
+# versions during a migration; either way, widening it is a one-line diff a
+# reviewer sees. scripts/setup-dev.sh's OCCT block provisions from the same
+# expectation, and tests/infra/test_occt_deps_preflight.sh asserts its dpkg
+# version stays a member of this set — bump the two together.
+OCCT_ACCEPTED_SONAMES=(7.8)
+
+occt_install_hint() {
+    err "Install the OCCT ${OCCT_ACCEPTED_SONAMES[0]} dev packages — scripts/setup-dev.sh's OCCT block does exactly this:"
     err "    sudo add-apt-repository -y ppa:freecad-maintainers/occt-releases"
     err "    sudo apt-get install -y libocct-foundation-dev libocct-modeling-algorithms-dev \\"
     err "                            libocct-modeling-data-dev libocct-data-exchange-dev"
     err "Or point OCCT_INCLUDE_DIR / OCCT_LIB_DIR at an existing install."
+}
+
+occt_hint() {
+    occt_install_hint
     err "WHY THIS IS FATAL rather than a warning: without OCCT, reify-kernel-occt's"
     err " build.rs never emits has_occt, so its #[cfg(all(test, has_occt))] module and"
     err " its ~25 #![cfg(has_occt)] integration binaries are not compiled AT ALL — the"
@@ -268,5 +306,67 @@ if [ "$occt_failed" -ne 0 ]; then
     occt_hint
     exit 1
 fi
+
+# Both halves resolved, so has_occt WILL be set. Now pin which OCCT it is.
+#
+# Mirrors reify_build_utils::read_soname_version()
+# (crates/reify-build-utils/src/lib.rs) rule for rule:
+#   - the FIRST-level link target only — `readlink`, never `readlink -f`,
+#     because multi-hop resolution yields 7.8.1 on a host where the build sees
+#     7.8;
+#   - everything after the `libTKernel.so.` prefix taken VERBATIM, so the
+#     conda one-level `-> libTKernel.so.7.9.3` shape yields `7.9.3` and a
+#     `:libTKernel.so.7.9.3` link directive names a file that exists.
+OCCT_SONAME_PATH="$OCCT_LIB_RESOLVED/$OCCT_LIB_SENTINEL"
+# `|| true`: a non-symlink makes readlink exit non-zero, and under `set -e`
+# that would abort here with no message at all — the undeterminable branch
+# below is the whole point.
+OCCT_SONAME_TARGET="$(readlink "$OCCT_SONAME_PATH" 2>/dev/null || true)"
+OCCT_SONAME_BASE="${OCCT_SONAME_TARGET##*/}"
+OCCT_SONAME_PREFIX="$OCCT_LIB_SENTINEL."
+OCCT_SONAME_VER=""
+if [ -n "$OCCT_SONAME_BASE" ]; then
+    OCCT_SONAME_VER="${OCCT_SONAME_BASE#"$OCCT_SONAME_PREFIX"}"
+    # Unchanged => the prefix was absent, so there is no version to read. An
+    # empty remainder (a bare `libTKernel.so.` target) is equally unusable.
+    [ "$OCCT_SONAME_VER" = "$OCCT_SONAME_BASE" ] && OCCT_SONAME_VER=""
+fi
+
+if [ -z "$OCCT_SONAME_VER" ]; then
+    err "manifold-deps guard: could not determine the OCCT SONAME from $OCCT_SONAME_PATH"
+    err "                     (first-level symlink target: '${OCCT_SONAME_TARGET:-<not a symlink>}';"
+    err "                      expected $OCCT_SONAME_PREFIX<version>)."
+    err "This is NOT a cosmetic gap. find() reports the dir as resolved — it only tests"
+    err " existence — so has_occt IS set, and crates/reify-kernel-occt/build.rs falls"
+    err " back to a HARD-CODED version for its dylib:+verbatim=libTK*.so.<ver> link"
+    err " directives behind nothing but a cargo:warning. The build would link a version"
+    err " nobody verified."
+    occt_install_hint
+    exit 1
+fi
+
+occt_soname_accepted=0
+for v in "${OCCT_ACCEPTED_SONAMES[@]}"; do
+    if [ "$v" = "$OCCT_SONAME_VER" ]; then
+        occt_soname_accepted=1
+        break
+    fi
+done
+
+if [ "$occt_soname_accepted" -ne 1 ]; then
+    err "manifold-deps guard: OCCT SONAME drift — resolved $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED,"
+    err "                     but the accepted set is: ${OCCT_ACCEPTED_SONAMES[*]}"
+    err "                     (read from $OCCT_SONAME_PATH -> $OCCT_SONAME_TARGET)."
+    err "If this move was NOT intended, install an accepted version:"
+    occt_install_hint
+    err "If it WAS intended: re-validate the OCCT-sensitive pins against $OCCT_SONAME_VER"
+    err " (the STEP plane-angle unit pin, the reify-kernel-occt geometry suites), then"
+    err " widen OCCT_ACCEPTED_SONAMES in scripts/check-manifold-deps.sh and bump"
+    err " scripts/setup-dev.sh's OCCT block to match — tests/infra/"
+    err " test_occt_deps_preflight.sh asserts the two agree."
+    exit 1
+fi
+
+ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED)"
 
 exit 0
