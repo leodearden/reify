@@ -1227,6 +1227,88 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // step-1 / step-2: 3-segment __tables spec (jcodemunch-mcp 1.108.54)
+    // ------------------------------------------------------------------
+
+    /// The real-wire `__tables` spec measured against jcodemunch-mcp
+    /// 1.108.54 on 2026-08-22 for `find_references`:
+    /// `r:__rows__:file|specifier|match_type` — 3 colon-segments, the type
+    /// list omitted. Every fixture under `tests/fixtures/jcodemunch/` was
+    /// captured against 1.108.27 and uses the 4-segment form, so both
+    /// grammars must be accepted (widening, not migration). Omitted types
+    /// mean every column decodes as `ColType::Str`.
+    #[test]
+    fn munch_decode_accepts_a_three_segment_table_spec_as_all_str() {
+        let munch = concat!(
+            "#MUNCH/1 tool=find_references enc=gen1\n",
+            "\n",
+            "@1=crates/reify-audit/\n",
+            "\n",
+            "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
+            "r,@1src/jcodemunch_client.rs,crate,named\n",
+            "r,@1tests/p1.rs,reify_audit,named\n",
+        );
+
+        let v = munch_decode(munch).expect("3-segment __tables spec should decode");
+
+        let rows = v
+            .get("__rows__")
+            .and_then(|t| t.as_array())
+            .expect("__rows__ table");
+        assert_eq!(rows.len(), 2);
+
+        for row in rows {
+            for key in ["file", "specifier", "match_type"] {
+                assert!(
+                    matches!(row.get(key), Some(Value::String(_))),
+                    "field {key:?} should decode as a String (type list \
+                     omitted => every column is ColType::Str); row={row:?}"
+                );
+            }
+        }
+
+        assert_eq!(
+            rows[0].get("file").and_then(|f| f.as_str()),
+            Some("crates/reify-audit/src/jcodemunch_client.rs"),
+            "the @1 ref must expand on the file column"
+        );
+        assert_eq!(rows[0].get("specifier").and_then(|f| f.as_str()), Some("crate"));
+        assert_eq!(rows[0].get("match_type").and_then(|f| f.as_str()), Some("named"));
+
+        assert_eq!(
+            rows[1].get("file").and_then(|f| f.as_str()),
+            Some("crates/reify-audit/tests/p1.rs")
+        );
+        assert_eq!(
+            rows[1].get("specifier").and_then(|f| f.as_str()),
+            Some("reify_audit")
+        );
+        assert_eq!(rows[1].get("match_type").and_then(|f| f.as_str()), Some("named"));
+    }
+
+    /// Pins that the step-2 relaxation stays bounded: a 2-segment spec
+    /// (prefix + table name, no columns at all) is still rejected. Passes
+    /// today; exists so step-2 cannot over-widen the grammar past 3-or-4.
+    #[test]
+    fn munch_decode_still_rejects_a_two_segment_table_spec() {
+        let munch = concat!(
+            "#MUNCH/1 tool=find_references enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=r:__rows__\n",
+        );
+        match munch_decode(munch) {
+            Err(LoadError::Protocol(msg)) => {
+                assert!(
+                    msg.contains("colon-segments"),
+                    "error should mention colon-segments: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected Protocol error for 2-segment table spec, got Ok"),
+            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http error"),
+        }
+    }
+
+    // ------------------------------------------------------------------
     // step-3 / step-4: decode_tool_result routing
     // ------------------------------------------------------------------
 
