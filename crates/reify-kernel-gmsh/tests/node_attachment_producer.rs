@@ -380,7 +380,8 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
 // Over-decomposition property-witness (raw FFI, has_gmsh)
 // ---------------------------------------------------------------------------
 
-/// Property-witness: `classify_surfaces(FRAC_PI_4, …)` + `create_geometry`
+/// Property-witness: `classify_surfaces` at the production
+/// `CLASSIFY_FEATURE_ANGLE`/`CLASSIFY_CURVE_ANGLE` + `create_geometry`
 /// over-decomposes the 2×2-subdivided unit cube into more sub-entities than
 /// the geometric B-rep count (8 vertices / 12 edges / 6 faces).
 ///
@@ -401,8 +402,8 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
 /// locus test — task 3763).
 #[cfg(has_gmsh)]
 #[test]
-fn classify_surfaces_frac_pi_4_over_decomposes_unit_cube() {
-    use reify_kernel_gmsh::{ffi, init, CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE};
+fn classify_surfaces_over_decomposes_unit_cube() {
+    use reify_kernel_gmsh::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE, ffi, init};
 
     let surface = subdivided_unit_cube_surface();
     let n_verts = surface.vertices.len() / 3;
@@ -441,16 +442,20 @@ fn classify_surfaces_frac_pi_4_over_decomposes_unit_cube() {
     let _ = ffi::clear();
 
     // Geometric unit cube: 8 vertices / 12 edges / 6 faces.
-    // gmsh over-decomposes at FRAC_PI_4 — pinned counts below.
-    // On failure after a gmsh upgrade: update the triple to (n0, n1, n2),
-    // add a comment with the gmsh version, and re-verify NodeAttachment
-    // producer attribution (task 3763).
+    // gmsh over-decomposes at the production classify angles — pinned counts
+    // below. On failure there are two possible causes: a gmsh upgrade, or a
+    // change to CLASSIFY_FEATURE_ANGLE/CLASSIFY_CURVE_ANGLE (kernel_real.rs)
+    // — confirm which before re-pinning. If it's a gmsh upgrade: update the
+    // triple to (n0, n1, n2), add a comment with the new gmsh version, and
+    // re-verify NodeAttachment producer attribution (task 3763).
     assert_eq!(
         (n0, n1, n2),
         (12, 20, 10),
         "gmsh over-decomposition counts changed from the pinned (12, 20, 10). \
-         Observed: ({n0}, {n1}, {n2}). Update the expected triple and re-verify \
-         NodeAttachment producer attribution (task 3763)."
+         Observed: ({n0}, {n1}, {n2}). Either gmsh was upgraded, or \
+         CLASSIFY_FEATURE_ANGLE/CLASSIFY_CURVE_ANGLE changed — confirm which \
+         before re-pinning, and re-verify NodeAttachment producer attribution \
+         (task 3763)."
     );
 }
 
