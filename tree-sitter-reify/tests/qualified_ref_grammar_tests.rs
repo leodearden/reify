@@ -585,6 +585,21 @@ fn chained_dotted_access_stays_nested_member_access() {
          got kinds: {:?}",
         collect_kinds(tree.root_node())
     );
+    // Span-anchored, so "two member_access nodes" cannot be satisfied by two
+    // nodes over the WRONG extents: the outer one covers the whole chain and the
+    // inner one covers only the first two segments (left-associative nesting).
+    assert_eq!(
+        kinds_spanning(tree.root_node(), source, "pp.FitClass.Clearance"),
+        vec!["member_access".to_string()],
+        "the outer member_access must span the whole chain; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+    assert_eq!(
+        kinds_spanning(tree.root_node(), source, "pp.FitClass"),
+        vec!["member_access".to_string()],
+        "the inner member_access must span only `pp.FitClass`; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
     assert!(
         find_node_by_kind(tree.root_node(), "namespaced_call").is_none(),
         "a call-less dotted chain must not produce a namespaced_call node"
