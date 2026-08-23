@@ -984,6 +984,147 @@ fn assert_live_leg(leg: &str, code: Option<i32>, findings: &[serde_json::Value],
 }
 
 #[cfg(test)]
+mod live_leg_seam {
+    use super::*;
+
+    // -------------------------------------------------------------------
+    // Why this module exists
+    // -------------------------------------------------------------------
+    //
+    // The only test that drives a REAL leg is `#[ignore]`d, so the per-leg
+    // contract would otherwise be checkable only by an operator with a serve
+    // in hand — and a check nobody can run on the gate is a check that rots.
+    // This is the same seam-splitting the file already applies to
+    // `require_reachable_serve` (α's `finish_teardown` pattern) and to
+    // `assert_well_formed_findings`: drive the assertion directly with
+    // SYNTHETIC stderr, gate-resident, no serve, no network, no `uvx`.
+    //
+    // Both fail-soft LAYERS are pinned here, because they are independent:
+    //
+    //   * CONSTRUCTION — `reify-audit: jcodemunch unreachable at '<url>': …`
+    //     (`src/bin/reify-audit.rs:797`), emitted when the handshake never
+    //     completes and the whole run degrades to `NoopJCodemunchOps`.
+    //   * PER CALL — `jcodemunch <tool>: …`
+    //     (`src/jcodemunch_client.rs:1074/1117/1135`), emitted when a single
+    //     `tools/call` errors AFTER a successful handshake and that one op
+    //     returns `Vec::new()`.
+    //
+    // The second layer is the one the capstone was blind to. A per-call
+    // failure leaves the construction breadcrumb silent, the §4.3 gate has
+    // already admitted the run, the exit code is 0, and `[]` is perfectly
+    // well-formed — every assertion that existed before this module passes.
+
+    /// A healthy run's stderr: β's own `INDEX-OK` token plus one ordinary,
+    /// REAL non-breadcrumb line.
+    ///
+    /// The second line is deliberately a genuine production message that
+    /// contains the word `jcodemunch` — the suppression-enrichment read
+    /// diagnostic, `src/jcodemunch_client.rs:664` — but is NOT a per-call
+    /// failure. A check that matched the bare word rather than the
+    /// tool-named breadcrumb would reject this healthy run, and
+    /// `live_leg_accepts_a_clean_stderr` below would catch it.
+    ///
+    /// Deliberately NOT the empty string: an empty fixture would let a
+    /// substring check that is subtly too broad still look correct.
+    const HEALTHY_STDERR: &str = concat!(
+        "INDEX-OK  repo=local/corpus-eb868740  db=/tmp/.tmpJc0/local/corpus-eb868740/code_index.db",
+        "  3 sym  indexed=3 cap=2000  jc-changed-files=0\n",
+        "reify-audit: jcodemunch suppression enrichment: failed to read",
+        " /tmp/corpus/src/gone.rs: No such file or directory (os error 2)\n",
+    );
+
+    /// The FULL vacuous-pass shape: `HEALTHY_STDERR` with one fail-soft line
+    /// spliced in and NOTHING else changed.
+    ///
+    /// Every caller below pairs this with `Some(0)` and `&[]`, so each
+    /// fixture reproduces a run that is indistinguishable from success under
+    /// the four assertions that predate this module: exit 0, no
+    /// `E_JC_INDEX_` refusal marker, and a well-formed (empty) findings
+    /// array. Only the assertion under test may fire.
+    fn vacuous_pass_stderr(fail_soft_line: &str) -> String {
+        format!("{HEALTHY_STDERR}{fail_soft_line}\n")
+    }
+
+    /// THE POSITIVE CONTROL, and it is load-bearing.
+    ///
+    /// Without it, an `assert_live_leg` that panicked unconditionally would
+    /// satisfy every `#[should_panic]` below — which is precisely the
+    /// pass-shaped-whether-or-not-it-works defect (PRD §2.4) this whole task
+    /// exists to close, reproduced inside the tests meant to close it.
+    #[test]
+    fn live_leg_accepts_a_clean_stderr() {
+        assert_live_leg(
+            "PDEAD",
+            Some(0),
+            &[],
+            HEALTHY_STDERR,
+            PDEAD_CALL_BREADCRUMBS,
+        );
+    }
+
+    /// `--pattern PDEAD` reaches exactly one op, and this is its fail-soft.
+    ///
+    /// `expected` pins the new check's own phrasing AND the specific tool, so
+    /// a panic raised by the exit-code check, the `E_JC_INDEX_` check, the
+    /// construction check or `assert_well_formed_findings` cannot satisfy it
+    /// — each of those echoes the stderr, which contains the raw breadcrumb,
+    /// so the breadcrumb alone would NOT have been a safe fragment.
+    #[test]
+    #[should_panic(
+        expected = "PER-CALL fail-soft breadcrumb `jcodemunch get_dead_code_v2:` is present"
+    )]
+    fn live_leg_rejects_the_get_dead_code_per_call_fail_soft() {
+        let stderr =
+            vacuous_pass_stderr("jcodemunch get_dead_code_v2: transport error: connection closed");
+        assert_live_leg("PDEAD", Some(0), &[], &stderr, PDEAD_CALL_BREADCRUMBS);
+    }
+
+    /// The load-bearing half of the P1 pair: `get_changed_symbols` runs
+    /// unconditionally, so its breadcrumb's absence is real evidence.
+    #[test]
+    #[should_panic(
+        expected = "PER-CALL fail-soft breadcrumb `jcodemunch get_changed_symbols:` is present"
+    )]
+    fn live_leg_rejects_the_get_changed_symbols_per_call_fail_soft() {
+        let stderr = vacuous_pass_stderr(
+            "jcodemunch get_changed_symbols: transport error: connection closed",
+        );
+        assert_live_leg("P1", Some(0), &[], &stderr, P1_CALL_BREADCRUMBS);
+    }
+
+    /// The SECOND entry of `P1_CALL_BREADCRUMBS`, which also proves the check
+    /// scans the whole slice rather than stopping at the first element: this
+    /// fixture carries no `get_changed_symbols` line at all.
+    #[test]
+    #[should_panic(
+        expected = "PER-CALL fail-soft breadcrumb `jcodemunch find_references(` is present"
+    )]
+    fn live_leg_rejects_the_find_references_per_call_fail_soft() {
+        let stderr = vacuous_pass_stderr(
+            "jcodemunch find_references(some_symbol): transport error: connection closed",
+        );
+        assert_live_leg("P1", Some(0), &[], &stderr, P1_CALL_BREADCRUMBS);
+    }
+
+    /// The CONSTRUCTION layer, which has shipped since step-9 with no seam
+    /// test of its own.
+    ///
+    /// Pinned by the same mechanism as the per-call layer so neither can rot
+    /// into a check that can never fire. The fixture quotes the real
+    /// `src/bin/reify-audit.rs:797` message verbatim.
+    #[test]
+    #[should_panic(expected = "FAILED to open a jcodemunch session")]
+    fn live_leg_rejects_the_construction_fail_soft() {
+        let stderr = vacuous_pass_stderr(
+            "reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8917/mcp': \
+             transport error: connection refused — P1 degraded to zero findings; \
+             P2/P5 still run (pass --no-jcodemunch to silence)",
+        );
+        assert_live_leg("PDEAD", Some(0), &[], &stderr, PDEAD_CALL_BREADCRUMBS);
+    }
+}
+
+#[cfg(test)]
 mod serve_preflight {
     use super::*;
 
