@@ -48,11 +48,13 @@ pub(crate) mod trampoline;
 /// `input_shape` (task ζ, extended by task λ) follows the identical delegate
 /// pattern: the stdlib `.ri` `input_shape` declaration delegates to the undeclared
 /// `input_shape_apply` name, so both route here to
-/// [`input_shape::eval_input_shape`]. The dispatcher first checks for
-/// `TOTSShaper` (λ arm) and runs the real SQP loop
-/// ([`input_shape::run_tots`] → [`super::tots::solve_tots`]); only then falls
-/// through to the impulse-train arms (ZV/ZVD/EI/Cascaded, ζ). Returns the
-/// shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad
+/// [`input_shape::eval_input_shape`]. The dispatcher first checks for a
+/// TOTS-family shaper (λ arm) — `TOTSShaper` (prismatic/linear) and
+/// `RevoluteTOTSShaper` (revolute), one per joint kind, with membership decided
+/// by [`tots::is_tots_shaper_type_name`], the single source of truth — and runs
+/// the real SQP loop ([`input_shape::run_tots`] → [`tots::solve_tots`]); only
+/// then falls through to the impulse-train arms (ZV/ZVD/EI/Cascaded, ζ). Returns
+/// the shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad
 /// args / infeasible TOTS / unrecognised shaper). See
 /// [`input_shape::eval_input_shape`] for the full argument contract.
 ///
