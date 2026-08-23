@@ -10,6 +10,7 @@
 //! (D-1 dependency row).
 
 use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
+use std::collections::HashMap;
 
 // Empty/vacuous assertion patterns scanned for by H1 (gate b).
 // Each is matched as a substring of added lines within a fn body.
@@ -291,11 +292,26 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<F
     if mode == CheckMode::Sweep && meta.status != "done" {
         return vec![];
     }
+    // ONE `git check-ignore` fork per declared file for the whole task. Both
+    // `check_gitignored` (which needs the full set as its finding payload) and
+    // the pre-done landing leg (which subtracts it from the declared set) ask
+    // the same question about the same paths; computing it here makes the
+    // second consumer free. That matters on the pre-done path specifically —
+    // it runs inside fused-memory's per-project write lock under a 30 s hard
+    // timeout, so a duplicated per-file fork is paid by every task mutation
+    // for the project.
+    let gitignored: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| ctx.git.is_gitignored(p))
+        .cloned()
+        .collect();
+
     let mut findings = Vec::new();
-    if let Some(f) = check_one(ctx, meta, mode) {
+    if let Some(f) = check_one(ctx, meta, mode, &gitignored) {
         findings.push(f);
     }
-    if let Some(f) = check_gitignored(ctx, meta) {
+    if let Some(f) = check_gitignored(meta, &gitignored) {
         findings.push(f);
     }
     findings.extend(check_tests_assert_empty(ctx, meta));
@@ -430,13 +446,11 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
 /// gitignored path may legitimately appear in the diff (e.g. tree-sitter
 /// generated `parser.c` is committed at vendor sync time but ignored in
 /// normal workflow). Memory: project_steward_metadata_files_gitignore_falsepositive.md.
-fn check_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
-    let ignored: Vec<String> = meta
-        .files
-        .iter()
-        .filter(|p| ctx.git.is_gitignored(p))
-        .cloned()
-        .collect();
+///
+/// Takes the gitignored subset precomputed once per task by [`check_task`]
+/// rather than re-forking `git check-ignore` per file — see the comment at that
+/// call site.
+fn check_gitignored(meta: &TaskMetadata, ignored: &[String]) -> Option<Finding> {
     if ignored.is_empty() {
         return None;
     }
@@ -448,7 +462,9 @@ fn check_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> 
             "metadata.files contains gitignored entry — strip per \
              project_steward_metadata_files_gitignore_falsepositive.md"
                 .to_string(),
-        evidence: vec![EvidenceRef::MetadataFiles { entries: ignored }],
+        evidence: vec![EvidenceRef::MetadataFiles {
+            entries: ignored.to_vec(),
+        }],
     })
 }
 
@@ -463,23 +479,42 @@ fn all_files_tracked_on_main(ctx: &AuditContext, meta: &TaskMetadata) -> bool {
     !meta.files.is_empty() && meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p))
 }
 
-/// True iff `subject` references `task_id` as a whole number — i.e. at least
-/// one occurrence whose immediate neighbours are not ASCII digits.
+/// Verdict of the substring-collision filter for ONE `log_grep` hit.
 ///
-/// `git log --grep=<id>` is a bare substring/regex match, so `--grep=593`
-/// matches "Merge task/5937 into main". Filtering Rust-side (rather than
-/// changing the `--grep` pattern) keeps the [`crate::GitOps::log_grep`]
-/// contract unchanged, works identically for `MockGitOps`, and avoids
-/// depending on git's BRE/ERE word-boundary support.
+/// Three-valued on purpose. `git log --grep` matches the WHOLE commit message
+/// (subject + body + trailers), but [`crate::LOG_GREP_FORMAT`] (`%H%x09%s`)
+/// carries only the subject — so for a hit whose subject does not contain the
+/// id at all, the match necessarily came from text this process never sees and
+/// the collision question is simply **unanswerable** from the data at hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubjectMatch {
+    /// The subject contains the id with at least one non-ASCII-digit boundary.
+    WholeNumber,
+    /// The subject contains the id, but EVERY occurrence is digit-adjacent —
+    /// i.e. it is part of a different, longer number ("5937" for id "593").
+    DigitCollision,
+    /// The subject does not contain the id at all: git matched on the body or a
+    /// trailer, which `log_grep` does not return.
+    NotInSubject,
+}
+
+/// Classify how `subject` references `task_id`, for the substring-collision
+/// filter. See [`SubjectMatch`] for the three outcomes.
+///
+/// Filtering Rust-side (rather than changing the `--grep` pattern) keeps the
+/// [`crate::GitOps::log_grep`] contract unchanged, works identically for
+/// `MockGitOps`, and avoids depending on git's BRE/ERE word-boundary support.
 ///
 /// Only DIGIT neighbours disqualify a match, so non-numeric ids ("H1T1",
 /// "REGR1", "6345D") behave exactly as before — the criterion is "is this a
 /// different, longer number", not "is this a word boundary".
-fn subject_references_task(subject: &str, task_id: &str) -> bool {
+fn classify_subject_match(subject: &str, task_id: &str) -> SubjectMatch {
     if task_id.is_empty() {
-        return false;
+        return SubjectMatch::NotInSubject;
     }
-    subject.match_indices(task_id).any(|(pos, m)| {
+    let mut seen_any = false;
+    for (pos, m) in subject.match_indices(task_id) {
+        seen_any = true;
         let before_ok = subject[..pos]
             .chars()
             .next_back()
@@ -488,20 +523,80 @@ fn subject_references_task(subject: &str, task_id: &str) -> bool {
             .chars()
             .next()
             .is_none_or(|c| !c.is_ascii_digit());
-        before_ok && after_ok
-    })
+        if before_ok && after_ok {
+            return SubjectMatch::WholeNumber;
+        }
+    }
+    if seen_any {
+        SubjectMatch::DigitCollision
+    } else {
+        SubjectMatch::NotInSubject
+    }
+}
+
+/// True iff a `log_grep` hit should still count as task-referencing.
+///
+/// Drops ONLY the hits that are demonstrably collisions: the subject contains
+/// the id and every occurrence sits inside a longer number. A hit whose subject
+/// does not mention the id at all is KEPT — git matched it on the body or a
+/// trailer, and dropping it would silently narrow the filter from "reject
+/// digit-collisions" into "reject every body-only reference", turning a
+/// legitimate landing commit into a false High (sweep) or a wrongful refusal
+/// (pre-done gate). MEASURED on the live repo: `git log main --grep=6200`
+/// returns `1881ede9ac docs(6211): …` and `09de21ab8e Merge main into
+/// task/6211`, neither of whose subjects contains `6200`.
+///
+/// # Known limitation (deliberate)
+///
+/// The residual case — a body-only reference that is ALSO a digit collision —
+/// is not adjudicable here, because [`crate::LOG_GREP_FORMAT`] never carries
+/// the body. Such a hit is kept, exactly as it was before the collision filter
+/// existed. Closing it would mean widening `GitCommit` with the message body
+/// (a public-struct change) or pushing an ERE at the `--grep` seam; both were
+/// judged out of proportion to a rescue leg that only ever downgrades or
+/// corroborates.
+fn hit_references_task(subject: &str, task_id: &str) -> bool {
+    classify_subject_match(subject, task_id) != SubjectMatch::DigitCollision
 }
 
 /// `git log <MAIN_BASE> --grep=<task_id>`, with substring collisions removed.
 ///
-/// The single entry point for every `log_grep`-based rescue, so the two sites
+/// The single entry point for every `log_grep`-based rescue, so the sites
 /// cannot drift on what counts as a task-referencing commit.
 fn task_referencing_commits(ctx: &AuditContext, task_id: &str) -> Vec<GitCommit> {
     ctx.git
         .log_grep(MAIN_BASE, task_id)
         .into_iter()
-        .filter(|c| subject_references_task(&c.subject, task_id))
+        .filter(|c| hit_references_task(&c.subject, task_id))
         .collect()
+}
+
+/// Per-invocation memo for `git merge-base --is-ancestor <commit> <MAIN_BASE>`.
+///
+/// [`changed_paths_for_claim`] stays the single ancestry decision point, but
+/// the same SHA is otherwise re-forked: the merged-arm rescue tests
+/// `prov.commit` and then the primary git-diff leg tests it again, and a sibling
+/// SHA can repeat across legs. One `HashMap` lookup replaces a ~57 ms fork,
+/// which matters most on the pre-done path (held inside fused-memory's
+/// per-project write lock).
+///
+/// Deliberately NOT pre-seeded with `true` for `log_grep`-derived SHAs even
+/// though `git log <MAIN_BASE> --grep=…` only lists commits reachable from
+/// `MAIN_BASE`: that would move the ancestry decision out of the helper and
+/// silently change behaviour for any caller (including `MockGitOps`) whose
+/// `log_grep` answers are not real ancestors.
+#[derive(Default)]
+struct AncestryCache(HashMap<String, bool>);
+
+impl AncestryCache {
+    fn is_ancestor_of_main(&mut self, ctx: &AuditContext, commit: &str) -> bool {
+        if let Some(&known) = self.0.get(commit) {
+            return known;
+        }
+        let answer = ctx.git.is_ancestor(commit, MAIN_BASE);
+        self.0.insert(commit.to_string(), answer);
+        answer
+    }
 }
 
 /// The set of paths a claimed commit contributes, choosing the diff base by
@@ -515,8 +610,16 @@ fn task_referencing_commits(ctx: &AuditContext, task_id: &str) -> Vec<GitCommit>
 /// `main..M` returned 6 paths and all six of that task's own files were absent
 /// from the set. Post-merge the correct question is "what did this commit
 /// change", i.e. `<commit>^1..<commit>`.
-fn changed_paths_for_claim(ctx: &AuditContext, commit: &str) -> Vec<String> {
-    if ctx.git.is_ancestor(commit, MAIN_BASE) {
+///
+/// The ancestry answer goes through `ancestry` ([`AncestryCache`]) so a SHA
+/// tested by an earlier leg of the same `check_one` costs a map lookup rather
+/// than a second `git merge-base` fork.
+fn changed_paths_for_claim(
+    ctx: &AuditContext,
+    commit: &str,
+    ancestry: &mut AncestryCache,
+) -> Vec<String> {
+    if ancestry.is_ancestor_of_main(ctx, commit) {
         ctx.git.changed_paths_in_commit(commit)
     } else {
         // Pre-merge D-1 case: `<commit>` is an un-landed branch tip, so
@@ -551,14 +654,33 @@ fn changed_paths_for_claim(ctx: &AuditContext, commit: &str) -> Vec<String> {
 /// sweep finding. The gitignored aspect already has its own channel — the
 /// `P5MetadataFilesGitignored` Medium from [`check_gitignored`]. Memory:
 /// `project_steward_metadata_files_gitignore_falsepositive.md`.
-fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
+///
+/// # Refuse only on evidence actually gathered
+///
+/// Every git leg in this crate fail-safes to `false` / empty on error. In the
+/// sweep that converges on "no finding"; HERE it converges on a High that
+/// BLOCKS a state transition, so an infrastructure hiccup would be
+/// indistinguishable from a genuine phantom-done. Two guards invert that:
+/// [`main_base_resolves`] probes the repo once before any refusal, and a
+/// sibling scan truncated at [`PRE_DONE_SIBLING_SCAN_CAP`] is treated as
+/// incomplete. Either way the finding is still emitted, but as an advisory
+/// `Low` that cannot block the flip.
+///
+/// `gitignored` is the task's precomputed gitignored subset (see
+/// [`check_task`]), so this leg costs no `git check-ignore` forks of its own.
+fn check_pre_done_landing(
+    ctx: &AuditContext,
+    meta: &TaskMetadata,
+    gitignored: &[String],
+) -> Option<Finding> {
     // Nothing corroboratable → nothing to refuse. Covers both the research /
     // ops / escalation task that legitimately lands no files, and the task
     // whose declared entries are all gitignored (equally uncorroboratable).
+    // Pure in-memory `retain` against the shared set — no fork here.
     let declared: Vec<String> = meta
         .files
         .iter()
-        .filter(|p| !ctx.git.is_gitignored(p))
+        .filter(|p| !gitignored.iter().any(|g| g == *p))
         .cloned()
         .collect();
     if declared.is_empty() {
@@ -566,7 +688,9 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
     }
 
     // The healthy flip: every declared entry resolves to a tracked file or
-    // directory on main. Costs N × `git ls-tree` and no `git log` at all.
+    // directory on main. Costs |declared| × `git ls-tree` and no `git log` at
+    // all — and, on this path, nothing else: the probe and the sibling scan
+    // below run only once something is genuinely absent.
     let absent: Vec<String> = declared
         .iter()
         .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
@@ -574,6 +698,18 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
         .collect();
     if absent.is_empty() {
         return None;
+    }
+
+    // Something is absent, so we are now on the road to a refusal. Probe that
+    // git is actually usable before spending the sibling scan on it, and before
+    // reading "absent" as evidence rather than as the fail-safe default.
+    if !main_base_resolves(ctx) {
+        return Some(pre_done_refusal(
+            meta,
+            &absent,
+            &[],
+            Some("git degraded: MAIN_BASE did not resolve"),
+        ));
     }
 
     // Deletion / rename rescue. A task whose declared file was REMOVED by its
@@ -584,11 +720,14 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
     let mut still_absent = absent.clone();
     let siblings = task_referencing_commits(ctx, &meta.task_id);
     let mut contributing: Vec<&GitCommit> = Vec::new();
+    let mut ancestry = AncestryCache::default();
+    let mut truncated = false;
     for (scanned, c) in siblings.iter().enumerate() {
         if still_absent.is_empty() {
             break;
         }
         if scanned >= PRE_DONE_SIBLING_SCAN_CAP {
+            truncated = true;
             eprintln!(
                 "reify-audit: pre-done landing scan capped at {PRE_DONE_SIBLING_SCAN_CAP} \
                  commits for task {} ({} candidates); {} entries left unchecked",
@@ -598,9 +737,19 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
             );
             break;
         }
-        let covered = changed_paths_for_claim(ctx, &c.sha);
+        let covered = changed_paths_for_claim(ctx, &c.sha, &mut ancestry);
         let before = still_absent.len();
-        still_absent.retain(|p| !covered.contains(p));
+        // Prefix-aware, mirroring `path_tracked_on`'s directory handling
+        // (`git ls-tree main -- <dir>` resolves a directory entry). A declared
+        // entry naming a DIRECTORY the landing commit removed or renamed away
+        // never appears verbatim in a `--name-only` delta, which lists the
+        // individual files beneath it — matching by exact string equality alone
+        // would refuse that flip.
+        still_absent.retain(|p| {
+            !covered
+                .iter()
+                .any(|c| c == p || c.starts_with(&format!("{p}/")))
+        });
         if still_absent.len() < before {
             contributing.push(c);
         }
@@ -609,6 +758,41 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
         return None;
     }
 
+    Some(pre_done_refusal(
+        meta,
+        &still_absent,
+        &contributing,
+        truncated.then_some(
+            "incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP before exhausting candidates",
+        ),
+    ))
+}
+
+/// One-fork probe that `MAIN_BASE` resolves in this repository:
+/// `git merge-base --is-ancestor main main` is exit-0 iff `main` names a
+/// commit, and exit-128 (mapped to `false` by [`crate::GitOps::is_ancestor`]'s
+/// fail-safe) when the ref, the repo, or `git` itself is unavailable.
+///
+/// Used only on the pre-done refusal road — see the "refuse only on evidence
+/// actually gathered" section of [`check_pre_done_landing`].
+fn main_base_resolves(ctx: &AuditContext) -> bool {
+    ctx.git.is_ancestor(MAIN_BASE, MAIN_BASE)
+}
+
+/// Build the pre-done refusal finding.
+///
+/// `advisory` carries the reason the evidence is incomplete (degraded git, a
+/// truncated scan). When it is `Some`, the finding is forced to `Low` and
+/// labelled — it is emitted for operator visibility but must not block a
+/// done-flip, because the corroborating commit may simply be one we never
+/// looked at. When it is `None` the severity is the armed one, subject to the
+/// [`pre_done_refusal_severity`] break-glass.
+fn pre_done_refusal(
+    meta: &TaskMetadata,
+    still_absent: &[String],
+    contributing: &[&GitCommit],
+    advisory: Option<&str>,
+) -> Finding {
     // Cite the commits we DID inspect alongside the absent set, so an operator
     // reading the refusal payload can inspect immediately rather than
     // re-deriving the candidate list by hand.
@@ -620,11 +804,26 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
         })
         .collect();
     evidence.push(EvidenceRef::MetadataFiles {
-        entries: still_absent.clone(),
+        entries: still_absent.to_vec(),
     });
 
-    let severity = pre_done_refusal_severity();
-    Some(Finding {
+    // Mark a downgraded refusal so an operator reading a Low in a log can tell
+    // it apart from a naturally-Low rescue, and can tell the two downgrade
+    // reasons (break-glass vs incomplete evidence) apart from each other.
+    let (severity, prefix) = match advisory {
+        Some(reason) => (Severity::Low, format!("[advisory — {reason}] ")),
+        None => {
+            let armed = pre_done_refusal_severity();
+            let prefix = if armed == Severity::High {
+                String::new()
+            } else {
+                "[warn-only] ".to_string()
+            };
+            (armed, prefix)
+        }
+    };
+
+    Finding {
         pattern: Pattern::P5PhantomDone,
         severity,
         task_id: meta.task_id.clone(),
@@ -632,15 +831,13 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
             "{}pre-done gate: {} declared metadata.files entr{} neither tracked on main \
              nor covered by a task-referencing commit's own delta — refusing the \
              done-flip for task {}",
-            // Mark a downgraded refusal so an operator reading a Low in a log
-            // can tell it apart from a naturally-Low rescue.
-            if severity == Severity::High { "" } else { "[warn-only] " },
+            prefix,
             still_absent.len(),
             if still_absent.len() == 1 { "y is" } else { "ies are" },
             meta.task_id
         ),
         evidence,
-    })
+    }
 }
 
 /// How many task-referencing commits the pre-done landing scan will inspect.
@@ -680,7 +877,18 @@ fn pre_done_refusal_severity() -> Severity {
 
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
 /// phantom-done, `None` if the provenance corroborates cleanly.
-fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option<Finding> {
+///
+/// `gitignored` is the task's gitignored subset, computed once by
+/// [`check_task`]; only the [`CheckMode::PreDone`] arm consumes it.
+fn check_one(
+    ctx: &AuditContext,
+    meta: &TaskMetadata,
+    mode: CheckMode,
+    gitignored: &[String],
+) -> Option<Finding> {
+    // One ancestry answer per SHA for the whole invocation: the merged-arm
+    // rescue and the primary git-diff leg below both test `prov.commit`.
+    let mut ancestry = AncestryCache::default();
     let Some(prov) = meta.done_provenance.as_ref() else {
         return match mode {
             // Sweep: unchanged (guard A1). A provenance-less `done` row is the
@@ -694,7 +902,7 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
             // (no env injection, no stdin), so the subprocess receives no task
             // state beyond the id. Landing must therefore be corroborated from
             // `task_id` + `metadata.files` alone.
-            CheckMode::PreDone => check_pre_done_landing(ctx, meta),
+            CheckMode::PreDone => check_pre_done_landing(ctx, meta, gitignored),
         };
     };
     let kind = prov.kind.as_deref().unwrap_or("");
@@ -724,7 +932,7 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
                 // signal here; we stay Low/inspectable rather than
                 // suppressing entirely.
                 if let Some(commit) = prov.commit.as_deref()
-                    && ctx.git.is_ancestor(commit, MAIN_BASE)
+                    && ancestry.is_ancestor_of_main(ctx, commit)
                 {
                     return Some(Finding {
                         pattern: Pattern::P5PhantomDone,
@@ -894,7 +1102,7 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
     // on main rather than merged through), the primary check yields
     // "everything missing" and the sibling-rescue path takes over.
     let primary_covered = match prov.commit.as_deref() {
-        Some(commit) => changed_paths_for_claim(ctx, commit),
+        Some(commit) => changed_paths_for_claim(ctx, commit, &mut ancestry),
         None => Vec::new(),
     };
     let missing = files_missing_from(&meta.files, &primary_covered);
@@ -950,7 +1158,7 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
             // directly: log_grep(main, …) only ever returns ancestors of main, but
             // stating that as an unwritten invariant at this call site would make
             // the code silently wrong the day a caller passes a non-ancestor.
-            let diff = changed_paths_for_claim(ctx, &c.sha);
+            let diff = changed_paths_for_claim(ctx, &c.sha, &mut ancestry);
             // Only cite siblings that contribute to closing the missing set.
             if diff.iter().any(|p| missing.contains(p)) {
                 contributing.push(c);
