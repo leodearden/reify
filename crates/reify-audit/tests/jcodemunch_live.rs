@@ -113,31 +113,38 @@ fn write_empty_runs_db(dir: &std::path::Path) -> std::path::PathBuf {
     path
 }
 
-/// Write a `tasks.json` containing ONE synthetic done task whose
-/// `done_provenance.commit` is `commit` and `done_at` is set to
-/// `done_at_epoch` (Unix seconds, encoded as a JSON number).
+/// Write a `tasks.json` holding ONE synthetic done task, pointed at `commit`
+/// with `files: [touched_file]`. Returns the path.
 ///
-/// Adapts cli.rs's `task_fixture` + `write_tasks_json`, but MUST set
-/// `done_at` (cli.rs leaves it `null`, which P1 skips) and
-/// `done_provenance.commit` to a real reify commit.
+/// Adapts cli.rs's `task_fixture` + `write_tasks_json`, with one mandatory
+/// difference: `done_at` MUST be set. cli.rs leaves it `null`, and P1 SKIPS a
+/// task whose `done_at` is null — a fixture that inherited that would make the
+/// P1 leg vacuous no matter what the seam did.
 ///
-/// The task has `files: ["crates/reify-audit/src/lib.rs"]` (a real file in
-/// the reify corpus), `status: "done"`, `done_provenance.kind: "merged"`.
+/// `commit` and `touched_file` are parameters, not constants. They used to be
+/// a pinned reify SHA (`ff1cb80c31`) and a hardcoded reify path, carrying the
+/// premise "this commit's diff contains >=1 still-orphaned public symbol" —
+/// a premise nobody validated, which rots as the corpus churns, and whose only
+/// purpose was to prop up a forbidden count assertion. The capstone now passes
+/// its THROWAWAY corpus's own HEAD and the file it genuinely modified in
+/// `prev..head`, so the range P1 derives (`commit^1..commit`) is real by
+/// construction and cannot rot.
 fn write_synthetic_done_task(
     dir: &std::path::Path,
     commit: &str,
     done_at_epoch: u64,
+    touched_file: &str,
 ) -> std::path::PathBuf {
     let task = serde_json::json!([{
-        "task_id": "synthetic-smoke-p1",
+        "task_id": "synthetic-capstone-p1",
         "status": "done",
-        "files": ["crates/reify-audit/src/lib.rs"],
+        "files": [touched_file],
         "done_provenance": {
             "kind": "merged",
             "commit": commit,
             "note": null
         },
-        "title": "Synthetic done task for L-SMOKE P1 leg",
+        "title": "Synthetic done task for the P1 capstone leg",
         "prd": null,
         "consumer_ref": null,
         "audit_foundation": null,
@@ -641,26 +648,8 @@ fn require_reachable_serve(url: &str) {
 }
 
 // -----------------------------------------------------------------------
-// Pinned live constants
+// NOTE — there is deliberately NO `JCODEMUNCH_REPO` constant here
 // -----------------------------------------------------------------------
-//
-// Commit used for the P1 leg.  The commit is a real reify commit whose diff
-// touched Rust source; the range PINNED_P1_COMMIT^1..PINNED_P1_COMMIT feeds
-// jcodemunch get_changed_symbols and is expected to contain ≥1 still-orphaned
-// public symbol.
-//
-// Resolved on-demand against the running jcodemunch serve.  Update this SHA
-// if the commit's diff no longer contains any orphan symbol after corpus churn
-// (pick a later commit that introduced new public Rust symbols):
-//
-//   git log --oneline --no-merges HEAD~20..HEAD -- crates/
-//
-// ff1cb80c31 = merge of task/4097 (L-PDEAD) which added pdead_dead_code.rs,
-// a new Rust source file with new public symbols.
-const PINNED_P1_COMMIT: &str = "ff1cb80c31";
-const DEFAULT_SERVE_URL: &str = "http://127.0.0.1:8901/mcp";
-
-// NOTE — there is deliberately NO `JCODEMUNCH_REPO` constant here any more.
 //
 // This capstone used to pin `leodearden/reify` and pass it as
 // `--jcodemunch-repo` on both legs. That identity is jcodemunch's *git*
@@ -675,145 +664,212 @@ const DEFAULT_SERVE_URL: &str = "http://127.0.0.1:8901/mcp";
 // assert against.
 //
 // The identity the audit is *supposed* to probe is the §4.2 per-path one the
-// binary now derives from `--project-root` (for `/home/leo/src/reify` that is
-// `local/reify-4ae45bbd`, the index jcodemunch actually populates under the
-// `JCODEMUNCH_GIT_ROOT_IDENTITY=0` lever reify forces everywhere). Omitting
-// the flag is what selects it, so re-introducing a pinned constant here would
-// re-break the capstone. If a future leg genuinely needs an explicit id, derive
-// it with `reify_audit::jcodemunch_index::resolve_repo_id` rather than
-// spelling one out.
+// binary derives from `--project-root` — which for this capstone is the
+// THROWAWAY corpus `build_corpus_repo` mints, so the id is whatever
+// `resolve_repo_id` derives for that temp path. Omitting the flag is what
+// selects it, so re-introducing a pinned constant here would re-break the
+// capstone. If a future leg genuinely needs an explicit id, derive it with
+// `reify_audit::jcodemunch_index::resolve_repo_id` rather than spelling one
+// out.
+//
+// There is likewise no `PINNED_P1_COMMIT` any more. The P1 leg's range comes
+// from the throwaway corpus's own `head`/`prev`, so it cannot rot as the
+// reify corpus churns — and it no longer encodes the "this commit contains
+// >=1 orphan symbol" premise the old constant's comment carried.
 
 // -----------------------------------------------------------------------
-// Capstone live integration test (#[ignore]-gated; requires serve up)
+// The capstone (#[ignore]-gated; requires a live serve — see the module doc)
 // -----------------------------------------------------------------------
 
-/// End-to-end smoke: real `reify-audit` binary → live jcodemunch serve.
+/// The real `reify-audit` binary completes a REAL MCP session against a
+/// freshly-indexed, NON-EMPTY corpus, on both detector legs.
 ///
-/// Asserts ≥1 `PDeadCode` finding (P-DEAD leg, repo-wide) and ≥1
-/// `P1ProducerOrphan` finding (P1 leg, over a pinned real reify commit).
+/// # What is asserted, per leg
 ///
-/// **Graceful skip**: if the serve is not reachable the test prints a note to
-/// stderr and returns without failing (mirrors `baseline_report_freshness`).
+/// 1. `exit == Some(0)`.
+/// 2. stderr carries no `E_JC_INDEX_` marker — the §4.3 gate ADMITTED the run
+///    rather than refusing it.
+/// 3. stderr carries no `jcodemunch unreachable at` breadcrumb — the client
+///    completed a real session instead of degrading to `NoopJCodemunchOps`.
+///    This is the single assertion that would have caught PRD §2.3: the
+///    degraded path still exits 0 and still serializes a well-formed EMPTY
+///    array, which is what let a broken handshake survive ten weeks.
+/// 4. every element of the findings array is well-formed.
 ///
-/// Run with the serve up:
-/// ```sh
-/// cargo test -p reify-audit --test jcodemunch_live -- --ignored
-/// ```
+/// Plus, once, before either leg: β printed its own `INDEX-OK` token, and
+/// `count_symbols(index_dir, repo_id) > 0` read INDEPENDENTLY against the
+/// very index the binary is about to be pointed at. That last one is what
+/// makes "runs to completion over a non-empty symbol set" (B6) unsatisfiable
+/// by an empty findings array — it reads the index, not the detector output.
 ///
-/// **Second prerequisite, beyond a reachable serve.** No `--jcodemunch-repo`
-/// is passed, so the binary derives the §4.2 per-path identity from
-/// `--project-root` — which this test resolves from `CARGO_MANIFEST_DIR`, i.e.
-/// *the checkout the test is compiled in*. That checkout must itself carry a
-/// fresh, non-empty jcodemunch index or the §4.3 gate refuses with exit 125
-/// before any detector runs. Running the capstone from a warm lane rather than
-/// the primary checkout is therefore expected to refuse: lanes are re-seeded
-/// per task and nothing indexes them. That is the gate working, not a
-/// regression — run it from the indexed checkout.
-#[ignore = "live integration: requires jcodemunch-serve up on default or $JCODEMUNCH_URL; run via --ignored"]
+/// # What is NOT asserted
+///
+/// Any finding COUNT, on either leg. See `assert_well_formed_findings`.
+///
+/// # There is no skip path
+///
+/// Every failure below is a panic; the body contains no `return`. Missing
+/// configuration is a hard failure naming the sanctioned one-liner, not a
+/// silent success (B8).
+#[ignore = "live capstone: needs a real jcodemunch serve + index; run it through scripts/with-jcodemunch-serve.sh with --ignored (see the module doc)"]
 #[test]
-fn live_audit_produces_p1_and_pdead_findings() {
-    let serve_url = std::env::var("JCODEMUNCH_URL")
-        .unwrap_or_else(|_| DEFAULT_SERVE_URL.to_string());
+fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpus() {
+    // ---------------------------------------------------------------
+    // 1. Configuration. Absent config is FATAL, never a skip.
+    // ---------------------------------------------------------------
+    let serve_url = std::env::var("JCODEMUNCH_URL").unwrap_or_else(|_| {
+        panic!(
+            "JCODEMUNCH_URL is unset. This capstone does not guess a default and \
+             does not skip — run it through δ's lifecycle wrapper, which spawns a \
+             serve, readiness-polls it, exports JCODEMUNCH_URL and tears down on \
+             every exit path:\n\n{RUN_COMMAND}"
+        )
+    });
+    let index_dir = std::env::var("CODE_INDEX_PATH").unwrap_or_else(|_| {
+        panic!(
+            "CODE_INDEX_PATH is unset. The serve reads its OWN index directory, so \
+             pointing this capstone at a throwaway corpus means telling BOTH halves \
+             where that directory lives — the serve (via the environment it was \
+             spawned in) and this test. Leaving it unset would silently target \
+             host-global ~/.code-index.\n\n{RUN_COMMAND}"
+        )
+    });
+    let index_dir = std::path::Path::new(&index_dir);
 
-    // Preflight: an unreachable or non-jcodemunch endpoint is FATAL, never a
-    // silent early return (B8). The last caller of the deleted bare-TCP probe.
+    // ---------------------------------------------------------------
+    // 2. B8: the endpoint must PROVE it is a jcodemunch serve.
+    // ---------------------------------------------------------------
     require_reachable_serve(&serve_url);
 
-    // Resolve repo root from CARGO_MANIFEST_DIR (crates/reify-audit → two parents).
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let project_root = std::path::Path::new(manifest_dir)
-        .parent()
-        .expect("crates/reify-audit has a parent")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
-        .to_str()
-        .expect("project root is valid UTF-8")
-        .to_string();
-
+    // ---------------------------------------------------------------
+    // 3-5. A real corpus, really indexed, with a really non-empty symbol set.
+    // ---------------------------------------------------------------
     let tmp = tempfile::tempdir().expect("create tempdir");
+    let corpus = build_corpus_repo(tmp.path());
+    let index_output = run_index_pass(&corpus.root, index_dir);
+
+    let symbols = reify_audit::jcodemunch_index::count_symbols(index_dir, &corpus.repo_id);
+    assert!(
+        symbols > 0,
+        "the index at {}/{} holds {symbols} symbols. β reported success, so this \
+         means the binary and β disagree about the identity or the directory — \
+         which is the failure the §4.3 gate exists to make loud. β's output:\n{index_output}",
+        index_dir.display(),
+        corpus.repo_id
+    );
+
+    let corpus_root = corpus.root.to_str().expect("corpus root is valid UTF-8");
     let dir = tmp.path();
     let runs_db = write_empty_runs_db(dir);
+    let runs_db = runs_db.to_str().expect("runs.db path is valid UTF-8");
 
-    // -------------------------------------------------------------------
-    // P-DEAD leg: --pattern PDEAD (repo-wide; serve-only; no tasks needed)
-    // -------------------------------------------------------------------
+    // ---------------------------------------------------------------
+    // 6. PDEAD leg — repo-wide; serve-only; no tasks needed.
+    // ---------------------------------------------------------------
     let empty_tasks = write_empty_tasks_file(dir);
     let (pdead_code, pdead_findings, pdead_stderr) = run_reify_audit(&[
         "--pattern",
         "PDEAD",
         "--jcodemunch-url",
         &serve_url,
-        "--tasks-file",
-        empty_tasks.to_str().unwrap(),
-        "--runs-db",
-        runs_db.to_str().unwrap(),
+        "--jcodemunch-index-dir",
+        index_dir.to_str().expect("index dir is valid UTF-8"),
         "--project-root",
-        &project_root,
+        corpus_root,
+        "--tasks-file",
+        empty_tasks.to_str().expect("tasks.json path is valid UTF-8"),
+        "--runs-db",
+        runs_db,
     ]);
-    assert_ne!(
-        pdead_code,
-        Some(125),
-        "PDEAD leg: exit 125 = infra/connection error OR a §4.3 index refusal.\n\
-         If stderr names E_JC_INDEX_EMPTY or E_JC_INDEX_STALE, the serve is fine \
-         and the index for the derived per-path identity of {project_root} is \
-         missing/empty/stale — reindex that checkout (jcodemunch must be invoked \
-         under JCODEMUNCH_GIT_ROOT_IDENTITY=0) rather than editing this test.\n\
-         stderr:\n{pdead_stderr}\n\
-         all findings: {:#}",
-        serde_json::Value::Array(pdead_findings.clone())
-    );
-    // The per-pattern count assertion that used to stand here is GONE, along
-    // with the `is_pdead_finding` predicate that existed only to serve it: a
-    // ">=1 PDeadCode finding" premise was never validated (PRD §2.5) and is
-    // the mirror image of §2.4's vacuity. The count is reported, never asserted.
-    println!("PDEAD leg: {} finding(s)", pdead_findings.len());
+    assert_live_leg("PDEAD", pdead_code, &pdead_findings, &pdead_stderr);
 
-    // -------------------------------------------------------------------
-    // P1 leg: --pattern P1 over ONE pinned done-task commit
+    // ---------------------------------------------------------------
+    // 7. P1 leg — one synthetic done task pinned to the corpus's own HEAD.
     //
-    // The synthetic --tasks-file contains a single done task with
-    // done_at set (so P1 does not skip it) and done_provenance.commit
-    // pointing at PINNED_P1_COMMIT. P1 maps this to the range
-    // PINNED_P1_COMMIT^1..PINNED_P1_COMMIT via get_changed_symbols.
-    // -------------------------------------------------------------------
-    // done_at_epoch ≈ 2025-05-23 (any non-zero epoch is fine; P1 only
-    // checks that done_at is Some, not the exact value).
-    let synthetic_tasks = write_synthetic_done_task(dir, PINNED_P1_COMMIT, 1_748_000_000);
+    // P1 maps `done_provenance.commit` to `commit^1..commit` and feeds it to
+    // get_changed_symbols, so the range is `corpus.prev..corpus.head` — real
+    // commits in a real repo the serve has really indexed. `done_at` must be
+    // non-zero: P1 skips a task whose done_at is null.
+    // ---------------------------------------------------------------
+    let synthetic_tasks =
+        write_synthetic_done_task(dir, &corpus.head, 1_748_000_000, &corpus.touched_file);
     let (p1_code, p1_findings, p1_stderr) = run_reify_audit(&[
         "--pattern",
         "P1",
         "--jcodemunch-url",
         &serve_url,
-        "--tasks-file",
-        synthetic_tasks.to_str().unwrap(),
-        "--runs-db",
-        runs_db.to_str().unwrap(),
+        "--jcodemunch-index-dir",
+        index_dir.to_str().expect("index dir is valid UTF-8"),
         "--project-root",
-        &project_root,
+        corpus_root,
+        "--tasks-file",
+        synthetic_tasks.to_str().expect("tasks.json path is valid UTF-8"),
+        "--runs-db",
+        runs_db,
     ]);
-    assert_ne!(
-        p1_code,
-        Some(125),
-        "P1 leg: exit 125 = infra/connection error OR a §4.3 index refusal.\n\
-         If stderr names E_JC_INDEX_EMPTY or E_JC_INDEX_STALE, the serve is fine \
-         and the index for the derived per-path identity of {project_root} is \
-         missing/empty/stale — reindex that checkout (jcodemunch must be invoked \
-         under JCODEMUNCH_GIT_ROOT_IDENTITY=0) rather than editing this test.\n\
-         stderr:\n{p1_stderr}\n\
-         all findings: {:#}",
-        serde_json::Value::Array(p1_findings.clone())
+    assert_live_leg("P1", p1_code, &p1_findings, &p1_stderr);
+
+    // ---------------------------------------------------------------
+    // 8. Operator-facing acceptance evidence. PRINTED, never asserted.
+    // ---------------------------------------------------------------
+    for line in index_output.lines().filter(|l| l.contains("INDEX-OK")) {
+        println!("capstone: β {}", line.trim());
+    }
+    println!(
+        "capstone: repo_id={} symbols={symbols} range={}..{}",
+        corpus.repo_id, corpus.prev, corpus.head
     );
-    // Same removal as the PDEAD leg above: no count premise, count reported only.
-    println!("P1 leg: {} finding(s)", p1_findings.len());
+    println!("capstone: PDEAD leg exit={pdead_code:?} findings={}", pdead_findings.len());
+    println!("capstone: P1    leg exit={p1_code:?} findings={}", p1_findings.len());
 }
 
-// -----------------------------------------------------------------------
-// Finding-shape predicate unit tests (hermetic; always run — no serve needed)
-// -----------------------------------------------------------------------
+/// The sanctioned way to run the capstone, quoted verbatim into every
+/// diagnostic that needs it so an operator never has to reconstruct it.
+const RUN_COMMAND: &str = "  CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcodemunch-serve.sh --port 8917 -- \\\n\
+     \x20   cargo test -p reify-audit --test jcodemunch_live -- --ignored --nocapture";
 
-// -----------------------------------------------------------------------
-// Serve-availability preflight unit test (hermetic; always run — no serve needed)
-// -----------------------------------------------------------------------
+/// The four-part per-leg assertion, in the order that makes a failure
+/// self-diagnosing.
+///
+/// Order matters. The exit code is checked first because a non-zero exit
+/// subsumes everything after it; the `E_JC_INDEX_` check comes next so a §4.3
+/// REFUSAL is never misread as a seam failure; the fail-soft breadcrumb comes
+/// third because it is the one that distinguishes "a real session happened"
+/// from "the run degraded and emitted a well-formed empty array"; and only
+/// then is the payload's shape judged.
+///
+/// Shared by both legs rather than written twice, so the two cannot drift into
+/// asserting different things about the same contract.
+fn assert_live_leg(
+    leg: &str,
+    code: Option<i32>,
+    findings: &[serde_json::Value],
+    stderr: &str,
+) {
+    assert_eq!(
+        code,
+        Some(0),
+        "{leg} leg: expected exit 0, got {code:?}. Exit 125 is either an infra/\
+         connection failure or a §4.3 index refusal — the stderr below says \
+         which (a refusal names an E_JC_INDEX_* marker).\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("E_JC_INDEX_"),
+        "{leg} leg: the §4.3 freshness gate REFUSED this run instead of \
+         admitting it, so no detector ever executed. β had just reported \
+         INDEX-OK for this corpus, so the gate and β disagree.\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("jcodemunch unreachable at"),
+        "{leg} leg: the binary FAILED to open a jcodemunch session and \
+         fail-softed to NoopJCodemunchOps. It still exited 0 and still emitted \
+         a well-formed empty findings array — which is exactly how PRD §2.3's \
+         broken handshake survived ten weeks. The preflight said the endpoint \
+         is a real jcodemunch-mcp serve, so the client is the broken half.\
+         \nstderr:\n{stderr}"
+    );
+    assert_well_formed_findings(findings, leg);
+}
 
 #[cfg(test)]
 mod serve_preflight {
