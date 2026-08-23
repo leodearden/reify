@@ -890,7 +890,13 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         "--runs-db",
         runs_db,
     ]);
-    assert_live_leg("PDEAD", pdead_code, &pdead_findings, &pdead_stderr);
+    assert_live_leg(
+        "PDEAD",
+        pdead_code,
+        &pdead_findings,
+        &pdead_stderr,
+        PDEAD_CALL_BREADCRUMBS,
+    );
 
     // ---------------------------------------------------------------
     // 7. P1 leg — one synthetic done task pinned to the corpus's own HEAD.
@@ -918,7 +924,13 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         "--runs-db",
         runs_db,
     ]);
-    assert_live_leg("P1", p1_code, &p1_findings, &p1_stderr);
+    assert_live_leg(
+        "P1",
+        p1_code,
+        &p1_findings,
+        &p1_stderr,
+        P1_CALL_BREADCRUMBS,
+    );
 
     // ---------------------------------------------------------------
     // 8. Operator-facing acceptance evidence. PRINTED, never asserted.
@@ -945,6 +957,38 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
 const RUN_COMMAND: &str = "  CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcodemunch-serve.sh --port 8917 -- \\\n\
      \x20   cargo test -p reify-audit --test jcodemunch_live -- --ignored --nocapture";
 
+/// The per-call fail-soft breadcrumbs `--pattern PDEAD` can emit.
+///
+/// Copied from `src/jcodemunch_client.rs:1135`, the `Err` arm of
+/// `RealJCodemunchOps::get_dead_code`. `--pattern PDEAD` reaches exactly one
+/// jcodemunch op (`src/pdead_dead_code.rs:35`), which is why this slice has
+/// exactly one entry.
+const PDEAD_CALL_BREADCRUMBS: &[&str] = &["jcodemunch get_dead_code_v2:"];
+
+/// The per-call fail-soft breadcrumbs `--pattern P1` can emit.
+///
+/// Copied from `src/jcodemunch_client.rs:1074` and `:1117`, the `Err` arms of
+/// `RealJCodemunchOps::get_changed_symbols` and `::find_references`.
+/// `--pattern P1` reaches both (`src/p1_producer_orphan.rs:131` and `:146`).
+///
+/// # `find_references` is CONDITIONALLY reachable — its absence proves nothing
+///
+/// `:146` sits INSIDE the `for symbol in ... get_changed_symbols(...)` loop
+/// opened at `:131`, so it runs once per returned symbol. If that first call
+/// legitimately returns zero symbols the second breadcrumb is unreachable and
+/// its absence carries no information at all. `get_changed_symbols` has no
+/// such precondition: it runs on every P1 leg, so it is the load-bearing half
+/// of the pair and the only one whose silence is evidence.
+///
+/// Deliberately NOT listed: `get_untested_symbols` / `get_layer_violations`
+/// (`:1152`, `:1168`). Neither op is reachable from PDEAD or P1, so asserting
+/// their breadcrumbs would be decorative — a check that can never fire reads
+/// like coverage while providing none.
+const P1_CALL_BREADCRUMBS: &[&str] = &[
+    "jcodemunch get_changed_symbols:",
+    "jcodemunch find_references(",
+];
+
 /// The four-part per-leg assertion, in the order that makes a failure
 /// self-diagnosing.
 ///
@@ -957,7 +1001,13 @@ const RUN_COMMAND: &str = "  CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcod
 ///
 /// Shared by both legs rather than written twice, so the two cannot drift into
 /// asserting different things about the same contract.
-fn assert_live_leg(leg: &str, code: Option<i32>, findings: &[serde_json::Value], stderr: &str) {
+fn assert_live_leg(
+    leg: &str,
+    code: Option<i32>,
+    findings: &[serde_json::Value],
+    stderr: &str,
+    call_breadcrumbs: &[&str],
+) {
     assert_eq!(
         code,
         Some(0),
@@ -980,6 +1030,27 @@ fn assert_live_leg(leg: &str, code: Option<i32>, findings: &[serde_json::Value],
          is a real jcodemunch-mcp serve, so the client is the broken half.\
          \nstderr:\n{stderr}"
     );
+    for breadcrumb in call_breadcrumbs {
+        assert!(
+            !stderr.contains(breadcrumb),
+            "{leg} leg: PER-CALL fail-soft breadcrumb `{breadcrumb}` is \
+             present in stderr, so this leg's findings array is \
+             EMPTY-BY-FAILURE, not empty-by-fact.\n\n\
+             This is the SECOND, independent fail-soft layer, and every other \
+             assertion here is silent on it: the session DID open (so no \
+             `jcodemunch unreachable at`), the §4.3 gate DID admit the run (so \
+             no `E_JC_INDEX_` marker), the binary DID exit 0, and the array IS \
+             well-formed. `count_symbols(...) > 0` does not close it either — \
+             that reads the index DB directly and says nothing about whether \
+             the serve answered this `tools/call`.\n\n\
+             Likely causes, in the order worth checking: the serve does not \
+             know the throwaway repo id `local/corpus-<hash>` this capstone \
+             just minted (it was indexed after the serve came up); the tool \
+             name or its argument schema drifted upstream in jcodemunch-mcp; \
+             or the MCP session was dropped mid-run.\n\
+             stderr:\n{stderr}"
+        );
+    }
     assert_well_formed_findings(findings, leg);
 }
 
