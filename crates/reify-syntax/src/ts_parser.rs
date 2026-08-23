@@ -3,7 +3,7 @@
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
@@ -160,6 +160,18 @@ struct Lowering<'a> {
     /// `collect_import_bindings` for why the entity-binding kinds do not.
     /// Read by `lower_namespaced_call`'s qualifier gate.
     import_bindings: HashSet<String>,
+    /// The names this file's imports bind NON-namespace-wise, each mapped to the
+    /// `ImportKind` that bound it (task 5495 μ). Populated by the same
+    /// `collect_import_bindings` pass, from exactly the three kinds
+    /// `import_bindings` deliberately skips — `Entity`, `EntityAliased` and
+    /// `Destructured`.
+    ///
+    /// This map is what lets `lower_namespaced_call` tell "this name is bound,
+    /// but as an entity" from "this name is not bound at all". Both are
+    /// rejections, but only the latter is fixed by declaring an import: telling
+    /// an author who wrote `import a.b.Widget` to "declare one as `import
+    /// <path>.Widget`" hands back the line they already wrote.
+    entity_bindings: HashMap<String, ImportKind>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
     /// Structured module path from a top-of-file `module a.b.c` declaration.
@@ -192,6 +204,7 @@ impl<'a> Lowering<'a> {
             errors: RefCell::new(Vec::new()),
             known_enums,
             import_bindings: HashSet::new(),
+            entity_bindings: HashMap::new(),
             module_pragmas: Vec::new(),
             declared_module_path: None,
         }
@@ -546,6 +559,16 @@ impl<'a> Lowering<'a> {
     /// does not have, and a hard parse error before μ — so binding those kinds
     /// would reopen a narrower version of the very hole this gate closes.
     ///
+    /// Those three kinds are still recorded, in `entity_bindings`, mapped to the
+    /// `ImportKind` that bound them. They must not qualify a call, but they are
+    /// not UNBOUND either, and the two cases need different remedies: only the
+    /// wholly-unbound one is fixed by declaring an import. Both maps are filled
+    /// from the same `lower_import` call, so a name can never be classified one
+    /// way here and another way by the import system.
+    ///
+    /// The name recorded is the one the AUTHOR WRITES, which for `EntityAliased`
+    /// is the alias (`import a.b.Widget as W` is used as `W`), not the entity.
+    ///
     /// The classification is obtained by CALLING `lower_import` and matching the
     /// returned `ImportKind`, rather than re-deriving Module-vs-Entity from the
     /// CST: the uppercase-final-segment heuristic then has exactly one
@@ -560,14 +583,49 @@ impl<'a> Lowering<'a> {
         let Some(import) = self.lower_import(node) else {
             return;
         };
-        let binding = match &import.kind {
+        let namespace_binding = match &import.kind {
             ImportKind::Aliased { alias } => Some(alias.clone()),
             ImportKind::Module => import.path.rsplit('.').next().map(str::to_string),
             ImportKind::Entity(_) | ImportKind::EntityAliased { .. } => None,
             ImportKind::Destructured(_) => None,
         };
-        if let Some(binding) = binding.filter(|b| !b.is_empty()) {
+        if let Some(binding) = namespace_binding.filter(|b| !b.is_empty()) {
             self.import_bindings.insert(binding);
+            return;
+        }
+
+        let entity_names: Vec<String> = match &import.kind {
+            ImportKind::Entity(entity) => vec![entity.clone()],
+            ImportKind::EntityAliased { alias, .. } => vec![alias.clone()],
+            ImportKind::Destructured(names) => names.clone(),
+            ImportKind::Aliased { .. } | ImportKind::Module => Vec::new(),
+        };
+        for name in entity_names.into_iter().filter(|n| !n.is_empty()) {
+            self.entity_bindings.insert(name, import.kind.clone());
+        }
+    }
+
+    /// How a diagnostic should describe the NON-namespace binding an import made
+    /// for a name, per `ImportKind` (task 5495 μ).
+    ///
+    /// Kept per-kind rather than a flat "an entity" so the message reflects what
+    /// the author actually wrote — an `import a.b.Widget as W` reader needs to
+    /// be told `W` is their own alias, not hunt for a `W` in the module.
+    ///
+    /// Total over all five kinds rather than `unreachable!` on the two
+    /// namespace-binding ones: `collect_import_bindings` never records those
+    /// here, but a diagnostic path is the last place that should be able to
+    /// panic if that ever changes.
+    fn entity_binding_note(kind: &ImportKind) -> String {
+        match kind {
+            // The qualifier IS the entity name here, so naming it again would
+            // only repeat the word the message already quoted.
+            ImportKind::Entity(_) => "an entity name".to_string(),
+            ImportKind::EntityAliased { entity, .. } => {
+                format!("an alias for the entity name `{entity}`")
+            }
+            ImportKind::Destructured(_) => "an entity name destructured from it".to_string(),
+            ImportKind::Aliased { .. } | ImportKind::Module => "an entity name".to_string(),
         }
     }
 
@@ -4498,18 +4556,31 @@ impl<'a> Lowering<'a> {
 
         let qualifier = self.node_text(object);
         if !self.import_bindings.contains(qualifier) {
-            self.push_error(
-                format!(
+            let callee_text = self.node_text(callee);
+            let message = match self.entity_bindings.get(qualifier) {
+                // Bound — but as an ENTITY name, so "declare an import" is not
+                // the remedy: one IS declared. Handing `import a.b.Widget` back
+                // the advice "declare one as `import <path>.Widget`" is worse
+                // than silence, because it is the line already in the file.
+                Some(kind) => format!(
+                    "qualifier `{qualifier}` in `{callee_text}(...)` is not a module \
+                     namespace: an import in this file binds `{qualifier}`, but as \
+                     {binding_note}, and the qualifier of a qualified call must be a \
+                     module namespace. Reify has no method-call syntax, so this cannot \
+                     be a call on the entity `{qualifier}`",
+                    binding_note = Self::entity_binding_note(kind),
+                ),
+                // Not bound at all — today's message, verbatim.
+                None => format!(
                     "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
                      of a qualified call must be a module namespace bound by an import, but \
                      no import in this file binds `{qualifier}` — declare one as \
                      `import <path> as {qualifier}` or `import <path>.{qualifier}`. Reify has \
                      no method-call syntax, so this cannot be a call on a value named \
-                     `{qualifier}`",
-                    callee_text = self.node_text(callee),
+                     `{qualifier}`"
                 ),
-                self.span(callee),
-            );
+            };
+            self.push_error(message, self.span(callee));
             return None;
         }
 
