@@ -172,17 +172,37 @@ pub structure IdlerPulley {
     constraint brg_od > brg_bore
 }
 
-/// Drive capstan (copied verbatim from dev_capstan.ri — single-file, no
-/// cross-file import in v0.1): dual-anchor winch drum, axis = local +Z, centred.
-/// Both ends of each belt loop anchor to it; rotation reels one end in / pays the
-/// other out. Carries BOTH windings of the belt's ±z moment pair (axially
-/// adjacent on the one drum). Smooth core at root-Ø + two retaining flanges +
-/// axial shaft bore. Groove helix not modelled until #5342 (helix wires
-/// unsweepable) lands — `lead` is the (clearance) pitch.
+/// Drive capstan (copied from dev_capstan.ri — single-file, no cross-file
+/// import in v0.1; the sketch's blank_volume/body_volume acceptance cells are
+/// deliberately omitted here — `volume()` is unresolvable on the check/eval
+/// surface and the machining metric belongs to the sketch). Helically-grooved
+/// dual-anchor winch drum, axis = local +Z, centred. Both ends of each belt
+/// loop anchor to it; rotation reels one end in / pays the other out. Carries
+/// BOTH windings of the belt's ±z moment pair (axially adjacent on one drum).
 ///
-/// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
+/// The rope seat is modelled (#5454): a circular section of radius `groove_r`
+/// swept along `helix(pitch_r, lead, groove_len)` and subtracted from the land
+/// cylinder at `land_r`, between two retaining flanges and over an axial bore.
+///
+/// The seat is a HALF-ROUND open seat (#5580): `land_r = pitch_r` puts the
+/// swept section's arc centre ON the land surface, so exactly half the section
+/// is cut away and the mouth it opens is the section's full width, 2*groove_r
+/// == rope_dia. The rope is laid in RADIALLY, not wound thread-style — the
+/// departure tangent migrates axially across the band every revolution, so
+/// the rope must leave the seat radially at arbitrary mid-band positions; a
+/// half-round is also the ONLY depth that admits the rope at all (the mouth
+/// chord peaks exactly at land_r == pitch_r). The wrap stays positive and
+/// zero-slip because both rope ends are ANCHORED to the drum.
+///
+/// PITCH-RADIUS CONSEQUENCE for every composing site: the rope CENTRELINE
+/// rides AT pitch_r == drum_d/2 (half-seated in the land), NOT at
+/// drum_r + rope_r as the retired smooth-core model had it — the drive's
+/// tangent planes sit 3mm (rope_dia/2) closer to the drum axis (2026-08-23
+/// re-sync; DriveTendons' hand-kept mirrors updated in step).
+///
+/// Sizing (D/d = 8): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
 /// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
-/// band = active_turns·lead ≈ 63mm (= the shuttle stroke); helix angle ≈ 2.7°.
+/// groove band = lead·(active + dead turns) ≈ 88mm; helix angle ≈ 2.7°.
 pub structure Capstan {
     param rope_dia    : Length = 6mm
     /// D/d ratio
@@ -204,18 +224,30 @@ pub structure Capstan {
     param windings    : Int    = 2
     param bore_dia    : Length = 19mm     // motor shaft
 
-    let drum_r     = drum_d / 2
-    let flange_r   = drum_r + rope_dia * 1.5      // stands proud of the rope crest
+    let pitch_r    = drum_d / 2                   // rope centreline (the D/d circle)
+    let groove_r   = rope_dia / 2                 // rope seat = swept-cutter section radius
+    // Outer land/crest cylinder. Cut back to the rope CENTRELINE, so the seat is a
+    // true half-round: its arc centre sits ON the land surface and its mouth is the
+    // seat's full width, 2*groove_r == rope_dia (see doc above).
+    let land_r     = pitch_r
+    let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
     let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
     let bore_r     = bore_dia / 2
 
-    // One inlined tree: core + two flanges, bored through. (No intermediate geometry
-    // lets — they would auto-surface as stray meshes.)
-    let body = difference(
+    // The rope channel: a circular section of radius groove_r, posed normal to the
+    // helix start tangent (rotate -90° about +X takes the profile's +Z normal onto
+    // +Y) and stood off onto the helix start point at +pitch_r, swept along the
+    // helical spine and re-centred on the band.
+    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), pitch_r, 0mm, 0mm)
+    aux let groove_path    = helix(pitch_r, lead, groove_len)
+    aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
+
+    // Stock: land + two flanges, bored through — the drum before the groove is cut.
+    aux let drum_blank = difference(
         union(
             union(
-                translate(cylinder(drum_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
+                translate(cylinder(land_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
                 translate(cylinder(flange_r, flange_w), 0mm, 0mm, groove_len / 2)
             ),
             translate(cylinder(flange_r, flange_w), 0mm, 0mm, 0mm - groove_len / 2 - flange_w)
@@ -223,9 +255,25 @@ pub structure Capstan {
         translate(cylinder(bore_r, groove_len + flange_w * 4), 0mm, 0mm, 0mm - groove_len / 2 - flange_w * 2)
     )
 
-    constraint drum_r > bore_r
-    constraint flange_r > drum_r
-    constraint lead > rope_dia        // clearance lead
+    let body = difference(drum_blank, groove_cutter)
+
+    constraint flange_r > land_r
+    // The seat must be a TRUE HALF-ROUND — arc centre ON the land surface, i.e.
+    // land_r == pitch_r; the two bounds are the one-sided halves of that equality
+    // (the mouth chord 2*sqrt(groove_r^2 - (land_r - pitch_r)^2) peaks at the
+    // equality, so ANY offset drops it below rope_dia — a high land buries the
+    // seat, a low land closes the mouth over an unseated rope). The ±1e-6 width
+    // is fp slack around a bit-exact assignment, matching the Rust acceptance
+    // gate's window (crates/reify-eval/tests/harness_sweep/capstan_groove_e2e.rs).
+    constraint land_r < pitch_r + groove_r * 0.000001
+    constraint land_r > pitch_r - groove_r * 0.000001
+    // Wall between the groove BOTTOM (pitch_r - groove_r, the deepest stock the
+    // seat removes) and the shaft bore.
+    constraint pitch_r - groove_r > bore_r
+    // Clearance lead: each wrap opens a 2*groove_r wide mouth in the land, so the
+    // lead must exceed the mouth width or adjacent seats merge and the land ridge
+    // between wraps vanishes (wedging would drift the effective Ø).
+    constraint lead > groove_r * 2.0
     constraint d_ratio > 0.0
 }
 
@@ -300,8 +348,10 @@ pub structure CapstanUnit {
 
     // All drum-coupled dimensions DERIVE from the capstan sub's own cells
     // (parent-reads-child-let verified 2026-07-23; no hand-kept literals —
-    // resize the Capstan and the fairlead follows).
-    let cap_pitch_r = self.capstan.drum_r + self.capstan.rope_dia / 2
+    // resize the Capstan and the fairlead follows). The rope centreline rides
+    // AT the capstan's pitch_r (half-round seat, 2026-08-23 re-sync) — the
+    // retired smooth-core model's drum_r + rope_r/2 form is gone.
+    let cap_pitch_r = self.capstan.pitch_r
     let flange_r    = self.capstan.flange_r
     /// Upper/lower winding-band centres: the two windings split the groove
     /// band in half, so their centres sit at ± a quarter of it.
@@ -554,11 +604,12 @@ pub structure DriveTendons {
     // rail is the CONVERSE via 180°-about-Z (the rail tendons lie on x = 0 in the
     // child frame, so the rotation only swaps the A/B fore/aft, not the rail X).
     // Rear-routing span extensions (v1): the two +z back-half rail runs whose
-    // rear pulleys sit at the moved/reoriented y = −436 line extend to 436mm —
+    // rear pulleys sit at the moved/reoriented y = −430 line extend to 430mm —
     // belt A's back half lives on the LEFT rail (a_upper, flipped) and belt
-    // B's on the RIGHT rail (b_upper).
-    sub rail_r = RailTendons(z_a: z_a, z_b: z_b, span_bu: 436mm) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
-    sub rail_l = RailTendons(z_a: z_a, z_b: z_b, span_au: 436mm) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
+    // B's on the RIGHT rail (b_upper). (436 → 430 with the 2026-08-23
+    // cap_pitch_r re-sync: moved_y tracks plane_out.)
+    sub rail_r = RailTendons(z_a: z_a, z_b: z_b, span_bu: 430mm) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
+    sub rail_l = RailTendons(z_a: z_a, z_b: z_b, span_au: 430mm) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
     // Gantry crosses: FULL-length quad turned 90° about Z.
     sub cross  = TendonQuad(z_a: z_a, z_b: z_b) at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))
 
@@ -611,12 +662,12 @@ pub structure DriveTendons {
     sub corner_fl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, neg_z_b))
 
     // Front-to-back RETURN tendons. The two whose rear pulley MOVED rearward
-    // (rear routing v1: the reoriented down-turns at y = moved_y) extend 36mm
-    // past the nominal rail length to reach the moved tangent point (836mm,
-    // centred y = −18mm); the other two stay full-rail 800mm.
-    sub return_r_u = LinearTendon(length: 836mm) at transform3(rot_to_y, vec3(return_x_r, 0mm - 18mm, z_a))
+    // (rear routing v1: the reoriented down-turns at y = moved_y) extend 30mm
+    // past the nominal rail length to reach the moved tangent point (830mm,
+    // centred y = −15mm); the other two stay full-rail 800mm.
+    sub return_r_u = LinearTendon(length: 830mm) at transform3(rot_to_y, vec3(return_x_r, 0mm - 15mm, z_a))
     sub return_r_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, neg_z_a))
-    sub return_l_u = LinearTendon(length: 836mm) at transform3(rot_to_y, vec3(return_x_l, 0mm - 18mm, z_b))
+    sub return_l_u = LinearTendon(length: 830mm) at transform3(rot_to_y, vec3(return_x_l, 0mm - 15mm, z_b))
     sub return_l_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, neg_z_b))
 
     // ── Rear drive (capstans DOWN + fairlead guide pulleys) ─────────────────
@@ -629,15 +680,18 @@ pub structure DriveTendons {
     // plane. The rear-routing section below connects the drive-plane rail/
     // return ends to the fairlead pulleys — the back-crosses are RETIRED
     // (the capstans close the loops now).
-    let cap_pitch_r = 27mm   // == Capstan drum_r (24mm) + rope radius (3mm). Hand-kept:
-                             // the derived form `self.rear_drive.unit_a.cap_pitch_r`
-                             // silently undefs today — instance reads chained through
+    let cap_pitch_r = 24mm   // == Capstan pitch_r (drum_d/2): the half-round seat
+                             // carries the rope centreline AT the land (was 27 =
+                             // drum_r + rope_r under the smooth-core model,
+                             // re-synced 2026-08-23). Hand-kept: the derived form
+                             // `self.rear_drive.unit_a.cap_pitch_r` silently
+                             // undefs today — instance reads chained through
                              // TWO sub levels are broken (#5360; one-level reads and
                              // even self-referential placement DO work, probe-verified
                              // 2026-07-23). Derive this once #5360 lands.
     let plane_in    = neg_corn - r_pitch           // machine-side tangent plane (−400)
-    let plane_out   = plane_in - cap_pitch_r * 2   // outboard tangent plane (−454)
-    let moved_y     = plane_out + r_pitch          // moved rear-pulley line (−436, Leo's no-jog move)
+    let plane_out   = plane_in - cap_pitch_r * 2   // outboard tangent plane (−448)
+    let moved_y     = plane_out + r_pitch          // moved rear-pulley line (−430, Leo's no-jog move)
     let cap_y       = plane_in - cap_pitch_r
     let cap_drop    = 220mm  // drum-axis depth below the drive plane's z = 0
     let neg_drop    = 0mm - cap_drop
@@ -651,7 +705,7 @@ pub structure DriveTendons {
     //
     // IN feeds — vertical-axis rear pulley → X-run in the winding's tangent
     // plane → in-idler (axis ∥ Y) → vertical descent to the fairlead pulley.
-    // The two +z-level rear pulleys MOVED along Y to moved_y (−436) so their
+    // The two +z-level rear pulleys MOVED along Y to moved_y (−430) so their
     // X-runs lie in plane_out with NO extra jog (Leo's insight); the −z ones
     // stay at neg_corn (X-runs already in plane_in).
     // OUT feeds — two schemes, chosen per level after collision-solving both
