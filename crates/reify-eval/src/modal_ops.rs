@@ -4164,6 +4164,16 @@ mod tests {
     /// Amendment (suggestion 2): `extract_damping` returns the Rayleigh
     /// coefficients only for a `RayleighDamping` instance; `NoDamping`, a missing
     /// field, and a non-struct all read as the undamped `(0, 0)`.
+    ///
+    /// The final arm pins `read_scalar_si`'s BARE-`Value::Real` tolerance
+    /// (task #6093 amendment). Once the `rayleigh_damping` builder above
+    /// migrated to dimensioned fields — correctly, since real input no longer
+    /// produces the bare shape — nothing else in this crate exercised that arm,
+    /// so an edit making `extract_damping` reject a bare `Real` would have
+    /// passed the whole in-crate suite while the builder's docstring still
+    /// claimed the tolerance was deliberate and preserved. Tightening it is a
+    /// decision owned by `docs/prds/v0_6/dimension-checked-readers.md`; until
+    /// that lands deliberately, this is the witness.
     #[test]
     fn extract_damping_discriminates_rayleigh_from_none() {
         let damped = modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
@@ -4177,6 +4187,27 @@ mod tests {
 
         assert_eq!(extract_damping(&modal_options(vec![])), (0.0, 0.0));
         assert_eq!(extract_damping(&Value::Undef), (0.0, 0.0));
+
+        // Legacy bare-`Real` damping fields still read identically to the
+        // dimensioned shape — the reader is dimension-blind by construction.
+        let bare = modal_options(vec![(
+            "damping".to_string(),
+            struct_instance(
+                "RayleighDamping",
+                vec![
+                    ("alpha".to_string(), Value::Real(0.5)),
+                    ("beta".to_string(), Value::Real(1e-6)),
+                ],
+            ),
+        )]);
+        assert_eq!(
+            extract_damping(&bare),
+            extract_damping(&damped),
+            "extract_damping must fold bare Value::Real fields to the same \
+             (alpha, beta) as the dimensioned Value::Scalar fields — \
+             read_scalar_si's tolerance is deliberate and is not this task's \
+             to tighten (docs/prds/v0_6/dimension-checked-readers.md)"
+        );
     }
 
     /// Amendment (suggestion 2): `build_dirichlet_bcs` selects the pin-pin
