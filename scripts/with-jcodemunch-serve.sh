@@ -132,7 +132,7 @@ answers a real MCP `initialize` AS jcodemunch, runs <command> against it with
 JCODEMUNCH_URL exported, then tears the serve down on every exit path.
 
   --port N    Serve on port N instead of the default 8901. Also the value
-              exported in JCODEMUNCH_URL.
+              exported in JCODEMUNCH_URL. `--port=N` is accepted too.
   --dry-run   Print the exact serve argv that would be spawned, exit 0. Spawns
               nothing and does NOT run <command>.
   --          End the wrapper's own flags; everything after begins <command>.
@@ -153,7 +153,14 @@ Refusal markers (stderr, always non-zero exit):
                            the readiness deadline
   E_JC_SERVE_LEAKED        teardown ran and the port is STILL accepting, or
                            the serve's process group is STILL alive — a serve
-                           was leaked and must be reclaimed by hand
+                           was leaked and must be reclaimed by hand. This is
+                           the one marker with a DISTINGUISHABLE exit status:
+                           an otherwise-successful run that leaked exits 75, so
+                           a consumer can tell "the wrapper leaked a serve"
+                           from "my wrapped command failed". A run whose
+                           wrapped command already exited non-zero keeps THAT
+                           status (and a signalled run keeps its 130/143) —
+                           only a status of 0 is promoted to 75.
 USAGE
 }
 
@@ -248,9 +255,12 @@ fi
 #     JCODEMUNCH_PIN);
 #   * the `--dry-run` needle in `tests/infra/test_with_jcodemunch_serve.sh`,
 #     which is what fails loudly if THIS line alone moves.
+# THE LIST IS NO LONGER PROSE-ONLY: that same guard now greps the version out of
+# β and α and asserts all three agree with the argv this script constructs, so a
+# bump that touches one site fails the gate instead of drifting silently.
 # Hoisting the three values (pin, interpreter, identity lever) into one sourced
-# `scripts/lib_jcodemunch_pin.sh` is the real fix, and it is out of δ's scope:
-# δ holds neither β nor α. Filed as follow-up work instead of half-done here.
+# `scripts/lib_jcodemunch_pin.sh` is still the real fix, and it remains out of
+# δ's scope: δ holds neither β nor α. Tracked as #6454.
 JC_PIN="jcodemunch-mcp==1.108.54"
 
 # THE INTERPRETER IS PART OF THE PIN (esc-6107-4). `--from jcodemunch-mcp==…`
@@ -382,8 +392,18 @@ READY_POLL_INTERVAL=1
 # Teardown deadlines, in WALL-CLOCK SECONDS (see the free-wait loop in cleanup).
 # α's Drop constants (:361-362): give the group 10 s to release the port and
 # exit, escalating ONCE from -TERM to -KILL at the 5 s mark.
-TEARDOWN_DEADLINE_SECS=10
-TEARDOWN_KILL_AFTER_SECS=5
+#
+# REIFY_JC_SERVE_TEARDOWN_DEADLINE / _KILL_AFTER are TEST-ONLY overrides, the
+# same shape and the same reasoning as REIFY_JC_SERVE_READY_TIMEOUT above: the
+# guard is a `pool` member, and a leak case necessarily runs the free-wait to
+# its cap, so at the production values the four deliberate-leak runs would spend
+# ~35 s of the suite asleep. What must NOT be lost is the -KILL escalation, so
+# the guard scales the PAIR (keeping kill-after strictly inside the deadline)
+# rather than shortening the deadline alone, and still drives one run at these
+# defaults. Never set them in production use: a short deadline reports
+# E_JC_SERVE_LEAKED against a serve that was merely slow to release the port.
+TEARDOWN_DEADLINE_SECS="${REIFY_JC_SERVE_TEARDOWN_DEADLINE:-10}"
+TEARDOWN_KILL_AFTER_SECS="${REIFY_JC_SERVE_TEARDOWN_KILL_AFTER:-5}"
 
 SERVE_URL="http://127.0.0.1:$PORT/mcp"
 
@@ -714,7 +734,25 @@ probe_once() {
     # `text/event-stream`, in which case the JSON-RPC payload is the first
     # `data:` line rather than the whole body.
     if grep -qi 'text/event-stream' "$PROBE_HEAD" 2>/dev/null; then
-        grep '^data:' "$PROBE_BODY" | head -n1 | sed 's/^data://' > "$PROBE_BODY.json"
+        # ONE awk, NO PIPELINE — deliberately. The obvious spelling
+        # `grep '^data:' … | head -n1 | sed 's/^data://'` is a trap under
+        # `set -euo pipefail`: `head -n1` closes the pipe after the first line,
+        # so on a multi-line SSE frame `grep` dies of SIGPIPE (141) and
+        # `pipefail` makes the whole pipeline non-zero; a body carrying NO
+        # `data:` line at all makes `grep` exit 1 outright. That does not abort
+        # this script today ONLY because probe_once is invoked exclusively as
+        # `probe_once && return 0`, which suppresses errexit for the entire
+        # function body — an invisible dependency that any future call outside a
+        # condition context turns into a mid-readiness abort with no diagnostic.
+        # It also swallowed the distinction between a malformed SSE frame and a
+        # missing serverInfo. awk has no early-closing consumer and no pipeline:
+        # it prints the FIRST `data:` payload and exits, leaving the file empty
+        # when there is none — which the serverInfo check below reports as
+        # `serverInfo.name=[<absent>]` rather than silently.
+        # A single space after the colon is SSE framing, not payload (WHATWG
+        # event-stream), so it is stripped here rather than handed to jq.
+        awk '/^data:/ { sub(/^data:[[:space:]]?/, ""); print; exit }' \
+            "$PROBE_BODY" > "$PROBE_BODY.json"
     else
         cp "$PROBE_BODY" "$PROBE_BODY.json"
     fi

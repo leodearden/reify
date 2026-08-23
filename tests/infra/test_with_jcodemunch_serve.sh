@@ -26,15 +26,21 @@
 # `capstone-must-not-become-gate-resident` resolution applies to ε, and the same
 # split β's tests/infra/test_jcodemunch_index_reify.sh already makes.
 #
-# COST: ~135 s wall on a quiet host, ~185 s observed under a loaded pool,
-# almost all of it sleeping rather than burning CPU — the readiness poll
-# interval, the three never-ready deadlines and the three leak runs' 10 s
-# teardown free-waits.
+# COST: 130 s wall MEASURED at 104 assertions (4.6 s user, 8.5 s sys — almost
+# all of it sleeping rather than burning CPU), against ~135 s quiet / ~185 s
+# under a loaded pool when this suite carried 87. The sleeping is the readiness
+# poll interval, the never-ready deadlines and the deliberate-leak runs'
+# teardown free-waits, which by construction always run to their cap.
 # Measured against siblings in the same bucket: test_warm_lane_audit.sh 143 s,
-# test_jcodemunch_index_reify.sh 37 s. If this needs to come down further, the
-# leak runs are the place to look, and the cost there is real coverage: the
-# -KILL escalation fires at the 5 s mark, so a shortened window would stop
-# exercising it. Nothing here waits on the network — see the stand-in note in
+# test_jcodemunch_index_reify.sh 37 s. The leak runs are where the remaining
+# sleeping lives, and the cost there was real coverage — the -KILL escalation
+# fires at the 5 s mark, so merely SHORTENING the deadline would stop exercising
+# it. Two of the three therefore SCALE THE PAIR instead
+# (REIFY_JC_SERVE_TEARDOWN_DEADLINE / _KILL_AFTER, the wrapper's test-only
+# overrides): 4 s deadline with the escalation at 2 s still crosses the
+# threshold and still reaps through -KILL, while one leak run and the `lingerer`
+# run stay at the production 10 s/5 s so the wrapper's own defaults keep being
+# exercised. Nothing here waits on the network — see the stand-in note in
 # Block 3 for why every invocation goes through REIFY_JC_SERVE_CMD.
 #
 # EVERY PORT THIS SUITE BINDS IS A FREE EPHEMERAL PORT IT PICKS ITSELF. This
@@ -319,6 +325,7 @@ dry_argv() { "$JC_SERVE" --dry-run "$@" 2>&1; }
 
 DRY_DEFAULT="$(dry_argv || true)"
 DRY_PORTED="$(dry_argv --port 8917 || true)"
+DRY_PORTED_EQ="$(dry_argv --port=8917 || true)"
 
 b2_pin_and_shape() {
     argv_has_in_order "$DRY_DEFAULT" \
@@ -349,6 +356,78 @@ b2_bans() {
 b2_port_moves() {
     argv_has_in_order "$DRY_PORTED" "--port" "8917" || return 1
     argv_lacks "$DRY_PORTED" "8901"
+}
+
+# `--port=N`, the `=` spelling, is IMPLEMENTED (`--port=*) PORT="${1#*=}"`) and
+# documented in --help — so it is part of the flag surface and must be guarded
+# like the spaced form. Without this it is an alias a later parser refactor
+# could silently drop: `--port=8917` would fall through the `-*` arm as an
+# unknown flag, and every caller using it would start refusing with exit 64.
+b2_port_eq_form() {
+    argv_has_in_order "$DRY_PORTED_EQ" "--port" "8917" || return 1
+    argv_lacks "$DRY_PORTED_EQ" "8901"
+}
+
+# -- THE FOUR-SITE PIN INVENTORY, ASSERTED RATHER THAN MERELY DOCUMENTED ------
+#
+# The wheel version is COPIED across four sites and, until these assertions,
+# nothing in the repo checked that the copies agree:
+#   * δ  scripts/with-jcodemunch-serve.sh          — read here out of the
+#        CONSTRUCTED argv, not out of the source line, so the value under test
+#        is the one that would really be spawned;
+#   * β  scripts/jcodemunch-index-reify.sh:394     — the indexer side;
+#   * α  crates/reify-audit/tests/jcodemunch_session_live.rs:76;
+#   * the literal needle in b2_pin_and_shape above, which is what fails if δ
+#        alone moves.
+# A serve running an OLDER wheel than the indexer that WROTE the index it is
+# being asked to query is precisely the drift the inventory exists to prevent,
+# and it is silent at the call site: the session opens, the query answers, and
+# the answer is merely wrong.
+#
+# HERMETIC AND ~5 ms: pure file read + string compare, no uvx, no PyPI, no
+# network. It does not FIX the duplication — hoisting the triple into one
+# sourced scripts/lib_jcodemunch_pin.sh needs locks on β and α that δ does not
+# hold, and is tracked as #6454 — but it makes a one-sided bump fail the gate
+# instead of shipping.
+JC_PIN_BETA_FILE="$REPO_ROOT/scripts/jcodemunch-index-reify.sh"
+JC_PIN_ALPHA_FILE="$REPO_ROOT/crates/reify-audit/tests/jcodemunch_session_live.rs"
+
+# Each extractor is ONE awk with an `exit` and no pipeline — a `… | head -n1`
+# would be an early-closing consumer under `set -euo pipefail`, the same trap
+# the wrapper's own SSE branch documents. Each emits nothing when it does not
+# match, and the comparator treats "nothing" as a FAILURE rather than as
+# agreement, so a renamed file or a reshaped literal fails loudly here instead
+# of comparing "" against "" and reporting that all four sites agree.
+jc_pin_delta() {
+    awk '/jcodemunch-mcp==/ { sub(/^.*jcodemunch-mcp==/, ""); sub(/[^0-9.].*$/, ""); print; exit }' <<< "$DRY_DEFAULT"
+}
+jc_pin_beta() {
+    [ -f "$JC_PIN_BETA_FILE" ] || return 0
+    awk '/^JC_PIN=/ { sub(/^.*jcodemunch-mcp==/, ""); sub(/[^0-9.].*$/, ""); print; exit }' "$JC_PIN_BETA_FILE"
+}
+jc_pin_alpha() {
+    [ -f "$JC_PIN_ALPHA_FILE" ] || return 0
+    awk '/const JCODEMUNCH_PIN/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_ALPHA_FILE"
+}
+
+# b2_pin_agrees <label> <file> <extractor-fn>
+b2_pin_agrees() {
+    local label="$1" file="$2" fn="$3" mine theirs
+    mine="$(jc_pin_delta)"
+    require_nonempty "the pin in δ's constructed argv" "$mine" || return 1
+    if [ ! -f "$file" ]; then
+        printf '%s\n' "$label's pin site is GONE: $file does not exist." \
+            "  The four-site inventory in scripts/with-jcodemunch-serve.sh is stale — update it and this guard together."
+        return 1
+    fi
+    theirs="$("$fn")"
+    require_nonempty "the pin extracted from $label ($file)" "$theirs" || return 1
+    [ "$mine" = "$theirs" ] && return 0
+    printf '%s\n' "jcodemunch pin DRIFT: δ constructs [$mine] but $label pins [$theirs]." \
+        "  $file" \
+        "  A serve on a different wheel than the indexer that wrote the index is SILENT at the call site." \
+        "  Bump every site in the inventory comment at scripts/with-jcodemunch-serve.sh (see #6454)."
+    return 1
 }
 
 b2_dry_run_exits_zero() { "$JC_SERVE" --dry-run >/dev/null 2>&1; }
@@ -382,6 +461,11 @@ b2_dry_run_skips_wrapped_command() {
 assert "the dry-run argv carries the identity lever, pin, transport and port in order" b2_pin_and_shape
 assert "the dry-run argv contains neither --paths-from nor the watch/index subcommands" b2_bans
 assert "--port 8917 moves the port in the argv (and drops the 8901 default)" b2_port_moves
+assert "the --port=N spelling moves the port too" b2_port_eq_form
+assert "δ's pin agrees with β's (scripts/jcodemunch-index-reify.sh)" \
+    b2_pin_agrees "β" "$JC_PIN_BETA_FILE" jc_pin_beta
+assert "δ's pin agrees with α's (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
+    b2_pin_agrees "α" "$JC_PIN_ALPHA_FILE" jc_pin_alpha
 assert "--dry-run exits 0" b2_dry_run_exits_zero
 assert "--dry-run spawns nothing (its port is still free afterwards)" b2_dry_run_spawns_nothing
 assert "--dry-run does not run the wrapped command" b2_dry_run_skips_wrapped_command
@@ -637,10 +721,18 @@ b3c_missing_tool_named() {
     port="$(pick_free_port)" || return 1
     out="$(PATH="$dir" REIFY_JC_SERVE_CMD="$fake" "$JC_SERVE" --port "$port" "$fake" 2>&1 || true)"
     require_nonempty "missing-$hidden output" "$out" || return 1
+    # THE QUOTED FORM ONLY. A ` $hidden `-spaced alternative reads as harmless
+    # tolerance and is in fact a silent loosening: the wrapper's own die message
+    # ("… POSTs an MCP initialize with curl and reads result.serverInfo.name
+    # with jq; neither is optional.") NAMES BOTH TOOLS in its prose whichever
+    # one is missing, so a space-delimited match would accept a refusal that
+    # named the WRONG dependency — defeating the entire point of this assertion.
+    # The wrapper always quotes the tool it could not find, so the tight pattern
+    # costs nothing.
     case "$out" in
-        *"'$hidden'"*|*" $hidden "*) return 0 ;;
+        *"'$hidden'"*) return 0 ;;
     esac
-    printf '%s\n' "the refusal does not name the missing '$hidden':" "$out"
+    printf '%s\n' "the refusal does not name the missing '$hidden' in quoted form:" "$out"
     return 1
 }
 b3c_negative_control() {
@@ -681,7 +773,18 @@ assert "a complete PATH produces no missing-tool refusal (control)"        b3c_n
 # (once serving) every request path it is asked for.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# mk_stub_serve <path> <healthy|foreign|slow|die|grandchild>
+# mk_stub_serve <path> <mode>, where mode is one of:
+#   healthy     200, correct name, session header, plain JSON body
+#   sse         as healthy, but framed as `text/event-stream` + `data:`
+#   foreign     as healthy, under somebody else's serverInfo.name
+#   no-session  as healthy, minus the assigned Mcp-Session-Id header
+#   http-404    answers, but not with 200
+#   slow        refuses connections for a few polls, then healthy
+#   die         exits 3 without binding anything
+#   deaf        accepts the connect and answers nothing, forever
+#   lingerer    releases the PORT on -TERM and keeps running
+#   grandchild  a separate forked python holds the port, not the spawned child
+#   escapee     the listener escapes the process group entirely (a real leak)
 #
 # Writes TWO files: <path> (the bash entry point) and <path>.py (the responder).
 # The responder is a separate file rather than a heredoc so the entry point can
@@ -756,7 +859,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length:
             self.rfile.read(length)
-        body = json.dumps(
+
+        if FLAG == "--http-404":
+            # A NON-200 ANSWER. The probe is a plain `curl` with no `-L`, so a
+            # 307 on `/mcp/` and a 404 on a client-minted session id land in the
+            # SAME branch — the one that refuses on the STATUS alone, before jq
+            # is ever reached. 404 is modelled because it is the status α
+            # actually documents. The body is deliberately NOT JSON: a probe
+            # that reached jq anyway would find nothing and report the wrong
+            # reason.
+            payload = b"not found\n"
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        envelope = json.dumps(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -766,11 +886,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "serverInfo": {"name": NAME, "version": "1.108.54"},
                 },
             }
-        ).encode()
+        )
+
+        if FLAG == "--sse":
+            # STREAMABLE-HTTP'S OTHER BODY SHAPE, and the one the wrapper's
+            # `data:`-extraction branch exists for: a real serve MAY answer
+            # `initialize` as an event stream, in which case the JSON-RPC
+            # envelope is the first `data:` line rather than the whole body.
+            # MULTI-LINE ON PURPOSE — the `event:` line before it and the blank
+            # terminator after are what make the extraction a real extraction.
+            # A single-line frame would be satisfied by a plain `cat`, and a
+            # multi-line one is also what makes an early-closing `head -n1`
+            # consumer in that branch observable rather than theoretical.
+            body = ("event: message\ndata: %s\n\n" % envelope).encode()
+            ctype = "text/event-stream"
+        else:
+            body = envelope.encode()
+            ctype = "application/json"
+
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Mcp-Session-Id", "stub-session-0001")
+        if FLAG != "--no-session":
+            # THE SESSION CONTRACT. Omitting this header is the `--no-session`
+            # mode: everything a liveness check looks at is correct, and only
+            # the assigned session id is missing.
+            self.send_header("Mcp-Session-Id", "stub-session-0001")
         self.end_headers()
         self.wfile.write(body)
 
@@ -833,6 +974,20 @@ STUB
             # Well-formed JSON-RPC, 200, a session header — everything a
             # LIVENESS check would accept — under somebody else's name.
             echo 'exec python3 "$0.py" "$STUB_PORT" not-jcodemunch' >> "$path" ;;
+        sse)
+            # A CORRECT serve that answers as an EVENT STREAM. Identical
+            # identity and session id to `healthy`; only the body framing
+            # differs, so the one thing it can prove is the `data:` routing.
+            echo 'exec python3 "$0.py" "$STUB_PORT" jcodemunch-mcp --sse' >> "$path" ;;
+        no-session)
+            # Correct name, correct JSON-RPC, 200 — and NO Mcp-Session-Id. The
+            # server is not honouring the session contract, so nothing
+            # downstream of readiness could be trusted.
+            echo 'exec python3 "$0.py" "$STUB_PORT" jcodemunch-mcp --no-session' >> "$path" ;;
+        http-404)
+            # Answers, but not with 200. Exercises the branch that refuses on
+            # the status alone.
+            echo 'exec python3 "$0.py" "$STUB_PORT" jcodemunch-mcp --http-404' >> "$path" ;;
         slow)
             # Refuses connections outright for a few polls, then becomes
             # healthy. A cold `uvx` resolve looks exactly like this.
@@ -909,12 +1064,37 @@ cleanup() {
 #         RW_EXTRA_ENV     extra NAME=VALUE settings placed in the WRAPPER's own
 #                          environment (not the serve's), for the inheritance
 #                          negative controls.
+#         RW_TEARDOWN_DEADLINE / RW_TEARDOWN_KILL_AFTER
+#                          the wrapper's teardown free-wait deadline and its
+#                          -TERM→-KILL escalation point, in seconds. EMPTY by
+#                          default so the ordinary run exercises the wrapper's
+#                          OWN production constants; set only by the runs that
+#                          deliberately leak, since those are the only ones that
+#                          run the free-wait to its cap. See rw_teardown_env.
 RW_SERVE_PREFIX=""
 RW_TIMEOUT=20
 RW_EXTRA_ENV=()
+RW_TEARDOWN_DEADLINE=""
+RW_TEARDOWN_KILL_AFTER=""
+
+# rw_teardown_env — the teardown overrides as `NAME=VALUE` words, or NOTHING.
+#
+# Emitting nothing when unset is the point: an unconditional passthrough would
+# mean NO run in this suite ever exercised the wrapper's own
+# `${REIFY_JC_SERVE_TEARDOWN_DEADLINE:-10}` defaults, so a typo in either
+# default would ship green.
+rw_teardown_env() {
+    if [ -n "$RW_TEARDOWN_DEADLINE" ]; then
+        printf '%s\n' "REIFY_JC_SERVE_TEARDOWN_DEADLINE=$RW_TEARDOWN_DEADLINE"
+    fi
+    if [ -n "$RW_TEARDOWN_KILL_AFTER" ]; then
+        printf '%s\n' "REIFY_JC_SERVE_TEARDOWN_KILL_AFTER=$RW_TEARDOWN_KILL_AFTER"
+    fi
+}
 rw_run() {
     local mode="$1"; shift
     local stub t0
+    local td=(); mapfile -t td < <(rw_teardown_env)
     RW_DIR="$(mk_tmpdir)" || return 1
     RW_WITNESS="$RW_DIR/witness"
     : > "$RW_WITNESS"
@@ -926,7 +1106,7 @@ rw_run() {
     RW_ERR="$RW_DIR/stderr"
     RW_RC=0
     t0=$SECONDS
-    env ${RW_EXTRA_ENV+"${RW_EXTRA_ENV[@]}"} \
+    env ${RW_EXTRA_ENV+"${RW_EXTRA_ENV[@]}"} ${td+"${td[@]}"} \
         REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
         REIFY_JC_SERVE_READY_TIMEOUT="$RW_TIMEOUT" \
         REIFY_JC_SERVE_CMD="${RW_SERVE_PREFIX:+$RW_SERVE_PREFIX }$stub" \
@@ -1001,6 +1181,84 @@ b4_slow_ready()    { has_line "$B4S_ERR" "$READY_MARKER"; }
 b4_slow_no_refuse(){ lacks_line "$B4S_ERR" "$M_NOT_READY"; }
 assert "a slow-starting serve is waited out, not failed"                   b4_slow_ready
 assert "a slow-starting serve produces no $M_NOT_READY"                    b4_slow_no_refuse
+
+# -- sse: the OTHER body shape a streamable-http serve may answer with --------
+#
+# THE BRANCH THIS COVERS WOULD OTHERWISE BE DEAD ON THE GATE. `healthy` answers
+# `Content-Type: application/json`, so every readiness assertion above goes down
+# probe_once's `cp` else-branch and the `text/event-stream` → first-`data:`-line
+# branch is never executed by anything. The only evidence it ever worked is a
+# single manual `uvx` run the gate cannot repeat — so a regression in the
+# extraction would ship green and surface later as a mysterious
+# E_JC_SERVE_NOT_READY against the REAL serve, which is precisely the silent
+# class the PRD exists to eliminate. This costs one healthy-speed run.
+rw_run sse true
+B4E_ERR="$RW_ERR"; B4E_WITNESS="$RW_WITNESS"; B4E_RC="$RW_RC"
+
+# ANTI-VACUITY FIRST, same reasoning as b4_foreign_answered: the SSE stub really
+# did answer a probe. Without it, a stub that never bound would make "no refusal"
+# unreachable and the readiness assertion could not distinguish the two.
+b4_sse_answered()  { has_line "$B4E_WITNESS" "request-path=[/mcp]"; }
+b4_sse_ready()     { has_line "$B4E_ERR" "$READY_MARKER"; }
+b4_sse_no_refuse() { lacks_line "$B4E_ERR" "$M_NOT_READY"; }
+b4_sse_zero()      { [ "$B4E_RC" = "0" ] && return 0; printf '%s\n' "the SSE run exited $B4E_RC, expected 0" "$(cat "$B4E_ERR")"; return 1; }
+
+assert "the SSE stub really answered the probe (anti-vacuity)"             b4_sse_answered
+assert "an event-stream serverInfo still reaches readiness"                b4_sse_ready
+assert "the event-stream body produces no $M_NOT_READY"                    b4_sse_no_refuse
+assert "the SSE run exits 0"                                               b4_sse_zero
+
+# -- no-session: the session contract is load-bearing -------------------------
+#
+# The `Mcp-Session-Id`-absent check is documented in the wrapper as the reason
+# nothing downstream could be trusted, citing α's assertion — but with no stub
+# ever omitting the header, deleting that check would break NOTHING on the gate:
+# a serve that answered correctly and assigned no session would still be
+# declared READY. This is the fixture that makes the check falsifiable. It pays
+# a readiness deadline, so the deadline is trimmed exactly as the foreign case's
+# is.
+RW_TIMEOUT=10
+rw_run no-session true
+B4NS_ERR="$RW_ERR"; B4NS_WITNESS="$RW_WITNESS"; B4NS_RC="$RW_RC"
+RW_TIMEOUT=20
+
+b4_nosession_answered() { has_line "$B4NS_WITNESS" "request-path=[/mcp]"; }
+b4_nosession_refuses()  { has_line "$B4NS_ERR" "$M_NOT_READY"; }
+# The MESSAGE, not merely the marker: a refusal that named the wrong reason
+# would send a reader hunting the pin or the identity lever instead of the
+# session contract. `LAST_PROBE` is where that reason is carried.
+b4_nosession_reason()   { has_line "$B4NS_ERR" "assigned no Mcp-Session-Id"; }
+b4_nosession_not_ready(){ lacks_line "$B4NS_ERR" "$READY_MARKER"; }
+b4_nosession_nonzero()  { [ "$B4NS_RC" -ne 0 ]; }
+
+assert "the no-session stub really answered the probe (anti-vacuity)"      b4_nosession_answered
+assert "a serve that assigns no session id refuses $M_NOT_READY"           b4_nosession_refuses
+assert "the no-session refusal says the session id was never assigned"     b4_nosession_reason
+assert "the no-session refusal never claims $READY_MARKER"                 b4_nosession_not_ready
+assert "the no-session refusal exits non-zero"                             b4_nosession_nonzero
+
+# -- http-404: a non-200 answer refuses on the STATUS --------------------------
+#
+# The other uncovered probe_once branch. curl is invoked with no `-L`, so this
+# is also the branch a `/mcp/` 307 would land in — the redirect the wrapper's
+# header calls out as dropping the session id. Nothing else in the suite ever
+# returns a non-200, so without this the status check is untested too.
+RW_TIMEOUT=10
+rw_run http-404 true
+B4C_ERR="$RW_ERR"; B4C_WITNESS="$RW_WITNESS"; B4C_RC="$RW_RC"
+RW_TIMEOUT=20
+
+b4_http404_answered()  { has_line "$B4C_WITNESS" "request-path=[/mcp]"; }
+b4_http404_refuses()   { has_line "$B4C_ERR" "$M_NOT_READY"; }
+b4_http404_reason()    { has_line "$B4C_ERR" "HTTP 404 (expected 200)"; }
+b4_http404_not_ready() { lacks_line "$B4C_ERR" "$READY_MARKER"; }
+b4_http404_nonzero()   { [ "$B4C_RC" -ne 0 ]; }
+
+assert "the 404 stub really answered the probe (anti-vacuity)"             b4_http404_answered
+assert "a non-200 answer refuses $M_NOT_READY"                             b4_http404_refuses
+assert "the non-200 refusal names the status it got and the one it wanted" b4_http404_reason
+assert "the non-200 refusal never claims $READY_MARKER"                    b4_http404_not_ready
+assert "the non-200 refusal exits non-zero"                                b4_http404_nonzero
 
 # -- foreign: identity, not liveness ------------------------------------------
 #
@@ -1376,6 +1634,7 @@ RWB_PID=""
 rw_run_bg() {
     local mode="$1"; shift
     local stub
+    local td=(); mapfile -t td < <(rw_teardown_env)
     RW_DIR="$(mk_tmpdir)" || return 1
     RW_WITNESS="$RW_DIR/witness"
     : > "$RW_WITNESS"
@@ -1407,7 +1666,8 @@ rw_run_bg() {
     # back off. The same run also confirms bash defers a trap until the running
     # FOREGROUND child returns: TRAP-INT printed and FELL-THROUGH did not.
     set -m
-    env REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
+    env ${td+"${td[@]}"} \
+        REIFY_JC_SERVE_WITNESS="$RW_WITNESS" \
         REIFY_JC_SERVE_READY_TIMEOUT="$RW_TIMEOUT" \
         REIFY_JC_SERVE_CMD="$stub" \
         "$JC_SERVE" --port "$RW_PORT" "$@" >"$RW_OUT" 2>"$RW_ERR" &
@@ -1539,9 +1799,16 @@ assert "teardown appends nothing after the wrapped command's last byte"     b7_l
 # Without this, "silent on success" is satisfiable by deleting the teardown
 # diagnostic entirely — and a leaked serve keeps holding the port, so the very
 # next invocation would refuse E_JC_SERVE_PORT_BUSY with nothing in the log to
-# say why. Each leak run costs the wrapper's full 10 s free-wait, so exactly two
-# are driven and every assertion reads their captured output rather than
+# say why. A leak run necessarily runs the free-wait to its CAP, so exactly two
+# are driven here and every assertion reads their captured output rather than
 # re-running.
+#
+# THIS FIRST RUN PAYS THE PRODUCTION DEADLINE ON PURPOSE — 10 s free-wait, -KILL
+# escalation at 5 s, both taken from the wrapper's own unset-env defaults. It is
+# the run that keeps `${REIFY_JC_SERVE_TEARDOWN_DEADLINE:-10}` honest; the two
+# runs below scale the pair down instead (see their note), and the `lingerer`
+# case in Block 6 likewise stays at the production 5 s escalation because there
+# the escalation IS the behaviour under test.
 B7L_EMITTER="$B7_DIR/emit-leak"
 mk_findings_emitter "$B7L_EMITTER" 0
 rw_run escapee "$B7L_EMITTER"
@@ -1549,6 +1816,16 @@ B7L_ERR="$RW_ERR"; B7L_RC="$RW_RC"; B7L_PORT="$RW_PORT"
 # Observed IMMEDIATELY after the run, before anything else can disturb it.
 B7L_STILL_HELD=0
 port_is_free "$B7L_PORT" || B7L_STILL_HELD=1
+
+# SCALED, NOT SHORTENED. The remaining two leak runs prove a STATUS rule (the
+# wrapped command's 9 survives; a signal's 143 survives), not a duration — and
+# each of them would otherwise sit out the full 10 s cap in a `pool` member that
+# runs alongside ~150 siblings. Scaling the PAIR keeps -KILL strictly inside the
+# deadline, so the escalation still fires and the leak verdict is reached the
+# same way; only the waiting is shorter. Integers are required: the wrapper
+# compares both against `$SECONDS` with `-ge`/`-lt`.
+RW_TEARDOWN_DEADLINE=4
+RW_TEARDOWN_KILL_AFTER=2
 
 B7F_EMITTER="$B7_DIR/emit-leak-fail"
 mk_findings_emitter "$B7F_EMITTER" 9
@@ -1602,8 +1879,9 @@ b7_leak_still_reported() { has_line "$B7F_ERR" "$M_LEAKED"; }
 # 130/143 BEFORE teardown runs, so a leak discovered afterwards must be reported
 # and must leave the status alone. The bug this pins is quiet: a promotion that
 # reads an unset WRAPPED_RC as 0 rewrites 143 into 75, and both are non-zero, so
-# nothing else in the suite notices. Costs the wrapper's full 10 s free-wait,
-# like the two runs above, so exactly one is driven.
+# nothing else in the suite notices. Runs the free-wait to its cap like the two
+# above, and inherits the scaled RW_TEARDOWN_* pair set there, so exactly one is
+# driven.
 b7_leak_preserves_signal_status() {
     local rc=0
     rw_run_bg escapee sleep 3 || return 1
