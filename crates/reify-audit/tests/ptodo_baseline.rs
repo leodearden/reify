@@ -43,9 +43,15 @@
 //!   still emitted when the tree is clean and stdout is empty. Graceful-skip if
 //!   `git` is unavailable.
 //!
+//! (D) **fixture git-env hygiene** — always-on. Pins that the two fixture
+//!   command builders (C) drives the real binary through strip every
+//!   `reify_audit::git_env::REPO_REDIRECT_VARS` entry, and replays (C) under a
+//!   real ambient hook git environment. Rationale lives in
+//!   `reify_test_support::git_env`; not restated here.
+//!
 //! User-observable signal:
-//!   `cargo test -p reify-audit --test ptodo_baseline`               (A + A′ + C)
-//!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + A′ + B + C)
+//!   `cargo test -p reify-audit --test ptodo_baseline`               (A + A′ + C + D)
+//!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + A′ + B + C + D)
 //!
 //! On (B) failure — regenerate the baseline with the canonical generator
 //! (`src/bin/ptodo-baseline-gen.rs`). It is the SINGLE source of truth: it maps
@@ -64,9 +70,12 @@
 //!   worktree's `.taskmaster/` is untracked, so without it the lane degrades to
 //!   structural-only).
 
+mod common;
+
 use reify_audit::ptodo::{fingerprint, is_allowlisted, is_g_allow_finding, is_swept_ext};
 use std::collections::HashSet;
 use std::path::Path;
+use std::process::Command;
 
 /// Resolve the path to `ptodo-baseline.txt`:
 ///   CARGO_MANIFEST_DIR = `crates/reify-audit` → `./ptodo-baseline.txt`
@@ -462,14 +471,21 @@ fn untracked_marker(body: &str) -> String {
     format!("// {}{}: {body}\n", "TO", "DO")
 }
 
-/// Run `git` in `root` with ambient git env stripped, panicking on failure.
-fn git_in(root: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(root)
+/// A `git` command targeting the fixture repo at `root`, with the ambient
+/// repo-redirect git env stripped.
+fn fixture_git_cmd(root: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(root)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_INDEX_FILE");
+    cmd
+}
+
+/// Run `git` in `root` with ambient git env stripped, panicking on failure.
+fn git_in(root: &Path, args: &[&str]) {
+    let out = fixture_git_cmd(root)
+        .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
     assert!(
@@ -498,17 +514,23 @@ fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
     dir
 }
 
-/// Run the real generator binary against `root` with `REIFY_PTODO_TASKS_DB`
+/// The real generator binary aimed at `root`, with `REIFY_PTODO_TASKS_DB`
 /// removed (the β liveness lane then degrades fail-soft, which is what a
-/// hermetic fixture wants).
-fn run_generator(root: &Path) -> std::process::Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_ptodo-baseline-gen"))
-        .arg("--project-root")
+/// hermetic fixture wants) and the ambient repo-redirect git env stripped.
+fn generator_cmd(root: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ptodo-baseline-gen"));
+    cmd.arg("--project-root")
         .arg(root)
         .env_remove("REIFY_PTODO_TASKS_DB")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_INDEX_FILE");
+    cmd
+}
+
+/// Run the real generator binary against `root`.
+fn run_generator(root: &Path) -> std::process::Output {
+    generator_cmd(root)
         .output()
         .expect("ptodo-baseline-gen spawns")
 }
@@ -713,4 +735,83 @@ fn parse_scan_line_ignores_unrecognised_tokens() {
         "markers_examined must survive both an unrecognised token and a \
          non-canonical field order"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (D) Fixture git-env hygiene
+//
+// (C) above drives the real generator over hermetic tempdir git fixtures, and
+// these tests run ALWAYS-ON under `hooks/pre-commit` -> `hooks/project-checks`
+// -> `scripts/verify.sh` — i.e. inside a git process tree, which is exactly the
+// ambient condition `reify_test_support::git_env` documents. The failure mode
+// and its measured signatures are argued there and are deliberately not
+// restated here.
+// ---------------------------------------------------------------------------
+
+/// (D1) Both fixture command builders must remove EVERY repo-redirect git env
+/// var, iterating the canonical set rather than a local copy.
+///
+/// Iterating `reify_audit::git_env::REPO_REDIRECT_VARS` is the point: the set
+/// may GROW without editing this test (its deletion guard already lives at the
+/// definition site, `repo_redirect_vars_covers_the_removal_floor`), and a local
+/// list of names here would be precisely the "re-derive `REPO_REDIRECT_VARS` by
+/// hand" step that `reify_test_support::git_env::sanitize`'s doc names as how
+/// this bug class reaches a new helper.
+///
+/// Removals are read through `removed_vars` — `std` encodes `env_remove` as a
+/// `(key, None)` pair — so an overwrite, or a value merely inherited from the
+/// parent, cannot pass as a removal.
+///
+/// Hermetic and always-on: no tempdir and no git spawn, so no availability
+/// probe is needed.
+#[test]
+fn fixture_commands_remove_every_repo_redirect_var() {
+    let root = Path::new("/some/root");
+
+    for (label, cmd) in [
+        ("fixture_git_cmd", fixture_git_cmd(root)),
+        ("generator_cmd", generator_cmd(root)),
+    ] {
+        let removed = reify_test_support::git_env::removed_vars(&cmd);
+        for var in reify_audit::git_env::REPO_REDIRECT_VARS {
+            assert!(
+                removed.iter().any(|r| r == var),
+                "{label}() must REMOVE `{var}` (env_remove -> `(key, None)`), not \
+                 merely overwrite it; removals seen: {removed:?}"
+            );
+        }
+    }
+
+    // Separately: the hermeticity property (C1)/(C2) rest on. An ambient tasks
+    // DB would wake the β liveness lane and change the fingerprint set, so a
+    // rewrite of `generator_cmd` may not silently drop this removal.
+    let removed = reify_test_support::git_env::removed_vars(&generator_cmd(root));
+    assert!(
+        removed.iter().any(|r| r == "REIFY_PTODO_TASKS_DB"),
+        "generator_cmd() must REMOVE `REIFY_PTODO_TASKS_DB` so the fixture stays \
+         hermetic (an ambient tasks DB wakes the β liveness lane and changes the \
+         fingerprint set); removals seen: {removed:?}"
+    );
+}
+
+/// (D2) COMPANION — replay the (C) scan-evidence tests under a real *ambient*
+/// hook git environment, mirroring `cli.rs`'s
+/// `hook_env_replay_of_ptodo_git_fixture_tests`.
+///
+/// This is NOT the RED half of (D): it passes both before and after
+/// `fixture_git_cmd`/`generator_cmd` route through the shared sanitizer,
+/// because the shared harness poisons only the three vars git exports into a
+/// hook's process tree (`GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`) and the
+/// hand-rolled trio already removed exactly those. It is regression protection
+/// for the ambient condition itself — (D1) is what pins the rest of the set.
+///
+/// Floor 2 is the selection measured today: (C1)
+/// `generator_emits_scan_evidence_with_real_counts` and (C2)
+/// `generator_emits_scan_evidence_on_a_marker_free_repo`. (C3)
+/// `parse_scan_line_ignores_unrecognised_tokens` and this test's own name both
+/// fall outside the filter, so the replay cannot select itself and the floor is
+/// not vacuous.
+#[test]
+fn hook_env_replay_of_generator_scan_evidence_tests() {
+    common::git_env::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 2);
 }
