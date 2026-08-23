@@ -3207,6 +3207,158 @@ mod freshness_gate {
         );
     }
 
+    /// Write ONE done task pinned to `commit` over `path`, replacing whatever
+    /// `scenario()` put there.
+    ///
+    /// P1 SKIPS a task whose `done_at` is null (`src/p1_producer_orphan.rs:104`)
+    /// or whose `done_provenance.commit` is absent (`:126`), and `task_fixture`
+    /// above hardcodes `done_at: null`. A fixture that inherited either would
+    /// make the P1 leg vacuous no matter what the seam did — the run would
+    /// never reach `get_changed_symbols` and the breadcrumb assertion would be
+    /// asserting the absence of something unreachable.
+    ///
+    /// `since_sha` is derived by P1 as `{commit}^1`, which does NOT resolve in
+    /// `scenario()`'s one-commit repo. That is fine and deliberate: both SHAs
+    /// are passed verbatim into the `tools/call` arguments
+    /// (`src/jcodemunch_client.rs:1063-1070`) with no local git resolution, and
+    /// the mock errors the call regardless.
+    fn write_p1_done_task(path: &std::path::Path, commit: &str) {
+        let tasks = serde_json::json!([{
+            "task_id": "synthetic-per-call-p1",
+            "status": "done",
+            "files": ["crates/reify-audit/src/lib.rs"],
+            "done_provenance": {"kind": "merged", "commit": commit, "note": null},
+            "title": "Synthetic done task for the per-call fail-soft lock",
+            "prd": null,
+            "consumer_ref": null,
+            "audit_foundation": null,
+            "done_at": 1_700_000_000_u64
+        }]);
+        std::fs::write(path, serde_json::to_string_pretty(&tasks).expect("serialize"))
+            .expect("overwrite tasks.json with a P1-eligible done task");
+    }
+
+    /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
+    ///
+    /// This is the anti-rot lock for `jcodemunch_live.rs`'s
+    /// `PDEAD_CALL_BREADCRUMBS`. The seam tests over there prove
+    /// `assert_live_leg` FIRES on a given literal; they cannot prove that
+    /// literal is what the binary actually emits. This test observes the
+    /// breadcrumb come out of the REAL binary on the ordinary merge gate, so a
+    /// reword of the `eprintln!` at `src/jcodemunch_client.rs:1135` turns THIS
+    /// test red instead of silently reverting the capstone to vacuous.
+    ///
+    /// The sibling below (`serve_down_fail_soft_takes_precedence_over_a_stale_index`,
+    /// above) pins the CONSTRUCTION layer; this pins the PER-CALL layer. They
+    /// are independent: a per-call failure happens AFTER a successful
+    /// handshake, which is exactly what the first four assertions here
+    /// document — this run is indistinguishable from success without the
+    /// fifth.
+    ///
+    /// HERMETIC and gate-resident, like the rest of this module: no serve, no
+    /// network, no `uvx`, no `#[ignore]`.
+    #[test]
+    fn per_call_fail_soft_is_a_vacuous_pass_the_capstone_must_catch() {
+        let s = scenario();
+        // FRESH index, so the §4.3 gate ADMITS. Required: under a
+        // jcodemunch-only run set a stale/empty index hard-exits 125 BEFORE
+        // any `tools/call`, and no breadcrumb could ever be reached.
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+
+        // `None` => HTTP 200 carrying a top-level JSON-RPC `error` envelope,
+        // which `JcodemunchClient::call_tool` maps to `LoadError::Protocol` —
+        // landing on precisely the `Err` arm that prints the breadcrumb.
+        // `initialize` and `notifications/initialized` are still answered
+        // normally, so `RealJCodemunchOps::new` SUCCEEDS and the construction
+        // fail-soft stays silent.
+        let mock = spawn_mock_mcp(|_args| None);
+        let out = s.run("PDEAD", &["--jcodemunch-url", mock.url()]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // --- the four assertions that ALL PASS on this vacuous run ---
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "the gate must have ADMITTED this run — a refusal would mean no \
+             detector ever ran and the breadcrumb below is unreachable; \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("jcodemunch unreachable at"),
+            "the handshake must have SUCCEEDED, or this would be the \
+             construction layer rather than the per-call layer; stderr:\n{stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "the errored op returns Vec::new(), so PDEAD's array must be \
+             empty here; got {findings:?}\nstderr:\n{stderr}"
+        );
+
+        // --- the fifth, and the only one that can tell the difference ---
+        assert!(
+            stderr.contains("jcodemunch get_dead_code_v2:"),
+            "the real binary must emit the per-call fail-soft breadcrumb this \
+             run's emptiness is EXPLAINED BY. Every assertion above passed, so \
+             without this one the run is indistinguishable from a genuine \
+             zero-finding success. If the `eprintln!` at \
+             src/jcodemunch_client.rs:1135 was reworded, carry the new literal \
+             to jcodemunch_live.rs::PDEAD_CALL_BREADCRUMBS.\nstderr:\n{stderr}"
+        );
+    }
+
+    /// PER-CALL FAIL-SOFT, P1 leg — the anti-rot lock for the load-bearing
+    /// half of `jcodemunch_live.rs`'s `P1_CALL_BREADCRUMBS`.
+    ///
+    /// `find_references` is deliberately NOT asserted: it runs once per symbol
+    /// returned by `get_changed_symbols` (`src/p1_producer_orphan.rs:131/146`),
+    /// and that call errored, so it is unreachable here. Asserting it would be
+    /// a check that can never fire. Its literal is pinned by
+    /// `jcodemunch_live.rs`'s seam test only — an asymmetry recorded beside
+    /// the constant rather than papered over.
+    #[test]
+    fn per_call_fail_soft_on_the_p1_pair() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+        write_p1_done_task(&s.tasks_file, &s.live_head);
+
+        let mock = spawn_mock_mcp(|_args| None);
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "the gate must have ADMITTED this run; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("jcodemunch unreachable at"),
+            "the handshake must have SUCCEEDED; stderr:\n{stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "get_changed_symbols returned Vec::new(), so P1 has nothing to \
+             report; got {findings:?}\nstderr:\n{stderr}"
+        );
+
+        assert!(
+            stderr.contains("jcodemunch get_changed_symbols:"),
+            "the real binary must emit the per-call fail-soft breadcrumb. If \
+             the `eprintln!` at src/jcodemunch_client.rs:1074 was reworded, \
+             carry the new literal to \
+             jcodemunch_live.rs::P1_CALL_BREADCRUMBS.\nstderr:\n{stderr}"
+        );
+    }
+
     /// `--no-jcodemunch` PRECEDENCE — the explicit escape hatch bypasses the
     /// seam entirely, so it must bypass the gate too. An escape hatch that
     /// still hard-failed on index state would not be an escape hatch.
