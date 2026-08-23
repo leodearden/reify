@@ -355,11 +355,21 @@ fn first_unrepresentable_char(s: &str) -> Option<char> {
 /// keep this a total `Value → kind name` function rather than a
 /// caller-specific residue.
 ///
-/// This duplicates `reify_constraints::value_kind_label`'s variant list. The
-/// non-duplicating form is a `Value::kind_name()` inherent method both delegate
-/// to (the shape `Value::format_hover()` already uses), which lives in
-/// `crates/reify-ir/src/value.rs` — outside this task's locked scope, so it is
-/// filed as follow-up rather than done here.
+/// This duplicates `reify_constraints::value_kind_label`'s variant list
+/// (`crates/reify-constraints/src/lib.rs`). The non-duplicating form is a
+/// `Value::kind_name()` inherent method both delegate to (the shape
+/// `Value::format_hover()` already uses), which lives in
+/// `crates/reify-ir/src/value.rs` — outside task #5095's locked scope, so it is
+/// deferred to **task #6466**, which holds all three files.
+///
+/// What the deferral actually costs, stated precisely: both matches are
+/// exhaustive with no `_` arm, so a NEW `Value` variant breaks both to compile
+/// and cannot drift silently. What CAN drift is a *name* — `value_kind_label`
+/// enriches two arms (`Scalar<{dimension}>`, `Enum<{type_name}>`) where this one
+/// says plain `Scalar`/`Enum`, and a rename on either side is invisible to the
+/// compiler. That is tolerable here because the two strings feed different
+/// surfaces (constraint diagnostics vs. this serializer's MCP rejection text)
+/// and nothing compares them; it is not tolerable indefinitely, hence #6466.
 fn value_kind_name(value: &Value) -> &'static str {
     match value {
         Value::Bool(_) => "Bool",
@@ -713,25 +723,95 @@ mod tests {
         fn assert_error<E: std::error::Error>(e: &E) -> String {
             e.to_string()
         }
-        let e = err(&Value::Real(f64::NAN));
-        let rendered = assert_error(&e);
+        let rendered = assert_error(&err(&Value::Real(f64::NAN)));
         assert!(
             !rendered.is_empty(),
             "Display for RiLiteralError must render something"
         );
-        // Every variant renders non-empty and mentions nothing enormous.
-        for v in [
-            Value::Int(i64::MAX),
-            Value::String("{".into()),
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::PRESSURE,
-            },
-            Value::Undef,
-        ] {
-            let text = err(&v).to_string();
-            assert!(!text.is_empty(), "empty Display for {v:?}");
-            assert!(text.len() < 200, "Display for {v:?} is too verbose: {text}");
+    }
+
+    /// A `Value` whose `{:?}` dump would be enormous — a 1001-point sampled
+    /// field. Used to make the no-payload property below *witnessable*.
+    fn enormous_sampled_field() -> Value {
+        let n = 1001;
+        Value::SampledField(crate::SampledField {
+            name: "temperature_grid".to_owned(),
+            kind: crate::SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![1.0],
+            spacing: vec![0.001],
+            axis_grids: vec![(0..n).map(|i| f64::from(i) / 1000.0).collect()],
+            interpolation: crate::InterpolationKind::Linear,
+            data: (0..n).map(|i| f64::from(i) * 1.5).collect(),
+            oob_emitted: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Every rejection renders as its EXACT expected sentence.
+    ///
+    /// This replaces an earlier `text.len() < 200` assertion whose stated
+    /// purpose was to catch a `{value:?}` payload dump. That assertion could
+    /// not do the job in either direction: `UnsupportedValueKind` carries only
+    /// a `&'static str` kind name, so the payload is structurally unreachable
+    /// from `Display` and the test would have had to be rewritten before it
+    /// could ever fire — while the magic threshold *would* have fired
+    /// spuriously on a legitimate rewording.
+    ///
+    /// Pinning the exact string does the same job positively and cannot drift
+    /// on length: `SampledField` and `Matrix` are here with deliberately
+    /// enormous payloads (1001 samples, 4096 cells), so an implementation that
+    /// interpolated `{value:?}` fails on the *content*, not on a byte count.
+    /// They are also the two variants the old loop omitted entirely.
+    ///
+    /// The dimension case pins the message TEMPLATE and delegates the
+    /// dimension's own rendering to `DimensionVector`'s `Display`, which is
+    /// `dimension.rs`'s contract to change, not this module's.
+    #[test]
+    fn error_display_names_the_kind_and_carries_no_payload() {
+        let cases = [
+            (
+                Value::Real(f64::NAN),
+                "non-finite number has no .ri literal form".to_owned(),
+            ),
+            (
+                Value::Int(i64::MAX),
+                "integer 9223372036854775807 is outside the exactly-f64-representable range (±2^53)"
+                    .to_owned(),
+            ),
+            (
+                Value::String("{".into()),
+                "string contains '{', which a .ri string literal cannot carry verbatim".to_owned(),
+            ),
+            (
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::PRESSURE,
+                },
+                format!(
+                    "dimension {} has no bare built-in unit symbol to emit",
+                    DimensionVector::PRESSURE
+                ),
+            ),
+            (
+                enormous_sampled_field(),
+                "value kind `SampledField` has no .ri literal form".to_owned(),
+            ),
+            (
+                Value::Matrix(vec![vec![Value::Real(1.5); 64]; 64]),
+                "value kind `Matrix` has no .ri literal form".to_owned(),
+            ),
+            (
+                Value::Undef,
+                "value kind `Undef` has no .ri literal form".to_owned(),
+            ),
+        ];
+        for (v, expected) in cases {
+            assert_eq!(
+                err(&v).to_string(),
+                expected,
+                "rejection text drifted for a {} value",
+                value_kind_name(&v)
+            );
         }
     }
 
