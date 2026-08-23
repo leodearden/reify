@@ -168,8 +168,9 @@ structure def ClearanceGate {
     let fouls = intersects(housing, bracket)
     let gap = distance(housing, bracket)
 
-    // Pair the boolean with the scalar: `gap` alone would pass on a fully
-    // nested part, which reports a positive distance (trap 5).
+    // Pair the boolean with the scalar: `intersects` is exactly `d <= 0.0`
+    // with no tolerance argument (trap 6), so `not fouls` alone still admits
+    // a zero-gap face touch. `gap > 1mm` is what expresses the tolerance band.
     constraint not fouls
     constraint gap > 1mm
 }
@@ -238,9 +239,12 @@ rather than looking equally guarded.
           self-pair -> undef)     :: overlapping_cubes_one_pair_and_zero_clearance
                                   :: disjoint_cubes_no_pairs_and_positive_clearance
                                   :: single_body_self_pair_excluded
-  trap 5 (fully NESTED solid      UNPINNED — prose only. This is the rider that defeats the
-          reports POSITIVE dist)  obvious "overlap => 0" reading, so treat it as the
-                                  highest-value gap here.
+  trap 5 (full CONTAINMENT reads  UNPINNED HERE — prose only. Measured 2026-08-23: strictly
+          dist 0 / intersects     nested boxes, both argument orders, live disjoint control.
+          true, under OCCT)       The executable pin is task #6269's, landing in
+                                  crates/reify-eval/tests/harness_kernel_realization/
+                                  kernel_queries_intersects_smoke.rs. OCCT-scoped: Manifold
+                                  parity on a nested pair is unmeasured (task #6475).
   trap 6 (`d <= 0.0`)             kernel_queries_intersects_smoke.rs
                                   :: intersects_smoke_evals_expected_booleans. Source of
                                   truth is reify-eval/src/geometry_ops.rs's Bool(d <= 0.0).
@@ -279,9 +283,14 @@ gate.
 5. **No penetration depth.** `min_clearance` and `distance` both report `0` on boundary-crossing
    overlap — a kernel property, since OCCT's `BRepExtrema_DistShapeShape::Value()` is non-negative by
    construction and Manifold's `min_gap` matches — so neither can rank interference severity, and an
-   objective that minimises penetration is flat inside the interference region. Two traps ride along:
-   a solid fully **nested** inside another with no boundary contact returns a **positive** distance
-   (so "overlap ⇒ 0" is not a general rule — pair the scalar with `interferes_with`/`intersects` for
-   the boolean), and a self-pair `min_clearance(s, id, id)` returns `undef`, not `0`.
+   objective that minimises penetration is flat inside the interference region. One rider: a self-pair
+   `min_clearance(s, id, id)` returns `undef`, not `0`.
+   Full containment is **not** a blind spot. Under OCCT a solid strictly **nested** inside another,
+   with no boundary contact at all, likewise reads `distance = 0 m` and `intersects = true` — OCCT
+   classifies containment explicitly (`BRepExtrema_DistShapeShape::InnerSolution()`: "completely or
+   partially inside the solid"), and "non-negative by construction" includes zero. So
+   `constraint not fouls` covers nesting as well as boundary-crossing overlap. Measured
+   2026-08-23; the executable pin is task #6269's, in `kernel_queries_intersects_smoke.rs`.
+   Scoped to **OCCT** — Manifold's answer on a strictly nested pair is unmeasured (task #6475).
 6. **`intersects` is `d <= 0.0`.** Face-touching parts therefore read `true`, and there is no
    tolerance argument at any layer. For a tolerance band, write `distance(a, b) > tol` yourself.
