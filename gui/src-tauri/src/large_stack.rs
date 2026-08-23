@@ -74,7 +74,7 @@
 //!    `crates/reify-lsp/src/server.rs`, which is outside this module and would
 //!    also regress the stdio `reify lsp` CLI server (it relies on
 //!    `spawn_blocking` to keep its 2-worker runtime responsive). Tracked as
-//!    follow-up work.
+//!    task #6195.
 //! 2. **`main.rs::mcp_tool_call`** remains unrouted; it is task 5466's scope, and
 //!    joins the ENGINE lane as a lane choice rather than a redesign.
 //!

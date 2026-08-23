@@ -116,7 +116,7 @@ pub async fn lsp_request_impl(
 /// which are precisely the keystroke/cursor-frequency ones. Closing the four
 /// needs a change in `crates/reify-lsp/src/server.rs`, which would also regress
 /// the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to keep its
-/// 2-worker runtime responsive); tracked as follow-up rather than overclaimed
+/// 2-worker runtime responsive); tracked as task #6195 rather than overclaimed
 /// here.
 ///
 /// # Why this composition lives here, not inline in `main.rs`
