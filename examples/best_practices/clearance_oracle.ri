@@ -34,6 +34,18 @@ module clearance_oracle
 //   to `false` and `0.01 m`. Do not "fix" an indeterminate clearance constraint
 //   by deleting it — run it on a surface that can answer it.
 //
+//   CONTAINMENT — `intersects` and `distance` DO see full containment, not just
+//   boundary-crossing overlap. A solid fully nested inside another, with no
+//   boundary contact anywhere, reports `intersects = true` and `distance = 0 m`
+//   — NOT the nesting margin as a positive gap. So `constraint not fouls`
+//   covers a part swallowed whole, and a zero gap means "interfering", never
+//   "just touching". (OCCT's `BRepExtrema_DistShapeShape` classifies solid
+//   containment explicitly, via `InnerSolution()`.) Pinned, both argument
+//   orders and with a disjoint control alongside, by
+//   `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_intersects_smoke.rs`
+//   → `intersects_and_distance_detect_full_containment`; read the measured
+//   values there rather than trusting this paragraph.
+//
 //   ASSEMBLY-GRADE — for a real mechanism with joints and poses, use the
 //   `mechanism` / `body` / `snapshot` / `min_clearance` chain instead of a pair
 //   of raw queries. Worked example, with the GD&T virtual-condition boundary
