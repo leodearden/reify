@@ -2084,6 +2084,190 @@ test_build_rs_watches_all_compiled_inputs() {
     fi
 }
 
+test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
+    # The two halves of the attestation contract must agree on WHAT can hash —
+    # asserted BEHAVIOURALLY, by running build.rs on a host where `sha256sum` is
+    # unreachable and only `shasum` is, and reading what it actually stamped.
+    #
+    # WHY THIS SHAPE, and not the source-text guard it replaces (#5629 review
+    # round 4). The outgoing `test_build_rs_hasher_matches_the_shell_fallbacks`
+    # grepped build.rs and scripts/lib_portable.sh, and was MEASURED vacuous in
+    # three independent ways:
+    #   (a) `grep -A3 '"shasum"' build.rs | grep -q '256'` cannot catch a bare
+    #       `shasum` — the matched line is the HASHERS declaration, and the
+    #       literal `sha256sum` on that same line already supplies the `256`, so
+    #       rewriting the entry to ("shasum", &[]) (SHA-1!) still PASSES;
+    #   (b) the sed-extracted portable_sha256 body was substring-matched for both
+    #       binary names, and that function's own error string "neither sha256sum
+    #       nor shasum found on PATH." satisfies both iterations — so found=2
+    #       survives deleting both `command -v` arms outright;
+    #   (c) `grep -q` for a Rust string literal proves the literal appears
+    #       somewhere in the file, never that `sha256_of` is reached.
+    # It also violated this file's OWN standard: :790 refuses to grep for
+    # `set -euo pipefail` and :1876 refuses to grep for an env-var name, both on
+    # exactly this reasoning. So the guard is replaced, not merely repaired.
+    #
+    # MASKING BY OMISSION, not by shadowing, is load-bearing: build.rs's
+    # `try_hasher` maps ENOENT to Ok(None) (fall through to the next binary) but
+    # a present-but-failing binary to Err(()) (retry). A failing sha256sum stub
+    # would therefore exercise the RETRY path, not the FALLBACK path under test.
+    #
+    # NON-VACUITY IS MEASURED BY MUTATION: build.rs reduced to sha256sum-only
+    # writes the literal UNAVAILABLE (caught by assertion 1), and ("shasum", &[])
+    # — bare shasum, which is SHA-1 — writes 40-hex digests that fail assertions
+    # 2 and 3. That second mutation is precisely what the outgoing guard missed.
+    #
+    # scripts/lib_portable.sh stays deliberately OUT of
+    # scripts/verify-pipeline-infra-tests.txt: routing it would pull this whole
+    # suite's serial cargo checks into any task-scope verify touching that shared
+    # lib. The merge gate runs --include-infra, so this arm is always evaluated
+    # there; the exposure is one task-scope run, not a coverage hole.
+
+    # SKIP only on a PROVEN environment defect. `shasum` absent from the host
+    # means the fallback under test cannot exist here at all.
+    if ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: shasum not on PATH — the shasum-only fallback cannot be exercised on this host"
+        return 0
+    fi
+
+    local mask
+    mask=$(ts_masked_path_dir sha256sum) || return 1
+
+    # POSITIVELY assert the mask took effect before concluding anything from the
+    # run. Without this the test degrades into exactly the vacuity it replaces:
+    # a shim that quietly still resolves sha256sum would pass every assertion
+    # below while proving nothing about the fallback.
+    if env PATH="$mask" bash -c 'command -v sha256sum' >/dev/null 2>&1; then
+        echo ""
+        echo "  ASSERTION FAILED: sha256sum still resolves under the masked PATH ($mask)"
+        echo "  — the fixture is not simulating a shasum-only host, so nothing below"
+        echo "  would exercise build.rs's fallback."
+        return 1
+    fi
+    if ! env PATH="$mask" bash -c 'command -v shasum' >/dev/null 2>&1; then
+        echo ""
+        echo "  ASSERTION FAILED: shasum is on the host PATH but NOT under the masked"
+        echo "  PATH ($mask) — the shim dropped the very binary under test. That is a"
+        echo "  broken fixture, not an unsupported host."
+        return 1
+    fi
+
+    # Masked-toolchain preflight — the second PROVEN environment defect that may
+    # skip. A bare cargo failure below is a HARD FAIL, never a skip.
+    local pf
+    pf=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$pf'")
+    if ! env PATH="$mask" cargo --version >"$pf" 2>&1 || ! env PATH="$mask" cc --version >>"$pf" 2>&1; then
+        echo "  SKIP: masked toolchain preflight failed (cargo/cc unusable under the shim)"
+        cat "$pf"
+        return 0
+    fi
+
+    # Force a build-script re-run: grammar.js is watched, and touching it is
+    # mtime-only, so the worktree stays clean and the digests are unchanged.
+    touch "$TS_DIR/grammar.js"
+
+    local cargo_out
+    cargo_out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    local guard_rc=0
+    run_guarded_cargo_check "$cargo_out" env PATH="$mask" timeout 300 cargo check \
+        -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local run_dir
+    run_dir=$(ts_freshest_run_dir)
+    if [ -z "$run_dir" ]; then
+        if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+            echo "  SKIP: CARGO_TARGET_DIR=$CARGO_TARGET_DIR redirects build output away from"
+            echo "  $REPO_ROOT/target, so the freshly written stamp is not locatable here"
+            return 0
+        fi
+        echo ""
+        echo "  ASSERTION FAILED: cargo check succeeded but no"
+        echo "  $REPO_ROOT/target/*/build/tree-sitter-reify-*/output exists — build.rs"
+        echo "  cannot have run, so no stamp was written."
+        return 1
+    fi
+    local stamp="$run_dir/out/tree_sitter_inputs.stamp"
+    assert_file_nonempty "$stamp" || return 1
+
+    local content
+    content=$(cat "$stamp")
+
+    # (1) A REAL manifest, not the no-hasher sentinel. UNAVAILABLE here is the
+    # whole defect: the shell side computes a real fingerprint from shasum, so
+    # every archive on such a host becomes permanently unattestable, `check`
+    # prints PARTIAL and exits 0, and the guard is a silent no-op for that whole
+    # checkout — propagating through CoW lane seeding.
+    if [ "$content" = "UNAVAILABLE" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: build.rs stamped the literal UNAVAILABLE on a"
+        echo "  shasum-only host — it hashes with sha256sum only, while"
+        echo "  scripts/tree-sitter-freshness.sh falls back to 'shasum -a 256'."
+        echo "  Every archive here is then permanently unattestable."
+        return 1
+    fi
+
+    # (2) Shape: one <64-hex><two spaces><relpath> line per --list-inputs path,
+    # in that order. DERIVED from the script's own input enumeration, so the two
+    # sides cannot drift. 40-hex digests (bare `shasum` is SHA-1) fail here.
+    local -a inputs=()
+    local rel
+    while IFS= read -r rel; do
+        [ -n "$rel" ] && inputs+=("$rel")
+    done < <(bash "$FRESHNESS_SCRIPT" --list-inputs)
+    if [ "${#inputs[@]}" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: --list-inputs produced no paths — this test derives its"
+        echo "  expected manifest from that enumeration, so it cannot silently pass."
+        return 1
+    fi
+    local -a lines=()
+    local line
+    while IFS= read -r line; do
+        lines+=("$line")
+    done <<< "$content"
+    if [ "${#lines[@]}" -ne "${#inputs[@]}" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: stamp has ${#lines[@]} lines, --list-inputs has ${#inputs[@]} paths"
+        echo "  --- stamp ($stamp) ---"; cat "$stamp"
+        echo "  --- --list-inputs ---"; printf '%s\n' "${inputs[@]}"
+        return 1
+    fi
+    local i
+    for i in "${!inputs[@]}"; do
+        if [[ ! "${lines[$i]}" =~ ^([0-9a-f]{64})\ \ (.+)$ ]]; then
+            echo ""
+            echo "  ASSERTION FAILED: stamp line $((i + 1)) is not '<64 hex>  <relpath>':"
+            echo "    ${lines[$i]}"
+            echo "  A 40-hex digest here means build.rs invoked bare 'shasum' (SHA-1)"
+            echo "  instead of 'shasum -a 256'."
+            return 1
+        fi
+        if [ "${BASH_REMATCH[2]}" != "${inputs[$i]}" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: stamp line $((i + 1)) names '${BASH_REMATCH[2]}',"
+            echo "  --list-inputs line $((i + 1)) names '${inputs[$i]}' — the two halves of the"
+            echo "  attestation enumerate different inputs."
+            return 1
+        fi
+    done
+
+    # (3) The cross-hasher agreement contract in its strongest form: what shasum
+    # wrote INSIDE the mask must be byte-identical to what sha256sum computes
+    # OUTSIDE it. Anything else and every `check` verdict is meaningless.
+    if ! cmp -s "$stamp" <(bash "$FRESHNESS_SCRIPT" --print-fingerprint); then
+        echo ""
+        echo "  ASSERTION FAILED: the shasum-written stamp is not byte-identical to"
+        echo "  scripts/tree-sitter-freshness.sh --print-fingerprint (sha256sum)."
+        echo "  --- stamp ($stamp) ---"; cat "$stamp"
+        echo "  --- shell fingerprint ---"; bash "$FRESHNESS_SCRIPT" --print-fingerprint
+        return 1
+    fi
+}
+
 test_build_rs_hasher_matches_the_shell_fallbacks() {
     # The two halves of the attestation contract must agree on WHAT can hash.
     # build.rs writes $OUT_DIR/tree_sitter_inputs.stamp; the freshness script
