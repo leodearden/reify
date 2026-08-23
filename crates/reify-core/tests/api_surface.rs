@@ -302,7 +302,9 @@ fn units_flat_and_module_path() {
     // assertion — it fails to compile if the entry shape moves (to a struct, an
     // owned form, or a different factor type), which would silently change what
     // every table-driven guard iterates. The table's CONTENTS stay in
-    // `units.rs`, where the entries and their four guards live.
+    // `units.rs`, where the entries and the guards over them live — a count
+    // here would be one more hand-maintained number to drift, which is the
+    // exact defect this task removed.
     let table: &'static [(&'static str, f64, DimensionVector)] = BUILTIN_UNITS;
     assert!(!table.is_empty(), "the built-in unit table must be reachable");
     assert_eq!(BUILTIN_UNITS_MOD, table);
