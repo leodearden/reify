@@ -211,6 +211,7 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
+    // x is injected from trait HasX.
     let x_cell = get_value_cell_in(&module, "S", "x");
 
     // The cell should be a Let kind.
@@ -371,6 +372,7 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
+    // x is injected from trait HasX.
     let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
@@ -525,9 +527,9 @@ structure S : MixedLets {
         errors
     );
 
-    // The injected cell for `a` must have its inferred Length type, confirming
-    // Pass 2's `compile_expr` saw `b : Length` in scope and typed `b + 1mm`
-    // correctly.
+    // The injected cell for `a` (from trait MixedLets) must have its inferred
+    // Length type, confirming Pass 2's `compile_expr` saw `b : Length` in
+    // scope and typed `b + 1mm` correctly.
     let a_cell = get_value_cell_in(&module, "S", "a");
     assert_eq!(
         a_cell.cell_type,
@@ -577,9 +579,10 @@ structure S : WithParam {
         errors
     );
 
-    // The injected cell for `a` must carry the inferred Length type, confirming
-    // Pass 2's `compile_expr` saw `x : Length` in scope and typed `x + 1mm`
-    // as Length (not Real, which would indicate Pass 1 missed the Param arm).
+    // The injected cell for `a` (from trait WithParam) must carry the inferred
+    // Length type, confirming Pass 2's `compile_expr` saw `x : Length` in
+    // scope and typed `x + 1mm` as Length (not Real, which would indicate
+    // Pass 1 missed the Param arm).
     let a_cell = get_value_cell_in(&module, "S", "a");
     assert_eq!(
         a_cell.cell_type,
@@ -634,6 +637,7 @@ structure S : T {
         errors
     );
 
+    // x is injected from trait T.
     let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
@@ -998,6 +1002,7 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
+    // x is injected from trait HasX.
     let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
@@ -1061,6 +1066,7 @@ structure S : HasX {
         errors
     );
 
+    // x is injected from trait HasX.
     let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
@@ -1114,6 +1120,7 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
         errors
     );
 
+    // x is injected from trait HasX.
     let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
