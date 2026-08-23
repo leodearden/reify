@@ -1,6 +1,7 @@
 //! Neutral, fixture-agnostic scaffolding shared by pin tests in this harness:
-//! read a `.ri` fixture, compile it against the stdlib, and optionally build
-//! it with a real OCCT kernel (skipping cleanly when OCCT is absent).
+//! read a `.ri` fixture, compile it against the stdlib, optionally build it
+//! with a real OCCT kernel (skipping cleanly when OCCT is absent), and assert
+//! individual value cells of the result.
 //!
 //! NOT a former standalone `tests/<file>.rs` and deliberately holds no
 //! `#[test]` fn of its own — it is a support module, so nothing here shows up
@@ -31,17 +32,23 @@
 //! entry point through them. Adding a source-shaped entry point therefore added
 //! no second copy of the skip/build block.
 //!
-//! Register of entry points, in dependency order:
+//! Every `pub(crate)` entry point below is a thin composition of those two
+//! private cores, so each fn's own doc comment and signature remain the single
+//! source of truth for what it does — this header deliberately keeps no
+//! register of them to fall out of lockstep.
 //!
-//! | fn | source | builds with OCCT |
-//! |---|---|---|
-//! | `read_and_compile_fixture` | file at `path` | no |
-//! | `compile_and_build_with_occt` | file at `path` | yes (or skips) |
-//! | `build_source_with_occt` | inline `&str` | yes (or skips) |
+//! # Cell assertions
+//!
+//! The same reasoning covers `assert_bool_cell` / `assert_length_cell`: a
+//! pin's *reading* of a built `BuildResult` cell is as copy-pasteable as its
+//! building, and a message-format tweak in one copy silently desynchronises
+//! the rest. They live here so every pin in this harness reports a failing
+//! cell identically.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_ir::ExportFormat;
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_core::ValueCellId;
+use reify_ir::{ExportFormat, Value};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// Parses+compiles `source` against the stdlib, asserting it compiles cleanly.
 /// The compile core shared by every entry point below, so the assert-clean
@@ -49,10 +56,19 @@ use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 /// from.
 ///
 /// `what` is the caller-facing label used in the failure message.
+///
+/// Deliberately builds on the NON-asserting `compile_source_with_stdlib` rather
+/// than its `parse_and_compile_with_stdlib` sibling. The sibling already runs
+/// this same emptiness check internally
+/// (`reify-test-support/src/helpers.rs:463-468`) and panics with an unlabelled
+/// `compile errors: [...]`, which would make the labelled assert below
+/// unreachable dead code and leave a compile regression reported without
+/// naming WHICH fixture or pin broke. Going through the non-asserting entry
+/// point puts `what` back in the failure message.
 fn compile_source_fixture(source: &str, what: &str) -> reify_compiler::CompiledModule {
     // Validate fixture compilation unconditionally — a grammar/compile regression
     // should fail on every runner.
-    let compiled = parse_and_compile_with_stdlib(source);
+    let compiled = compile_source_with_stdlib(source);
     assert!(
         errors_only(&compiled).is_empty(),
         "{what} should compile with no error-severity diagnostics, got:\n{:#?}",
@@ -146,4 +162,81 @@ pub(crate) fn compile_and_build_with_occt(
 pub(crate) fn build_source_with_occt(source: &str, what: &str) -> Option<reify_eval::BuildResult> {
     let compiled = compile_source_fixture(source, what);
     build_compiled_with_occt(&compiled, what)
+}
+
+/// Asserts that `struct_name.cell_name` in `result` is `Value::Bool(expected)`.
+///
+/// Hoisted here (task #6269 amendment) because every real-OCCT pin in this
+/// harness reads its Bool cells the same way, and each copy of the read was
+/// re-deriving the same `ValueCellId::new` + `get` + `assert_eq!` shape — the
+/// same silent-drift risk in the *reading* of a `BuildResult` that this
+/// module's build helpers already close for the *producing* of one.
+pub(crate) fn assert_bool_cell(
+    result: &reify_eval::BuildResult,
+    struct_name: &str,
+    cell_name: &str,
+    expected: bool,
+) {
+    let cell = ValueCellId::new(struct_name, cell_name);
+    let actual = result.values.get(&cell);
+    assert_eq!(
+        actual,
+        Some(&Value::Bool(expected)),
+        "{struct_name}.{cell_name} should be Value::Bool({expected}), got: {actual:?}"
+    );
+}
+
+/// Asserts that `struct_name.cell_name` in `result` is a LENGTH `Value::Scalar`
+/// whose `si_value` matches `expected`.
+///
+/// `tolerance` selects the comparison, and the choice is load-bearing rather
+/// than stylistic:
+///
+/// - `tolerance <= 0.0` asserts EXACT `f64` equality. Correct when the kernel
+///   returns a classified literal rather than a computed extremum — e.g. OCCT's
+///   `SolidTreatment`/`InnerSolution()` containment path, which yields a literal
+///   `0.0`. A tolerance there would be strictly weaker and would blur
+///   "contained" (0.0) against "clear by a small margin" (a positive gap).
+/// - `tolerance > 0.0` asserts `|actual - expected| < tolerance`. Correct for a
+///   genuinely computed extremum; the caller is expected to DERIVE the epsilon
+///   from the geometry's representation error rather than tune it against an
+///   observed value.
+///
+/// Both arms name `struct_name.cell_name` and print the delta, so a failure in
+/// any pin in this harness reads identically.
+pub(crate) fn assert_length_cell(
+    result: &reify_eval::BuildResult,
+    struct_name: &str,
+    cell_name: &str,
+    expected: f64,
+    tolerance: f64,
+) {
+    let cell = ValueCellId::new(struct_name, cell_name);
+    let actual = result.values.get(&cell);
+    match actual {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == reify_core::DimensionVector::LENGTH => {
+            let delta = (si_value - expected).abs();
+            if tolerance > 0.0 {
+                assert!(
+                    delta < tolerance,
+                    "{struct_name}.{cell_name} si_value should be {expected} \
+                     (within {tolerance:.1e}), got {si_value:.15} (delta {delta:.3e})"
+                );
+            } else {
+                assert_eq!(
+                    *si_value, expected,
+                    "{struct_name}.{cell_name} si_value should be EXACTLY {expected} \
+                     — asserted exact, not within a tolerance — got {si_value:.17e} \
+                     (delta {delta:.3e})"
+                );
+            }
+        }
+        other => panic!(
+            "{struct_name}.{cell_name} should be Value::Scalar{{LENGTH, {expected}}}, \
+             got: {other:?}"
+        ),
+    }
 }

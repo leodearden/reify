@@ -51,18 +51,14 @@
 //! land silently and quietly falsify the `constraint not fouls` idiom that
 //! `examples/best_practices/clearance_oracle.ri` teaches.
 //!
-//! Measured on this branch with `reify eval` before the pin was written
-//! (`outer` = 20 mm box, `inner` = 10 mm box, both centred ⟹ 5 mm clear on
-//! every face; `disjoint` = 10 mm box translated 50 mm in X ⟹ 35 mm face gap):
+//! Provenance, deliberately NOT a second copy of the contract — the test
+//! body's assertions are authoritative and the geometry is described once, on
+//! `CONTAINMENT_SOURCE` below: all six cells were measured out-of-band with
+//! `reify eval` on this branch BEFORE the pin was written, and agreed
+//! cell-for-cell with what the test now asserts.
 //!
-//! ```text
-//! nested_hit = true    nested_gap = 0 m       (intersects/distance(outer, inner))
-//! nested_hit_rev = true nested_gap_rev = 0 m  (arguments swapped)
-//! apart_hit = false    apart_gap = 0.035 m    (disjoint control)
-//! ```
-//!
-//! The zero is exact, not a rounded epsilon — probed in-language on the same
-//! source: `g == 0mm` → true, `g > 0mm` → false, and `g * 1e12` → `0 m` (a
+//! The nested zero is exact, not a rounded epsilon — probed in-language on the
+//! same source: `g == 0mm` → true, `g > 0mm` → false, and `g * 1e12` → `0 m` (a
 //! 1e-16 epsilon scaled by 1e12 would have printed 1e-4). Mechanism: OCCT's
 //! `BRepExtrema_DistShapeShape` classifies solid containment explicitly via
 //! `SolidTreatment`/`InnerSolution()` ("True if one of the shapes is a solid
@@ -85,12 +81,19 @@
 use reify_core::ValueCellId;
 use reify_ir::Value;
 
-use super::fixture_scaffolding::{build_source_with_occt, compile_and_build_with_occt};
+use super::fixture_scaffolding::{
+    assert_bool_cell, assert_length_cell, build_source_with_occt, compile_and_build_with_occt,
+};
 
 const INTERSECTS_SMOKE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/kernel_queries/intersects_smoke.ri"
 );
+
+/// `tolerance` argument to `assert_length_cell` selecting EXACT `f64` equality
+/// rather than a window. Named so a call site reads as a deliberate choice
+/// instead of a bare `0.0` that could be mistaken for a forgotten epsilon.
+const EXACT: f64 = 0.0;
 
 /// Inline source for `intersects_and_distance_detect_full_containment` below.
 /// Deliberately test-owned rather than a corpus `.ri` — see the module header.
@@ -142,24 +145,13 @@ fn intersects_smoke_evals_expected_booleans() {
         return;
     };
 
-    // Helper: assert a Bool cell on IntersectsSmoke equals the expected value.
-    let assert_bool = |cell_name: &str, expected: bool| {
-        let cell = ValueCellId::new("IntersectsSmoke", cell_name);
-        let actual = result.values.get(&cell);
-        assert_eq!(
-            actual,
-            Some(&Value::Bool(expected)),
-            "IntersectsSmoke.{cell_name} should be Value::Bool({expected}), got: {actual:?}"
-        );
-    };
-
     // b_overlap translated 5mm in X → overlaps a (both span ±5mm centred at origin)
     // by 5mm in X → BRep min distance = 0.0 → intersects = true.
-    assert_bool("overlapping", true);
+    assert_bool_cell(&result, "IntersectsSmoke", "overlapping", true);
 
     // b_far translated 100mm in X → spans 95..105mm in X, ~90mm face gap from a
     // → BRep min distance ≈ 0.09m > 0.0 → intersects = false.
-    assert_bool("apart", false);
+    assert_bool_cell(&result, "IntersectsSmoke", "apart", false);
 
     // Pin §4 invariant #1: an inline geometry arg (CompiledExprKind::FunctionCall,
     // not ValueRef) is rejected by resolve_geometry_handle_arg → dispatch arm
@@ -199,83 +191,32 @@ fn intersects_and_distance_detect_full_containment() {
         return;
     };
 
-    // Same closure shape as `intersects_smoke_evals_expected_booleans` above,
-    // so both tests in this module fail with visually consistent output.
-    let assert_bool = |cell_name: &str, expected: bool| {
-        let cell = ValueCellId::new("ContainmentPin", cell_name);
-        let actual = result.values.get(&cell);
-        assert_eq!(
-            actual,
-            Some(&Value::Bool(expected)),
-            "ContainmentPin.{cell_name} should be Value::Bool({expected}), got: {actual:?}"
-        );
-    };
-
-    // Assert an exactly-zero LENGTH. NOT a tolerance: OCCT's
-    // `SolidTreatment`/`InnerSolution()` path classifies containment and
-    // returns a literal 0.0 rather than a computed near-zero extremum,
-    // confirmed in-language on this branch (`g == 0mm` → true, `g > 0mm` →
-    // false, `g * 1e12` → 0 m). An epsilon here would be strictly weaker and
-    // would blur the very distinction this pin exists to make: "contained"
-    // (0.0) vs "clear by the nesting margin" (a positive gap).
-    let assert_exactly_zero_length = |cell_name: &str| {
-        let cell = ValueCellId::new("ContainmentPin", cell_name);
-        let actual = result.values.get(&cell);
-        match actual {
-            Some(Value::Scalar {
-                si_value,
-                dimension,
-            }) if *dimension == reify_core::DimensionVector::LENGTH => {
-                assert_eq!(
-                    *si_value, 0.0,
-                    "ContainmentPin.{cell_name} si_value should be EXACTLY 0.0 \
-                     (full containment, not a positive nesting gap), got {si_value:.17e}"
-                );
-            }
-            other => panic!(
-                "ContainmentPin.{cell_name} should be Value::Scalar{{LENGTH, 0.0}}, got: {other:?}"
-            ),
-        }
-    };
-
     // inner (±5mm) is strictly inside outer (±10mm) with no boundary contact,
     // yet the pair still reads as fouling with a zero gap — both orders.
-    assert_bool("nested_hit", true);
-    assert_exactly_zero_length("nested_gap");
-    assert_bool("nested_hit_rev", true);
-    assert_exactly_zero_length("nested_gap_rev");
+    //
+    // The gap assertions are EXACT, not a tolerance: OCCT's
+    // `SolidTreatment`/`InnerSolution()` path classifies containment and returns
+    // a literal 0.0 rather than a computed near-zero extremum, confirmed
+    // in-language on this branch (`g == 0mm` → true, `g > 0mm` → false,
+    // `g * 1e12` → 0 m). An epsilon here would be strictly weaker and would blur
+    // the very distinction this pin exists to make: "contained" (0.0) vs "clear
+    // by the nesting margin" (a positive gap).
+    assert_bool_cell(&result, "ContainmentPin", "nested_hit", true);
+    assert_length_cell(&result, "ContainmentPin", "nested_gap", 0.0, EXACT);
+    assert_bool_cell(&result, "ContainmentPin", "nested_hit_rev", true);
+    assert_length_cell(&result, "ContainmentPin", "nested_gap_rev", 0.0, EXACT);
 
     // Disjoint control, in the SAME source so a regression toward the imagined
     // blind spot (a positive nested distance / `false`) fails loudly alongside
     // the proof that this query surface discriminates at all.
-    assert_bool("apart_hit", false);
-
-    let apart_gap_cell = ValueCellId::new("ContainmentPin", "apart_gap");
-    let apart_gap_actual = result.values.get(&apart_gap_cell);
-    match apart_gap_actual {
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == reify_core::DimensionVector::LENGTH => {
-            // outer's +X face sits at 0.010 m and disjoint's -X face at
-            // 0.050 - 0.005 = 0.045 m, so the gap is 0.035 m. Epsilon
-            // rationale (unlike the nested case, this IS a tolerance — but a
-            // derived one, not a tuned one): both closest features are
-            // axis-aligned PLANAR faces at coordinates exactly representable in
-            // decimal, so the extremum is a difference of two doubles carrying
-            // ~1e-17 representation error. 1e-9 sits 8 orders above that noise
-            // floor and 7 orders below the 35 mm signal.
-            let expected = 0.035_f64;
-            let epsilon = 1e-9;
-            assert!(
-                (si_value - expected).abs() < epsilon,
-                "ContainmentPin.apart_gap si_value should be 0.035 (35 mm face gap), \
-                 got {si_value:.15} (delta {delta:.3e})",
-                delta = (si_value - expected).abs()
-            );
-        }
-        other => panic!(
-            "ContainmentPin.apart_gap should be Value::Scalar{{LENGTH, ≈0.035}}, got: {other:?}"
-        ),
-    }
+    //
+    // outer's +X face sits at 0.010 m and disjoint's -X face at
+    // 0.050 - 0.005 = 0.045 m, so the gap is 0.035 m. Epsilon rationale (unlike
+    // the nested case, this IS a tolerance — but a DERIVED one, not a tuned
+    // one): both closest features are axis-aligned PLANAR faces at coordinates
+    // exactly representable in decimal, so the extremum is a difference of two
+    // doubles carrying ~1e-17 representation error. 1e-9 sits 8 orders above
+    // that noise floor and 7 orders below the 35 mm signal.
+    assert_bool_cell(&result, "ContainmentPin", "apart_hit", false);
+    assert_length_cell(&result, "ContainmentPin", "apart_gap", 0.035, 1e-9);
 }
