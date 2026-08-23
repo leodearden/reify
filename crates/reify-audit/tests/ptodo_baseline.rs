@@ -471,15 +471,14 @@ fn untracked_marker(body: &str) -> String {
     format!("// {}{}: {body}\n", "TO", "DO")
 }
 
-/// A `git` command targeting the fixture repo at `root`, with the ambient
-/// repo-redirect git env stripped.
+/// A `git` command targeting the fixture repo at `root`.
+///
+/// Built through the shared `git -C <root>` constructor, as this crate's
+/// sibling git-fixture test binaries are. The rule lives in
+/// [`reify_audit::git_env`] and the failure mode it prevents in
+/// [`reify_test_support::git_env`]; neither is restated here.
 fn fixture_git_cmd(root: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(root)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE");
-    cmd
+    common::git_env::git_cmd(root)
 }
 
 /// Run `git` in `root` with ambient git env stripped, panicking on failure.
@@ -516,15 +515,18 @@ fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
 
 /// The real generator binary aimed at `root`, with `REIFY_PTODO_TASKS_DB`
 /// removed (the β liveness lane then degrades fail-soft, which is what a
-/// hermetic fixture wants) and the ambient repo-redirect git env stripped.
+/// hermetic fixture wants).
+///
+/// Sanitized DIRECTLY rather than built through [`reify_audit::git_env`]'s
+/// `git -C <root>` constructor: the program here is a reify binary that runs
+/// git internally, not git itself, which is the other-shape case
+/// [`reify_test_support::git_env::sanitize`] sanctions.
 fn generator_cmd(root: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ptodo-baseline-gen"));
     cmd.arg("--project-root")
         .arg(root)
-        .env_remove("REIFY_PTODO_TASKS_DB")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE");
+        .env_remove("REIFY_PTODO_TASKS_DB");
+    reify_audit::git_env::sanitize(&mut cmd);
     cmd
 }
 

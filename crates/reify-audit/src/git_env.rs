@@ -48,7 +48,10 @@
 //! an enumerated census of call sites in a doc comment rots the moment one is
 //! renamed, and silently reads as authoritative while it does. Within this
 //! crate the rule currently holds with no exceptions — production `RealGitOps`
-//! and the `tests/` fixture helpers alike build through [`command`].
+//! and the `tests/` git-fixture helpers alike build through [`command`], and
+//! the second sweep shape above (a spawn of a binary that runs git internally,
+//! where the program is not git and `-C <root>` is therefore not the right
+//! shape) routes through [`sanitize`] directly instead.
 
 use std::path::Path;
 use std::process::Command;
