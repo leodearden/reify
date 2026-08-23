@@ -1,6 +1,6 @@
 // DimensionalSolver: Nelder-Mead based constraint solver for auto parameters.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
@@ -1248,6 +1248,97 @@ fn derived_seed_box(problem: &ResolutionProblem) -> Vec<(f64, f64)> {
     )
 }
 
+/// Auto-param indices that appear in at least one constraint conjunct the bound
+/// derivation could NOT read as a bound on them (task #5711, esc-5711-3).
+///
+/// [`derive_from_expr`]/[`derive_from_side`] recognise only three syntactic
+/// shapes (`p OP c`, `p − k OP c`, `k − p OP c`) on `Ge`/`Gt`/`Le`/`Lt` with a
+/// CONSTANT, auto-free far operand. Every other legitimate way a user can bound
+/// a param derives to `None`:
+///
+/// - `Eq` is skipped outright by the op rule, yet `constraint x == 10mm` is the
+///   canonical DSL way to determine a strict auto
+///   (`examples/auto_binding_sites.ri`);
+/// - coefficient/nonlinear forms (`2*t > 3mm`, `t*t > 4`) match no shape;
+/// - a COUPLED bound (`y < 5mm - x`) has a far operand naming another auto, so
+///   [`constant_operand_value`] rejects it for BOTH params.
+///
+/// Those `None`s are derivation BLIND SPOTS, not evidence that the user left a
+/// side unbounded — the distinction [`strict_autos_constraint_bracketed`] needs
+/// in order to reserve its `false` verdict for params positively confirmed
+/// unbounded. A param is recorded here when some conjunct MENTIONS it (via
+/// `CompiledExpr::collect_value_refs`, which walks every expression kind, not
+/// just the three shapes) while yielding NO bound at all for it.
+///
+/// Conjuncts are split on `And` before the test, mirroring
+/// [`derive_from_expr`]'s own recursion: in `x > 1mm AND y < 5mm - x` the first
+/// conjunct is readable and the second is not, and per-conjunct granularity is
+/// what keeps `x` from being scored readable on the strength of a DIFFERENT
+/// conjunct while the one that actually mentions it is opaque.
+///
+/// Pure function of its inputs — no solve, no I/O, no mutation.
+fn params_in_underivable_constraints(
+    auto_params: &[AutoParam],
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    if auto_params.is_empty() {
+        return out;
+    }
+    let auto_index: HashMap<ValueCellId, usize> = auto_params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id.clone(), i))
+        .collect();
+    for (_, expr) in constraints {
+        collect_underivable(
+            expr,
+            &auto_index,
+            values,
+            functions,
+            auto_params.len(),
+            &mut out,
+        );
+    }
+    out
+}
+
+/// Recursive worker for [`params_in_underivable_constraints`]: splits on `And`,
+/// then scores one leaf conjunct by re-running [`derive_from_expr`] on it into a
+/// scratch buffer and comparing what it bounded against what it mentions.
+fn collect_underivable(
+    expr: &CompiledExpr,
+    auto_index: &HashMap<ValueCellId, usize>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    n_params: usize,
+    out: &mut HashSet<usize>,
+) {
+    if let CompiledExprKind::BinOp {
+        op: BinOp::And,
+        left,
+        right,
+    } = &expr.kind
+    {
+        collect_underivable(left, auto_index, values, functions, n_params, out);
+        collect_underivable(right, auto_index, values, functions, n_params, out);
+        return;
+    }
+    let mut scratch = vec![DerivedInterval::default(); n_params];
+    derive_from_expr(expr, auto_index, values, functions, &mut scratch);
+    for id in expr.collect_value_refs() {
+        if let Some(&i) = auto_index.get(&id)
+            && scratch
+                .get(i)
+                .is_some_and(|iv| iv.lo.is_none() && iv.hi.is_none())
+        {
+            out.insert(i);
+        }
+    }
+}
+
 /// Is EVERY strict (`!p.free`) auto param's derived interval bounded on BOTH
 /// sides by the user's own constraints?
 ///
@@ -1260,10 +1351,29 @@ fn derived_seed_box(problem: &ResolutionProblem) -> Vec<(f64, f64)> {
 /// - Both sides constraint-derived ⇒ the objective's argmin is taken over an
 ///   interval the USER authored, so the resolved value is fixed by the user's
 ///   model: well-determined.
-/// - A side missing ⇒ that side is supplied by [`default_bounds_for`], a
+/// - A side missing AND the param mentioned in no constraint the derivation
+///   failed to read ⇒ that side is supplied by [`default_bounds_for`], a
 ///   solver-internal default the user never wrote, so the resolved value is
 ///   DEFAULT-BOUNDS-determined rather than model-determined: exactly the
 ///   non-determinedness §11.6 exists to catch.
+/// - A side missing but the param present in `underivable` ⇒ ABSTAIN, counting
+///   the param as bracketed (esc-5711-3). The `None` there is a derivation
+///   BLIND SPOT, not evidence about the user's model: `Eq`, coefficient,
+///   nonlinear and coupled bounds are all invisible to
+///   [`derive_param_intervals`] (see [`params_in_underivable_constraints`]),
+///   and letting one masquerade as "the user did not bound this side" converts
+///   a valid, bounded γ model into a user-facing `error: strict auto parameter
+///   resolution is not uniquely determined`. MEASURED before the fix, on this
+///   branch: γ + `1mm<x<4mm ∧ y>1mm ∧ y < 5mm - x` reported
+///   `ConstraintNonUnique` even though the region is bounded (x>1mm ⇒ y<4mm)
+///   and the plain-`Minimize` path accepted the IDENTICAL constraints. `false`
+///   is thereby reserved for params the derivation POSITIVELY confirms are
+///   constraint-unbounded on a side.
+///
+/// Abstention is checked per-param against a MISSING SIDE, not against "no
+/// interval data at all": in the coupled example above `x` has a readable
+/// lower bound and only its upper side is opaque, so an all-or-nothing
+/// abstention test would still have errored on it.
 ///
 /// Free params are exempt: they carry no §11.6 obligation at all, and
 /// [`finalise_uniqueness`] only reaches `verify_uniqueness` when at least one
@@ -1286,15 +1396,17 @@ fn derived_seed_box(problem: &ResolutionProblem) -> Vec<(f64, f64)> {
 fn strict_autos_constraint_bracketed(
     auto_params: &[AutoParam],
     intervals: &[DerivedInterval],
+    underivable: &HashSet<usize>,
 ) -> bool {
     auto_params
         .iter()
         .enumerate()
         .filter(|(_, p)| !p.free)
         .all(|(i, _)| {
-            intervals
-                .get(i)
-                .is_some_and(|iv| iv.lo.is_some() && iv.hi.is_some())
+            underivable.contains(&i)
+                || intervals
+                    .get(i)
+                    .is_some_and(|iv| iv.lo.is_some() && iv.hi.is_some())
         })
 }
 
@@ -2681,7 +2793,10 @@ fn score_solution(problem: &ResolutionProblem, values: &HashMap<ValueCellId, Val
 ///
 /// When `problem.objective` carries the γ `cost_robustness_tradeoff` marker
 /// (task #4791) this function does not perturb at all: it returns
-/// [`strict_autos_constraint_bracketed`] directly, before the re-solve below.
+/// [`strict_autos_constraint_bracketed`] directly, before the re-solve below,
+/// with [`params_in_underivable_constraints`] supplying the abstention
+/// evidence that keeps a derivation blind spot (`Eq`, coefficient, nonlinear
+/// or coupled bounds) from masquerading as an unbounded side (esc-5711-3).
 ///
 /// **Why the perturbation machinery is STRUCTURALLY INAPPLICABLE here.**
 /// [`solve_cost_robustness_tradeoff`] is SEED-DEPENDENT BY CONSTRUCTION — its
@@ -2825,7 +2940,17 @@ fn verify_uniqueness(
             &problem.current_values,
             &problem.functions,
         );
-        let bracketed = strict_autos_constraint_bracketed(&problem.auto_params, &intervals);
+        // esc-5711-3: a param whose missing side is attributable to a
+        // constraint the derivation could not READ abstains rather than
+        // reporting non-uniqueness — see `params_in_underivable_constraints`.
+        let underivable = params_in_underivable_constraints(
+            &problem.auto_params,
+            &problem.constraints,
+            &problem.current_values,
+            &problem.functions,
+        );
+        let bracketed =
+            strict_autos_constraint_bracketed(&problem.auto_params, &intervals, &underivable);
         // debug!, deliberately NOT warn!: solver_tracing.rs's
         // `normal_solve_emits_zero_warns` expectation and step-4's exact-WARN-count
         // assertion must both stay untouched by this branch.
@@ -4589,6 +4714,8 @@ mod tests {
 
     #[test]
     fn strict_autos_constraint_bracketed_two_sided_returns_true() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         let params = vec![bracketed_test_param("t", false)];
@@ -4598,13 +4725,15 @@ mod tests {
         iv.push_hi(0.004, true);
 
         assert!(
-            strict_autos_constraint_bracketed(&params, &[iv]),
+            strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
             "a strict auto bracketed on BOTH sides is constraint-determined"
         );
     }
 
     #[test]
     fn strict_autos_constraint_bracketed_missing_hi_returns_false() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         let params = vec![bracketed_test_param("t", false)];
@@ -4615,7 +4744,7 @@ mod tests {
         iv.push_lo(0.001, true);
 
         assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv]),
+            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
             "a missing upper side means the value is default-bounds-determined, not \
              model-determined"
         );
@@ -4623,6 +4752,8 @@ mod tests {
 
     #[test]
     fn strict_autos_constraint_bracketed_missing_lo_returns_false() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         let params = vec![bracketed_test_param("t", false)];
@@ -4630,25 +4761,33 @@ mod tests {
         iv.push_hi(0.004, true);
 
         assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv]),
+            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
             "a missing lower side is symmetric with a missing upper side"
         );
     }
 
     #[test]
     fn strict_autos_constraint_bracketed_unbounded_returns_false() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         let params = vec![bracketed_test_param("t", false)];
 
         assert!(
-            !strict_autos_constraint_bracketed(&params, &[DerivedInterval::default()]),
+            !strict_autos_constraint_bracketed(
+                &params,
+                &[DerivedInterval::default()],
+                &HashSet::new()
+            ),
             "a strict auto with NEITHER side constrained is entirely default-bounds-determined"
         );
     }
 
     #[test]
     fn strict_autos_constraint_bracketed_free_params_are_exempt() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         // A bracketed STRICT param alongside an entirely unbracketed FREE one.
@@ -4661,7 +4800,11 @@ mod tests {
         bracketed.push_hi(0.004, true);
 
         assert!(
-            strict_autos_constraint_bracketed(&params, &[bracketed, DerivedInterval::default()]),
+            strict_autos_constraint_bracketed(
+                &params,
+                &[bracketed, DerivedInterval::default()],
+                &HashSet::new()
+            ),
             "free params carry no §11.6 obligation (finalise_uniqueness only calls \
              verify_uniqueness when at least one param is strict), so an unbracketed free \
              param must not veto the verdict"
@@ -4670,6 +4813,8 @@ mod tests {
 
     #[test]
     fn strict_autos_constraint_bracketed_no_strict_params_is_vacuously_true() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         let params = vec![
@@ -4680,7 +4825,8 @@ mod tests {
         assert!(
             strict_autos_constraint_bracketed(
                 &params,
-                &[DerivedInterval::default(), DerivedInterval::default()]
+                &[DerivedInterval::default(), DerivedInterval::default()],
+                &HashSet::new()
             ),
             "with no strict params the §11.6 obligation is vacuous and the predicate holds"
         );
@@ -4688,6 +4834,8 @@ mod tests {
 
     #[test]
     fn strict_autos_constraint_bracketed_index_beyond_intervals_returns_false() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         // Two params, ONE interval — a length mismatch is a bug in the caller.
@@ -4700,7 +4848,7 @@ mod tests {
         iv.push_hi(0.004, true);
 
         assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv]),
+            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
             "a strict param with no corresponding interval must read as NOT bracketed — \
              preserving solutions_agree's loud-not-silent contract rather than silently \
              defaulting to 'bracketed'"
@@ -4709,6 +4857,8 @@ mod tests {
 
     #[test]
     fn strict_autos_constraint_bracketed_strict_bounds_still_count() {
+        use std::collections::HashSet;
+
         use super::{DerivedInterval, strict_autos_constraint_bracketed};
 
         let params = vec![bracketed_test_param("t", false)];
@@ -4727,12 +4877,219 @@ mod tests {
         };
 
         assert!(
-            strict_autos_constraint_bracketed(&params, &[strict_both]),
+            strict_autos_constraint_bracketed(&params, &[strict_both], &HashSet::new()),
             "a strict (`>`/`<`) bound still SUPPLIES that side"
         );
         assert!(
-            strict_autos_constraint_bracketed(&params, &[non_strict_both]),
+            strict_autos_constraint_bracketed(&params, &[non_strict_both], &HashSet::new()),
             "a non-strict (`>=`/`<=`) bound must give the same verdict as a strict one"
+        );
+    }
+
+    // ---- abstention on an UNREADABLE constraint (esc-5711-3) ----
+    //
+    // `derive_param_intervals` recognises only three syntactic shapes with a
+    // constant far operand, so `Eq`, coefficient/nonlinear and coupled bounds
+    // all derive to `None`. Those `None`s are derivation BLIND SPOTS, and
+    // reading one as "the user did not bound this side" turns a valid, bounded
+    // γ model into `error: strict auto parameter resolution is not uniquely
+    // determined`. `params_in_underivable_constraints` is the evidence source
+    // that keeps the predicate's `false` reserved for params POSITIVELY
+    // confirmed unbounded; the integration-level counterparts live in
+    // `tests/cost_robustness_tradeoff_blend.rs`.
+
+    /// A readable one-sided bound flags NOTHING: `q >= 1.0` is exactly the
+    /// shape `derive_from_side` handles, so the missing upper side really is
+    /// `default_bounds_for`'s and must keep reporting non-determinedness.
+    #[test]
+    fn params_in_underivable_constraints_readable_bound_flags_nothing() {
+        use reify_ir::BinOp;
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Ge, &q, 1.0)]);
+
+        assert!(
+            super::params_in_underivable_constraints(&params, &constraints, &ValueMap::new(), &[])
+                .is_empty(),
+            "a bound the derivation CAN read is positive evidence, not a blind spot"
+        );
+    }
+
+    /// `constraint q == 5.0` — skipped outright by `derive_from_expr`'s op rule,
+    /// yet the canonical DSL way to determine a strict auto
+    /// (`examples/auto_binding_sites.ri`). Must be flagged.
+    #[test]
+    fn params_in_underivable_constraints_flags_eq() {
+        use reify_ir::BinOp;
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Eq, &q, 5.0)]);
+
+        assert_eq!(
+            super::params_in_underivable_constraints(&params, &constraints, &ValueMap::new(), &[]),
+            std::collections::HashSet::from([0]),
+            "`Eq` determines the param but derives no interval — a blind spot, not an \
+             unbounded side"
+        );
+    }
+
+    /// A COUPLED bound (`y < 5 - x`) has a far operand naming another auto, so
+    /// `constant_operand_value` rejects it and NEITHER param gets a bound —
+    /// both must be flagged.
+    #[test]
+    fn params_in_underivable_constraints_flags_coupled_pair() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let x = reify_core::ValueCellId::new("Derive", "x");
+        let y = reify_core::ValueCellId::new("Derive", "y");
+        let params = vec![real_auto_param(x.clone()), real_auto_param(y.clone())];
+        // `y < 5 - x`
+        let rhs = CompiledExpr::binop(
+            BinOp::Sub,
+            real_lit(5.0),
+            real_ref(&x),
+            Type::dimensionless_scalar(),
+        );
+        let coupled = CompiledExpr::binop(BinOp::Lt, real_ref(&y), rhs, Type::Bool);
+        let constraints = as_constraints(vec![coupled]);
+
+        assert_eq!(
+            super::params_in_underivable_constraints(&params, &constraints, &ValueMap::new(), &[]),
+            std::collections::HashSet::from([0, 1]),
+            "a coupled bound is unreadable for BOTH the near and the far param"
+        );
+    }
+
+    /// A COEFFICIENT bound (`2*q > 3`) matches none of the three shapes.
+    #[test]
+    fn params_in_underivable_constraints_flags_coefficient_form() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let scaled = CompiledExpr::binop(
+            BinOp::Mul,
+            real_lit(2.0),
+            real_ref(&q),
+            Type::dimensionless_scalar(),
+        );
+        let constraints = as_constraints(vec![CompiledExpr::binop(
+            BinOp::Gt,
+            scaled,
+            real_lit(3.0),
+            Type::Bool,
+        )]);
+
+        assert_eq!(
+            super::params_in_underivable_constraints(&params, &constraints, &ValueMap::new(), &[]),
+            std::collections::HashSet::from([0]),
+            "`2*q > 3` bounds q at 1.5 — the derivation just cannot read it"
+        );
+    }
+
+    /// Conjuncts are scored SEPARATELY: an `And` of two readable bounds flags
+    /// nothing, and mixing in an unreadable conjunct flags only what that
+    /// conjunct mentions opaquely.
+    #[test]
+    fn params_in_underivable_constraints_splits_conjunctions() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let both_readable = CompiledExpr::binop(
+            BinOp::And,
+            cmp_ref_lit(BinOp::Ge, &q, 1.0),
+            cmp_ref_lit(BinOp::Le, &q, 4.0),
+            Type::Bool,
+        );
+
+        assert!(
+            super::params_in_underivable_constraints(
+                &params,
+                &as_constraints(vec![both_readable]),
+                &ValueMap::new(),
+                &[],
+            )
+            .is_empty(),
+            "`And` must recurse exactly as `derive_from_expr` does, not be treated as one \
+             opaque leaf"
+        );
+
+        let mixed = CompiledExpr::binop(
+            BinOp::And,
+            cmp_ref_lit(BinOp::Ge, &q, 1.0),
+            cmp_ref_lit(BinOp::Eq, &q, 5.0),
+            Type::Bool,
+        );
+
+        assert_eq!(
+            super::params_in_underivable_constraints(
+                &params,
+                &as_constraints(vec![mixed]),
+                &ValueMap::new(),
+                &[],
+            ),
+            std::collections::HashSet::from([0]),
+            "a readable conjunct must not launder an unreadable sibling that mentions the \
+             same param"
+        );
+    }
+
+    /// The predicate ABSTAINS (reads as bracketed) for a strict param whose
+    /// missing side is attributable to an unreadable constraint — and only
+    /// then. Same fixture, empty evidence set ⇒ still `false`, which is what
+    /// keeps `gamma_strict_auto_one_sided_stays_non_unique` green.
+    #[test]
+    fn strict_autos_constraint_bracketed_abstains_for_underivable_param() {
+        use std::collections::HashSet;
+
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![bracketed_test_param("t", false)];
+        // Lower side readable (`t > 1mm`); upper side opaque.
+        let mut iv = DerivedInterval::default();
+        iv.push_lo(0.001, true);
+
+        assert!(
+            strict_autos_constraint_bracketed(&params, &[iv], &HashSet::from([0])),
+            "a missing side traceable to a constraint the derivation could not READ must \
+             abstain, not report non-determinedness"
+        );
+        assert!(
+            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
+            "with no unreadable-constraint evidence the SAME interval must still report \
+             default-bounds-determined"
+        );
+    }
+
+    /// Abstention is per-param and keyed on a MISSING SIDE, not on "no interval
+    /// data at all": one abstaining param must not excuse a sibling the
+    /// derivation positively confirms is one-sided.
+    #[test]
+    fn strict_autos_constraint_bracketed_abstention_does_not_leak_across_params() {
+        use std::collections::HashSet;
+
+        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+
+        let params = vec![
+            bracketed_test_param("t", false),
+            bracketed_test_param("u", false),
+        ];
+        let mut one_sided = DerivedInterval::default();
+        one_sided.push_lo(0.001, true);
+
+        assert!(
+            !strict_autos_constraint_bracketed(
+                &params,
+                &[one_sided, one_sided],
+                &HashSet::from([0]),
+            ),
+            "param 1 has no unreadable-constraint evidence, so the verdict must stay false"
         );
     }
 

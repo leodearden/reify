@@ -375,3 +375,190 @@ fn gamma_strict_auto_one_sided_stays_non_unique() {
         ),
     }
 }
+
+// ── γ + a bound the DERIVATION cannot read (task #5711, esc-5711-3) ───────
+//
+// `strict_autos_constraint_bracketed` reads its evidence out of
+// `derive_param_intervals`, which recognises only three syntactic shapes
+// (`p OP c`, `p - k OP c`, `k - p OP c`) on `Ge`/`Gt`/`Le`/`Lt` with a
+// CONSTANT, auto-free far operand. Every other legitimate way to bound a
+// param — `Eq` (skipped outright), a coefficient (`2*t > 3mm`), a nonlinear
+// form, or a COUPLED bound naming another auto (`y < 5mm - x`) — derives to
+// `None`, and a `None` read as "the user did not bound this side" turns a
+// perfectly bounded γ model into a user-facing `error: strict auto parameter
+// resolution is not uniquely determined`.
+//
+// A derivation BLIND SPOT must never masquerade as positive evidence of
+// under-determinedness. The three fixtures below pin the ABSTAIN rule: when a
+// strict param's missing side is attributable to a constraint the derivation
+// could not read, `verify_uniqueness` falls back to "cannot prove non-unique"
+// (returns `true`) instead of manufacturing a `ConstraintNonUnique`. `false`
+// stays reserved for params the derivation POSITIVELY confirms are
+// constraint-unbounded on a side — which is exactly
+// `gamma_strict_auto_one_sided_stays_non_unique` above, still green.
+
+/// Builds `x_id == bound_si_m` as a `CompiledExpr`.
+fn eq_expr(x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
+    let length_dim = DimensionVector::LENGTH;
+    let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: length_dim });
+    let bound = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: bound_si_m,
+            dimension: length_dim,
+        },
+        Type::Scalar { dimension: length_dim },
+    );
+    CompiledExpr::binop(BinOp::Eq, x_ref, bound, Type::Bool)
+}
+
+/// Builds `k * x_id > bound_si_m` — a COEFFICIENT form, outside the three
+/// shapes `derive_from_side` recognises.
+fn scaled_gt_expr(x_id: &ValueCellId, k: f64, bound_si_m: f64) -> CompiledExpr {
+    let length_dim = DimensionVector::LENGTH;
+    let dimensionless = DimensionVector::DIMENSIONLESS;
+    let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: length_dim });
+    let k_lit = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: k,
+            dimension: dimensionless,
+        },
+        Type::Scalar { dimension: dimensionless },
+    );
+    let scaled = CompiledExpr::binop(
+        BinOp::Mul,
+        k_lit,
+        x_ref,
+        Type::Scalar { dimension: length_dim },
+    );
+    let bound = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: bound_si_m,
+            dimension: length_dim,
+        },
+        Type::Scalar { dimension: length_dim },
+    );
+    CompiledExpr::binop(BinOp::Gt, scaled, bound, Type::Bool)
+}
+
+/// Builds `y_id < total_si_m - x_id` — a COUPLED bound: `y`'s upper side is
+/// supplied by the user's model, but names another auto, so
+/// `constant_operand_value` rejects the far operand and no bound is derived
+/// for EITHER param.
+fn coupled_lt_expr(y_id: &ValueCellId, total_si_m: f64, x_id: &ValueCellId) -> CompiledExpr {
+    let length_dim = DimensionVector::LENGTH;
+    let y_ref = CompiledExpr::value_ref(y_id.clone(), Type::Scalar { dimension: length_dim });
+    let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: length_dim });
+    let total = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: total_si_m,
+            dimension: length_dim,
+        },
+        Type::Scalar { dimension: length_dim },
+    );
+    let rhs = CompiledExpr::binop(
+        BinOp::Sub,
+        total,
+        x_ref,
+        Type::Scalar { dimension: length_dim },
+    );
+    CompiledExpr::binop(BinOp::Lt, y_ref, rhs, Type::Bool)
+}
+
+/// A STRICT γ problem over `auto_ids`, with caller-supplied constraints.
+fn strict_problem_with(
+    auto_ids: &[ValueCellId],
+    cost_id: &ValueCellId,
+    lambda: f64,
+    constraints: Vec<CompiledExpr>,
+) -> ResolutionProblem {
+    ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: auto_ids
+            .iter()
+            .map(|id| AutoParam {
+                id: id.clone(),
+                param_type: Type::Scalar { dimension: DimensionVector::LENGTH },
+                bounds: None,
+                free: false,
+            })
+            .collect(),
+        constraints: constraints
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (constraint_id("CostRobustnessTradeoff", i as u32), e))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::cost_robustness_tradeoff(
+            money_expr_x_per_mm(cost_id),
+            lambda,
+        )),
+        functions: vec![].into(),
+    }
+}
+
+/// Asserts the solve did NOT report `ConstraintNonUnique`.
+fn assert_not_non_unique(problem: &ResolutionProblem, what: &str) {
+    if let SolveResult::Infeasible { diagnostics } = DimensionalSolver.solve(problem) {
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+            "{what}: the derivation could not READ this bound, which is not evidence the user \
+             failed to write one — the γ predicate must abstain (cannot prove non-unique) \
+             rather than report ConstraintNonUnique. diagnostics: {diagnostics:?}"
+        );
+    }
+}
+
+/// `constraint t == 2mm` — the canonical DSL way to determine a strict auto
+/// (`examples/auto_binding_sites.ri`) — is skipped outright by
+/// `derive_from_expr`'s op rule, so BOTH derived sides are `None`. That must
+/// abstain, not error.
+#[test]
+fn gamma_strict_auto_eq_determined_is_not_non_unique() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let problem = strict_problem_with(
+        std::slice::from_ref(&t_id),
+        &t_id,
+        0.5,
+        vec![eq_expr(&t_id, 0.002)],
+    );
+    assert_not_non_unique(&problem, "Eq-determined strict auto");
+}
+
+/// A COEFFICIENT lower bound (`2*t > 3mm`, i.e. `t > 1.5mm`) paired with a
+/// readable upper bound (`t < 4mm`). The interval is bounded on both sides by
+/// the user's own model; only the derivation cannot see the lower one.
+#[test]
+fn gamma_strict_auto_coefficient_bound_is_not_non_unique() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let problem = strict_problem_with(
+        std::slice::from_ref(&t_id),
+        &t_id,
+        0.5,
+        vec![scaled_gt_expr(&t_id, 2.0, 0.003), lt_expr(&t_id, 0.004)],
+    );
+    assert_not_non_unique(&problem, "coefficient-bounded strict auto");
+}
+
+/// The reviewer's measured case [B]: `1mm < x < 4mm ∧ y > 1mm ∧ y < 5mm - x`.
+/// The region is bounded and well-determined (x > 1mm ⇒ y < 4mm), and the
+/// plain-`Minimize` path accepts the identical constraints — but `y`'s upper
+/// bound names another auto, so `derive_from_side` yields `None` for it.
+#[test]
+fn gamma_strict_autos_coupled_bound_is_not_non_unique() {
+    let x_id = ValueCellId::new("CostRobustnessTradeoff", "x");
+    let y_id = ValueCellId::new("CostRobustnessTradeoff", "y");
+    let problem = strict_problem_with(
+        &[x_id.clone(), y_id.clone()],
+        &x_id,
+        0.5,
+        vec![
+            gt_expr(&x_id, 0.001),
+            lt_expr(&x_id, 0.004),
+            gt_expr(&y_id, 0.001),
+            coupled_lt_expr(&y_id, 0.005, &x_id),
+        ],
+    );
+    assert_not_non_unique(&problem, "coupled multi-param bound");
+}
