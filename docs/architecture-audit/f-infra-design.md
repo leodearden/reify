@@ -298,6 +298,27 @@ whatever landed after `X`. P5 now selects the diff base by ancestry
 `main..<commit>` for an un-landed branch tip. That is also what makes a
 deletion visible, which the pre-done gate's removal/rename rescue depends on.
 
+**Fail-safe direction is INVERTED on this path, and must be corrected for.**
+Every git seam in `reify-audit` fail-safes to `false`/empty on error. In the
+sweep that converges on "no finding" — the safe direction. On the `--pre-done`
+path the same defaults converge on a `High` that REFUSES a state transition, so
+an infrastructure hiccup inside the 30 s hook subprocess is otherwise
+indistinguishable from a genuine phantom-done. Two guards restore the safe
+direction: a one-fork probe that `main` resolves at all
+(`git merge-base --is-ancestor main main`), run only once something is already
+absent so the healthy flip pays nothing for it; and a truncation flag on the
+`PRE_DONE_SIBLING_SCAN_CAP` (50) break, since the corroborating commit may be
+one the capped scan never inspected. Either downgrades the refusal to an
+advisory `Low` carrying its reason — still emitted and visible, but exit 0, so
+it cannot block the flip. **A refusal must rest on evidence actually gathered.**
+
+One consequence for readers of the corroboration legs: `log_grep` matches the
+whole commit message but `LOG_GREP_FORMAT` (`%H%x09%s`) returns only the
+subject, so the digit-boundary collision filter can only adjudicate hits whose
+subject contains the id. A hit matched on the body or a trailer is KEPT
+unchanged — dropping it would silently narrow "reject digit collisions" into
+"reject every body-only reference".
+
 ### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
 
 `scripts/reify-audit-predone-wrapper.sh` and the `/audit` skill both materialize their TaskMetadata snapshots through a single canonical jq filter at `scripts/reify-audit-snapshot-filter.jq`. The filter takes a fused-memory `tools/call get_tasks` JSON-RPC response on stdin and emits a JSON array of TaskMetadata-shaped objects (matching `crates/reify-audit/src/lib.rs:127-158`).

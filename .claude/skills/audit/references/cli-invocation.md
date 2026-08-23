@@ -201,14 +201,14 @@ $ cat /tmp/out.json
 
 Skill behaviour: parse empty array, write per-run JSON with `findings: []`, report "0 findings" to user.
 
-### High-severity run (2 High findings)
+### High-severity run (1 High + 1 Medium for one task)
 
 ```
 $ reify-audit --task 3242 2>/tmp/out.json; echo "exit=$?"
 reify-audit: 2 finding(s):
   [High] P5PhantomDone task=3242: metadata.files mismatch / commit not reachable from main
-  [High] P5PhantomDone task=3242: metadata.status=done but no task_completed event in runs.db
-exit=2
+  [Medium] P5MetadataFilesGitignored task=3242: metadata.files contains gitignored entry — strip per project_steward_metadata_files_gitignore_falsepositive.md
+exit=1
 
 $ cat /tmp/out.json
 [
@@ -220,16 +220,28 @@ $ cat /tmp/out.json
     "evidence": [{"MetadataFiles": {"entries": ["crates/reify-x/src/never_landed.rs"]}}]
   },
   {
-    "pattern": "P5PhantomDone",
-    "severity": "High",
+    "pattern": "P5MetadataFilesGitignored",
+    "severity": "Medium",
     "task_id": "3242",
-    "summary": "metadata.status=done but no task_completed event in runs.db",
-    "evidence": [{"RunsDb": {"table": "events", "key": "task_id=3242 AND event_type=task_completed"}}]
+    "summary": "metadata.files contains gitignored entry — strip per project_steward_metadata_files_gitignore_falsepositive.md",
+    "evidence": [{"MetadataFiles": {"entries": ["target/debug/generated.rs"]}}]
   }
 ]
 ```
 
-Skill behaviour: exit code 2 (2 High findings); parse 2 findings; escalate both via `mcp__escalation__escalate_info`; write per-run JSON with `action_taken: "escalated"` for each.
+Skill behaviour: exit code 1 (the exit code counts **High** findings only, so a
+Medium alongside does not raise it); parse 2 findings; route each by severity
+per `references/severity-routing.md`; write per-run JSON with the action taken
+for each.
+
+**At most one `P5PhantomDone` per task id.** `check_task` calls `check_one`
+exactly once per task and `check_one` returns `Option<Finding>`, so the
+phantom-done corroboration legs are mutually exclusive — you will never see two
+`P5PhantomDone` rows for the same `task_id` in one run. A task CAN carry a
+`P5PhantomDone` plus one of the independent per-task passes
+(`P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`), which
+is the multi-finding shape above. Two `P5PhantomDone` rows in one run always
+mean two distinct task ids.
 
 ### `--pre-done` landing gate (the D-1 hook path)
 
@@ -262,7 +274,23 @@ exits non-zero and the transition is refused.
 
 **Break-glass:** `REIFY_AUDIT_PREDONE_WARN_ONLY=1` downgrades that refusal to
 `Low`, making the gate advisory (exit 0). The finding is still emitted, with
-`[warn-only] ` prefixed to the summary above. Default is ARMED.
+`[warn-only] ` prefixed to the summary above. Default is ARMED. It is scoped to
+this finding only — a sweep `High` is unaffected by it.
+
+**Never refuses on incomplete evidence.** Every git leg fail-safes to
+`false`/empty, which on this path would converge on a blocking `High`, so two
+guards downgrade to an advisory `Low` (exit 0) instead, prefixing
+`[advisory — <reason>] ` to the summary:
+- `git degraded: MAIN_BASE did not resolve` — the one-fork probe
+  (`git merge-base --is-ancestor main main`) failed, so "absent from main" is
+  the fail-safe default rather than an observation;
+- `incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP…` — the
+  task-referencing-commit scan was truncated at 50, so the corroborating commit
+  may simply be one that was never inspected (a `reify-audit:` breadcrumb is
+  also written to stderr).
+
+Read an `[advisory` prefix as "the gate could not decide", NOT as "this task is
+phantom-done at low confidence".
 
 Note the SWEEP deliberately still emits nothing for a provenance-less `done`
 task (guard A1) — that is what keeps the 4075/4464 false-positive storm closed.
