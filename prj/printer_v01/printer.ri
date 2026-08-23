@@ -1,3 +1,5 @@
+module printer
+
 // printer_v01 — single-file integration.
 //
 // Multi-material CoreXY toolchanger build. See docs/projects/printer_v01.md
@@ -49,15 +51,10 @@
 //    live x_head/y_head tracking (a future live-input feature).
 //
 // VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
-// `aux` — realised + inspectable but default_visible=false (GUI auto-hide is
-// task 3904/T6; the Outline eye-icon tri-state full/semi/hidden works today).
+// `aux` — realised + inspectable but hidden by default (aux auto-hide, task
+// 3904/T6 — landed; the Outline eye-icon tri-state full/semi/hidden toggles it).
 
 #version(0.1)
-
-// ── Derived dimensions ──────────────────────────────────────────────────────
-
-/// Linear acceleration (m/s²).
-type Acceleration = Length / Time / Time
 
 // ── Construction primitives (centred; rods/tendons along local +Z) ──────────
 
@@ -125,12 +122,13 @@ pub structure CarriageBlock {
 /// composing site stands it on the axis it should turn about. Axle bolt + bearing
 /// shields are not modelled.
 ///
-/// GROOVE SHAPE: the groove is RECTANGULAR (flat-bottomed: two retaining flanges
-/// either side of a recessed core). A true semicircular seat MATCHING the round
-/// tendon profile wants `torus` (fn torus(major,minor)->Solid is spec'd) — but
-/// torus is NOT a runtime geometry builtin yet (the dispatch has cylinder/sphere/
-/// revolve/union/… but no torus/cone), so the round seat is deferred to that fix
-/// (or a revolve-of-profile). Filed as a dogfood gap.
+/// GROOVE SHAPE: a SEMICIRCULAR seat matching the round tendon profile — a
+/// `torus` (tube radius = groove_width/2 = the tendon radius) subtracted from
+/// the solid rim at the mid-plane, its tube CENTRE on the rim surface, so the
+/// seat is exactly the half-round channel the rope beds into: seat bottom at
+/// sheave_r − groove_width/2, rope centre (pitch circle) at sheave_r ==
+/// sheave_od/2 == the r_pitch every composing site uses. (Was a rectangular
+/// flat-bottomed groove while `torus` was missing — that gap landed as #4157.)
 ///
 /// Body is ONE inlined union/difference tree so the boolean operands do NOT
 /// auto-surface as stray meshes — only `body` surfaces (scalar `let`s are
@@ -140,16 +138,15 @@ pub structure IdlerPulley {
     param brg_od    : Length = 22mm
     param brg_bore  : Length = 8mm
     param brg_width : Length = 7mm
-    // Sheave (flanged grooved wheel pressed on the bearing OD).
-    param sheave_od    : Length = 36mm   // flange (outer) diameter
-    param groove_depth : Length = 3mm    // radial depth, rim → groove bottom
-    param groove_width : Length = 6mm    // == tendon diameter (the seat width)
-    param flange_width : Length = 2mm    // each retaining flange
+    // Sheave (grooved wheel pressed on the bearing OD).
+    param sheave_od    : Length = 36mm   // rim (outer) diameter == rope pitch circle
+    param groove_width : Length = 6mm    // == tendon diameter (seat width; depth = half)
+    param flange_width : Length = 2mm    // rim shoulder either side of the seat
 
     let brg_r       = brg_od / 2
     let sheave_r    = sheave_od / 2
-    let groove_r    = sheave_r - groove_depth          // recessed groove-bottom radius
     let groove_half = groove_width / 2
+    let sheave_w    = groove_width + flange_width * 2   // full rim width
     let bore_len    = groove_width + flange_width * 3   // through-bore length (> sheave width)
 
     let body = union(
@@ -158,23 +155,249 @@ pub structure IdlerPulley {
             translate(cylinder(brg_r, brg_width), 0mm, 0mm, 0mm - brg_width / 2),
             translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
         ),
-        // Sheave: two retaining flanges (full radius) + a recessed grooved core,
-        // bored to the bearing OD (press fit).
+        // Sheave: solid rim with the semicircular seat cut at the mid-plane
+        // (torus tube centred ON the rim surface), bored to the bearing OD
+        // (press fit).
         difference(
-            union(
-                union(
-                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, groove_half),
-                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, 0mm - groove_half - flange_width)
-                ),
-                translate(cylinder(groove_r, groove_width), 0mm, 0mm, 0mm - groove_half)
+            difference(
+                translate(cylinder(sheave_r, sheave_w), 0mm, 0mm, 0mm - sheave_w / 2),
+                torus(sheave_r, groove_half)
             ),
             translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
         )
     )
 
     constraint sheave_od > brg_od
-    constraint groove_r > brg_r
+    constraint sheave_r - groove_half > brg_r
     constraint brg_od > brg_bore
+}
+
+/// Drive capstan (copied verbatim from dev_capstan.ri — single-file, no
+/// cross-file import in v0.1): dual-anchor winch drum, axis = local +Z, centred.
+/// Both ends of each belt loop anchor to it; rotation reels one end in / pays the
+/// other out. Carries BOTH windings of the belt's ±z moment pair (axially
+/// adjacent on the one drum). Smooth core at root-Ø + two retaining flanges +
+/// axial shaft bore. Groove helix not modelled until #5342 (helix wires
+/// unsweepable) lands — `lead` is the (clearance) pitch.
+///
+/// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
+/// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
+/// band = active_turns·lead ≈ 63mm (= the shuttle stroke); helix angle ≈ 2.7°.
+pub structure Capstan {
+    param rope_dia    : Length = 6mm
+    /// D/d ratio
+    ///  Tendon-life lever. Larger ratio -> shallower bends -> longer life.
+    ///    8 ≈ Vectran-friendly.
+    ///  Sets mechanical advantage for drive. Larger -> Higher top speed, lower Acceleration.
+    param d_ratio     : Real   = 8.0
+    let drum_d : Length = rope_dia * d_ratio
+    /// Helical pitch. CLEARANCE lead (> rope_dia) so adjacent wraps don't rub/wedge
+    /// (wedging would drift the effective Ø → transmission-ratio error).
+    param lead        : Length = 7mm
+    /// Max per-belt rope feed = X-travel + Y-travel (documentation; drives turns).
+    param feed        : Length = 1300mm
+    /// Active wrap turns ≈ feed / (π·drum_Ø).
+    let active_turns : Real  = feed / (pi * drum_d)
+    /// Dead (anchored) turns total, both ends — keep tension off the anchors.
+    param dead_total  : Real   = 4.0
+    /// Windings per drum = the belt's ±z moment pair (documentation; one drum band).
+    param windings    : Int    = 2
+    param bore_dia    : Length = 19mm     // motor shaft
+
+    let drum_r     = drum_d / 2
+    let flange_r   = drum_r + rope_dia * 1.5      // stands proud of the rope crest
+    let flange_w   = 6mm
+    let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
+    let bore_r     = bore_dia / 2
+
+    // One inlined tree: core + two flanges, bored through. (No intermediate geometry
+    // lets — they would auto-surface as stray meshes.)
+    let body = difference(
+        union(
+            union(
+                translate(cylinder(drum_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
+                translate(cylinder(flange_r, flange_w), 0mm, 0mm, groove_len / 2)
+            ),
+            translate(cylinder(flange_r, flange_w), 0mm, 0mm, 0mm - groove_len / 2 - flange_w)
+        ),
+        translate(cylinder(bore_r, groove_len + flange_w * 4), 0mm, 0mm, 0mm - groove_len / 2 - flange_w * 2)
+    )
+
+    constraint drum_r > bore_r
+    constraint flange_r > drum_r
+    constraint lead > rope_dia        // clearance lead
+    constraint d_ratio > 0.0
+}
+
+/// Fairlead carrier frame — a light rectangular COLLAR around the drum: two
+/// XZ side plates outboard of the pulley planes, joined by two YZ end webs
+/// outboard of the vertical tendon runs; open top/bottom so the drum and all
+/// four verticals pass straight through. The collar translates along Z with
+/// the wrap band (stroke ≈ the Capstan band extent). Pulley axles/bosses
+/// span the plate-to-pulley gap (not modelled — same idealization as the
+/// IdlerPulley axle bolts); the light guide rail that takes the ΔT-scale
+/// dynamic residuals is not modelled yet.
+pub structure FairleadFrame {
+    param half_x  : Length = 80mm   // collar half-width across X
+    param half_z  : Length = 72mm   // collar half-height (covers the pulley extremes)
+    param side_y  : Length = 40mm   // side-plate mid-plane |y|
+    param plate_t : Length = 8mm
+    param web_t   : Length = 8mm
+
+    let neg_side = 0mm - side_y
+
+    let body = union(
+        union(
+            translate(box(half_x * 2, plate_t, half_z * 2), 0mm, side_y,   0mm),
+            translate(box(half_x * 2, plate_t, half_z * 2), 0mm, neg_side, 0mm)
+        ),
+        union(
+            translate(box(web_t, side_y * 2, half_z * 2), half_x - web_t / 2,       0mm, 0mm),
+            translate(box(web_t, side_y * 2, half_z * 2), 0mm - half_x + web_t / 2, 0mm, 0mm)
+        )
+    )
+
+    constraint half_x > 0mm
+    constraint half_z > 0mm
+    constraint side_y > plate_t / 2
+}
+
+/// Fairlead-equipped drive unit — ONE capstan + its FOUR fairlead guide
+/// pulleys + the carrier collar (FairleadFrame) + provisional lead segments.
+///
+/// DEFERRED VARIANT (Leo, 2026-07-23): DOUBLING the tendon count (4 windings
+/// per capstan) could cancel the dynamic F_z and M_y residuals too — and
+/// possibly M_z. Parked until this two-tendon version is fully designed.
+///
+/// Local frame: capstan axis = +Z at the origin; +y faces the machine (the
+/// feed side). The pulleys take each lead's LAST corner: they turn the
+/// vertical descents (fed by drive-plane routing idlers, not yet modelled)
+/// into horizontal runs that enter the drum windings tangentially.
+///
+/// GEOMETRY (agreed 2026-07-22): every fairlead pulley's centre (groove)
+/// plane is TANGENTIAL to the capstan pitch cylinder, and every spin axis
+/// lies in XY, parallel to Y. The two planes satisfying both are the
+/// XZ-parallel tangent planes at y = ±cap_pitch_r; they carry all four
+/// pulleys — the LOWER winding's pair on the machine side (+y), the UPPER
+/// winding's pair outboard (−y), one winding per plane so leads never share
+/// a plane (dev_capstan.ri sketch convention). In each plane the pair sits
+/// left/right of the drum (±pulley_x): the rope descends on the pulley's
+/// outboard side, wraps its lower quarter, and leaves horizontally toward
+/// the tangent line x = 0, entering the wrap at its winding's band height.
+/// The pair is split ±lead_split in Z — a winding's two rope ends exit at
+/// different band heights (which end is higher depends on wrap sense;
+/// nominal assignment here). DEFERRED DETAIL: band-migration tracking (the
+/// translating-shuttle function) and the exact end heights vs travel.
+pub structure CapstanUnit {
+    /// Fairlead pulley pitch radius — threaded INTO the pulley subs as
+    /// sheave_od = 2*this, so it is the single source (not hand-matched).
+    param r_pitch  : Length = 18mm
+    /// Pulley lateral stand-off from the drum axis (groove-plane distance
+    /// from drum centre to pulley centre, along X).
+    param pulley_x : Length = 45mm
+
+    sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    // All drum-coupled dimensions DERIVE from the capstan sub's own cells
+    // (parent-reads-child-let verified 2026-07-23; no hand-kept literals —
+    // resize the Capstan and the fairlead follows).
+    let cap_pitch_r = self.capstan.drum_r + self.capstan.rope_dia / 2
+    let flange_r    = self.capstan.flange_r
+    /// Upper/lower winding-band centres: the two windings split the groove
+    /// band in half, so their centres sit at ± a quarter of it.
+    let winding_z   = self.capstan.groove_len / 4
+    /// Nominal Z split of a winding's two rope-end exits (an eighth of the
+    /// band = half the winding: mid-migration positions of the two ends).
+    let lead_split  = self.capstan.groove_len / 8
+
+    let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // leaf +Z (spin) → Y
+    let neg_x     = 0mm - pulley_x
+    let y_front   = cap_pitch_r          // machine-side tangent plane
+    let y_rear    = 0mm - cap_pitch_r    // outboard tangent plane
+
+    // ── STATIC-BALANCED pulley configuration (agreed 2026-07-23) ────────────
+    // Exhaustive force/moment enumeration (64 configs): exactly 4 mirror-image
+    // configurations zero ALL static force+moment components on the rigid
+    // fairlead; this is the chosen one. Conditions (Leo's constraint set,
+    // confirmed + sharpened): opposite sides take each winding's band-top
+    // exit (upper winding top LEFT, lower winding top RIGHT — the M_y couple
+    // flip); IN-leads (band-top under forward drive) both enter from ABOVE,
+    // OUT-leads (band-bottom) both from BELOW — one per tangent plane, same
+    // vertical sense per role, which cancels frame forces (2 up / 2 down)
+    // AND M_x (equal-and-opposite y per role). M_z cancels via the L/R
+    // horizontal pairs. Same-handed windings migrate together, and a uniform
+    // z-shift adds zero net load, so balance holds across the whole stroke.
+    // Residual DYNAMIC loads under drive torque (tension T0±ΔT) are the
+    // irreducible 4ΔT vertical + 2·(band-sep)·2ΔT about Y + 4·pitch_r·ΔT
+    // about Z — carried by the light fairlead guide; they scale with ΔT
+    // only, never the pre-tension. The resulting pulley centres are
+    // CENTROSYMMETRIC about the drum centre (a visible balance check).
+    //
+    // ABOVE-entry pulleys: vertical run rises to the frame; wrap = lower
+    // quarter → centre sits r_pitch ABOVE the drum-entry height. BELOW-entry
+    // pulleys: vertical run drops below the drive block (below-routing to be
+    // modelled); wrap = upper quarter → centre r_pitch BELOW the entry.
+    // Verticals sit outboard at ±(pulley_x + r_pitch) in both styles.
+    let w1_in  = winding_z + lead_split + r_pitch            // upper winding, band-top, LEFT, from above
+    let w1_out = winding_z - lead_split - r_pitch            // upper winding, band-bottom, RIGHT, from below
+    let w2_in  = 0mm - winding_z + lead_split + r_pitch      // lower winding, band-top, RIGHT, from above
+    let w2_out = 0mm - winding_z - lead_split - r_pitch      // lower winding, band-bottom, LEFT, from below
+
+    // UPPER winding (w1) — outboard (−y) tangent plane.
+    sub fl_w1_in  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_rear,  w1_in))
+    sub fl_w1_out = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_rear,  w1_out))
+    // LOWER winding (w2) — machine-side (+y) tangent plane.
+    sub fl_w2_in  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_front, w2_in))
+    sub fl_w2_out = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_front, w2_out))
+
+    // Carrier collar, centred on the drum (translates with the band).
+    sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    // ── Lead segments (drum-side only) ──────────────────────────────────────
+    // Drum-side horizontals are EXACT: pulley tangent → drum tangent line
+    // (x = 0) at the winding's entry height (pulley centre ∓ r_pitch for
+    // above/below entry). The frame-side verticals + all drive-plane /
+    // below-block routing are modelled at the DriveTendons level (rear
+    // routing v1, 2026-07-23) — they need machine-frame positions this
+    // unit cannot know.
+    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // leaf +Z → +X
+    let px_half    = pulley_x / 2
+    let neg_pxh    = 0mm - px_half
+    let vert_x     = pulley_x + r_pitch
+
+    sub lead_w1_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(neg_pxh, y_rear,  w1_in - r_pitch))
+    sub lead_w1_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(px_half, y_rear,  w1_out + r_pitch))
+    sub lead_w2_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(px_half, y_front, w2_in - r_pitch))
+    sub lead_w2_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(neg_pxh, y_front, w2_out + r_pitch))
+
+    // The flanges pierce the tangent planes for |x| < sqrt(flange_r² −
+    // cap_pitch_r²) (≈19mm at the defaults): keep the pulley's inner edge
+    // clear of that crossing.
+    constraint pulley_x - r_pitch > sqrt(flange_r * flange_r - cap_pitch_r * cap_pitch_r)
+    constraint winding_z > lead_split
+    constraint cap_pitch_r > 0mm
+    constraint flange_r > cap_pitch_r
+    // Collar clearances (one-level sub reads — probe-verified):
+    constraint self.frame.side_y - self.frame.plate_t / 2 > flange_r          // plates clear the drum flanges
+    constraint self.frame.half_x - self.frame.web_t > vert_x + 6mm            // webs clear the vertical runs (tendon Ø)
+    constraint self.frame.half_z > w1_in + r_pitch                            // collar covers the top pulley rim
+}
+
+/// Rear drive block — BOTH fairlead-equipped drive units (one per belt),
+/// for placement dropped below the drive plane (capstans-down layout,
+/// agreed 2026-07-22: the drive-plane feeds get routed DOWN to the fairleads
+/// by additional routing idlers — not yet modelled). Local frame: origin on
+/// the machine centreline at drum-axis height; +y faces the machine.
+pub structure RearDrive {
+    /// Unit lateral offsets: belt A right (+), belt B left (−).
+    param cap_x : Length = 100mm
+
+    let neg_cap_x = 0mm - cap_x
+
+    sub unit_a = CapstanUnit() at transform3(orient_identity(), vec3(cap_x,     0mm, 0mm))  // belt A (outer ±z_a)
+    sub unit_b = CapstanUnit() at transform3(orient_identity(), vec3(neg_cap_x, 0mm, 0mm))  // belt B (inner ±z_b)
+
+    constraint cap_x > 0mm
 }
 
 // ── Tendon routing (γ: doubled belts A/B on both rails + gantry crosses) ─────
@@ -224,25 +447,30 @@ pub structure TendonQuad {
 pub structure RailTendons {
     param z_a : Length = 80mm
     param z_b : Length = 55mm
+    // Per-span lengths (rear routing v1, 2026-07-23): a span whose rear pulley
+    // MOVED rearward (to put its X-run in a fairlead tangent plane) extends
+    // past the nominal 400mm half-span to reach the moved tangent point; the
+    // composing site overrides just that one.
+    param span_au : Length = 400mm
+    param span_al : Length = 400mm
+    param span_bu : Length = 400mm
+    param span_bl : Length = 400mm
 
     let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // span runs along local +Y
     // Each rail belt run is a HALF span (carriage → rail end): a LinearTendon
-    // overridden to `span`. Centre offset = span / 2, so a +half span is
+    // overridden to its span. Centre offset = span / 2, so a +half span is
     // y∈[0,+span] (front) and a −half span is y∈[−span,0] (back) — both anchored
     // on the cross line y=0. (Was a separate HalfTendon leaf before the task-4147
     // override fix; now just a length override on the one LinearTendon.)
-    let span     = 400mm
-    let half     = span / 2
-    let neg_half = 0mm - half
     let neg_z_a  = 0mm - z_a
     let neg_z_b  = 0mm - z_b
 
     // Belt A → FRONT half, doubled ±z_a.
-    sub a_upper = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, half, z_a))
-    sub a_lower = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, half, neg_z_a))
+    sub a_upper = LinearTendon(length: span_au) at transform3(rot_to_y, vec3(0mm, span_au / 2, z_a))
+    sub a_lower = LinearTendon(length: span_al) at transform3(rot_to_y, vec3(0mm, span_al / 2, neg_z_a))
     // Belt B → BACK half, doubled ±z_b.
-    sub b_upper = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, neg_half, z_b))
-    sub b_lower = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, neg_half, neg_z_b))
+    sub b_upper = LinearTendon(length: span_bu) at transform3(rot_to_y, vec3(0mm, 0mm - span_bu / 2, z_b))
+    sub b_lower = LinearTendon(length: span_bl) at transform3(rot_to_y, vec3(0mm, 0mm - span_bl / 2, neg_z_b))
 
     constraint z_a > z_b
     constraint z_b > 0mm
@@ -298,10 +526,13 @@ pub structure CarriageIdlers {
 /// back idler, carrying the front strand to the rear so both ends of every belt
 /// land at the back, where a back-cross tendon joins them — CLOSING each belt
 /// into a full CoreXY loop (each Z layer a complete belt; the ±z pair is the
-/// moment-balanced double). PROVISIONAL beyond this point: the capstans (each taps
-/// a back-cross) are the next step. Deferred: the gantry-cross fore/aft split
-/// (crosses still run on y = 0) and live x_head/y_head tracking (a future
-/// live-input feature).
+/// moment-balanced double). The 2 CAPSTANS (one per belt, vertical axis — agreed
+/// 2026-07-22) are roughed in behind the rear rail-end plane, each plan-view
+/// tangent to its belt's back-cross. PROVISIONAL beyond this point: the
+/// translating fairlead shuttles + the lead segments that dive from the fixed
+/// ±z levels to the migrating wrap band (sketched in dev_capstan.ri) are the
+/// next step. Deferred: the gantry-cross fore/aft split (crosses still run on
+/// y = 0) and live x_head/y_head tracking (a future live-input feature).
 pub structure DriveTendons {
     /// Transverse position of each rail == the Y-rail axis. CoreXY overrides this
     /// with y_rail_offset so the tendons sit in the rail's vertical plane (single
@@ -322,8 +553,12 @@ pub structure DriveTendons {
     // Y rails: HALF spans (RailTendons), A-front/B-back on the right; the left
     // rail is the CONVERSE via 180°-about-Z (the rail tendons lie on x = 0 in the
     // child frame, so the rotation only swaps the A/B fore/aft, not the rail X).
-    sub rail_r = RailTendons(z_a: z_a, z_b: z_b) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
-    sub rail_l = RailTendons(z_a: z_a, z_b: z_b) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
+    // Rear-routing span extensions (v1): the two +z back-half rail runs whose
+    // rear pulleys sit at the moved/reoriented y = −436 line extend to 436mm —
+    // belt A's back half lives on the LEFT rail (a_upper, flipped) and belt
+    // B's on the RIGHT rail (b_upper).
+    sub rail_r = RailTendons(z_a: z_a, z_b: z_b, span_bu: 436mm) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
+    sub rail_l = RailTendons(z_a: z_a, z_b: z_b, span_au: 436mm) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
     // Gantry crosses: FULL-length quad turned 90° about Z.
     sub cross  = TendonQuad(z_a: z_a, z_b: z_b) at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))
 
@@ -348,26 +583,17 @@ pub structure DriveTendons {
     // the X tangency offset (idler_in_l) is unaffected by the rotation.
     sub idlers_l = CarriageIdlers(z_a: z_a, z_b: z_b, ab_split: r_pitch) at transform3(flip_ab, vec3(idler_in_l, 0mm, 0mm))
 
-    // ── Corner idlers + front-to-back returns (rough-out) ───────────────────
-    // Close each belt loop to the REAR (where the capstans sit) WITHOUT disturbing
-    // the diagonal active runs. One belt terminates at each corner — FR & BL =
-    // belt A (±z_a outer), BR & FL = belt B (±z_b inner) — each doubled above/below
-    // for moment balance, vertical (+Z) spin axes.
-    //
-    //  • BACK corners (BR, BL): the rail run ends here; the idler sits r_pitch
-    //    INBOARD and turns the run toward the rear capstan.
-    //  • FRONT corners (FR, FL): the idler sits r_pitch OUTBOARD and U-turns the
-    //    rail run onto a front-to-back RETURN tendon that runs rearward just
-    //    outside the rail (one sheave-OD out, tangent to both idlers); a BACK
-    //    idler at the rear of each return turns it toward the capstan. This
-    //    carries the front strand to the back, so BOTH ends of every belt land at
-    //    the rear.
-    //
-    // PROVISIONAL: the capstans + the final rear connection are the next step.
-    // (z_a/z_b are this struct's own params — the single source, see below.)
+    // ── Front corners + front-to-back returns ───────────────────────────────
+    // One belt terminates at each corner — FR & BL = belt A (±z_a outer),
+    // BR & FL = belt B (±z_b inner). FRONT corners (FR, FL): the idler sits
+    // r_pitch OUTBOARD and U-turns the rail run onto a front-to-back RETURN
+    // tendon just outside the rail (one sheave-OD out, tangent to both
+    // idlers), carrying the front strand to the rear so BOTH ends of every
+    // belt land at the back. The REAR ends of the rails/returns feed the
+    // rear-routing section below (which owns all the back pulleys since the
+    // back-crosses were retired — the capstans close the loops now).
     let rot_to_y    = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // return runs along +Y
-    // z_a / z_b are now params (single source, threaded into the subs above) and
-    // reused here for the corner idlers / returns / back-crosses.
+    let rot_to_x    = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // X-runs / X-axis pulleys
     let neg_z_a     = 0mm - z_a
     let neg_z_b     = 0mm - z_b
     let rail_half   = 400mm   // == BearingRod.length / 2 — rail runs end at ±rail_half
@@ -378,50 +604,140 @@ pub structure DriveTendons {
     let return_x_r  = rail_x + r_pitch * 2        // right return: one sheave-OD outboard
     let return_x_l  = neg_rail_x - r_pitch * 2    // left  return
 
-    // BACK corners — INBOARD (rail run → toward capstan). BL = belt A, BR = belt B.
-    sub corner_bl_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, z_a))
-    sub corner_bl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, neg_z_a))
-    sub corner_br_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, z_b))
-    sub corner_br_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, neg_z_b))
-
     // FRONT corners — OUTBOARD, U-turn onto the rearward return. FR = belt A, FL = belt B.
     sub corner_fr_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, corner_y, z_a))
     sub corner_fr_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, corner_y, neg_z_a))
     sub corner_fl_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, z_b))
     sub corner_fl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, neg_z_b))
 
-    // Front-to-back RETURN tendons (full rail length, just outboard of each rail).
-    sub return_r_u = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, z_a))
+    // Front-to-back RETURN tendons. The two whose rear pulley MOVED rearward
+    // (rear routing v1: the reoriented down-turns at y = moved_y) extend 36mm
+    // past the nominal rail length to reach the moved tangent point (836mm,
+    // centred y = −18mm); the other two stay full-rail 800mm.
+    sub return_r_u = LinearTendon(length: 836mm) at transform3(rot_to_y, vec3(return_x_r, 0mm - 18mm, z_a))
     sub return_r_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, neg_z_a))
-    sub return_l_u = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, z_b))
+    sub return_l_u = LinearTendon(length: 836mm) at transform3(rot_to_y, vec3(return_x_l, 0mm - 18mm, z_b))
     sub return_l_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, neg_z_b))
 
-    // BACK idler at the rear of each return (turns it toward the capstan).
-    sub backidler_r_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, z_a))
-    sub backidler_r_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, neg_z_a))
-    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, z_b))
-    sub backidler_l_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, neg_z_b))
+    // ── Rear drive (capstans DOWN + fairlead guide pulleys) ─────────────────
+    // Both belts' drive units live in ONE RearDrive block behind the rear
+    // rail-end plane, VERTICAL drum axes (agreed 2026-07-22: the rear feeds
+    // head inboard ALONG X, and a rope can only wrap a drum whose axis is
+    // perpendicular to its approach). Each drum's pitch cylinder is plan-view
+    // TANGENT to the machine-side tangent plane (plane_in, the legacy
+    // back-cross line) and the block is DROPPED cap_drop below the drive
+    // plane. The rear-routing section below connects the drive-plane rail/
+    // return ends to the fairlead pulleys — the back-crosses are RETIRED
+    // (the capstans close the loops now).
+    let cap_pitch_r = 27mm   // == Capstan drum_r (24mm) + rope radius (3mm). Hand-kept:
+                             // the derived form `self.rear_drive.unit_a.cap_pitch_r`
+                             // silently undefs today — instance reads chained through
+                             // TWO sub levels are broken (#5360; one-level reads and
+                             // even self-referential placement DO work, probe-verified
+                             // 2026-07-23). Derive this once #5360 lands.
+    let plane_in    = neg_corn - r_pitch           // machine-side tangent plane (−400)
+    let plane_out   = plane_in - cap_pitch_r * 2   // outboard tangent plane (−454)
+    let moved_y     = plane_out + r_pitch          // moved rear-pulley line (−436, Leo's no-jog move)
+    let cap_y       = plane_in - cap_pitch_r
+    let cap_drop    = 220mm  // drum-axis depth below the drive plane's z = 0
+    let neg_drop    = 0mm - cap_drop
+    sub rear_drive = RearDrive() at transform3(orient_identity(), vec3(0mm, cap_y, neg_drop))
 
-    // Back-cross tendons — CLOSE each belt loop across the REAR, joining its two
-    // rear ends at the belt's Z level: belt A (±z_a) BL-inboard ↔ right-outboard
-    // return idler; belt B (±z_b) BR-inboard ↔ left-outboard return idler. They run
-    // r_pitch BEHIND the back pulleys (at y = −rail_half, the rail-end plane), so
-    // each is TANGENT to the rear of its pulleys — a proper 90° wrap onto the rail/
-    // return run, the same tangent relation the rail tendons have with the corner
-    // idlers. Each span is 2*rail_x == LinearTendon's 800mm default, centred at
-    // ±r_pitch. The two belts' back-crosses cross at the rear (different Z, no
-    // contact) — the CoreXY rear crossing — completing the loops. Each Z layer
-    // (top OR bottom) is a full CoreXY belt; the pair is the moment-balanced
-    // double. Capstans next: each taps a back-cross.
-    let rot_to_x    = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // span runs along +X
-    let neg_r_pit   = 0mm - r_pitch
-    let backcross_y = neg_corn - r_pitch     // r_pitch behind the back pulleys (== −rail_half), tangent
-    sub backcross_a_u = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   backcross_y, z_a))
-    sub backcross_a_l = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   backcross_y, neg_z_a))
-    sub backcross_b_u = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, z_b))
-    sub backcross_b_l = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, neg_z_b))
+    // ── Rear routing v1 (2026-07-23): drive plane ↔ fairleads ───────────────
+    // Loop→winding: each belt's +z loop feeds its OUTBOARD winding (w1), the
+    // −z loop the MACHINE-side winding (w2) — the swap puts fairlead verticals
+    // through in-runs. Per loop the IN end (band-top) arrives from ABOVE and
+    // the OUT end (band-bottom) from BELOW (the static-balance requirement).
+    //
+    // IN feeds — vertical-axis rear pulley → X-run in the winding's tangent
+    // plane → in-idler (axis ∥ Y) → vertical descent to the fairlead pulley.
+    // The two +z-level rear pulleys MOVED along Y to moved_y (−436) so their
+    // X-runs lie in plane_out with NO extra jog (Leo's insight); the −z ones
+    // stay at neg_corn (X-runs already in plane_in).
+    // OUT feeds — two schemes, chosen per level after collision-solving both
+    // tangent planes (each plane hosts BOTH belts' runs at different z):
+    //  • +z outs: X-axis DOWN-TURN pulley directly on the return/rail line
+    //    (far outboard, y = moved_y): belt A w1-out off the right return
+    //    (x=436), belt B w1-out via its moved rear pulley + a short drive-
+    //    plane run to a down-idler at x=108 (its descent starts below the
+    //    other belt's runs, so the inboard jog is safe at the LOWER level
+    //    of the pair… here belt B (+55) descends beside unit A, clear of
+    //    belt A's +80 runs which are above).
+    //  • −z outs: belt A w2-out jogs inboard off its (unmoved) rear pulley
+    //    to a down-idler at x=−91 (descent at −73, starting at −98 below
+    //    belt B's −55 runs); belt B w2-out is an X-axis down-turn on the
+    //    right rail line (x=400).
+    // Each descent → low corner → LOW RUN under the drive block → up-turn →
+    // RISE into the fairlead out-pulley from below. Low runs stagger at
+    // low_hi (−320: belt B w1, belt A w2) and low_lo (−365: belt A w1,
+    // belt B w2) so runs, discs, and rises clear each other (min surface
+    // clearance ≈ 6mm, verified pairwise during placement).
+    //
+    // Hand-kept fairlead mirrors (#5360 — derive once chained sub reads land):
+    let cap_x_m   = 100mm    // == RearDrive.cap_x
+    let fl_vert   = 63mm     // == CapstanUnit pulley_x + r_pitch (vertical stand-off)
+    let flz_in1   = neg_drop + 51.1mm   // w1_in  pulley centre (world z)
+    let flz_out1  = neg_drop - 7mm      // w1_out
+    let flz_in2   = neg_drop + 7mm      // w2_in
+    let flz_out2  = neg_drop - 51.1mm   // w2_out
+    let low_hi    = 0mm - 320mm
+    let low_lo    = 0mm - 365mm
+
+    // Rear pulleys (BL/FR = belt A, BR/FL = belt B; _u/_l = its ±z levels).
+    sub corner_bl_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, moved_y,  z_a))        // A w1-IN (moved)
+    sub corner_bl_l   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, neg_z_a))    // A w2-OUT emitter
+    sub corner_br_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, moved_y,  z_b))        // B w1-OUT emitter (moved)
+    sub corner_br_l   = IdlerPulley() at transform3(rot_to_x, vec3(rail_x, neg_corn, neg_z_b - r_pitch))       // B w2-OUT down-turn (X-axis)
+    sub backidler_r_u = IdlerPulley() at transform3(rot_to_x, vec3(return_x_r, moved_y, z_a - r_pitch))        // A w1-OUT down-turn (X-axis)
+    sub backidler_r_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, neg_z_a))   // A w2-IN
+    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, moved_y,  z_b))       // B w1-IN (moved)
+    sub backidler_l_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, neg_z_b))   // B w2-IN
+
+    // IN X-runs (rear pulley tangent → in-idler tangent) + in-idlers + verticals.
+    sub run_in_a1  = LinearTendon(length: 401mm) at transform3(rot_to_x, vec3(0mm - 181.5mm, plane_out, z_a))
+    sub run_in_b1  = LinearTendon(length: 237mm) at transform3(rot_to_x, vec3(0mm - 299.5mm, plane_out, z_b))
+    sub run_in_a2  = LinearTendon(length: 237mm) at transform3(rot_to_x, vec3(299.5mm,       plane_in,  neg_z_a))
+    sub run_in_b2  = LinearTendon(length: 363mm) at transform3(rot_to_x, vec3(0mm - 236.5mm, plane_in,  neg_z_b))
+    sub idler_in_a1 = IdlerPulley() at transform3(rot_to_y, vec3(19mm,        plane_out, z_a - r_pitch))
+    sub idler_in_b1 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 181mm, plane_out, z_b - r_pitch))
+    sub idler_in_a2 = IdlerPulley() at transform3(rot_to_y, vec3(181mm,       plane_in,  neg_z_a - r_pitch))
+    sub idler_in_b2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 55mm,  plane_in,  neg_z_b - r_pitch))
+    sub vert_in_a1 = LinearTendon(length: 231mm) at transform3(orient_identity(), vec3(37mm,        plane_out, 0mm - 53.5mm))
+    sub vert_in_b1 = LinearTendon(length: 206mm) at transform3(orient_identity(), vec3(0mm - 163mm, plane_out, 0mm - 66mm))
+    sub vert_in_a2 = LinearTendon(length: 115mm) at transform3(orient_identity(), vec3(163mm,       plane_in,  0mm - 155.5mm))
+    sub vert_in_b2 = LinearTendon(length: 140mm) at transform3(orient_identity(), vec3(0mm - 37mm,  plane_in,  0mm - 143mm))
+
+    // OUT drive-plane runs (jogged outs only) + their down-idlers.
+    sub run_out_b1 = LinearTendon(length: 274mm) at transform3(rot_to_x, vec3(245mm,         plane_out, z_b))
+    sub run_out_a2 = LinearTendon(length: 291mm) at transform3(rot_to_x, vec3(0mm - 236.5mm, plane_in,  neg_z_a))
+    sub idler_dn_b1 = IdlerPulley() at transform3(rot_to_y, vec3(108mm,       plane_out, z_b - r_pitch))
+    sub idler_dn_a2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 91mm,  plane_in,  neg_z_a - r_pitch))
+
+    // OUT descents → low corners → low runs → up-turns → rises (from below).
+    sub desc_a1 = LinearTendon(length: 409mm) at transform3(orient_identity(), vec3(436mm,       plane_out, 0mm - 142.5mm))
+    sub desc_b1 = LinearTendon(length: 339mm) at transform3(orient_identity(), vec3(90mm,        plane_out, 0mm - 132.5mm))
+    sub desc_a2 = LinearTendon(length: 204mm) at transform3(orient_identity(), vec3(0mm - 73mm,  plane_in,  0mm - 200mm))
+    sub desc_b2 = LinearTendon(length: 274mm) at transform3(orient_identity(), vec3(400mm,       plane_in,  0mm - 210mm))
+    sub corner_lo_a1 = IdlerPulley() at transform3(rot_to_y, vec3(418mm,       plane_out, low_lo + r_pitch))
+    sub corner_lo_b1 = IdlerPulley() at transform3(rot_to_y, vec3(72mm,        plane_out, low_hi + r_pitch))
+    sub corner_lo_a2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 55mm,  plane_in,  low_hi + r_pitch))
+    sub corner_lo_b2 = IdlerPulley() at transform3(rot_to_y, vec3(382mm,       plane_in,  low_lo + r_pitch))
+    sub run_lo_a1 = LinearTendon(length: 237mm) at transform3(rot_to_x, vec3(299.5mm,     plane_out, low_lo))
+    sub run_lo_b1 = LinearTendon(length: 91mm)  at transform3(rot_to_x, vec3(26.5mm,      plane_out, low_hi))
+    sub run_lo_a2 = LinearTendon(length: 74mm)  at transform3(rot_to_x, vec3(0mm - 18mm,  plane_in,  low_hi))
+    sub run_lo_b2 = LinearTendon(length: 563mm) at transform3(rot_to_x, vec3(100.5mm,     plane_in,  low_lo))
+    sub idler_up_a1 = IdlerPulley() at transform3(rot_to_y, vec3(181mm,       plane_out, low_lo + r_pitch))
+    sub idler_up_b1 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 19mm,  plane_out, low_hi + r_pitch))
+    sub idler_up_a2 = IdlerPulley() at transform3(rot_to_y, vec3(19mm,        plane_in,  low_hi + r_pitch))
+    sub idler_up_b2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 181mm, plane_in,  low_lo + r_pitch))
+    sub rise_a1 = LinearTendon(length: 120mm) at transform3(orient_identity(), vec3(163mm,       plane_out, 0mm - 287mm))
+    sub rise_b1 = LinearTendon(length: 75mm)  at transform3(orient_identity(), vec3(0mm - 37mm,  plane_out, 0mm - 264.5mm))
+    sub rise_a2 = LinearTendon(length: 31mm)  at transform3(orient_identity(), vec3(37mm,        plane_in,  0mm - 286.5mm))
+    sub rise_b2 = LinearTendon(length: 76mm)  at transform3(orient_identity(), vec3(0mm - 163mm, plane_in,  0mm - 309mm))
 
     constraint rail_x > 0mm
+    constraint cap_drop > 0mm
+    constraint low_hi > low_lo
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
