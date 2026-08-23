@@ -296,6 +296,40 @@ fn nurbs_bare_pole_drops_op_dimensioned_builds() {
 }
 
 // ---------------------------------------------------------------------------
+// The variadic PROFILE constructor (task 5661)
+// ---------------------------------------------------------------------------
+
+/// `polygon`'s flat 2-D vertex pairs — the pre-5658 bare variadic reader's last
+/// consumer (gating this retired it, so `eval_all_args_to_f64` no longer
+/// exists), and the only arity-open PROFILE signature in the language.
+///
+/// Two things only this layer can show. First that a `.ri` author actually sees
+/// the DISPLAY name `x1` rather than the compiler's inert positional `c0` — the
+/// unit tests build their `CompiledGeometryOp` by hand, so they cannot prove
+/// the compiler really mints `c0`…`cN` here. Second that parse → compile →
+/// build agree on a variadic PROFILE, a shape the R2 curve rows never exercise.
+///
+/// Six args satisfies the compiler-side precondition (">= 6 args for 3 points",
+/// even count — `reify-compiler/src/geometry.rs:1631`), and the dimensioned
+/// control is byte-identical to the call already smoked by
+/// `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs:213`
+/// so the doc example and this signal cannot drift.
+#[test]
+fn polygon_bare_vertex_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "polygon",
+        "x1",
+        r#"structure def BarePolygon {
+            let r = polygon(0, 0, 10, 0, 5, 10)
+        }"#,
+        r#"structure def DimPolygon {
+            let r = polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
+        }"#,
+        |op| matches!(op, GeometryOp::PolygonProfile { .. }),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The desugaring cross-check — the highest-risk unknown in task 5623
 // ---------------------------------------------------------------------------
 
