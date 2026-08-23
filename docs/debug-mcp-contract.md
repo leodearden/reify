@@ -264,8 +264,10 @@ surface §0 warns about. Read them there:
 
 The positional-vs-search split between the two JS decoders is the one §2d fact
 this doc DOES own, stated once under "JS-side decoders" below. It is a contract
-*between* two decoders and so belongs with neither of them alone; the four code
-sites that depend on it point here instead of restating it.
+*between* two decoders and so belongs with neither of them alone; the code sites
+that depend on it point here for the RATIONALE instead of restating it. That
+section names the sites, and the one exception that still states the fact on its
+own terms.
 
 ### JS-side decoders
 
