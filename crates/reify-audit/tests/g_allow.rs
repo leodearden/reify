@@ -185,19 +185,21 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// # What each half demonstrates
 ///
 /// `audit-orphan-producers.sh --scope crates/reify-audit/src --quiet --format
-/// json`, three ways, against a `git init`ed tempdir carrying a planted
-/// `.git/index.lock` — exactly what [`common::git_env::decoy_repo`] builds:
+/// json`, two ways — poisoned, then sanitized — against a `git init`ed
+/// tempdir carrying a planted `.git/index.lock`, exactly what
+/// [`common::git_env::decoy_repo`] builds. There is no third, clean run: the
+/// sanitized half IS the clean baseline, since stripping the poison is what
+/// restores the unpoisoned environment.
 ///
-/// - clean: a JSON envelope with a numeric `orphan_count`.
 /// - `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` pointed at the decoy: empty
 ///   stdout, stderr `audit-orphan-producers.sh: no source files matched`.
-/// - the same poison, then those three vars `env_remove`d: the same JSON
-///   envelope as the clean run.
+/// - the same poison, then [`reify_audit::git_env::sanitize`]d: a JSON
+///   envelope with a numeric `orphan_count`.
 ///
-/// Exit status is 0 in all three shapes above — the exit code carries no
-/// signal here, which is why the assertions below read stdout (each run's
-/// status and stderr are still carried on `common::git_env::AuditRun` for a
-/// failure message to report, even though neither is asserted on directly).
+/// Exit status is 0 in both shapes above — the exit code carries no signal
+/// here, which is why the assertions below read stdout (each run's status and
+/// stderr are still carried on `common::git_env::AuditRun` for a failure
+/// message to report, even though neither is asserted on directly).
 ///
 /// The mechanism is `audit-orphan-producers.sh` line 66 —
 /// `REPO_ROOT="$(git rev-parse --show-toplevel)"` followed by
@@ -205,19 +207,29 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// cwd and any `-C`, so the whole scan is redirected into the empty decoy
 /// tree, matches no source files, and emits nothing.
 ///
-/// The "poisoned defeats the script" half is checked, not asserted: a script
-/// that has become immune to this hazard on its own is not a regression in
-/// reify's sanitization, so this test logs and skips the comparison in that
-/// case rather than failing — see the test body for the full rationale.
+/// BOTH halves are hard assertions. The poisoned one was briefly a soft
+/// `eprintln!` check, on the reasoning that a script which hardened itself out
+/// of this hazard should not be punished for it — but libtest swallows stderr
+/// on a passing test, so nothing observable happened, and with that half soft
+/// this test's remaining assertions merely restated what
+/// `reify_audit_pub_fns_are_g_allow_marked` (same binary, same scope) and
+/// `sanitize_makes_dash_c_authoritative_against_real_git`
+/// (reify-test-support's `git_env.rs`, same decoy-and-poison construction)
+/// already pin. A dropped `cmd.env(..)` in `poison_with_hook_git_env`, a decoy
+/// that stopped being empty, or a refactor applying the poison to the wrong
+/// `Command` would each have made the two halves identical with this test
+/// still reporting PASS. The hardening case is real but rare and one-off: the
+/// sanctioned response is to retire this test deliberately, together with what
+/// it guards, rather than to leave it permanently self-disabled. The failure
+/// message says so.
 ///
 /// The sanitized-half assertions deliberately pin only "non-empty and parses
 /// as an envelope with a numeric `orphan_count`" — never a byte count or a
-/// scanned-fn count. Those are today's incidental corpus size for this crate
-/// (they do drift: measured at 7417 bytes / 46 fns when this test was
-/// written, 7418 bytes on a later checkout with no behavioural change);
-/// pinning them would make an unrelated `pub fn` addition fail this test,
-/// and that kind of churn is exactly how a signal gets weakened or deleted
-/// by a later maintainer.
+/// scanned-fn count. Those track this crate's incidental corpus size and drift
+/// with any unrelated `pub fn` addition (they already have, twice, since this
+/// test was written); pinning them would make such an addition fail this test,
+/// and that kind of churn is exactly how a signal gets weakened or deleted by
+/// a later maintainer.
 ///
 /// This test never runs inside the poisoned replay child: that replay's filter
 /// selects `reify_audit_pub_fns_are_g_allow_marked` only, and this name does
@@ -229,29 +241,33 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
     let Some((poisoned, sanitized)) =
         common::git_env::audit_script_stdout_poisoned_and_sanitized("crates/reify-audit/src")
     else {
-        // python3 / git / the script itself is absent — same graceful-skip
-        // protocol every `run_orphan_audit` caller follows.
+        // The helper gates on `reify_test_support::run_orphan_audit`, so this
+        // is that function's own graceful-skip protocol verbatim — python3 /
+        // git / the script absent, `repo_root` outside any git work tree, or a
+        // scope in EXCLUDE_CRATES. Each of those empties BOTH halves, so the
+        // comparison below would prove nothing.
         return;
     };
 
     // `{:.400}` is a Display precision, i.e. a truncating max width: enough of
-    // the offending stdout/stderr to diagnose a failure without dumping 7 KiB.
+    // the offending stdout/stderr to diagnose a failure without dumping ~9 KiB.
     //
-    // The sanitized half is asserted UNCONDITIONALLY, and FIRST. These three
-    // checks (non-empty stdout, valid JSON, numeric `orphan_count`) are real
-    // and independently meaningful regardless of what the poisoned half
-    // shows, so they must not be reachable only through a branch the poisoned
-    // check could skip. Ordering the soft poisoned check first would let a
-    // hardened script (or a decoy that stops being empty) return early and
-    // silently skip these too, degrading the whole test to a no-op PASS
-    // instead of merely skipping the poisoned/sanitized comparison.
+    // The sanitized half is asserted FIRST. Both halves are hard assertions
+    // now, so ordering no longer decides whether a check runs at all — but it
+    // still decides which diagnosis a reader meets first, and "the script
+    // cannot produce output even unpoisoned" is the more fundamental failure:
+    // it explains an empty poisoned half too, whereas the reverse is not true.
     assert!(
         !sanitized.stdout.trim().is_empty(),
         "stripping GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE did NOT restore the \
          audit script's output — it emitted nothing (exit {:?}). Stripping \
-         those vars is supposed to be the whole cure, so this says the script \
-         now fails for some other reason (a broken --scope, a missing tool \
-         that the skip probes did not catch).\n\
+         those vars is supposed to be the whole cure, and the environment is \
+         already vetted: `reify_test_support::run_orphan_audit` ran this same \
+         script against this same scope moments ago and got an envelope, or \
+         this test would have skipped. So the difference is something this \
+         test's own two spawns introduce — a mis-sanitized command, or a \
+         `.parent()` walk resolving a different script than the gate vetted. \
+         The stderr below is the script's own account.\n\
          --- sanitized stdout (truncated) ---\n{:.400}\n\
          --- sanitized stderr (truncated) ---\n{:.400}",
         sanitized.status.code(),
@@ -276,33 +292,38 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
         envelope.to_string(),
     );
 
-    // The "poisoned" half runs LAST and is deliberately NOT a hard assertion.
-    // Its only two failure causes are the script becoming immune to the
-    // hazard on its own (e.g. resolving its repo root some way other than
-    // `git rev-parse --show-toplevel`) or the decoy no longer being empty —
-    // neither is a regression in reify's own sanitization, which
-    // `build_audit_command_removes_every_repo_redirect_var` and
-    // `wrong_tree_with_real_scope_panics` (orphan_audit.rs) plus
-    // `orphan_audit_survives_ambient_hook_git_env` (here) already guard. A
-    // hard failure here would instead penalize hardening the script itself —
-    // so log and skip the comparison rather than assert, after the real
-    // checks above have already run unconditionally.
-    if !poisoned.stdout.trim().is_empty() {
-        eprintln!(
-            "the hook git environment no longer defeats the audit script: with \
-             GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an empty decoy repo, \
-             the script still emitted {} byte(s) on stdout (exit {:?}). The \
-             script has apparently become immune to this hazard on its own; \
-             nothing left for this test to demonstrate. If that's confirmed \
-             deliberate, `reify_audit_pub_fns_are_g_allow_marked`'s \
-             replay-child panic and reify-test-support's `sanitize()` are both \
-             dead weight and should be retired together.\n\
-             --- poisoned stdout (truncated) ---\n{:.400}\n\
-             --- poisoned stderr (truncated) ---\n{:.400}",
-            poisoned.stdout.len(),
-            poisoned.status.code(),
-            poisoned.stdout,
-            poisoned.stderr,
-        );
-    }
+    // The "poisoned" half runs LAST — the ordering above is load-bearing and
+    // unchanged — but it is a HARD assertion, because it is the only thing
+    // this test uniquely contributes. Everything asserted above is already
+    // pinned by `reify_audit_pub_fns_are_g_allow_marked` (same binary, same
+    // scope); this line is what makes the pair a demonstration of the hazard
+    // rather than a second copy of that test. Left soft, a regression in the
+    // harness itself — a dropped `cmd.env(..)` in `poison_with_hook_git_env`,
+    // a decoy that stopped being empty, a refactor poisoning the wrong
+    // `Command` — makes both halves identical and this test still reports
+    // PASS, with the explanatory `eprintln!` swallowed by libtest because the
+    // test passed.
+    assert!(
+        poisoned.stdout.trim().is_empty(),
+        "the hook git environment no longer defeats the audit script: with \
+         GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an empty decoy repo, the \
+         script still emitted {} byte(s) on stdout (exit {:?}), the same shape the \
+         sanitized run produced. Two possible causes, and they need opposite \
+         responses. (1) This harness regressed and the poison never reached the \
+         child — check that `poison_with_hook_git_env` still applies all three vars \
+         to the POISONED command, and that `decoy_repo` still yields an empty tree; \
+         fix it. (2) The script deliberately hardened itself, e.g. it no longer \
+         resolves its repo root via `git rev-parse --show-toplevel`; then this \
+         hazard is genuinely dead, and the right move is to retire this test \
+         together with what it guards — `reify_audit_pub_fns_are_g_allow_marked`'s \
+         replay-child panic and reify-test-support's `sanitize()` — rather than to \
+         weaken this assertion back into a log line that no passing run ever \
+         shows.\n\
+         --- poisoned stdout (truncated) ---\n{:.400}\n\
+         --- poisoned stderr (truncated) ---\n{:.400}",
+        poisoned.stdout.len(),
+        poisoned.status.code(),
+        poisoned.stdout,
+        poisoned.stderr,
+    );
 }
