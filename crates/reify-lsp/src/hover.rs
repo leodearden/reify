@@ -1344,6 +1344,45 @@ structure Bolt {
         );
     }
 
+    /// `format_type_params` advertises `<T, U: Numeric, V: A + B = Int>`, but only
+    /// the single-bound single-param shape (`<Q: Dimension>`, above) and the empty
+    /// shape were pinned. The `bounds.join(" + ")` and ` = {default}` branches are
+    /// both live — `lower_type_params_inner` (crates/reify-syntax/src/ts_parser.rs)
+    /// fills `bounds` from a trait-bound list and `default` from the `default`
+    /// field — and the same string is reused as the completion `detail`, so a
+    /// separator or spacing bug there would ship silently on two surfaces at once.
+    #[test]
+    fn hover_on_multi_bound_defaulted_type_alias_renders_full_param_list() {
+        let source = "pub type Foo<T, U: Dimension + Numeric = Length> = U / Time\n";
+        let position = Position::new(0, 10); // on 'Foo'
+        let md = hover_markdown(source, position)
+            .expect("hover on a multi-parameter type-alias name must return Some");
+        assert!(
+            md.contains("type Foo<T, U: Dimension + Numeric = Length> = U / Time"),
+            "signature must render both params, join bounds with ' + ', and append \
+             the default, got: {md}"
+        );
+    }
+
+    /// The behaviour this feature mostly delivers is hovering an alias at a USE
+    /// site (`param v: Speed`), yet every other alias test puts the cursor on the
+    /// declaration's own name. The use-site path is materially different: with a
+    /// cursor inside the structure body `enclosing` resolves to that structure, so
+    /// the scoped-member lookups run (and must miss) before control reaches the
+    /// alias arm. A future change there could swallow the alias hover with no
+    /// other test failing.
+    #[test]
+    fn hover_on_type_alias_at_use_site_shows_signature() {
+        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
+        let position = Position::new(2, 14); // on 'Speed' in 'param v: Speed'
+        let md = hover_markdown(source, position)
+            .expect("hover on a type-alias USE site must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "the alias use site must resolve to the alias signature, got: {md}"
+        );
+    }
+
     /// An alias doc comment is appended below the signature, exactly as the
     /// fn/trait/enum arms already do.
     #[test]

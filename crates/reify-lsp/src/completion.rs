@@ -1589,6 +1589,31 @@ mod tests {
         );
     }
 
+    /// Order pin. `TypeAliasRegistry::into_compiled` drains a
+    /// `HashMap<String, TypeAliasEntry>`, so iterating `compiled.type_aliases`
+    /// yielded a different order per process under std's `RandomState`, and these
+    /// items set no `sort_text` to re-impose one. Driving the loop from the parse
+    /// makes the order source order. The three names are deliberately ordered so
+    /// source order differs from alphabetical, catching a sort-by-name too.
+    #[test]
+    fn completion_type_aliases_are_offered_in_source_order() {
+        let source = "type Zeta = Length / Time\ntype Alpha = Bool\ntype Mid = Length\n\
+                      structure Foo {\n    param x: \n}";
+        // Line 4, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(4, 13));
+
+        let aliases: Vec<&str> = items
+            .iter()
+            .map(|i| i.label.as_str())
+            .filter(|l| matches!(*l, "Zeta" | "Alpha" | "Mid"))
+            .collect();
+        assert_eq!(
+            aliases,
+            vec!["Zeta", "Alpha", "Mid"],
+            "aliases must be offered in source order, not HashMap order"
+        );
+    }
+
     #[test]
     fn completion_type_position_returns_types_and_structs() {
         // Cursor is in a type annotation position (after `x: `)
