@@ -142,6 +142,12 @@ fn read_real_list(v: &Value) -> Vec<f64> {
 /// time), not solver-derived, so there is no float jitter to tolerate. Both `Hz`
 /// and `s` have unit factor exactly 1.0, so an inert migration must reproduce
 /// the previous bare `Real` bit-for-bit.
+///
+/// KNOWN DUPLICATION: this is a near-verbatim second copy of the task-5758
+/// helper cited above, and the two will drift. The right home is
+/// `reify-test-support` (alongside the `mm` / `kg` / `newton` dimensioned-Value
+/// family), so both crates import one copy — deliberately NOT done here because
+/// that crate is outside task #6093's locked scope; filed as follow-up work.
 fn assert_dimensioned(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
     match v {
         Value::Scalar {
@@ -392,29 +398,33 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
     //     pass in `crates/reify-compiler/src/conformance/mod.rs`, corpus-gated
     //     by `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`),
     //     but because that pass judges a bare dimensionless literal COMPATIBLE
-    //     with a dimensioned slot. Re-verified first-hand:
-    //     `general_leaf_param_family_is_validated` matches
-    //     `Type::Bool | Type::Int | Type::String | Type::Scalar { .. }`, so a
-    //     `Scalar` slot is on its ALLOWLIST and IS routed through the shared
-    //     `reject_if_incompatible` → `type_compatible` gate — the silence is
-    //     that gate's verdict, not an absent check, so a tightening has to land
-    //     on the compatibility judgement. (An earlier revision of this comment
-    //     called the family "EXCLUDED / HELD" and anchored it at
-    //     `conformance/mod.rs:1789`; both halves were wrong — that line is the
-    //     unrelated `Selector`/`AnySelector` arm. Cite by symbol; the line is a
-    //     hint.) A bare `0.0` at this `Frequency` slot is therefore silent
-    //     today; the negative pin that would make it loud is owned by
-    //     `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1
+    //     with a dimensioned slot: `general_leaf_param_family_is_validated`
+    //     matches `Type::Bool | Type::Int | Type::String | Type::Scalar { .. }`,
+    //     so a `Scalar` slot is on its ALLOWLIST and IS routed through the
+    //     shared `reject_if_incompatible` → `type_compatible` gate. The silence
+    //     is that gate's verdict, not an absent check, so a tightening has to
+    //     land on the compatibility judgement — and that negative pin is owned
+    //     by `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1
     //     invariant I3 (task γ = #5627), not by this task. Reading the
     //     evaluated cell is consequently the only way to see whether the corpus
-    //     actually carries the dimension.
+    //     actually carries the dimension. (Symbols cited by name, not
+    //     `file:line` — house rule.)
     //
     //     Piggybacks the eval above rather than standing alone: a second FEA
     //     solve would cost a full extra eigensolve, and a synthetic inline
     //     snippet would be GREEN before and after (ctor args are stored
     //     verbatim regardless of the declared type), proving nothing about the
     //     migration. Reading the real corpus file is what makes this RED while
-    //     `transient_step_response.ri:76` still says `beta: 0.0003`.
+    //     `transient_step_response.ri` still says `beta: 0.0003`.
+    //
+    //     KNOWN LIMITATION (release-profile-only): this is the only pin
+    //     anywhere that a real `.ri` corpus file carries the dimension at the
+    //     VALUE layer, and it rides on this test's
+    //     `#[cfg_attr(debug_assertions, ignore)]` heavy-solve gate. A green
+    //     debug-profile run is therefore NOT evidence that the migration held;
+    //     only a release run (and the merge gate's `--profile both`) exercises
+    //     it. The cheap alternative does not exist — see the synthetic-snippet
+    //     note above — so this is recorded rather than restructured.
     //
     //     The exact-equality SI assertions are the numerical-inertness half of
     //     the claim; the σ_measured check just above is the end-to-end half.
