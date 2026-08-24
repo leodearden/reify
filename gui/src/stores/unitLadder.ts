@@ -100,36 +100,48 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * parseable (task #5788 probe evidence). So `mm^3` becomes accepted while
  * `mm³` stays rejected, in both the pre- and post-#5788 eras.
  *
- * WHAT "ADVERTISED" DOES NOT MEAN — the accepted degradation. The ladders are
- * the curated DISPLAY table (`reify_core::display_units::unit_ladders`), a
- * strictly LARGER set than what the commit path can input-parse. That path —
- * `handleSetParameter` (App.tsx) -> `bridge.setParameter` ->
+ * WHAT "ADVERTISED" NOW MEANS — the gap this used to document is CLOSED
+ * (task #5757). The ladders are the curated DISPLAY table
+ * (`reify_core::display_units::unit_ladders`), and until #5757 the commit path
+ * — `handleSetParameter` (App.tsx) -> `bridge.setParameter` ->
  * `EngineSession::set_parameter` -> `parse_value_string` (both in
- * gui/src-tauri/src/engine.rs) — matches only `UNIT_TABLE`, a hard-coded
- * five-entry suffix table built from neither the .ri unit registry nor
- * `unit_ladders`. Its five entries are exactly {@link BASE_UNIT_LABELS}; the
- * rule, therefore, is that EVERY curated ladder label outside that floor is
- * admitted by this gate and then refused on commit, with the message
- * `Cannot parse value '<input>'` — not the .ri compiler's unknown-unit
- * diagnostic, which belongs to a different subsystem this path never reaches
- * (it short-circuits before `edit_check`).
+ * gui/src-tauri/src/engine.rs) — matched a hard-coded five-entry suffix table
+ * whose entries were exactly {@link BASE_UNIT_LABELS}. Every curated label
+ * outside that floor was admitted here and then refused on commit with
+ * `Cannot parse value '<input>'`, discarding the typed text behind an async
+ * toast.
  *
- * The user-visible cost is that the typed text is discarded and an async error
- * toast replaces the inline `data-invalid` that used to preserve it for
- * correction. It is bounded twice over: callers scope the alphabet to the
- * cell's own dimension, so only that dimension's labels can reach the gate;
- * and the whole contract is pinned end-to-end by the `App.test.tsx` block
- * named above, which is the ready-made failing assertion for the fix to flip.
+ * `parse_value_string` now scans an index composed from THIS SAME
+ * `unit_ladders()` table unioned with `reify_core::BUILTIN_UNITS`, so the two
+ * ends are two readers of one table rather than two tables kept in lockstep.
+ * The backend registers each rung under BOTH its raw superscript spelling and
+ * its {@link normalizeUnitLabel} form, while this gate admits only the ASCII
+ * one — so the backend is a strict SUPERSET of what this alphabet can produce,
+ * and no label admitted here can be refused on commit. Compound labels
+ * (`mm^3`, `kg/m^3`, `g/cm^3`) are included: the backend matches them as whole
+ * suffixes off the composed index, so it never has to compose a `UnitExpr` the
+ * way the .ri grammar does.
  *
- * Accepted because narrowing the gate to what the backend can PARSE needs a
- * surface the frontend cannot see. Task #5757 widens `UNIT_TABLE` but is
- * necessary-not-sufficient — it reconciles against
- * `reify_core::units::unit_symbol_to_si`, which holds only BARE symbols, so
- * compound labels stay rejected: the .ri grammar composes them as EXPRESSIONS
- * while `parse_value_string` is a flat suffix matcher that cannot compose.
- * That compound half is filed as an agent-followup ticket spawned from #6028
- * naming #5757 as its sibling. Task #5788 fixes none of it: it touches the
- * compiler's stdlib registry, not `gui/src-tauri`.
+ * THE ONE ASYMMETRY THAT REMAINS runs the other way and is deliberate: the
+ * backend also accepts spellings this gate refuses — raw superscripts, the SI
+ * bases no ladder carries (`s`, `K`, `A`, `mol`, `cd`), and a label belonging
+ * to a dimension other than the cell's. The last of those is not silently
+ * taken: it resolves to its own dimension and is then refused by reify-eval
+ * with a `DimensionMismatch` naming both. Callers still scope this alphabet to
+ * the cell's own dimension, so the panel rejects a cross-dimension literal
+ * inline and the backend path is only reached by callers that bypass this gate
+ * (`MechanismPanel`, via `handleSetParameter`).
+ *
+ * Separately, {@link acceptsBareNumber} refuses a bare number for a cell that
+ * carries a dimension, mirroring the backend's `parse_value_string_for_cell`.
+ * The `App.test.tsx` block that used to pin the degradation above now pins this
+ * reconciled contract in both directions.
+ *
+ * Still deferred, and NOT this: compound unit EXPRESSIONS in .ri source at the
+ * `bind(joint, <quantity>)` site (`UnitExpr::Mul`/`Div`/`Pow`), which are task
+ * γ (#3803); and the compiler's per-module `UnitRegistry` spellings (`km`,
+ * `ft`, `psi`, `degC`, …), which this gate rejects outright and which are
+ * therefore unreachable from the property editor.
  */
 export function quantityUnitAlphabet(ladders: UnitLadderMap | undefined): string[] {
   const alphabet = new Set<string>(BASE_UNIT_LABELS);

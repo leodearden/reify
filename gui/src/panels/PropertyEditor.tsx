@@ -72,6 +72,14 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 // allowed between number and unit, matching the .ri grammar (token.immediate);
 // the backend parse_value_string is more lenient (accepts "5 mm") but the
 // frontend intentionally enforces the stricter rule.
+//
+// The bare-number half is not unconditional (task #5757): a cell that carries a
+// DIMENSION requires a unit, gated by `acceptsBareNumber` in the same module.
+// Unlike the whitespace rule above, this one is NOT the frontend being
+// deliberately stricter — it mirrors the backend exactly. `set_parameter`
+// refuses a bare number for a dimensioned cell too, so gating here only decides
+// whether the user finds out inline, with the typed text kept for correction,
+// or asynchronously via a toast that discards it.
 
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
@@ -128,13 +136,20 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    * ladder map changes; the returned resolver caches per dimension, so a panel
    * of N cells over K dimensions builds at most K+1 regexes.
    *
-   * ACCEPTED DEGRADATION: this gate still admits more than the commit path can
-   * parse, because the ladders are the curated DISPLAY table while the commit
-   * path has its own hard-coded suffix table. Per-cell scoping shrinks that
-   * gap; it does not close it. The full account — cause, user-visible shape,
-   * why it is accepted, and who owns the fix — is on `quantityUnitAlphabet` in
-   * `../stores/unitLadder`, and it is pinned end-to-end by the `App.test.tsx`
-   * block "ladder-derived units the backend cannot parse".
+   * The gap this used to carry is CLOSED (task #5757): the commit path no
+   * longer has its own hard-coded suffix table, it scans an index composed from
+   * the same `unit_ladders()` the alphabet here is derived from, so everything
+   * this gate admits now parses. The backend registers the raw superscript
+   * spellings too, making it a strict superset of this alphabet. The full
+   * account — what "advertised" now means, and the one asymmetry that remains
+   * — is on `quantityUnitAlphabet` in `../stores/unitLadder`, and it is pinned
+   * end-to-end by the `App.test.tsx` block "the reconciled unit/bare-number
+   * contract".
+   *
+   * Per-cell scoping therefore no longer exists to shrink a gap. It earns its
+   * keep on its own terms: it is what rejects a Density literal in a Volume
+   * cell INLINE, instead of committing it for reify-eval to refuse with a
+   * `DimensionMismatch` on the worst-feedback path.
    */
   const quantityReFor = createMemo(() => {
     const ladders = props.unitLadders;

@@ -9802,9 +9802,15 @@ fn get_mechanism_descriptors_does_not_warn_for_normally_named_params() {
 
 // ---- amendment review tests (suggestions 1, 3, 4) ---------------------------
 
-/// Source for unsupported-unit test: bind(y_axis, 50inch) where "inch" is not
-/// in UNIT_TABLE.  initial_value_si must be None and a DEBUG event must fire at
+/// Source for unsupported-unit test: bind(y_axis, 50inch), where "inch" is not a
+/// symbol `reify_core::unit_symbol_to_si` resolves — the DSL spells inches `in`.
+/// initial_value_si must be None and a DEBUG event must fire at
 /// `reify_gui::engine::literal_bind`.
+///
+/// Task #5757 widened this site from the retired five-entry table to the full
+/// builtin symbol set; "inch" is outside BOTH, so this stays the unresolvable
+/// case. `bind(y_axis, 3in)` — the spelling that DID move — is covered by
+/// `literal_bind_resolves_the_builtin_unit_symbols_the_old_table_dropped`.
 const SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE: &str = r#"
 structure Kinematic {
     let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
@@ -9814,8 +9820,8 @@ structure Kinematic {
 }
 "#;
 
-/// `bind(y_axis, 50inch)` — "inch" is not in UNIT_TABLE — must produce
-/// `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
+/// `bind(y_axis, 50inch)` — "inch" is not a resolvable DSL unit symbol — must
+/// produce `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
 /// AND emit exactly one DEBUG event at the `literal_bind` target.
 #[test]
 fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_logs_debug() {

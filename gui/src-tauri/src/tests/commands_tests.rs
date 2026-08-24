@@ -3129,11 +3129,24 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
 /// (`moment_of_inertia(geometry, body_density)`) — is driven by a param that is
 /// NOT a scalar argument of any geometry op.
 ///
-/// `density_scale : Real` rather than a `Density`-typed param is deliberate:
-/// `parse_value_string` (engine.rs) only knows `UNIT_TABLE`'s deg/rad/mm/cm/m, so
-/// a `Density`-typed param is not editable through `set_parameter` at all. A plain
-/// `Real` multiplier is the reachable spelling of the same defect, and the shape a
-/// user actually authors (a `param body_density` folded into `Material(...)`).
+/// `density_scale : Real` rather than a `Density`-typed param is deliberate, but
+/// the ORIGINAL reason has expired. It was that `parse_value_string` (engine.rs)
+/// knew only a five-entry `deg`/`rad`/`mm`/`cm`/`m` table, so a `Density`-typed
+/// param was not editable through `set_parameter` at all. Task #5757 retired that
+/// table for an index composed from the curated display ladders plus
+/// `reify_core::BUILTIN_UNITS`, and `kg/m^3` now resolves — so a `Density` param
+/// IS editable today.
+///
+/// DO NOT retype this fixture on the strength of that. The `Real` multiplier is
+/// still what this test needs: it is the shape a user actually authors (a
+/// `param body_density` folded into `Material(...)`), and — load-bearing here —
+/// it is a mass input that is NOT a scalar argument of any geometry op, which is
+/// the whole precondition for the #5338 stale-mass defect below. Retyping it
+/// would perturb an unrelated regression lock for no gain.
+///
+/// Note also that a `Density`-typed param would now be subject to #5757's
+/// bare-number gate, so the warm edit below would have to be spelled
+/// `"2kg/m^3"`; `"2.0"` works precisely because this cell is `Real`.
 ///
 /// At load `density_scale = 1.0`, so the density is bits-exact `7850.0` — which is
 /// what `with_inertia_tensor_result` keys on (test_helpers.rs) — and the cold load

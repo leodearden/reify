@@ -5363,7 +5363,10 @@ fn scalar_to_f64(val: &Value) -> Option<f64> {
 /// Returned by [`collect_snapshot_bind_pairs`] after the η-engine extension:
 /// - `Param`: the value side is a bare identifier; downstream resolved against Param cells.
 /// - `Literal`: the value side is a literal expression (`QuantityLiteral` or `NumberLiteral`)
-///   whose SI value can be computed from [`UNIT_TABLE`].
+///   whose SI value is computed from `reify_core::unit_symbol_to_si` — the DSL's own
+///   built-in symbol table, since this site's universe is .ri SOURCE tokens rather
+///   than the GUI's curated display labels (task #5757). A compound unit expression
+///   (`UnitExpr::Mul`/`Div`/`Pow`) still yields no SI value; that resolver is task γ (#3803).
 enum BindValue {
     /// A bare identifier referring to a Param cell (e.g. `bind(j, y_pos)`).
     Param(String),
@@ -5499,7 +5502,7 @@ fn resolve_driving_params_from_ast(
                 }
 
                 BindValue::Literal(literal_expr) => {
-                    // Evaluate the literal expression to SI value using UNIT_TABLE.
+                    // Evaluate the literal expression to an SI value.
                     use reify_ast::ExprKind;
                     let initial_value_si = match &literal_expr.kind {
                         ExprKind::QuantityLiteral { value, unit } => {
@@ -6773,12 +6776,23 @@ pub(crate) fn resolve_unit_label(
         .map(|e| (e.si_scale, e.dimension))
 }
 
-/// Parse a value string into a Value.
+/// Parse a value string into a Value, with no cell context.
 ///
 /// Supported formats:
-/// - Quantity literals: "80mm", "100cm", "1.5m", "90deg", "1.57rad"
+/// - Quantity literals: a number plus any unit in the composed unit index — every
+///   rung of every curated display ladder, in both its raw superscript and its
+///   ASCII spelling (`80mm`, `5L`, `5mm^3`, `5mm³`, `2kg/m^3`, `10MPa`, `750N`),
+///   unioned with the DSL's bare built-in symbols (`3in`, `2s`, `300K`, `5A`,
+///   `3mol`, `7cd`). The set is DERIVED, so this list is illustrative, never
+///   exhaustive — read the index, not this comment (task #5757).
 /// - Plain numbers: "5.0" → Real, "5" → Int
 /// - Booleans: "true", "false"
+///
+/// Deliberately dimension-AGNOSTIC, for callers with no cell context. A bare
+/// number is a perfectly good `Value::Int`/`Value::Real` here; refusing one for a
+/// DIMENSIONED cell is `parse_value_string_for_cell`'s job, because only it
+/// knows the declared type. (Both are crate-private, hence named rather than
+/// intra-doc linked from this `pub` item.)
 pub fn parse_value_string(s: &str) -> Result<Value, String> {
     parse_value_string_with_unit_hint(s, None)
 }
