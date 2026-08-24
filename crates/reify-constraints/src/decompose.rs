@@ -399,27 +399,44 @@ pub(crate) fn dependent_cell_reach_delta(
 ///     `other =>` catch-all except the two geometry types, which answer
 ///     `Geometric` (the domain they actually belong to) instead.
 ///
-/// # Why `Type::Bool` is checked BEFORE the predicate
+/// # Why `Type::Bool` and `Type::Enum` are checked BEFORE the predicate
 ///
-/// CP-SAT enumerates `Bool` natively, so the predicate alone would answer
-/// `None` for it. But a `Bool` auto reached through a derived cell must still
-/// contribute its LOGICAL flag: a constraint the classifier called
-/// `Dimensional` that reaches a `Bool` auto is genuinely cross-domain, and
-/// leaving it `Dimensional` would route a `Bool` auto at `DimensionalSolver`,
-/// which cannot enumerate it. The `Bool` arm therefore answers the domain
-/// question, not the capability question, and is matched first.
+/// CP-SAT enumerates `Bool` natively and enumerates an `Enum` whose variants
+/// appear as literals, so the predicate alone would answer `None` for both. But
+/// a `Bool`/`Enum` auto reached through a derived cell must still contribute
+/// its LOGICAL flag: a constraint the classifier called `Dimensional` that
+/// reaches one is genuinely cross-domain, and leaving it `Dimensional` routes a
+/// `Bool`/`Enum` auto at `DimensionalSolver`, which cannot enumerate it and
+/// writes a `Value::Scalar` back for it. Those two arms therefore answer the
+/// DOMAIN question, not the capability question, and are matched first.
+///
+/// `Type::Int` is the only type left for the capability probe, and it is the
+/// only one where the two questions coincide — an enumerable `Int` is both
+/// numeric and CP-SAT-representable, so leaving a `Logical` base alone is
+/// correct. Since `build_variable_domain` accepts exactly `Bool`, bounded-sane
+/// `Int` and literal-bearing `Enum` (cpsat.rs), those three arms exhaust the
+/// probe's true-set: no `_ if can_enumerate(..)` catch-all is needed, and
+/// having one is a live bug (it short-circuits the domain answer for the very
+/// types whose domain differs from the base's).
 ///
 /// # KNOWN APPROXIMATION, accepted: `Type::Enum` sees the WHOLE problem
 ///
 /// `can_enumerate`'s enum arm scans `constraints` for variant literals, and the
 /// slice passed here is the decomposition's FULL input, not the component the
 /// auto will end up in. A variant literal that lands in a DIFFERENT component
-/// therefore still counts as enumerable. This over-approximates in the unsafe
-/// direction — but only relative to a perfect answer, never relative to what
-/// stood here before: the old code contributed `None` for `Type::Enum`
-/// UNCONDITIONALLY, so every enum auto routed `Logical` regardless. Component
-/// membership is not known at this point in the loop (the union-find is still
-/// being built), so a per-component answer would need a second pass.
+/// therefore still counts as enumerable. Component membership is not known at
+/// this point in the loop (the union-find is still being built), so a
+/// per-component answer would need a second pass.
+///
+/// With `Type::Enum` answering its own domain rather than deferring to the
+/// probe, that imprecision no longer has an UNSAFE direction: an enum answers
+/// `Logical` when the probe says yes and `CrossDomain` when it says no, and
+/// both force the fallback against a `Dimensional`/`Geometric` base while both
+/// are absorbed by a `Logical` one. The approximation therefore costs at most
+/// exactness (`CrossDomain` where `Logical` would have sufficed, against a
+/// non-`Logical` base), never a solver that cannot represent the param —
+/// unlike the `_ if can_enumerate(..)` catch-all this replaced, where a
+/// false-positive probe left an enum auto routed at `DimensionalSolver`.
 ///
 /// # KNOWN ASYMMETRY, accepted
 ///
@@ -430,7 +447,10 @@ pub(crate) fn dependent_cell_reach_delta(
 ///
 /// Pinned by `an_int_auto_behind_a_bool_cell_stays_logical` (the enumerable
 /// case) and its `..._unbounded_...` / `..._a_string_auto_...` /
-/// `..._a_variantless_enum_...` siblings (the rejected cases).
+/// `..._a_variantless_enum_...` siblings (the rejected cases), and — for the
+/// arm ORDER specifically, which every one of those passes regardless because
+/// they all sit on a `Logical` base — by
+/// `an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional`.
 fn domain_of_auto(
     param: &AutoParam,
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -438,9 +458,44 @@ fn domain_of_auto(
     match &param.param_type {
         // Answers the DOMAIN question, so it precedes the capability probe.
         reify_core::Type::Bool => Some(ConstraintDomain::Logical),
-        // CP-SAT can build a domain for this auto, so letting the component
-        // stay `Logical` is safe — contribute nothing.
-        _ if crate::cpsat::can_enumerate(param, constraints) => None,
+        // `Enum` answers the DOMAIN question too, so it ALSO precedes the
+        // capability probe (review round 3, suggestion 2). "CP-SAT can build a
+        // domain for this auto" and "which solver slot can represent this auto"
+        // are DIFFERENT questions, and `widen_domain` is only ever asking the
+        // second one. Contributing `None` here left an enum auto reached from a
+        // `Dimensional`-classified constraint in a `Dimensional` component,
+        // which `solver_for` routes at `DimensionalSolver` — a solver that maps
+        // every non-`Type::Scalar` param to `DimensionVector::DIMENSIONLESS`
+        // and writes a `Value::Scalar` back. That is precisely the misrouting
+        // this fn's doc block opens by promising to close, and it uses an
+        // `Enum` auto as its worked example.
+        //
+        // `Logical` is the enum's OWN domain, so the answer behaves exactly
+        // like the `Bool` arm above: a no-op against a `Logical` base
+        // (`widen_domain`'s `a == b` fast path) and a forcing function against
+        // a `Dimensional` or `Geometric` one.
+        //
+        // NOT hypothetical, and it needs no exotic model: `can_enumerate`'s
+        // enum arm matches variant literals on `type_name` ALONE over the
+        // decomposition's WHOLE constraint slice (see the KNOWN APPROXIMATION
+        // section above), so a DIFFERENT auto's `constraint fit2 == Fit::Tight`
+        // in an unrelated component makes `can_enumerate(fit)` true for a `fit`
+        // whose own component contains no literal at all. Pinned by
+        // `an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional`.
+        reify_core::Type::Enum(_) if crate::cpsat::can_enumerate(param, constraints) => {
+            Some(ConstraintDomain::Logical)
+        }
+        // `Int` is the ONE type whose capability answer IS its routing answer:
+        // an enumerable `Int` is both genuinely numeric and CP-SAT
+        // representable, so a `Logical` component holding it stays solvable and
+        // contributing nothing is correct. Keeping the probe in a TYPE-BOUND
+        // arm rather than a `_` catch-all is the whole point — a catch-all lets
+        // the capability question short-circuit the domain question for every
+        // type whose domain is not the base's. `Bool`/`Int`/`Enum` are exactly
+        // the three types `build_variable_domain` accepts (cpsat.rs), so these
+        // three arms cover the probe's entire true-set with nothing left for a
+        // catch-all to absorb.
+        reify_core::Type::Int if crate::cpsat::can_enumerate(param, constraints) => None,
         // A geometry handle is GEOMETRIC, not numeric. `widen_domain` already
         // carries both `Geometric` arms; answering `Dimensional` here would
         // fabricate exactly the numeric flag this function's doc opens by
@@ -543,9 +598,35 @@ pub fn decompose_into_components(
 /// [`decompose_into_components`] over an ALREADY-BUILT
 /// `dependent-cell id → transitive auto set` map.
 ///
-/// See [`dependent_cell_auto_reads`] for the map's construction and its
-/// fail-safe cycle semantics (a cell on or downstream of a back edge is
-/// OMITTED rather than published with a partial set).
+/// See [`dependent_cell_auto_reads`] for the map's construction and its cycle
+/// semantics (a cell on or downstream of a back edge is OMITTED rather than
+/// published with a partial set).
+///
+/// # That omission is fail-safe for the DROP-side consumer, NOT for this one
+///
+/// (Review round 3, suggestion 7 — recorded here rather than fixed, see the
+/// follow-up note at the end.) Omission is the safe direction for
+/// `SolverRegistry`'s subset filter, where a missing entry can only make the
+/// filter keep a constraint it might have dropped. It is the UNSAFE direction
+/// for this CONNECTIVITY consumer, and the two must not be conflated:
+///
+///   * an omitted cell contributes no `refs` and therefore no union edges;
+///   * a constraint that reads ONLY such a cell has an empty `referenced` set
+///     and is silently `continue`d out of the decomposition;
+///   * if that empties the component list entirely, `SolverRegistry` reports
+///     `Solved { unique: true }` with every auto at its default — the exact
+///     silent "all autos unconstrained" outcome LAYER 2 exists to close,
+///     re-opened for cyclic or incomplete cells.
+///
+/// Not reachable from today's callers: `reify-eval`'s `build_dependent_cells`
+/// drops cyclic cells upstream, so a cell on a back edge never reaches this
+/// map with a constraint still reading it. The masking is a property of the
+/// CALLER, though, not of anything enforced here, so a future producer that
+/// stops pre-dropping cycles re-opens it with no compile error and no test
+/// failure. Closing it properly means returning the omitted-id set alongside
+/// the map so a constraint reading an omitted cell can be routed to
+/// `CrossDomain` (or rejected with a diagnostic) instead of dropped — larger
+/// than a doc correction and outside task #5467's lock set.
 ///
 /// # `objective_refs` is expanded HERE — unless the caller already did it
 ///
@@ -771,7 +852,7 @@ pub(crate) fn decompose_into_components_with_reads(
 
     // Build SubProblem for each component
     let mut result: Vec<SubProblem> = Vec::new();
-    for (_root, info_indices) in component_map {
+    for (root, info_indices) in component_map {
         let mut params = HashSet::new();
         let mut sub_constraints = Vec::new();
         let mut domains: Vec<ConstraintDomain> = Vec::new();
@@ -781,24 +862,33 @@ pub(crate) fn decompose_into_components_with_reads(
             let (cid, expr) = &constraints[info.constraint_idx];
             sub_constraints.push((cid.clone(), expr.clone()));
             domains.push(info.domain);
-
-            for &pi in &info.referenced_params {
-                // Find the root and collect all params in this component
-                params.insert(param_ids[pi].clone());
-            }
         }
 
-        // Also add any params that are in this component but not directly
-        // referenced by any constraint in our list (transitive through union-find)
+        // Every param in this component — which is exactly every param whose
+        // union-find root IS the component's root, directly referenced or not.
+        //
+        // This ONE pass replaces the two that stood here (review round 3,
+        // suggestion 4): an insert loop over each constraint's
+        // `referenced_params`, then a scan asking, per param, whether ANY
+        // constraint in the component referenced ANY param sharing that param's
+        // root. Both are subsumed, and the subsumption is exact rather than
+        // approximate: the constraint loop above unions every one of a
+        // constraint's `referenced_params` together, and `component_map` is
+        // keyed on `uf.find(referenced_params[0])`, so `uf.find(rp) == root`
+        // holds for EVERY `rp` of EVERY constraint in `info_indices` by
+        // construction. The old predicate therefore reduced to `root_of(pi) ==
+        // root` — the map key already in hand — and the first loop's inserts
+        // were a subset of what this one produces.
+        //
+        // Not merely tidier: the old form cost O(P x I_c x R) `uf.find` calls
+        // where O(P) suffices, and LAYER 2 made `R` grow. Pre-α
+        // `referenced_params` held the 1-2 SYNTACTICALLY visible autos; it is
+        // now derived from the WIDENED ref set, so one constraint reading a
+        // single `let` over the whole model carries `R = |component|` and the
+        // scan goes worst-case O(P^2 x C) — on the solve hot path, for exactly
+        // the let-indirected models this feature exists to make solvable.
         for (pi, pid) in param_ids.iter().enumerate() {
-            let root = uf.find(pi);
-            // Check if this param's root matches any constraint's param root
-            if info_indices.iter().any(|&ii| {
-                constraint_infos[ii]
-                    .referenced_params
-                    .iter()
-                    .any(|&rp| uf.find(rp) == root)
-            }) {
+            if uf.find(pi) == root {
                 params.insert(pid.clone());
             }
         }
@@ -1476,6 +1566,110 @@ mod tests {
              `widen_domain` absorbs into an already-`Dimensional` base — \
              leaving a String auto routed at `DimensionalSolver`, which writes \
              a `Value::Scalar` back for it",
+        );
+    }
+
+    /// An ENUMERABLE `Type::Enum` auto reached from a `Dimensional`-base
+    /// constraint must not leave the component `Dimensional` (review round 3,
+    /// suggestion 2).
+    ///
+    /// This is the ONE unit in this module that discriminates `domain_of_auto`'s
+    /// ARM ORDER. Every other enum/int case here sits on a `Logical` base built
+    /// by `bool_cell_over`, and against a `Logical` base a `None` contribution
+    /// and a `Some(Logical)` one are indistinguishable — `widen_domain(Logical,
+    /// Logical) == Logical` via the `a == b` fast path. Only a `Dimensional`
+    /// base separates them: `None` leaves `Dimensional` (the classifier's
+    /// verdict AND its flagless empty default), while `Some(Logical)` widens to
+    /// `CrossDomain`.
+    ///
+    /// The fixture deliberately does NOT put a variant literal in the component
+    /// under test. `S.fit` is reached only through `let w = 1.0mm + fit` from a
+    /// numeric constraint; the `Fit::Tight` literal lives in a SEPARATE
+    /// component belonging to a different auto, `S.fit2`. That is exactly the
+    /// documented `can_enumerate` over-approximation — its enum arm scans the
+    /// decomposition's whole constraint slice and matches on `type_name` alone
+    /// — so `can_enumerate(S.fit)` is true purely because of another auto's
+    /// constraint. A `_ if can_enumerate(..)` catch-all therefore contributed
+    /// `None` for `S.fit`, the component stayed `Dimensional`, and
+    /// `solver_for(Dimensional)` handed an `Enum` auto to `DimensionalSolver`,
+    /// which maps every non-`Type::Scalar` param to `DIMENSIONLESS` and writes
+    /// a `Value::Scalar` back.
+    ///
+    /// Latent in `production()` today (both the `Logical` and `CrossDomain`
+    /// slots are `None`, so every spelling lands on `DimensionalSolver`
+    /// regardless) and live at PRD2 γ — the CLASSIFICATION is wrong either way,
+    /// which is what this pins.
+    #[test]
+    fn an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional() {
+        let fit = ValueCellId::new("S", "fit");
+        let fit2 = ValueCellId::new("S", "fit2");
+        let fit_ty = || Type::Enum("Fit".to_string());
+        let enum_auto = |id: &ValueCellId| AutoParam {
+            id: id.clone(),
+            param_type: fit_ty(),
+            bounds: None,
+            free: true,
+        };
+        let params = vec![enum_auto(&fit), enum_auto(&fit2)];
+        let constraints = vec![
+            // Dimensional base, reaching `S.fit` only through the derived cell.
+            (
+                ConstraintNodeId::new("S", 0),
+                eq_lit(alpha_vref("S", "w"), 1.0),
+            ),
+            // A DIFFERENT auto, a DIFFERENT component — but the same enum type,
+            // so this literal is what makes `can_enumerate(S.fit)` answer true.
+            (
+                ConstraintNodeId::new("S", 1),
+                CompiledExpr::binop(
+                    BinOp::Eq,
+                    CompiledExpr::value_ref(fit2.clone(), fit_ty()),
+                    CompiledExpr::literal(Value::enum_unit("Fit", "Tight"), fit_ty()),
+                    Type::Bool,
+                ),
+            ),
+        ];
+        let dependent_cells = vec![(
+            ValueCellId::new("S", "w"),
+            add(
+                CompiledExpr::literal(Value::Real(1.0), Type::length()),
+                CompiledExpr::value_ref(fit.clone(), fit_ty()),
+            ),
+        )];
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        // Fixture integrity: the two autos must land in SEPARATE components, or
+        // `S.fit2`'s own `Logical` constraint would supply the widening under
+        // test and the assertion would be vacuous.
+        assert_eq!(
+            components.len(),
+            2,
+            "fixture integrity: `S.fit` (reached through `let w`) and `S.fit2` \
+             (syntactically referenced) share no constraint and must decompose \
+             into two components; got {components:?}",
+        );
+        let under_test = components
+            .iter()
+            .find(|c| c.auto_params.contains(&fit))
+            .expect("fixture integrity: some component must hold `S.fit`");
+        assert!(
+            !under_test.auto_params.contains(&fit2),
+            "fixture integrity: `S.fit`'s component must NOT also hold `S.fit2`, \
+             whose constraint carries the variant literal; got {:?}",
+            under_test.auto_params,
+        );
+
+        assert_eq!(
+            under_test.domain,
+            ConstraintDomain::CrossDomain,
+            "the constraint classifies `Dimensional` (a length cell compared \
+             with a length literal) and reaches an `Enum` auto through the \
+             derived cell. Getting `Dimensional` means `domain_of_auto` let the \
+             `can_enumerate` CAPABILITY probe short-circuit the DOMAIN answer \
+             for `Type::Enum` — and `widen_domain` absorbs a `None` into an \
+             already-`Dimensional` base, leaving an `Enum` auto routed at \
+             `DimensionalSolver`, which writes a `Value::Scalar` back for it",
         );
     }
 

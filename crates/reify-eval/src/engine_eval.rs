@@ -756,6 +756,27 @@ fn detect_underdetermined<'t>(
     // consumer used to build its own throwaway index right here.
     let index = read_index
         .get_or_init(|| CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes));
+    // The budgets above are honoured only when THIS consumer wins `get_or_init`
+    // — otherwise the index already exists and was built with whatever budgets
+    // `build_solver_problem` (or layer 1) passed. Every call site currently
+    // passes the same `self.max_unfold_*`, so the two can only differ if a
+    // future caller starts varying them, and it would get no error and no
+    // effect. Pin that agreement here rather than letting the parameters read
+    // as authoritative when they are not (review round 3, suggestion 10).
+    debug_assert_eq!(
+        (index.max_unfold_depth, index.max_unfold_nodes),
+        (max_unfold_depth, max_unfold_nodes),
+        "the shared per-eval `CellReadIndex` was built with unfold budgets \
+         ({}, {}) but `detect_underdetermined` was called with ({}, {}). The \
+         index is built ONCE per eval by whichever consumer reaches it first, \
+         so the losing caller's budgets are silently discarded — pass the same \
+         budgets from every call site, or read them off the index instead of \
+         taking them as parameters",
+        index.max_unfold_depth,
+        index.max_unfold_nodes,
+        max_unfold_depth,
+        max_unfold_nodes,
+    );
     let global_reads = index.read_closure(seeds);
 
     // Emit W_UNDERDETERMINED for each STRICTLY-auto cell (not auto(free)) absent
@@ -779,9 +800,24 @@ fn detect_underdetermined<'t>(
             // DISJUNCTS 2 and 3 — the REVERSE answer. Deliberately ordered
             // AFTER disjunct 1 so the reverse probe runs only for a cell that
             // would OTHERWISE BE WARNED ABOUT, a set that is empty in the
-            // overwhelming majority of models. The reverse graph itself is
-            // memoized inside the per-eval `CellReadIndex`, so N such probes
-            // cost ONE `extract_value_deps` sweep rather than N.
+            // overwhelming majority of models. That ordering is what keeps the
+            // probe cheap, and it has to be — because only PART of the probe is
+            // memoized (review round 3, suggestion 9):
+            //   * MEMOIZED, once per eval, inside the shared `CellReadIndex`:
+            //     the reverse `dep -> readers` MAP, i.e. the
+            //     `extract_value_deps` sweep over every template's cells. N
+            //     probes pay that sweep ONCE, not N times.
+            //   * NOT memoized, paid per probe: the reverse WALK over that map
+            //     from this auto's seed, and the owned `HashSet<ValueCellId>`
+            //     of cloned reader ids it returns — plus one freshly allocated
+            //     `ValueCellId` per reader inside
+            //     `auto_is_pinned_through_a_reader`'s re-projection disjunct.
+            // So the cost is O(strictly-auto-and-unread cells x readers) id
+            // clones, not O(1). Making it O(1) means having `cells_reaching`
+            // hand back a borrow (or an iterator) and computing the
+            // auto -> readers relation once with provenance tags, which is a
+            // signature change across all three consumers and outside task
+            // #5467's lock set.
             if auto_is_pinned_through_a_reader(
                 index,
                 &global_reads,
