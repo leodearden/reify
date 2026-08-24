@@ -200,6 +200,75 @@ if [ -f "$_verify_sh" ]; then
              | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|')
 fi
 
+# 4b. Live emitted-gate derivation, PLAN-DERIVED half (task 6426): append every
+#    repo-relative *.sh path named by a line of verify.sh's RESOLVED plan, as
+#    produced by --print-plan.
+#
+#    WHAT THIS BUYS OVER 4a: a plan line assembled through a VARIABLE
+#    (`_cmd="./scripts/x.sh"; add_tool "$_cmd"` — the shape verify.sh uses for
+#    _gui_cmd / _sidecar_cmd / _ts_cmd, assembled at scripts/verify.sh:2568-2574
+#    and emitted at :2651-2653) is invisible to a source-text grep, because the
+#    statement begins with the assignment rather than with `add_tool`. The
+#    resolved plan names the path outright.
+#
+#    UNIONED ONTO CLAUSE 4a, NEVER REPLACING IT — and that is a safety property,
+#    not a style choice. The union makes the classifier MONOTONE: 4b can only
+#    ever ADD a path, so a --print-plan failure (missing sibling libs, absent
+#    cargo, a hard-failing nextest probe, a wedged run) degrades to clause 4a's
+#    source-text floor and can NEVER classify something as less load-bearing
+#    than it is today. A REPLACEMENT would fail OPEN, since an empty derivation
+#    reads as "fast-path safe" — recreating the exact #4618/#4624 -> #4288
+#    ambush class this whole clause exists to prevent. Do not collapse the two
+#    halves into one; tests/infra/test_verify_pipeline_guard.sh Pair E (c-bis)
+#    pins the fail-soft direction.
+#
+#    Shares the $_verify_sh resolved at clause 3 — one knob, three clauses, no
+#    second env var. NOTE that the knob's semantics WIDEN here from READ to
+#    EXECUTE; see the header's Environment knobs block.
+if [ -f "$_verify_sh" ]; then
+    while IFS= read -r _gate; do
+        [ -z "$_gate" ] && continue
+        _SET="${_SET}"$'\n'"${_gate}"
+    #    Three things about the pipeline below are load-bearing. (Same tail-of-
+    #    loop-body placement as clause 4a, and for the same reason: bash admits
+    #    no comment between `done` and its `< <(...)` redirect.)
+    #
+    #    (a) THE CANONICAL INVOCATION — action=all, --scope all, --profile both,
+    #    --include-infra, DF_VERIFY_ROLE=merge. Every one of those five
+    #    widenings is load-bearing rather than decoration. Measured on this
+    #    tree: plain `all --scope all --profile both` derives only 6 of the 12
+    #    gates; adding --include-infra reaches 11; role=merge is what adds
+    #    tests/infra/run_all.sh. With all five, the derived set is
+    #    byte-identical BOTH to clause 4a's source-text set AND to the union
+    #    over a 4-action x 3-scope x 4-role, 48-invocation matrix — so ONE fork
+    #    is the exact superset today, and an N-way union would multiply the
+    #    fork cost while buying nothing.
+    #
+    #    (b) THE `grep -v '^#'` FILTER. --print-plan emits a header, a NOTE
+    #    line, a scope-decision line, a narrowing line, an environment block and
+    #    per-command annotations, all '#'-prefixed. No `.sh` path appears in any
+    #    of them TODAY, so this filter is belt-and-braces rather than strictly
+    #    load-bearing — but those lines are free prose, and a future annotation
+    #    that named a script path would silently promote it to load-bearing.
+    #    Keep the filter; it is not the no-op it looks like.
+    #
+    #    (c) THE REGEX AND NORMALIZER ARE CLAUSE 4a's, VERBATIM (see the
+    #    pipeline just above and the over-match rationale written up with it),
+    #    so both path boundaries and the directory-qualified '+(/…)+' shape
+    #    carry over for free rather than being re-derived and drifting.
+    #    THE ONE DELIBERATE DIFFERENCE: 4a's
+    #    '^[[:space:]]*add(_tool)?[[:space:]]+' STATEMENT ANCHOR is absent here,
+    #    and must STAY absent. --print-plan emits RESOLVED COMMANDS, not add()
+    #    statements, so the anchor would match nothing and silently zero this
+    #    entire clause. Do not "restore" it for symmetry. The comment-exclusion
+    #    job the anchor does for 4a is done here by (b)'s '^#' filter instead.
+    done < <(DF_VERIFY_ROLE=merge bash "$_verify_sh" \
+                 all --scope all --profile both --include-infra --print-plan \
+             | grep -v '^#' \
+             | grep -oE '(^|[^A-Za-z0-9_./-])(\./)?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh([^A-Za-z0-9_.-]|$)' \
+             | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|')
+fi
+
 # 5. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
 #    operational docs cross-referenced by tests/infra doc-sync checks (see
 #    that file's header for the full rationale and the tradeoff breadcrumb).
