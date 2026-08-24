@@ -259,9 +259,18 @@ fn backtrack(
         // `dependent_cells` early-returns inside the helper without touching
         // `assignment` or running any guard work, so the D1/B2 path is
         // byte-identical to pre-α.
-        crate::solver::fold_dependent_cells(assignment, dependent_cells, functions, |id| {
-            auto_param_ids.contains(id)
-        });
+        // `dispatch: None` — cpsat has no compute-dispatch plumbing of its own,
+        // and its forward-check below evaluates through a bare
+        // `EvalContext::new` for the same reason. Passing `None` keeps the fold
+        // and the forward-check reading the SAME context shape, so this call
+        // adds no dispatch capability cpsat did not already have.
+        crate::solver::fold_dependent_cells(
+            assignment,
+            dependent_cells,
+            functions,
+            |id| auto_param_ids.contains(id),
+            None,
+        );
 
         // Forward-check: evaluate all constraints whose auto-param refs are fully assigned
         let mut feasible = true;
