@@ -1682,4 +1682,312 @@ mod solve_all_enumeration_tests {
         }
         assert!(complete, "a fully-explored 4-point space is complete");
     }
+
+    // -----------------------------------------------------------------------
+    // NODE BUDGET (PRD2 §10 Q1, explicitly "decide in β").
+    //
+    // `cap` bounds SOLUTIONS COLLECTED. It does NOT bound NODES VISITED, and
+    // the difference is about to become load-bearing: step β.6 makes `solve()`
+    // enumerate at `cap = 2`, because 2 is the minimum that can tell "exactly
+    // one model" from "at least two". But proving there is no SECOND solution
+    // means proving the rest of the space holds none — i.e. EXHAUSTING it. Two
+    // `Int` autos at `MAX_INT_DOMAIN` = 1000 is 10^6 leaves, and every node on
+    // the way pays a total `fold_dependent_cells` pass plus a full constraint
+    // sweep. Without a node bound, `solve()` would silently regress from "stop
+    // at the first solution" to "walk the whole product" — the same work
+    // whether or not a second solution turns up on node two.
+    //
+    // The budget bounds that. When it bites, the search reports `complete:
+    // false` on THE SAME channel the solution cap already uses, so `complete`
+    // keeps meaning exactly one thing — "the space was exhausted" — and
+    // everything conjoined with it (`unique`, `ProvenOptimal`) stays honest
+    // without knowing WHICH truncation mode fired (D5).
+    //
+    // Every unit below drives `solve_all_with_budget` / `solve_with_budget`
+    // rather than the production entry points: a unit test must never have to
+    // burn ~1e5 nodes to observe the bound it is testing, and a test that had
+    // to would be quietly deleted the first time CI got slow.
+    // -----------------------------------------------------------------------
+
+    /// A budget far below the 6 nodes an unconstrained `int_auto("n", 0, 5)`
+    /// visits, so truncation is unmistakable rather than marginal.
+    const TRUNCATING_BUDGET: usize = 3;
+
+    /// A budget that stops the search BEFORE the only model of
+    /// `n == 5` (reached at the sixth and last node) can be collected.
+    const BUDGET_BELOW_THE_ONLY_SOLUTION: usize = 2;
+
+    /// Comfortably above every fixture's node count here, so the budget is
+    /// provably inert rather than accidentally slack.
+    const INERT_BUDGET: usize = 1_000;
+
+    /// Six models and six nodes: `n ∈ 0..=5` with nothing constraining it.
+    ///
+    /// Deliberately constraint-FREE so the node count and the model count
+    /// coincide. That makes "how many solutions came back" a direct readout of
+    /// "how many nodes the search was allowed", with no pruning in between to
+    /// muddy which of the two the budget actually bounded.
+    fn six_unconstrained_ints() -> ResolutionProblem {
+        problem(vec![int_auto("n", 0, 5)], Vec::new(), Vec::new())
+    }
+
+    /// One model, and it is the LAST node the search reaches: `n ∈ 0..=5` with
+    /// `constraint n == 5`.
+    ///
+    /// The shape that separates "budget stopped me" from "there is nothing
+    /// here": every earlier node is pruned, so a search cut short reports the
+    /// same EMPTY solution set a contradiction does — and only `complete` tells
+    /// the two apart.
+    fn only_solution_is_the_last_node() -> ResolutionProblem {
+        problem(
+            vec![int_auto("n", 0, 5)],
+            vec![(ConstraintNodeId::new("S", 0), eq_int(iref("n"), 5))],
+            Vec::new(),
+        )
+    }
+
+    /// `a && !a` over one `Bool` auto — no model, and the search PROVES it by
+    /// visiting both domain values.
+    fn contradiction() -> ResolutionProblem {
+        problem(
+            vec![bool_auto("a")],
+            vec![(
+                ConstraintNodeId::new("S", 0),
+                and(bref("a"), not(bref("a"))),
+            )],
+            Vec::new(),
+        )
+    }
+
+    /// (a) THE BUDGET TRUNCATES, AND SAYS SO. A 6-node space walked under a
+    /// 3-node budget comes back with strictly fewer than 6 solutions and
+    /// `complete: false`.
+    ///
+    /// The bound is asserted as an INEQUALITY rather than an exact count on
+    /// purpose: whether the budget is checked before or after the counter
+    /// increments is an implementation detail worth exactly zero test
+    /// coupling. What must hold is that a budget below the node count stops the
+    /// search short AND reports it — pinning an off-by-one here would just make
+    /// the honest half of the assertion harder to read.
+    ///
+    /// `cap` is left GENEROUS so nothing but the budget can end this search. If
+    /// the two truncation modes were confused, this unit would still pass while
+    /// (c) — the same problem at an inert budget — failed.
+    #[test]
+    fn a_node_budget_truncates_the_search_and_reports_it_as_incomplete() {
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all_with_budget(
+            &six_unconstrained_ints(),
+            GENEROUS_CAP,
+            TRUNCATING_BUDGET,
+        ));
+
+        assert!(
+            solutions.len() < 6,
+            "a {TRUNCATING_BUDGET}-node budget cannot walk a 6-node space; \
+             getting all 6 back means the budget is not consulted at all and \
+             `solve()` at cap = 2 will exhaust every product it is handed; got \
+             {solutions:?}",
+        );
+        assert!(
+            !solutions.is_empty(),
+            "the budget must bound the search, not abort it — a {TRUNCATING_BUDGET}-node \
+             budget still admits the first nodes, and coming back empty would \
+             mean the bound fires before any work happens; got {solutions:?}",
+        );
+        assert!(
+            !complete,
+            "a budget-truncated search did NOT exhaust the space. Reporting \
+             `complete: true` here would license step β.6's `unique` and step \
+             β.8's `ProvenOptimal` off a search that stopped early — the exact \
+             silent lie D5 forbids",
+        );
+    }
+
+    /// (b) BUDGET-EMPTY AND PROVEN-EMPTY ARE DIFFERENT ANSWERS. Both are
+    /// asserted HERE, in one unit, so a collapse of the two fails loudly
+    /// instead of leaving each half green in its own file.
+    ///
+    /// `{ solutions: [], complete: false }` says "I found nothing and I proved
+    /// nothing". `{ solutions: [], complete: true }` says "I visited every
+    /// point and there is no model" — a PROOF of unsatisfiability, and the only
+    /// one `solve()` is entitled to report as `Infeasible`. They share a
+    /// solution set, so `complete` is the entire discriminator; an
+    /// implementation that dropped the flag on the empty path would look
+    /// perfectly correct until it started calling a timeout a contradiction.
+    #[test]
+    fn a_budget_exhausted_empty_result_is_distinguishable_from_a_proven_contradiction() {
+        let (cut_short, cut_short_complete) = enumerated(CpSatSolver.solve_all_with_budget(
+            &only_solution_is_the_last_node(),
+            GENEROUS_CAP,
+            BUDGET_BELOW_THE_ONLY_SOLUTION,
+        ));
+        let (proven, proven_complete) = enumerated(CpSatSolver.solve_all_with_budget(
+            &contradiction(),
+            GENEROUS_CAP,
+            INERT_BUDGET,
+        ));
+
+        assert!(
+            cut_short.is_empty(),
+            "`n == 5` prunes every node before the last, and a \
+             {BUDGET_BELOW_THE_ONLY_SOLUTION}-node budget never reaches it; got {cut_short:?}",
+        );
+        assert!(
+            proven.is_empty(),
+            "`a && !a` has no model at all; got {proven:?}",
+        );
+        assert!(
+            !cut_short_complete,
+            "the budget stopped this search before it could reach the ONLY \
+             model, so it proved nothing. `complete: true` here would turn a \
+             timeout into a claim of unsatisfiability",
+        );
+        assert!(
+            proven_complete,
+            "`a && !a` was refuted at every point of a fully-walked 2-point \
+             space — that IS the proof, and `complete: false` would throw it \
+             away, downgrading a real `Infeasible` to `NoProgress`",
+        );
+        assert_ne!(
+            cut_short_complete, proven_complete,
+            "two empty solution sets, two OPPOSITE verdicts: `complete` is the \
+             only thing telling them apart, so it must differ here",
+        );
+    }
+
+    /// (c) A GENEROUS BUDGET IS INERT. The same 6-node space at a budget well
+    /// above its node count returns all 6 models with `complete: true`.
+    ///
+    /// The counterweight to (a), and the reason it exists: a bound that clipped
+    /// ordinary solves would be caught by nothing else here — every other unit
+    /// in this module runs at the production budget, where a slack-by-a-factor
+    /// bug is invisible. This unit says the budget costs nothing when it is not
+    /// binding.
+    #[test]
+    fn a_budget_above_the_node_count_cannot_clip_a_normal_enumeration() {
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all_with_budget(
+            &six_unconstrained_ints(),
+            GENEROUS_CAP,
+            INERT_BUDGET,
+        ));
+
+        assert_eq!(
+            solutions.len(),
+            6,
+            "`n ∈ 0..=5` unconstrained has exactly 6 models, and a \
+             {INERT_BUDGET}-node budget is far above the 6 nodes needed to \
+             reach them; anything less means the budget is clipping a solve it \
+             has no business bounding; got {solutions:?}",
+        );
+        assert!(
+            complete,
+            "a 6-node space walked under a {INERT_BUDGET}-node budget was \
+             exhausted; `complete: false` here would silently strip `unique` \
+             and `ProvenOptimal` off every honest solve",
+        );
+    }
+
+    /// (d) `solve()` REPORTS BUDGET EXHAUSTION AS `NoProgress`, NEVER AS
+    /// `Infeasible`. Both arms are asserted here for the same reason (b) pairs
+    /// its two: the whole point is that they must not collapse.
+    ///
+    /// A search that ran out of budget has not shown the constraints are
+    /// unsatisfiable — it has shown nothing whatsoever. `Infeasible` is a
+    /// diagnostic a user acts on by editing their model; emitting it for a
+    /// solver that simply stopped early sends them to rewrite a design that was
+    /// never wrong. `NoProgress` is the honest, loud answer (D5).
+    ///
+    /// Driven through the `pub(crate)` `solve_with_budget` seam rather than by
+    /// building a 100_000-node fixture: the production const is pinned
+    /// separately in (e), and the two together say more than one slow test
+    /// could.
+    #[test]
+    fn solve_reports_budget_exhaustion_as_no_progress_rather_than_infeasible() {
+        let cut_short = CpSatSolver
+            .solve_with_budget(&only_solution_is_the_last_node(), BUDGET_BELOW_THE_ONLY_SOLUTION);
+        let proven = CpSatSolver.solve_with_budget(&contradiction(), INERT_BUDGET);
+
+        match cut_short {
+            SolveResult::NoProgress { reason } => assert!(
+                reason.contains("budget"),
+                "the reason a user reads must NAME the exhausted enumeration \
+                 budget — otherwise `NoProgress` is indistinguishable from \
+                 every other reason the solver declines to answer; got {reason:?}",
+            ),
+            SolveResult::Infeasible { diagnostics } => panic!(
+                "a budget-truncated search NEVER proved `n == 5` unsatisfiable \
+                 — it never reached n = 5 at all. Reporting Infeasible \
+                 {diagnostics:?} tells the user to go fix a model that is \
+                 perfectly satisfiable",
+            ),
+            other => panic!(
+                "expected NoProgress naming the budget; got {other:?} — note \
+                 `Solved` would be worse still, since nothing was found",
+            ),
+        }
+        assert!(
+            matches!(proven, SolveResult::Infeasible { .. }),
+            "the budget arm must not swallow the REAL one: `a && !a` walked to \
+             exhaustion is genuinely unsatisfiable and must still report \
+             Infeasible; got {proven:?}",
+        );
+    }
+
+    /// (e) THE PUBLIC ENTRY POINT IS EXACTLY THE PRODUCTION SPECIALIZATION.
+    ///
+    /// Two claims, and both are needed. The const's VALUE is pinned so a
+    /// silent retune shows up as a failing test with a number in it rather
+    /// than as a mysterious slowdown or a mysterious `complete: false`. The
+    /// EQUIVALENCE is pinned so `solve_all` cannot grow a second, private
+    /// bound that drifts from the named one — the lock-step-twin failure this
+    /// whole task is written to avoid (G7).
+    ///
+    /// The equivalence is asserted against a tiny budget as well as the
+    /// production one. Agreeing with `ENUMERATION_NODE_BUDGET` alone would also
+    /// be satisfied by a `solve_all` that ignored budgets entirely; DISagreeing
+    /// with a truncating budget is what shows the parameter is genuinely
+    /// threaded through the same code path.
+    ///
+    /// Not probed at the exact 100_000-node boundary: `MAX_INT_DOMAIN` caps one
+    /// `Int` auto at 1000 values, so reaching that boundary needs two autos and
+    /// a ~10^6-leaf walk, each node paying a full fold plus constraint sweep.
+    /// That is a multi-second unit test to pin an integer literal already
+    /// asserted on the line above.
+    #[test]
+    fn the_public_solve_all_is_exactly_the_production_budget_specialization() {
+        assert_eq!(
+            ENUMERATION_NODE_BUDGET, 100_000,
+            "PRD2 §10 Q1 sets the enumeration bound at ~1e5 nodes; changing it \
+             changes when `solve()` starts answering `NoProgress` instead of \
+             `Solved`, so it changes user-visible behaviour and belongs in a \
+             commit that says so",
+        );
+
+        let p = six_unconstrained_ints();
+        let public = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+        let explicit = enumerated(CpSatSolver.solve_all_with_budget(
+            &p,
+            GENEROUS_CAP,
+            ENUMERATION_NODE_BUDGET,
+        ));
+        let truncated = enumerated(CpSatSolver.solve_all_with_budget(
+            &p,
+            GENEROUS_CAP,
+            TRUNCATING_BUDGET,
+        ));
+
+        assert_eq!(
+            public, explicit,
+            "`solve_all(p, cap)` must BE `solve_all_with_budget(p, cap, \
+             ENUMERATION_NODE_BUDGET)` — if the two can differ, the budget a \
+             reader sees named in the source is not the budget production runs",
+        );
+        assert_ne!(
+            public, truncated,
+            "the budget parameter must actually reach the search: if \
+             `solve_all_with_budget` returns the same thing at {TRUNCATING_BUDGET} \
+             nodes as at {ENUMERATION_NODE_BUDGET}, then the equivalence above \
+             proves nothing and the bound does not exist",
+        );
+    }
 }
