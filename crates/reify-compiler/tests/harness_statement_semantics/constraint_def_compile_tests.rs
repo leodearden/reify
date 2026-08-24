@@ -7,7 +7,7 @@ use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 use reify_compiler::{CompiledConstraintDef, CompiledConstraintParam};
 use reify_core::*;
 use reify_ir::*;
-use reify_test_support::{compile_source, compile_template};
+use reify_test_support::{compile_source, compile_source_with_stdlib, compile_template};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1466,5 +1466,95 @@ structure S {
          (numeric leniency — dimensional strictness is task 4490's job), \
          got {}; diagnostics: {:?}",
         code_count, module.diagnostics
+    );
+}
+
+// ── Task 6416: enum-typed constraint def params resolve to Type::Enum ────────
+
+/// A bare enum-typed `constraint def` param must store the RESOLVED enum type on
+/// `CompiledConstraintParam.ty`, not `None`.
+///
+/// Enum names reach type resolution only through the ambient `RESOLUTION_ENUM_NAMES`
+/// set installed by the `EnumNameScope` guard. Before task 6416 `compile_constraint_def`
+/// installed no such scope, so `param g : Zq` resolved to `None` and the `ty` field
+/// stayed `None` — which in turn made task 4546's instantiation-site arg type check
+/// in `expand_constraint_inst` silently inert for every enum-typed param (it skips
+/// params whose `ty` is `None`).
+///
+/// The zero-error assertion is bundled deliberately: a compile that newly started
+/// erroring would be an alternative — and unacceptable — way to make the `ty`
+/// assertion unreachable.
+#[test]
+fn enum_typed_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for an enum-typed constraint def param, got: {:?}",
+        errors
+    );
+
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "K")
+        .expect("K constraint def must be present in module.constraint_defs");
+    assert_eq!(
+        def.params.len(),
+        1,
+        "expected K to have exactly 1 param (g), got {}",
+        def.params.len()
+    );
+    let param: &CompiledConstraintParam = &def.params[0];
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("Zq".to_string())),
+        "expected param 'g' to carry the resolved enum type Enum(Zq); a `None` here \
+         means the instantiation-site arg type check silently skips this param"
+    );
+}
+
+/// The same enum-name fallback must reach params typed by a STDLIB (prelude) enum,
+/// not just module-local ones — `ThreadSystem` is declared at
+/// `crates/reify-compiler/stdlib/ports_mechanical.ri:35`.
+///
+/// Pins that the ambient enum-name set installed by `compile_constraint_def` covers
+/// the full `enum_defs` slice (local + prelude), not merely the module's own decls.
+#[test]
+fn stdlib_enum_typed_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+constraint def K {
+    param g : ThreadSystem
+    true
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for a stdlib-enum-typed constraint def param, got: {:?}",
+        errors
+    );
+
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "K")
+        .expect("K constraint def must be present in module.constraint_defs");
+    let param: &CompiledConstraintParam = &def.params[0];
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("ThreadSystem".to_string())),
+        "expected param 'g' to carry the resolved stdlib enum type Enum(ThreadSystem)"
     );
 }
