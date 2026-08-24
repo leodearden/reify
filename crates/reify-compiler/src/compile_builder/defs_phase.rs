@@ -47,10 +47,11 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// instantiation sites can read it without re-scanning annotations.
 ///
 /// `structure_names` is the set of structure/occurrence names in scope (both
-/// local and imported via the prelude). Param type names in this set suppress
-/// the "unknown type" diagnostic because the resolved type is discarded at
-/// def-compile time anyway — entity.rs only reads `param.name` and
-/// `param.default` at instantiation time.
+/// local and imported via the prelude). A param type name in this set suppresses
+/// the "unknown type" diagnostic for that structure/occurrence spelling. The
+/// resolved type is NOT discarded: it is stored on `CompiledConstraintParam.ty`
+/// and consumed by `expand_constraint_inst`'s arg type check at instantiation
+/// time (task 4546), which skips any param whose `ty` is `None`.
 fn compile_constraint_def(
     c: &reify_ast::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
