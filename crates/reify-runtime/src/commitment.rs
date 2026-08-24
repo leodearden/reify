@@ -17,7 +17,7 @@ use reify_ir::NodeTraits;
 use crate::Priority;
 // Re-export the canonical `NodeKind` from `reify-ir` (it lives in
 // `reify-ir/src/node_traits.rs`; the `reify-types` façade that originally
-// hosted it was retired in 3f3da9f03d, task η) so existing
+// hosted it was retired in 3f3da9f03d, task η, #3775) so existing
 // `reify_runtime::commitment::NodeKind` call sites keep resolving
 // transparently. The live witness is this module's
 // `node_kind_reexport_identity` test; the other former beneficiary,
@@ -1056,7 +1056,7 @@ mod tests {
         // Asserts that crate::commitment::NodeKind IS reify_ir::NodeKind — the
         // same type, not a wrapper — which is exactly what the module-head
         // `pub use reify_ir::NodeKind` buys. This read `reify_types::NodeKind`
-        // until that façade crate was retired in 3f3da9f03d (task η).
+        // until that façade crate was retired in 3f3da9f03d (task η, #3775).
         let _: reify_ir::NodeKind = crate::commitment::NodeKind::Value;
     }
 
