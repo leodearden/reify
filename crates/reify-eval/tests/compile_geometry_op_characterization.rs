@@ -1738,17 +1738,17 @@ const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] =
 fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
     let args = match k {
         ModifyKind::Fillet => vec![("radius".to_string(), lit_len(0.005))],
-        ModifyKind::Chamfer => vec![("distance".to_string(), lit(0.005))],
+        ModifyKind::Chamfer => vec![("distance".to_string(), lit_len(0.005))],
         ModifyKind::ChamferAsymmetric => vec![
-            ("d1".to_string(), lit(0.004)),
-            ("d2".to_string(), lit(0.006)),
+            ("d1".to_string(), lit_len(0.004)),
+            ("d2".to_string(), lit_len(0.006)),
         ],
-        ModifyKind::Shell => vec![("thickness".to_string(), lit(0.002))],
+        ModifyKind::Shell => vec![("thickness".to_string(), lit_len(0.002))],
         ModifyKind::Draft => vec![("angle".to_string(), lit(0.1))],
-        ModifyKind::Thicken => vec![("offset".to_string(), lit(0.003))],
-        ModifyKind::ZoneSlab => vec![("width".to_string(), lit(0.01))],
-        ModifyKind::OffsetSolid => vec![("distance".to_string(), lit(0.002))],
-        ModifyKind::OffsetCurve => vec![("distance".to_string(), lit(0.002))],
+        ModifyKind::Thicken => vec![("offset".to_string(), lit_len(0.003))],
+        ModifyKind::ZoneSlab => vec![("width".to_string(), lit_len(0.01))],
+        ModifyKind::OffsetSolid => vec![("distance".to_string(), lit_len(0.002))],
+        ModifyKind::OffsetCurve => vec![("distance".to_string(), lit_len(0.002))],
     };
     CompiledGeometryOp::Modify {
         kind: k,
@@ -2226,7 +2226,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         SweepKind::Loft => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::Extrude => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit(0.02))],
+            vec![("distance".to_string(), lit_len(0.02))],
         ),
         SweepKind::Revolve => (
             vec![GeomRef::Step(0)],
@@ -2245,7 +2245,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::ExtrudeSymmetric => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit(0.02))],
+            vec![("distance".to_string(), lit_len(0.02))],
         ),
         SweepKind::SweepGuided => (
             vec![GeomRef::Step(0), GeomRef::Step(1), GeomRef::Step(2)],
@@ -2257,7 +2257,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::Pipe => (
             vec![GeomRef::Step(0)],
-            vec![("radius".to_string(), lit(0.005))],
+            vec![("radius".to_string(), lit_len(0.005))],
         ),
         SweepKind::ExtrudeInfinite => (
             vec![GeomRef::Step(0)],
