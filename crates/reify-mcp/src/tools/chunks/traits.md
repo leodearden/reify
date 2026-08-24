@@ -6,7 +6,7 @@ Traits are non-entity declarations: no identity, no determinacy state. They are 
 
 ```
 pub trait Rigid : Physical {
-    let moment_of_inertia = compute_moi(geometry, material.density) // pdoccover:allow — illustrative placeholder helper for the example, not a compiler/stdlib function
+    let moment_of_inertia = compute_moi(geometry, material.density) // illustrative placeholder helper, not a compiler/stdlib function — pdoccover:allow — placeholder
 }
 ```
 
