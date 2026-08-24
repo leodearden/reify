@@ -140,12 +140,15 @@ pub async fn lsp_request_on_worker(
 /// avoid: the tested one could keep resolving while the production one acquired
 /// a defect. With one body, the only thing the seam varies is which lane the
 /// work travels — which is the variable the tests actually mean to control.
-fn lsp_request_future(
+/// Every argument is OWNED, so the returned future is `Send + 'static` — the
+/// bound a lane requires — without spelling either out (clippy rejects the
+/// explicit `-> impl Future` form here as `manual_async_fn`).
+async fn lsp_request_future(
     bridge: Arc<LspBridge>,
     method: String,
     params: String,
-) -> impl std::future::Future<Output = Result<String, String>> + Send + 'static {
-    async move { lsp_request_impl(&bridge, &method, params).await }
+) -> Result<String, String> {
+    lsp_request_impl(&bridge, &method, params).await
 }
 
 /// [`lsp_request_on_worker`] with its "is there a lane?" question turned into a

@@ -831,9 +831,8 @@ fn submitting_to_your_own_lane_panics_loudly_instead_of_wedging_it() {
         run_on_worker(|| run_on_worker(|| 1u32))
     }));
 
-    let payload = outcome.expect_err(
-        "re-entrant submission must panic on the submitter rather than wedge the lane",
-    );
+    let payload = outcome
+        .expect_err("re-entrant submission must panic on the submitter rather than wedge the lane");
     let message = panic_message(&*payload);
     assert!(
         message.contains("re-entrant submission"),
