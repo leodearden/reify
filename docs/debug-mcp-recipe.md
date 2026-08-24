@@ -88,7 +88,7 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown. Caveat: an UNSCOPED wait is not proof about any one pane, and misleads in BOTH directions (green off a pane you did not mean; a spurious timeout on a hidden first match) — mechanism in the tool's own `viewportId` schema description; scope the wait whenever the follow-up action is scoped |
+| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown. Caveat: an UNSCOPED wait is not proof about any one pane, and misleads in EVERY direction (green off a pane you did not mean; a spurious `visible` timeout on a hidden first match; a `gone` green off a first match that is merely hidden) — mechanism in the tool's own `viewportId` schema description; scope the wait whenever the follow-up action is scoped |
 | `list_console_errors` | `{}` | `{errors:[{message,stack}], count}` |
 
 ### I1 — Editor interaction

@@ -483,7 +483,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
 
   interface MountPanesOpts {
     inPane1?: boolean;
-    visible?: 'all' | 'design-main' | 'pane-1';
+    visible?: 'all' | 'pane-1';
   }
 
   /**
@@ -497,17 +497,18 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
    *   back to the document-wide lookup would be satisfied by design-main's
    *   element no matter which pane was asked for.
    * - `visible` (default `'all'`) — which pane's element gets a non-zero rect.
-   *   Naming ONE pane leaves the other's at jsdom's default all-zero rect, which
-   *   isElementVisible() reads as hidden; `{visible: 'pane-1'}` therefore puts
-   *   the HIDDEN element first in document order, the fixture case (i) needs for
-   *   the false-negative half of the unscoped trap.
+   *   `{visible: 'pane-1'}` leaves design-main's at jsdom's default all-zero
+   *   rect, which isElementVisible() reads as hidden, and so puts the HIDDEN
+   *   element FIRST in document order — the fixture cases (i) and (j) need for
+   *   the two faces of the unscoped trap that turn on visibility rather than on
+   *   presence.
    *
    * ONE markup template on purpose. Split across two near-copy helpers, a change
    * to the pane markup — a wrapper element, a third pane, a different viewport
    * id — has to be applied twice, and a drift between the copies would leave (h)
    * and (i) testing subtly different DOMs while both stayed green.
    */
-  function mountPanes({ inPane1 = true, visible = 'all' }: MountPanesOpts = {}): HTMLElement {
+  function mountPanes({ inPane1 = true, visible = 'all' }: MountPanesOpts = {}) {
     root = document.createElement('div');
     root.innerHTML = `
       <div data-viewport-id="design-main"><div data-testid="scoped-el"></div></div>
@@ -520,7 +521,6 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     const targets = root.querySelectorAll(sel);
     expect(targets.length).toBeGreaterThan(0); // a fixture that made nothing visible is a typo, not a test
     targets.forEach(makeVisible);
-    return root;
   }
 
   /** Settle pending microtasks WITHOUT advancing any fake timer. */
@@ -712,19 +712,29 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(result).toEqual({ error: 'timeout' });
   });
 
-  // (h)/(i) pin the residual silent-wrong-pane path that scoping does NOT close,
-  // and that (f) only half-covers: (f) shows an unscoped multi-match reports no
-  // pane keys; these show what that costs a caller when the panes are not equal.
+  // (h)/(i)/(j) pin the residual silent-wrong-pane path that scoping does NOT
+  // close, and that (f) only half-covers: (f) shows an unscoped multi-match
+  // reports no pane keys; these show what that costs a caller when the panes are
+  // not equal.
   //
   // THE MECHANISM, stated once for both: resolveByTestId commits to
   // `matches[0]` — the first element in DOCUMENT ORDER — and only THEN does
   // buildSelectorPredicate evaluate isElementVisible() on that one element. The
   // selection happens BEFORE visibility is consulted, not "the first element
-  // that satisfies the predicate", so the trap has two opposite faces:
+  // that satisfies the predicate", so the trap has three faces — one per arm of
+  // the predicate, and the `gone` one is the dangerous one:
   //
-  //   (h) FALSE POSITIVE — the first pane satisfies, a later pane is not ready.
-  //   (i) FALSE NEGATIVE — the first pane's copy is hidden, so the wait times out
-  //       even though a VISIBLE match exists in a later pane.
+  //   (h) state:'visible', FALSE POSITIVE — the first pane satisfies, a later
+  //       pane is not ready.
+  //   (i) state:'visible', FALSE NEGATIVE — the first pane's copy is hidden, so
+  //       the wait times out even though a VISIBLE match exists in a later pane.
+  //   (j) state:'gone', FALSE POSITIVE — the first pane's copy is merely HIDDEN,
+  //       which `el === null || !isElementVisible(el)` reads as gone, while a
+  //       VISIBLE copy is still mounted in a later pane.
+  //
+  // (j) is the face to fear. (i) fails loudly — a timeout a caller has to look
+  // at — whereas (j) hands back {ok:true, waited_ms:0} for a teardown that never
+  // happened, and a green is believed without being looked at.
   //
   // CALLER-FACING FAILURE PATH for (h): a harness that waits UNSCOPED and then
   // acts SCOPED on pane-1 gets a green wait off design-main — pane 0 in document
@@ -783,6 +793,38 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     });
 
     expect(scoped.result.ok).toBe(true);
+  });
+
+  it('(j) UNSCOPED state:"gone" goes GREEN off a merely-hidden first match — while a VISIBLE copy is still mounted in a later pane', async () => {
+    // Same fixture as (i), read through the other arm: design-main's `scoped-el`
+    // keeps jsdom's zero rect (hidden) and pane-1's is visible. The 'gone' arm is
+    // `el === null || !isElementVisible(el)`, evaluated on matches[0] ALONE — so
+    // design-main's hidden copy satisfies it and pane-1's visible copy is never
+    // consulted.
+    mountPanes({ visible: 'pane-1' });
+
+    const unscoped = await dispatchDrained(35, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'gone', timeout_ms: 100,
+    });
+
+    expect(unscoped.result.ok).toBe(true);
+    // Not merely "eventually true" — satisfied on the FIRST evaluation, before
+    // pollUntil's first 16 ms tick. Nothing about the timing hints that a
+    // still-mounted, still-visible copy exists.
+    expect(unscoped.settledBeforePolling).toBe(true);
+    // Same shape as (f)/(h): no pane keys, so the green carries no clue that a
+    // pane other than the caller's was the one consulted.
+    expect(Object.keys(unscoped.result).sort()).toEqual(['ok', 'waited_ms']);
+
+    // The contrast that makes the trap concrete, and the mirror of (i)'s: against
+    // the SAME DOM the scoped gone-wait TIMES OUT, because pane-1's copy really
+    // is still there and visible. The unscoped green above was never evidence of
+    // a teardown.
+    const scoped = await dispatchDrained(36, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'gone', viewportId: 'pane-1', timeout_ms: 100,
+    });
+
+    expect(scoped.result).toEqual({ error: 'timeout' });
   });
 });
 

@@ -605,7 +605,7 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. This arm builds the SAME selector predicate as wait_for_selector, so it carries that tool's unscoped-wait trap in both directions — an unscoped wait is not proof about any one pane; see wait_for_selector's viewportId parameter for the mechanism, and scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. This arm builds the SAME selector predicate as wait_for_selector, so it carries that tool's unscoped-wait trap in every direction — an unscoped wait is not proof about any one pane; see wait_for_selector's viewportId parameter for the mechanism, and scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -623,7 +623,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated — not the first one that satisfies the wait — so with several panes mounted an unscoped wait misleads in either direction: it can go green off a pane OTHER than the one you are about to act on (and the result says nothing about which), or under state:'visible' time out on a hidden first match while a visible one sits in a LATER pane. Scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated — not the first one that satisfies the wait — so with several panes mounted an unscoped wait misleads in every direction: it can go green off a pane OTHER than the one you are about to act on (and the result says nothing about which); under state:'visible' it can time out on a hidden first match while a visible one sits in a LATER pane; and under state:'gone' it can go green because the first match is merely HIDDEN while a visible one remains in a later pane — reporting a teardown that did not happen. Scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -3198,11 +3198,13 @@ mod tests {
     // `element_screenshot`'s pane-guess diagnostics (`viewportId`/`matchCount`) are
     // the entire point of #5891 for that tool, yet the image branch of `tools/call`
     // returned EARLY with a content array holding only the image block — so they were
-    // discarded at the transport boundary. The frontend test
-    // (debugFixtureInjection.test.ts:653-658) asserts at the BRIDGE level and stays
-    // green while end-to-end is broken, and `handle_mcp` takes `State(DebugServerState)`
-    // — an Arc-of-Mutex bundle impractical to build here — which is why the envelope
-    // had ZERO coverage. The pure Value→Value mapping is therefore extracted as
+    // discarded at the transport boundary. The frontend test — case `#5891 unscoped
+    // multi-match crops the first and reports the guessed pane`, in the
+    // `element_screenshot: bridge handler` block of debugFixtureInjection.test.ts —
+    // asserts at the BRIDGE level and stays green while end-to-end is broken, and
+    // `handle_mcp` takes `State(DebugServerState)` — an Arc-of-Mutex bundle
+    // impractical to build here — which is why the envelope had ZERO coverage. The
+    // pure Value→Value mapping is therefore extracted as
     // `mcp_content_blocks`, the same move step-14 made for
     // `canonical_wait_for_selector_params`.
 
@@ -3268,9 +3270,12 @@ mod tests {
         // nothing else, so its envelope must stay bit-for-bit today's single block.
         // screenshot/screenshot_window: neither ever carries a non-`data` success key
         // (their handlers in bridge.ts's `buildHandlers`), so the new gate must never
-        // perturb them — that is what keeps gui/test/visual/rpcEnvelope.test.ts's
-        // `resolves to null when there is no text block to interpret` image-only stub
-        // accurate.
+        // perturb them — that is what keeps the image-only stubs in
+        // gui/test/visual/rpcEnvelope.test.ts accurate. Two cases stub one, with
+        // near-identical titles: `yields null when there is no text block to
+        // interpret` (the normalizeRpcEnvelope branch-3 case) and its transport
+        // sibling `resolves to null when there is no text block to interpret`
+        // (makeDebugRpc).
         for tool in ["element_screenshot", "screenshot", "screenshot_window"] {
             let out = mcp_content_blocks(tool, &json!({"data": "data:image/png;base64,BBB="}));
             let content = out["content"]
