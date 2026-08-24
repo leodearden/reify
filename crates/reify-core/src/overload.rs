@@ -548,4 +548,342 @@ mod tests {
             );
         }
     }
+
+    // ── `type_carries_*` predicate coverage ──────────────────────────────────
+    //
+    // Cases derived from the compile-side tests these predicates arrived with
+    // (`type_carries_type_param_recurses_through_all_constructors`,
+    // `type_carries_dim_param_*`), extended to the arms those do not reach.
+    // The eval side never had direct coverage at all, which is part of why the
+    // two copies could drift.
+
+    /// ScalarParam shorthand, matching the compile-side `sp` helper.
+    fn sp(name: &str) -> Type {
+        Type::ScalarParam(name.to_string())
+    }
+
+    /// TypeParam shorthand, matching the compile-side `tp` helper.
+    fn tp(name: &str) -> Type {
+        Type::TypeParam(name.to_string())
+    }
+
+    /// `type_carries_trait_object` deliberately walks FEWER constructors than
+    /// its two siblings: only `Option`/`List`/`Set`/`Map`/`Applied` args /
+    /// `Projection` base — no `Field`, `Function`, `Union`, `Keyed`, `Complex`,
+    /// `Range` or quantity-slot recursion. That asymmetry is EXISTING
+    /// BEHAVIOUR and must be preserved, not "fixed": widening it here would
+    /// silently turn more params into resolution wildcards. The two negative
+    /// assertions at the end pin the boundary.
+    #[test]
+    fn type_carries_trait_object_covers_its_narrower_walk() {
+        let to = || Type::TraitObject("Load".to_string());
+
+        // The leaf itself.
+        assert!(super::type_carries_trait_object(&to()));
+
+        // The constructors this predicate DOES recurse through.
+        assert!(super::type_carries_trait_object(&Type::Option(Box::new(
+            to()
+        ))));
+        assert!(super::type_carries_trait_object(&Type::List(Box::new(to()))));
+        assert!(super::type_carries_trait_object(&Type::Set(Box::new(to()))));
+        assert!(
+            super::type_carries_trait_object(&Type::Map(
+                Box::new(to()),
+                Box::new(Type::Int)
+            )),
+            "Map KEY position participates in conformance checking"
+        );
+        assert!(
+            super::type_carries_trait_object(&Type::Map(
+                Box::new(Type::String),
+                Box::new(to())
+            )),
+            "Map VALUE position participates in conformance checking"
+        );
+        assert!(super::type_carries_trait_object(&Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::Int, to()],
+        }));
+        assert!(super::type_carries_trait_object(&Type::Projection {
+            base: Box::new(to()),
+            member: "Out".to_string(),
+        }));
+
+        // Nesting composes through the covered constructors.
+        assert!(super::type_carries_trait_object(&Type::List(Box::new(
+            Type::Option(Box::new(to()))
+        ))));
+
+        // Leaves that carry no trait object.
+        assert!(!super::type_carries_trait_object(&tp("T")));
+        assert!(!super::type_carries_trait_object(&Type::Int));
+        assert!(!super::type_carries_trait_object(&Type::List(Box::new(
+            Type::Int
+        ))));
+
+        // The DELIBERATE non-recursion. These are `false` today and must stay
+        // `false`: `type_carries_trait_object` is the ungated tier-3 wildcard
+        // disjunct (it applies even to non-generic candidates), so widening
+        // its walk widens overload resolution for every function in the
+        // program.
+        assert!(
+            !super::type_carries_trait_object(&Type::Field {
+                domain: Box::new(to()),
+                codomain: Box::new(Type::Int),
+            }),
+            "Field is deliberately NOT walked by type_carries_trait_object"
+        );
+        assert!(
+            !super::type_carries_trait_object(&Type::Function {
+                params: vec![to()],
+                return_type: Box::new(Type::Int),
+            }),
+            "Function is deliberately NOT walked by type_carries_trait_object"
+        );
+        assert!(
+            !super::type_carries_trait_object(&Type::Union(vec![Type::Int, to()])),
+            "Union is deliberately NOT walked by type_carries_trait_object"
+        );
+        assert!(
+            !super::type_carries_trait_object(&Type::Vector {
+                n: 3,
+                quantity: Box::new(to()),
+            }),
+            "the quantity slot is deliberately NOT walked by \
+             type_carries_trait_object"
+        );
+    }
+
+    /// `type_carries_type_param` recurses through the same inner-`Type`-bearing
+    /// constructor set as the `unify` / `substitute_type_params` walks, so a
+    /// generic param embedding a type-param anywhere is recognised. Returns
+    /// `true` at the `TypeParam(_)` leaf and `false` at the `ScalarParam(_)`
+    /// leaf — dimension params are a distinct kind (D7) covered by the sibling
+    /// [`type_carries_dim_param`].
+    #[test]
+    fn type_carries_type_param_recurses_through_all_constructors() {
+        // The leaf itself, and the sibling leaf it must NOT claim.
+        assert!(super::type_carries_type_param(&tp("T")));
+        assert!(
+            !super::type_carries_type_param(&sp("Q")),
+            "a dimension param is not a type param (D7)"
+        );
+
+        // Single-inner-Type wrappers.
+        assert!(super::type_carries_type_param(&Type::List(Box::new(tp("T")))));
+        assert!(super::type_carries_type_param(&Type::Set(Box::new(tp("T")))));
+        assert!(super::type_carries_type_param(&Type::Keyed(Box::new(tp(
+            "T"
+        )))));
+        assert!(super::type_carries_type_param(&Type::Option(Box::new(tp(
+            "T"
+        )))));
+        assert!(super::type_carries_type_param(&Type::Complex(Box::new(tp(
+            "T"
+        )))));
+        assert!(super::type_carries_type_param(&Type::Range(Box::new(tp(
+            "T"
+        )))));
+
+        // Quantity-bearing aggregates: the `quantity` slot.
+        assert!(super::type_carries_type_param(&Type::Point {
+            n: 3,
+            quantity: Box::new(tp("T")),
+        }));
+        assert!(super::type_carries_type_param(&Type::Vector {
+            n: 3,
+            quantity: Box::new(tp("T")),
+        }));
+        assert!(super::type_carries_type_param(&Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(tp("T")),
+        }));
+        assert!(super::type_carries_type_param(&Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(tp("T")),
+        }));
+
+        // Two-inner-Type wrappers: BOTH positions.
+        assert!(super::type_carries_type_param(&Type::Map(
+            Box::new(tp("K")),
+            Box::new(Type::Int)
+        )));
+        assert!(super::type_carries_type_param(&Type::Map(
+            Box::new(Type::String),
+            Box::new(tp("V"))
+        )));
+        assert!(super::type_carries_type_param(&Type::Field {
+            domain: Box::new(tp("D")),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        }));
+        assert!(super::type_carries_type_param(&Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(tp("C")),
+        }));
+
+        // Function: any param, or the return type.
+        assert!(super::type_carries_type_param(&Type::Function {
+            params: vec![Type::dimensionless_scalar(), tp("T")],
+            return_type: Box::new(Type::dimensionless_scalar()),
+        }));
+        assert!(super::type_carries_type_param(&Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(tp("R")),
+        }));
+
+        // Union arms, Applied args, Projection base.
+        assert!(super::type_carries_type_param(&Type::Union(vec![
+            Type::Int,
+            tp("T")
+        ])));
+        assert!(super::type_carries_type_param(&Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::Int, tp("E")],
+        }));
+        assert!(super::type_carries_type_param(&Type::Projection {
+            base: Box::new(tp("T")),
+            member: "Out".to_string(),
+        }));
+
+        // Recursion composes through nesting.
+        assert!(
+            super::type_carries_type_param(&Type::List(Box::new(Type::Field {
+                domain: Box::new(tp("D")),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            }))),
+            "recursion must pass through List into Field"
+        );
+
+        // Negative: no type-param anywhere.
+        assert!(!super::type_carries_type_param(&Type::dimensionless_scalar()));
+        assert!(!super::type_carries_type_param(&Type::Int));
+        assert!(!super::type_carries_type_param(&Type::TraitObject(
+            "Load".to_string()
+        )));
+        assert!(!super::type_carries_type_param(&Type::List(Box::new(
+            Type::Int
+        ))));
+        assert!(!super::type_carries_type_param(&Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::length()),
+        }));
+    }
+
+    /// `type_carries_dim_param` is the mirror image of
+    /// [`type_carries_type_param`]: same constructor recursion, `true` at the
+    /// `ScalarParam(_)` leaf, `false` at the `TypeParam(_)` leaf.
+    #[test]
+    fn type_carries_dim_param_recurses_through_all_constructors() {
+        // The leaf itself, and the sibling leaf it must NOT claim.
+        assert!(
+            super::type_carries_dim_param(&sp("Q")),
+            "ScalarParam should carry a dim-param"
+        );
+        assert!(
+            !super::type_carries_dim_param(&tp("T")),
+            "TypeParam should NOT carry a dim-param"
+        );
+
+        // Single-inner-Type wrappers.
+        assert!(super::type_carries_dim_param(&Type::List(Box::new(sp("Q")))));
+        assert!(super::type_carries_dim_param(&Type::Set(Box::new(sp("Q")))));
+        assert!(super::type_carries_dim_param(&Type::Keyed(Box::new(sp("Q")))));
+        assert!(super::type_carries_dim_param(&Type::Option(Box::new(sp(
+            "Q"
+        )))));
+        assert!(super::type_carries_dim_param(&Type::Complex(Box::new(sp(
+            "Q"
+        )))));
+        assert!(super::type_carries_dim_param(&Type::Range(Box::new(sp("Q")))));
+
+        // Quantity-bearing aggregates: the `quantity` slot.
+        assert!(super::type_carries_dim_param(&Type::Point {
+            n: 3,
+            quantity: Box::new(sp("Q")),
+        }));
+        assert!(
+            super::type_carries_dim_param(&Type::Vector {
+                n: 3,
+                quantity: Box::new(sp("Q")),
+            }),
+            "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
+        );
+        assert!(super::type_carries_dim_param(&Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(sp("Q")),
+        }));
+        assert!(super::type_carries_dim_param(&Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(sp("Q")),
+        }));
+
+        // Two-inner-Type wrappers: BOTH positions.
+        assert!(super::type_carries_dim_param(&Type::Map(
+            Box::new(sp("Q")),
+            Box::new(Type::Int)
+        )));
+        assert!(super::type_carries_dim_param(&Type::Map(
+            Box::new(Type::String),
+            Box::new(sp("Q"))
+        )));
+        assert!(super::type_carries_dim_param(&Type::Field {
+            domain: Box::new(sp("Q")),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        }));
+        assert!(super::type_carries_dim_param(&Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(sp("Q")),
+        }));
+
+        // Function: any param, or the return type.
+        assert!(super::type_carries_dim_param(&Type::Function {
+            params: vec![Type::Int, sp("Q")],
+            return_type: Box::new(Type::dimensionless_scalar()),
+        }));
+        assert!(super::type_carries_dim_param(&Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(sp("Q")),
+        }));
+
+        // Union arms, Applied args, Projection base.
+        assert!(super::type_carries_dim_param(&Type::Union(vec![
+            Type::Int,
+            sp("Q")
+        ])));
+        assert!(super::type_carries_dim_param(&Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::Int, sp("Q")],
+        }));
+        assert!(super::type_carries_dim_param(&Type::Projection {
+            base: Box::new(sp("Q")),
+            member: "Out".to_string(),
+        }));
+
+        // Recursion composes through nesting.
+        assert!(super::type_carries_dim_param(&Type::List(Box::new(
+            Type::Field {
+                domain: Box::new(sp("Q")),
+                codomain: Box::new(Type::Int),
+            }
+        ))));
+
+        // Negative: no dim-param anywhere.
+        assert!(
+            !super::type_carries_dim_param(&Type::length()),
+            "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
+        );
+        assert!(!super::type_carries_dim_param(&Type::Int));
+        assert!(!super::type_carries_dim_param(&Type::List(Box::new(
+            Type::Int
+        ))));
+        assert!(!super::type_carries_dim_param(&Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::length()),
+        }));
+    }
 }
