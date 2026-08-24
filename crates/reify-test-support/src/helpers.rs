@@ -1790,6 +1790,39 @@ mod tests {
         super::get_value_cell_in(&module, "S", "y");
     }
 
+    /// get_value_cell_in should return the cell — not panic — when its
+    /// default_expr is None. This is the property that distinguishes it from
+    /// get_let_expr_in, which panics with "has no default expr" in that same
+    /// case (see test_get_let_expr_in_panics_on_missing_default_expr below,
+    /// whose builder-synthesized fixture this test reuses): a source-level
+    /// `param` always carries a default in well-formed compiled output, so
+    /// `auto_param` is the only way to reach a `default_expr: None` cell.
+    /// Also asserts `cell.id.member` so the test cannot pass by returning
+    /// some other cell.
+    #[test]
+    fn test_get_value_cell_in_returns_cell_with_no_default_expr() {
+        use reify_core::{ModulePath, Type};
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::dimensionless_scalar())
+            .build();
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        let cell = super::get_value_cell_in(&module, "S", "x");
+        assert_eq!(
+            cell.id.member, "x",
+            "expected get_value_cell_in to return the cell named 'x', got {:?}",
+            cell.id.member
+        );
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param must produce default_expr = None for this test's intent; \
+             if that ever changes, get_value_cell_in's exactly-two-panic contract \
+             needs re-verifying rather than this test silently passing for the \
+             wrong reason"
+        );
+    }
+
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
     /// get_let_expr_in should return the default_expr of the named cell in the
