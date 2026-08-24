@@ -5360,6 +5360,76 @@ mod tests {
         );
     }
 
+    // ── Orientation type-name resolution (task 6384) ─────────────────────────
+    //
+    // Mirrors the Transform3 block above.  `Type::Orientation(3)` was already
+    // inhabited from .ri source (the ten `orient_*` constructors return it) and
+    // already carried arms in type_compat / conformance / auto_type_param, but
+    // had no ANNOTATION surface: `resolve_type_name("Orientation")` returned
+    // None, so `stdlib/joints.ri`'s `with orientation: Orientation` silently
+    // degraded to `Type::Error` and disabled the joint DOF self-check verdict.
+    //
+    // (a) and (b) are GREEN from the bare-name arm.  (c)'s resolver half is RED
+    // until the arm is widened to accept the Display spelling `Orientation3`:
+    // that name is not in NAMED_DIMENSIONS, so it falls to the `_` arm and
+    // returns None.
+
+    /// (a) `resolve_type_name("Orientation")` must return `Some(Type::Orientation(3))`.
+    ///
+    /// This is the direct unit lock on the arm; the integration companions in
+    /// `standard_joint_library_tests.rs` only observe it through a whole compile.
+    #[test]
+    fn resolve_type_name_recognises_orientation() {
+        assert_eq!(
+            resolve_type_name("Orientation"),
+            Some(Type::Orientation(3)),
+            "\"Orientation\" should resolve to Type::Orientation(3)"
+        );
+    }
+
+    /// (b) `resolve_type_with_aliases("Orientation", …)` must inherit the builtin
+    /// arm so that `param : Orientation` and `with orientation: Orientation`
+    /// annotations resolve without a registry entry.
+    #[test]
+    fn resolve_type_with_aliases_inherits_orientation() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Orientation",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Orientation(3)),
+            "resolve_type_with_aliases(\"Orientation\", …) should return Type::Orientation(3)"
+        );
+    }
+
+    /// (c) Display round-trip: `Type::Orientation(3)` formats as `"Orientation3"`,
+    /// and the resolver must accept that same spelling — a user copying a type
+    /// name out of a compiler message must get a resolvable name.  Same
+    /// convention `transform3_display_matches_resolver_spelling` pins for
+    /// Transform3 (task 4577).
+    ///
+    /// The Display half is GREEN from the existing arm in ty.rs:696; the
+    /// resolver half is RED until `"Orientation3"` joins the arm.
+    #[test]
+    fn orientation3_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::Orientation(3)),
+            "Orientation3",
+            "Type::Orientation(3) should display as \"Orientation3\""
+        );
+        assert_eq!(
+            resolve_type_name("Orientation3"),
+            Some(Type::Orientation(3)),
+            "the resolver must accept the Display spelling \"Orientation3\" so the \
+             Display/resolver round-trip holds"
+        );
+    }
+
     // ── Keyed<T> parameterized resolution (step-3 RED / task 3930 β) ──────────
     // `Keyed<Vent>` must resolve to the keyed-collection kind, distinct from the
     // `Map`/`List` resolutions of the same arg. Mirrors the List/Map resolver arms.
