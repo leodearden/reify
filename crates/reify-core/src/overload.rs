@@ -372,7 +372,6 @@ pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::ty::Type;
 
     /// The corpus behind [`heads_unifiable_matches_pinned_corpus_verdicts`]
@@ -1099,5 +1098,233 @@ mod tests {
             domain: Box::new(Type::dimensionless_scalar()),
             codomain: Box::new(Type::length()),
         }));
+    }
+
+    // ── the two shared tier predicates ───────────────────────────────────────
+
+    /// Tier 3 (WILDCARD) — the broadest tier, and the one whose two copies had
+    /// actually diverged.
+    ///
+    /// `type_carries_trait_object(param)` is UNGATED on candidate genericity;
+    /// the type-param / dim-param param disjuncts are gated on `is_generic`
+    /// (INV-6, task 4231 β) so non-generic fns are bit-for-bit unaffected.
+    #[test]
+    fn slot_matches_wildcard_tier_covers_each_disjunct() {
+        // Trait-object-carrying param is a wildcard even for a NON-generic
+        // candidate — the esc-4093-152 `List<Load>` shape.
+        assert!(
+            super::slot_matches_wildcard_tier(
+                &Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+                &Type::List(Box::new(Type::StructureRef("PointLoad".to_string()))),
+                false,
+            ),
+            "a trait-carrying param is a wildcard regardless of genericity"
+        );
+
+        // Type-param- and dim-param-carrying params are wildcards ONLY for a
+        // GENERIC candidate (INV-6).
+        assert!(super::slot_matches_wildcard_tier(
+            &Type::List(Box::new(tp("T"))),
+            &Type::List(Box::new(Type::Int)),
+            true,
+        ));
+        assert!(
+            !super::slot_matches_wildcard_tier(
+                &Type::List(Box::new(tp("T"))),
+                &Type::List(Box::new(Type::Int)),
+                false,
+            ),
+            "INV-6: the type-param param disjunct is gated on is_generic"
+        );
+        assert!(super::slot_matches_wildcard_tier(
+            &sp("Q"),
+            &Type::length(),
+            true,
+        ));
+        assert!(
+            !super::slot_matches_wildcard_tier(&sp("Q"), &Type::length(), false),
+            "INV-6: the dim-param param disjunct is gated on is_generic"
+        );
+
+        // Plain equality, and its negation.
+        assert!(super::slot_matches_wildcard_tier(
+            &Type::Int,
+            &Type::Int,
+            false
+        ));
+        assert!(!super::slot_matches_wildcard_tier(
+            &Type::Int,
+            &Type::String,
+            false
+        ));
+    }
+
+    /// THE UNIFICATION PIN (#5689).
+    ///
+    /// A type-param-carrying ARG is itself a resolution wildcard: D4 /
+    /// task-4232 γ. A generic fn body passing a `T`-typed value to a
+    /// CONCRETE-param overload must still select that overload rather than
+    /// falling to a spurious no-match.
+    ///
+    /// The compile-side `matches` closure
+    /// (`crates/reify-compiler/src/type_compat.rs`, inside
+    /// `resolve_function_overload`) has always carried this
+    /// `type_carries_type_param(arg_ty)` disjunct; the eval-side `wildcard`
+    /// closure in `reify_expr::find_matching_compiled_function` never did.
+    /// That single missing disjunct is the whole compile/eval divergence, and
+    /// **the compile side is the reference answer** — the compiler already
+    /// typechecked the call, so eval agreeing with it is what makes the pair
+    /// consistent. The same witness is pinned compile-side by
+    /// `overload_bare_type_param_arg_still_resolves`.
+    ///
+    /// The disjunct is self-scoping: a `TypeParam`-typed arg only arises inside
+    /// a generic fn body, so concrete-arg calls are bit-for-bit unchanged
+    /// (`type_carries_type_param(concrete) == false`). Note it is NOT gated on
+    /// `is_generic` — the genericity in question belongs to the CALLER whose
+    /// body produced the `T`-typed value, not to the CANDIDATE being matched.
+    #[test]
+    fn slot_matches_wildcard_tier_accepts_a_type_param_carrying_arg() {
+        assert!(
+            super::slot_matches_wildcard_tier(
+                &Type::dimensionless_scalar(),
+                &tp("U"),
+                false,
+            ),
+            "D4 / task-4232 γ: a bare TypeParam ARG is a wildcard against a \
+             concrete param, even for a non-generic candidate. Dropping this \
+             disjunct is exactly the divergence #5689 unified away: eval would \
+             return None where the compiler Resolved, and the call would \
+             silently evaluate to Value::Undef."
+        );
+        // Self-scoping: a concrete arg is unaffected by this disjunct.
+        assert!(!super::slot_matches_wildcard_tier(
+            &Type::dimensionless_scalar(),
+            &Type::Int,
+            false,
+        ));
+        // A NESTED type-param arg also carries the wildcard at this tier —
+        // tier 2 is where headed args get discriminated, not here.
+        assert!(super::slot_matches_wildcard_tier(
+            &Type::dimensionless_scalar(),
+            &Type::Applied {
+                name: "Result".to_string(),
+                args: vec![tp("T"), tp("E")],
+            },
+            false,
+        ));
+    }
+
+    /// Tier 2 (HEAD) — the middle tie-break tier. Narrower than tier 3 on the
+    /// type-param-param disjunct (structural `heads_unifiable` instead of a
+    /// full wildcard), but NOT a subset of it; see
+    /// [`slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier`].
+    #[test]
+    fn slot_matches_head_tier_covers_each_disjunct() {
+        // Trait-object param: ungated on genericity, same as tier 3.
+        assert!(super::slot_matches_head_tier(
+            &Type::TraitObject("Load".to_string()),
+            &Type::StructureRef("PointLoad".to_string()),
+            false,
+        ));
+
+        // `heads_unifiable`, gated on is_generic: this is the tier's whole
+        // point — discriminating two GENERIC container overloads.
+        let option_t = Type::Option(Box::new(tp("T")));
+        let result_len_str = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::length(), Type::String],
+        };
+        assert!(
+            !super::slot_matches_head_tier(&option_t, &result_len_str, true),
+            "an Option<T> param must NOT head-match a Result<..> arg — this is \
+             the #5685 mis-selection the head tier exists to prevent"
+        );
+        assert!(super::slot_matches_head_tier(
+            &option_t,
+            &Type::Option(Box::new(Type::Int)),
+            true,
+        ));
+        assert!(
+            !super::slot_matches_head_tier(
+                &option_t,
+                &Type::Option(Box::new(Type::Int)),
+                false,
+            ),
+            "the heads_unifiable disjunct is gated on is_generic"
+        );
+
+        // The `type_carries_dim_param` FULL-wildcard carve-out survives INSIDE
+        // the head tier: dimension-param overload resolution is orthogonal to
+        // enum-head disambiguation, so it is deliberately NOT narrowed to
+        // `heads_unifiable`.
+        assert!(
+            !super::heads_unifiable(&sp("Q"), &Type::Int),
+            "precondition: heads_unifiable rejects ScalarParam vs a non-Scalar"
+        );
+        assert!(
+            super::slot_matches_head_tier(&sp("Q"), &Type::Int, true),
+            "the dim-param param disjunct stays a FULL wildcard in the head \
+             tier, even where heads_unifiable says false"
+        );
+
+        // The BARE-`TypeParam` ARG disjunct: ungated, matches any param.
+        assert!(super::slot_matches_head_tier(&Type::Int, &tp("T"), false));
+        assert!(super::slot_matches_head_tier(&option_t, &tp("T"), false));
+        // ...but a HEADED arg carrying a NESTED type-param is NOT a wildcard
+        // here (task #4038 δ) — it has a real head, so heads_unifiable
+        // discriminates it.
+        assert!(!super::slot_matches_head_tier(
+            &Type::Int,
+            &Type::Applied {
+                name: "Result".to_string(),
+                args: vec![tp("T"), tp("E")],
+            },
+            false,
+        ));
+
+        // Plain equality, and its negation.
+        assert!(super::slot_matches_head_tier(&Type::Int, &Type::Int, false));
+        assert!(!super::slot_matches_head_tier(
+            &Type::Int,
+            &Type::String,
+            false
+        ));
+    }
+
+    /// THE SCREENING COUNTEREXAMPLE — why every caller MUST apply tier 2 as a
+    /// FILTER over tier 3's surviving set, never standalone.
+    ///
+    /// It is tempting to read "tier 2 is narrower than tier 3" as "tier 2 ⊆
+    /// tier 3", and therefore to run the head pass independently. It is not a
+    /// subset: `heads_unifiable`'s erased-subject arm (`Applied{name, ..}` vs
+    /// `Enum(name)`) accepts a pair that tier 3 rejects outright, because tier
+    /// 3 only ever compares an `Applied` param to an `Enum` arg by plain
+    /// equality.
+    ///
+    /// A standalone head pass would therefore WIDEN resolution rather than
+    /// narrow it, admitting candidates the wildcard tier had already excluded.
+    /// Until #5689 this contract lived only as prose in
+    /// `reify_expr::find_matching_compiled_function`; this test is the
+    /// executable form.
+    #[test]
+    fn slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier() {
+        let param = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::Int, Type::String],
+        };
+        let arg = Type::Enum("Result".to_string());
+
+        assert!(
+            super::slot_matches_head_tier(&param, &arg, false),
+            "heads_unifiable's erased-subject arm accepts Applied{{Result}} vs \
+             Enum(Result)"
+        );
+        assert!(
+            !super::slot_matches_wildcard_tier(&param, &arg, false),
+            "...but the wildcard tier does NOT: no disjunct fires, and \
+             Applied != Enum. Head is NOT a subset of wildcard, so a \
+             standalone head pass would WIDEN resolution — every caller must \
+             screen tier 2 through tier 3."
+        );
     }
 }
