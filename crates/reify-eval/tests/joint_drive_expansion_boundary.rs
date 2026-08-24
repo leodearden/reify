@@ -1302,12 +1302,14 @@ structure RivetedPanel {
 /// # The rule, not a magic number
 ///
 /// With a Money objective and at least one live inequality, the solver
-/// synthesises a per-constraint margin floor (task #4789 α;
-/// `crates/reify-constraints/src/solver.rs` lines 715-744):
+/// synthesises a per-constraint margin floor — see the "Robustness floor
+/// (task #4789 α)" comment block and the `synthesise_floor_constraints` /
+/// `robustness_margin_for` functions in
+/// `crates/reify-constraints/src/solver.rs`:
 ///
 ///     m_i        = max(REL_MARGIN × |bound_i|, ABS_FLOOR_SI)
-///     REL_MARGIN   = 0.02   (solver.rs:739)
-///     ABS_FLOOR_SI = 1e-9   (solver.rs:744)
+///     REL_MARGIN   = 0.02   (`const REL_MARGIN`, solver.rs)
+///     ABS_FLOOR_SI = 1e-9   (`const ABS_FLOOR_SI`, solver.rs)
 ///     floored_lo = bracket + m_i
 ///
 /// `line_cost = 0.50USD × quantity_produced` is strictly increasing, so the
@@ -1322,8 +1324,9 @@ structure RivetedPanel {
 /// (b) Bracket-shifted variant (bracket `1.0`, [`SHIFTED_LOWER_BRACKET_SRC`])
 ///     — RELATIVE-margin regime. `m = max(0.02×1.0, 1e-9) = 0.02`, so the
 ///     floored lower bound is `1.02`. This matches the solver's own worked
-///     example ("`x > 1mm` → m = 20µm → floor: x ≥ 1.02mm", solver.rs:738)
-///     and its unit test `(lo.0 - 1.02).abs() < 1e-12` (solver.rs:6293). It
+///     example ("`x > 1mm` → m = 20µm → floor: x ≥ 1.02mm", the doc comment
+///     on `const REL_MARGIN`) and its unit test
+///     `(lo.0 - 1.02).abs() < 1e-12`, named `derive_intervals_floor_slack_shapes`. It
 ///     is also the direct executable REFUTATION of the header's former
 ///     (falsified) claim that this bracket makes the solve report
 ///     `RobustnessFloorInfeasible` — [`eval_ri_with_real_solver`] already
@@ -1380,9 +1383,10 @@ fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
 
     // Closed form: `m = max(0.02 × |1.0|, 1e-9) = 0.02`, floored lower bound
     // `1.0 + 0.02 = 1.02`. Tolerance 1e-6 is looser than the solver's own
-    // 1e-12 unit-test tolerance for the same quantity (solver.rs:6293) —
-    // derived from the closed form first, confirmed against observation
-    // second, never tuned to match an unknown output.
+    // 1e-12 unit-test tolerance for the same quantity (test
+    // `derive_intervals_floor_slack_shapes`) — derived from the closed form
+    // first, confirmed against observation second, never tuned to match an
+    // unknown output.
     assert!(
         (shifted_q - 1.02).abs() <= 1e-6,
         "BT-5b(b): the bracket-shifted variant's merged auto must land at the \
