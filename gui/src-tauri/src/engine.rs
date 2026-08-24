@@ -6599,6 +6599,87 @@ pub(crate) struct ComposedUnit {
     pub(crate) dimension: DimensionVector,
 }
 
+/// Resolve a curated ladder's canonical dimension NAME back to its vector.
+///
+/// A [`crate::display_units::DimensionLadder`] carries its dimension as a name,
+/// not a vector. This is the same first-match `NAMED_DIMENSIONS` scan
+/// reify-compiler's `resolve_dimension_type` uses (that function is
+/// `pub(crate)` there, so it cannot be called from here).
+///
+/// Totality across the curated table is already guaranteed by reify-core's
+/// `every_ladder_dimension_round_trips_through_canonical_name`, so a `None`
+/// means that guard has itself broken. Both callers degrade by SKIPPING the
+/// ladder rather than panicking inside a `LazyLock`, which would poison it for
+/// every later caller on this process.
+///
+/// Shared by [`COMPOSED_UNIT_INDEX`] and [`LADDER_COVERAGE`] precisely so the
+/// two cannot disagree: a dimension is recorded as covered exactly when the
+/// index actually registered that ladder's rungs for it.
+fn ladder_dimension(name: &str) -> Option<DimensionVector> {
+    reify_core::NAMED_DIMENSIONS
+        .iter()
+        .find(|(_, candidate)| *candidate == name)
+        .map(|(dim, _)| *dim)
+}
+
+/// What [`COMPOSED_UNIT_INDEX`] can EXPRESS, per dimension: for each curated
+/// ladder it resolved, the `(vector, canonical name, example rung)` triple.
+///
+/// This is the table [`dimension_requires_unit`] reads, and therefore the table
+/// that decides whether a bare number is refused for a cell (task #5757
+/// amendment). Built by the SAME [`ladder_dimension`] scan as the index itself,
+/// so coverage can never claim a dimension whose rungs the index failed to
+/// register — the failure mode that would brick a cell while telling the user
+/// to type a unit for it.
+///
+/// The example rung is stored in its [`normalize_unit_label`] ASCII form. Both
+/// spellings parse here, but the frontend's typed-input gate admits only the
+/// ASCII one, so suggesting `mm³` would name a literal the panel then refuses
+/// inline. The `is_default` rung is preferred — it is the one the cell is
+/// already being DISPLAYED in, so `80` → `80mm` is the edit the user is
+/// actually making — with the first rung as a fallback for a hypothetical
+/// ladder with no default (reify-core's `every_ladder_has_exactly_one_default`
+/// makes that unreachable today).
+static LADDER_COVERAGE: std::sync::LazyLock<Vec<(DimensionVector, String, String)>> =
+    std::sync::LazyLock::new(|| {
+        let mut covered = Vec::new();
+        for ladder in crate::display_units::unit_ladders() {
+            let Some(dimension) = ladder_dimension(&ladder.dimension) else {
+                continue; // Already logged by the index builder.
+            };
+            let Some(rung) = ladder
+                .units
+                .iter()
+                .find(|u| u.is_default)
+                .or_else(|| ladder.units.first())
+            else {
+                continue; // A rungless ladder expresses nothing.
+            };
+            covered.push((
+                dimension,
+                ladder.dimension.clone(),
+                normalize_unit_label(&rung.label),
+            ));
+        }
+        covered
+    });
+
+/// Whether a cell of this dimension can EXPRESS a unit, and if so what to call
+/// it: `Some((canonical dimension name, an example rung label))`, else `None`.
+///
+/// `Some` is the precondition for refusing a bare number in
+/// [`parse_value_string_for_cell`], and it doubles as the message's vocabulary —
+/// the same lookup yields both the gate and the words, so the refusal cannot
+/// name a unit the index could not have parsed.
+pub(crate) fn dimension_requires_unit(
+    dimension: &DimensionVector,
+) -> Option<(&'static str, &'static str)> {
+    LADDER_COVERAGE
+        .iter()
+        .find(|(dim, _, _)| dim == dimension)
+        .map(|(_, name, rung)| (name.as_str(), rung.as_str()))
+}
+
 /// Every unit spelling the GUI parameter editor can parse, LONGEST LABEL FIRST.
 ///
 /// Composed once from the two Rust-authored tables the GUI already depends on
@@ -6667,6 +6748,21 @@ pub(crate) struct ComposedUnit {
 /// direction. It is not silently accepted either — it resolves to its OWN
 /// dimension and is refused one layer down by reify-eval's `DimensionMismatch`,
 /// which names both.
+///
+/// WHAT THIS INDEX COVERS ALSO DECIDES WHERE THE BARE-NUMBER GATE FIRES.
+/// [`parse_value_string_for_cell`] refuses a bare number only for a dimension
+/// [`LADDER_COVERAGE`] records — i.e. exactly the dimensions whose rungs were
+/// registered above. A cell whose dimension this index cannot express is left
+/// on the SI-number path DELIBERATELY: with no parseable unit, refusing the
+/// bare number would leave it with no accepted input at all rather than
+/// disambiguating anything.
+///
+/// The bounded, understood case is `Money`. Sixteen `param … : Money`
+/// declarations across `examples/*.ri` spell their literals `NUSD`, and `USD`
+/// is reachable only through the compiler's per-module `UnitRegistry` — the
+/// registry the paragraph above excludes on cost grounds. So Money cells keep
+/// taking a bare SI number, which is what they took before task #5757, and
+/// widening the index is what would change that.
 static COMPOSED_UNIT_INDEX: std::sync::LazyLock<Vec<ComposedUnit>> =
     std::sync::LazyLock::new(|| {
         /// Register one spelling. `(label, dimension)` is the identity: the
@@ -6699,22 +6795,7 @@ static COMPOSED_UNIT_INDEX: std::sync::LazyLock<Vec<ComposedUnit>> =
         // Curated display ladders first, so that on a same-length collision the
         // spelling the user is being SHOWN wins.
         for ladder in crate::display_units::unit_ladders() {
-            // A ladder carries its dimension as a canonical NAME, not a vector.
-            // Map it back with the same first-match `NAMED_DIMENSIONS` scan
-            // reify-compiler's `resolve_dimension_type` uses (that function is
-            // `pub(crate)`, so it cannot be called from here).
-            //
-            // Totality across the curated table is already guaranteed by
-            // reify-core's `every_ladder_dimension_round_trips_through_canonical_name`,
-            // so a miss means that guard has itself broken. Degrade by skipping
-            // the ladder — its labels simply stay unparseable, and the picker
-            // keeps working — rather than panicking inside a `LazyLock`, which
-            // would poison it for every later caller on this process.
-            let Some(dimension) = reify_core::NAMED_DIMENSIONS
-                .iter()
-                .find(|(_, name)| *name == ladder.dimension)
-                .map(|(dim, _)| *dim)
-            else {
+            let Some(dimension) = ladder_dimension(&ladder.dimension) else {
                 tracing::debug!(
                     target: "reify_gui::engine::unit_index",
                     dimension = %ladder.dimension,
@@ -6845,26 +6926,49 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
 /// a cross-dimension literal is left for reify-eval's `DimensionMismatch`
 /// rather than refused here as an unparseable string.
 ///
+/// THE GATE IS CONDITIONAL ON EXPRESSIBILITY, not on dimensionedness. It fires
+/// only where `dimension_requires_unit` reports a curated ladder, because the
+/// 1000× ambiguity it targets presupposes that a unit COULD have been typed.
+/// Where none can be, refusing the bare number disambiguates nothing and simply
+/// removes the cell's last accepted input — it becomes permanently uneditable
+/// through `set_parameter`, in the property editor AND on the GUI MCP surface.
+/// The in-tree case is `Money`: 16 `param … : Money` declarations across
+/// `examples/*.ri`, whose `USD` literals are reachable only through the
+/// compiler's per-module `UnitRegistry`, which `COMPOSED_UNIT_INDEX`
+/// deliberately excludes. Such cells keep the SI-number behaviour they had
+/// before this gate existed.
+///
 /// The gate is scoped as narrowly as it can be:
 ///
 ///   * only `Value::Int` / `Value::Real` are refused. Every other variant falls
 ///     through so reify-eval keeps emitting its own `TypeKindMismatch` /
 ///     `DimensionMismatch` diagnostics — notably `Value::Bool`, whose message
 ///     an existing test depends on;
-///   * keyed on `!dimension.is_dimensionless()` rather than on
-///     `canonical_name().is_some()`, so a COMPOSED dimension (which has no
-///     `NAMED_DIMENSIONS` entry, hence no canonical name) is still gated. The
-///     message then falls back to the `DimensionVector` Display form, the same
-///     degradation `to_display_units` already performs — pinned directly by
-///     `parse_value_string_for_cell_falls_back_to_the_display_form_for_a_composed_dimension`,
-///     since no compiled `.ri` cell reaches this function with one;
-///   * `!dimension.is_dimensionless()` is the SINGLE load-bearing check. Every
-///     non-`Type::Scalar` cell type (`Type::Int`, `Type::Bool`, `Type::String`,
-///     …) yields no declared dimension at all and so cannot be gated, and a
+///   * `dimension_requires_unit(dimension).is_some()` is the load-bearing
+///     check. NAMEDNESS IS NOT THE KEY: a COMPOSED dimension (no
+///     `NAMED_DIMENSIONS` entry, hence no canonical name) and a NAMED but
+///     unladdered one (`Money`, `Torque`) are both ungated, and for the same
+///     reason — pinned together by
+///     `parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness`,
+///     which exists because keying on `canonical_name().is_some()` would read
+///     as an equivalent refactor and split them;
+///   * `!dimension.is_dimensionless()` is kept as an explicit conjunct even
+///     though every covered dimension is non-dimensionless by construction, so
+///     that a future curated ladder for a dimensionless quantity cannot
+///     silently start gating every ratio slider. Every non-`Type::Scalar` cell
+///     type (`Type::Int`, `Type::Bool`, `Type::String`, …) yields no declared
+///     dimension at all and so cannot be gated, and a
 ///     `Type::Scalar { DIMENSIONLESS }` cell — which is what `param x : Real`
 ///     compiles to, `Real` being that type's Display form, not a variant of its
-///     own — falls on the permissive side of the check. That is what keeps every
+///     own — falls on the permissive side. That is what keeps every
 ///     dimensionless slider in the panel working.
+///
+/// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it is
+/// total by construction rather than by a fallback nobody can exercise, and it
+/// can only ever name a rung this index can actually parse. It does NOT point
+/// at a unit picker: `pickerLadder` in `gui/src/panels/PropertyEditor.tsx`
+/// renders no `<select>` for a ladder of fewer than two rungs, and the
+/// `Force`/`Energy`/`Power` ladders carry exactly one each.
 ///
 /// The wording echoes the shape reify-eval's `arg_acceptance::ArgRejection`
 /// uses for the same defect class at the geometry-argument chokepoint
@@ -6880,14 +6984,11 @@ pub(crate) fn parse_value_string_for_cell(
     if let reify_core::Type::Scalar { dimension } = cell_type
         && !dimension.is_dimensionless()
         && matches!(value, Value::Int(_) | Value::Real(_))
+        && let Some((expected, rung)) = dimension_requires_unit(dimension)
     {
-        let expected = dimension
-            .canonical_name()
-            .map(str::to_string)
-            .unwrap_or_else(|| dimension.to_string());
         return Err(format!(
             "expects {expected}, got the bare number '{s}'; pass a dimensioned \
-             {expected} literal (this cell's unit picker lists the accepted units)"
+             {expected} literal such as '{s}{rung}'"
         ));
     }
 

@@ -2594,26 +2594,54 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session
+    let loaded = session
         .load_from_source(BARE_NUMBER_COVERAGE_SRC, "bare_number_coverage")
         .expect("initial load");
 
-    // (b) The uncovered cell takes a bare number, and it lands as canonical SI.
+    /// The Money cell out of a payload — read twice, before and after the edit.
+    fn cost_cell(state: &crate::types::GuiState) -> &crate::types::ValueData {
+        state
+            .values
+            .iter()
+            .find(|v| v.name == "cost")
+            .expect("the Money cell must be in the payload")
+    }
+
+    // (b) The uncovered cell takes a bare number, and the magnitude lands
+    // verbatim as the canonical SI number.
+    //
+    // Asserted in BOTH states because the transition is the observable cost of
+    // leaving the Int/Real coercion to reify-eval (see
+    // `parse_value_string_for_cell`, which explains why this gate deliberately
+    // does not touch it). The `5USD` default compiles to a
+    // `Value::Scalar { MONEY }`, so the cell starts out carrying a dimension and
+    // an `si_value`; a bare-number edit replaces it with a `Value::Int`, which
+    // reify-eval accepts through that wildcard — and a non-Scalar has no
+    // dimension to report, so `dimension`/`si_value` go empty and `value` alone
+    // carries the magnitude. Pinned rather than described so a future change to
+    // that coercion surfaces here.
+    let before = cost_cell(&loaded);
+    assert_eq!(before.dimension, "Money", "the default is a dimensioned literal");
+    assert_eq!(
+        before.si_value,
+        Some(5.0),
+        "the default carries its SI magnitude; got {before:?}"
+    );
+
     let state = session
         .set_parameter("MoneyScope.cost", "6")
         .expect("a Money cell has no expressible unit, so its bare number must be accepted");
-    let cost = state
-        .values
-        .iter()
-        .find(|v| v.name == "cost")
-        .expect("the Money cell must still be in the payload");
-    match cost.si_value {
-        Some(si) => assert!(
-            (si - 6.0).abs() < 1e-10,
-            "the bare number must land as the SI magnitude itself; got {si}"
-        ),
-        None => panic!("the Money cell must carry an si_value; got {cost:?}"),
-    }
+    let cost = cost_cell(&state);
+    assert_eq!(
+        cost.value, "6",
+        "the bare number must land verbatim as the canonical SI magnitude; got {cost:?}"
+    );
+    assert_eq!(
+        (cost.dimension.as_str(), cost.si_value),
+        ("", None),
+        "a bare number lands as a `Value::Int`, which has no dimension to report — \
+         the pre-#5757 behaviour this relaxation restores; got {cost:?}"
+    );
 
     // (c) The COVERED neighbour, in the SAME session, is untouched by the
     // relaxation — it has a ladder, so a unit is expressible and required.
