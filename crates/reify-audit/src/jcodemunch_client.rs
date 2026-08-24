@@ -705,6 +705,37 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
     }
 }
 
+// -----------------------------------------------------------------------
+// stale_decl_line_diagnostic helper
+
+/// Summarise symbols whose wire-reported declaration line fell outside
+/// their (successfully read) file's current line range into ONE diagnostic
+/// line, mirroring [`read_source_lines_for_enrichment`]'s "return the
+/// diagnostic, let the caller `eprintln!` it" idiom.
+///
+/// `out_of_range` entries are `(file, wire_line, file_line_count)` for
+/// symbols where `extract_suppression` hit its totality guard
+/// (`decl_line_1based == 0 || decl_line_1based > lines.len()`) — i.e. the
+/// jcodemunch index reported a declaration line that no longer exists in
+/// the file on disk. Returns `None` on the happy-path empty slice.
+///
+/// Deliberately summarises to ONE line naming only the affected count and
+/// the first entry, regardless of how many symbols are affected: a
+/// per-symbol print would reproduce the per-symbol stderr storm this task
+/// exists to remove. `RealJCodemunchOps::get_changed_symbols` calls this
+/// once per invocation (the P1 sweep calls `get_changed_symbols` once per
+/// done task), so a stale index is loud without flooding stderr.
+fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option<String> {
+    let (file, wire_line, file_line_count) = out_of_range.first()?;
+    let n = out_of_range.len();
+    Some(format!(
+        "reify-audit: jcodemunch suppression enrichment: {n} symbol(s) have a declaration line \
+         past the file's current range (first: {file} line {wire_line} > {file_line_count} \
+         lines) — the jcodemunch index may be stale; re-index the repo. Suppression flags are \
+         unavailable for these symbols."
+    ))
+}
+
 // extract_suppression helper
 // -----------------------------------------------------------------------
 
@@ -1134,6 +1165,7 @@ impl JCodemunchOps for RealJCodemunchOps {
         // Cache by path: many symbols share the same file (e.g. decl.rs has
         // 1110+ rows), so reading each file once avoids O(symbols) disk reads.
         let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        let mut out_of_range: Vec<(String, usize, usize)> = Vec::new();
         for sym in &mut symbols {
             let path = self.project_root.join(&sym.file);
             let lines = match file_cache.entry(path.clone()) {
@@ -1147,6 +1179,9 @@ impl JCodemunchOps for RealJCodemunchOps {
                 }
             };
             if !lines.is_empty() {
+                if sym.line == 0 || sym.line > lines.len() {
+                    out_of_range.push((sym.file.clone(), sym.line, lines.len()));
+                }
                 let lines_ref: Vec<&str> = lines.iter().map(String::as_str).collect();
                 let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
                     extract_suppression(&lines_ref, sym.line);
@@ -1154,6 +1189,9 @@ impl JCodemunchOps for RealJCodemunchOps {
                 sym.has_cfg_test = has_cfg_test;
                 sym.g_allow_marker = g_allow_marker;
             }
+        }
+        if let Some(msg) = stale_decl_line_diagnostic(&out_of_range) {
+            eprintln!("{msg}");
         }
         symbols
     }
@@ -1772,7 +1810,11 @@ mod tests {
     fn extract_suppression_boundary_cases() {
         // decl_line_1based == lines.len() (declaration on the final line)
         // must still scan upward for attrs above it.
-        let src = ["fn placeholder() {}", "#[allow(dead_code)]", "pub fn my_fn() {}"];
+        let src = [
+            "fn placeholder() {}",
+            "#[allow(dead_code)]",
+            "pub fn my_fn() {}",
+        ];
         let (allow, _cfg, _g) = extract_suppression(&src, 3);
         assert!(
             allow,
