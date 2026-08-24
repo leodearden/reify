@@ -1518,8 +1518,22 @@ pub(crate) fn decode_plane(
     Ok((origin_arr, unit_normal))
 }
 
-/// Decode a [`Value::Axis`] into `(origin, unit_direction)` — a pair of SI
-/// metre triples returned as `([f64; 3], [f64; 3])`.
+/// Decode a [`Value::Axis`] into `(origin, unit_direction)` — an SI metre triple
+/// and a dimensionless unit vector, returned as `([f64; 3], [f64; 3])`.
+///
+/// The ORIGIN-vs-DIRECTION split is [`decode_plane`]'s, for the same reasons and
+/// through the same helpers (task 5745):
+///
+/// - the ORIGIN is a POINT IN SPACE, LENGTH-gated through
+///   [`accept_length_point3`] under the `ox`/`oy`/`oz` names the SCALAR form of
+///   `circular_pattern` has used since task 5350. Until δ this route bypassed
+///   that gate: `circular_pattern(b, axis_z(point3(12, 0, 0)), …)` placed the
+///   rotation axis 12 SI **metres** out with zero diagnostics — 1000× a
+///   plausible 12 mm offset, and the scalar form's headline defect arriving
+///   through a different door;
+/// - the DIRECTION is a DIMENSIONLESS unit vector and stays on the bare
+///   [`point3_components`] read, matching the scalar form's `ax`/`ay`/`az`. D3
+///   adversary finding, 2026-07-28, BINDING.
 ///
 /// The direction vector is normalized to unit length.  Non-unit directions are
 /// accepted and normalized silently.  Zero-magnitude directions are rejected.
@@ -1529,7 +1543,13 @@ pub(crate) fn decode_plane(
 ///   dimensionless unit vector.
 /// - `Err(message)` — for any of:
 ///   - wrong value variant (not `Value::Axis`), including `Value::Undef`;
-///   - origin or direction with non-numeric / non-finite components;
+///   - an origin component that is not a finite LENGTH (a `Severity::Error`
+///     carrying [`reify_core::DiagnosticCode::DimensionedArgRejected`] is pushed
+///     per offending component — ALL THREE in one build, FIRST error returned);
+///   - origin or direction of the wrong SHAPE (not a 3-component
+///     `Point`/`Vector`), or a direction with non-numeric / non-finite
+///     components — these keep their pre-δ wording and push no diagnostic. A
+///     kernel-minted `Value::Direction` still lands here, unchanged;
 ///   - zero-magnitude direction.
 ///
 /// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
@@ -1540,15 +1560,29 @@ pub(crate) fn decode_plane(
 /// `pub(crate)` — widened to `pub` only when a cross-crate consumer lands
 /// (task 3465, design open).
 // G-allow: same-file caller only; audit counts cross-file refs
-pub(crate) fn decode_axis(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+pub(crate) fn decode_axis(
+    value: &reify_ir::Value,
+    kind_label: impl std::fmt::Display + Copy,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<([f64; 3], [f64; 3]), String> {
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
         other => {
             return Err(format!("expected an Axis value, got {}", other));
         }
     };
-    let origin_arr = point3_components(origin_val)
-        .ok_or_else(|| "Axis origin is not a valid 3-component numeric Point/Vector".to_string())?;
+    // The axis ORIGIN is a point in space — LENGTH-gated, with the pre-δ shape
+    // message handed through unchanged as `shape_err`.
+    let origin_arr = accept_length_point3(
+        origin_val,
+        ["ox", "oy", "oz"],
+        kind_label,
+        || "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        diagnostics,
+    )?;
+    // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
+    // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
+    // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
         "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
     })?;
@@ -3370,7 +3404,7 @@ fn pattern_circular(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val)
+        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)
             .map_err(|e| format!("circular_pattern: {}", e))?;
         let count_raw = eval_named_arg_f64(
             "count",

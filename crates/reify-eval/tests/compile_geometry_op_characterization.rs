@@ -174,9 +174,13 @@ fn point3_len(c: [f64; 3]) -> Value {
 
 /// A `Value::Axis` for the Circular pattern value-form sub-branch (decoded by
 /// `decode_axis`; the direction is normalized to unit length by production).
+///
+/// The ORIGIN is a LENGTH `Point` and the DIRECTION a bare `Real` `Vector` — the
+/// ORIGIN-vs-DIRECTION split task 5745 drew, and the shape a real
+/// `axis_z(point3(10mm, 20mm, 30mm))` actually has.
 fn axis_value(origin: [f64; 3], direction: [f64; 3]) -> Value {
     Value::Axis {
-        origin: Box::new(vec3_value(origin)),
+        origin: Box::new(point3_len(origin)),
         direction: Box::new(vec3_value(direction)),
     }
 }
