@@ -185,11 +185,16 @@ use reify_ir::traits::{
 };
 
 // ── ri_literal (flat form) ───────────────────────────────────────────────────
-use reify_ir::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
+use reify_ir::{
+    RiLiteralError, UnitScope, value_to_ri_literal, value_to_ri_literal_in_scope,
+    value_to_ri_literal_with_unit,
+};
 
 // ── ri_literal (module-path form) ────────────────────────────────────────────
 use reify_ir::ri_literal::{
-    RiLiteralError as RiLiteralErrorMod, value_to_ri_literal as value_to_ri_literal_mod,
+    RiLiteralError as RiLiteralErrorMod, UnitScope as UnitScopeMod,
+    value_to_ri_literal as value_to_ri_literal_mod,
+    value_to_ri_literal_in_scope as value_to_ri_literal_in_scope_mod,
     value_to_ri_literal_with_unit as value_to_ri_literal_with_unit_mod,
 };
 
@@ -812,4 +817,30 @@ fn ri_literal_flat_and_module_path() {
         e,
         RiLiteralError::UnsupportedValueKind { kind: "Undef" }
     );
+
+    // The opt-in COMPOUND regime (task #6400), in both spellings. The
+    // `UnitScope` argument is what a caller must consciously supply to assert
+    // the target module's registry seeds the SI base symbols, so its
+    // reachability is part of the contract, not incidental.
+    //
+    // The annotation below is load-bearing: it fails to compile if the scope
+    // parameter is dropped, reordered, or widened to a non-`Copy` handle.
+    let in_scope: fn(&Value, Option<&str>, UnitScope) -> Result<String, RiLiteralError> =
+        value_to_ri_literal_in_scope;
+    let area = Value::Scalar {
+        si_value: 2.5,
+        dimension: reify_core::DimensionVector::AREA,
+    };
+    let seeded = in_scope(&area, None, UnitScope::SiBaseUnitsSeeded);
+    assert!(seeded.is_ok(), "AREA must be emittable under SiBaseUnitsSeeded");
+    assert_eq!(
+        value_to_ri_literal_in_scope_mod(&area, None, UnitScopeMod::SiBaseUnitsSeeded),
+        seeded
+    );
+    // …and the shipped scope is unchanged.
+    assert_eq!(
+        in_scope(&area, None, UnitScope::BareBuiltinsOnly),
+        value_to_ri_literal(&area)
+    );
+    assert_eq!(UnitScope::BareBuiltinsOnly, UnitScopeMod::BareBuiltinsOnly);
 }
