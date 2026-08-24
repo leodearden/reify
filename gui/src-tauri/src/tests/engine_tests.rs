@@ -9862,6 +9862,164 @@ fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_
     );
 }
 
+// ---- bind(joint, <quantity>) — the second UNIT_TABLE lookup site (task #5757) ----
+//
+// `collect_snapshot_bind_pairs`'s `BindValue::Literal` arm resolves the value
+// side of `bind(joint, <quantity>)` inside a `snapshot(...)` call. It did its
+// own lookup over the same five-entry `UNIT_TABLE`, so every other DSL unit
+// symbol silently lost its value to `initial_value_si: None` — the joint slider
+// then has no initial position.
+//
+// This site's universe is DSL SOURCE TOKENS, not GUI display labels: it consumes
+// an already-parsed `reify_ast::UnitExpr` produced by the .ri lexer. It therefore
+// delegates to `reify_core::unit_symbol_to_si` and NOT to the ladder-backed
+// `resolve_unit_label` — admitting `L` or `mm³` here would let the GUI resolve a
+// literal the compiler itself rejects, manufacturing a GUI/compiler disagreement
+// in the opposite direction to the one this task fixes.
+
+/// `bind(y_axis, 3in)` — `in` is a DSL built-in symbol the five-entry GUI table
+/// dropped.
+const SNAPSHOT_INCH_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 3in)])
+}
+"#;
+
+/// `bind(y_axis, 2kg)` — a MASS-dimensioned literal, a dimension the old table
+/// could not resolve at all.
+const SNAPSHOT_KILOGRAM_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 2kg)])
+}
+"#;
+
+/// `bind(y_axis, 2s)` — a TIME-dimensioned literal. `s` reaches the resolver
+/// only through `BUILTIN_UNITS`; no curated display ladder carries it.
+const SNAPSHOT_SECOND_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 2s)])
+}
+"#;
+
+/// `bind(y_axis, 5kg/m^3)` — a COMPOUND unit expression (`UnitExpr::Div`).
+const SNAPSHOT_COMPOUND_DIV_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 5kg/m^3)])
+}
+"#;
+
+/// `bind(y_axis, 5m^2)` — a COMPOUND unit expression (`UnitExpr::Pow`).
+const SNAPSHOT_COMPOUND_POW_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 5m^2)])
+}
+"#;
+
+/// Read the single joint's `LiteralBound.initial_value_si` for a source.
+fn literal_bind_initial_value_si(src: &str) -> Option<f64> {
+    let mut session = make_session();
+    session
+        .load_from_source(src, "kinematic")
+        .expect("bind-literal source should load");
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    match &m1_desc.joints[0].binding {
+        crate::types::JointBinding::LiteralBound {
+            initial_value_si, ..
+        } => *initial_value_si,
+        other => panic!("expected LiteralBound for a literal bind; got {other:?}"),
+    }
+}
+
+/// Bare DSL unit symbols outside the retired five-entry table now resolve to an
+/// SI value instead of silently degrading to `None`.
+#[test]
+fn literal_bind_resolves_the_builtin_unit_symbols_the_old_table_dropped() {
+    let inch = literal_bind_initial_value_si(SNAPSHOT_INCH_BIND_SOURCE);
+    let expected = 3.0 * 0.0254;
+    match inch {
+        Some(v) => assert!(
+            (v - expected).abs() < 1e-10,
+            "bind(y_axis, 3in) → {v}, expected {expected}"
+        ),
+        None => panic!("bind(y_axis, 3in) must resolve an SI value, not degrade to None"),
+    }
+
+    match literal_bind_initial_value_si(SNAPSHOT_KILOGRAM_BIND_SOURCE) {
+        Some(v) => assert!((v - 2.0).abs() < 1e-10, "bind(y_axis, 2kg) → {v}, expected 2"),
+        None => panic!("bind(y_axis, 2kg) must resolve an SI value, not degrade to None"),
+    }
+
+    match literal_bind_initial_value_si(SNAPSHOT_SECOND_BIND_SOURCE) {
+        Some(v) => assert!((v - 2.0).abs() < 1e-10, "bind(y_axis, 2s) → {v}, expected 2"),
+        None => panic!("bind(y_axis, 2s) must resolve an SI value, not degrade to None"),
+    }
+}
+
+/// Compound unit EXPRESSIONS stay unresolved.
+///
+/// The `UnitExpr::Mul`/`Div`/`Pow` arm is explicitly deferred — its in-code note
+/// assigns the compound resolver to task γ (#3803), which needs a per-module
+/// `UnitRegistry` rebuilt GUI-side. Widening the bare-symbol arm must not
+/// quietly widen this one, so the deferral is pinned rather than left implicit.
+#[test]
+fn literal_bind_still_defers_compound_unit_expressions_to_task_3803() {
+    assert_eq!(
+        literal_bind_initial_value_si(SNAPSHOT_COMPOUND_DIV_BIND_SOURCE),
+        None,
+        "bind(y_axis, 5kg/m^3) is a UnitExpr::Div — the compound resolver is task γ (#3803)"
+    );
+    assert_eq!(
+        literal_bind_initial_value_si(SNAPSHOT_COMPOUND_POW_BIND_SOURCE),
+        None,
+        "bind(y_axis, 5m^2) is a UnitExpr::Pow — the compound resolver is task γ (#3803)"
+    );
+}
+
+/// The display-only ladder labels are NOT admitted at this site.
+///
+/// `L` is not a DSL unit at all (`reify-compiler/stdlib/units.ri` declares no SI
+/// volume units) and the superscript spellings have never been lexable, so a
+/// `.ri` file cannot even carry them here. What this pins is the DIRECTION of
+/// the delegation: this site resolves through `unit_symbol_to_si`, whose table
+/// contains neither, so no future edit can route it through the ladder-backed
+/// `resolve_unit_label` and start resolving literals the compiler rejects.
+#[test]
+fn literal_bind_universe_is_dsl_symbols_not_gui_display_labels() {
+    for label in ["L", "mm\u{00B3}", "kg/m\u{00B3}", "MPa", "mm^3"] {
+        assert!(
+            reify_core::unit_symbol_to_si(label).is_none(),
+            "{label:?} is a display label, not a DSL unit symbol — the bind site \
+             must not be able to resolve it"
+        );
+    }
+    // …while the symbols this site DOES admit are exactly the builtin ones.
+    for label in ["in", "kg", "g", "s", "K", "A", "mol", "cd"] {
+        assert!(
+            reify_core::unit_symbol_to_si(label).is_some(),
+            "{label:?} must be resolvable as a DSL unit symbol"
+        );
+    }
+}
+
 /// Source for mixed-bind test (literal before param): two snapshot() calls bind
 /// the same joint y_axis — first to a literal 50mm, then to param y_pos.
 /// With the broadened ParamBound guard (`LiteralBound { .. }`), the param
@@ -18607,3 +18765,4 @@ fn resolve_param_default_span_resolves_an_occurrence_entity() {
         .expect("Machining.feed_rate has a default literal");
     assert_eq!(&SRC[span.start as usize..span.end as usize], "100");
 }
+
