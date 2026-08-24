@@ -831,6 +831,24 @@ mod cpsat_test_fixtures {
         }
     }
 
+    /// [`bool_auto`] with `free: false` — a STRICT auto.
+    ///
+    /// Exists to pin that the distinction makes NO difference to what cpsat
+    /// reports. `free` is what the engine gates its non-unique WARNING on
+    /// (engine_eval.rs:3355/5975), and `DimensionalSolver::finalise_uniqueness`
+    /// (solver.rs:2686) goes further still and DEMOTES a non-unique strict solve
+    /// to `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
+    /// the honest flag and stops there. That is a deliberate scope line, not an
+    /// oversight, so it gets a fixture and a unit rather than silence.
+    pub(super) fn strict_bool_auto(member: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("S", member),
+            param_type: Type::Bool,
+            bounds: None,
+            free: false,
+        }
+    }
+
     /// An `Int` auto over the INCLUSIVE bound pair `[lo, hi]` —
     /// `build_variable_domain` enumerates `lo..=hi`, so the domain has
     /// `hi - lo + 1` values.
@@ -2124,6 +2142,238 @@ mod solve_all_enumeration_tests {
              `solve_all_with_budget` returns the same thing at {TRUNCATING_BUDGET} \
              nodes as at {ENUMERATION_NODE_BUDGET}, then the equivalence above \
              proves nothing and the bound does not exist",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `unique` HONESTY (PRD2 D3, §3 decision 5; task β #5468).
+//
+// `ConstraintSolver::solve` has always answered `Solved { unique: true }` —
+// hardcoded, on every `Solved` arm, for every problem. It was never a claim the
+// solver had checked; the pre-β search stopped at the FIRST solution and so had
+// no way to know whether a second existed. `unique` is not a decorative field:
+// the engine reads it, and a `true` there is a claim that this design has
+// exactly one valid configuration.
+//
+// Deriving it honestly costs exactly one more solution's worth of search. `cap
+// = 2` is the minimum that can tell "exactly one model" from "at least two", so
+// the flag becomes `complete && solutions.len() == 1` — a CONJUNCTION, because
+// a search that stopped early (solution cap or node budget) has not proven a
+// second model absent and must not claim it did.
+//
+// Every unit here asserts a VALUE or a VARIANT alongside the flag, never the
+// flag alone: CP-SAT is landed-but-unwired until PRD2 γ, so these units are the
+// only thing standing between the flag and a silent regression, and a unit that
+// only checked `unique` would pass on a solver that returned the wrong model.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod unique_honesty_tests {
+    use super::*;
+    use super::cpsat_test_fixtures::*;
+    use std::collections::HashMap;
+
+    /// Unwrap `Solved`, or panic naming what actually came back.
+    ///
+    /// Returning BOTH halves is the point: a unit that read only `unique` would
+    /// pass on a solver that reported the right flag about the wrong model, and
+    /// with cpsat unwired nothing downstream would notice.
+    fn solved(result: SolveResult) -> (HashMap<ValueCellId, Value>, bool) {
+        match result {
+            SolveResult::Solved { values, unique } => (values, unique),
+            other => panic!("expected SolveResult::Solved; got {other:?}"),
+        }
+    }
+
+    /// The canonical 3-model problem, reused across these units so the flag is
+    /// the only thing that varies between them.
+    fn a_or_b_with(autos: Vec<AutoParam>) -> ResolutionProblem {
+        problem(
+            autos,
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            Vec::new(),
+        )
+    }
+
+    /// (a) ONE MODEL => `unique: true`. `constraint up == true` over one `Bool`
+    /// auto admits exactly `up = true`, and the honest answer is the same `true`
+    /// the hardcode used to emit.
+    ///
+    /// Here so the fix cannot be "return `false` everywhere". That would pass
+    /// (b), (d) and (f) while making the flag exactly as uninformative as the
+    /// hardcode was — noise instead of a lie, but still not a fact. The VALUE
+    /// assertion rides along because a solver that failed to prune would report
+    /// `Solved` with `up = false`.
+    #[test]
+    fn a_problem_with_exactly_one_model_still_reports_unique() {
+        let p = problem(
+            vec![bool_auto("up")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("up")))],
+            Vec::new(),
+        );
+
+        let (values, unique) = solved(CpSatSolver.solve(&p));
+
+        assert_eq!(
+            values.get(&ValueCellId::new("S", "up")),
+            Some(&Value::Bool(true)),
+            "`constraint up == true` pins up = true; got {values:?}",
+        );
+        assert!(
+            unique,
+            "the space was EXHAUSTED and held exactly one model, so `unique` is \
+             an honest true here. An implementation that answered false would \
+             have swapped a hardcoded lie for a hardcoded shrug",
+        );
+    }
+
+    /// (b) THREE MODELS => `unique: false`. THE unit this step exists for.
+    ///
+    /// `a || b` is satisfied by 3 of the 4 points of `{true, false}²`. Every
+    /// pre-β `solve()` reported `unique: true` for it, because the search
+    /// stopped at the first model and the flag was a literal. The engine reads
+    /// that flag as "this design has exactly one valid configuration" — a claim
+    /// no CP-SAT solve has ever been in a position to make.
+    #[test]
+    fn a_problem_with_more_than_one_model_reports_non_unique() {
+        let (_, unique) = solved(CpSatSolver.solve(&a_or_b_with(vec![
+            bool_auto("a"),
+            bool_auto("b"),
+        ])));
+
+        assert!(
+            !unique,
+            "`a || b` has THREE models. `unique: true` here is not an \
+             approximation or a rounding — it is a false statement about the \
+             design, emitted by a solver that never looked",
+        );
+    }
+
+    /// (c) THE ANSWER ITSELF IS UNCHANGED (D1). Deriving `unique` from a cap-2
+    /// enumeration must add information, never move the point `solve` returns.
+    ///
+    /// The pre-β search visited variables in `auto_params` declaration order and
+    /// values in `DomainSpec` construction order (`[true, false]` for `Bool`),
+    /// so the first model reached for `a || b` was `a = true, b = true`. Cap-2
+    /// keeps searching PAST that point; this unit says the extra search does not
+    /// change which model comes back — the `ConstraintSolver` I1 spirit, that a
+    /// derivation must not perturb the thing it derives from.
+    ///
+    /// The whole map is compared, not just the two members, so an extra or
+    /// missing entry fails here rather than surfacing somewhere downstream.
+    #[test]
+    fn deriving_unique_does_not_change_which_model_solve_returns() {
+        let (values, _) = solved(CpSatSolver.solve(&a_or_b_with(vec![
+            bool_auto("a"),
+            bool_auto("b"),
+        ])));
+
+        let expected: HashMap<ValueCellId, Value> = [
+            (ValueCellId::new("S", "a"), Value::Bool(true)),
+            (ValueCellId::new("S", "b"), Value::Bool(true)),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            values, expected,
+            "cap-2 enumeration searches PAST the first model to learn whether a \
+             second exists; it must still RETURN the first. A different point \
+             here means the uniqueness derivation silently changed every \
+             CP-SAT answer in the codebase",
+        );
+    }
+
+    /// (d) A TRUNCATED SEARCH IS NEVER UNIQUE. One model found, then the node
+    /// budget bites: the search never proved a second does not exist, so it may
+    /// not say so.
+    ///
+    /// This is the hardcoded lie in its most tempting costume. `solutions.len()
+    /// == 1` is true here, and an implementation that derived `unique` from the
+    /// count ALONE would report `true` — having proven nothing at all about the
+    /// three nodes it never visited. `complete` is the conjunct that makes the
+    /// claim honest, and this unit is the only thing that pins it.
+    ///
+    /// `n == 0` puts the single model at the FIRST node, so the budget is
+    /// guaranteed to bite after the model is collected rather than before.
+    #[test]
+    fn a_model_found_before_the_budget_bit_is_not_reported_as_unique() {
+        let p = problem(
+            vec![int_auto("n", 0, 5)],
+            vec![(ConstraintNodeId::new("S", 0), eq_int(iref("n"), 0))],
+            Vec::new(),
+        );
+
+        let (values, unique) = solved(CpSatSolver.solve_with_budget(&p, 3));
+
+        assert_eq!(
+            values.get(&ValueCellId::new("S", "n")),
+            Some(&Value::Int(0)),
+            "the one model reachable inside the budget is n = 0, and it must \
+             still be returned — a truncated search answers with less \
+             CONFIDENCE, not with a different point; got {values:?}",
+        );
+        assert!(
+            !unique,
+            "exactly one model was COLLECTED, but the search stopped three \
+             nodes in and never refuted the other five. Deriving `unique` from \
+             the solution count alone would report true here and would be \
+             wrong for the same reason the hardcode was: nobody looked",
+        );
+    }
+
+    /// (e) THE EMPTY-AUTOS FAST PATH KEEPS ITS `unique: true`.
+    ///
+    /// That flag is HONEST and predates this step: with zero autos there is
+    /// exactly one assignment — the empty one — so it is trivially the unique
+    /// solution. It sits on a different arm from the hardcode being replaced,
+    /// and a fix that swept the file for `unique: true` would take it out too,
+    /// turning a true statement into a false one in the opposite direction.
+    #[test]
+    fn the_no_auto_params_fast_path_is_honestly_unique() {
+        let (values, unique) = solved(CpSatSolver.solve(&problem(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )));
+
+        assert!(
+            values.is_empty(),
+            "a problem with no auto params solves to the empty assignment; got {values:?}",
+        );
+        assert!(
+            unique,
+            "with zero autos the empty assignment is the ONLY assignment, so \
+             this `unique: true` is a fact, not the hardcode — it must survive \
+             the change untouched",
+        );
+    }
+
+    /// (f) STRICT AND FREE AUTOS GET THE SAME FLAG. Deliberate scope line, so it
+    /// is pinned rather than left to be inferred from an absence.
+    ///
+    /// β's job is to make `unique` TRUE-OR-FALSE-AS-MEASURED. It stops there.
+    /// It does NOT copy `DimensionalSolver::finalise_uniqueness`
+    /// (solver.rs:2686), which demotes a non-unique STRICT-auto solve all the
+    /// way to `Infeasible { ConstraintNonUnique }`. Two reasons, both outside
+    /// this task: the engine's non-unique warning is gated on `ap.free`
+    /// (engine_eval.rs:3355/5975), so nothing user-visible turns on the strict
+    /// case yet; and CP-SAT is unreachable in production until the γ wiring, so
+    /// the demotion POLICY belongs with the step that first makes it observable.
+    ///
+    /// If a later step adds that demotion, this unit fails — which is the
+    /// correct outcome. It asserts today's contract, not a wish.
+    #[test]
+    fn a_strict_auto_gets_the_same_honest_flag_and_no_demotion() {
+        let (_, unique) = solved(CpSatSolver.solve(&a_or_b_with(vec![
+            strict_bool_auto("a"),
+            strict_bool_auto("b"),
+        ])));
+
+        assert!(
+            !unique,
+            "`free` is not consulted anywhere in cpsat, and the model count is \
+             the same 3 either way — the flag must be the same honest false",
         );
     }
 }
