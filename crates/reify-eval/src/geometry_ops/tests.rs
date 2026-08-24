@@ -23722,6 +23722,197 @@
         }
     }
 
+    // ── δ: `decode_axis` gates its ORIGIN, not its DIRECTION (task 5745) ──────
+
+    /// The pre-δ wrong-SHAPE message for an axis ORIGIN, kept byte-identical by
+    /// being handed to `accept_length_point3` as `shape_err`.
+    const AXIS_ORIGIN_SHAPE_ERR: &str =
+        "Axis origin is not a valid 3-component numeric Point/Vector";
+
+    /// The pre-δ wrong-SHAPE message for an axis DIRECTION — unchanged because
+    /// the direction is not gated at all and still reads through bare
+    /// `point3_components`.
+    const AXIS_DIRECTION_SHAPE_ERR: &str =
+        "Axis direction is not a valid 3-component numeric Point/Vector";
+
+    /// Build a `Value::Axis` from an origin and a direction `Value`, both handed
+    /// in whole so a row can pair ANY origin shape with ANY direction shape.
+    fn axis_of(origin: reify_ir::Value, direction: reify_ir::Value) -> reify_ir::Value {
+        reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(direction),
+        }
+    }
+
+    /// The ANTI-OVER-GATING half: a dimensioned LENGTH origin beside a BARE
+    /// dimensionless direction is the fully clean path — the exact shape
+    /// `axis_z(point3(0mm, 0mm, 0mm))` produces — and must emit NOTHING.
+    #[test]
+    fn decode_axis_accepts_length_origin_beside_a_bare_direction() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let axis = axis_of(
+            length_point3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        let (origin, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
+            .expect("a LENGTH origin beside a bare unit direction is the clean path");
+        assert_eq!(
+            origin,
+            [0.01, 0.02, 0.03],
+            "the gate copies `si_value` and does no arithmetic"
+        );
+        assert_eq!(dir, [0.0, 0.0, 1.0], "the direction is still normalised");
+        assert!(
+            diagnostics.is_empty(),
+            "no units complaint may be raised about the deliberately-bare \
+             direction; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The headline δ behaviour for `decode_axis`, and the 1000× hazard this
+    /// whole PRD exists for: a BARE axis origin is rejected at every component
+    /// rather than silently placing the rotation axis metres away.
+    #[test]
+    fn decode_axis_rejects_a_bare_origin_at_every_component() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let axis = axis_of(
+            bare_real_vector3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        let got = decode_axis(&axis, "circular_pattern", &mut diagnostics);
+        assert_eq!(
+            got,
+            Err("missing or non-Length argument 'ox' for circular_pattern".to_string()),
+            "the caller-facing `Err` is byte-identical to the SCALAR form's, \
+             which has used these same names since task 5350"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "ALL THREE bare origin components are diagnosed in one build — and \
+             the bare DIRECTION beside them contributes none; got: {:?}",
+            diagnostics
+        );
+        for (d, name) in diagnostics.iter().zip(["ox", "oy", "oz"]) {
+            assert_eq!(d.severity, reify_core::Severity::Error);
+            assert_eq!(
+                d.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+            );
+            assert_eq!(
+                d.message,
+                expected_length_rejection("circular_pattern", name, "Real")
+            );
+        }
+    }
+
+    /// A `Value::Direction { x, y, z }` direction paired with a LENGTH origin
+    /// behaves EXACTLY as it did pre-δ: `Direction` is not a `Point`/`Vector`, so
+    /// it still fails `point3_components` with the unchanged shape message.
+    ///
+    /// This row exists to pin that δ did not perturb the KERNEL-DATUM path.
+    /// `feature_datum.rs` mints analytic axes as `Value::length` origins beside a
+    /// `Value::Direction`, so the origin half is already dimensioned and passes
+    /// the new gate; only the direction half fails, and it fails the way it
+    /// always did, for a reason that has nothing to do with units.
+    #[test]
+    fn decode_axis_direction_variant_still_fails_the_pre_delta_way() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let axis = axis_of(
+            length_point3(0.0, 0.0, 0.01),
+            reify_ir::Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+        );
+        assert_eq!(
+            decode_axis(&axis, "circular_pattern", &mut diagnostics),
+            Err(AXIS_DIRECTION_SHAPE_ERR.to_string()),
+            "unchanged by δ — a `Value::Direction` is a SHAPE mismatch for the \
+             bare direction read, not a units rejection"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "and it therefore emits no units diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Non-unit directions are still normalised SILENTLY over a LENGTH origin.
+    #[test]
+    fn decode_axis_still_normalises_a_non_unit_direction_over_a_length_origin() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let axis = axis_of(
+            length_point3(0.0, 0.0, 0.0),
+            bare_real_vector3(2.0, 0.0, 0.0),
+        );
+        let (_, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
+            .expect("a non-unit direction [2,0,0] normalises without error");
+        assert_eq!(dir, [1.0, 0.0, 0.0]);
+        assert!(
+            diagnostics.is_empty(),
+            "silent normalisation means silent: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Every PRE-EXISTING `decode_axis` rejection keeps its EXACT wording and
+    /// pushes no units diagnostic.
+    #[test]
+    fn decode_axis_pre_existing_rejections_are_unchanged() {
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(length_point3(0.0, 0.0, 0.0)),
+            normal: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+        };
+        let cases: Vec<(reify_ir::Value, String)> = vec![
+            (
+                plane.clone(),
+                format!("expected an Axis value, got {}", plane),
+            ),
+            (
+                reify_ir::Value::Undef,
+                format!("expected an Axis value, got {}", reify_ir::Value::Undef),
+            ),
+            (
+                axis_of(
+                    reify_ir::Value::Point(vec![
+                        reify_ir::Value::length(0.0),
+                        reify_ir::Value::length(0.0),
+                    ]),
+                    bare_real_vector3(0.0, 0.0, 1.0),
+                ),
+                AXIS_ORIGIN_SHAPE_ERR.to_string(),
+            ),
+            (
+                axis_of(
+                    length_point3(0.0, 0.0, 0.0),
+                    bare_real_vector3(0.0, 0.0, 0.0),
+                ),
+                "Axis has a degenerate direction: zero-magnitude vector \
+                 [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
+                 unit direction"
+                    .to_string(),
+            ),
+        ];
+
+        for (value, expected) in cases {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            assert_eq!(
+                decode_axis(&value, "circular_pattern", &mut diagnostics),
+                Err(expected.clone()),
+                "pre-δ wording must survive byte-identical for {:?}",
+                value
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "none of these is an `ArgSpec` rejection ({expected}); got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
     // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
 
     /// True producer→decode round-trip for plane_xy: the real stdlib producer

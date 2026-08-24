@@ -547,7 +547,10 @@ fn circular_pattern_scalar_mm_origin_builds_op() {
 /// op-compile Error which accompanies every rejection ALSO names the argument
 /// and the word "Length", so a looser shape would pass without the gate ever
 /// having fired.
-fn build_mirror(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
+fn build_value_form(
+    source: &str,
+    want: fn(&GeometryOp) -> bool,
+) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
     let compiled = parse_and_compile(source);
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
@@ -557,12 +560,22 @@ fn build_mirror(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) 
     );
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
     let ops = ops_ref.lock().unwrap();
-    let mirror_ops: Vec<GeometryOp> = ops
+    let kept: Vec<GeometryOp> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::Mirror { .. }))
+        .filter(|r| want(&r.op))
         .map(|r| r.op.clone())
         .collect();
-    (result.diagnostics.clone(), mirror_ops)
+    (result.diagnostics.clone(), kept)
+}
+
+/// `build_value_form` narrowed to `Mirror` ops.
+fn build_mirror(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
+    build_value_form(source, |op| matches!(op, GeometryOp::Mirror { .. }))
+}
+
+/// `build_value_form` narrowed to `CircularPattern` ops.
+fn build_circular(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
+    build_value_form(source, |op| matches!(op, GeometryOp::CircularPattern { .. }))
 }
 
 /// PRD §6 row 5 — the BYPASS, closed: a bare `plane_yz(10)` origin must be
@@ -735,4 +748,119 @@ fn mirror_scalar_dimensioned_origin_still_builds_clean() {
         .collect();
     assert!(errors.is_empty(), "expected zero Errors, got: {:?}", errors);
     assert_eq!(mirror_ops.len(), 1, "got {:?}", mirror_ops);
+}
+
+/// PRD §6 row 5, axis half — the counterpart of
+/// `circular_pattern_scalar_bare_origin_drops_op_with_error` directly above,
+/// for the route that BYPASSED the gate that test locks.
+///
+/// A bare `axis_z(point3(12, 0, 0))` origin must be rejected and the op DROPPED,
+/// never silently built with a 12 SI-**metre** axis origin — 1000× a plausible
+/// 12 mm offset. Placing the rotation axis 12 metres out silently reproduces the
+/// scalar form's headline defect through a different door, which is exactly what
+/// made the two forms' disagreement worth closing.
+#[test]
+fn circular_pattern_value_form_bare_axis_origin_drops_op_with_error() {
+    let (diagnostics, circular_ops) = build_circular(
+        r#"
+        structure def BareAxisRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, axis_z(point3(12, 0, 0)), 6, 60deg)
+        }
+        "#,
+    );
+
+    let rejection = diagnostics
+        .iter()
+        .find(|d| {
+            d.severity == reify_core::Severity::Error
+                && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a bare `axis_z(point3(12, 0, 0))` origin must produce the shared \
+                 DimensionedArgRejected Error; got: {:?}",
+                diagnostics
+            )
+        });
+    assert!(
+        rejection.message.contains("argument expects Length"),
+        "wording must come from `ArgRejection::message`; got: {}",
+        rejection.message
+    );
+    assert!(
+        rejection.message.contains("ox"),
+        "the rejection must name the ORIGIN component `ox`, matching the scalar \
+         form; got: {}",
+        rejection.message
+    );
+    assert!(
+        circular_ops.is_empty(),
+        "a bare-origin value-form circular_pattern must be DROPPED, not silently \
+         built with a 12 SI-metre axis origin; emitted ops: {:?}",
+        circular_ops
+    );
+}
+
+/// PRD §6 row 6, axis half — the positive control that keeps the row above from
+/// passing vacuously, and the compatibility promise: the DIMENSIONED value form
+/// still builds and still reaches the kernel at `[0.012, 0, 0]`, not `[12, 0, 0]`.
+///
+/// `1e-12` for `circular_pattern_scalar_mm_origin_builds_op`'s reason: the parser
+/// computes `12 * 1e-3`, so the f64 error is at most ~1 ulp (order 1e-18 here),
+/// six orders below this bound and far tighter than the 1000× defect guarded
+/// against.
+#[test]
+fn circular_pattern_value_form_dimensioned_axis_origin_builds_unchanged() {
+    let (diagnostics, circular_ops) = build_circular(
+        r#"
+        structure def MmAxisRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, axis_z(point3(12mm, 0mm, 0mm)), 6, 60deg)
+        }
+        "#,
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the dimensioned value form must build with ZERO Error diagnostics; \
+         got: {:?}",
+        errors
+    );
+    assert_eq!(
+        circular_ops.len(),
+        1,
+        "expected exactly one CircularPattern op, got {:?}",
+        circular_ops
+    );
+    match &circular_ops[0] {
+        GeometryOp::CircularPattern {
+            axis_origin,
+            axis_dir,
+            ..
+        } => {
+            for (i, expected) in [0.012_f64, 0.0, 0.0].into_iter().enumerate() {
+                assert!(
+                    (axis_origin[i] - expected).abs() < 1e-12,
+                    "axis_origin[{i}] must be {expected} SI metres (NOT {} m); \
+                     got {:?}",
+                    expected * 1000.0,
+                    axis_origin
+                );
+            }
+            for (i, expected) in [0.0_f64, 0.0, 1.0].into_iter().enumerate() {
+                assert!(
+                    (axis_dir[i] - expected).abs() < 1e-12,
+                    "axis_z's direction is the dimensionless unit vector [0,0,1] \
+                     and is NOT gated; got {:?}",
+                    axis_dir
+                );
+            }
+        }
+        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
+    }
 }
