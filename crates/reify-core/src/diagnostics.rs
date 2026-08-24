@@ -6025,17 +6025,15 @@ mod tests {
     /// `DiagnosticCode::CtorUnknownField` round-trips through
     /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
     /// severity it was constructed with. Catches a future enum reorganisation
-    /// that drops or renames the variant.
+    /// that DROPS the variant; a RENAME is caught by the sibling
+    /// `diagnostic_code_ctor_unknown_field_serde_pascal_case`, which pins the
+    /// externally-visible LSP wire identifier.
     #[test]
     fn diagnostic_code_ctor_unknown_field_with_code_round_trips() {
         use super::Severity;
         let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorUnknownField);
         assert_eq!(d.code, Some(DiagnosticCode::CtorUnknownField));
         assert_eq!(d.severity, Severity::Error);
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::CtorUnknownField),
-            "CtorUnknownField"
-        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::CtorUnknownField` serializes
@@ -6061,7 +6059,6 @@ mod tests {
         let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorArity);
         assert_eq!(d.code, Some(DiagnosticCode::CtorArity));
         assert_eq!(d.severity, Severity::Error);
-        assert_eq!(format!("{:?}", DiagnosticCode::CtorArity), "CtorArity");
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::CtorArity` serializes as
