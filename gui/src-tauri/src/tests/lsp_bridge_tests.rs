@@ -422,7 +422,7 @@ async fn the_lsp_lane_runs_its_work_off_the_awaiting_runtime_thread() {
     use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
 
     let caller = std::thread::current().id();
-    let (name, id) = run_on_lsp_worker(|| {
+    let (name, id) = run_on_lsp_worker(async {
         (
             std::thread::current().name().map(str::to_owned),
             std::thread::current().id(),

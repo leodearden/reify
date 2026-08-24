@@ -276,7 +276,10 @@ where
 /// borrow submitter-stack data. The erased signature is `FnOnce()` regardless of
 /// the caller's `T`: the per-call result travels back over a reply channel
 /// captured INSIDE the job, not through this type.
-type Job = Box<dyn FnOnce() + Send + 'static>;
+///
+/// `pub(crate)` so the in-crate tests can name it when building a SYNTHETIC
+/// queue to provoke the `SendError` arm; it adds no public API surface.
+pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
 
 /// What a job sends back to its submitter: the computed value, or the panic
 /// payload its body raised.
@@ -293,7 +296,11 @@ type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 /// depend on that. The lock is held only across a `send` of an already-boxed
 /// job, so no user code ever runs under it and it is never held longer than a
 /// queue push.
-type JobSender = std::sync::Mutex<std::sync::mpsc::Sender<Job>>;
+///
+/// `pub(crate)` for the same reason as [`Job`], and additionally because it is
+/// the parameter type of the [`dispatch`] / [`dispatch_async`] seams that
+/// `lsp_bridge` composes against.
+pub(crate) type JobSender = std::sync::Mutex<std::sync::mpsc::Sender<Job>>;
 
 /// One persistent large-stack worker: a NAME plus the queue feeding it.
 ///
@@ -475,6 +482,22 @@ where
 /// `pub(crate)` is deliberate and sufficient: the tests are an in-crate
 /// `#[cfg(test)] mod tests`, so the seam adds no public API surface. Callers
 /// outside this module want [`run_on_worker`], which supplies the engine lane.
+///
+/// # Precondition: `f` must be runtime-agnostic
+///
+/// Both degraded arms below run `f` in the SUBMITTING frame — on whatever thread
+/// called in, which may or may not be inside a tokio runtime. So `f` must be
+/// legal on either: no [`tokio::runtime::Handle::block_on`], no `Runtime::new`,
+/// nothing that panics when a runtime is already entered. That holds for the
+/// fourteen engine-lane call sites — plain sync `commands::*_impl` calls made
+/// from a non-async `#[tauri::command] fn`, which Tauri runs as
+/// `ExecutionContext::Blocking` on its own thread — and it is stated here as a
+/// precondition rather than left as an accident of who happens to call it.
+///
+/// The async lane cannot honour the same precondition: an LSP future needs a
+/// driver, and the only one that works is a `Handle`. That is why
+/// [`dispatch_async`] takes a FUTURE and drives it itself, instead of taking a
+/// closure with a `block_on` already baked in.
 pub(crate) fn dispatch<F, T>(sender: Option<&JobSender>, f: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,
@@ -531,8 +554,8 @@ where
     }
 }
 
-/// Run `f` on the persistent LSP lane WITHOUT blocking the calling tokio worker,
-/// resolving to its value.
+/// Drive `fut` to completion on the persistent LSP lane WITHOUT blocking the
+/// calling tokio worker, resolving to its output.
 ///
 /// The async sibling of [`run_on_worker`], for `lsp_request` — an `async fn`
 /// Tauri command that fires on effectively every keystroke and cursor move.
@@ -542,6 +565,21 @@ where
 /// [`tokio::sync::oneshot`](tokio::sync::oneshot) reply instead RELEASES the
 /// worker while the lane thread computes.
 ///
+/// # Why this lane carries a FUTURE, not a closure
+///
+/// The blocking lane takes `FnOnce() -> T`; this one takes
+/// `Future<Output = T>`, and the difference is a correctness constraint rather
+/// than a style choice. Both lanes must be able to degrade — to run the work
+/// SOMEWHERE when the lane is absent or its queue is dead — and the degraded
+/// arms of an async submission necessarily run in the submitting async frame,
+/// i.e. on a thread already inside the tauri runtime. A future can simply be
+/// `.await`ed there. A closure that pre-bakes a
+/// [`tokio::runtime::Handle::block_on`] — which is what an LSP job must do, see
+/// [`dispatch_async`] — cannot: `block_on` from inside a runtime panics "Cannot
+/// start a runtime from within a runtime". Taking the future and letting
+/// [`dispatch_async`] decide how to drive it puts that decision with the code
+/// that knows which frame the work will land in.
+///
 /// Everything else is shared with the blocking seam: the same [`LSP_LANE`], the
 /// same boxed [`Job`], the same catch-inside-the-job protocol and [`JobReply`]
 /// payload, the same panic fidelity. Only the reply channel differs.
@@ -550,58 +588,100 @@ where
 /// bridges an async caller to a large-stack thread with exactly
 /// [`spawn_on_large_stack`] + a `oneshot`. This amortises that bridge onto a
 /// persistent lane instead of paying a fresh 256 MiB mapping per call.
-pub async fn run_on_lsp_worker<F, T>(f: F) -> T
+pub async fn run_on_lsp_worker<Fut, T>(fut: Fut) -> T
 where
-    F: FnOnce() -> T + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    dispatch_async(LSP_LANE.sender(), f).await
+    dispatch_async(LSP_LANE.sender(), fut).await
 }
 
-/// Submit `f` to `sender`'s lane and AWAIT its result — or, given `None`, run `f`
-/// INLINE on the caller and resolve immediately.
+/// Submit `fut` to `sender`'s lane and AWAIT its output — or, given `None`,
+/// simply `.await` it here.
 ///
 /// The async counterpart of [`dispatch`], and `pub(crate)` for the same reason:
 /// turning "is there a lane?" into a parameter is what makes the degraded arm
 /// reachable from a test rather than requiring a real `pthread_create` failure.
 ///
-/// # Degradation policy: never lose a result, never hang an `.await`
+/// # How the future is driven on the lane, and why by a `Handle`
 ///
-/// Both of [`dispatch`]'s arms are preserved, which matters more here — a
-/// blocking submitter that degrades merely runs slower, whereas a hung future
-/// would leave the frontend's `invoke` promise unresolved forever (a silently
-/// dead editor pane):
+/// A lane thread is a plain `std` thread with no ambient runtime, so the future
+/// needs a driver. FOUR of `InProcessLsp::handle_request`'s arms
+/// (`textDocument/definition`, `prepareRename`, `rename`, `references`) call
+/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
+/// — under a bare executor such as `futures::executor::block_on` those four
+/// would panic with "there is no reactor running".
+/// [`tokio::runtime::Handle::block_on`] installs the runtime context via
+/// `enter_runtime` and is explicitly legal from a NON-runtime thread. So the
+/// handle is captured HERE, on the submitter (which is inside the tauri
+/// runtime), and MOVED into the job: the "how is this future driven" policy
+/// lives with the lane that drives it, not with each caller. Secondary reason
+/// for `Handle` over `futures`: `futures` is not a declared `reify-gui`
+/// dependency, so using it would mean adding one to get strictly worse
+/// behaviour.
 ///
-/// * `None` lane (the OS refused the 256 MiB mapping): run `f` inline. The
-///   worst case is exactly today's behaviour — the LSP request on a tokio
-///   worker's ~2 MiB stack.
-/// * `SendError(job)`: the queue handed the job BACK unrun, so run it in this
-///   frame where the oneshot sender is still live. The result still arrives over
-///   the same channel.
+/// # Degradation policy: never lose a result, never hang an `.await`, never
+/// nest a runtime
 ///
-/// And a `RecvError` is a loud panic rather than a hang: a disconnected
+/// This matters more here than on the blocking seam — a blocking submitter that
+/// degrades merely runs slower, whereas a hung or panicking future would leave
+/// the frontend's `invoke` promise unresolved forever (a silently dead editor
+/// pane). Three arms, and none of them needs a resource the triggering condition
+/// would deny:
+///
+/// * `None` lane (the OS refused the 256 MiB mapping): `.await` the future right
+///   here. That is a NATIVE await, not a thread — which is the only degradation
+///   that still works under the very condition that triggers it, since an OS
+///   that refused a 256 MiB mapping will equally refuse a recovery thread. It is
+///   also genuinely "today's behaviour": the LSP future polled on a tokio
+///   worker's ~2 MiB stack, exactly what `main.rs::lsp_request` did before task
+///   5772.
+/// * No ambient runtime ([`tokio::runtime::Handle::try_current`] is `Err`):
+///   `.await` here too. `try_current` rather than `current` so a caller polled
+///   outside any runtime DEGRADES instead of panicking; with no runtime there is
+///   no nesting hazard, and the four `spawn_blocking` arms would have failed
+///   under any driver in that state anyway.
+/// * `SendError(job)`: the queue handed the job BACK unrun. The job provably
+///   contains a `Handle::block_on`, so it must NOT run in this frame — this
+///   frame is inside the runtime, and `block_on` there panics "Cannot start a
+///   runtime from within a runtime". Hand it to [`spawn_on_large_stack`]
+///   instead: a plain `std` thread, therefore never a runtime context, with a
+///   [`COMPILE_STACK_SIZE`] stack and an `io::Result` rather than an inline
+///   fallback. If that spawn ALSO fails, drop the job — its `reply_tx` drops
+///   with it, `reply_rx` resolves `Err(RecvError)` at once, and the loud-panic
+///   arm below fires. One panic site, never a hang, and the result is preserved
+///   whenever preserving it is possible at all.
+///
+/// And a `RecvError` is that loud panic rather than a hang: a disconnected
 /// `oneshot` resolves AT ONCE, so the `.await` below can never park forever.
-pub(crate) async fn dispatch_async<F, T>(sender: Option<&JobSender>, f: F) -> T
+pub(crate) async fn dispatch_async<Fut, T>(sender: Option<&JobSender>, fut: Fut) -> T
 where
-    F: FnOnce() -> T + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
     let Some(sender) = sender else {
-        // No lane (already warned once, in the lane initialiser). Run inline —
-        // a panic here propagates naturally, so this arm needs no forwarding of
-        // its own.
-        return f();
+        // No lane (already warned once, in the lane initialiser). Await the
+        // future right here — a panic in it propagates naturally, so this arm
+        // needs no forwarding of its own.
+        return fut.await;
+    };
+
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        // Polled outside any tokio runtime, so there is nothing to hand the
+        // lane thread as a driver — and equally nothing to nest. Await here.
+        return fut.await;
     };
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
-        // Identical to `dispatch`'s job body: the catch lives INSIDE the job, so
-        // the lane's `for job in rx` loop can never observe an unwind and cannot
-        // be killed by user code. `AssertUnwindSafe` is sound because the job
-        // OWNS its captures and is consumed by this call — nothing observes them
-        // after a panic — and the payload is re-raised on the submitter below
-        // rather than swallowed.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        // Identical to `dispatch`'s job body apart from the driver: the catch
+        // lives INSIDE the job, so the lane's `for job in rx` loop can never
+        // observe an unwind and cannot be killed by user code.
+        // `AssertUnwindSafe` is sound because the job OWNS its captures and is
+        // consumed by this call — nothing observes them after a panic — and the
+        // payload is re-raised on the submitter below rather than swallowed.
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle.block_on(fut)));
         // A dropped receiver means the awaiting task is gone; nothing to report.
         let _ = reply_tx.send(outcome);
     });
@@ -616,9 +696,19 @@ where
         .send(job);
 
     if let Err(std::sync::mpsc::SendError(job)) = send_result {
-        // The lane's worker is gone. Run the handed-back job here; the oneshot
-        // sender it captured is still live, so the result arrives below.
-        job();
+        // The lane's worker is gone and the job came back unrun. It carries a
+        // `Handle::block_on`, so running it in THIS frame would panic — give it
+        // a plain `std` thread, which is never a runtime context.
+        if let Err(e) = spawn_on_large_stack(job) {
+            // Nothing left that can legally run it. Dropping the job drops its
+            // `reply_tx`, so the `.await` below resolves `Err` immediately and
+            // reports loudly instead of hanging.
+            eprintln!(
+                "Warning: a large-stack lane's queue was dead and the recovery \
+                 thread could not be spawned ({e}); the submitted job cannot be \
+                 run"
+            );
+        }
     }
 
     match reply_rx.await {
@@ -626,8 +716,8 @@ where
         // Re-raise the ORIGINAL payload on the awaiting task, so panic semantics
         // are identical to every other tier's.
         Ok(Err(payload)) => std::panic::resume_unwind(payload),
-        // Unreachable while the job catches its own unwind: the oneshot can only
-        // disconnect if the job was dropped unrun. A disconnected `oneshot`
+        // Reached only when the job was dropped unrun — i.e. both the lane and
+        // the recovery thread were unavailable. A disconnected `oneshot`
         // resolves AT ONCE, so this is a loud failure, not a hung future.
         Err(_) => panic!(
             "a large-stack lane dropped a job without answering: its oneshot \

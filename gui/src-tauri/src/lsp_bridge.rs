@@ -89,20 +89,17 @@ pub async fn lsp_request_impl(
 /// over one thread for the process lifetime rather than a fresh 256 MiB mapping
 /// per keystroke.
 ///
-/// # Why `Handle::block_on` and not a bare executor
+/// # What this hands the lane, and what the lane does with it
 ///
-/// The closure runs on a plain `std` thread with no ambient runtime, so the
-/// future needs something to drive it. FOUR of `InProcessLsp::handle_request`'s
-/// arms (`textDocument/definition`, `prepareRename`, `rename`, `references`)
-/// call [`tokio::task::spawn_blocking`], whose first statement is
-/// `Handle::current()` — under a bare executor such as
-/// `futures::executor::block_on` those four would panic with "there is no
-/// reactor running". [`tokio::runtime::Handle::block_on`] installs the runtime
-/// context via `enter_runtime` and is explicitly legal from a NON-runtime thread
-/// (it panics only when called from inside an async context, which a lane thread
-/// never is). The handle is captured on the caller, which IS inside the tauri
-/// runtime. Secondary reason: `futures` is not a declared `reify-gui`
-/// dependency, so using it would mean adding one to get strictly worse behaviour.
+/// A FUTURE, not a closure. The lane thread has no ambient runtime, so the
+/// future does need a driver — [`tokio::runtime::Handle::block_on`], because
+/// four of `InProcessLsp::handle_request`'s arms call
+/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
+/// — but choosing that driver is [`crate::large_stack::dispatch_async`]'s job,
+/// not this function's. Pre-baking the `block_on` here would break the lane's
+/// degraded arms, which run in the submitting async frame where `block_on`
+/// panics "Cannot start a runtime from within a runtime"; see
+/// [`crate::large_stack::dispatch_async`]'s degradation policy.
 ///
 /// # What this does NOT cover
 ///
@@ -130,12 +127,40 @@ pub async fn lsp_request_on_worker(
     method: String,
     params: String,
 ) -> Result<String, String> {
-    // Captured on the CALLER, which is inside the tauri runtime; the lane thread
-    // is not, and cannot obtain one for itself.
-    let handle = tokio::runtime::Handle::current();
+    lsp_request_on_lane(
+        crate::large_stack::LSP_LANE.sender(),
+        bridge,
+        method,
+        params,
+    )
+    .await
+}
 
-    crate::large_stack::run_on_lsp_worker(move || {
-        handle.block_on(lsp_request_impl(&bridge, &method, params))
+/// [`lsp_request_on_worker`] with its "is there a lane?" question turned into a
+/// PARAMETER — the one body both the lane path and the degraded path run.
+///
+/// The lane a request travels is a parameter for the same reason
+/// [`crate::large_stack::dispatch_async`]'s is: it makes the DEGRADED arm
+/// reachable from a test. Provoking a real `pthread_create` failure from a unit
+/// test is not possible, so passing `None` here tests the seam instead of the
+/// OS — and it tests it through the REAL composition. A test that rebuilt the
+/// `dispatch_async(None, async { lsp_request_impl(..) })` composition itself
+/// would only prove that its own copy resolves; the production body could
+/// diverge and stay green. That is exactly how the earlier generic guard went
+/// vacuous: its closure contained no `block_on`, so it could not see that the
+/// real one panicked.
+///
+/// `pub(crate)` — the tests are an in-crate `#[cfg(test)] mod tests`, so this
+/// adds no public API surface, and `main.rs` keeps calling
+/// [`lsp_request_on_worker`], whose signature is unchanged.
+pub(crate) async fn lsp_request_on_lane(
+    sender: Option<&crate::large_stack::JobSender>,
+    bridge: Arc<LspBridge>,
+    method: String,
+    params: String,
+) -> Result<String, String> {
+    crate::large_stack::dispatch_async(sender, async move {
+        lsp_request_impl(&bridge, &method, params).await
     })
     .await
 }

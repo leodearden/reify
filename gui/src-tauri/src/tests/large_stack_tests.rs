@@ -848,7 +848,7 @@ async fn run_on_lsp_worker_returns_value_and_runs_on_the_lane() {
     // `run_on_worker_returns_value_and_runs_on_named_distinct_thread`.
     let data = Vec::from([1u64, 2, 3, 4, 5]);
 
-    let (sum, inner_id, inner_name) = run_on_lsp_worker(move || {
+    let (sum, inner_id, inner_name) = run_on_lsp_worker(async move {
         let s: u64 = data.iter().sum();
         (
             s,
@@ -906,7 +906,7 @@ async fn run_on_lsp_worker_does_not_block_the_calling_runtime() {
 
     // Long enough that "did the runtime get to poll anything else?" is not a
     // close call either way.
-    let lane_result = run_on_lsp_worker(|| {
+    let lane_result = run_on_lsp_worker(async {
         std::thread::sleep(std::time::Duration::from_millis(300));
         "lane job done"
     })
@@ -951,7 +951,7 @@ async fn run_on_lsp_worker_propagates_the_original_job_panic() {
         // Concrete `T = ()` so inference is unambiguous; the closure never
         // returns normally, but the panic must still cross the lane AND the
         // oneshot to reach the awaiting task.
-        run_on_lsp_worker::<_, ()>(|| panic!("async boom")).await;
+        run_on_lsp_worker::<_, ()>(async { panic!("async boom") }).await;
     })
     .await;
 
@@ -968,29 +968,45 @@ async fn run_on_lsp_worker_propagates_the_original_job_panic() {
     );
 }
 
-/// (x) The DEGRADED arm of the async path: with no lane, the closure runs inline
-/// on the caller and the `.await` still RESOLVES.
+/// (x) The DEGRADED arm of the async path: with no lane, the future is awaited
+/// natively on the caller and the `.await` still RESOLVES.
 ///
 /// A refused 256 MiB mapping must never hang an `await`. The blocking seam's
 /// `None` arm is already tested; this pins that the async variant inherits it
 /// rather than reimplementing it, so both degradation arms are exercised by a
 /// test instead of resting on prose.
+///
+/// # Why this test alone is NOT sufficient, and must not be trusted as if it were
+///
+/// The body submitted here is deliberately trivial, which makes it blind to the
+/// hazard that actually lived in this arm. In its earlier CLOSURE form
+/// (`|| (77u32, thread::current().id())`) it needed no runtime, so it passed
+/// while the ONLY production submission — a pre-baked
+/// `Handle::block_on(lsp_request_impl(..))` — panicked "Cannot start a runtime
+/// from within a runtime" every time this arm ran, unwinding the Tauri command
+/// and leaving the frontend's `invoke` promise unresolved. A generic guard over
+/// a stand-in body can only show that the ARM resolves, never that the real
+/// WORK does. The claim about production belongs to
+/// `lsp_bridge_tests::lsp_request_on_lane_without_a_lane_still_resolves_to_the_right_value`,
+/// which drives the same arm through the real composition; do not weaken that
+/// one on the grounds that this one covers it.
 #[tokio::test]
 async fn async_dispatch_without_a_lane_runs_inline_and_still_resolves() {
     use crate::large_stack::dispatch_async;
 
     let caller_id = std::thread::current().id();
 
-    let (value, ran_on) = dispatch_async(None, || (77u32, std::thread::current().id())).await;
+    let (value, ran_on) =
+        dispatch_async(None, async { (77u32, std::thread::current().id()) }).await;
 
     assert_eq!(
         value, 77,
-        "the degraded async arm must still return the closure's value — never a \
+        "the degraded async arm must still return the future's output — never a \
          lost result, and never a hung await"
     );
     assert_eq!(
         ran_on, caller_id,
-        "with no lane the closure must run INLINE on the caller's own stack"
+        "with no lane the future must be polled INLINE in the caller's own frame"
     );
 }
 
@@ -1010,7 +1026,7 @@ async fn async_dispatch_without_a_lane_runs_inline_and_still_resolves() {
 async fn run_on_lsp_worker_survives_deep_recursion_over_default_stack() {
     use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
 
-    let result = run_on_lsp_worker(|| {
+    let result = run_on_lsp_worker(async {
         deep_recurse_if_on_thread(LSP_WORKER_THREAD_NAME, DEEP_RECURSION_DEPTH)
     })
     .await;
