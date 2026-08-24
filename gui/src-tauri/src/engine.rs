@@ -7120,6 +7120,48 @@ pub(crate) fn parse_value_string_for_cell(
     Ok(value)
 }
 
+/// Extract the unit symbol trailing a default-literal slice, as an ADVISORY
+/// hint for [`reify_ir::value_to_ri_literal_with_unit`]'s `preferred_unit`
+/// parameter (task 5096 γ, INV-GUI-3 write-back).
+///
+/// Deliberately LEXICAL, not a parser: it reads the symbol off the literal
+/// being replaced and hands it to `value_to_ri_literal_with_unit` as a hint
+/// only — that function honours the hint exclusively when it resolves as a
+/// bare built-in, its dimension matches the value being written, and the
+/// magnitude is bit-exact, silently falling back to the canonical unit
+/// ladder otherwise. So a false positive here (e.g. reading `mm` off the
+/// identifier `x2mm`) can only change WHICH exact literal
+/// [`EngineSession::apply_param_to_source`] writes, never WHETHER the write
+/// is exact.
+///
+/// Algorithm: take the longest trailing run of `is_ascii_alphabetic` chars
+/// in the trimmed slice, then look at the character immediately before that
+/// run (skipping ASCII whitespace). The run is returned as the hint only
+/// when that predecessor is an ASCII digit or `.` — that is what rejects a
+/// bare identifier (`width`), `auto`, and `true`/`false`, none of which have
+/// a digit/`.` anchoring their trailing letters.
+pub(crate) fn unit_hint_from_default_literal(default_slice: &str) -> Option<&str> {
+    let trimmed = default_slice.trim();
+    let mut alpha_start = trimmed.len();
+    for (i, c) in trimmed.char_indices().rev() {
+        if !c.is_ascii_alphabetic() {
+            break;
+        }
+        alpha_start = i;
+    }
+    // alpha_start == trimmed.len(): the trailing run is empty (the last char
+    // isn't alphabetic). alpha_start == 0: the run reaches the start of the
+    // string, so there is no predecessor to check (a bare identifier like
+    // "width" or "auto").
+    if alpha_start == 0 || alpha_start == trimmed.len() {
+        return None;
+    }
+    match trimmed[..alpha_start].trim_end().chars().next_back() {
+        Some(c) if c.is_ascii_digit() || c == '.' => Some(&trimmed[alpha_start..]),
+        _ => None,
+    }
+}
+
 /// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).
 ///
 /// Used only by `format_expr` to decide how to pretty-print a string-literal
