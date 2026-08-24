@@ -127,13 +127,25 @@ pub async fn lsp_request_on_worker(
     method: String,
     params: String,
 ) -> Result<String, String> {
-    lsp_request_on_lane(
-        crate::large_stack::LSP_LANE.sender(),
-        bridge,
-        method,
-        params,
-    )
-    .await
+    crate::large_stack::run_on_lsp_worker(lsp_request_future(bridge, method, params)).await
+}
+
+/// The ONE future both LSP entry points submit: `lsp_request_impl`, owned and
+/// `'static` so a lane can take it.
+///
+/// Factored out so [`lsp_request_on_worker`] (production) and
+/// `lsp_request_on_lane` (the lane-parameterised test seam) submit the SAME
+/// body rather than two independently-written `async move` blocks. Two spellings
+/// of the composition is precisely the divergence hazard the seam exists to
+/// avoid: the tested one could keep resolving while the production one acquired
+/// a defect. With one body, the only thing the seam varies is which lane the
+/// work travels — which is the variable the tests actually mean to control.
+fn lsp_request_future(
+    bridge: Arc<LspBridge>,
+    method: String,
+    params: String,
+) -> impl std::future::Future<Output = Result<String, String>> + Send + 'static {
+    async move { lsp_request_impl(&bridge, &method, params).await }
 }
 
 /// [`lsp_request_on_worker`] with its "is there a lane?" question turned into a
@@ -150,19 +162,28 @@ pub async fn lsp_request_on_worker(
 /// vacuous: its closure contained no `block_on`, so it could not see that the
 /// real one panicked.
 ///
-/// `pub(crate)` — the tests are an in-crate `#[cfg(test)] mod tests`, so this
-/// adds no public API surface, and `main.rs` keeps calling
-/// [`lsp_request_on_worker`], whose signature is unchanged.
+/// # Relationship to [`lsp_request_on_worker`]
+///
+/// `lsp_request_on_lane(LSP_LANE.sender(), ..)` IS `lsp_request_on_worker`, by
+/// construction rather than by resemblance: both submit
+/// [`lsp_request_future`]'s single body, and
+/// [`crate::large_stack::run_on_lsp_worker`] — which production goes through —
+/// is defined as `dispatch_async(LSP_LANE.sender(), fut)`. So a lane-path test
+/// written against this seam exercises the production path, and the only
+/// difference either side can develop is the lane argument itself.
+///
+/// `#[cfg(test)] pub(crate)` — production reaches the lane through
+/// [`lsp_request_on_worker`], so this seam exists only to vary the lane
+/// argument from a test. Gating it to test builds keeps that honest and adds no
+/// public API surface; `main.rs` is unaffected.
+#[cfg(test)]
 pub(crate) async fn lsp_request_on_lane(
     sender: Option<&crate::large_stack::JobSender>,
     bridge: Arc<LspBridge>,
     method: String,
     params: String,
 ) -> Result<String, String> {
-    crate::large_stack::dispatch_async(sender, async move {
-        lsp_request_impl(&bridge, &method, params).await
-    })
-    .await
+    crate::large_stack::dispatch_async(sender, lsp_request_future(bridge, method, params)).await
 }
 
 #[cfg(test)]
