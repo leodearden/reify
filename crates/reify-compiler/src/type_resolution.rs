@@ -749,7 +749,18 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // Unlike "Frame3", nothing in stdlib or examples declares the name
         // `Orientation`, so there is no collision.  Bare-name-resolves-to-3D
         // follows the `"Frame" => Type::Frame(3)` precedent above.
-        "Orientation" => Some(Type::Orientation(3)),
+        //
+        // BOTH spellings are accepted, where `Frame` accepts only the bare one.
+        // The bare `Orientation` is required because that is what joints.ri
+        // writes.  `Orientation3` is required to honour the Display/resolver
+        // round-trip: `Type::Orientation(3)` displays as "Orientation3"
+        // (reify-core/src/ty.rs:696), so a user copying a type name out of a
+        // compiler message must get back a resolvable name.  `Frame` breaks
+        // that round-trip only because `Frame3` collides with the `structure
+        // Frame3` in ports.ri; no .ri declaration anywhere in stdlib or
+        // examples binds `Orientation3`, so here it can be honoured — matching
+        // the "Transform3" precedent above.
+        "Orientation" | "Orientation3" => Some(Type::Orientation(3)),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
