@@ -24002,6 +24002,353 @@
         }
     }
 
+    // ── δ: NurbsSurface control points are LENGTH-gated (task 5745) ──────────
+    //
+    // The SURFACE sibling of the variadic curve poles task 5658 gated. Its
+    // dimensionless neighbours — weights, u/v knots, u/v degrees — are the same
+    // four `nurbs` already documents as deliberately un-gated (a rational
+    // blending factor, a parameter-space value, a polynomial degree, a count),
+    // so the anti-over-gating row below is the surface-side restatement of that
+    // table, not a new claim.
+
+    /// The 2×2 control grid of the inline `nurbs_surface(...)` source at
+    /// `crates/reify-cli/src/main.rs`, in SI metres:
+    /// `[[point3(0mm,0mm,0mm), point3(0mm,10mm,0mm)],
+    ///   [point3(10mm,0mm,0mm), point3(10mm,10mm,5mm)]]`.
+    const NURBS_GRID_SI: [[[f64; 3]; 2]; 2] = [
+        [[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]],
+        [[0.01, 0.0, 0.0], [0.01, 0.01, 0.005]],
+    ];
+
+    /// Wrap a raw `Value` as a `CompiledExpr` literal. The declared `Type` is
+    /// inert — `reify_expr::eval_expr` returns a `Literal`'s embedded value
+    /// verbatim — so this is the right tool for the synthetic grid/knot Lists.
+    fn nurbs_lit(v: reify_ir::Value) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(v, reify_core::Type::dimensionless_scalar())
+    }
+
+    /// A `Value::List` of `Value::List` rows built from a per-cell constructor —
+    /// so a row can make the whole grid LENGTH, the whole grid bare, or exactly
+    /// one cell bare, without three near-identical literals.
+    fn nurbs_grid(cell: impl Fn(usize, usize, [f64; 3]) -> reify_ir::Value) -> reify_ir::Value {
+        reify_ir::Value::List(
+            NURBS_GRID_SI
+                .iter()
+                .enumerate()
+                .map(|(ri, row)| {
+                    reify_ir::Value::List(
+                        row.iter()
+                            .enumerate()
+                            .map(|(ci, c)| cell(ri, ci, *c))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// A `SurfaceKind::Nurbs` op over an arbitrary `control_points` value, with
+    /// the five DIMENSIONLESS neighbours fixed at their `main.rs` values: unit
+    /// weights, clamped `[0,0,1,1]` u/v knots, and degree 1 in both directions.
+    fn nurbs_surface_op(control_points: reify_ir::Value) -> CompiledGeometryOp {
+        let ones = reify_ir::Value::List(vec![
+            reify_ir::Value::List(vec![reify_ir::Value::Real(1.0), reify_ir::Value::Real(1.0)]),
+            reify_ir::Value::List(vec![reify_ir::Value::Real(1.0), reify_ir::Value::Real(1.0)]),
+        ]);
+        let knots = || {
+            reify_ir::Value::List(vec![
+                reify_ir::Value::Int(0),
+                reify_ir::Value::Int(0),
+                reify_ir::Value::Int(1),
+                reify_ir::Value::Int(1),
+            ])
+        };
+        CompiledGeometryOp::Surface {
+            kind: reify_compiler::SurfaceKind::Nurbs,
+            args: vec![
+                ("control_points".into(), nurbs_lit(control_points)),
+                ("weights".into(), nurbs_lit(ones)),
+                ("u_knots".into(), nurbs_lit(knots())),
+                ("v_knots".into(), nurbs_lit(knots())),
+                ("u_degree".into(), nurbs_lit(reify_ir::Value::Int(1))),
+                ("v_degree".into(), nurbs_lit(reify_ir::Value::Int(1))),
+            ],
+        }
+    }
+
+    /// Drive `compile_geometry_op` over a `nurbs_surface` fixture, returning the
+    /// result and the diagnostics it emitted.
+    fn compile_nurbs(
+        control_points: reify_ir::Value,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let op = nurbs_surface_op(control_points);
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// (a) The clean path: a fully DIMENSIONED control grid compiles to the
+    /// exact SI metres it carried, with ZERO diagnostics.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_length_grid_compiles_exactly() {
+        let (result, diagnostics) =
+            compile_nurbs(nurbs_grid(|_, _, c| length_point3(c[0], c[1], c[2])));
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsSurface { control_points, .. }) => {
+                assert_eq!(
+                    control_points,
+                    vec![
+                        vec![[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]],
+                        vec![[0.01, 0.0, 0.0], [0.01, 0.01, 0.005]],
+                    ],
+                    "the gate copies `si_value` and does no arithmetic, so the \
+                     poles are bit-identical to the pre-δ read"
+                );
+            }
+            other => panic!("expected a clean NurbsSurface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "the clean path must emit NOTHING; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) ALL FAILURES AT ONCE across the WHOLE GRID — the assertion the
+    /// pre-δ `.map(…).collect::<Result<_,_>>()?` short-circuit structurally
+    /// cannot satisfy, and the reason step-8 rewrites that nested adaptor pair
+    /// into explicit loops.
+    ///
+    /// Twelve coordinates, twelve diagnostics, one build. A grid is written as
+    /// one gesture, so a bare grid is usually bare in every cell; reporting one
+    /// coordinate per rebuild would cost twelve edit-build cycles to fix one
+    /// literal.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_bare_grid_diagnoses_every_coordinate() {
+        let (result, diagnostics) = compile_nurbs(nurbs_grid(|_, _, c| {
+            bare_real_vector3(c[0], c[1], c[2])
+        }));
+        assert!(
+            result.is_err(),
+            "a bare control grid must be REJECTED and no op produced; got {:?}",
+            result
+        );
+        let rejections: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+            })
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            12,
+            "2 rows × 2 columns × 3 coordinates = TWELVE rejections in ONE build; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (c) The exact rendered wording for one interior cell — pinning BOTH the
+    /// `GridCoordName` rendering AND that the text still comes from
+    /// `ArgRejection::message` rather than a hand-rolled copy in the loop.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_names_the_exact_grid_coordinate() {
+        let (_, diagnostics) = compile_nurbs(nurbs_grid(|_, _, c| {
+            bare_real_vector3(c[0], c[1], c[2])
+        }));
+        let expected = expected_length_rejection("nurbs_surface", "control_points[1][0].x", "Real");
+        assert!(
+            diagnostics.iter().any(|d| d.message == expected),
+            "expected {expected:?} among: {:?}",
+            diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// (d) ONE bare pole among three dimensioned ones is rejected and named by
+    /// its exact grid coordinates — which is what makes the diagnostic
+    /// actionable on a real grid, where the author mistyped a single literal.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_names_a_single_bare_pole() {
+        let (result, diagnostics) = compile_nurbs(nurbs_grid(|ri, ci, c| {
+            if (ri, ci) == (1, 1) {
+                bare_real_vector3(c[0], c[1], c[2])
+            } else {
+                length_point3(c[0], c[1], c[2])
+            }
+        }));
+        assert!(result.is_err(), "got {:?}", result);
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "only the three coordinates of the ONE bare pole may be diagnosed; \
+             got: {:?}",
+            diagnostics
+        );
+        for (d, axis) in diagnostics.iter().zip(["x", "y", "z"]) {
+            assert_eq!(
+                d.message,
+                expected_length_rejection(
+                    "nurbs_surface",
+                    &format!("control_points[1][1].{axis}"),
+                    "Real"
+                )
+            );
+        }
+    }
+
+    /// (e) An `Undef` coordinate is UNRESOLVED, not WRONG (D10 / INV-SF-1): it
+    /// gets the distinct message and pushes no diagnostic. Today it is
+    /// indistinguishable from a malformed point, because `as_f64` returns `None`
+    /// for both.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_undef_pole_is_unresolved() {
+        let (result, diagnostics) = compile_nurbs(nurbs_grid(|ri, ci, c| {
+            if (ri, ci) == (0, 0) {
+                reify_ir::Value::Point(vec![
+                    reify_ir::Value::length(c[0]),
+                    reify_ir::Value::Undef,
+                    reify_ir::Value::length(c[2]),
+                ])
+            } else {
+                length_point3(c[0], c[1], c[2])
+            }
+        }));
+        assert_eq!(
+            result.expect_err("an unresolved pole must be rejected"),
+            "argument 'control_points[0][0].y' for nurbs_surface is unresolved (Undef)",
+            "an unresolved pole must NOT be reported as a malformed one"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unresolved degrades quietly; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (f) THE ANTI-OVER-GATING LOCK for this arm: over a LENGTH control grid,
+    /// the surrounding DIMENSIONLESS neighbours must stay bare. Bare `weights`
+    /// (rational blending factors), bare `u_knots`/`v_knots` (parameter-space
+    /// values) and integer `u_degree`/`v_degree` (a polynomial degree, i.e. a
+    /// count) all still compile clean — none is a quantity in metres, so
+    /// demanding a dimension of them would reject correct `.ri` code.
+    ///
+    /// `nurbs_surface_op` fixes all five at those bare values, so EVERY row in
+    /// this block is also carrying this lock; this one states it explicitly and
+    /// checks the decoded neighbours reached the op intact.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_dimensionless_neighbours_stay_bare() {
+        let (result, diagnostics) =
+            compile_nurbs(nurbs_grid(|_, _, c| length_point3(c[0], c[1], c[2])));
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsSurface {
+                weights,
+                u_knots,
+                v_knots,
+                u_degree,
+                v_degree,
+                ..
+            }) => {
+                assert_eq!(weights, vec![vec![1.0, 1.0], vec![1.0, 1.0]]);
+                assert_eq!(u_knots, vec![0.0, 0.0, 1.0, 1.0]);
+                assert_eq!(v_knots, vec![0.0, 0.0, 1.0, 1.0]);
+                assert_eq!(u_degree, 1);
+                assert_eq!(v_degree, 1);
+            }
+            other => panic!("expected a clean NurbsSurface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "no units complaint may be raised about weights / knots / degrees; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (g) Every PRE-EXISTING shape error keeps its EXACT message. δ replaced
+    /// the poles' ACCEPTANCE policy, not the grid's structural validation, so a
+    /// reader who knew these messages before still recognises them.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_shape_errors_are_unchanged() {
+        let good_pt = || length_point3(0.0, 0.0, 0.0);
+        let bad_pt = reify_ir::Value::Real(1.0);
+
+        // control_points is not a List at all.
+        let (result, _) = compile_nurbs(reify_ir::Value::Real(1.0));
+        assert_eq!(
+            result.expect_err("a non-List control_points must be rejected"),
+            "nurbs_surface: control_points is not a List"
+        );
+
+        // A ROW is not a List.
+        let row_other = reify_ir::Value::Real(2.0);
+        let (result, _) = compile_nurbs(reify_ir::Value::List(vec![row_other.clone()]));
+        assert_eq!(
+            result.expect_err("a non-List row must be rejected"),
+            format!(
+                "nurbs_surface: control_points row 0 must be a List of points, got {:?}",
+                row_other
+            )
+        );
+
+        // Empty grid.
+        let (result, _) = compile_nurbs(reify_ir::Value::List(vec![]));
+        assert_eq!(
+            result.expect_err("an empty grid must be rejected"),
+            "nurbs_surface: control_points grid has zero rows"
+        );
+
+        // Empty row.
+        let (result, _) = compile_nurbs(reify_ir::Value::List(vec![reify_ir::Value::List(vec![])]));
+        assert_eq!(
+            result.expect_err("an empty row must be rejected"),
+            "nurbs_surface: control_points grid has zero columns"
+        );
+
+        // Non-rectangular grid.
+        let (result, _) = compile_nurbs(reify_ir::Value::List(vec![
+            reify_ir::Value::List(vec![good_pt(), good_pt()]),
+            reify_ir::Value::List(vec![good_pt()]),
+        ]));
+        assert_eq!(
+            result.expect_err("a ragged grid must be rejected"),
+            "nurbs_surface: non-rectangular control_points"
+        );
+
+        // A control point that is not a 3-component Point/Vector: this is the
+        // one `shape_err` δ hands to `accept_length_point3`, so it is the row
+        // that proves the caller keeps ownership of its own wording.
+        let (result, diagnostics) = compile_nurbs(reify_ir::Value::List(vec![
+            reify_ir::Value::List(vec![good_pt(), bad_pt.clone()]),
+        ]));
+        assert_eq!(
+            result.expect_err("a malformed control point must be rejected"),
+            format!(
+                "nurbs_surface: control_points[0][1] must be a Point3<Length>, got {:?}",
+                bad_pt
+            )
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)),
+            "a shape failure is not an `ArgSpec` rejection; got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
 
     /// True producer→decode round-trip for plane_xy: the real stdlib producer
