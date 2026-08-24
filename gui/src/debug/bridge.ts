@@ -100,9 +100,10 @@ function validXY(v: unknown): v is { x: number; y: number } {
  * Uses PointerEvent when available (real browser), falls back to MouseEvent in
  * jsdom (which lacks the PointerEvent constructor). The event TYPE string —
  * not the constructor class — determines which listeners fire, so a MouseEvent
- * dispatched as 'pointerdown' still triggers pointerdown listeners (debugContract
- * .test.ts:340 / selection.test.ts pattern). Both PointerEvent and MouseEvent
- * accept clientX/clientY in their init dict, so coordinates propagate correctly.
+ * dispatched as 'pointerdown' still triggers pointerdown listeners — the jsdom
+ * note in debugContract.test.ts's `pointerdown+pointerup at canvas center` case,
+ * and the selection.test.ts pattern. Both PointerEvent and MouseEvent accept
+ * clientX/clientY in their init dict, so coordinates propagate correctly.
  */
 function dispatchPointer(target: Element, type: string, x: number, y: number): void {
   const init = { clientX: x, clientY: y, bubbles: true, cancelable: true };
@@ -211,10 +212,16 @@ function pickFeaChannelSelect(
  * Escape a value for interpolation into an `[attr="…"]` selector.
  *
  * CSS.escape is absent in some environments (notably jsdom), so fall back to a
- * minimal escape of the two characters that can terminate or corrupt a quoted
- * attribute value. Without this, a value carrying a quote or backslash makes
- * querySelector THROW a DOMException, which the dispatcher surfaces as an
+ * minimal escape of the two characters MOST LIKELY to terminate or corrupt a
+ * quoted attribute value. Without this, a value carrying a quote or backslash
+ * makes querySelector THROW a DOMException, which the dispatcher surfaces as an
  * opaque CSS-parser message instead of the intended not-found diagnostic.
+ *
+ * The fallback is deliberately NOT exhaustive: a raw newline or other raw
+ * control character is also invalid inside a CSS string, so `escapeAttrValue`
+ * can still yield a throwing selector under that arm. CSS.escape handles those
+ * too, and it is present in every real webview — the fallback runs only where
+ * `CSS` is undefined, which today is jsdom alone.
  */
 function escapeAttrValue(v: string): string {
   return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
@@ -913,17 +920,17 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const name = params.name as string;
       if (!name) return { error: 'name is required' };
 
-      // The one caller-supplied interpolation in this file NOT run through
-      // `escapeAttrValue`: menu names are simple lowercase identifiers by
-      // convention. That convention is caller-side and this tool boundary does
-      // not enforce it, so a `name` carrying a quote or backslash makes
-      // querySelector THROW a DOMException, which the dispatcher surfaces as an
-      // opaque CSS-parser message instead of `menu trigger not found` below.
-      // Closing that is a behaviour change, not a dedupe; `escapeAttrValue(name)`
-      // is the one-line fix if it is ever wanted. (jsdom's missing CSS.escape is
-      // NOT a reason to skip it — escapeAttrValue's fallback arm covers exactly
-      // that case.)
-      const el = document.querySelector(`[data-testid="menu-trigger-${name}"]`);
+      // Menu names are simple lowercase identifiers by convention, but that
+      // convention is caller-side and this tool boundary does not enforce it —
+      // so `name` goes through the same `escapeAttrValue` as every other
+      // caller-supplied interpolation in this file. Unescaped, a quote or
+      // backslash makes querySelector THROW a DOMException, which the dispatcher
+      // surfaces as an opaque CSS-parser message instead of the
+      // `menu trigger not found` diagnostic below. Pinned by cases (e)/(f) of
+      // the `debug bridge open_menu` block in debugBridge.test.tsx.
+      const el = document.querySelector(
+        `[data-testid="menu-trigger-${escapeAttrValue(name)}"]`,
+      );
       if (!el) return { error: `menu trigger not found: ${name}` };
 
       // Idempotency: if the requested menu is already open, skip the click.

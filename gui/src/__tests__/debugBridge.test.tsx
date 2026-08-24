@@ -2047,6 +2047,64 @@ describe('debug bridge open_menu', () => {
     // State unchanged — still 'file'
     expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
   });
+
+  // (e)/(f) pin `open_menu`'s escape of its caller-supplied `name`, the last
+  // interpolation in bridge.ts to be routed through `escapeAttrValue`. Menu
+  // names are simple lowercase identifiers BY CONVENTION only — the tool
+  // boundary does not enforce it — so a typo'd or hostile name must reach the
+  // `menu trigger not found` diagnostic rather than dying inside the selector
+  // parser and surfacing as an opaque `{error: '<CSS parser message>'}`.
+  //
+  // Same negative/positive pair, and for the same measured reason, as (n)/(o)
+  // in the resolveByTestId block — measured against this handler, not assumed:
+  //
+  //   escape dropped from open_menu                → (e) FAILS, (f) fails
+  //   `v.replace(/["\\]/g, '')` — strip, not escape → (e) PASSES, (f) FAILS
+  //
+  // i.e. (e) alone would be satisfied by a helper that merely DELETED the
+  // metacharacters, and only (f) rejects that.
+  it('(e) a menu name carrying selector metacharacters returns the not-found error, not a CSS-parser throw', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Deliberately NO matching trigger: the point is that the lookup reaches
+    // its own not-found diagnostic instead of throwing inside querySelector.
+    for (const [i, badName] of ['fi"le', 'fi\\le', 'file"]'].entries()) {
+      const result = await dispatchCmd(3007 + i, 'open_menu', { name: badName });
+
+      // The diagnostic quotes the RAW name back, not the escaped form.
+      expect(result).toEqual({ error: `menu trigger not found: ${badName}` });
+    }
+  });
+
+  it('(f) a menu name that really contains a quote and a backslash still resolves and clicks', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Built with setAttribute rather than innerHTML so the attribute holds these
+    // bytes exactly, with no HTML-parser unescaping in between. No <MenuBar />
+    // here on purpose: it stamps only the conventional names, and this case is
+    // about the selector round-trip, not about menu state.
+    const name = 'fi"l\\e';
+    const el = document.createElement('button');
+    el.setAttribute('data-testid', `menu-trigger-${name}`);
+    document.body.appendChild(el);
+    const clickSpy = vi.fn();
+    el.addEventListener('click', clickSpy);
+    expect(el.getAttribute('data-testid')).toBe(`menu-trigger-${name}`);
+
+    try {
+      const result = await dispatchCmd(3010, 'open_menu', { name });
+
+      // No MenuBar mounted, so ctx.menuBar is undefined and `open` falls back to
+      // the requested name — the assertion that matters is that the element was
+      // FOUND and clicked.
+      expect(result).toEqual({ ok: true, open: name });
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2706,15 +2764,8 @@ describe('debug bridge tree-node expand/collapse', () => {
   // (j) closes the coverage gap under driveTreeNode's CSS escape — one of the
   // TWO escape call sites in bridge.ts that had no test of its own, the other
   // being `resolveByTestId`'s testId arm, now pinned by (n)/(o) in the
-  // resolveByTestId block.
-  //
-  // INVENTORY CAVEAT — that pair completes the ESCAPED sites, not every
-  // caller-supplied interpolation in bridge.ts. `open_menu` builds
-  // `[data-testid="menu-trigger-${name}"]` WITHOUT `escapeAttrValue` and so has
-  // no case here: it is a deliberate exception resting on a caller-side naming
-  // convention (see its own comment), not an oversight, and closing it would be
-  // a behaviour change rather than a dedupe. Do not read this block as proof
-  // that every selector interpolation in the file is covered.
+  // resolveByTestId block. `open_menu`'s `name`, the third, is pinned by (e)/(f)
+  // in the `debug bridge open_menu` block.
   //
   // (f) above reaches the same not-found branch but with a metacharacter-free
   // path, so nothing else would notice if the escape were dropped here: an
@@ -4929,9 +4980,7 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
   //
   // Measured, not assumed: replacing `escapeAttrValue(testId)` with a raw
   // `${testId}` in `resolveByTestId` left every test in this file plus
-  // waitFor.test.ts green before (n) existed. (No absolute pass count: it goes
-  // stale the next time a case is added to either suite, and the claim that
-  // matters is "nothing failed", not the cardinality.) An unescaped quote or backslash
+  // waitFor.test.ts green before (n) existed. An unescaped quote or backslash
   // makes document.querySelectorAll THROW a DOMException, which the dispatcher
   // surfaces as an opaque `{error: '<CSS parser message>'}` — a typo'd or
   // hostile testId reading as a bridge malfunction rather than as "no such
