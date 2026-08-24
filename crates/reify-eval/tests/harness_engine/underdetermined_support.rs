@@ -92,9 +92,13 @@ pub fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
              {other:?}. `Undef` means the auto was never solved: either layer \
              1 dropped the constraint that pins it (so it reached the solver \
              with no residual), or the decomposition returned no component for \
-             it. Note this is SILENTLY wrong rather than loud — the warning \
-             that would have said so is suppressed as soon as layer 4 sees the \
-             auto as reached",
+             it. Whether `W_UNDERDETERMINED` also fires depends on the SHAPE, \
+             so do not read a quiet eval as a healthy one: layer 4 suppresses \
+             the warning once its own probes see the auto as pinned, which for \
+             a PARENT-side `let` the forward closure alone already does. That \
+             is the silent-`Undef` case. For a CHILD-side `let` the closure \
+             does not, and layer 4 stays loud. The value assertion is the only \
+             signal that holds in both",
         ),
     }
 }

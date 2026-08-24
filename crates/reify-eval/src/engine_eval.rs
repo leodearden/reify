@@ -1801,11 +1801,23 @@ pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[Compile
 /// the normalised one rather than replacing it. That is the whole substance of
 /// the bridge, and it must hold in both directions at once — `read_closure`
 /// inserts both into its closure, and `cells_reaching` keys its reverse map on
-/// both. Making only ONE side additive is worse than making neither: layer 4
-/// then sees an instance-path auto as pinned (no warning) while layer 1 still
-/// drops the constraint that pins it (no solve), turning a correct warning into
-/// a silent `Undef`. See each walk's own comment for the construction argument
-/// that neither addition can perturb the PRD2 D1 identity branch.
+/// both. Making only ONE side additive is worse than making neither, and the
+/// two one-sided failures are NOT the same failure — which shape you are in
+/// decides which you get:
+///
+/// * FORWARD-only additive (the PARENT-side `let`, reading `self.b.bore` from
+///   the container): layer 4 sees the instance-path auto as pinned and stays
+///   quiet, while layer 1 still drops the constraint that pins it. A correct
+///   warning becomes a SILENT `Undef` — strictly worse than not widening.
+/// * REVERSE-only additive (the CHILD-side `let`, whose dep is already
+///   canonical): layer 1 now SOLVES the auto, but the forward closure never
+///   produced the raw declaration id, so layer 4 keeps warning about a cell
+///   that is no longer free. A NEW false positive, loud but wrong.
+///
+/// The second is why layer 4 does not rely on the closure alone; see
+/// [`auto_is_pinned_through_a_reader`]. See each walk's own comment for the
+/// construction argument that neither addition can perturb the PRD2 D1
+/// identity branch.
 struct CellReadIndex<'t> {
     /// Every NON-AUTO cell across all templates that carries a plain
     /// `default_expr`, keyed by id. Autos have no `default_expr` and are
@@ -2009,15 +2021,24 @@ impl<'t> CellReadIndex<'t> {
         // spellings, but every caller seeds THIS walk with RAW declaration ids
         // (`build_solver_problem` passes `regular_auto_cells.iter().map(|c|
         // c.id.clone())`), and the compiler mints instance-path-keyed auto
-        // decls — `ValueCellId("Holder.b", "bore")`, for a construction
+        // decls — `ValueCellId("LetIndirect.b", "bore")`, for a construction
         // named-arg and for a sub-override (`reify-compiler/src/entity.rs`).
-        // A `let` reading that same cell normalises its
-        // dep to `Bearing.bore`, so a normalise-only key set can NEVER be hit
-        // by the raw seed: `reverse.get()` misses, `reaches` comes back empty,
-        // layer 1 drops the let-indirected constraint, and the auto is never
-        // solved — while the additive `read_closure` has already let layer 4
-        // see it and suppress the `W_UNDERDETERMINED` warning. That combination
-        // is strictly worse than not widening at all: a loud, correct warning
+        //
+        // The shape this KEYING fixes is the PARENT-side one, where the reading
+        // `let` lives in the CONTAINER: `LetIndirect.margin = self.b.bore - 2mm`.
+        // That is a DIFFERENT shape from the child-side one the SEEDING below
+        // fixes, and the difference decides which failure each prevents — the
+        // two were conflated here until amendment round 2. Here the `let`'s dep
+        // is spelled `LetIndirect.b.bore` and normalises to `Bearing.bore`, so
+        // a normalise-only key set can NEVER be hit by the raw seed:
+        // `reverse.get()` misses, `reaches` comes back empty, layer 1 drops the
+        // let-indirected constraint, and the auto is never solved — while the
+        // additive `read_closure` HAS already let layer 4 see it and suppress
+        // the `W_UNDERDETERMINED` warning, because that same raw
+        // `LetIndirect.b.bore` is what the walk's additive MID-WALK hop put in
+        // the closure when it followed the constraint's seed read
+        // `LetIndirect.margin` down into the `let`. That combination is
+        // strictly worse than not widening at all: a loud, correct warning
         // becomes a silent `Undef`. Locked by
         // `let_indirected_instance_path_autos_resolve_through_their_lets`.
         //
@@ -2051,11 +2072,25 @@ impl<'t> CellReadIndex<'t> {
         // `Bearing.fit = Bearing.bore * 2` under `sub b : Bearing { bore = auto }`,
         // whose decl the compiler mints as `ValueCellId("Holder.b", "bore")`.
         // `reverse.get(&"Holder.b".bore)` misses, `reaches` comes back empty,
-        // layer 1 drops the pinning constraint — while layer 4's additive
-        // FORWARD closure has already suppressed the `W_UNDERDETERMINED`
-        // warning. Same "loud correct warning becomes a silent `Undef`" failure
-        // the additive keying exists to prevent, one seam over. Locked by
-        // `cells_reaching_seeds_both_spellings_of_an_instance_path_auto`.
+        // and layer 1 drops the pinning constraint.
+        //
+        // THE FAILURE HERE IS NOT THE ONE THE KEYING ABOVE PREVENTS, and saying
+        // it was is the falsehood this comment carried until amendment round 2.
+        // In THIS shape layer 4's forward closure holds only `Bearing.bore` —
+        // `Bearing.fit`'s dep is already canonical, so the walk's additive hop
+        // adds nothing — while `detect_underdetermined` matches the RAW
+        // declaration id `Holder.b.bore`. So BEFORE this seeding both layers
+        // were loud and correct: the constraint was dropped AND the warning was
+        // true. This seeding alone makes layer 1 SOLVE the auto while layer 4
+        // keeps warning — a NEW false positive, not a silent `Undef`. What
+        // closes the pair is layer 4's own reverse probe,
+        // [`auto_is_pinned_through_a_reader`]. Locked in halves so a regression
+        // names which one broke:
+        // `cells_reaching_seeds_both_spellings_of_an_instance_path_auto` and
+        // `child_side_let_instance_path_auto_resolves_through_the_childs_let`
+        // pin the solve;
+        // `child_side_let_instance_path_auto_emits_no_underdetermined_warning`
+        // pins the warning.
         //
         // Purely additive, so it cannot perturb D1: an empty `auto_ids` still
         // returns above; a template-keyed seed normalises to itself and adds
@@ -11998,12 +12033,19 @@ mod cell_read_index_tests {
     /// (`norm == dep`, so only ONE key is added) while the DECLARATION is
     /// instance-path spelled.
     ///
-    /// The consequence is the exact failure the additive keying exists to
-    /// prevent, one seam over: `reverse.get(&"Holder.b".bore)` misses, layer 1
-    /// drops the constraint that pins the auto, and the auto is never solved —
-    /// while the FORWARD walk, additive since step-19, has already let layer 4
-    /// suppress the `W_UNDERDETERMINED` warning. A loud, correct warning
-    /// becomes a silent `Undef`.
+    /// The consequence is a DIFFERENT failure from the one the additive keying
+    /// prevents, and conflating the two is what amendment round 2 corrected:
+    /// `reverse.get(&"Holder.b".bore)` misses, layer 1 drops the constraint
+    /// that pins the auto, and the auto is never solved. The FORWARD walk does
+    /// NOT paper over that here — `Bearing.fit`'s dep is already canonical, so
+    /// the closure holds only `Bearing.bore` while layer 4 matches the raw
+    /// `Holder.b.bore` — so without this seeding BOTH layers are loud and
+    /// correct. The regression this test guards is therefore VISIBLE, not
+    /// silent. The silent failure available at this seam is the opposite one —
+    /// the many-to-one normalised seeding letting one sibling's pin mask
+    /// another's genuinely free auto — and it is guarded by
+    /// `a_container_local_let_reading_one_sibling_does_not_mask_the_other`
+    /// against layer 4's [`auto_is_pinned_through_a_reader`].
     #[test]
     fn cells_reaching_seeds_both_spellings_of_an_instance_path_auto() {
         let templates = child_side_let_templates();
@@ -12022,9 +12064,11 @@ mod cell_read_index_tests {
              `Bearing.bore`. The reverse map therefore holds ONE key, and the \
              raw seed is not it — the frontier has to carry the NORMALISED \
              spelling too. Getting an empty set here is layer 1 dropping the \
-             one constraint that pins this auto, with layer 4's additive \
-             forward closure already suppressing the warning that would have \
-             said so; got {reaching:?}",
+             one constraint that pins this auto; layer 4 then WARNS about it, \
+             correctly, since it really would be unsolved — so this regression \
+             is LOUD, not the silent-`Undef` mode. Cross-checked end to end by \
+             `child_side_let_instance_path_auto_resolves_through_the_childs_let`; \
+             got {reaching:?}",
         );
     }
 
@@ -12474,9 +12518,16 @@ mod transitive_constraint_admission_tests {
             vec![0],
             "`constraint self.b.fit == 20.0` pins the auto `Holder.b.bore` \
              through the child's `let fit = bore * 2.0`. Dropping it leaves \
-             the auto unsolved while layer 4 stays quiet about it — the \
-             silent-`Undef` failure mode, not a loud one; got {got:?} with \
-             reaching={reaching:?}",
+             the auto unsolved, and layer 4 SAYS SO: in this shape the forward \
+             closure holds only `Bearing.bore`, so `detect_underdetermined` \
+             still matches the raw `Holder.b.bore` and warns. The regression is \
+             therefore loud, not the silent-`Undef` mode — that is the opposite \
+             error, guarded by \
+             `two_sibling_instances_sharing_a_child_side_let_are_flagged_independently`. \
+             With BOTH halves fixed (this admission plus layer 4's \
+             `auto_is_pinned_through_a_reader`) the two layers agree, which \
+             `child_side_let_instance_path_auto_emits_no_underdetermined_warning` \
+             pins; got {got:?} with reaching={reaching:?}",
         );
     }
 
