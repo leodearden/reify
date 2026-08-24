@@ -3,6 +3,7 @@ import type { UnitLadderMap, UnitOption, ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 import { SelectionBreadcrumb } from './SelectionBreadcrumb';
 import {
+  acceptsBareNumber,
   buildQuantityRe,
   convertToUnit,
   formatDisplayNumber,
@@ -379,12 +380,19 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    */
   function isValidValue(value: string, cellId: string): boolean {
     if (value === '') return false;
-    // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity)
-    if (NUMBER_RE.test(value) && Number.isFinite(Number(value))) return true;
+    const dimension = props.values[cellId]?.dimension;
+    // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity).
+    // `acceptsBareNumber` gates the whole branch (task #5757): a cell that carries a
+    // dimension needs a unit, because the engine used to resolve `20` in a Volume cell
+    // silently as 20 CUBIC METRES. Read from the same `dimension` the quantity branch
+    // below consults for `quantityReFor`, so both halves are scoped to the same cell.
+    if (acceptsBareNumber(dimension) && NUMBER_RE.test(value) && Number.isFinite(Number(value))) {
+      return true;
+    }
     // Group 1 is the whole signed numeric literal, so the overflow check reads
     // it directly — no second regex re-declaring the unit alternation to strip
     // the suffix, and so nothing left to keep in sync.
-    const m = quantityReFor()(props.values[cellId]?.dimension).exec(value);
+    const m = quantityReFor()(dimension).exec(value);
     if (m) return Number.isFinite(Number(m[1]));
     return false;
   }

@@ -1744,11 +1744,28 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     expect(input.value).toBe('7.04500224');
 
-    // Focus (no edit) then commit: must submit the CANONICAL mm³ magnitude,
-    // not the displayed 'L' magnitude.
+    // Focus (no edit) then commit. Since task #5757 a BARE magnitude is no
+    // longer a valid literal for a dimensioned cell — the PRD's ratified
+    // decision (1), "hard-REJECT bare numbers at dimensioned positions"
+    // (docs/prds/v0_6/units-length-gate-completion.md §6 row 16). So the
+    // unmodified commit is refused inline instead of submitting.
+    //
+    // That STRENGTHENS what this test guards rather than weakening it: the
+    // hazard was an unmodified commit silently rewriting the parameter, and it
+    // now cannot rewrite it at all. Before the gate this submitted the bare
+    // `7045002.24`, which the engine read as 7045002.24 CUBIC METRES — a 1e9
+    // error on a cell whose si_value is 0.00704500224.
     fireEvent.focus(input);
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', '7045002.24');
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+
+    // Re-committing the same canonical magnitude WITH its unit is accepted, and
+    // is still submitted verbatim — the picked 'L' does not rescale it. That is
+    // the original subject of this test, restated in the post-gate grammar.
+    fireEvent.input(input, { target: { value: '7045002.24mm^3' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '7045002.24mm^3');
   });
 
   it('(h) focusing a cell while a non-default unit is picked shows an explicit "editing in <default>" hint', () => {
@@ -1778,7 +1795,12 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     fireEvent.focus(input);
     expect(screen.getByTestId('unit-edit-hint-c1').textContent).toContain('mm³');
 
-    // Committing ends the edit and the hint disappears again.
+    // Committing ends the edit and the hint disappears again. The literal must
+    // carry a unit: since task #5757 a bare magnitude is refused for a
+    // dimensioned cell, and a refused commit keeps the row in edit mode (that
+    // is the point of the inline `data-invalid` path — the typed text stays on
+    // screen for correction), so the hint would correctly still be showing.
+    fireEvent.input(input, { target: { value: '7045002.24mm^3' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
   });
@@ -1822,13 +1844,19 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     expect(hint.className).not.toContain('unitBadge');
   });
 
-  it('(i) typing a NEW value while a non-default unit is picked commits the raw typed number, uninterpreted by the picked unit', () => {
+  it('(i) typing a NEW value while a non-default unit is picked commits the raw typed literal, uninterpreted by the picked unit', () => {
     // Reviewer finding (task #5199 amend, robustness): test (g) only covers
     // the no-op focus+Enter case. This covers the actually-lossy case: the
-    // user types a fresh number while "L" is selected. onSetParameter must
+    // user types a fresh value while "L" is selected. onSetParameter must
     // receive exactly what was typed (submission is never silently
     // converted by the picked unit) — documented here so a future change to
     // this contract cannot land unnoticed.
+    //
+    // Task #5757 changes only the GRAMMAR of what may be typed, not this
+    // contract: a dimensioned cell needs a unit, so the fresh value is
+    // `9999mm^3` rather than a bare `9999`. The point still stands and is
+    // arguably sharper — `9999mm^3` is submitted verbatim, NOT reinterpreted
+    // as 9999 litres because the picker happens to read "L".
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor
@@ -1844,10 +1872,17 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
 
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '9999' } });
+    fireEvent.input(input, { target: { value: '9999mm^3' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    expect(onSetParam).toHaveBeenCalledWith('c1', '9999');
+    expect(onSetParam).toHaveBeenCalledWith('c1', '9999mm^3');
+
+    // The bare spelling is what the gate refuses, and refusing it is what
+    // stops the engine reading `9999` as 9999 CUBIC METRES.
+    fireEvent.input(input, { target: { value: '9999' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledTimes(1);
+    expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 
   it('(j) a demand-pruned cell showing last_substantive_value suppresses the picker entirely', () => {
