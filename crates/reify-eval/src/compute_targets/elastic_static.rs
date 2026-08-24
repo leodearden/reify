@@ -149,7 +149,8 @@
 //!   (landed); the realized box measures complete fill today. The conditional
 //!   above is unchanged by either event, because it is a property of the MESH:
 //!   any future mesh regression re-arms the sentinel, which is exactly what
-//!   `realized_box_mesh_tiles_its_own_aabb` now guards live. The measurement,
+//!   `solve_elastic_static_body_e2e::assert_box_grid_miss_measurement` guards
+//!   live, on both this field and `stress`. The measurement,
 //!   its provenance, and the resolution are recorded once in PRD
 //!   `docs/prds/v0_4/fea-result-model.md` §11 Q2 (task #6154). Those figures are
 //!   deliberately NOT restated here — no test pins them, so a second copy would

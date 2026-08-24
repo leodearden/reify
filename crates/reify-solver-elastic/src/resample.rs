@@ -400,7 +400,7 @@ pub struct GridMissReport {
     /// A non-zero value here means the rest of this report is describing a field
     /// that is already broken upstream of the sampler, so read it before drawing
     /// any conclusion from the buckets.
-    pub n_partial_nan: usize,
+    pub n_nonfinite_anomalies: usize,
     /// Physical coordinates of each miss, in visit order.
     pub missed_points: Vec<[f64; 3]>,
     /// Per-axis grid indices of each miss, parallel to `missed_points`.
@@ -417,7 +417,7 @@ pub struct GridMissReport {
 /// matching the sentinel's all-or-nothing write. Any OTHER non-finite point — a
 /// `NaN` in some but not all components, or an `±INF` anywhere — is a different
 /// defect (a non-finite solution value, not an out-of-solid marker), so it is
-/// never bucketed: it increments [`GridMissReport::n_partial_nan`] instead.
+/// never bucketed: it increments [`GridMissReport::n_nonfinite_anomalies`] instead.
 ///
 /// That counter, and not an assertion, is what carries the signal. Flagging the
 /// condition with a `debug_assert!` was tried and removed: whether the caller's
@@ -489,7 +489,7 @@ pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport 
                     // all-`INF` point has `n_nan == 0` and would otherwise fall
                     // through as a valid, covered sample.
                     if comps.iter().any(|v| !v.is_finite()) {
-                        report.n_partial_nan += 1;
+                        report.n_nonfinite_anomalies += 1;
                     }
                     continue;
                 }
@@ -1395,7 +1395,7 @@ mod miss_diag_tests {
         let report = classify_grid_misses(&sf, 3);
 
         assert_eq!(
-            report.n_partial_nan, 1,
+            report.n_nonfinite_anomalies, 1,
             "a 1-of-3 NaN point must be COUNTED as an anomaly — this counter is \
              the only thing standing between a diverged solve and a report \
              claiming full coverage",
@@ -1418,7 +1418,7 @@ mod miss_diag_tests {
     /// and an all-`INF` grid point has `n_nan == 0`: under an `is_nan()`-only
     /// predicate it is neither a miss nor an anomaly, so the instrument would
     /// report a broken field as fully covered — the exact inversion
-    /// `n_partial_nan` exists to prevent. Both the all-`INF` point (0 of 3 NaN)
+    /// `n_nonfinite_anomalies` exists to prevent. Both the all-`INF` point (0 of 3 NaN)
     /// and the mixed `INF`-plus-finite point are pinned, since only the former
     /// is invisible to the old predicate.
     #[test]
@@ -1435,7 +1435,7 @@ mod miss_diag_tests {
         let report = classify_grid_misses(&sf, 3);
 
         assert_eq!(
-            report.n_partial_nan, 2,
+            report.n_nonfinite_anomalies, 2,
             "both the all-INF point and the mixed INF/finite point are non-finite \
              SOLUTION values, so both must be counted; an all-INF point has \
              n_nan == 0 and is invisible to an is_nan()-only test",
