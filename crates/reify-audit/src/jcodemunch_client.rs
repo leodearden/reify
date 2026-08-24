@@ -720,11 +720,29 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
 /// - `has_allow_dead_code` — an attribute contains `allow(` and `dead_code`
 /// - `has_cfg_test` — an attribute contains `cfg(test)`
 /// - `g_allow_marker` — first `// G-allow: <reason>` with non-blank reason
+///
+/// `decl_line_1based` originates as [`ChangedSymbol::line`](crate::ChangedSymbol::line),
+/// an integer taken verbatim off the jcodemunch wire by
+/// [`changed_symbols_from_wire`] — it is UNTRUSTED and must never index
+/// `lines` unchecked. This function is TOTAL over its inputs: a
+/// `decl_line_1based` of `0` or beyond `lines.len()` returns the neutral
+/// `(false, false, None)` rather than panicking. Observed 2026-08-22:
+/// `index out of bounds: the len is 13165 but the index is 18319` at this
+/// function's scan, against a 13165-line `crates/reify-eval/src/engine_build.rs`
+/// — a stale jcodemunch index reported a line past the file's current EOF.
+///
+/// Deliberately does NOT clamp to `lines.len()` and scan from there: that
+/// would read an arbitrary unrelated block of the file and could fabricate
+/// an `#[allow(dead_code)]` / `// G-allow:` suppression the symbol never
+/// carried. The neutral triple is the only answer that cannot invent one.
+/// Callers should not let it be silent — see `stale_decl_line_diagnostic`,
+/// which `RealJCodemunchOps::get_changed_symbols` uses to surface a stale
+/// index on stderr.
 fn extract_suppression(
     lines: &[&str],
     decl_line_1based: usize,
 ) -> (bool, bool, Option<String>) {
-    if decl_line_1based == 0 {
+    if decl_line_1based == 0 || decl_line_1based > lines.len() {
         return (false, false, None);
     }
     let decl_idx = decl_line_1based - 1; // 0-based
