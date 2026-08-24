@@ -21,9 +21,11 @@ use crate::common;
 ///
 /// Two exceptions where a name-only anchor was shown to be too weak: the
 /// nominal_zone family pins exact printed values (see the rationale at those
-/// asserts), and `it7_width` carries an anti-`undef` assertion, because the eval
-/// printer prints undef cells at exit 0 and a name-only anchor therefore cannot
-/// see a regressed cell at all.
+/// asserts), and the two IT7 cells (`it7_width`, `it7_via_grade`) each PAIR a
+/// name anchor with an anti-`undef` assertion, because the eval printer prints
+/// undef cells at exit 0 — so a name-only anchor cannot see a regressed cell at
+/// all, while an anti-`undef` assertion alone would pass vacuously if the cell
+/// stopped being emitted.
 #[test]
 fn eval_std_tolerancing_surface_example_succeeds() {
     let path = common::example_path("tolerancing/std_tolerancing_surface.ri");
@@ -74,6 +76,16 @@ fn eval_std_tolerancing_surface_example_succeeds() {
     // migrated, which also settles that a non-`pub` prelude structure does fold
     // its derived let for a user module.  Without this, a stale prelude call site
     // would regress silently exactly as the example's did.
+    //
+    // Paired with a positive name anchor, exactly like it7_width above: without
+    // it the `!contains(… = undef)` half passes VACUOUSLY if the cell is ever
+    // renamed, dropped from the example, or stops being emitted by the printer —
+    // leaving the prelude call site this guard exists to cover unguarded with the
+    // suite still green.
+    assert!(
+        stdout.contains("it7_via_grade"),
+        "stdout should contain 'it7_via_grade' (ISOToleranceGrade.tolerance_value cell);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     assert!(
         !stdout.contains("it7_via_grade = undef"),
         "it7_via_grade must materialise ISOToleranceGrade.tolerance_value, not undef — \

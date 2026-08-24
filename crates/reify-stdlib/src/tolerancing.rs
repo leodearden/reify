@@ -92,6 +92,31 @@ fn parse_iso_well_typed(args: &[Value]) -> Option<(f64, f64, i64)> {
     Some((min_si * 1e3, max_si * 1e3, grade))
 }
 
+/// Detect the superseded grade-first spelling
+/// `iso_it_tolerance(grade, nominal_min, nominal_max)`.
+///
+/// True iff the args are exactly `(Value::Int, LENGTH scalar, LENGTH scalar)` —
+/// the order ratified by #4265 and superseded by #6091's subject-first flip.
+///
+/// This shape is *internally consistent but mis-ordered*: no subject-first call
+/// can produce it (arg-0 would be a LENGTH scalar), so it can only have come
+/// from a pre-flip call site. That makes it diagnosable rather than merely
+/// ill-typed, which is why `diagnose` checks it BEFORE `parse_iso_well_typed`'s
+/// `?` early-return. Without this arm a stale call site fails completely
+/// silently: the builtin returns `Undef`, `diagnose` returns `None`, nothing
+/// reaches the diagnostic sink, and `reify eval` prints a bare `cell = undef`
+/// at exit 0 with nothing on stderr to say why.
+///
+/// Deliberately NOT matched: `(Int, LENGTH, Int)` (i.e.
+/// `iso_it_envelope_invalid_arg_types_are_undef`'s "nominal_min as Int" case),
+/// which is genuinely ill-typed under both orders and stays a plain `None`.
+fn is_legacy_grade_first_shape(args: &[Value]) -> bool {
+    args.len() == 3
+        && matches!(&args[0], Value::Int(_))
+        && validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH).is_some()
+        && validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH).is_some()
+}
+
 /// Validate that a nominal size range is within the supported ISO 286-1 envelope.
 ///
 /// Returns `true` iff:
@@ -189,11 +214,16 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
 /// - valid in-envelope calls to `iso_it_tolerance`
 /// - any call to `effective_tolerance_zone`
 /// - ill-typed args (wrong arity, wrong types) — parse_iso_well_typed returns None
-///   and the `?` early-exits the function
+///   and the `?` early-exits the function — EXCEPT the legacy grade-first shape
+///   below, which is recognised ahead of that early-return
 ///
-/// Returns `Some(Diagnostic)` for out-of-envelope but well-typed calls to
-/// `iso_it_tolerance` (grade outside IT5–IT18 or nominal size outside
-/// `(0, 500mm]` or inverted/zero range).
+/// Returns `Some(Diagnostic)` (both `Severity::Error`) for:
+/// - out-of-envelope but well-typed calls to `iso_it_tolerance` (grade outside
+///   IT5–IT18, or nominal size outside `(0, 500mm]`, or an inverted/zero range)
+///   — `E_TolerancingOutOfEnvelope`
+/// - the superseded grade-first spelling `(grade, nominal_min, nominal_max)`
+///   — `E_TolerancingLegacyArgOrder`, an actionable migration message in place
+///   of a silent `Undef` (see `is_legacy_grade_first_shape`)
 ///
 /// Note: the diagnostic is code-less (`Diagnostic::error` sets `code: None`).
 /// Adding a `DiagnosticCode` variant would expand the change to `reify-core` and
@@ -202,6 +232,17 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     match name {
         "iso_it_tolerance" => {
+            // Superseded grade-first spelling. Checked BEFORE the well-typed
+            // decode's `?`, which would otherwise discard this shape as merely
+            // "ill-typed" and leave the caller with a silent `Undef`.
+            if is_legacy_grade_first_shape(args) {
+                return Some(Diagnostic::error(
+                    "E_TolerancingLegacyArgOrder: iso_it_tolerance is subject-first \u{2014} \
+                     iso_it_tolerance(nominal_min, nominal_max, grade). The grade-first \
+                     spelling iso_it_tolerance(grade, nominal_min, nominal_max) was \
+                     superseded by task #6091; move the grade to the last argument.",
+                ));
+            }
             let (min_mm, max_mm, grade) = parse_iso_well_typed(args)?;
             let in_env =
                 it_grade_factor(grade).is_some() && iso_size_in_envelope(min_mm, max_mm);
@@ -834,6 +875,15 @@ mod tests {
     /// `diagnose` shares the one decode point, so it must keep classifying
     /// out-of-envelope calls under the new order: IT4 is well-typed but below
     /// IT5 → `Some(Diagnostic)` with `Severity::Error`.
+    ///
+    /// Severity alone would duplicate `diagnose_iso_it_grade4_out_of_envelope_
+    /// returns_error` (same args, same single assertion), so this test pins the
+    /// MESSAGE instead — which the severity-only siblings never do at this
+    /// layer, and which is what discriminates the two Error-producing arms of
+    /// `diagnose` from each other. Specifically: a well-typed subject-first
+    /// out-of-envelope call must get `E_TolerancingOutOfEnvelope`, NOT the
+    /// `E_TolerancingLegacyArgOrder` migration error — i.e. the legacy-shape
+    /// arm must not swallow a legitimately-ordered call.
     #[test]
     fn diagnose_iso_it_subject_first_out_of_envelope_returns_error() {
         use reify_core::Severity;
@@ -848,6 +898,74 @@ mod tests {
             diag.severity,
             Severity::Error,
             "out-of-envelope diagnostic should be Error severity under subject-first order"
+        );
+        assert!(
+            diag.message.contains("E_TolerancingOutOfEnvelope"),
+            "subject-first out-of-envelope call must carry the envelope error tag, got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("E_TolerancingLegacyArgOrder"),
+            "a correctly-ordered subject-first call must NOT be misclassified as the \
+             legacy grade-first spelling, got: {}",
+            diag.message
+        );
+    }
+
+    /// The legacy grade-first spelling `(grade, nominal_min, nominal_max)` is
+    /// well-formed-but-mis-ordered, so `diagnose` must surface an actionable
+    /// migration Error rather than the silent `Undef` an ill-typed call gets.
+    ///
+    /// Before this arm, `parse_iso_well_typed(args)?` early-returned `None` on
+    /// the very first line of `diagnose`, so `emit_undef_builtin_diagnostics`
+    /// pushed nothing and `reify eval` printed `cell = undef` at exit 0 with an
+    /// empty stderr — the same class of silent failure the CLI gate's
+    /// anti-`undef` assertions exist to catch. This also closes the previously
+    /// untested `diagnose`-on-a-legacy-shape path.
+    #[test]
+    fn diagnose_iso_it_legacy_grade_first_shape_returns_migration_error() {
+        use reify_core::Severity;
+        // The exact arg vector `iso_it_tolerance_grade_first_spelling_is_undef`
+        // pins as Undef at the evaluator layer — this is its diagnostic half.
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(7), len(0.030), len(0.050)],
+        );
+        let diag =
+            d.expect("legacy grade-first shape should return Some(Diagnostic), not None");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "legacy grade-first spelling should be diagnosed at Error severity"
+        );
+        assert!(
+            diag.message.contains("E_TolerancingLegacyArgOrder"),
+            "legacy-order diagnostic must carry its own error tag, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("iso_it_tolerance(nominal_min, nominal_max, grade)"),
+            "the diagnostic must spell the correct subject-first order so it is \
+             actionable without reading the source, got: {}",
+            diag.message
+        );
+    }
+
+    /// The legacy-shape arm must stay narrow: `(Int, LENGTH, Int)` is ill-typed
+    /// under BOTH orders (it is `iso_it_envelope_invalid_arg_types_are_undef`'s
+    /// "nominal_min as Int" case, not a pre-flip call site), so it must keep
+    /// returning `None` rather than being mislabelled a migration problem.
+    #[test]
+    fn diagnose_iso_it_genuinely_ill_typed_shape_still_returns_none() {
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(18), len(0.030), Value::Int(7)],
+        );
+        assert!(
+            d.is_none(),
+            "an ill-typed (Int, LENGTH, Int) call is not the legacy grade-first \
+             spelling and must not be diagnosed as one, got: {:?}",
+            d.map(|x| x.message)
         );
     }
 }
