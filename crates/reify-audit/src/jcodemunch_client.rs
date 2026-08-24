@@ -647,9 +647,17 @@ fn layer_violations_from_wire(decoded: &Value) -> Vec<LayerViolation> {
 
 /// Adapter: MUNCH-decoded value → `Vec<SymbolReference>`.
 ///
-/// Finds the first table whose rows carry both `file` and `line` fields;
-/// returns an empty vec when absent (no captured fixture exists for
-/// `find_references` — end-to-end validation is L-SMOKE's job).
+/// Finds the first table whose rows carry a `file` field; returns an empty
+/// vec when absent. `file` is the only column P1 consumes, so it is the
+/// selector; `line` is read when present and defaults to `0` otherwise.
+///
+/// The real jcodemunch-mcp 1.108.54 `find_references` wire shape (measured
+/// 2026-08-22, re-confirmed live against `local/reify-4ae45bbd`) is
+/// `file|specifier|match_type` and carries NO `line` column at all — so
+/// `line == 0` means "the wire did not report one", not "line 1". Every
+/// fixture under `tests/fixtures/jcodemunch/` predates this: no captured
+/// `find_references` fixture exists (end-to-end validation is L-SMOKE's
+/// job), so this doc is the record of the live-measured shape.
 fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
     let obj = match decoded.as_object() {
         Some(o) => o,
@@ -657,13 +665,16 @@ fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
     };
     for (_table_name, table_val) in obj {
         if let Some(rows) = table_val.as_array() {
-            // Check whether this table's rows contain file + line
-            if rows.iter().any(|r| r.get("file").is_some() && r.get("line").is_some()) {
+            // Check whether this table's rows contain a `file` field.
+            if rows.iter().any(|r| r.get("file").is_some()) {
                 return rows
                     .iter()
                     .filter_map(|row| {
                         let file = row.get("file")?.as_str()?.to_string();
-                        let line = row.get("line")?.as_u64()? as usize;
+                        let line = row
+                            .get("line")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0) as usize;
                         Some(SymbolReference { file, line })
                     })
                     .collect();

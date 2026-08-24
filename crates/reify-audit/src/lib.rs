@@ -1394,7 +1394,9 @@ pub struct ChangedSymbol {
 pub struct SymbolReference {
     /// Workspace-relative path of the referencing file.
     pub file: String,
-    /// 1-based line of the reference.
+    /// 1-based line of the reference WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported": jcodemunch's `find_references` records
+    /// carry only `file`/`specifier`/`match_type`, no line number.
     pub line: usize,
 }
 
