@@ -249,53 +249,46 @@ mod modal_analysis_fns_stdlib_compile {
 
     // ─── (b) user-observable consumer signal ──────────────────────────────────────
 
-    /// A `structure` running the committed modal_analysis → transient_response →
-    /// displacement_at pipeline, binding the result through a `List<Length>`
-    /// ANNOTATION.
+    /// A `structure` reaching a `displacement_at` call site with a well-typed
+    /// `DisplacementTimeHistory`, binding the result through a `List<Length>`
+    /// annotation.
     ///
-    /// Adapted from `compile_displacement_at_probe`
-    /// (reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs) so the
-    /// `displacement_at` call site is reached with a well-typed
-    /// `DisplacementTimeHistory`; the only change is the annotated binding.
+    /// DELIBERATELY MINIMAL — it constructs the `DisplacementTimeHistory`
+    /// directly rather than driving the modal_analysis -> transient_response ->
+    /// displacement_at pipeline. Only the DECLARED return type of
+    /// `displacement_at` decides the bound cell's type, so the whole solver
+    /// preamble (`Steel_AISI_1045` / `FEAMaterialInput` / `ModalOptions` / `box` /
+    /// `faces_by_normal` / `StepForce` / `ForcingTimeHistory` / `modal_analysis` /
+    /// `transient_response`) contributed nothing to the signal while coupling
+    /// this pin to nine further stdlib signatures — as a third near-verbatim copy
+    /// of a fixture already carried by `examples/modal/transient_step_response.ri`
+    /// and by `compile_displacement_at_probe`
+    /// (reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs), it would
+    /// have rotted into a compile error on any of their signature changes while
+    /// adding no coverage those two do not already give. They keep the end-to-end
+    /// pipeline coverage; this pin needs only a well-typed `history` argument, so
+    /// it builds one.
+    ///
+    /// `modes` / `boundary_conditions` are empty and the matrix norms are
+    /// placeholders: nothing here is evaluated, only type-checked.
     const LIST_LENGTH_CONSUMER_PROBE: &str = r#"
     structure DisplacementAtLengthConsumerProbe {
-        param length : Length = 200mm
-        param width  : Length = 10mm
-        param height : Length = 2mm
-
-        let material = Steel_AISI_1045()
-        let mi = FEAMaterialInput(material: material)
-        let root = FixedSupport(target: "x_min")
-        let opts = ModalOptions(
-            n_modes: 3,
-            boundary_conditions: [root],
-            damping: RayleighDamping(alpha: 0.0, beta: 0.0003),
-            sigma: 0.0,
-            tol: 0.000000001,
-            max_iters: 200,
-            reference_direction: vec3(0.0, 0.0, 1.0),
-            element_order: ElementOrder.P1
+        let modal_result = ModalResult(
+            part: Part(),
+            modes: [],
+            boundary_conditions: [],
+            damping: RayleighDamping(alpha: 0.0, beta: 0.0),
+            mass_matrix_norm: 1.0,
+            stiffness_matrix_norm: 1.0
         )
-        let result = modal_analysis(mi.material, length, width, height, opts)
-
-        let beam = box(length, width, height)
-        let tip_dir = vec3(1.0, 0.0, 0.0)
-        let tip_tol = 1deg
-        let tip_face = faces_by_normal(beam, tip_dir, tip_tol)
-        let tip_push = StepForce(
-            at: tip_face,
-            direction: vec3(0.0, 0.0, 1.0),
-            magnitude: 10N,
-            start_time: 0s
+        let response = DisplacementTimeHistory(
+            part: Part(),
+            modal_result: modal_result,
+            t_samples: [0s, 0.01s],
+            mode_coords: [[0.0, 0.0]]
         )
-        let forcing = ForcingTimeHistory(part: Part(), sources: [tip_push])
 
-        let t_start = 0s
-        let t_end   = 0.25s
-        let dt      = 0.0002s
-        let response = transient_response(result, forcing, t_start, t_end, dt)
-
-        let tip : List<Length> = displacement_at(response, "tip", tip_push.direction)
+        let tip : List<Length> = displacement_at(response, "tip", vec3(0.0, 0.0, 1.0))
     }
     "#;
 
@@ -318,9 +311,15 @@ mod modal_analysis_fns_stdlib_compile {
              annotation must produce no Error diagnostics (#6094); got: {errs:?}"
         );
 
-        // The annotation must actually be recorded on the cell — otherwise the
-        // zero-Error assertion above could pass by the annotation being dropped
-        // rather than checked.
+        // What follows pins the call site's INFERRED cell type — the type the
+        // `displacement_at` declaration propagates into `tip`. It does NOT pin
+        // the `: List<Length>` annotation: per the module docs above, an
+        // annotated-let mismatch raises no diagnostic today and the inferred type
+        // simply wins, so this assertion would read identically with the
+        // annotation deleted. The annotation is kept only because it spells out
+        // the consumer shape the task is about ("a user who writes
+        // `let tip : List<Length> = displacement_at(...)` gets what they asked
+        // for"); do not read it as a checked constraint.
         let template = module
             .templates
             .iter()
