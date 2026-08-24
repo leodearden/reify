@@ -1562,6 +1562,60 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // step-3 / step-4: find_references_from_wire over real-wire (line-less)
+    // rows, through the full production decode_tool_result route
+    // ------------------------------------------------------------------
+
+    /// The real jcodemunch-mcp 1.108.54 `find_references` wire shape (see
+    /// `munch_decode_accepts_a_three_segment_table_spec_as_all_str`) carries
+    /// no `line` column at all. Wraps the same MUNCH text in the JSON-RPC
+    /// `result` envelope the client actually receives, so the `#MUNCH/`
+    /// routing in `decode_tool_result` is exercised too, not just
+    /// `munch_decode` directly.
+    #[test]
+    fn find_references_from_wire_decodes_line_less_real_wire_rows() {
+        let munch = concat!(
+            "#MUNCH/1 tool=find_references enc=gen1\n",
+            "\n",
+            "@1=crates/reify-audit/\n",
+            "\n",
+            "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
+            "r,@1src/jcodemunch_client.rs,crate,named\n",
+            "r,@1tests/p1.rs,reify_audit,named\n",
+        );
+        let result = json!({
+            "content": [{"type": "text", "text": munch}]
+        });
+        let decoded = decode_tool_result(&result).expect("decode_tool_result should succeed");
+        let refs = find_references_from_wire(&decoded);
+
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].file, "crates/reify-audit/src/jcodemunch_client.rs");
+        assert_eq!(refs[0].line, 0, "the real wire reports no line; sentinel is 0");
+        assert_eq!(refs[1].file, "crates/reify-audit/tests/p1.rs");
+        assert_eq!(refs[1].line, 0, "the real wire reports no line; sentinel is 0");
+    }
+
+    /// Pins that the coming relaxation widens the table selector from
+    /// "carries `file` AND `line`" to "carries `file`" only — it must not
+    /// start matching arbitrary tables that merely happen to have rows.
+    #[test]
+    fn find_references_from_wire_ignores_a_table_without_a_file_column() {
+        let munch = concat!(
+            "#MUNCH/1 tool=t enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:rows:path|line:str|int\n",
+            "t,foo.rs,10\n",
+        );
+        let v = munch_decode(munch).expect("decode should succeed");
+        let refs = find_references_from_wire(&v);
+        assert!(
+            refs.is_empty(),
+            "a table with no `file` column must not be matched"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // munch_decode: row field-count mismatch returns Protocol error
     // ------------------------------------------------------------------
 
