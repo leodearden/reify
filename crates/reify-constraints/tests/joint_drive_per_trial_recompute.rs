@@ -1032,6 +1032,9 @@ const STALE_SIDE: f64 = 555.0;
 ///   component. Without it every cell is either fully owned or fully disjoint,
 ///   and `is_subset` is indistinguishable from `!is_disjoint` — the mutation
 ///   that reintroduces the cross-component `Undef` fold this task removes.
+///   `mix` is deliberately read by NO constraint; see the note at
+///   ConstraintNodeId("Part", 3) for why a constraint reading it would be a
+///   genuine a↔c coupling under task #5467's transitive decomposition.
 struct TwoComponentFixture {
     problem: ResolutionProblem,
     a: ValueCellId,
@@ -1072,8 +1075,30 @@ fn two_component_dependent_cell_problem() -> TwoComponentFixture {
             (ConstraintNodeId::new("Part", 0), ge_lo(vref(&a))),
             (ConstraintNodeId::new("Part", 1), ge_lo(vref(&b))),
             (ConstraintNodeId::new("Part", 2), ge_lo(vref(&c))),
+            // `side` reads {c} only, so this constrains the {c} component and
+            // couples nothing new.
             (ConstraintNodeId::new("Part", 3), ge_lo(vref(&side))),
-            (ConstraintNodeId::new("Part", 4), ge_lo(vref(&mix))),
+            // DELIBERATELY NOT CONSTRAINED: `mix`. It reads {a, c}, so under
+            // task #5467's layer 2 (constraint refs now follow
+            // `dependent_cells`) a constraint reading `mix` is a GENUINE a↔c
+            // coupling and correctly collapses this fixture to ONE component —
+            // destroying the two-component premise both tests below rest on,
+            // and with it the per-component filter they exist to guard.
+            //
+            // The old `ge_lo(vref(&mix))` at ConstraintNodeId("Part", 4) was
+            // not enforcing anything: pre-α its ref set was `{mix}`, which
+            // intersected the auto params in NOTHING, so
+            // `decompose_into_components` SKIPPED it outright and no solver
+            // ever saw it. Removing it therefore drops zero coverage — it
+            // removes a constraint that was silently inert, which is exactly
+            // the α bug this branch fixes, sitting inside this fixture.
+            //
+            // `mix` REMAINS a dependent cell, which is the role it was added
+            // for: it is the only cell whose auto set is neither owned by nor
+            // disjoint from a component, so `is_subset` stays distinguishable
+            // from `!is_disjoint`. A straddling cell and a constraint reading
+            // it are simply incompatible with a two-component premise once
+            // decomposition is transitive.
         ],
         current_values,
         objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, vref(&total))),

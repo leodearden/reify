@@ -23,7 +23,7 @@
 //! Step 10 (GREEN): extends `examples/auto_binding_sites.ri` with all four sites.
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{DeterminacyState, Value};
 use reify_test_support::parse_and_compile_with_stdlib;
@@ -47,6 +47,35 @@ fn warnings_only(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Dia
         .iter()
         .filter(|d| d.severity == Severity::Warning)
         .collect()
+}
+
+/// The cell ids named by every `Underdetermined`-coded diagnostic, sorted.
+///
+/// Matched by CODE, not by a substring on the rendered `W_UNDERDETERMINED`
+/// text, then the id is read back out of the message — `Diagnostic` carries no
+/// structured cell field, and the message's `auto parameter '<id>'` prefix is
+/// itself pinned verbatim by κ #4019's tests in `tests/underdetermined.rs`, so
+/// this parse cannot silently drift.
+fn underdetermined_cell_ids(diagnostics: &[reify_core::Diagnostic]) -> Vec<String> {
+    let mut ids: Vec<String> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .map(|d| {
+            d.message
+                .split('\'')
+                .nth(1)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "a W_UNDERDETERMINED message must name its cell in \
+                         single quotes (`auto parameter '<id>'`); got: {}",
+                        d.message
+                    )
+                })
+                .to_string()
+        })
+        .collect();
+    ids.sort();
+    ids
 }
 
 // ── Test (a): LET auto strict resolves uniquely ───────────────────────────────
@@ -512,6 +541,56 @@ fn example_auto_binding_sites_ri_all_four_resolve() {
         "examples/auto_binding_sites.ri should evaluate with no error-severity diagnostics; \
          got:\n{:#?}",
         eval_errors
+    );
+
+    // ── WARNING severity (task #5467 step-16) ────────────────────────────────
+    //
+    // The error-severity assertion above is deliberately left intact, but it is
+    // BLIND to `W_UNDERDETERMINED`, which is a WARNING. That blindness is how
+    // two brand-new user-visible false positives — `AutoBindingSites.b.bore`
+    // and `AllFourSites.bolt.length`, both instance-path-keyed auto decls —
+    // passed through this very test silently.
+    //
+    // The expected SET is DERIVED from the fixture and the two id namespaces,
+    // never read off a run. Each of the file's five auto cells is accounted
+    // for:
+    //
+    //   * `AutoBindingSites.b.bore`     — decl instance-path (entity.rs:3130),
+    //     pinned by `constraint self.b.bore == 10mm` reading the same
+    //     spelling                                        ⇒ NOT flagged.
+    //   * `AllFourSites.bolt.length`    — decl instance-path (entity.rs:3025),
+    //     pinned by `constraint self.bolt.length == 10mm` ⇒ NOT flagged.
+    //   * `AllFourSites.m`              — a `let ... = auto` in the template
+    //     itself, so decl AND constraint are both template-keyed and
+    //     normalisation is the identity                   ⇒ never flagged.
+    //   * `EpsilonConnector.gain`       — decl template-keyed, pinned by the
+    //     connector's own internal `constraint self.gain == 10mm`
+    //                                                     ⇒ never flagged.
+    //   * `AllFourSites.__connector_0.gain` — decl instance-path, and by design
+    //     D5 the parent CANNOT name `__connector_N`, so NO constraint reads it
+    //     under any spelling               ⇒ flagged, before AND after #5467.
+    //
+    // That last one is a PRE-EXISTING false positive (main's
+    // `detect_underdetermined` extended the raw one-hop reads, which likewise
+    // never contained the scoped connector id), is out of scope for #5467, and
+    // is filed as its own follow-up. It is pinned here as the expected baseline
+    // so a future fix must consciously update this assertion instead of
+    // silently changing the count.
+    //
+    // Asserted as a SET, not a bare count, so a failure says WHICH id drifted.
+    // A mismatch means the derivation above or the fixture changed — STOP and
+    // re-derive; never edit this list to match an observed run.
+    let underdetermined_ids = underdetermined_cell_ids(&result.diagnostics);
+    assert_eq!(
+        underdetermined_ids,
+        vec!["AllFourSites.__connector_0.gain".to_string()],
+        "W_UNDERDETERMINED set drifted from the per-cell derivation above. \
+         `AutoBindingSites.b.bore` and/or `AllFourSites.bolt.length` appearing \
+         means the read closure dropped the RAW instance-path spelling that \
+         entity.rs:3130 / :3025 used to declare them; the connect-param entry \
+         disappearing means the separate, pre-existing D5 gap was fixed and \
+         this baseline needs a conscious update. Full diagnostics:\n{:#?}",
+        result.diagnostics,
     );
 
     let snap = engine.snapshot().expect("snapshot should exist");
