@@ -332,7 +332,8 @@ structure S {
 ;      contract — only the presence of an error is contractual — and
 ;      `tree-sitter parse` renders the same node as a nested `(ERROR (ERROR))`,
 ;      which produces a pin that FAILS under `tree-sitter test`.
-; Both idioms also appear in test/corpus/imaginary_literal.txt:1-30.
+; Both idioms also appear in test/corpus/imaginary_literal.txt (cited by FILE:
+; a line range rots on the first edit and nothing validates it).
 ;
 ; Every expected tree here was transcribed from a real parse, never hand-written.
 ; Check manually on the FULL corpus — a filtered run hides a broken neighbour:

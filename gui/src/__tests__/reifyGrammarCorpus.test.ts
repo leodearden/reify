@@ -3975,7 +3975,10 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
     expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
   });
 
-  // :27 — `·` composed with `^` and a negative exponent, in one literal.
+  // The `composed` binding — `·` composed with `^` and a negative exponent, in
+  // one literal. Cited by BINDING NAME for the same reason as its two siblings
+  // above: the fixture's line numbers moved under #5784 and nothing validates a
+  // file:line cite.
   it('composes middots with unit exponents', () => {
     const src = 'structure def S { let composed = 5m^2·kg·s^-2 }';
     expect(countErrorNodes(src)).toBe(0);
