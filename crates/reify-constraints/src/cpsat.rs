@@ -466,6 +466,201 @@ impl ConstraintSolver for CpSatSolver {
 }
 
 // ---------------------------------------------------------------------------
+// SHARED FIXTURE VOCABULARY for cpsat's in-src test modules.
+//
+// Lifted out of `dependent_cell_forward_check_tests` (task #5468 / PRD2 β) when
+// a second and third test module needed the same vocabulary. A sibling module
+// cannot reach a private item of a sibling — Rust privacy is "visible in the
+// defining module and its descendants" — so `use super::dependent_cell_forward_check_tests::*`
+// was never an option without widening those items anyway. Lifting them to a
+// shared parent-level module says what is actually true: this vocabulary is
+// cpsat's test-side ALPHABET, not one lock module's private detail.
+//
+// Every item is `pub(super)`: `super` here is `mod cpsat`, so each is visible
+// to cpsat and all of its descendants (i.e. every in-src test module) and to
+// nothing else. NOT `pub` — that would leak them onto the crate's test-cfg
+// surface for no reader's benefit.
+//
+// Nothing here is new; the bodies and their doc comments are the originals,
+// moved verbatim except for the visibility qualifier and the `or` helper added
+// for β's disjunction fixtures.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod cpsat_test_fixtures {
+    use super::*;
+    use reify_ir::{ObjectiveSet, UnOp};
+    use std::sync::Arc;
+
+    /// The value a stale same-scope auto entry carries into the search.
+    ///
+    /// Named rather than inlined — mirroring `STALE_SIDE` in
+    /// `tests/joint_drive_per_trial_recompute.rs` — so a mixed-up assertion
+    /// cannot pass by coincidence: every lock-2 fixture is built so that the
+    /// STALE answer and the CORRECT answer are opposites, and naming the stale
+    /// side makes that opposition explicit at the call site.
+    ///
+    /// A real one arrives via any of the three sources named in this module's
+    /// header; `SolverRegistry::solve_lexicographic`'s warm-start is the one that
+    /// needs no eval layer at all.
+    pub(super) const STALE_SEED: bool = true;
+
+    pub(super) fn bool_auto(member: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("S", member),
+            param_type: Type::Bool,
+            bounds: None,
+            free: true,
+        }
+    }
+
+    /// An `Int` auto over the INCLUSIVE bound pair `[lo, hi]` —
+    /// `build_variable_domain` enumerates `lo..=hi`, so the domain has
+    /// `hi - lo + 1` values.
+    pub(super) fn int_auto(member: &str, lo: i64, hi: i64) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("S", member),
+            param_type: Type::Int,
+            bounds: Some((lo as f64, hi as f64)),
+            free: true,
+        }
+    }
+
+    pub(super) fn bref(member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Bool)
+    }
+
+    pub(super) fn iref(member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Int)
+    }
+
+    pub(super) fn not(e: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::unop(UnOp::Not, e, Type::Bool)
+    }
+
+    pub(super) fn and(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(reify_ir::BinOp::And, l, r, Type::Bool)
+    }
+
+    pub(super) fn eq_true(e: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Eq,
+            e,
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        )
+    }
+
+    pub(super) fn mul_int(e: CompiledExpr, k: i64) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Mul,
+            e,
+            CompiledExpr::literal(Value::Int(k), Type::Int),
+            Type::Int,
+        )
+    }
+
+    pub(super) fn add_int(e: CompiledExpr, k: i64) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Add,
+            e,
+            CompiledExpr::literal(Value::Int(k), Type::Int),
+            Type::Int,
+        )
+    }
+
+    pub(super) fn eq_int(e: CompiledExpr, k: i64) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Eq,
+            e,
+            CompiledExpr::literal(Value::Int(k), Type::Int),
+            Type::Bool,
+        )
+    }
+
+    /// A `ValueMap` seeded with exactly one `S.<member>` entry — every lock-2
+    /// fixture needs precisely one, and keeping it to one makes the thing under
+    /// test unmistakable at the call site.
+    ///
+    /// `ValueMap` has no `FromIterator` impl (reify-ir/src/value.rs), so this
+    /// is `new` + `insert` rather than a `collect`.
+    pub(super) fn seed(member: &str, v: Value) -> ValueMap {
+        let mut m = ValueMap::new();
+        m.insert(ValueCellId::new("S", member), v);
+        m
+    }
+
+    /// A problem with the `current_values` seed exposed — that seed IS the
+    /// subject under test for lock 2, so it cannot be hard-wired the way
+    /// [`problem`] wires it.
+    pub(super) fn problem_with_seed(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
+        current_values: ValueMap,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values,
+            objective: None::<ObjectiveSet>,
+            functions: Arc::from(Vec::new()),
+            dependent_cells,
+        }
+    }
+
+    /// [`problem_with_seed`] with an EMPTY seed — the shape every lock-1
+    /// fixture wants, and the shape all 11 `ResolutionProblem` literals in
+    /// `tests/cpsat_tests.rs` build.
+    pub(super) fn problem(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
+    ) -> ResolutionProblem {
+        problem_with_seed(auto_params, constraints, dependent_cells, ValueMap::new())
+    }
+
+    /// The solved value of `S.<member>`, or a panic naming what actually came
+    /// back — an unpruned search reports `Solved`/`unique: true` with the WRONG
+    /// value, so a test that only checked the variant would pass on the bug.
+    pub(super) fn solved_value(result: &SolveResult, member: &str) -> Value {
+        match result {
+            SolveResult::Solved { values, .. } => values
+                .get(&ValueCellId::new("S", member))
+                .unwrap_or_else(|| {
+                    panic!("no solved value for S.{member}; got values {values:?}")
+                })
+                .clone(),
+            other => panic!("expected SolveResult::Solved for S.{member}; got {other:?}"),
+        }
+    }
+
+    /// An `Int` auto with NO bounds — the shape `domain_spec` REJECTS
+    /// ("integer auto param … has no bounds; cannot enumerate domain"), and so
+    /// the only way to reach the not-enumerable channel from a unit test.
+    ///
+    /// Distinct from [`int_auto`] deliberately: the rejection is the subject
+    /// under test, not an accident of a mis-built fixture, and a reader seeing
+    /// this name at the call site knows which of `domain_spec`'s four `Err`
+    /// arms is being exercised.
+    pub(super) fn unbounded_int_auto(member: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("S", member),
+            param_type: Type::Int,
+            bounds: None,
+            free: true,
+        }
+    }
+
+    /// Disjunction — the shape every β enumeration fixture is built on, because
+    /// `a || b` is the smallest constraint with MORE THAN ONE model (3 of the 4
+    /// points) and so the smallest thing that can tell honest enumeration apart
+    /// from "returned the first feasible point".
+    pub(super) fn or(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(reify_ir::BinOp::Or, l, r, Type::Bool)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // REGRESSION LOCKS for the CP-SAT forward-check's two dependent-cell hazards
 // (task #5467 / PRD2 α, §3 decision 9). Both are FIXED above; these units are
 // what keeps them fixed. CP-SAT is landed-but-unwired — unreachable in
@@ -506,159 +701,18 @@ impl ConstraintSolver for CpSatSolver {
 //        `an_overridden_auto_is_searched_rather_than_pinned_to_its_seed` pins
 //        that choice explicitly.
 //
-// The two locks are ONE module because they share a fixture vocabulary and
-// because lock 2's `*_direct_path_*` unit is what proves lock 2's repair
-// belongs at the seed rather than inside the fold — an argument only legible
-// next to lock 1's fold units.
+// The two locks are ONE module because lock 2's `*_direct_path_*` unit is what
+// proves lock 2's repair belongs at the seed rather than inside the fold — an
+// argument only legible next to lock 1's fold units. (They also once shared a
+// private fixture vocabulary; that has since moved up to
+// `cpsat_test_fixtures`, task #5468, so it is no longer part of the reason.)
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod dependent_cell_forward_check_tests {
     use super::*;
-    use reify_ir::{ObjectiveSet, UnOp};
-    use std::sync::Arc;
-
-    /// The value a stale same-scope auto entry carries into the search.
-    ///
-    /// Named rather than inlined — mirroring `STALE_SIDE` in
-    /// `tests/joint_drive_per_trial_recompute.rs` — so a mixed-up assertion
-    /// cannot pass by coincidence: every lock-2 fixture is built so that the
-    /// STALE answer and the CORRECT answer are opposites, and naming the stale
-    /// side makes that opposition explicit at the call site.
-    ///
-    /// A real one arrives via any of the three sources named in this module's
-    /// header; `SolverRegistry::solve_lexicographic`'s warm-start is the one that
-    /// needs no eval layer at all.
-    const STALE_SEED: bool = true;
-
-    fn bool_auto(member: &str) -> AutoParam {
-        AutoParam {
-            id: ValueCellId::new("S", member),
-            param_type: Type::Bool,
-            bounds: None,
-            free: true,
-        }
-    }
-
-    /// An `Int` auto over the INCLUSIVE bound pair `[lo, hi]` —
-    /// `build_variable_domain` enumerates `lo..=hi`, so the domain has
-    /// `hi - lo + 1` values.
-    fn int_auto(member: &str, lo: i64, hi: i64) -> AutoParam {
-        AutoParam {
-            id: ValueCellId::new("S", member),
-            param_type: Type::Int,
-            bounds: Some((lo as f64, hi as f64)),
-            free: true,
-        }
-    }
-
-    fn bref(member: &str) -> CompiledExpr {
-        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Bool)
-    }
-
-    fn iref(member: &str) -> CompiledExpr {
-        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Int)
-    }
-
-    fn not(e: CompiledExpr) -> CompiledExpr {
-        CompiledExpr::unop(UnOp::Not, e, Type::Bool)
-    }
-
-    fn and(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
-        CompiledExpr::binop(reify_ir::BinOp::And, l, r, Type::Bool)
-    }
-
-    fn eq_true(e: CompiledExpr) -> CompiledExpr {
-        CompiledExpr::binop(
-            reify_ir::BinOp::Eq,
-            e,
-            CompiledExpr::literal(Value::Bool(true), Type::Bool),
-            Type::Bool,
-        )
-    }
-
-    fn mul_int(e: CompiledExpr, k: i64) -> CompiledExpr {
-        CompiledExpr::binop(
-            reify_ir::BinOp::Mul,
-            e,
-            CompiledExpr::literal(Value::Int(k), Type::Int),
-            Type::Int,
-        )
-    }
-
-    fn add_int(e: CompiledExpr, k: i64) -> CompiledExpr {
-        CompiledExpr::binop(
-            reify_ir::BinOp::Add,
-            e,
-            CompiledExpr::literal(Value::Int(k), Type::Int),
-            Type::Int,
-        )
-    }
-
-    fn eq_int(e: CompiledExpr, k: i64) -> CompiledExpr {
-        CompiledExpr::binop(
-            reify_ir::BinOp::Eq,
-            e,
-            CompiledExpr::literal(Value::Int(k), Type::Int),
-            Type::Bool,
-        )
-    }
-
-    /// A `ValueMap` seeded with exactly one `S.<member>` entry — every lock-2
-    /// fixture needs precisely one, and keeping it to one makes the thing under
-    /// test unmistakable at the call site.
-    ///
-    /// `ValueMap` has no `FromIterator` impl (reify-ir/src/value.rs), so this
-    /// is `new` + `insert` rather than a `collect`.
-    fn seed(member: &str, v: Value) -> ValueMap {
-        let mut m = ValueMap::new();
-        m.insert(ValueCellId::new("S", member), v);
-        m
-    }
-
-    /// A problem with the `current_values` seed exposed — that seed IS the
-    /// subject under test for lock 2, so it cannot be hard-wired the way
-    /// [`problem`] wires it.
-    fn problem_with_seed(
-        auto_params: Vec<AutoParam>,
-        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
-        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
-        current_values: ValueMap,
-    ) -> ResolutionProblem {
-        ResolutionProblem {
-            auto_params,
-            constraints,
-            current_values,
-            objective: None::<ObjectiveSet>,
-            functions: Arc::from(Vec::new()),
-            dependent_cells,
-        }
-    }
-
-    /// [`problem_with_seed`] with an EMPTY seed — the shape every lock-1
-    /// fixture wants, and the shape all 11 `ResolutionProblem` literals in
-    /// `tests/cpsat_tests.rs` build.
-    fn problem(
-        auto_params: Vec<AutoParam>,
-        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
-        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
-    ) -> ResolutionProblem {
-        problem_with_seed(auto_params, constraints, dependent_cells, ValueMap::new())
-    }
-
-    /// The solved value of `S.<member>`, or a panic naming what actually came
-    /// back — an unpruned search reports `Solved`/`unique: true` with the WRONG
-    /// value, so a test that only checked the variant would pass on the bug.
-    fn solved_value(result: &SolveResult, member: &str) -> Value {
-        match result {
-            SolveResult::Solved { values, .. } => values
-                .get(&ValueCellId::new("S", member))
-                .unwrap_or_else(|| {
-                    panic!("no solved value for S.{member}; got values {values:?}")
-                })
-                .clone(),
-            other => panic!("expected SolveResult::Solved for S.{member}; got {other:?}"),
-        }
-    }
+    // The fixture vocabulary these locks are written in now lives one level
+    // up, shared with the β enumeration modules (task #5468).
+    use super::cpsat_test_fixtures::*;
 
     /// LOCK 1 — LET-INDIRECTED PRUNING. A constraint reading ONLY a dependent
     /// cell must still prune the domain of the auto that cell is derived from.
@@ -1053,5 +1107,397 @@ mod dependent_cell_forward_check_tests {
              along with the autos and the verdict no longer depends on it; got \
              {flipped:?}",
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PRD2 β (task #5468) — the HONEST ENUMERATION CORE.
+//
+// `CpSatSolver::solve_all(problem, cap)` is the all-solutions generalisation of
+// the same forward-checking backtracker `solve()` runs. These units pin its
+// CONTRACT — not just that it returns something, but the three things every
+// downstream honesty claim in this PRD is derived from:
+//
+//   * the solution SET is right (count, membership, and that each member
+//     genuinely satisfies the constraints);
+//   * `complete` distinguishes "the space was exhausted" from "the search
+//     stopped early", so `unique` (step β.6) and `ProvenOptimal` (step β.8) can
+//     be conjoined with it rather than asserted on faith;
+//   * "cannot enumerate this domain" stays on its OWN channel
+//     (`NotEnumerable`) rather than collapsing into an empty solution set —
+//     which is the D5 "never silent" requirement stated in carrier form.
+//
+// # Why (f), (g) and (h) below exist at all
+//
+// The spike this task adapts (commit 75cf3b4d19, 2026-07-24) predates PRD2 α
+// (#5467). Its `backtrack_all` has NEITHER the per-trial `fold_dependent_cells`
+// call NOR the auto-id strip on the `current_values` seed. Cherry-picked
+// verbatim onto today's tree it would be wrong in two silent directions: with
+// no fold, a constraint reading only a dependent cell never prunes and
+// enumeration returns THE ENTIRE DOMAIN PRODUCT as "solutions"; with no strip,
+// a stale seeded auto prunes feasible branches and enumeration returns an empty
+// set for a satisfiable problem. `enumerating_a_let_indirected_constraint_*`,
+// `chained_dependent_cells_*` and `a_stale_seeded_auto_*` are the three units
+// that make either mistake impossible to land — they are the α locks restated
+// against the enumeration entry point, because a generalisation that only
+// `solve()` is tested through would let the enumeration path regress alone.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod solve_all_enumeration_tests {
+    use super::*;
+    use super::cpsat_test_fixtures::*;
+    use std::collections::HashMap;
+
+    /// A cap comfortably above every fixture's model count.
+    ///
+    /// STRICTLY GREATER, never equal, and that is load-bearing rather than
+    /// stylistic: the cap is checked AT THE PUSH, so a search that collects its
+    /// `cap`-th solution stops right there and reports `complete: false` even
+    /// when that solution happened to be the last one in the space. The flag is
+    /// deliberately conservative in the honest direction — "I did not prove I
+    /// exhausted it" — so a fixture wanting `complete: true` must leave the cap
+    /// room to come back empty-handed at least once.
+    const GENEROUS_CAP: usize = 64;
+
+    /// Unwrap the enumerated arm, or panic naming the variant that came back.
+    ///
+    /// A bare `matches!` would let a `NotEnumerable` regression pass as "well,
+    /// it wasn't `Enumerated`" in some other assertion's shadow; naming the
+    /// actual variant here means a domain-rejection regression reads as one.
+    fn enumerated(result: SolveAllResult) -> (Vec<HashMap<ValueCellId, Value>>, bool) {
+        match result {
+            SolveAllResult::Enumerated { solutions, complete } => (solutions, complete),
+            SolveAllResult::NotEnumerable { reason } => {
+                panic!("expected SolveAllResult::Enumerated; got NotEnumerable {{ {reason} }}")
+            }
+        }
+    }
+
+    /// The value of `S.<member>` in one enumerated solution.
+    fn at(solution: &HashMap<ValueCellId, Value>, member: &str) -> Value {
+        solution
+            .get(&ValueCellId::new("S", member))
+            .unwrap_or_else(|| panic!("no enumerated value for S.{member}; got {solution:?}"))
+            .clone()
+    }
+
+    /// `S.<member> == <b>`, as a plain bool, for membership assertions.
+    fn boolean(solution: &HashMap<ValueCellId, Value>, member: &str) -> bool {
+        match at(solution, member) {
+            Value::Bool(b) => b,
+            other => panic!("expected S.{member} to be a Bool; got {other:?}"),
+        }
+    }
+
+    /// The canonical two-`Bool`-auto disjunction: `a || b`, whose models are
+    /// exactly the three points of `{true, false}²` minus `(false, false)`.
+    ///
+    /// Reused by nearly every unit here because 3 is the smallest model count
+    /// that separates all four behaviours this module has to tell apart:
+    /// first-solution-only (1), honest enumeration (3), a cap (2), and the
+    /// whole unpruned domain product (4).
+    fn a_or_b() -> ResolutionProblem {
+        problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            Vec::new(),
+        )
+    }
+
+    /// (a) COUNT + MEMBERSHIP. `a || b` has exactly 3 models, and enumeration
+    /// must return all 3 — each genuinely satisfying the constraint.
+    ///
+    /// Both halves are needed. The count alone would pass on a search that
+    /// returned three arbitrary points of the domain product; the membership
+    /// check alone would pass on a search that returned only the first model.
+    /// Together they say: the solution SET is right. `complete: true` is the
+    /// third claim — the search proved there is no fourth model — and it is
+    /// what step β.6 conjoins into `unique` and step β.8 into `ProvenOptimal`.
+    #[test]
+    fn enumerating_a_disjunction_returns_every_model_and_reports_completeness() {
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&a_or_b(), GENEROUS_CAP));
+
+        assert_eq!(
+            solutions.len(),
+            3,
+            "`a || b` over two Bool autos has exactly 3 models. 1 means the \
+             search still stops at the first solution; 4 means nothing pruned \
+             and the whole domain product came back as `solutions`; got \
+             {solutions:?}",
+        );
+        for s in &solutions {
+            assert!(
+                boolean(s, "a") || boolean(s, "b"),
+                "every enumerated solution must SATISFY `a || b`; {s:?} does not",
+            );
+        }
+        assert!(
+            complete,
+            "a 3-model space enumerated under a cap of {GENEROUS_CAP} was \
+             exhausted, so `complete` must be true — this is the flag step β.6 \
+             conjoins into `unique` and step β.8 into `ProvenOptimal`",
+        );
+    }
+
+    /// (b) DETERMINISM (D4). Two successive `solve_all` calls on the same
+    /// problem return the IDENTICAL solution sequence, and that sequence starts
+    /// at the point the declared search order names.
+    ///
+    /// The repeat-call half pins the absence of any RNG or clock in the search.
+    /// The first-solution half pins the ORDER itself: variables are visited in
+    /// `auto_params` declaration order (`a` then `b`) and values in `DomainSpec`
+    /// construction order (`[true, false]` for `Type::Bool`), so the first model
+    /// reached is `a = true, b = true`. Asserting only "the two runs agree"
+    /// would be satisfied by any stable-but-wrong order; asserting the head
+    /// value pins which order it is.
+    #[test]
+    fn enumeration_order_is_deterministic_and_follows_declaration_then_domain_order() {
+        let p = a_or_b();
+        let (first_run, _) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+        let (second_run, _) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            first_run, second_run,
+            "D4: enumeration uses no RNG and no clock, so two calls on the same \
+             problem must return byte-identical solution sequences",
+        );
+        assert_eq!(
+            (
+                at(&first_run[0], "a"),
+                at(&first_run[0], "b"),
+            ),
+            (Value::Bool(true), Value::Bool(true)),
+            "the search visits variables in `auto_params` declaration order \
+             (a, then b) and values in `DomainSpec` construction order \
+             ([true, false] for Bool), so the FIRST model reached is \
+             a = true, b = true",
+        );
+    }
+
+    /// (c) PROVEN INFEASIBLE. `a and not(a)` has no models, and enumeration must
+    /// say so with `complete: true` — an empty set the search PROVED empty.
+    ///
+    /// The `complete` half is the whole point. `{ solutions: [], complete: true }`
+    /// and `{ solutions: [], complete: false }` are different claims —
+    /// "unsatisfiable" versus "I ran out of budget before finding anything" —
+    /// and step β.4's `solve()` arm splits `Infeasible` from `NoProgress` on
+    /// exactly this bit. A carrier that collapsed them would make CP-SAT report
+    /// a truncated search as a proof of unsatisfiability, which is the precise
+    /// silent lie D5 forbids. `budget_exhaustion_is_reported_as_an_incomplete_*`
+    /// (step β.3) is this assertion's other half.
+    #[test]
+    fn a_contradiction_enumerates_to_an_empty_but_complete_solution_set() {
+        let p = problem(
+            vec![bool_auto("a")],
+            vec![(
+                ConstraintNodeId::new("S", 0),
+                and(bref("a"), not(bref("a"))),
+            )],
+            Vec::new(),
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert!(
+            solutions.is_empty(),
+            "`a and not(a)` is false at both points of a Bool domain, so it has \
+             NO models; got {solutions:?}",
+        );
+        assert!(
+            complete,
+            "the search visited both points and rejected both, so the empty set \
+             is PROVEN empty — `complete: false` here would be indistinguishable \
+             from a truncated search that simply never found anything",
+        );
+    }
+
+    /// (d) CAP TRUNCATION. The same 3-model problem at `cap = 2` returns exactly
+    /// 2 solutions and `complete: false`.
+    ///
+    /// This is what makes `cap` an honest instrument rather than a silent one:
+    /// stopping early is REPORTED, on the same `complete` channel a node-budget
+    /// stop uses (step β.4), so every consumer that reads `complete` gets both
+    /// truncation modes for free and none of them can grow a second, drifting
+    /// notion of "was this the whole story".
+    #[test]
+    fn a_solution_cap_truncates_the_search_and_reports_it_as_incomplete() {
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&a_or_b(), 2));
+
+        assert_eq!(
+            solutions.len(),
+            2,
+            "`cap = 2` bounds the collected solutions at 2 even though the space \
+             holds 3; got {solutions:?}",
+        );
+        assert!(
+            !complete,
+            "a capped search did NOT exhaust the space, and saying otherwise \
+             would let step β.6 derive `unique` and step β.8 derive \
+             `ProvenOptimal` from a search that never proved anything",
+        );
+    }
+
+    /// (e) NOT-ENUMERABLE IS ITS OWN CHANNEL. An `Int` auto with no bounds
+    /// cannot have a domain built for it at all, and that must surface as
+    /// `NotEnumerable { reason }` naming the param — NOT as an empty
+    /// `Enumerated`.
+    ///
+    /// This is why [`SolveAllResult`] is an enum rather than the bare
+    /// `{ solutions, complete }` struct PRD §4.2 sketches. With a struct, a
+    /// domain rejection has nowhere to go but `{ solutions: [], complete: ? }`,
+    /// which is exactly the "genuinely infeasible" shape (c) pins — two
+    /// opposite verdicts wearing one costume. Keeping the rejection on its own
+    /// variant is also what lets `solve()` keep mapping it to
+    /// `NoProgress { reason }` byte-identically to pre-β behaviour (D1).
+    #[test]
+    fn an_unbuildable_domain_is_reported_as_not_enumerable_rather_than_as_no_solutions() {
+        let p = problem(
+            vec![unbounded_int_auto("n")],
+            vec![(ConstraintNodeId::new("S", 0), eq_int(iref("n"), 3))],
+            Vec::new(),
+        );
+
+        match CpSatSolver.solve_all(&p, GENEROUS_CAP) {
+            SolveAllResult::NotEnumerable { reason } => assert!(
+                reason.contains("S.n"),
+                "the rejection must NAME the param that could not be enumerated \
+                 — this string is what `solve()` hands to `NoProgress` and what \
+                 a user eventually reads; got {reason:?}",
+            ),
+            SolveAllResult::Enumerated { solutions, complete } => panic!(
+                "an unbounded `Int` auto has no buildable domain, so enumeration \
+                 must report NotEnumerable. Getting \
+                 Enumerated {{ solutions: {solutions:?}, complete: {complete} }} \
+                 means 'cannot enumerate' was collapsed into 'no solutions' — \
+                 indistinguishable from a proven contradiction",
+            ),
+        }
+    }
+
+    /// (f) THE FOLD IS INHERITED BY THE ENUMERATION PATH. `let f = not(up)` with
+    /// `constraint f == true` enumerates to EXACTLY ONE solution, `up = false`.
+    ///
+    /// The α lock (`a_constraint_reading_only_a_dependent_cell_prunes_*`)
+    /// restated against `solve_all`, and the single most important spike
+    /// adaptation. A constraint reading ONLY a dependent cell has an EMPTY
+    /// `auto_refs`, so `all_assigned` is VACUOUSLY true and the constraint IS
+    /// evaluated — against an absent `S.f` if the per-trial fold is missing,
+    /// which returns a non-`Bool`, takes the skip-don't-prune arm, and prunes
+    /// NOTHING. On the first-solution path that surfaced as the wrong VALUE; on
+    /// the enumeration path it surfaces as the wrong CARDINALITY: both `up`
+    /// values come back, and `complete: true` then licenses a
+    /// `ProvenOptimal` ranking over a set containing an infeasible point.
+    #[test]
+    fn enumerating_a_let_indirected_constraint_prunes_the_auto_it_derives_from() {
+        let p = problem(
+            vec![bool_auto("up")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("f")))],
+            vec![(ValueCellId::new("S", "f"), not(bref("up")))],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            solutions.len(),
+            1,
+            "`constraint f == true` over `let f = not(up)` has exactly ONE \
+             model. Getting 2 means the enumeration path lost the per-trial \
+             `fold_dependent_cells` call and returned the whole Bool domain as \
+             'solutions'; got {solutions:?}",
+        );
+        assert_eq!(
+            at(&solutions[0], "up"),
+            Value::Bool(false),
+            "the one model is up = false",
+        );
+        assert!(complete, "a fully-explored 2-point space is complete");
+    }
+
+    /// (g) CHAINED CELLS ARE FOLDED IN STORED ORDER, PER TRIAL. `let f = n * 2`
+    /// then `let g = f + 1`, with `constraint g == 7` and `constraint f == 6`
+    /// over `n ∈ [0, 5]`, enumerates to exactly one solution `n = 3`.
+    ///
+    /// Discriminates three ways, each landing on a different observable — the
+    /// same three the α lock names, read through cardinality instead of value:
+    ///
+    /// * NO FOLD → both constraints see absent cells, the skip-don't-prune arm
+    ///   fires at every trial, and all SIX domain values are "solutions".
+    /// * REVERSED stored order (or an `EvalContext` hoisted out of the fold
+    ///   loop) → `g` lags one trial behind `f`, `n = 3` and `n = 4` are each
+    ///   pruned by the constraint the other satisfies, and ZERO solutions come
+    ///   back.
+    /// * CORRECT → exactly one, `n = 3`.
+    ///
+    /// A 6-value `Int` domain rather than a 2-value `Bool` one because on two
+    /// values a lagged read can coincide with the correct one.
+    #[test]
+    fn chained_dependent_cells_are_folded_in_stored_order_during_enumeration() {
+        let p = problem(
+            vec![int_auto("n", 0, 5)],
+            vec![
+                (ConstraintNodeId::new("S", 0), eq_int(iref("g"), 7)),
+                (ConstraintNodeId::new("S", 1), eq_int(iref("f"), 6)),
+            ],
+            vec![
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "g"), add_int(iref("f"), 1)),
+            ],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            solutions.len(),
+            1,
+            "`g = 2n + 1` with `constraint g == 7` and `constraint f == 6` has \
+             exactly ONE model over n ∈ [0, 5]. Six means the fold never ran; \
+             zero means `g` was folded BEFORE `f` and read the previous trial's \
+             value; got {solutions:?}",
+        );
+        assert_eq!(at(&solutions[0], "n"), Value::Int(3), "the one model is n = 3");
+        assert!(complete, "a fully-explored 6-point space is complete");
+    }
+
+    /// (h) THE SEED STRIP IS INHERITED BY THE ENUMERATION PATH. Two Bool autos
+    /// `[a, b]` with `current_values` carrying ONLY the stale `S.b`,
+    /// `let f = not(b)`, `constraint f == true`: enumeration must find the
+    /// feasible `b = false` models rather than reporting an empty set.
+    ///
+    /// The α lock (`stale_deeper_auto_behind_a_dependent_cell_*`) restated
+    /// against `solve_all`, and the second spike adaptation: the spike seeds its
+    /// assignment from `problem.current_values.clone()` VERBATIM. Without the
+    /// auto-id strip, the depth-0 fold materialises `S.f = not(STALE_SEED) =
+    /// false` off a value the search had not chosen yet; the constraint's
+    /// `auto_refs` is empty, so it is evaluated right there and prunes BOTH `S.a`
+    /// branches before the search ever descends to `S.b`. A satisfiable problem
+    /// comes back as an empty — and, worse, COMPLETE — solution set, which
+    /// downstream reads as a proof of unsatisfiability.
+    #[test]
+    fn a_stale_seeded_auto_must_not_prune_every_branch_during_enumeration() {
+        let p = problem_with_seed(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("f")))],
+            vec![(ValueCellId::new("S", "f"), not(bref("b")))],
+            seed("b", Value::Bool(STALE_SEED)),
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            solutions.len(),
+            2,
+            "`let f = not(b)` with `constraint f == true` pins b = false and \
+             leaves the unconstrained `S.a` free, so there are exactly 2 models. \
+             Zero means the stale `S.b = {STALE_SEED}` seed survived into the \
+             search and the depth-0 fold pruned every branch; got {solutions:?}",
+        );
+        for s in &solutions {
+            assert_eq!(
+                at(s, "b"),
+                Value::Bool(!STALE_SEED),
+                "every model must pin b = false; {s:?} does not",
+            );
+        }
+        assert!(complete, "a fully-explored 4-point space is complete");
     }
 }
