@@ -887,6 +887,213 @@ fn accept_variadic_length_args(
     }
 }
 
+/// Read an already-DECODED 3-component position (`Value::Point` /
+/// `Value::Vector`) as three SI metres, routing every component through the
+/// Contract C chokepoint — the THIRD route into it, beside the NAMED-ARG route
+/// ([`eval_named_arg_length`]) and the VARIADIC one
+/// ([`accept_variadic_length_args`]).
+///
+/// The other two routes gate an *argument list*. This one gates a position that
+/// has already been assembled into a composite `Value` by a stdlib producer
+/// (`plane_yz(10mm)` → `Value::Plane`, `point3(…)` → `Value::Point`) or by a
+/// literal grid (`nurbs_surface`'s control points), and so never passes through
+/// an argument-name read at all. That is exactly why it was a BYPASS: a bare
+/// `plane_yz(10)` reached the kernel as a **10 SI-metre** plane offset with zero
+/// diagnostics while its scalar sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was
+/// rejected at `ox`/`oy`/`oz` (task 5745, PRD decision D3).
+///
+/// Because every component goes through the shared [`accept_length_value`], the
+/// rejection wording here is byte-identical to the other two routes BY
+/// CONSTRUCTION rather than by convention — `ArgRejection::message` remains the
+/// sole owner of the `expects Length` phrasing and the `5mm` migration hint, and
+/// the `Severity::Error` + `DiagnosticCode::DimensionedArgRejected` promotion
+/// (task 5743) is inherited for free. The `Unresolved` / `Invalid` `Err`
+/// wordings are lifted VERBATIM from [`required_length_arg`].
+///
+/// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
+/// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
+/// a bare one is usually bare in EVERY component; short-circuiting would hand
+/// the author one coordinate name per rebuild.
+///
+/// A wrong SHAPE is deliberately NOT a units rejection: it returns the
+/// caller-supplied `shape_err()` VERBATIM and pushes no diagnostic. This helper
+/// replaces [`point3_components`]' ACCEPTANCE policy, not its shape check, so
+/// every pre-δ wrong-variant / wrong-arity message survives byte-identical.
+///
+/// `names` is `[N; 3]` with `N: Display + Copy` rather than `[&str; 3]` so a
+/// caller whose names are COMPUTED can hand over lazy renderers instead of
+/// eagerly-built `String`s — see [`GridCoordName`], the arity-open grid case.
+/// Every `to_string()` sits inside a rejection branch, so the clean path renders
+/// nothing.
+///
+/// # Per-argument triage for every [`point3_components`] position
+///
+/// Written down HERE, in one place, for the reason
+/// [`accept_variadic_length_args`]' table is: task 5752's closure-guard
+/// allowlist lifts it verbatim from a single site, and a second location is how
+/// an allowlist silently goes stale.
+///
+/// | site                                   | bound to                  | class         | gated? |
+/// |----------------------------------------|---------------------------|---------------|--------|
+/// | [`decode_plane`]                       | plane ORIGIN              | **LENGTH**    | yes — a point in space |
+/// | [`decode_plane`]                       | plane NORMAL              | dimensionless | no — a unit vector, normalised by [`unit_vector3`] |
+/// | [`decode_axis`]                        | axis ORIGIN               | **LENGTH**    | yes — a point in space |
+/// | [`decode_axis`]                        | axis DIRECTION            | dimensionless | no — a unit vector, normalised by [`unit_vector3`] |
+/// | `compile_geometry_op` `SurfaceKind::Nurbs` | control-point grid    | **LENGTH**    | yes — pole POSITIONS, the SURFACE sibling of the curve poles task 5658 gated |
+/// | `modify_offset_curve`                  | `third` → `direction`     | dimensionless | no — its own production diagnostic already calls it "a direction vec3" |
+///
+/// The three DIRECTION rows are the D3 adversary finding's ORIGIN-vs-DIRECTION
+/// split (2026-07-28, BINDING): gating them would reject correct `.ri` code,
+/// since a unit vector legitimately has bare components. [`point3_components`]
+/// therefore SURVIVES δ as the un-gated decoder for exactly those three
+/// positions — it is not dead, and must not be deleted or renamed.
+// `#[allow(dead_code)]` is TRANSIENT and scoped to task 5745's step ladder: this
+// helper lands ADDITIVE (with its unit rows) so the workspace stays green at
+// every commit, and acquires its first production caller one commit later when
+// `decode_plane`'s origin is switched over. Remove the attribute then — it must
+// not outlive the migration.
+#[allow(dead_code)]
+fn accept_length_point3<N: std::fmt::Display + Copy>(
+    value: &reify_ir::Value,
+    names: [N; 3],
+    kind_label: impl std::fmt::Display + Copy,
+    shape_err: impl FnOnce() -> String,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; 3], String> {
+    // SHAPE check, mirroring `point3_components` exactly — same variants, same
+    // arity. A mismatch keeps the caller's pre-δ wording and emits nothing.
+    let comps = match value {
+        reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
+        _ => return Err(shape_err()),
+    };
+
+    let mut out = [0.0_f64; 3];
+    let mut first_err: Option<String> = None;
+    for (i, slot) in out.iter_mut().enumerate() {
+        let name = names[i];
+        let err = match accept_length_value(name, kind_label, &comps[i], diagnostics) {
+            LengthArg::Length(si) => {
+                *slot = si;
+                None
+            }
+            LengthArg::Unresolved => Some(format!(
+                "argument '{}' for {} is unresolved (Undef)",
+                name, kind_label
+            )),
+            LengthArg::Invalid => Some(format!(
+                "missing or non-Length argument '{}' for {}",
+                name, kind_label
+            )),
+        };
+        // FIRST error wins — same precedence as `required_length_args`: an
+        // `Unresolved` member must not be masked by a later `Invalid` one.
+        if let Some(e) = err
+            && first_err.is_none()
+        {
+            first_err = Some(e);
+        }
+    }
+
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
+/// One coordinate of one NurbsSurface control point, rendered ON DEMAND as
+/// `control_points[{row}][{col}].{x|y|z}`.
+///
+/// A pole rejection has to name the exact grid CELL and AXIS to be actionable:
+/// "control_points must be a Point3<Length>" over a 20×20 grid tells an author
+/// nothing about which of 400 poles to fix. This is the grid-shaped counterpart
+/// of [`CoordName`], which names a position in a FLAT variadic stream.
+///
+/// A `Copy` `Display` newtype rather than an eagerly-built `String`, for
+/// [`CoordName`]'s rationale: the control grid is arity-open and is re-read on
+/// every solver iteration, while only the rejection branches ever render a name.
+/// A `String` per coordinate would cost a 20×20 grid 1200 heap allocations per
+/// rebuild on the fully clean path, which is the interactive hot path.
+// `#[allow(dead_code)]`, TRANSIENT as above: `GridCoordName` is exercised by the
+// step-1 unit rows immediately, but its production caller is the NurbsSurface
+// control-point loop, which lands later in the same ladder. Remove then.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+struct GridCoordName {
+    /// Row index into the control-point grid (the `u` direction).
+    row: usize,
+    /// Column index within that row (the `v` direction).
+    col: usize,
+    /// Which of the point's three coordinates this names.
+    axis: Axis3,
+}
+
+/// Which coordinate of a 3-D point a [`GridCoordName`] names. An enum rather
+/// than a `usize` so no out-of-range axis is REPRESENTABLE — the same reasoning
+/// [`Stride`] records, and for the same reason: the renderer runs only once an
+/// author already has a broken `.ri` file, the worst possible place to discover
+/// an index typo.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+enum Axis3 {
+    X,
+    Y,
+    Z,
+}
+
+#[allow(dead_code)]
+impl Axis3 {
+    /// The axis letter, as it appears in the rendered name.
+    fn letter(self) -> &'static str {
+        match self {
+            Axis3::X => "x",
+            Axis3::Y => "y",
+            Axis3::Z => "z",
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl GridCoordName {
+    /// The X coordinate of the pole at `[row][col]`.
+    fn x(row: usize, col: usize) -> Self {
+        Self {
+            row,
+            col,
+            axis: Axis3::X,
+        }
+    }
+
+    /// The Y coordinate of the pole at `[row][col]`.
+    fn y(row: usize, col: usize) -> Self {
+        Self {
+            row,
+            col,
+            axis: Axis3::Y,
+        }
+    }
+
+    /// The Z coordinate of the pole at `[row][col]`.
+    fn z(row: usize, col: usize) -> Self {
+        Self {
+            row,
+            col,
+            axis: Axis3::Z,
+        }
+    }
+}
+
+impl std::fmt::Display for GridCoordName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "control_points[{}][{}].{}",
+            self.row,
+            self.col,
+            self.axis.letter()
+        )
+    }
+}
+
 /// Canonicalize sub-handle `kernel_handle` ids into the canonical edge/face
 /// order: ascending `kernel_handle` id, deduplicated. Single source of truth
 /// for the "canonical order + dedup" step, shared by `resolve_subhandle_list`
