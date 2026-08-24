@@ -948,21 +948,8 @@ fn strip_inlined_minimize(src: &str) -> String {
 /// this — so the read+strip+eval mechanics are a single source of truth
 /// instead of drifting apart across the two example fixtures.
 ///
-/// # Both wrappers memoize, and why
-///
-/// Each wrapper caches its own pair behind a `OnceLock`, so each shipped
-/// example is read + stripped + solved exactly ONCE per test binary. Every
-/// caller of a given pair wants the SAME evaluation, not an independent one
-/// (they assert about one model's merged-vs-frozen gap), so re-deriving per
-/// call buys no additional signal — only two more real `DimensionalSolver`
-/// runs. `OnceLock::get_or_init` also de-duplicates correctly when the
-/// `#[test]` functions run concurrently on libtest's default thread pool: a
-/// second caller blocks on the first's in-flight solve rather than racing a
-/// redundant one.
-///
-/// Both wrappers therefore return `&'static`, so the whole file has ONE
-/// call-site idiom (`scalar_si(merged, ..)`, never `scalar_si(&merged, ..)`)
-/// — asymmetric signatures for an identical concept were pure reader tax.
+/// Does NO caching itself: each wrapper memoizes its own pair, for the
+/// reasons documented once on [`joint_drive_halves`].
 fn halves(path: &str) -> (EvalResult, EvalResult) {
     let merged_src =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"));
@@ -983,9 +970,21 @@ fn halves(path: &str) -> (EvalResult, EvalResult) {
 /// the failure mode `strip_inlined_minimize`'s own doc comment warns about
 /// for "derived, never transcribed" baselines.
 ///
-/// MEMOIZED behind a `OnceLock` — rationale on [`halves`], which both
-/// wrappers share. Two callers here (BT-5 and the pin), so caching collapses
-/// two real solver runs into one.
+/// # Memoized — the rationale for BOTH wrappers
+///
+/// The pair is cached behind a `OnceLock`, so the example is read + stripped
+/// + solved exactly ONCE per test binary. Every caller of a given pair wants
+/// the SAME evaluation, not an independent one — they all assert about one
+/// model's merged-vs-frozen gap — so re-deriving per call buys no additional
+/// signal, only more real `DimensionalSolver` runs. `OnceLock::get_or_init`
+/// also de-duplicates correctly when the `#[test]` functions run
+/// concurrently on libtest's default thread pool: a second caller blocks on
+/// the first's in-flight solve rather than racing a redundant one.
+///
+/// Both wrappers therefore return `&'static`, so the whole file has ONE
+/// call-site idiom (`scalar_si(merged, ..)`, never `scalar_si(&merged, ..)`)
+/// — asymmetric signatures for an identical concept were pure reader tax.
+/// [`mwhole_halves`] is the other wrapper and follows this verbatim.
 fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
     static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| halves(JOINT_DRIVE_EXAMPLE_PATH))
@@ -1084,28 +1083,18 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
     // (immediately below) / #5835.
     //
-    // NOT INDEPENDENT SIGNAL, and deliberately so: this is (i) restated at the
-    // Money layer. `Costed.line_cost` == `unit_cost * quantity_produced` and
-    // `unit_cost` is a fixed `param unit_cost : Money = 0.50USD` — identical
-    // in both halves by construction (a literal in the shipped source, which
-    // `strip_inlined_minimize` does not touch), with (iii) below asserting
-    // the fold itself — so `merged_q < frozen_q` from (i) MECHANICALLY
-    // entails the inequality asserted here: (ii) cannot fail while (i)
-    // passes. It stays because the user-observable joint-drive claim is about
-    // MONEY and should be asserted in Money terms rather than left for a
-    // reader to re-derive — but it must not be mistaken for additional
-    // coverage. (Contrast
+    // NOT INDEPENDENT SIGNAL, and deliberately so: this is (i) restated at
+    // the Money layer. `line_cost` == `unit_cost * quantity_produced` with
+    // `unit_cost` a literal that is identical in both halves, so (i)'s
+    // `merged_q < frozen_q` MECHANICALLY entails the inequality asserted
+    // here — (ii) cannot fail while (i) passes. It stays because the
+    // user-observable joint-drive claim is about MONEY and should be
+    // asserted in Money terms rather than left for a reader to re-derive,
+    // but it must not be mistaken for additional coverage. (Contrast
     // `mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline`,
     // whose SUM spans two children and is genuinely not implied by any
-    // single-child claim.)
-    //
-    // The alternative that WOULD be independent — read the objective's own
-    // instance-path spelling `RivetedPanel.rivets.line_cost` in both halves,
-    // exercising the alias write-back — is not available here: that alias
-    // resolves in the MERGED half only (measured: `Some(Undef)` in the frozen
-    // half), because with no `minimize` no cluster forms and
-    // `build_dependent_cells` never emits the alias entry. (iii) below reads
-    // it in the merged half, which is the only half where it exists.
+    // single-child claim.) The instance-path alias — the read that WOULD be
+    // independent — is (iii)'s territory, documented there.
     let line_cost = ValueCellId::new("Rivet", "line_cost");
 
     let merged_cost = scalar_si(merged, &line_cost, "merged");
@@ -1191,7 +1180,7 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
     let line_cost = ValueCellId::new("Rivet", "line_cost");
 
     // Looped, not duplicated: the MERGED and FROZEN-CASCADE halves pin the
-    // identical three claims, and a verbatim copy is exactly the shape that
+    // identical claims, and a verbatim copy is exactly the shape that
     // drifts — a future edit to one message or one `matches!` arm could
     // silently not be applied to the other. Precedent:
     // `mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value`
@@ -1646,17 +1635,15 @@ const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
     "/../../examples/whole_model_cost_min.ri"
 );
 
-/// Shared preamble for every `mwhole_*` test below: the M-WHOLE ε example's
-/// merged/frozen-cascade pair, via [`halves`]. All three `mwhole_*` tests
-/// need exactly this pair, so centralising it keeps the mechanics a single
-/// source of truth instead of three literal copies — and, since
+/// Shared preamble for the `mwhole_*` tests below: the M-WHOLE ε example's
+/// merged/frozen-cascade pair, via [`halves`]. Every `mwhole_*` test needs
+/// exactly this pair, so centralising it keeps the mechanics a single source
+/// of truth instead of a literal copy per test — and, since
 /// [`joint_drive_halves`] wraps the same [`halves`], across both example
 /// fixtures in this file.
 ///
-/// MEMOIZED behind a `OnceLock` — rationale on [`halves`], which both
-/// wrappers share. THREE callers here, and this example couples two children
-/// into a dimension-2 cluster, so it is the larger of the file's two fixtures
-/// on both axes: caching collapses three real solver-pair runs into one.
+/// MEMOIZED behind a `OnceLock` — rationale on [`joint_drive_halves`], which
+/// this wrapper follows verbatim.
 fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
     static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| halves(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH))
