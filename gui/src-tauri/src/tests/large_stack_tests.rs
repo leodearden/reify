@@ -1023,3 +1023,54 @@ async fn run_on_lsp_worker_survives_deep_recursion_over_default_stack() {
          reached through the ASYNC entry point `lsp_request` uses"
     );
 }
+
+/// (z) The `SendError` recovery arm of the ASYNC lane, driven by a job that —
+/// like production — must be driven by a [`tokio::runtime::Handle`] and
+/// therefore cannot legally run in the submitting async frame.
+///
+/// The second half of the same finding (x) covers for the `None` arm. When
+/// `send` fails, `mpsc` hands the JOB BACK, and the async lane's job is exactly
+/// the one the lane thread would have run: a `Handle::block_on` of the caller's
+/// future. Running that in this frame — a thread already inside the tauri tokio
+/// runtime — hits `enter_runtime`'s `is_entered()` guard and panics "Cannot
+/// start a runtime from within a runtime", which unwinds the Tauri command and
+/// leaves the frontend's `invoke` promise unresolved. So the recovery arm must
+/// hand the job to a thread that is NOT in a runtime context.
+///
+/// The failure is provoked deterministically with a SYNTHETIC sender whose
+/// consumer is already gone — no real lane, no `pthread_create` failure, no
+/// timing. Asserting on the RESOLVED VALUE (rather than merely "did not hang")
+/// is what makes this a real assertion about recovery: a result must never be
+/// lost, and it must be produced somewhere legal.
+///
+/// DEPENDS on [`crate::large_stack::JobSender`] being `pub(crate)`, so the
+/// synthetic sender's type can be named here at all.
+#[tokio::test]
+async fn async_dispatch_recovers_a_handed_back_job_off_the_submitting_frame() {
+    use crate::large_stack::{JobSender, dispatch_async};
+
+    // Consumer dropped before any send: every `send` fails at once with
+    // `SendError(job)`, which is the arm under test.
+    let (tx, rx) = std::sync::mpsc::channel();
+    drop(rx);
+    let dead: JobSender = std::sync::Mutex::new(tx);
+
+    let caller_id = std::thread::current().id();
+
+    let (value, ran_on) = dispatch_async(Some(&dead), async move {
+        (4242u32, std::thread::current().id())
+    })
+    .await;
+
+    assert_eq!(
+        value, 4242,
+        "a job handed back by a dead queue must still be run and its value \
+         delivered — degraded, never lost"
+    );
+    assert_ne!(
+        ran_on, caller_id,
+        "the handed-back job carries a `Handle::block_on`, so it must NOT be \
+         run in the submitting async frame (which is inside the runtime) — that \
+         panics with the nested-runtime message instead of resolving"
+    );
+}

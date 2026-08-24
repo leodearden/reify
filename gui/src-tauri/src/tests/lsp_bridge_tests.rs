@@ -523,6 +523,111 @@ async fn deeply_nested_source_opens_and_hovers_through_the_lane() {
         .expect("hover over deeply-nested source must return a well-formed JSON response");
 }
 
+/// (f) The DEGRADED arm of the LSP routing, driven by the REAL production
+/// composition rather than by a stand-in closure.
+///
+/// `dispatch_async`'s `None` arm is what runs when the OS refuses the 256 MiB
+/// mapping. The generic guard for it — `large_stack_tests`'
+/// `async_dispatch_without_a_lane_runs_inline_and_still_resolves` — submits
+/// `|| (77u32, thread::current().id())`, a body that needs no runtime and so
+/// cannot detect the hazard the PRODUCTION body carries: the only real caller
+/// pre-bakes a [`tokio::runtime::Handle::block_on`], and `block_on` called from
+/// inside a runtime panics "Cannot start a runtime from within a runtime". The
+/// degraded arm therefore has to be exercised through the SAME function body
+/// `lsp_request_on_worker` delegates to, or the test rots into testing a COPY of
+/// the composition rather than the composition.
+///
+/// The claim is RESOLVING WITH THE RIGHT VALUE, not merely "did not hang": a
+/// degraded arm that panics unwinds the Tauri command and leaves the frontend's
+/// `invoke` promise unresolved — precisely the silently-dead-editor-pane outcome
+/// the routing exists to prevent.
+#[tokio::test]
+async fn lsp_request_on_lane_without_a_lane_still_resolves_to_the_right_value() {
+    use crate::lsp_bridge::lsp_request_on_lane;
+
+    const URI: &str = "file:///degraded.ri";
+
+    let direct = LspBridge::new();
+    init_and_open(&direct, URI).await;
+
+    let degraded = Arc::new(LspBridge::new());
+    init_and_open(&degraded, URI).await;
+
+    let params = json!({
+        "textDocument": { "uri": URI },
+        "position": { "line": 1, "character": 4 }
+    })
+    .to_string();
+
+    let expected = lsp_request_impl(&direct, "textDocument/hover", params.clone())
+        .await
+        .expect("a direct hover must succeed");
+
+    // `None` is exactly what `LSP_LANE.sender()` yields once the OS has refused
+    // the 256 MiB mapping — the state this arm exists for.
+    let actual = lsp_request_on_lane(
+        None,
+        Arc::clone(&degraded),
+        "textDocument/hover".to_string(),
+        params,
+    )
+    .await
+    .expect("the degraded arm must RESOLVE to Ok, not panic and unwind the command");
+
+    assert_eq!(
+        actual, expected,
+        "with no lane, the LSP seam must still return exactly what a direct \
+         `lsp_request_impl` call returns — degradation is a stack downgrade, not \
+         a behaviour change"
+    );
+}
+
+/// (g) The lane-path counterpart of (f): the SAME seam, handed a REAL lane,
+/// returns the SAME payload.
+///
+/// (f) and (g) together pin that the degradation is BEHAVIOUR-PRESERVING rather
+/// than merely non-crashing — and they keep (f) honest in the other direction
+/// too. A future change that silently sent every request down the degraded arm
+/// would satisfy (f) alone; it fails (d)'s off-thread assertion, which submits
+/// through the same lane API this seam uses.
+#[tokio::test]
+async fn lsp_request_on_lane_with_a_lane_returns_the_same_payload() {
+    use crate::lsp_bridge::lsp_request_on_lane;
+
+    const URI: &str = "file:///lane_parity.ri";
+
+    let direct = LspBridge::new();
+    init_and_open(&direct, URI).await;
+
+    let laned = Arc::new(LspBridge::new());
+    init_and_open(&laned, URI).await;
+
+    let params = json!({
+        "textDocument": { "uri": URI },
+        "position": { "line": 1, "character": 4 }
+    })
+    .to_string();
+
+    let expected = lsp_request_impl(&direct, "textDocument/hover", params.clone())
+        .await
+        .expect("a direct hover must succeed");
+
+    let actual = lsp_request_on_lane(
+        crate::large_stack::LSP_LANE.sender(),
+        Arc::clone(&laned),
+        "textDocument/hover".to_string(),
+        params,
+    )
+    .await
+    .expect("the lane arm must resolve to Ok");
+
+    assert_eq!(
+        actual, expected,
+        "through the real lane the LSP seam must return exactly what a direct \
+         `lsp_request_impl` call returns — the lane hop must be invisible"
+    );
+}
+
 #[tokio::test]
 async fn lsp_request_impl_valid_json_passes_json_parse_step() {
     // Table-driven: each entry is valid JSON that serde_json::from_str accepts.
