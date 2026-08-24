@@ -13,7 +13,7 @@
 //!   codimension split (via [`crate::relation_signatures::relation_delta_dof_kinds`]),
 //!   so the residual is `(3 − Σrot, 3 − Σtrans)`, saturating at 0.
 //! - [`declared_kinds`] — the kinds the declared DOF fields contribute
-//!   (`Angle` → rotational, `Length` → translational, `Orientation` → 3
+//!   (`Angle` → rotational, `Length` → translational, `Orientation(3)` → 3
 //!   rotational).
 //! - [`check_joint_dof`] — compares the two `(rot, trans)` pairs by exact
 //!   integer equality (no tolerance; PRD §12 G6 numeric-floor is N/A) and, on
