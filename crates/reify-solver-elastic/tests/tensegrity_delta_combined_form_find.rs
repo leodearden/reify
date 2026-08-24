@@ -76,6 +76,25 @@ fn prism_surfaces() -> Vec<(usize, usize, usize)> {
     vec![(0, 1, 2), (3, 4, 5)]
 }
 
+/// Closed-form COMBINED self-stress for the triplex + two equilateral membrane
+/// triangles, struts-then-cables order. At the free-standing equilibrium both
+/// membrane triangles are equilateral, so every cotangent in the surface stencil
+/// is cot(60°) = 1/√3 and `Σ_T σ_T·L_T` collapses to a uniform extra edge weight
+/// w = σ·cot(60°)/2 = σ/(2√3) on exactly the six horizontal cables. Hence
+/// D_combined(q) ≡ D_line(q + w·1{horizontal}), and a valid form needs
+/// q + w·1{horizontal} ∝ the triplex self-stress (-√3, 1, √3). Pinning the
+/// horizontals at 1 gives λ = 1 + σ/(2√3), i.e. q_strut = -(√3 + σ/2),
+/// q_horiz = 1, q_vert = +(√3 + σ/2).
+fn analytic_combined_q(sigma: f64) -> Vec<f64> {
+    let a = 3.0_f64.sqrt() + sigma / 2.0;
+    vec![
+        -a, -a, -a, // struts
+        1.0, 1.0, 1.0, // top horizontals
+        1.0, 1.0, 1.0, // bottom horizontals
+        a, a, a, // verticals
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Independent (faer-free) reassembly helpers — the honest verification path
 // ---------------------------------------------------------------------------
@@ -215,4 +234,96 @@ fn combined_prism_membrane_golden() {
         resid < EQUIL_TOL,
         "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < {EQUIL_TOL:.0e}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Explicit + surfaces coverage (task 6537) — the coverage gap the analysis
+// confirmed: all prior tests in this file drive ForceDensitySpec::GroupRatios
+// only. These two close that gap.
+// ---------------------------------------------------------------------------
+
+/// Headline RED: `Explicit` combined free-standing form-finding, from a
+/// perturbed (non-symmetric) starting guess, must converge to the closed-form
+/// combined self-stress. Today's kernel drives geometry only through the
+/// eigen-gap descent, which pushes D toward nullity 4 but never moves the
+/// coordinate vector x INTO null(D) — so this returns `SearchDidNotConverge`
+/// pre-fix. MEASURED pre-fix: `Err(SearchDidNotConverge)`.
+#[test]
+fn combined_explicit_analytic_q_from_perturbed_guess_converges() {
+    let (members, kinds) = triplex_topology();
+    let guess = perturbed_prism_guess();
+    let surfaces = prism_surfaces();
+    let sigma = 0.2_f64;
+    let sigmas = vec![sigma; 2];
+    let q = analytic_combined_q(sigma);
+
+    let spec = ForceDensitySpec::Explicit(q);
+
+    let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+        .expect("combined explicit q from perturbed guess must form-find");
+
+    assert!(result.converged, "combined solve must converge");
+    assert_eq!(result.nullity, 4, "combined D must have nullity 4");
+
+    // surface_stresses echo.
+    assert_eq!(result.surface_stresses.len(), 2);
+    for (t, &s) in result.surface_stresses.iter().enumerate() {
+        assert!(
+            (s - sigma).abs() < 1e-12,
+            "surface_stresses[{t}] = {s}, expected {sigma}",
+        );
+    }
+
+    // Force signs.
+    for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+        match kind {
+            MemberKind::Strut => assert!(n_i < 0.0, "strut {idx} N={n_i} must be compressive"),
+            MemberKind::Cable => assert!(n_i > 0.0, "cable {idx} N={n_i} must be tensile"),
+        }
+    }
+
+    // Primary honest signal: independent reassembly + all-node residual.
+    let d = reassemble_d_combined(6, &members, &result.force_densities, &surfaces, &sigmas, &result.nodes);
+    let resid = free_residual_scaled(&d, &result.nodes);
+    assert!(
+        resid < EQUIL_TOL,
+        "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < {EQUIL_TOL:.0e}",
+    );
+}
+
+/// Negative guard: pins WHY the task's reported "analytic q = (-√3, 1, +√3)
+/// stalls" is correct behaviour, not the defect. With σ = 0.2 present, the
+/// membrane already contributes w = σ/(2√3) to every horizontal edge, so the
+/// line-only self-stress leaves D_combined with the wrong nullity — it is not
+/// a combined self-stress. Must fail from BOTH starting guesses, so the fix
+/// landed for the headline test above does not manufacture a false positive
+/// here.
+#[test]
+fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
+    let (members, kinds) = triplex_topology();
+    let surfaces = prism_surfaces();
+    let sigma = 0.2_f64;
+    let sigmas = vec![sigma; 2];
+    let s = 3.0_f64.sqrt();
+    let line_only_q = vec![
+        -s, -s, -s, // struts
+        1.0, 1.0, 1.0, // top horizontals
+        1.0, 1.0, 1.0, // bottom horizontals
+        s, s, s, // verticals
+    ];
+    let spec = ForceDensitySpec::Explicit(line_only_q);
+
+    for (label, guess) in [
+        ("canonical", canonical_prism()),
+        ("perturbed", perturbed_prism_guess()),
+    ] {
+        assert_eq!(
+            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+                .unwrap_err(),
+            FreeFormError::SearchDidNotConverge,
+            "line-only q from {label} guess must not converge under σ={sigma} \
+             (the membrane already contributes w=σ/(2√3) to every horizontal \
+             edge, so this q leaves D_combined with the wrong nullity)",
+        );
+    }
 }
