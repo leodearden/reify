@@ -318,6 +318,26 @@ async fn init_and_open(bridge: &LspBridge, uri: &str) {
 /// This is the load-bearing migration guard: the lane hop must be invisible to
 /// the frontend. Two independently-constructed bridges are driven identically,
 /// so equal responses mean the routing changed nothing observable.
+///
+/// # Why the table spans BOTH arm shapes
+///
+/// `hover` / `completion` / `documentSymbol` run INLINE inside `handle_request`,
+/// so the lane thread's own stack carries them. `definition` and `references`
+/// instead hop to [`tokio::task::spawn_blocking`], whose first statement is
+/// `Handle::current()` — and driving them is the entire reason
+/// `dispatch_async` captures a [`tokio::runtime::Handle`] on the submitter and
+/// uses `Handle::block_on` rather than a bare executor such as
+/// `futures::executor::block_on`, which would panic "there is no reactor
+/// running". That justification is stated three times across this module's docs
+/// and was asserted nowhere: an inline-arms-only table leaves a bare-executor
+/// refactor, or a runtime-flavour change, shipping green.
+///
+/// The `must_resolve` column is the anti-vacuity guard for exactly those two: a
+/// `null == null` comparison would satisfy the parity assertion while proving
+/// nothing ran, so the spawn_blocking cases additionally have to produce a real
+/// answer. (No claim is made that those two get the LARGE STACK — their compiler
+/// work runs on the blocking pool's ~2 MiB threads, see this file's header note
+/// and task #6195. What is claimed is that they RESOLVE through the lane.)
 #[tokio::test]
 async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
     use crate::lsp_bridge::lsp_request_on_worker;
@@ -330,15 +350,19 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
     let worker = Arc::new(LspBridge::new());
     init_and_open(&worker, URI).await;
 
-    // Covered (inline) arms only — a hover and a completion are the two the task
-    // description names as firing on effectively every keystroke and cursor move.
+    // (method, params, must_resolve): `must_resolve` demands a non-`null`
+    // response, so the case cannot pass by both sides answering "nothing".
     let cases = [
+        // Inline arms — a hover and a completion are the two the task
+        // description names as firing on effectively every keystroke and cursor
+        // move.
         (
             "textDocument/hover",
             json!({
                 "textDocument": { "uri": URI },
                 "position": { "line": 1, "character": 4 }
             }),
+            false,
         ),
         (
             "textDocument/completion",
@@ -346,14 +370,37 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
                 "textDocument": { "uri": URI },
                 "position": { "line": 1, "character": 0 }
             }),
+            false,
         ),
         (
             "textDocument/documentSymbol",
             json!({ "textDocument": { "uri": URI } }),
+            false,
+        ),
+        // `spawn_blocking` arms — reached from inside `Handle::block_on` on a
+        // NON-runtime thread, the interaction the lane's driver choice exists
+        // for. Positions match reify-lsp's own handler tests: `thickness` in a
+        // constraint (line 9) and the `width` declaration token (line 1).
+        (
+            "textDocument/definition",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 9, "character": 15 }
+            }),
+            true,
+        ),
+        (
+            "textDocument/references",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 1, "character": 10 },
+                "context": { "includeDeclaration": true }
+            }),
+            true,
         ),
     ];
 
-    for (method, params) in cases {
+    for (method, params, must_resolve) in cases {
         let expected = lsp_request_impl(&direct, method, params.to_string())
             .await
             .unwrap_or_else(|e| panic!("direct {method} should succeed: {e}"));
@@ -371,6 +418,17 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
             "{method} through the LSP lane must return exactly what a direct \
              call returns — the lane hop must be invisible to the frontend"
         );
+
+        if must_resolve {
+            let parsed: serde_json::Value = serde_json::from_str(&actual)
+                .unwrap_or_else(|e| panic!("{method} response must be JSON: {e}"));
+            assert!(
+                !parsed.is_null(),
+                "{method} must produce a real answer through the lane, not \
+                 `null` — a null-vs-null comparison would satisfy the parity \
+                 assertion while proving the arm never ran"
+            );
+        }
     }
 }
 
