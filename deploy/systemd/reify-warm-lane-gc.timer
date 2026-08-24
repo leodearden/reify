@@ -12,8 +12,11 @@ OnBootSec=5min
 # Recurring cadence: reclaim divergent FREE lanes unconditionally on each tick.
 # Tuning knob — not a contract value; tests assert only the directive presence.
 OnUnitActiveSec=15min
-# Persist=true: if a scheduled run is missed (host was off), catch up at next start.
-Persistent=true
+# No Persistent=: this schedule is OnUnitActiveSec= (monotonic), not OnCalendar=.
+# systemd.timer(5): "Persistent= only has an effect on timers configured with
+# OnCalendar=". At a 15-minute recurring cadence, missing a catch-up run after
+# host downtime is a minor loss (task #6419) — deliberately not worth converting
+# to an OnCalendar= schedule just to make Persistent=true take effect.
 Unit=reify-warm-lane-gc.service
 
 [Install]

@@ -10,7 +10,11 @@
 #   C — happy path: existing --mount dir → exit 0, gc-script invoked as
 #         reclaim --mount <dir>
 #   D — unit file structural assertions:
-#         deploy/systemd/reify-warm-lane-gc.timer (periodic, Persistent, WantedBy)
+#         deploy/systemd/reify-warm-lane-gc.timer (periodic, WantedBy, and a
+#           Persistent=true=>OnCalendar= implication guard — task #6419: the
+#           timer deliberately has NO Persistent=true on its monotonic-only
+#           OnUnitActiveSec= schedule, since systemd.timer(5) states
+#           Persistent= only takes effect paired with OnCalendar=)
 #         deploy/systemd/reify-warm-lane-gc.service (Type=oneshot, ExecStart ref)
 #   F — drift-guard map wiring: verify-pipeline-infra-tests.txt contains expected rows
 #   V — part-1 verification / green-on-arrival regression guards:
@@ -349,9 +353,26 @@ assert "D1: deploy/systemd/reify-warm-lane-gc.timer exists" \
 assert "D2: timer has periodic directive (OnUnitActiveSec= or OnCalendar=)" \
     bash -c 'grep -qE "^(OnUnitActiveSec=|OnCalendar=)" "$1"' _ "$GC_TIMER"
 
-# D3: timer has Persistent=true (survive missed runs across reboots)
-assert "D3: timer has Persistent=true" \
-    bash -c 'grep -q "^Persistent=true$" "$1"' _ "$GC_TIMER"
+# D3: timer deliberately has NO Persistent=true (task #6419): the schedule is
+# OnUnitActiveSec= (monotonic), and systemd.timer(5) states Persistent= only
+# has an effect on OnCalendar= timers — a Persistent=true here would be inert.
+assert "D3: timer does NOT declare Persistent=true (inert on a monotonic-only schedule)" \
+    bash -c '! grep -q "^Persistent=true$" "$1"' _ "$GC_TIMER"
+
+# D3b: implication guard — if a timer ever DOES declare Persistent=true, it
+# must also declare OnCalendar=, or the directive is inert per systemd.timer(5)
+# ("Persistent= only has an effect on timers configured with OnCalendar=").
+# Mirrors the guard task #6111 added for reify-jcodemunch-index.timer so this
+# class of bug (esc/task #6419) cannot recur in either timer.
+assert "D3b: Persistent=true (if present) implies OnCalendar= is also present" \
+    bash -c '
+        timer="$1"
+        if grep -q "^Persistent=true$" "$timer"; then
+            grep -qE "^OnCalendar=" "$timer"
+        else
+            exit 0
+        fi
+    ' _ "$GC_TIMER"
 
 # D4: timer [Install] WantedBy=timers.target
 assert "D4: timer [Install] WantedBy=timers.target" \
