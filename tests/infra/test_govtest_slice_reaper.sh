@@ -2105,7 +2105,12 @@ source "$SCRIPT_DIR/run-all-classification-lib.sh"
 
 # _map_targets_for <artifact-path> — mirror select_infra_tests()'s parse
 # exactly (same active-row filter, same two-field `read`), then print every
-# matching row's glob, expanded under $REPO_ROOT, one EXISTING path per line.
+# matching row's glob, expanded under $REPO_ROOT, one EXISTING REGULAR FILE
+# per line. `-f` (not `-e`) deliberately mirrors verify.sh's own selective-
+# infra emitter loop (`[ -f "$_vt" ] || continue`, scripts/verify.sh:2910):
+# a glob expansion that resolves to a directory or other non-regular path
+# must be excluded here exactly as it would be at runtime, or this helper
+# could report a routing that select_infra_tests() would not actually drive.
 _map_targets_for() {
     local _want="$1" _artifact _glob _line _expanded
     [ -f "$VP_INFRA_MAP" ] || return 0
@@ -2115,7 +2120,7 @@ _map_targets_for() {
         [ -n "$_glob" ]     || continue
         [ "$_artifact" = "$_want" ] || continue
         for _expanded in "$REPO_ROOT"/$_glob; do
-            [ -e "$_expanded" ] && printf '%s\n' "$_expanded"
+            [ -f "$_expanded" ] && printf '%s\n' "$_expanded"
         done
     done < <(grep -v '^\s*#' "$VP_INFRA_MAP" | grep -v '^\s*$')
     return 0
@@ -2134,9 +2139,22 @@ _map_selects_this_test() {
 # _map_never_targets_bucket <artifact-path> <bucket> — success if NONE of
 # <artifact-path>'s mapped targets are classified <bucket> in
 # run-all-classification.manifest.
+#
+# Self-anchored: classification_bucket() returns rc 0 with EMPTY output both
+# when the manifest is absent/renamed (`[ -f "$_manifest" ] || return 0` in
+# run-all-classification-lib.sh) and when <bucket> is a typo'd token that
+# matches no manifest row — either way `_members` would be empty and the
+# scan loop below could never match, making the assertion pass vacuously
+# instead of catching the regression it exists to catch. Fail loudly instead
+# of silently in both cases: an empty bucket lookup means this check's own
+# input has disappeared, not that the artifact is clean.
 _map_never_targets_bucket() {
     local _want="$1" _bucket="$2" _t _base _members
     _members="$(classification_bucket "$_bucket")"
+    if [ -z "$_members" ]; then
+        echo "bucket '$_bucket' resolved to no members — manifest missing/renamed or bucket token typo'd; cannot assert a negative against an empty set"
+        return 1
+    fi
     while IFS= read -r _t; do
         [ -n "$_t" ] || continue
         _base="$(basename "$_t")"
