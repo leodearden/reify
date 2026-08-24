@@ -142,6 +142,7 @@ those must NOT be dimensioned. Only the control-point coordinates in the middle 
 `nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)`.
 
 ## Interference & Clearance Queries
+<!-- ORACLE-SECTION -->
 
 <!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs verifies, for all
      five query names: that this section documents each as a call form, that each is a real registry
@@ -150,7 +151,11 @@ those must NOT be dimensioned. Only the control-point coordinates in the middle 
      editing the matching fence is RED. It still covers names/arity/parse only — argument DIMENSION
      is unchecked. The RUNTIME claims in "Clearance-query traps" are pinned (where they are pinned at
      all) by the eval/CLI tests mapped in the SYNC block at that subsection — read it before relying
-     on a trap, and before changing one of those behaviours. -->
+     on a trap, and before changing one of those behaviours.
+
+     The `<!-- ORACLE-SECTION -->` marker on the line above is what scopes that guard's scan, matched
+     byte-exactly — NOT this heading's wording, which is free to change. Keep the marker directly
+     under the heading it opens; the scan runs from it to the next `##` heading. -->
 
 Reify **does** have a static interference/clearance oracle. Never hand-roll a bounding-box overlap
 test or hand-compute a gap from parameters — ask the kernel. Two forms; prefer FORM B unless you
@@ -231,37 +236,42 @@ these runtime claims would otherwise rot silently. Named here so a behaviour cha
 a file whose grep leads back to this doc — and so the UNPINNED ones are visibly unpinned
 rather than looking equally guarded.
 
-  trap 1 (build/eval catches it)  crates/reify-cli/tests/harness_cli/cli_vc_clearance.rs
-                                  :: build_vc_bolt_pattern_clearance_satisfied
-                                  :: build_vc_bolt_pattern_interference_violated
-  trap 1 (check exits 0)          UNPINNED — prose only.
-  trap 2 (inline arg -> undef)    crates/reify-eval/tests/harness_kernel_realization/
-                                  kernel_queries_intersects_smoke.rs, which asserts the
-                                  IntersectsSmoke.undef_inline cell is None or Undef.
-  trap 3 (FORM A trio on plain    UNPINNED — prose only. Verified by hand while probing;
-          geometry -> undef)      re-verify before trusting it.
-  trap 4 (sub `at` pose not       UNPINNED — prose only. Substrate fix is owned by the
-          carried into snapshot)  constraint-driven-placement PRD track.
-  trap 5 (clamp to 0 on overlap;  crates/reify-eval/tests/harness_mechanism/
-          positive when disjoint; mechanism_interference_smoke.rs
-          self-pair -> undef)     :: overlapping_cubes_one_pair_and_zero_clearance
-                                  :: disjoint_cubes_no_pairs_and_positive_clearance
-                                  :: single_body_self_pair_excluded
-  trap 5 (full CONTAINMENT reads  UNPINNED HERE — prose only. Measured 2026-08-23: strictly
-          dist 0 / intersects     nested boxes, both argument orders, live disjoint control.
-          true, under OCCT)       The executable pin is task #6269's, landing in
-                                  crates/reify-eval/tests/harness_kernel_realization/
-                                  kernel_queries_intersects_smoke.rs. OCCT-scoped: Manifold
-                                  parity on a nested pair is unmeasured (task #6475).
-  trap 6 (`d <= 0.0`)             kernel_queries_intersects_smoke.rs
-                                  :: intersects_smoke_evals_expected_booleans. Source of
-                                  truth is reify-eval/src/geometry_ops.rs's Bool(d <= 0.0).
-                                  The face-TOUCHING edge case specifically is UNPINNED; the
-                                  test covers overlapping and well-apart.
+FORMAT IS LOAD-BEARING. Every cite is written WHOLE on ONE line as `<path>::<fn_name>`, never
+wrapped across lines and never tabulated into a two-column layout.
+geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve resolves each one against the
+tree — the file must exist and must declare that fn — so a renamed or deleted test is RED
+there rather than silently turning a PINNED row into a false claim. A wrapped path is
+invisible to that check, so keep one cite per line when editing this block.
 
-FORM A's posed and swept forms are pinned by mechanism_interference_smoke.rs
-:: fk_posed_cubes_no_interference_and_correct_clearance and
-:: swept_min_clearance_monotonic_to_interference.
+  trap 1 (build/eval catches it) — PINNED by
+    crates/reify-cli/tests/harness_cli/cli_vc_clearance.rs::build_vc_bolt_pattern_clearance_satisfied
+    crates/reify-cli/tests/harness_cli/cli_vc_clearance.rs::build_vc_bolt_pattern_interference_violated
+  trap 1 (`check` exits 0) — UNPINNED, prose only.
+  trap 2 (inline arg -> undef) — PINNED by
+    crates/reify-eval/tests/harness_kernel_realization/kernel_queries_intersects_smoke.rs::intersects_smoke_evals_expected_booleans
+    (its IntersectsSmoke.undef_inline assertion: the cell must be None or Undef).
+  trap 3 (FORM A trio on plain geometry -> undef) — UNPINNED, prose only. Verified by hand
+    while probing; re-verify before trusting it.
+  trap 4 (sub `at` pose not carried into snapshot) — UNPINNED, prose only. Substrate fix is
+    owned by the constraint-driven-placement PRD track.
+  trap 5 (clamp to 0 on overlap; positive when disjoint; self-pair -> undef) — PINNED by
+    crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::overlapping_cubes_one_pair_and_zero_clearance
+    crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::disjoint_cubes_no_pairs_and_positive_clearance
+    crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::single_body_self_pair_excluded
+  trap 5 (full CONTAINMENT reads dist 0 / intersects true, under OCCT) — UNPINNED HERE, prose
+    only. Measured 2026-08-23: strictly nested boxes, both argument orders, live disjoint
+    control. The executable pin is task #6269's, landing in
+    crates/reify-eval/tests/harness_kernel_realization/kernel_queries_intersects_smoke.rs.
+    OCCT-scoped: Manifold parity on a nested pair is unmeasured (task #6475).
+  trap 6 (`d <= 0.0`) — PINNED by
+    crates/reify-eval/tests/harness_kernel_realization/kernel_queries_intersects_smoke.rs::intersects_smoke_evals_expected_booleans
+    Source of truth is crates/reify-eval/src/geometry_ops.rs's Bool(d <= 0.0). The
+    face-TOUCHING edge case specifically is UNPINNED; the test covers overlapping and
+    well-apart.
+
+FORM A's posed and swept forms are pinned by
+    crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::fk_posed_cubes_no_interference_and_correct_clearance
+    crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::swept_min_clearance_monotonic_to_interference
 -->
 
 Every one of these is a **silent wrong answer**, not an error — read them before writing a clearance
