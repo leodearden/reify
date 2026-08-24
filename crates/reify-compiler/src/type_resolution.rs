@@ -732,9 +732,24 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // translation) — see crates/reify-core/src/ty.rs:305/462.  Surfacing the
         // bare "Transform3" name makes `pub type Pose3 = Transform3` and
         // `param : Transform3` annotations resolvable.  "Frame3" is intentionally
-        // absent (collides with the ports.ri structure def), as are "Orientation"
-        // and "AffineMap3" (out of scope for this task).
+        // absent (collides with the `structure Frame3` in ports.ri), as is
+        // "AffineMap3" (no surface demand).
         "Transform3" => Some(Type::Transform(3)),
+        // Orientation type-name surface (task 6384).
+        // `stdlib/joints.ri` declares the spherical/ball free DOF as
+        // `with orientation: Orientation`.  Without an arm here that annotation
+        // resolves to `None` — and `resolve_type_expr_with_aliases` returns
+        // `None` for an unknown bare name WITHOUT pushing a diagnostic — so the
+        // DOF type became `Type::Error`, which silently disables the §7.1
+        // count/kind verdict at `compile_builder/entities_phase.rs:699-701`
+        // (that gate treats `Type::Error` as already-diagnosed, anti-cascade).
+        // The declared-vs-residual self-check was therefore never run for any
+        // orientation-bearing joint, and `dof_kind_of`'s `Type::Orientation`
+        // arm (joint_self_check.rs) was unreachable from .ri source.
+        // Unlike "Frame3", nothing in stdlib or examples declares the name
+        // `Orientation`, so there is no collision.  Bare-name-resolves-to-3D
+        // follows the `"Frame" => Type::Frame(3)` precedent above.
+        "Orientation" => Some(Type::Orientation(3)),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
