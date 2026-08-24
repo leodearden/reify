@@ -246,28 +246,17 @@ Decoder-author checklist:
 - `screenshot` and `screenshot_window` never emit the trailing block. Only
   `element_screenshot` does.
 
-Two further facts about this envelope are deliberately NOT restated here — the
-GATING RULE (the exact condition under which the trailing block is emitted, and
-why that condition rather than another), and the invariant that the trailing
-block never carries a top-level string `error`. Each lives with the code it
-constrains, and a second synchronized copy here would be precisely the drift
-surface §0 warns about. Read them there:
+Two further facts about this envelope live with the code that enforces them:
 
-- GATING RULE → the `mcp_content_blocks` doc comment, property 2
+- GATING RULE — the exact condition under which the trailing block is emitted:
+  the `mcp_content_blocks` doc comment, property 2
   (`gui/src-tauri/src/debug_server.rs`).
-- No top-level string `error` → the CROSS-LANGUAGE INVARIANT paragraph in
-  `isInBandError`'s docblock (`gui/test/visual/rpcEnvelope.mjs`), which is where
-  the invariant is stated for BOTH languages. `mcp_content_blocks`'s gating rule
-  is its emission-side consequence and cites it from there. (Branch 3 of that
-  same file is a different fact — search-vs-index — and is covered under "The
-  §2d divergence" below, not here.)
+- The trailing block never carries a top-level string `error`: the
+  CROSS-LANGUAGE INVARIANT paragraph in `isInBandError`'s docblock
+  (`gui/test/visual/rpcEnvelope.mjs`), stated there for BOTH languages.
 
 The positional-vs-search split between the two JS decoders is the one §2d fact
-this doc DOES own, stated once under "JS-side decoders" below. It is a contract
-*between* two decoders and so belongs with neither of them alone; the code sites
-that depend on it point here for the RATIONALE instead of restating it. That
-section names the sites, and the one exception that still states the fact on its
-own terms.
+this doc owns, under "The §2d divergence — canonical statement" below.
 
 ### JS-side decoders
 
@@ -293,17 +282,8 @@ in-band shape.
 #### The §2d divergence — canonical statement
 
 The two decoders diverge on §2d's image envelope as well, and again on purpose.
-**This section is the single home of that rationale.** Branch 3 of
-`gui/test/visual/rpc.ts`, case 4b of `gui/test/visual/rpc.test.ts`, the branch-3
-case of `gui/test/visual/rpcEnvelope.test.ts` and property 1 of
-`mcp_content_blocks`'s doc comment (`gui/src-tauri/src/debug_server.rs`) point
-HERE for the rationale rather than restating it.
-
-One site still states the split on its own terms: branch 3 of the branch table in
-`gui/test/visual/rpcEnvelope.mjs`, which names its sibling's positional read while
-describing its OWN search. That is a second copy of the FACT (not of the
-rationale) and the site to re-read whenever this section changes — no claim is
-made here that only one copy exists.
+This section is the canonical statement of that rationale; the code sites cite it
+rather than restating it.
 
 `normalizeRpcEnvelope` SEARCHES the content array for its text block;
 `parseRpcResponse` stays POSITIONAL on `content[0]`. Each is right for its own
@@ -341,10 +321,7 @@ through both decoders — case 4b of `gui/test/visual/rpc.test.ts`'s "the
 documented divergence" suite, which asserts the two verdicts side by side, and
 the branch-3 fall-through case in `gui/test/visual/rpcEnvelope.test.ts`. The
 error-envelope divergences are pinned case-by-case in those same two files.
-Under the TEXT-targeted rewrite above, case 4b is the SOLE failure. No absolute
-pass count is quoted anywhere in this section on purpose: a count goes stale the
-next time a case is added to either suite, and a stale count is how the earlier
-drift in this doc started.
+Under the TEXT-targeted rewrite above, case 4b is the SOLE failure.
 
 ---
 

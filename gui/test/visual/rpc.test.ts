@@ -250,8 +250,7 @@ describe("parseRpcResponse vs normalizeRpcEnvelope — the documented divergence
     //
     // What this case buys: under the TEXT-targeted rewrite that section warns
     // against, case 4b is the SOLE failure across rpc.test.ts + rpcEnvelope
-    // .test.ts. Deliberately no absolute pass count — that goes stale the next
-    // time a case is added to either suite.
+    // .test.ts.
     const envelope = {
       result: {
         // `isError` deliberately ABSENT — this is a success envelope.
