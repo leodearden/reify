@@ -1030,6 +1030,60 @@ mod cpsat_test_fixtures {
         }
     }
 
+    /// `if <cond> { Int(then) } else { Int(els) }`.
+    ///
+    /// The only way to get a NON-CONSTANT integer score out of `Bool` autos, and
+    /// so the shape every ranked-override fixture folds its objective from.
+    /// Built as a struct literal because `CompiledExpr` exposes no `conditional`
+    /// constructor — the same thing `reify-compiler`'s own tests do, with the
+    /// `TAG_CONDITIONAL` content-hash recipe copied from `compile_expr`
+    /// (reify-compiler/src/expr.rs) so the node is indistinguishable from a
+    /// compiled one.
+    pub(super) fn int_if(cond: CompiledExpr, then_i: i64, els: i64) -> CompiledExpr {
+        let then_branch = CompiledExpr::literal(Value::Int(then_i), Type::Int);
+        let else_branch = CompiledExpr::literal(Value::Int(els), Type::Int);
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_CONDITIONAL])
+            .combine(cond.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::Int,
+            content_hash,
+        }
+    }
+
+    /// `l + r` over two `Int` EXPRESSIONS.
+    ///
+    /// Distinct from [`add_int`], which adds a literal to an expression: an
+    /// objective that has to score two independent autos needs to fold two
+    /// sub-expressions, not an expression and a constant.
+    pub(super) fn sum_int(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(reify_ir::BinOp::Add, l, r, Type::Int)
+    }
+
+    /// [`problem`] with an OBJECTIVE — the shape `solve_ranked`'s argmin path
+    /// needs, and the one thing `problem`/`problem_with_seed` hard-wire to
+    /// `None`.
+    pub(super) fn problem_with_objective(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        objective: ObjectiveSet,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values: ValueMap::new(),
+            objective: Some(objective),
+            functions: Arc::from(Vec::new()),
+            dependent_cells: Vec::new(),
+        }
+    }
+
     /// Disjunction — the shape every β enumeration fixture is built on, because
     /// `a || b` is the smallest constraint with MORE THAN ONE model (3 of the 4
     /// points) and so the smallest thing that can tell honest enumeration apart
@@ -2417,6 +2471,398 @@ mod unique_honesty_tests {
             !unique,
             "`free` is not consulted anywhere in cpsat, and the model count is \
              the same 3 either way — the flag must be the same honest false",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `solve_ranked` ARGMIN OVERRIDE (PRD2 §4.2, D2; F-result invariants I2/I4;
+// task β #5468).
+//
+// Without an override, `CpSatSolver` inherits the reify-ir default lift
+// (constraint.rs:564): it calls `solve()`, wraps whatever came back in a
+// single candidate with `objective_score: None`, and reports
+// `BestFound { Unreported }`. That lift is honest about knowing nothing — but
+// what it means in practice is that a `minimize` on a discrete model is
+// SILENTLY IGNORED. `solve()` returns the first feasible point in search order;
+// flipping the objective from Minimize to Maximize returns the same point
+// (PRD2 §2.3 spike rows n3/n3b). The user wrote an objective and got a
+// coin-flip.
+//
+// The override enumerates, scores every model through the SAME
+// `build_scoring_values` + `eval_objective_set` pair the continuous path uses,
+// and sorts. Because the domains are finite and materialised up front, and the
+// forward-check only ever prunes a branch a constraint evaluated to
+// `Bool(false)`, `complete == true` means every feasible point was visited and
+// scored — so the ascending minimum IS the global minimum. That is what earns
+// `OptimalityStatus::ProvenOptimal`, the codebase's first honest one (the
+// F-result PRD grants it exclusively to PRD 2).
+//
+// Every score in these fixtures is a small integer, exactly representable in
+// IEEE-754 and reached by exact integer arithmetic, so every assertion here is
+// exact equality or strict ordering. No tolerances, no guessed thresholds.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod solve_ranked_override_tests {
+    use super::*;
+    use super::cpsat_test_fixtures::*;
+    use reify_ir::{
+        BestFoundReason, ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate,
+        RankedSolveResult,
+    };
+
+    /// The objective's weight on `a`, and on `b`. Distinct and non-equal so the
+    /// three models of `a || b` score three DISTINCT values:
+    ///
+    /// | model        | raw score |
+    /// |--------------|-----------|
+    /// | `a=T, b=T`   | 11        |
+    /// | `a=T, b=F`   | 1         |
+    /// | `a=F, b=T`   | 10        |
+    ///
+    /// Chosen so the Minimize winner (`a=T, b=F`) is NOT the first point in
+    /// enumeration order (`a=T, b=T`). If it were, this module could not tell
+    /// an argmin from "returned the first feasible model", which is exactly the
+    /// behaviour it exists to replace.
+    const WEIGHT_A: i64 = 1;
+    const WEIGHT_B: i64 = 10;
+
+    /// Equal weights, for the TIE fixture: `a=T,b=F` and `a=F,b=T` both score 5,
+    /// and both are the Minimize optimum.
+    const TIED_WEIGHT: i64 = 5;
+
+    /// `a || b` under `sense`, scored `WEIGHT_A·[a] + WEIGHT_B·[b]`.
+    fn a_or_b_scored(sense: ObjectiveSense) -> ResolutionProblem {
+        scored_disjunction(sense, WEIGHT_A, WEIGHT_B)
+    }
+
+    /// `a || b` under `sense`, scored with the given per-auto weights.
+    fn scored_disjunction(sense: ObjectiveSense, wa: i64, wb: i64) -> ResolutionProblem {
+        problem_with_objective(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            ObjectiveSet::single(
+                sense,
+                sum_int(int_if(bref("a"), wa, 0), int_if(bref("b"), wb, 0)),
+            ),
+        )
+    }
+
+    /// The three models of `a || b` with the score each one MUST receive,
+    /// computed here from the weights rather than read back from the solver.
+    ///
+    /// Mirrors `eval_objective_set`'s normalisation: a `Maximize` term
+    /// contributes `-weight · v`, so every score in this carrier is already
+    /// "lower is better" (F-result I2). A test that read the solver's own
+    /// scores back and then checked they were sorted would pass on a solver
+    /// that scored every model wrong but consistently.
+    fn expected(sense: ObjectiveSense, wa: i64, wb: i64) -> Vec<((bool, bool), f64)> {
+        [(true, true), (true, false), (false, true)]
+            .into_iter()
+            .map(|(a, b)| {
+                let raw = (if a { wa } else { 0 } + if b { wb } else { 0 }) as f64;
+                let score = match sense {
+                    ObjectiveSense::Minimize => raw,
+                    ObjectiveSense::Maximize => -raw,
+                };
+                ((a, b), score)
+            })
+            .collect()
+    }
+
+    /// Unwrap `Ranked`, or panic naming the variant that came back.
+    fn ranked(result: RankedSolveResult) -> (Vec<RankedCandidate>, OptimalityStatus) {
+        match result {
+            RankedSolveResult::Ranked {
+                candidates,
+                optimality,
+            } => (candidates, optimality),
+            other => panic!("expected RankedSolveResult::Ranked; got {other:?}"),
+        }
+    }
+
+    /// One candidate as `((a, b), score, unique)` — the whole of what a caller
+    /// can observe, in a shape that compares with `assert_eq!`.
+    ///
+    /// `RankedCandidate` derives neither `PartialEq` nor `Eq`, so "byte-identical
+    /// across two runs" has to be spelled out; projecting to a comparable tuple
+    /// says exactly which fields that claim covers.
+    fn shape(c: &RankedCandidate) -> ((bool, bool), Option<f64>, bool) {
+        let get = |m: &str| match c.values.get(&ValueCellId::new("S", m)) {
+            Some(Value::Bool(v)) => *v,
+            other => panic!("expected a Bool at S.{m}; got {other:?}"),
+        };
+        ((get("a"), get("b")), c.objective_score, c.unique)
+    }
+
+    /// The score a candidate MUST carry, or a panic — `None` is never a valid
+    /// answer under a governing objective (F-result I4).
+    fn score(c: &RankedCandidate) -> f64 {
+        c.objective_score.unwrap_or_else(|| {
+            panic!(
+                "an objective governs this solve, so every candidate must carry \
+                 a score; got objective_score: None for {:?}",
+                c.values
+            )
+        })
+    }
+
+    /// (a) ASCENDING BY SCORE, AND `candidates[0]` IS THE TRUE ARGMIN (I2).
+    ///
+    /// Two independent claims. The ORDER claim is what I2 promises consumers:
+    /// index 0 is the selected optimum and the list descends in quality from
+    /// there. The ARGMIN claim is the one that matters — the expected minimum is
+    /// computed from the fixture's weights in [`expected`], never read back from
+    /// the solver, so a solver that scored every model wrong but sorted the
+    /// wrong scores correctly still fails here.
+    #[test]
+    fn ranking_is_ascending_by_score_and_starts_at_the_global_argmin() {
+        let (candidates, _) =
+            ranked(CpSatSolver.solve_ranked(&a_or_b_scored(ObjectiveSense::Minimize)));
+
+        assert!(
+            !candidates.is_empty(),
+            "I2: a `Ranked` result's candidate list is never empty",
+        );
+        for pair in candidates.windows(2) {
+            assert!(
+                score(&pair[0]) < score(&pair[1]),
+                "I2: candidates are ordered by ascending objective_score (lower \
+                 is better); {:?} then {:?} is not",
+                shape(&pair[0]),
+                shape(&pair[1]),
+            );
+        }
+
+        let table = expected(ObjectiveSense::Minimize, WEIGHT_A, WEIGHT_B);
+        let (best_model, best_score) = table
+            .iter()
+            .min_by(|x, y| x.1.partial_cmp(&y.1).expect("scores are finite"))
+            .expect("three models");
+
+        assert_eq!(
+            (shape(&candidates[0]).0, score(&candidates[0])),
+            (*best_model, *best_score),
+            "candidates[0] must be the model with the lowest score over ALL \
+             three feasible points. Getting (true, true) here means the \
+             objective was ignored and the FIRST point in enumeration order was \
+             returned — the pre-β behaviour this override replaces",
+        );
+    }
+
+    /// (b) FLIPPING THE SENSE FLIPS THE WINNER. The direct discriminator
+    /// against today's behaviour.
+    ///
+    /// Under the default lift, `solve_ranked` returns whatever `solve()` found —
+    /// the first feasible point in search order — and `solve()` never looks at
+    /// the objective at all. So Minimize and Maximize produce the SAME winner
+    /// (PRD2 §2.3, spike rows n3/n3b: "objective silently ignored"). A user who
+    /// wrote `minimize` and a user who wrote `maximize` got identical answers
+    /// and no diagnostic either way.
+    ///
+    /// The expected winners are named explicitly rather than merely asserted
+    /// unequal: "they differ" would also be satisfied by two arbitrary wrong
+    /// answers.
+    #[test]
+    fn flipping_the_objective_sense_selects_a_different_winner() {
+        let (min_candidates, _) =
+            ranked(CpSatSolver.solve_ranked(&a_or_b_scored(ObjectiveSense::Minimize)));
+        let (max_candidates, _) =
+            ranked(CpSatSolver.solve_ranked(&a_or_b_scored(ObjectiveSense::Maximize)));
+
+        assert_eq!(
+            shape(&min_candidates[0]).0,
+            (true, false),
+            "minimising 1·[a] + 10·[b] over `a || b` picks a=true, b=false \
+             (score 1)",
+        );
+        assert_eq!(
+            shape(&max_candidates[0]).0,
+            (true, true),
+            "maximising the same expression picks a=true, b=true (raw 11, \
+             normalised to -11)",
+        );
+        assert_ne!(
+            shape(&min_candidates[0]).0,
+            shape(&max_candidates[0]).0,
+            "the winner MUST depend on the sense. Identical winners is the \
+             pre-β signature: the objective was never consulted",
+        );
+    }
+
+    /// (c) A COMPLETE ENUMERATION IS `ProvenOptimal` (D2).
+    ///
+    /// Earned, not asserted. The domains are finite and materialised before the
+    /// search starts; the forward-check prunes a branch ONLY when a constraint
+    /// whose auto refs are all assigned evaluates to `Bool(false)` (a non-`Bool`
+    /// result takes the skip-don't-prune arm), so no feasible point is ever cut.
+    /// `complete == true` therefore means every feasible point was visited and
+    /// scored, and the ascending minimum is the GLOBAL minimum.
+    ///
+    /// This is the codebase's first honest `ProvenOptimal`. Every other producer
+    /// is derivative-free or budget-truncated and must say `BestFound`
+    /// (F-result I3).
+    #[test]
+    fn a_complete_enumeration_under_an_objective_is_proven_optimal() {
+        let (_, optimality) =
+            ranked(CpSatSolver.solve_ranked(&a_or_b_scored(ObjectiveSense::Minimize)));
+
+        assert!(
+            matches!(optimality, OptimalityStatus::ProvenOptimal),
+            "a finite domain walked to exhaustion with sound pruning IS a proof \
+             of global optimality; got {optimality:?}",
+        );
+    }
+
+    /// (d) EVERY CANDIDATE CARRIES A SCORE (I4).
+    ///
+    /// I4 forbids pairing a scored optimality status with `objective_score:
+    /// None`. The default lift emits exactly that pairing today — `BestFound`
+    /// alongside a `None` score — which reads downstream as "here is the best
+    /// one, and no, I will not tell you how good it is".
+    #[test]
+    fn every_candidate_carries_a_score_when_an_objective_governs() {
+        let (candidates, _) =
+            ranked(CpSatSolver.solve_ranked(&a_or_b_scored(ObjectiveSense::Minimize)));
+
+        for c in &candidates {
+            assert!(
+                c.objective_score.is_some(),
+                "I4: an objective governs this solve, so no candidate may carry \
+                 objective_score: None; {:?} does",
+                c.values,
+            );
+        }
+    }
+
+    /// (e) ALL THREE MODELS ARE RANKED, with the scores [`expected`] predicts.
+    ///
+    /// The count alone would pass on three arbitrary points; the score-set
+    /// comparison says the ranking covers the actual model set. Well under the
+    /// top-N carrier cap, so nothing is truncated here — that interaction is
+    /// step β.9's (c).
+    #[test]
+    fn every_feasible_model_appears_in_the_ranking() {
+        let (candidates, _) =
+            ranked(CpSatSolver.solve_ranked(&a_or_b_scored(ObjectiveSense::Minimize)));
+
+        assert_eq!(
+            candidates.len(),
+            3,
+            "`a || b` has three models and all three are scoreable; 1 means the \
+             ranking is still `solve()`'s single answer in a richer wrapper",
+        );
+
+        let mut got: Vec<((bool, bool), f64)> =
+            candidates.iter().map(|c| (shape(c).0, score(c))).collect();
+        let mut want = expected(ObjectiveSense::Minimize, WEIGHT_A, WEIGHT_B);
+        got.sort_by(|x, y| x.0.cmp(&y.0));
+        want.sort_by(|x, y| x.0.cmp(&y.0));
+
+        assert_eq!(
+            got, want,
+            "every model must appear exactly once, carrying the score the \
+             fixture's weights give it",
+        );
+    }
+
+    /// (f) THE WINNER'S `unique` MEANS "no OTHER model attained this score".
+    ///
+    /// `RankedCandidate.unique` is documented as "the solver certifies no other
+    /// solution with the same objective value exists" — a claim about the SCORE,
+    /// not about the model count. With distinct weights the optimum is attained
+    /// once and the flag is `true`; with equal weights two models tie at 5 and
+    /// it must be `false`, even though each is individually a perfectly good
+    /// answer.
+    ///
+    /// Non-winners carry `false` unconditionally, mirroring
+    /// `DimensionalSolver::solve_ranked_impl`: an alternative optimum is by
+    /// definition not *the* unique solution.
+    #[test]
+    fn the_winner_reports_uniqueness_of_its_score_and_non_winners_never_do() {
+        let (distinct, _) =
+            ranked(CpSatSolver.solve_ranked(&a_or_b_scored(ObjectiveSense::Minimize)));
+        assert!(
+            distinct[0].unique,
+            "score 1 is attained by exactly one of the three models, and the \
+             enumeration was complete, so the winner is unique; got {:?}",
+            shape(&distinct[0]),
+        );
+        for c in &distinct[1..] {
+            assert!(
+                !c.unique,
+                "a non-winning candidate is by definition not *the* solution; \
+                 {:?} claims otherwise",
+                shape(c),
+            );
+        }
+
+        let (tied, _) = ranked(CpSatSolver.solve_ranked(&scored_disjunction(
+            ObjectiveSense::Minimize,
+            TIED_WEIGHT,
+            TIED_WEIGHT,
+        )));
+        assert_eq!(
+            score(&tied[0]),
+            TIED_WEIGHT as f64,
+            "with equal weights the optimum is {TIED_WEIGHT}, attained by both \
+             single-true models",
+        );
+        assert!(
+            !tied[0].unique,
+            "two models attain the best score, so the winner is NOT unique — \
+             reporting true here would tell a user their design has one optimal \
+             configuration when it has two",
+        );
+    }
+
+    /// (g) DETERMINISM (D4), INCLUDING UNDER AN EXACT TIE.
+    ///
+    /// The repeat-call half pins the absence of any RNG or clock. The tie half
+    /// pins the COMPARATOR: two models scoring exactly 5 have no score-based
+    /// order between them, so something else must decide, and that something
+    /// must not be `sort_by`'s behaviour on a partial order. Ascending
+    /// enumeration index is the tiebreak — the same shape as
+    /// `solve_ranked_impl`'s score-then-start-index comparator — so `a=T,b=F`
+    /// (enumeration index 1) precedes `a=F,b=T` (index 2), run after run.
+    #[test]
+    fn ranking_is_deterministic_and_ties_break_by_enumeration_index() {
+        let p = a_or_b_scored(ObjectiveSense::Minimize);
+        let first: Vec<_> = ranked(CpSatSolver.solve_ranked(&p))
+            .0
+            .iter()
+            .map(shape)
+            .collect();
+        let second: Vec<_> = ranked(CpSatSolver.solve_ranked(&p))
+            .0
+            .iter()
+            .map(shape)
+            .collect();
+
+        assert_eq!(
+            first, second,
+            "D4: no RNG and no clock, so two calls on the same problem return \
+             identical values, scores and ordering",
+        );
+
+        let (tied, _) = ranked(CpSatSolver.solve_ranked(&scored_disjunction(
+            ObjectiveSense::Minimize,
+            TIED_WEIGHT,
+            TIED_WEIGHT,
+        )));
+        assert!(
+            tied.len() >= 2,
+            "the tie-order claim needs both tied models in the ranking; got {:?}",
+            tied.iter().map(shape).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            (shape(&tied[0]).0, shape(&tied[1]).0),
+            ((true, false), (false, true)),
+            "an exact tie must be broken by ascending ENUMERATION INDEX, so the \
+             model found first comes first. Leaving tied candidates to fall \
+             wherever the sort puts them makes the ranking unstable run-to-run \
+             for exactly the problems where the choice is arbitrary — the worst \
+             place to be non-reproducible",
         );
     }
 }
