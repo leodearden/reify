@@ -175,6 +175,18 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 }
 
 /// Format a dimension as a human-readable unit string.
+///
+/// UNIT CONTRACT (OUTBOUND). The string returned here is the SI-COHERENT unit
+/// of the cell's `DimensionVector` - metres, kilograms, and for angles RADIANS.
+/// It is therefore also the unit the paired INBOUND `set_parameter` will assume
+/// for a bare number, since that path installs the client's `f64` as the cell's
+/// SI magnitude with no conversion.
+///
+/// This field is the client's ONLY channel for that information: the
+/// `reify_set_parameter` schema tells a client that units are SI, and this
+/// tells it WHICH SI unit a given parameter takes.
+///
+/// Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4).
 fn dimension_unit(ty: &reify_core::ty::Type) -> String {
     match ty {
         reify_core::ty::Type::Scalar { dimension } => format!("{}", dimension),
@@ -520,7 +532,25 @@ impl ReifyToolContext for CliToolContext {
         let ty = cell_type
             .ok_or_else(|| ToolError::InvalidParams(format!("cell not found: {}", cell_id_obj)))?;
 
-        // Construct the appropriate Value based on the cell's type
+        // Construct the appropriate Value based on the cell's type.
+        //
+        // UNIT CONTRACT (INBOUND). The `f64` parsed above is installed VERBATIM
+        // as the cell's SI-coherent magnitude: no unit suffix is parsed, no
+        // conversion is applied, and the cell's own `dimension` is attached
+        // unchanged. For an Angle cell that means the client's number is SI
+        // RADIANS - the rad = 1 SI-coherence that is numerically right by
+        // construction, and that INV-AD-4 requires a boundary to DECLARE rather
+        // than merely rely on.
+        //
+        // The client-facing half of this declaration is the `reify_set_parameter`
+        // schema text in `crates/reify-mcp/src/tools/write.rs`, which is what an
+        // MCP client actually sees over `tools/list`. The two must be kept in
+        // step; `set_parameter_schema_declares_the_si_unit_contract` in
+        // `crates/reify-mcp/tests/write_tools_tests.rs` pins the schema half.
+        // The paired OUTBOUND declaration is the `unit` field built by
+        // `dimension_unit` in `get_parameters` above.
+        //
+        // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4).
         let new_value = match &ty {
             reify_core::ty::Type::Scalar { dimension } if !dimension.is_dimensionless() => {
                 Value::Scalar { si_value: numeric_val, dimension: *dimension }
