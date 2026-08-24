@@ -1174,12 +1174,13 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 /// the δ cluster DOES form here (BT-5 passes), but this particular
 /// parent-level consumer `let` still never resolves post-solve.
 ///
-/// If this test ever goes RED (`total_cost` starts resolving to a usable
-/// number — a `Scalar`, `Real`, or `Int`), the correct response is a
-/// reviewed design change — re-enable the parent
-/// aggregate as BT-5(ii)'s preferred cost cell and update the example
+/// If this test goes RED because `total_cost` started resolving to a usable
+/// number, the correct response is a reviewed design change — re-enable the
+/// parent aggregate as BT-5(ii)'s preferred cost cell and update the example
 /// header's "Reading the result" section — NOT a silent edit to this
-/// assertion or to #5835's status.
+/// assertion or to #5835's status. The one benign cause is a bare re-spelling
+/// of the unresolved state, which trips only the exact-shape backstop in the
+/// body; the two assertions carry the instructions for telling them apart.
 // TODO(#5835): delete this known-limitation pin and re-enable the parent
 // aggregate as BT-5(ii)'s cost cell when the engine gap closes.
 #[test]
@@ -1208,11 +1209,19 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
              total_cost` binding, or this cell's id spelling, has changed) \
              — got no entry",
         );
-        // UNRESOLVED — the actual claim. Assert the negative shape (not a
-        // resolved numeric scalar shape — `Scalar`, `Real`, or `Int`, the
-        // only variants a `Money` cell could plausibly resolve to) rather
-        // than pinning today's exact `Value::Undef` spelling, so this pins
-        // "not a usable number", not one particular non-Scalar variant.
+        // UNRESOLVED — the actual claim, in TWO layers because the two ways
+        // it can stop holding want opposite treatment.
+        //
+        // Layer 1 (here) is the SEMANTIC claim: not a resolved number. It
+        // denies the numeric shapes a `Money` cell could plausibly resolve
+        // to — `Scalar`, `Real`, `Int` — so it survives a harmless
+        // re-spelling of the unresolved state, and it owns the loud
+        // "#5835 has closed" instruction. But a deny-list is only ever
+        // complete for the variants that exist TODAY: a `total_cost` that
+        // resolved through some new carrier (a dimensioned Money variant, an
+        // `Enum` payload, a `List`-wrapped fold) would sail straight through
+        // it. That hole is what layer 2 below backstops — so if a numeric
+        // variant is ever added to `Value`, add it here too.
         assert!(
             !matches!(
                 cell,
@@ -1228,6 +1237,27 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
              cost cell, update the example header's \"Reading the result\" \
              section), not a silent edit to this assertion or to #5835's \
              status.",
+        );
+
+        // Layer 2 — the maximum-sensitivity backstop: today the engine leaves
+        // this cell at exactly `Value::Undef`, and ANY other shape fires here,
+        // including ones layer 1's deny-list cannot know about. Asymmetric on
+        // purpose: a false RED costs one line to re-baseline and is LOUD,
+        // whereas the failure this pin exists to prevent — staying silently
+        // GREEN while #5835 closes through an unanticipated representation,
+        // leaving BT-5(ii) on the fallback cell forever — is silent, and
+        // silence is the one thing a known-limitation pin must not do.
+        assert!(
+            matches!(cell, Some(Value::Undef)),
+            "`RivetedPanel.total_cost` is in the {what} eval neither a usable \
+             number (layer 1 above would have fired) nor `Value::Undef` — got \
+             {cell:?}. EITHER the engine merely re-spelled its unresolved \
+             state, in which case re-baseline this one `matches!` arm; OR \
+             #5835 closed by resolving this cell through a representation \
+             layer 1 does not deny (a new dimensioned/Money carrier, an \
+             `Enum` payload, a `List`-wrapped fold), in which case this is a \
+             KNOWN-LIMITATION REGRESSED (#5835) hit — read layer 1's message \
+             and follow it. Inspect the value before deciding which.",
         );
 
         // LIVENESS — the eval produced values at all, so PRESENCE/UNRESOLVED
