@@ -6312,6 +6312,91 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
         step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
         step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
 
+        // PLANE-ANGLE UNIT REGIME. Plane angles cross this boundary as SI
+        // RADIANS in both directions, and — unlike the length regime above —
+        // there is nothing to CALL to make that so. OCCT declares radians
+        // unconditionally: STEPConstruct_UnitContext::Init, the sole builder of
+        // the write-side unit context, emits `SI_UNIT($,.RADIAN.)` with no
+        // branch on any writer option. Contrast the length unit twenty
+        // instructions above, which carries a full conditional
+        // CONVERSION_BASED_UNIT chain driven by `write.step.unit`. So reify's
+        // angular declaration is correct BY CONSTRUCTION — which is precisely
+        // why it needed a DECLARATION: rad = 1 by SI coherence is numerically
+        // right, but until #6184 it was nowhere stated (INV-AD-4).
+        //
+        // THERE IS NO WRITE-SIDE ANGLE KNOB, and this was settled empirically —
+        // do not re-investigate. No `SetWriteAngleUnit` / `WriteAngleUnit` /
+        // `SetLocalAngleUnit` exists in the linked OCCT 7.8 headers, and
+        // StepData_StepModel — which carries SetLocalLengthUnit /
+        // SetWriteLengthUnit and a `myLocalLengthUnit` member — has no angular
+        // counterpart of any kind. (Chartering additionally checked V7_9_0,
+        // V7_9_3, V8_0_1 and master: all clean, and there is no 7.10. OCCT's
+        // own docs describe the one angle parameter as "obsolete ... when a
+        // STEP file is read".)
+        //
+        // THE TRAP: `step.angleunit.mode`. It is a REGISTERED Interface_Static
+        // in this OCCT (Interface_Static::IsPresent returns true), an enum of
+        // File/Rad/Deg, and STEPControl_ActorWrite::Transfer genuinely reads it
+        // — `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`.
+        // But it is HALF-WIRED: its only write-side consumer is
+        // TopoDSToStep_MakeStepFace::Init -> GeomConvert_Units::RadianToDegree,
+        // which rescales PCURVE PARAMETER space; the unit DECLARATION ignores
+        // it entirely. Setting it to Deg therefore emits degree pcurves under a
+        // radian header — a silently self-inconsistent file, NOT a degrees file.
+        //
+        // Measured on this branch (task/6184) against the linked system OCCT
+        // 7.8, exporting one 30 mm cone under each of the three enum values:
+        //   - modes 0 (File) and 1 (Rad): byte-identical DATA sections.
+        //   - mode 2 (Deg): differs in exactly ONE entity, the pcurve point
+        //     inside a DEFINITIONAL_REPRESENTATION —
+        //       mode 0/1  #39 = CARTESIAN_POINT('',(-6.28318530718,0.))  [-2*pi rad]
+        //       mode 2    #39 = CARTESIAN_POINT('',(-360.,0.))           [same angle, degrees]
+        //   - the declaration is byte-identical in ALL THREE modes:
+        //       #84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+        //     with zero CONVERSION_BASED_UNIT and zero "degree" tokens anywhere
+        //     in the file, in every mode.
+        // The payload moves; the declaration does not. That is the whole defect
+        // in one diff. reify never sets this static, and must not.
+        //
+        // WHICH OCCT. This writer is SYSTEM OCCT 7.8 from
+        // /usr/lib/x86_64-linux-gnu, NOT the 7.9.3 in /opt/reify-deps:
+        // crates/reify-build-utils/src/lib.rs deliberately lists system paths
+        // first for NativeDep::Occt (the deps tree ships 7.9 only as a
+        // transitive gmsh dependency). Both are loaded into one address space,
+        // and exported files carry 'Open CASCADE STEP processor 7.8' — so
+        // reason about this writer from 7.8 headers. Both versions hardcode the
+        // radian, so the conclusion above is version-independent.
+        //
+        // INTERACTION WITH THE LENGTH REGIME above: the two are independent
+        // here ONLY because the plane-angle factor is 1.0. StepData_Factors
+        // carries myLengthFactor and myPlaneAngleFactor as separate members,
+        // and 7.9 added DEFAULTED StepData_Factors arguments across the
+        // GeomToStep_* entry points — so a forgotten-factors regression would
+        // be INVISIBLE in the angle (factor 1.0, no observable change) and
+        // FATAL in the length (factor 1000). Do not infer from "angles are
+        // fine" that the factor plumbing is fine.
+        //
+        // THE GUARANTEE BOUNDARY. reify guarantees the declaration and the
+        // payload AGREE. It does NOT guarantee a consumer honours the
+        // declaration: a 26.565 deg cone semi-angle misread as 0.4636 deg puts
+        // the top edge 14.76 mm off its own surface on a 30 mm part — a
+        // topologically invalid face that importers resolve inconsistently.
+        // Nor do the pins below catch the `step.angleunit.mode` trap: they
+        // quantify over unit DECLARATIONS, and as measured above the
+        // declaration does not move when the payload does.
+        //
+        // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
+        // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
+        // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
+        // quantify over EVERY unit context — a compound emits one per
+        // representation_context, three for a two-cone union — rather than
+        // grepping for one ".RADIAN." token, so a partial flip fails. INV-AD-4's
+        // third arm, a runtime refusal guard, is deliberately DEFERRED to #6344
+        // so this leaf keeps its no-behaviour-change character.
+        //
+        // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
+        // section 9 B7). Length regime above: #6186.
+
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
         // Write to a temporary file, then read back
