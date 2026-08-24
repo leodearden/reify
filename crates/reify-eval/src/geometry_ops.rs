@@ -451,10 +451,14 @@ pub(crate) fn required_length_arg(
 /// field goes through here or through its group sibling
 /// [`required_length_values`] (which this delegates to at `N == 1`, so
 /// `reify_ir::Value::length` is still called from exactly one site) — the IR
-/// spacing slots (`LinearPattern`/`LinearPattern2D`), and since task 5743 the
+/// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
 /// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
-/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`). The stored
+/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
+/// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
+/// `ChamferAsymmetric` `d1`/`d2`, `Shell` thickness, `Thicken` offset,
+/// `ZoneSlab` width, `OffsetSolid`/`OffsetCurve` distance, `Extrude`/
+/// `ExtrudeSymmetric` distance, `Pipe` radius). The stored
 /// representation is deliberately unchanged by the check — the kernel still
 /// reads a dimensioned `Value` — so gating a slot is a one-line swap of its
 /// `eval_arg` read for one of these two, and inherits C1's three-state
