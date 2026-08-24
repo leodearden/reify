@@ -115,8 +115,18 @@
 //!   Its trigger is a DEAD LANE rather than a refused mapping, so asking for a
 //!   thread is not circular there; and if even that spawn fails the job is
 //!   dropped, its reply channel resolves `Err` at once, and the loud-panic arm
-//!   fires. The worst outcome anywhere in this module is therefore a loud panic
-//!   — never a silent hang, and never a nested runtime.
+//!   fires.
+//!
+//! The one failure mode that would NOT have resolved is RE-ENTRANT submission —
+//! a job submitting to the lane it is itself running on, which wedges that lane
+//! and every later submitter in the process. It is a caller error rather than a
+//! degradation arm, and it is rejected by [`assert_not_reentrant`] instead of
+//! being left to hang: the panic fires inside the running job, is caught by that
+//! job's own `catch_unwind`, and is re-raised on its submitter, so the lane
+//! survives. See [`run_on_worker`]'s reentrancy section.
+//!
+//! The worst outcome anywhere in this module is therefore a loud panic — never a
+//! silent hang, and never a nested runtime.
 
 /// Stack size for the large-stack compile thread: 256 MiB.
 ///
@@ -325,7 +335,7 @@ pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
 /// [`run_on_worker`]'s semantics identical to [`run_on_large_stack`]'s.
 type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 
-/// The submit end of the persistent worker's job queue.
+/// The submit end of a lane's job queue, TAGGED with the lane it feeds.
 ///
 /// The [`std::sync::Mutex`] is defensive rather than required —
 /// `mpsc::Sender<T>` is `Sync` on current `std`, but nothing here needs to
@@ -333,10 +343,97 @@ type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 /// job, so no user code ever runs under it and it is never held longer than a
 /// queue push.
 ///
+/// The `lane` tag exists for the reentrancy guard, and is what makes that guard
+/// PRECISE rather than blanket: it lets [`assert_not_reentrant`] distinguish
+/// "submitting to the lane whose thread I am running on" (a permanent wedge —
+/// see [`run_on_worker`]'s reentrancy section) from "submitting to the OTHER
+/// lane" (perfectly legal: a different thread, which drains independently).
+///
 /// `pub(crate)` for the same reason as [`Job`], and additionally because it is
 /// the parameter type of the [`dispatch`] / [`dispatch_async`] seams that
 /// `lsp_bridge` composes against.
-pub(crate) type JobSender = std::sync::Mutex<std::sync::mpsc::Sender<Job>>;
+pub(crate) struct JobSender {
+    /// Which lane this queue feeds — the same `&'static str` that lane's thread
+    /// publishes in [`CURRENT_LANE`].
+    lane: &'static str,
+    tx: std::sync::Mutex<std::sync::mpsc::Sender<Job>>,
+}
+
+impl JobSender {
+    /// Wrap a lane's `Sender`, tagging it with that lane's name.
+    ///
+    /// `pub(crate)` so a test can build a SYNTHETIC sender (typically over an
+    /// already-dropped `Receiver`) to provoke the `SendError` arms of
+    /// [`dispatch`] / [`dispatch_async`] deterministically.
+    pub(crate) fn new(lane: &'static str, tx: std::sync::mpsc::Sender<Job>) -> Self {
+        Self {
+            lane,
+            tx: std::sync::Mutex::new(tx),
+        }
+    }
+
+    /// Push `job` onto the queue, or hand it BACK inside `SendError` when the
+    /// consumer is gone.
+    ///
+    /// Poisoning is meaningless for a `Sender` — it holds no invariant a panic
+    /// could leave broken — so the guard is recovered rather than propagated.
+    fn send(&self, job: Job) -> Result<(), std::sync::mpsc::SendError<Job>> {
+        self.tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send(job)
+    }
+
+    /// True when the CALLING thread is this queue's own lane thread.
+    fn is_own_lane_thread(&self) -> bool {
+        CURRENT_LANE.with(std::cell::Cell::get) == Some(self.lane)
+    }
+}
+
+thread_local! {
+    /// The name of the lane whose consumer thread this is — `None` on every
+    /// thread that is not a lane consumer (i.e. on every submitter).
+    ///
+    /// Set once by the lane's receive loop and never cleared: a lane thread does
+    /// nothing but drain its own queue for the process lifetime.
+    static CURRENT_LANE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Panic if this submission would enqueue work onto the lane whose thread is
+/// making it — the one shape that wedges a lane permanently.
+///
+/// A lane has a SINGLE consumer, so a job that submits to its own lane and then
+/// waits for the reply can never be answered: the inner job only runs once the
+/// outer one returns, and the outer one is blocked waiting for it. The thread
+/// stops returning to its `for job in rx` loop, so the lane is dead AND every
+/// future submitter in the process blocks forever too — a silent, unrecoverable,
+/// process-wide hang.
+///
+/// # Why a panic here is strictly better than the hang it replaces
+///
+/// This check runs ON the lane thread, inside the currently-running job — so the
+/// panic is caught by that job's own [`std::panic::catch_unwind`] and re-raised
+/// on ITS submitter, exactly like any other job panic. The lane survives, one
+/// caller sees a loud error naming the reentrancy, and the module's "never a
+/// silent hang" invariant holds without exception. (An earlier revision argued a
+/// guard's failure mode would poison the shared worker; that is true of a guard
+/// placed on the SUBMITTING side, not of this one.)
+///
+/// Cross-lane submission is deliberately NOT rejected: `ENGINE_LANE` -> jobs
+/// submitting to `LSP_LANE` (or the reverse) land on a different thread with its
+/// own consumer, so they complete normally.
+fn assert_not_reentrant(sender: &JobSender) {
+    assert!(
+        !sender.is_own_lane_thread(),
+        "re-entrant submission to the `{}` large-stack lane: a job running ON \
+         that lane submitted to it again. The lane has a single consumer, so the \
+         inner job could only run after the outer one returned, and the outer one \
+         is waiting for it — a permanent wedge. Run the inner work inline, or \
+         submit it to the other lane.",
+        sender.lane
+    );
+}
 
 /// One persistent large-stack worker: a NAME plus the queue feeding it.
 ///
@@ -401,6 +498,10 @@ impl Lane {
                     .name(name.to_string())
                     .stack_size(COMPILE_STACK_SIZE)
                     .spawn(move || {
+                        // Publish this thread's lane identity so
+                        // `assert_not_reentrant` can tell a self-submission (a
+                        // permanent wedge) from a cross-lane one (legal).
+                        CURRENT_LANE.with(|l| l.set(Some(name)));
                         // Parks while the queue is empty. `rx` only ends when
                         // the `Sender` in the `OnceLock` drops, which never
                         // happens, so this loop lives as long as the process.
@@ -408,7 +509,7 @@ impl Lane {
                             job();
                         }
                     }) {
-                    Ok(_handle) => Some(std::sync::Mutex::new(tx)),
+                    Ok(_handle) => Some(JobSender::new(name, tx)),
                     Err(e) => {
                         // Same warning shape as `run_on_large_stack`'s inline
                         // fallback.
@@ -461,17 +562,32 @@ pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 /// `crossbeam`/`rayon` trick of `unsafe`-transmuting the boxed job's lifetime,
 /// which is not a trade worth making for this.
 ///
-/// # Non-reentrancy (and its corollary)
+/// # Non-reentrancy: one half ENFORCED, one half documented
 ///
 /// The queue has a SINGLE consumer, so a job that itself calls `run_on_worker`
-/// would deadlock: the inner submission can only run after the outer job
-/// returns. By the same argument, a caller must NOT already hold the engine
-/// mutex — the job would block acquiring it while the caller blocks on the
-/// reply. Neither is reachable from the migrated call sites (`commands::*_impl`
-/// are leaves that take the engine lock themselves via `with_engine_lock`, which
-/// is already non-reentrant for exactly these callers), so this is documented
-/// rather than enforced: a guard's failure mode would be a hang that poisons the
-/// shared worker for every other caller in the process.
+/// cannot be answered: the inner submission only runs once the outer job
+/// returns, and the outer job is waiting for it. Left unguarded that is the
+/// module's worst possible outcome — the lane thread never returns to its
+/// `for job in rx` loop, so the lane is dead AND every future submitter in the
+/// process blocks forever in `recv()` too: a silent, unrecoverable, process-wide
+/// hang.
+///
+/// It is therefore CHECKED. [`dispatch`] and [`dispatch_async`] call
+/// [`assert_not_reentrant`], which panics when the submitting thread is the
+/// target lane's own thread. The check runs inside the running job, so its panic
+/// is caught by that job's `catch_unwind` and re-raised on ITS submitter: one
+/// loud error, and the lane survives. The check is per-lane, so an ENGINE job
+/// submitting to the LSP lane (or the reverse) is unaffected — a different
+/// thread with its own consumer. None of this is reachable from the fourteen
+/// migrated call sites (`commands::*_impl` are leaves); the guard is there
+/// because the lane is SHARED and grows new callers — `main.rs::mcp_tool_call`
+/// is already named as a future one (task 5466).
+///
+/// The COROLLARY is not checkable and stays a documented precondition: a caller
+/// must not already hold the engine mutex, or the job would block acquiring it
+/// while the caller blocks on the reply. That deadlock involves no lane identity
+/// this module can observe. It is likewise unreachable from the migrated sites,
+/// which take the engine lock themselves via `with_engine_lock`.
 ///
 /// # Panic isolation (the one behavioural difference this tier requires)
 ///
@@ -546,6 +662,10 @@ where
         return f();
     };
 
+    // Rejected loudly rather than enqueued: submitting to the lane this thread
+    // IS would wedge it forever (see `assert_not_reentrant`).
+    assert_not_reentrant(sender);
+
     let (reply_tx, reply_rx) = std::sync::mpsc::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
         // The catch lives INSIDE the job, so the worker's `for job in rx` loop
@@ -559,12 +679,7 @@ where
         let _ = reply_tx.send(outcome);
     });
 
-    // Poisoning is meaningless for a `Sender` — it holds no invariant a panic
-    // could leave broken — so recover the guard rather than propagating.
-    let send_result = sender
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .send(job);
+    let send_result = sender.send(job);
 
     if let Err(std::sync::mpsc::SendError(job)) = send_result {
         // The lane's worker is gone. `send` returned the job unrun and the reply
@@ -708,6 +823,10 @@ where
         return fut.await;
     };
 
+    // Same guard as the blocking seam: a future submitted from a job already
+    // running on this lane could only be driven after that job returned.
+    assert_not_reentrant(sender);
+
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
         // Identical to `dispatch`'s job body apart from the driver: the catch
@@ -722,14 +841,9 @@ where
         let _ = reply_tx.send(outcome);
     });
 
-    // Poisoning is meaningless for a `Sender` — it holds no invariant a panic
-    // could leave broken — so recover the guard rather than propagating. The
-    // lock is released before the `.await` below (it is a std `Mutex`, and is
-    // held only across this queue push).
-    let send_result = sender
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .send(job);
+    // The queue lock is released before the `.await` below — it is a std
+    // `Mutex` held only across this push, inside `JobSender::send`.
+    let send_result = sender.send(job);
 
     if let Err(std::sync::mpsc::SendError(job)) = send_result {
         // The lane's worker is gone and the job came back unrun. It carries a

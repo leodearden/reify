@@ -753,6 +753,96 @@ fn the_two_lanes_are_separate_threads_each_amortised() {
     );
 }
 
+/// (r2) A job that submits to the lane it is RUNNING ON gets a loud panic
+/// carrying that lane's name — not the process-wide wedge the same code would
+/// otherwise produce — and the lane keeps working afterwards.
+///
+/// The wedge is the module's worst possible outcome and the only failure mode it
+/// could not resolve: a lane has a SINGLE consumer, so the inner job can only run
+/// once the outer one returns, while the outer one blocks in `recv()` waiting for
+/// it. The lane thread never returns to its `for job in rx` loop, so the lane is
+/// dead AND every later submitter in the process blocks forever too — silently,
+/// unrecoverably.
+///
+/// Both halves of the assertion are load-bearing. The PANIC is what replaces the
+/// hang; the SURVIVAL is what makes panicking the right answer, and it is not
+/// free — the check runs on the lane thread, inside the running job, so its
+/// unwind is caught by that job's own `catch_unwind` and re-raised on the
+/// submitter like any other job panic. A guard placed on the submitting side, or
+/// one raised outside the job body, would kill the shared lane for everybody.
+///
+/// Not reachable from the fourteen migrated call sites; the guard exists because
+/// the lane is SHARED and grows new callers (`main.rs::mcp_tool_call`, task 5466,
+/// is already named as a future one).
+///
+/// UNLIKE the deep-recursion tests, this one cannot honour the module's "no
+/// violent RED" doctrine: the failure it guards against is a wedge of a
+/// process-wide `static` lane, so if the guard is ever removed this test hangs —
+/// and so does every other engine-lane test in the binary, whatever this one
+/// does. A timeout here would only make this test's report legible while the
+/// rest of the suite hung anyway, so the honest note is this paragraph rather
+/// than a wrapper that implies protection it cannot give.
+#[test]
+fn submitting_to_your_own_lane_panics_loudly_instead_of_wedging_it() {
+    use crate::large_stack::{WORKER_THREAD_NAME, run_on_worker};
+    use std::panic::AssertUnwindSafe;
+
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // The OUTER job runs on the engine lane; the inner submission targets
+        // that same lane, which is the wedge.
+        run_on_worker(|| run_on_worker(|| 1u32))
+    }));
+
+    let payload = outcome.expect_err(
+        "re-entrant submission must panic on the submitter rather than wedge the lane",
+    );
+    let message = panic_message(&*payload);
+    assert!(
+        message.contains("re-entrant submission"),
+        "the panic must name the reentrancy rather than surface as a generic \
+         channel error, got: {message}"
+    );
+    assert!(
+        message.contains(WORKER_THREAD_NAME),
+        "the panic must name the LANE that was re-entered, got: {message}"
+    );
+
+    // Survival: the lane still answers. A wedged lane would hang here instead —
+    // which is exactly why this assertion is placed after the panic one.
+    assert_eq!(
+        run_on_worker(|| 7u32),
+        7,
+        "the lane must survive a rejected re-entrant submission and keep serving \
+         every other caller in the process"
+    );
+}
+
+/// (r3) The guard is PER-LANE, not blanket: a job running on one lane may submit
+/// to the OTHER one, because that lands on a different thread with its own
+/// consumer.
+///
+/// This is the other half of (r2), and it is what makes the guard a correctness
+/// check rather than a blunt "no submitting from a lane thread" rule that would
+/// reject a legal composition. Asserting the inner job's `ThreadId` — rather than
+/// just that it returned — is what pins that it genuinely crossed lanes instead
+/// of quietly degrading to an inline call on the outer lane's thread.
+#[test]
+fn a_job_on_one_lane_may_submit_to_the_other_lane() {
+    use crate::large_stack::{LSP_LANE, dispatch, run_on_worker};
+
+    let (outer, inner) = run_on_worker(|| {
+        let outer = std::thread::current().id();
+        let inner = dispatch(LSP_LANE.sender(), || std::thread::current().id());
+        (outer, inner)
+    });
+
+    assert_ne!(
+        outer, inner,
+        "a cross-lane submission must run on the OTHER lane's thread — the guard \
+         must not reject it, and it must not degrade to an inline call"
+    );
+}
+
 /// (s) LARGE STACK — the LSP lane survives ~16 MiB of recursion, 8x the 2 MiB
 /// default a tokio worker gives it today. An impl that built the lane without
 /// [`crate::large_stack::COMPILE_STACK_SIZE`] fails here.
@@ -1069,7 +1159,7 @@ async fn async_dispatch_recovers_a_handed_back_job_off_the_submitting_frame() {
     // `SendError(job)`, which is the arm under test.
     let (tx, rx) = std::sync::mpsc::channel();
     drop(rx);
-    let dead: JobSender = std::sync::Mutex::new(tx);
+    let dead = JobSender::new("test-dead-async", tx);
 
     let caller_id = std::thread::current().id();
 
