@@ -2453,6 +2453,22 @@ const BARE_NUMBER_GATE_SRC: &str = r#"structure def GateScope {
     let body = box(width, width, width)
 }"#;
 
+/// One dimensioned param NO curated ladder covers, and one that is covered.
+///
+/// The `Money` half is the in-tree case: 16 `param … : Money` declarations
+/// spell their literals `NUSD` across `examples/*.ri` (`cost_aggregation.ri`,
+/// `bom_lifecycle.ri`, `continuous_cost_min.ri`, `aspect_massive.ri`, …), and
+/// `USD` lives only in the compiler's per-module `UnitRegistry`, which the
+/// composed index deliberately excludes. Pairing it with a `Length` neighbour
+/// is what lets the covered and uncovered rules be shown DISCRIMINATED in one
+/// session, the way `set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell`
+/// already does for the dimensionless axis.
+const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
+    param cost : Money = 5USD
+    param width : Length = 80mm
+    let body = box(width, width, width)
+}"#;
+
 /// A bare number typed into a dimensioned cell is refused, and the message
 /// names both the expected dimension and the offending input.
 #[test]
@@ -2538,22 +2554,111 @@ fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
     assert!(err.contains("Length"), "got {err:?}");
 }
 
-/// A COMPOSED dimension — one with no `NAMED_DIMENSIONS` entry — is still
-/// gated, and the message falls back to the `DimensionVector` Display form.
+/// A dimensioned cell whose dimension NO curated ladder covers stays settable:
+/// the bare number is the only input the panel can produce for it.
+///
+/// The reviewer_comprehensive correctness regression this closes: keying the
+/// gate on `!dimension.is_dimensionless()` alone refuses a bare `Int`/`Real`
+/// for ANY non-dimensionless `Type::Scalar`, but `parse_value_string` can only
+/// resolve the ten curated ladders' rungs plus `BUILTIN_UNITS` — so a dimension
+/// outside that union has NO accepted input at all and its cells become
+/// permanently uneditable through `set_parameter` (property editor AND the GUI
+/// MCP surface). Accepting the bare number restores the pre-#5757 SI-number
+/// behaviour for exactly those cells rather than inventing a new one.
+///
+/// Asserts the RULE — EXPRESSIBILITY, not dimensionedness — never an
+/// enumeration of dimension names.
+#[test]
+fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers() {
+    use reify_core::DimensionVector;
+
+    // (a) PREMISE, asserted not assumed. If a future task adds a Money ladder
+    // or registers `USD`, this line fails FIRST with a legible reason instead
+    // of the test silently changing subject.
+    assert!(
+        !crate::display_units::unit_ladders()
+            .iter()
+            .any(|l| l.dimension == "Money"),
+        "this test needs a dimension with NO curated ladder; Money has one now — \
+         pick another uncovered dimension"
+    );
+    assert!(
+        !crate::engine::composed_unit_index()
+            .iter()
+            .any(|e| e.dimension == DimensionVector::MONEY),
+        "no spelling the composed index can parse may resolve to MONEY, or a united \
+         Money literal would be expressible and the bare number would not be the \
+         cell's only input"
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(BARE_NUMBER_COVERAGE_SRC, "bare_number_coverage")
+        .expect("initial load");
+
+    // (b) The uncovered cell takes a bare number, and it lands as canonical SI.
+    let state = session
+        .set_parameter("MoneyScope.cost", "6")
+        .expect("a Money cell has no expressible unit, so its bare number must be accepted");
+    let cost = state
+        .values
+        .iter()
+        .find(|v| v.name == "cost")
+        .expect("the Money cell must still be in the payload");
+    match cost.si_value {
+        Some(si) => assert!(
+            (si - 6.0).abs() < 1e-10,
+            "the bare number must land as the SI magnitude itself; got {si}"
+        ),
+        None => panic!("the Money cell must carry an si_value; got {cost:?}"),
+    }
+
+    // (c) The COVERED neighbour, in the SAME session, is untouched by the
+    // relaxation — it has a ladder, so a unit is expressible and required.
+    let err = session
+        .set_parameter("MoneyScope.width", "120")
+        .expect_err("a Length cell has a curated ladder, so it must still reject a bare number");
+    assert!(err.contains("Length"), "got {err:?}");
+    session
+        .set_parameter("MoneyScope.width", "120mm")
+        .expect("a united Length literal must still be accepted");
+
+    // (d) The honest statement of what makes (b) necessary: `USD` is NOT
+    // parseable here. It lives only in the compiler's per-module
+    // `UnitRegistry`, which the composed index deliberately excludes — so
+    // refusing the bare number would leave the cell with no accepted input.
+    let err = session
+        .set_parameter("MoneyScope.cost", "6USD")
+        .expect_err("`USD` is outside the composed index — pinned as fact, not aspiration");
+    assert!(
+        err.contains("Cannot parse value") && err.contains("6USD"),
+        "got {err:?}"
+    );
+}
+
+/// NAMEDNESS IS NOT THE KEY — EXPRESSIBILITY IS.
+///
+/// Reconciled in place from
+/// `parse_value_string_for_cell_falls_back_to_the_display_form_for_a_composed_dimension`,
+/// whose subject was "the gate must not be keyed on `canonical_name().is_some()`".
+/// That subject survives verbatim; only the direction the evidence points has
+/// changed. Under the coverage-conditional rule the m^7 cell it built is no
+/// longer gated either — not because it lacks a name, but because it lacks a
+/// LADDER, which is the same reason the NAMED `Money`/`Torque` cells are not.
+///
+/// So the two are asserted to behave IDENTICALLY: a future edit that re-keys the
+/// gate on namedness (either polarity) splits them and fails here.
 ///
 /// Driven at `parse_value_string_for_cell` directly rather than through
-/// `set_parameter`, because no `.ri` param type reaches that function carrying
-/// a nameless dimension: the surface syntax names its dimension, so every
-/// compiled cell that gets here has a canonical name. That makes this the ONLY
-/// coverage of the `unwrap_or_else(|| dimension.to_string())` fallback.
-///
-/// What it protects, concretely: keying the gate on `canonical_name().is_some()`
-/// instead of on `!dimension.is_dimensionless()` would read as an equivalent
-/// refactor, pass every other test in this block, and silently re-open the
-/// 1000× hazard for exactly the cells whose units are hardest to guess.
+/// `set_parameter`, because no `.ri` param type reaches that function carrying a
+/// nameless dimension: the surface syntax names its dimension, so every compiled
+/// cell that gets here has a canonical name.
 #[test]
-fn parse_value_string_for_cell_falls_back_to_the_display_form_for_a_composed_dimension() {
+fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness() {
     use reify_core::{DimensionVector, Type};
+    use reify_ir::Value;
 
     // m^7 — dimensionally meaningful, physically nobody's, and deliberately not
     // in `NAMED_DIMENSIONS`. Asserted rather than assumed: if a future edit ever
@@ -2562,36 +2667,100 @@ fn parse_value_string_for_cell_falls_back_to_the_display_form_for_a_composed_dim
     let composed = DimensionVector::LENGTH.pow(7);
     assert!(
         composed.canonical_name().is_none(),
-        "this test needs a dimension with NO canonical name; {composed} has one now — \
+        "this half needs a dimension with NO canonical name; {composed} has one now — \
          pick another exponent vector"
     );
     assert!(
         !composed.is_dimensionless(),
-        "m^7 must not be dimensionless, or the gate would correctly skip it"
+        "m^7 must not be dimensionless, or the dimensionless arm would carry it"
     );
-    let display_form = composed.to_string();
+
+    // (e) Torque: NAMED, and still uncovered by any curated ladder. No `.ri`
+    // fixture is needed to reach it, and it is the dimension the frontend
+    // fixtures use for the same rule.
+    let named_but_unladdered = DimensionVector::TORQUE;
+    assert!(
+        named_but_unladdered.canonical_name().is_some(),
+        "this half needs a NAMED dimension, or it cannot discriminate namedness \
+         from coverage"
+    );
+    assert!(
+        !crate::display_units::unit_ladders()
+            .iter()
+            .any(|l| Some(l.dimension.as_str()) == named_but_unladdered.canonical_name()),
+        "this half needs a named dimension with NO curated ladder; Torque has one \
+         now — pick another"
+    );
+
+    // Both ungated, and for the same reason. `matches!` on Int rather than a
+    // bare `is_ok()` so a future edit that starts coercing the bare number into
+    // a `Scalar` of the cell's dimension is caught too.
+    for dimension in [composed, named_but_unladdered] {
+        let parsed = crate::engine::parse_value_string_for_cell("120", &Type::Scalar { dimension })
+            .unwrap_or_else(|e| {
+                panic!(
+                    "no rung of any curated ladder can express {dimension}, so refusing its \
+                     bare number would leave the cell with no accepted input; got {e:?}"
+                )
+            });
+        assert!(
+            matches!(parsed, Value::Int(120)),
+            "an ungated cell keeps the context-free parse verbatim; {dimension} gave {parsed:?}"
+        );
+
+        // The gate stays scoped to Int/Real either way: a UNITED literal parses
+        // fine here and is left for reify-eval's `DimensionMismatch`, which is
+        // the layer that actually knows the two dimensions disagree.
+        crate::engine::parse_value_string_for_cell("120mm", &Type::Scalar { dimension })
+            .unwrap_or_else(|e| {
+                panic!("a united literal must still parse for {dimension}; got {e:?}")
+            });
+    }
+}
+
+/// The refusal a COVERED cell gets names its dimension and a rung from ITS OWN
+/// ladder — and does not claim a unit picker.
+///
+/// The picker claim was actively misleading: `pickerLadder` in
+/// `gui/src/panels/PropertyEditor.tsx` renders no `<select>` for a ladder with
+/// fewer than two rungs, and the `Force`/`Energy`/`Power` ladders carry exactly
+/// one each, so those cells were told to consult a control that does not exist.
+///
+/// The expected rung is DERIVED from `unit_ladders()` — any rung of the cell's
+/// own ladder satisfies it — rather than mirroring the implementation's choice
+/// of which one to name, which would make this a tautology.
+#[test]
+fn the_bare_number_refusal_names_a_rung_from_the_cells_own_ladder() {
+    use reify_core::{DimensionVector, Type};
 
     let err = crate::engine::parse_value_string_for_cell("120", &Type::Scalar {
-        dimension: composed,
+        dimension: DimensionVector::LENGTH,
     })
-    .expect_err("a bare number must be refused for a cell with a composed dimension");
-    assert!(
-        err.contains(&display_form),
-        "the rejection must name the dimension in its Display form ({display_form:?}) \
-         when there is no canonical name to use; got {err:?}"
-    );
-    assert!(
-        err.contains("120"),
-        "the rejection must quote the offending input; got {err:?}"
-    );
+    .expect_err("a covered cell must still refuse a bare number");
 
-    // The gate stays scoped to Int/Real: a UNITED literal on the same composed
-    // cell parses fine here and is left for reify-eval's `DimensionMismatch`,
-    // which is the layer that actually knows the two dimensions disagree.
-    crate::engine::parse_value_string_for_cell("120mm", &Type::Scalar {
-        dimension: composed,
-    })
-    .expect("a united literal must still parse — the dimension check is reify-eval's");
+    let ladder = crate::display_units::unit_ladders()
+        .into_iter()
+        .find(|l| l.dimension == "Length")
+        .expect("Length must have a curated ladder, or this test has no subject");
+    assert!(
+        ladder.units.iter().any(|u| {
+            err.contains(&format!(
+                "'120{}'",
+                crate::engine::normalize_unit_label(&u.label)
+            ))
+        }),
+        "the refusal must show a CONCRETE literal built from the offending input and a \
+         rung of this cell's own ladder; got {err:?}"
+    );
+    assert!(
+        err.contains("Length"),
+        "the refusal must still name the expected dimension; got {err:?}"
+    );
+    assert!(
+        !err.contains("picker"),
+        "the refusal must not point at a unit picker — the one-rung Force/Energy/Power \
+         ladders render none; got {err:?}"
+    );
 }
 
 /// A `Bool` for a `Length` cell still falls through to reify-eval.
