@@ -42,8 +42,8 @@ most likely failure mode of this whole exercise is a table of confident near-zer
 that are silent non-realizations.
 
 There is also a *third* outcome, distinct from both: `INDETERMINATE`, which is what a
-construct that compiles but never realizes produces (loft, `nurbs_surface`, degenerate
-cone — §1.5, §2.3).
+construct that compiles but never realizes produces (loft, degenerate cone — §1.5,
+§2.3).
 
 **Caveat 3 — sampled lower bound.** The reported deviation is a sampled lower bound on
 the true Hausdorff chord error (4 interior points per facet), and per PRD §2.1 only the
@@ -171,13 +171,31 @@ bounds, not suprema — see §2.4.
 Not measurable, recorded honestly:
 
 * **sweep along a helix**, either profile — `TIMEOUT > 90 s` at every `d` tried.
-* **`nurbs_surface(…)`** — `INDETERMINATE` in **0.22 s**, a *fast* fail, i.e. no
-  realization was attempted rather than a slow kernel failure. Consistent with the known
-  gap: `Operation::SurfaceNurbs` is absent from `occt_capability_descriptor()`
-  (`crates/reify-kernel-occt/src/register.rs:101-163`). `nurbs(…)` is excluded on
-  semantics, not behaviour: it returns a **Wire**, which has no facets and therefore no
-  chord deviation.
+* **`nurbs(…)`** is excluded on semantics, not behaviour: it returns a **Wire**, which
+  has no facets and therefore no chord deviation.
 * **loft** — blocked at realization, both failure modes below.
+
+**`nurbs_surface(…)` is measurable and does not belong in the list above.** The
+`INDETERMINATE` in 0.22 s originally recorded here was **not** a capability gap: it was
+an artifact of a flat, bare-`[x,y,z]`-literal control-point/weight encoding rejected at
+eval decode. `control_points`/`weights` are NESTED (u-major × v) grids
+(`NurbsSurface` in `crates/reify-ir/src/geometry.rs`), and every pole must be a
+`point3(…)` — `point3_components` (`crates/reify-eval/src/geometry_ops.rs:1209`)
+accepts only `Value::Point`/`Value::Vector` with 3 components, so a flat list of bare
+`[x,y,z]` literals decodes to `Value::List` and is rejected, leaving the subject
+undefined. Re-measured 2026-08-24 at HEAD=`2306e029ec` with the corrected nested
+encoding (3x3 u-major control net of `point3(…)` poles, nested unit weights, the same
+clamped knots `[0,0,0,1,1,1]` in both directions and `u_degree = v_degree = 2` as
+before):
+
+    error: RepresentationWithin: sampled facet deviation 1.713e-2 m exceeds bound 1.000e-6 m
+
+`Operation::SurfaceNurbs` remains genuinely absent from `occt_capability_descriptor()`
+(`crates/reify-kernel-occt/src/register.rs:101-163`) — that fact still holds. What was
+wrong was the inference that the absence prevents realization: it resolves instead via
+the `DEFAULT_KERNEL_NAME` fallback, which is exactly how the corrected call above
+realizes. No d-ladder row exists yet for this class — one measurement is not a ladder —
+tracked as follow-up ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`.
 
 ### 1.6 Loft is unreachable from the source language
 
@@ -411,7 +429,7 @@ expected values are continuous measurements that drift with OCCT and machine):
 | `tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri` | fillet blend |
 | `tests/prd-gate/fixtures/pnrg_envelope_sweep.ri` | sweep |
 | `tests/prd-gate/fixtures/pnrg_envelope_pipe.ri` | pipe |
-| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline (+ the `nurbs_surface` non-realization) |
+| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline (+ a commented, measurable `nurbs_surface` alternative) |
 | `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — **evidence only**, does not realize |
 | `tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri` | cost split |
 
