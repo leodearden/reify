@@ -1091,6 +1091,71 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
     ])('falls back to the union for %s on cell %s, which has %s', (literal, cellId) => {
       expect(typeInto(literal, ladders, cellId).accepted).toBe(true);
     });
+
+    // ── task #5757: a bare number is not a valid literal for a DIMENSIONED cell ──
+    //
+    // `20` in a Volume cell is ambiguous — 20 what? — and the engine used to
+    // resolve that ambiguity silently, reading it as 20 CUBIC METRES:
+    // `parse_value_string` yields Value::Int, reify-eval's
+    // `value_type_kind_matches` treats Int/Real as a dimension WILDCARD for
+    // Type::Scalar, and `validate_param_override` then skips its dimension check
+    // entirely because the value is not a Value::Scalar.
+    //
+    // The backend now refuses it (`parse_value_string_for_cell`). These cases
+    // pin the INLINE mirror: rejecting here is what keeps the typed text on
+    // screen under `data-invalid` for correction, instead of discarding it and
+    // replacing it with an async error toast.
+    it.each([
+      ['20', 'c1', 'Volume'],
+      ['7045002.24', 'c1', 'Volume'],
+      ['-5', 'c1', 'Volume'],
+      ['1e3', 'c1', 'Volume'],
+      ['20', 'c2', 'Density'],
+      ['7.8', 'c2', 'Density'],
+      // c3's dimension has NO curated ladder. Dimensionedness is a property of
+      // the cell, not of ladder coverage — a Torque cell still means N·m — so
+      // the bare number is refused there too, even though its unit picker has
+      // nothing to offer.
+      ['20', 'c3', 'Torque (no curated ladder)'],
+      ['-5', 'c3', 'Torque (no curated ladder)'],
+    ])('rejects the bare number %s on cell %s, which is dimensioned — %s', (literal, cellId) => {
+      expect(typeInto(literal, ladders, cellId).accepted).toBe(false);
+    });
+
+    it.each([
+      ['20'],
+      ['7045002.24'],
+      ['-5'],
+      ['1e3'],
+    ])('still accepts the bare number %s on the undimensioned cell', (literal) => {
+      // The gate must not touch dimensionless cells — every ratio/count slider
+      // in the panel is one. `typeInto` also asserts the value is submitted
+      // VERBATIM, so this covers the accept side end-to-end.
+      expect(typeInto(literal, ladders, 'c4').accepted).toBe(true);
+    });
+
+    // Gating the bare-number branch must not weaken the QUANTITY branch beside
+    // it: the widened per-cell alphabet, the cross-dimension narrowing, the
+    // superscript refusal and the non-quantity rules are all unchanged. Their
+    // primary coverage is the it.each blocks above; these are the specific
+    // pairings where a mis-scoped gate would show up first.
+    it.each([
+      ['5L', 'c1', true],
+      ['5mm^3', 'c1', true],
+      ['80mm', 'c1', true],
+      ['2kg/m^3', 'c2', true],
+      // Cross-dimension is still rejected by the per-cell alphabet…
+      ['2kg/m^3', 'c1', false],
+      ['5L', 'c2', false],
+      // …superscript input is still rejected…
+      ['5mm³', 'c1', false],
+      // …and the non-quantity rules still hold.
+      ['10xyz', 'c1', false],
+      ['5 mm^3', 'c1', false],
+      ['1e999L', 'c1', false],
+    ])('leaves the quantity branch unweakened: %s on %s → accepted=%s', (literal, cellId, expected) => {
+      expect(typeInto(literal, ladders, cellId).accepted).toBe(expected);
+    });
   });
 
   // The guard: the ladder-less path has not moved. The widening is scoped to
