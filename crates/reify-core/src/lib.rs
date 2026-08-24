@@ -25,6 +25,7 @@ pub mod field_calculus;
 pub mod kernel;
 pub mod hash;
 pub mod identity;
+pub mod overload;
 pub mod panic_payload;
 pub mod persistent_cache;
 pub mod primitives;
