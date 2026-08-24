@@ -42,10 +42,16 @@ have been unverifiable, not merely stale.
 figures this decision rests on, and they reproduce exactly across every
 pass, including this one. The *other* chunks' byte counts are not
 load-bearing and do drift as unrelated sibling tasks land documentation on
-`main` between passes: two rows moved between the original P1 pass and this
-one (`stdlib.md` 4606 → 5022, `geometry.md` 7200 → 8243, via `21991bb8a6`
-and `e88dbdf1b4` landing on `main`). A future re-run that finds a
-*non-`units.md`* row mismatched against this block is expected drift, not a
+`main` between passes: `stdlib.md` moved once (4606 → 5022, via
+`21991bb8a6`/`e88dbdf1b4`) and `geometry.md` has now moved *twice*
+(7200 → 8243 → 8622 — the second hop via `a29bcbe812`, which landed on
+`main` after the previous pass recorded this block at 8243). Any figure
+*derived* from these rows — the corpus mean, and which chunk currently
+ranks largest — is exactly as drift-subject as the rows themselves, even
+though it is written below as a plain number: treat it as this pass's
+snapshot, not a constant to cite forward. A future re-run that finds a
+*non-`units.md`* row, or a derived total/mean/rank built only from
+non-`units.md` rows, mismatched against this block is expected drift, not a
 falsified record; a mismatch on one of `units.md`'s own four numbers would
 be the thing to investigate.
 
@@ -69,14 +75,17 @@ $ for f in crates/reify-mcp/src/tools/chunks/*.md; do wc -c "$f"; done | sort -n
 5022 crates/reify-mcp/src/tools/chunks/stdlib.md
 6117 crates/reify-mcp/src/tools/chunks/units.md
 7227 crates/reify-mcp/src/tools/chunks/enums.md
-8243 crates/reify-mcp/src/tools/chunks/geometry.md
+8622 crates/reify-mcp/src/tools/chunks/geometry.md
 ```
 
-`units.md` is the **3rd largest of 17** — below `geometry.md` (8243) and
-`enums.md` (7227) — against a corpus mean of 49262 / 17 ≈ **2898 bytes**.
-`geometry.md` and `enums.md` have swapped rank since P1 (`geometry.md` was
-7200, now the corpus's largest chunk at 8243), but `units.md`'s own rank —
-3rd of 17 — is unaffected either way.
+`units.md` is the **3rd largest of 17** — below `geometry.md` (8622) and
+`enums.md` (7227) — against a corpus mean of 49641 / 17 ≈ **2920 bytes**.
+(That mean and the exact `geometry.md` figure are this pass's snapshot, not
+a constant — see the drift note above; recompute rather than cite them
+forward.) `geometry.md` and `enums.md` swapped rank between P1 and the
+previous pass (`geometry.md` was 7200, then 8243), and `geometry.md` has
+grown again since (8243 → 8622); `units.md`'s own rank — 3rd of 17 — is
+unaffected by any of it.
 
 ### `units.md` internal split
 
@@ -143,15 +152,22 @@ PASS: 22 | FAIL: 0 | SKIP: 0
 
 **No relocation (lever a). No compression (lever b).** The angle-crossing
 doctrine stays in `units.md` at its current byte weight, and this task does
-not edit `units.md` at all — every measurement above and in §5 confirms the
-chunk corpus is byte-identical to `main` throughout, including across the
-guard-test attempt described in §4.
+not edit `units.md`, any other chunk file, or `language_chunks.rs` at
+all — §5's merge-base-anchored diff confirms this task's own change is the
+note you are reading and nothing else, including across the guard-test
+attempt described in §4. (A raw `git diff ... main` against the wider
+`chunks/` directory can show *unrelated* drift from sibling tasks landing
+on `main` after this branch forked — the same phenomenon as §1's
+byte-census drift, on a different instrument; see §5.)
 
 ## 3. Why no change
 
 **(i) Absolute size is not an outlier.** `units.md` at 6117 bytes is the 3rd
-largest of 17 chunks, below `geometry.md` (8243) and `enums.md` (7227);
-corpus mean ~2898. No per-topic size policy exists anywhere in `docs/prds/`
+largest of 17 chunks, below `geometry.md` (8622) and `enums.md` (7227);
+corpus mean ~2920 (§1's byte census — the `geometry.md` figure and the mean
+are today's snapshot of chunks this task does not touch and will drift
+again; `units.md`'s 3rd-of-17 rank is what does not). No per-topic size
+policy exists anywhere in `docs/prds/`
 or `docs/legibility/` (grepped, zero hits). The MCP tool serves one topic
 per call (`reference.rs` → `get_chunk`), so a large chunk costs only the
 author who asked for that topic. No consumer-side budget complaint exists.
@@ -275,9 +291,10 @@ An earlier revision of this branch added the two guard tests described in
 §4 to `language_chunks.rs`; comprehensive review rejected them as
 documentation meta-tests, and they were removed along with the
 `chunk_corpus()`/`CORPUS` infrastructure that backed them, leaving
-`crates/reify-mcp/` byte-identical to `main` again. The counts below are
-lower than an earlier pass on this branch recorded, on purpose, reflecting
-that removal.
+`language_chunks.rs` byte-identical to `main` again (the wider
+`crates/reify-mcp/` tree is not, for reasons unrelated to that removal —
+see the drift note further down). The counts below are lower than an
+earlier pass on this branch recorded, on purpose, reflecting that removal.
 
 The `Hz`/`rad/s` and PDOCCOVER-name grep instruments still reproduce
 byte-for-byte against the §1 blocks above — re-run fresh for this section,
@@ -301,29 +318,65 @@ $ cargo clippy -p reify-mcp --all-targets -- -D warnings
 BUILD OK | warnings: 0 | errors: 0
 ```
 
-And directly, rather than inferred from instrument output — the chunk
-corpus itself has zero diff against `main`, and `language_chunks.rs`
-itself is byte-identical to `main` too:
+And directly, rather than inferred from instrument output —
+`language_chunks.rs` itself is byte-identical to `main`:
 
 ```
-$ git diff --stat main -- crates/reify-mcp/src/tools/chunks/
-(no output)
-$ git diff --stat main -- crates/reify-mcp/
-(no output)
 $ git diff main -- crates/reify-mcp/src/tools/language_chunks.rs
 (no output)
 ```
 
-This is what discharges hard constraints 1, 3 and 4, and keeps #5790 (ξ)'s
-L1–53 seam untouched.
+`units.md` specifically is also byte-identical to `main` — this is the
+per-file check that actually matters for the verdict:
+
+```
+$ git diff main -- crates/reify-mcp/src/tools/chunks/units.md
+(no output)
+```
+
+A *whole-directory* `git diff --stat main -- crates/reify-mcp/src/tools/chunks/`
+is a weaker check than it looks, for the same reason §1's byte census
+drifts: `main` keeps moving after this branch forked, so the comparison
+also picks up sibling tasks' edits to chunk files this task never touched.
+Run fresh for this pass, it is no longer empty:
+
+```
+$ git diff --stat main -- crates/reify-mcp/src/tools/chunks/
+ crates/reify-mcp/src/tools/chunks/constraints.md | 4 ++--
+ crates/reify-mcp/src/tools/chunks/traits.md      | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+$ git diff --stat main -- crates/reify-mcp/
+ crates/reify-mcp/src/tools/chunks/constraints.md | 4 ++--
+ crates/reify-mcp/src/tools/chunks/traits.md      | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+```
+
+Both hunks are `// pdoccover:allow` annotations `main` gained on
+`constraints.md` and `traits.md` via task #6213 (`1b644bf57e`,
+`f80ad0dc4c`), after this branch's merge-base — neither file is in this
+task's scope or this note's subject matter, and neither touches `units.md`
+or the angle-crossing/field-operator vocabulary. (An earlier pass on this
+branch recorded these two blocks empty; that was accurate at the time and
+stopped being accurate the moment #6213 landed on `main` — the same kind of
+drift §1 already documents for byte counts, showing up on a `git diff`
+instrument instead of `wc` this time.)
+
+The per-file checks above — `units.md` and `language_chunks.rs` both
+byte-identical to `main` — are what actually discharge hard constraints 1,
+3 and 4 and keep #5790 (ξ)'s L1–53 seam untouched; the whole-directory
+`--stat` is included for transparency, not as the load-bearing proof, since
+it is exactly as drift-prone as §1's byte census and for the same reason.
 
 **One honestly-reported wrinkle.** `main` has independently advanced since
 this branch's own base (unrelated merges and docs commits this task did
-not touch), so an unscoped `git diff --stat main` would not isolate this
-task's own diff; the merge-base-anchored, `--name-only` form below does
-instead (path list, not an insertion count, because a count would be
-self-referential — any later edit to this section changes the number it
-would quote):
+not touch — the `constraints.md`/`traits.md` annotations above are one
+example), so an unscoped `git diff --stat main` does not isolate this
+task's own diff, and can drift between passes exactly as shown above; the
+merge-base-anchored, `--name-only` form below is not subject to that
+drift, because it diffs from a fixed historical point (this branch's fork
+point) rather than `main`'s moving tip (path list, not an insertion count,
+because a count would be self-referential — any later edit to this section
+changes the number it would quote):
 
 ```
 $ git diff --name-only "$(git merge-base HEAD main)" HEAD
@@ -331,6 +384,7 @@ docs/notes/angle-crossing-doctrine-placement-2026-08-19.md
 ```
 
 This task's entire diff, relative to where it actually branched, is this
-note and nothing else — `crates/reify-mcp/` nets to zero change, per the
-empty `git diff --stat main -- crates/reify-mcp/` above, and no chunk
-`.md` file, in particular not `units.md`, was ever touched.
+note and nothing else — confirmed by the merge-base-anchored form above,
+which lists only this file, and by the two per-file `main`-diffs above
+(`units.md`, `language_chunks.rs`) both being empty. No chunk `.md` file,
+in particular not `units.md`, was ever touched by this task.
