@@ -723,15 +723,6 @@ fn detect_underdetermined<'t>(
     // themselves (LAYER 4, task #5467 / PRD2 α).  See the "let-tracing" section
     // of this fn's doc comment for why one hop is not enough.
     let mut seeds: Vec<&CompiledExpr> = Vec::new();
-    // TEMPLATE-LOCAL PROVENANCE, feeding the third membership disjunct below
-    // (task #5467 amendment round 2): the subset of these same reads that were
-    // ALREADY template-keyed AT THEIR SOURCE — template `T`'s own constraint or
-    // objective naming a cell spelled `T.<member>`. Accumulated in THIS loop
-    // rather than by a second sweep so the two can never come to describe
-    // different expression sets. Costs one extra `extract_value_deps` pass over
-    // the seeds per eval, against `read_closure`'s same pass plus a transitive
-    // walk.
-    let mut template_local_reads: HashSet<ValueCellId> = HashSet::new();
     for template in templates {
         // Constraints, then objective terms — objective read-sets mirror
         // `detect_scope_coupling` at engine_eval.rs:609-614.
@@ -743,11 +734,6 @@ fn detect_underdetermined<'t>(
         );
         for expr in own_exprs {
             seeds.push(expr);
-            for dep in crate::deps::extract_value_deps(expr) {
-                if dep.entity == template.name {
-                    template_local_reads.insert(dep);
-                }
-            }
         }
     }
     // SHARED with layers 1 and 3 (task #5467 amendment): the caller owns one
@@ -797,7 +783,7 @@ fn detect_underdetermined<'t>(
             if global_reads.contains(&cell.id) {
                 continue;
             }
-            // DISJUNCTS 2 and 3 — the REVERSE answer. Deliberately ordered
+            // DISJUNCT 2 — the REVERSE answer. Deliberately ordered
             // AFTER disjunct 1 so the reverse probe runs only for a cell that
             // would OTHERWISE BE WARNED ABOUT, a set that is empty in the
             // overwhelming majority of models. That ordering is what keeps the
@@ -818,12 +804,7 @@ fn detect_underdetermined<'t>(
             // auto -> readers relation once with provenance tags, which is a
             // signature change across all three consumers and outside task
             // #5467's lock set.
-            if auto_is_pinned_through_a_reader(
-                index,
-                &global_reads,
-                &template_local_reads,
-                &cell.id,
-            ) {
+            if auto_is_pinned_through_a_reader(index, &global_reads, &cell.id) {
                 continue;
             }
             let cell_id = &cell.id;
@@ -838,10 +819,10 @@ fn detect_underdetermined<'t>(
     diagnostics
 }
 
-/// LAYER 4's second and third membership disjuncts (task #5467 amendment round
-/// 2, review finding 1): is `auto` pinned by a constraint that reaches it only
-/// THROUGH a reader cell whose own spelling the forward closure never projects
-/// back onto `auto`?
+/// LAYER 4's second membership disjunct (task #5467 amendment round 2, review
+/// finding 1): is `auto` pinned by a constraint that reaches it only THROUGH a
+/// reader cell whose own spelling the forward closure never projects back onto
+/// `auto`?
 ///
 /// # The gap this closes
 ///
@@ -868,7 +849,8 @@ fn detect_underdetermined<'t>(
 /// from 2 diagnostics to 0 while both autos remain `Value::Undef` — the
 /// loud-correct-warning-becomes-a-silent-`Undef` failure this branch guards
 /// against everywhere else, and strictly worse than the false positive it cures.
-/// The two disjuncts below cover every shape it covers and none it does not.
+/// The single guarded disjunct below covers the shapes layer 1 actually solves
+/// and none it does not.
 ///
 /// * **INSTANCE RE-PROJECTION.** Ask whether the reader is named under THIS
 ///   auto's OWN instance path anywhere in the closure:
@@ -879,28 +861,49 @@ fn detect_underdetermined<'t>(
 ///   `normalize_cell_id` it is one-to-one in the direction used, so a pin on
 ///   `Sib.b1.fit` cannot reach `Sib.b2.bore`. The masking argument at
 ///   [`CellReadIndex::read_closure`] is respected, not worked around.
-/// * **TEMPLATE-LOCAL PROVENANCE.** A read that was already template-keyed at
-///   its SOURCE — `Bearing2`'s own `constraint self.fit == 20mm` reading
-///   `Bearing2.fit` — genuinely applies to every instance of `Bearing2`, so
-///   honouring it cannot mask a sibling. This is the disjunct re-projection
-///   provably cannot replace: the reader is `Bearing2.fit` and `Own.b.fit` is
-///   nowhere in the closure. Pinned by
-///   `an_auto_pinned_only_by_a_constraint_inside_its_declaring_child_is_not_flagged`.
 ///
-/// # The two guards both disjuncts carry (review esc-5467-16)
+/// # The disjunct that was here and is NOT (review esc-5467-18)
+///
+/// An earlier round carried a THIRD disjunct, **TEMPLATE-LOCAL PROVENANCE**:
+/// unflag whenever the reader was already template-keyed at its SOURCE, as
+/// `Bearing2`'s own `constraint self.fit == 20mm` reading `Bearing2.fit` is. Its
+/// argument was that such a read applies to every instance of `Bearing2` and so
+/// cannot mask a sibling. That is true about the CONSTRAINT and false about the
+/// SOLVE, which is the only thing layer 4 is entitled to speak for. Disjunct 1's
+/// forward closure already expands through template-local `let`s, so the only
+/// shapes the disjunct ADDED were instance-path-keyed autos (`Own.b.bore`, minted
+/// by the sub-override at `reify-compiler/src/entity.rs`) pinned by a constraint
+/// living in the CHILD template. Layer 1 does not solve those:
+/// [`filter_constraints_reading_autos`] only ever filters the constraints of the
+/// scope that OWNS the auto (`Own`), so `Bearing2`'s constraint never enters
+/// `Own`'s `ResolutionProblem`, and `Bearing2`'s own scope has no autos so
+/// `build_solver_problem` returns `None` there.
+///
+/// MEASURED on the `CONSTRAINT_INSIDE_THE_DECLARING_CHILD` fixture through
+/// `SolverRegistry::production()`: `Own.b.bore = Undef`, `Own.b.fit = Undef`, and
+/// with the disjunct in place ZERO diagnostics — i.e. it converted `main`'s loud
+/// and TRUE warning into a silent `Undef`, the exact failure this fn's own
+/// drivability argument below calls "strictly worse than not widening at all".
+/// The drivability gate does not rescue it either: `Own.b` is `Bearing2`'s single
+/// instance, so the oracle answers `true` while the solve still does not happen.
+/// Making that premise true means widening layer 1 to admit and re-project a
+/// child's own constraints onto the alias path — a real feature, out of scope
+/// here. Pinned, in its honest direction, by
+/// `an_auto_pinned_only_by_a_constraint_inside_its_declaring_child_is_flagged`.
+///
+/// # The two guards the disjunct carries (review esc-5467-16)
 ///
 /// * **DECLARING-TEMPLATE.** `reader.entity == normalised(auto.entity)` narrows
-///   BOTH disjuncts to readers that genuinely live in the auto's DECLARING
+///   the disjunct to readers that genuinely live in the auto's DECLARING
 ///   template. Without it, `cells_reaching`'s normalised seeding can surface a
 ///   reader that is template-local to the auto's CONTAINER instead — `Sib`'s own
 ///   `let fit = self.b1.bore * 2` is reached from `Sib.b2.bore`'s normalised
 ///   seed via the shared `Bearing.bore` key — and masking b2 with b1's pin is
 ///   exactly the false negative the re-projection is shaped to avoid. Pinned by
 ///   `a_container_local_let_reading_one_sibling_does_not_mask_the_other`. The
-///   SAME guard is load-bearing on re-projection for a second, independent
-///   reason: both disjuncts key on the reader's MEMBER NAME alone, so an
-///   unrelated entity that happens to own a member of the same name unflags a
-///   genuinely free auto. Pinned by
+///   SAME guard is load-bearing for a second, independent reason: the disjunct
+///   keys on the reader's MEMBER NAME alone, so an unrelated entity that happens
+///   to own a member of the same name unflags a genuinely free auto. Pinned by
 ///   `a_colliding_member_name_in_another_entity_does_not_mask_a_free_auto`.
 /// * **DRIVABILITY.** Re-projection additionally requires that stage (g) of
 ///   [`build_dependent_cells`] will actually EMIT alias entries under this
@@ -912,20 +915,18 @@ fn detect_underdetermined<'t>(
 ///   cannot drive turns a loud, correct warning into a silent `Undef` —
 ///   strictly worse than not widening at all. Pinned by
 ///   `two_sibling_instances_sharing_a_child_side_let_are_flagged_independently`,
-///   which asserts the VALUES as well as the count. The template-local disjunct
-///   needs no such gate: it makes no instance-path claim, so it is answered in
-///   the template namespace layer 1 already solves in.
+///   which asserts the VALUES as well as the count. It is checked FIRST, before
+///   the reverse walk, since it does not depend on the reader.
 ///
 /// # D1 / B2 identity
 ///
 /// By construction, as with every other α widening: an auto whose
 /// `cells_reaching` is EMPTY — every auto in a model with no dependent cells at
-/// all — keeps today's verdict byte-identically, and both disjuncts can only
-/// ever UNFLAG, never flag.
+/// all — keeps today's verdict byte-identically, and the disjunct can only ever
+/// UNFLAG, never flag.
 fn auto_is_pinned_through_a_reader(
     index: &CellReadIndex<'_>,
     global_reads: &HashSet<ValueCellId>,
-    template_local_reads: &HashSet<ValueCellId>,
     auto: &ValueCellId,
 ) -> bool {
     let mut seed: HashSet<ValueCellId> = HashSet::with_capacity(1);
@@ -944,6 +945,12 @@ fn auto_is_pinned_through_a_reader(
         .single_instance_alias_paths()
         .get(declaring.as_str())
         .is_some_and(|path| *path == auto.entity);
+    // Hoisted out of the `any` below: the oracle does not depend on the reader,
+    // and answering it FIRST skips the reverse walk entirely for an auto layer 1
+    // could not drive under any reader.
+    if !drivable_through_this_instance_path {
+        return false;
+    }
     index.cells_reaching(&seed).iter().any(|reader| {
         // THE DECLARING-TEMPLATE GUARD, on BOTH disjuncts (review esc-5467-16
         // finding 1). `cells_reaching`'s additive normalised seeding surfaces
@@ -961,12 +968,10 @@ fn auto_is_pinned_through_a_reader(
         if reader.entity != declaring {
             return false;
         }
-        template_local_reads.contains(reader)
-            || (drivable_through_this_instance_path
-                && global_reads.contains(&ValueCellId::new(
-                    auto.entity.clone(),
-                    reader.member.clone(),
-                )))
+        global_reads.contains(&ValueCellId::new(
+            auto.entity.clone(),
+            reader.member.clone(),
+        ))
     })
 }
 

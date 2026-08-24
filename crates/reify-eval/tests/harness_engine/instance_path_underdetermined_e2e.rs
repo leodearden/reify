@@ -450,6 +450,9 @@ fn two_sibling_instances_sharing_a_child_side_let_are_flagged_independently() {
 /// The shape a pure instance re-projection provably CANNOT reach: the pinning
 /// constraint lives INSIDE the declaring child, so the reader `Bearing2.fit` is
 /// template-keyed at its source and `Own.b.fit` appears nowhere in the closure.
+///
+/// It is ALSO the shape layer 1 does not solve — see the test below — so layer 4
+/// must keep WARNING about it, not quietly unflag it.
 const CONSTRAINT_INSIDE_THE_DECLARING_CHILD: &str = r#"
 structure Bearing2 {
     param bore : Length = 10mm
@@ -462,30 +465,75 @@ structure Own {
 }
 "#;
 
-/// A constraint written inside the declaring child pins the auto for EVERY
-/// instance of that child, so `Own.b.bore` is not free.
+/// A constraint written inside the declaring child does NOT reach the
+/// instance-path-keyed auto `Own.b.bore` through any layer this task builds, so
+/// the warning must survive — matching `main` (review esc-5467-18).
 ///
-/// RED before step-30, and the same finding-1 defect class one seam over. This
-/// case is what forces the TEMPLATE-LOCAL-PROVENANCE disjunct: the reader is
-/// `Bearing2.fit`, re-projecting it onto this auto's own instance path gives
-/// `Own.b.fit`, and nothing ever mints that id — so a two-disjunct fix
-/// (raw + re-projection) leaves this shape false-positive.
+/// # Why this is an expectation and not a bug left in place
+///
+/// An earlier round of this branch unflagged this shape via a TEMPLATE-LOCAL
+/// PROVENANCE disjunct in `auto_is_pinned_through_a_reader`, arguing that a read
+/// already template-keyed at its source pins every instance of `Bearing2`. That
+/// is a true statement about the CONSTRAINT and a false one about the SOLVE:
+/// `filter_constraints_reading_autos` (layer 1) only filters the constraints of
+/// the scope that OWNS the auto — `Own` — so `Bearing2`'s constraint never enters
+/// `Own`'s `ResolutionProblem`, while `Bearing2`'s own scope holds no autos and
+/// yields no problem at all. Nothing solves `Own.b.bore`; the disjunct only
+/// stopped layer 4 from saying so.
+///
+/// Widening layer 1 to admit a child's own constraints and re-project them onto
+/// the alias path is a real feature and is OUT OF SCOPE for task #5467. Until it
+/// lands, the honest verdict is `main`'s: one loud, TRUE `W_UNDERDETERMINED`.
+///
+/// # Why the VALUE half is not optional
+///
+/// A count alone cannot distinguish "still unsolved and correctly warned" from
+/// "solved, and the warning is now a false positive" — the second would be GOOD
+/// news and would demand the opposite edit. Asserting `Undef` through the real
+/// `SolverRegistry::production()` is what makes the two halves unable to disagree
+/// silently, exactly as
+/// `two_sibling_instances_sharing_a_child_side_let_are_flagged_independently`
+/// does one seam over.
 #[test]
-fn an_auto_pinned_only_by_a_constraint_inside_its_declaring_child_is_not_flagged() {
+fn an_auto_pinned_only_by_a_constraint_inside_its_declaring_child_is_flagged() {
     let result = eval_through_reify_check(
         CONSTRAINT_INSIDE_THE_DECLARING_CHILD,
         "child-internal constraint",
     );
 
     let flagged = underdetermined(&result);
-    assert!(
-        flagged.is_empty(),
-        "`constraint self.fit == 20mm` is written inside `Bearing2`, so it \
-         applies to every instance of `Bearing2` — including the one `Own.b` \
-         names, whose `bore` the sub-override minted as `Own.b.bore`. A read \
-         that was ALREADY template-keyed at its source genuinely pins every \
-         instance, so honouring it cannot mask a sibling. Got {flagged:#?}",
+    assert_eq!(
+        flagged.len(),
+        1,
+        "`Own.b.bore` is minted by the sub-override and is solved by NO layer \
+         (asserted below), so exactly one W_UNDERDETERMINED must name it. ZERO \
+         here is the esc-5467-18 regression: layer 4 unflagged an auto layer 1 \
+         never drives, turning `main`'s loud correct warning into a silent \
+         `Undef`. Got {flagged:#?}",
     );
+    assert!(
+        flagged[0].message.contains("Own.b.bore"),
+        "the diagnostic must name the instance-path-keyed auto `Own.b.bore`; \
+         got: {}",
+        flagged[0].message,
+    );
+
+    // The half a count cannot express: the warning is TRUE.
+    let solved = eval_through_production_registry(
+        CONSTRAINT_INSIDE_THE_DECLARING_CHILD,
+        "child-internal constraint",
+    );
+    for member in ["bore", "fit"] {
+        let got = solved.values.get(&ValueCellId::new("Own.b", member));
+        assert!(
+            matches!(got, None | Some(reify_ir::Value::Undef)),
+            "`Own.b.{member}` is expected to stay unresolved: layer 1 admits \
+             only `Own`'s OWN constraints, and `Own` has none. If it now \
+             RESOLVES, layer 1 was widened to re-project child-side constraints \
+             — that is good news; drop the W_UNDERDETERMINED expectation above \
+             in the SAME change, and never the other way round. Got {got:?}",
+        );
+    }
 }
 
 /// The counterexample that forces the DECLARING-TEMPLATE guard on the
@@ -618,3 +666,4 @@ fn a_colliding_member_name_in_another_entity_does_not_mask_a_free_auto() {
         );
     }
 }
+
