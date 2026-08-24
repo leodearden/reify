@@ -507,6 +507,57 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
     None
 }
 
+/// The name a top-level [`Declaration`] declares, paired with the
+/// declaration's own statement span — or `None` for the kinds that declare
+/// no name of their own.
+///
+/// This is the UNIFORM source of declaration names for same-file
+/// go-to-definition (task 6388). The match is deliberately **exhaustive with no
+/// `_` wildcard arm**: that is the load-bearing part of the design. Every other
+/// declaration scan in this crate is a per-kind allowlist
+/// (`goto_def::find_declaration_name_span` at 6 kinds,
+/// `references::classify_top_level_decl` at 5,
+/// `compute_document_symbols_from_parsed` at 5), and every one of them silently
+/// dropped Purpose/Constraint/Unit/TypeAlias/Joint when the parser grew them. A
+/// wildcard-free match turns a new `Declaration` variant into a COMPILE ERROR
+/// here, forcing an explicit named-vs-unnamed decision instead of a silent
+/// omission.
+///
+/// The returned span is the whole declaration statement, NOT the name token —
+/// narrow it with [`name_token_span`] when a jump target is wanted.
+///
+/// `goto_def::find_declaration_name_span` and `references::classify_top_level_decl`
+/// deliberately do NOT delegate to this helper: both are the rename/references
+/// oracle, whose use-site collectors walk expression identifiers only, so
+/// widening them to a type-position-only kind would yield a rename that moves
+/// the declaration token and misses every use site (task 6388 CRITICAL
+/// CONSTRAINT; see the guard test
+/// `rename_and_references_unaffected_by_same_file_goto_def_declaration_names`
+/// in references.rs).
+pub fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
+    let named = match decl {
+        Declaration::Structure(s) => (s.name.as_str(), s.span),
+        Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+        Declaration::Enum(e) => (e.name.as_str(), e.span),
+        Declaration::Function(f) => (f.name.as_str(), f.span),
+        Declaration::Trait(t) => (t.name.as_str(), t.span),
+        Declaration::Field(f) => (f.name.as_str(), f.span),
+        Declaration::Purpose(p) => (p.name.as_str(), p.span),
+        Declaration::Constraint(c) => (c.name.as_str(), c.span),
+        Declaration::Unit(u) => (u.name.as_str(), u.span),
+        Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
+        Declaration::Joint(j) => (j.name.as_str(), j.span),
+        // Binds a path/entity, not a new name — goto-def's cross-file Phase 0
+        // owns the cursor-in-import case.
+        Declaration::Import(_) => return None,
+        // A dotted module path, not a declared name.
+        Declaration::Module(_) => return None,
+        // Binds an EXISTING type to a value; introduces no new name.
+        Declaration::Default(_) => return None,
+    };
+    Some(named)
+}
+
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
