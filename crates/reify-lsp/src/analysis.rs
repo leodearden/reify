@@ -2563,8 +2563,9 @@ mod tests {
     /// Every snippet is lifted (verbatim or near-verbatim) from an existing
     /// passing source — `crates/reify-syntax/tests/harness_syntax/*` or
     /// `tree-sitter-reify/test/corpus/*` — rather than invented, so a RED
-    /// assertion can never be doomed by a surface-syntax guess. Shared with
-    /// goto_def.rs's equivalent table so the two stay in lockstep.
+    /// assertion can never be doomed by a surface-syntax guess. Mirrored by
+    /// `goto_def::tests::NAMED_DECL_SNIPPETS` (this module is private, so the
+    /// table is duplicated rather than shared).
     const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
         ("structure S { param x : Length = 5mm }", "S"),
         ("occurrence def Welding { param method : Length }", "Welding"),

@@ -492,13 +492,28 @@ mod tests {
     }
 
     #[test]
-    fn goto_def_structure_name_returns_none() {
+    fn goto_def_structure_name_resolves_to_its_own_name_token() {
+        // Task 6388: goto-def on a top-level declaration NAME used to return
+        // None — a deliberate non-goal, now lifted. Standard LSP behaviour is
+        // that goto-def on a definition returns that definition, and the
+        // cross-file path (find_declaration_name_span) has always returned the
+        // NAME TOKEN for the very same symbol; this closes that asymmetry.
         let source = reify_test_support::bracket_source();
         // 'Bracket' on line 0: "structure def Bracket {"
         let position = Position::new(0, 16);
-        assert!(
-            compute_goto_definition(source, &test_uri(), position).is_none(),
-            "goto-def on structure name should return None"
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def on a structure name should resolve to its own name token");
+        assert_eq!(loc.uri, test_uri());
+
+        // Derive the expected columns from the fixture rather than hard-coding
+        // 14/21, so the assertion survives a fixture edit.
+        let name_start = source.find("Bracket").expect("fixture declares Bracket");
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, name_start as u32);
+        assert_eq!(loc.range.end.line, 0);
+        assert_eq!(
+            loc.range.end.character,
+            (name_start + "Bracket".len()) as u32
         );
     }
 
@@ -709,14 +724,146 @@ mod tests {
     }
 
     #[test]
-    fn goto_def_unknown_word_returns_none() {
+    fn goto_def_declaration_name_resolves_to_itself() {
+        // Task 6388: this source/position pair used to be asserted as None by a
+        // test misleadingly named `goto_def_unknown_word_returns_none` — 'Foo'
+        // is not an unknown word, it is the structure's own name. It now
+        // resolves to its own name token.
         let source = "structure Foo {\n  param x: Length = 5mm\n}";
-        // Position past end of meaningful content
         let position = Position::new(0, 12); // on 'Foo'
-        // 'Foo' is a structure name, should return None
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def on a declaration name should resolve to itself");
+        assert_eq!(loc.uri, test_uri());
+        let name_start = source.find("Foo").expect("source declares Foo");
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, name_start as u32);
+        assert_eq!(loc.range.end.line, 0);
+        assert_eq!(loc.range.end.character, (name_start + "Foo".len()) as u32);
+    }
+
+    #[test]
+    fn goto_def_unknown_word_returns_none() {
+        // The genuine no-match contract (task 6388 keeps this covered, with an
+        // honest fixture): a word naming neither a member nor a top-level
+        // declaration still returns None.
+        let source = "structure Foo {\n    let y = nowhere\n}";
+        let unknown = source.find("nowhere").expect("source mentions nowhere");
+        let position = crate::convert::offset_to_position(source, unknown as u32 + 1);
         assert!(
             compute_goto_definition(source, &test_uri(), position).is_none(),
-            "goto-def on structure name should return None"
+            "goto-def on a word matching no member and no declaration should return None"
+        );
+    }
+
+    // --- task 6388: uniform same-file declaration-name resolution ---
+
+    /// One verified-parseable snippet per NAMED `Declaration` variant, paired
+    /// with the name it declares.
+    ///
+    /// Mirrors `analysis::tests::NAMED_DECL_SNIPPETS` (that module is private,
+    /// so the table is duplicated rather than shared). Every snippet is lifted
+    /// from an existing passing source — `crates/reify-syntax/tests/
+    /// harness_syntax/*` or `tree-sitter-reify/test/corpus/*` — rather than
+    /// invented, so no assertion can be doomed by a surface-syntax guess.
+    const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
+        ("structure S { param x : Length = 5mm }", "S"),
+        ("occurrence def Welding { param method : Length }", "Welding"),
+        ("enum Dir { In, Out }", "Dir"),
+        ("fn id_length(x: Length) -> Length { x }", "id_length"),
+        ("trait Rigid { param mass : Mass }", "Rigid"),
+        (
+            "field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
+            "temp",
+        ),
+        (
+            "purpose lightweight(subject : Structure) { minimize subject.mass }",
+            "lightweight",
+        ),
+        ("constraint def Foo { x > 0 }", "Foo"),
+        ("unit meter : Length", "meter"),
+        ("type Pressure = Force", "Pressure"),
+        (
+            "joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)",
+            "ball",
+        ),
+    ];
+
+    /// Convert an LSP range back to the `[start, end)` byte range it covers.
+    fn range_to_byte_range(source: &str, range: Range) -> (usize, usize) {
+        (
+            position_to_offset(source, range.start),
+            position_to_offset(source, range.end),
+        )
+    }
+
+    #[test]
+    fn goto_def_cursor_on_declaration_name_resolves_for_every_kind() {
+        for (source, name) in NAMED_DECL_SNIPPETS {
+            let name_offset = source
+                .find(name)
+                .unwrap_or_else(|| panic!("snippet must contain {name:?}: {source}"));
+            // One byte INSIDE the name token, so `find_word_at_offset` yields it.
+            let position = crate::convert::offset_to_position(source, name_offset as u32 + 1);
+
+            let loc = compute_goto_definition(source, &test_uri(), position)
+                .unwrap_or_else(|| panic!("goto-def on {name:?} returned None for: {source}"));
+            assert_eq!(loc.uri, test_uri(), "uri mismatch for: {source}");
+
+            let (lo, hi) = range_to_byte_range(source, loc.range);
+            assert_eq!(
+                &source[lo..hi],
+                *name,
+                "goto-def range {:?} sliced to {:?}, expected exactly {name:?} for: {source}",
+                loc.range,
+                &source[lo..hi]
+            );
+            assert_eq!(
+                lo, name_offset,
+                "goto-def should land on the DECLARATION's own name token for: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn goto_def_unnamed_declaration_kinds_return_none() {
+        // The three `Declaration` variants that declare no name of their own.
+        // Driven through the SINGLE-FILE entry point on purpose: the cross-file
+        // Phase 0 would navigate an `import` to its target file, which is a
+        // different contract.
+        let cases = [
+            ("import parts.Hole", "parts"),
+            ("module a.b.c", "a"),
+            ("default Material = steel", "Material"),
+        ];
+        for (source, word) in cases {
+            let offset = source
+                .find(word)
+                .unwrap_or_else(|| panic!("snippet must contain {word:?}: {source}"));
+            let position = crate::convert::offset_to_position(source, offset as u32 + 1);
+            assert!(
+                compute_goto_definition(source, &test_uri(), position).is_none(),
+                "unnamed declaration kind should not resolve {word:?} for: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn goto_def_purpose_nested_structure_is_not_top_level() {
+        // DELIBERATE SCOPE BOUNDARY, not an oversight. A `structure def` nested
+        // directly inside a `purpose` body lands in `PurposeDef.structures`, not
+        // in `ParsedModule.declarations`, so it is not a TOP-LEVEL declaration
+        // and task 6388's uniform declaration-name resolution does not reach it.
+        // Whether such a name is even visible outside its enclosing purpose is a
+        // language-semantics question this task does not answer; pinning the
+        // current None keeps the boundary explicit rather than latent.
+        let source = "purpose Exploration() {\n    structure def InPurpose {\n        param x : Length = 5mm\n    }\n}";
+        let offset = source
+            .find("InPurpose")
+            .expect("source declares InPurpose");
+        let position = crate::convert::offset_to_position(source, offset as u32 + 1);
+        assert!(
+            compute_goto_definition(source, &test_uri(), position).is_none(),
+            "a purpose-nested structure name is not a top-level declaration"
         );
     }
 
