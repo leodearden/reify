@@ -5,8 +5,9 @@
 //
 // ── WHY THE SUBJECT IS A SWEPT BEZIER AND NOT A NURBS SURFACE ──
 //
-// The obvious spline subject is `nurbs_surface(...)`, and it is the one that does
-// NOT work.  Two candidates were considered:
+// The obvious spline subject is `nurbs_surface(...)`.  It DOES realize and
+// measure — the swept Bezier below is the subject for a different reason (see
+// the end of this note).  Two candidates were considered:
 //
 //  (a) `nurbs(degree, n_pts, coords…, weights…)` returns a WIRE.  A wire has no
 //      facets, therefore no chord deviation, therefore nothing to measure.  It is
@@ -14,20 +15,51 @@
 //
 //  (b) `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree,
 //      v_degree)` [6 args, crates/reify-compiler/src/geometry.rs:2639] returns a
-//      Face and is the right shape — but it does NOT realize.  Measured
-//      2026-08-10 at 5db884e30b with a 3x3 control net, unit weights, clamped
-//      knots [0,0,0,1,1,1] in both directions and u_degree = v_degree = 2:
-//          INDETERMINATE PnrgSplineCheck#constraint[0]
-//      in 0.22 s — a fast fail, i.e. no realization was attempted rather than a
-//      slow kernel failure.  This is consistent with the known latent gap:
-//      `Operation::SurfaceNurbs` is ABSENT from `occt_capability_descriptor()`
-//      (crates/reify-kernel-occt/src/register.rs:101-163), so it resolves only via
-//      the DEFAULT_KERNEL_NAME fallback in engine_build.rs and `plan_output_repr`
-//      returns None for it.  Recorded as measured; not escalated.
+//      Face, is the right shape, and DOES realize.  Re-measured 2026-08-24 at
+//      HEAD=2306e029ec via a /tmp scratch probe cloning this fixture's own
+//      subject/checker layout, with the corrected nested call now commented
+//      below in place of the live subject: a 3x3 u-major control net of
+//      `point3(...)` poles, nested unit weights, the same clamped knots
+//      [0,0,0,1,1,1] in both directions and u_degree = v_degree = 2:
+//          VIOLATED <checker>#constraint[0]
+//          error: RepresentationWithin: sampled facet deviation 1.713e-2 m
+//          exceeds bound 1.000e-6 m
+//      exit 1, ~0.36 s — a genuine realization and measurement, reproduced
+//      twice, identically.
 //
-// The subject below is therefore the documented FALLBACK: a circular profile swept
-// along a BEZIER path.  That is a genuinely non-analytic (B-spline-parameterized)
-// surface — the property the spline class is here to exercise — and it measures.
+//      SUPERSEDED, kept as provenance rather than deleted: the original
+//      2026-08-10 observation at 5db884e30b recorded
+//          INDETERMINATE PnrgSplineCheck#constraint[0]
+//      in 0.22 s against a FLAT control-point/weight encoding — 9 bare
+//      `[x,y,z]` list literals in one flat list, not a 3x3 nested grid of
+//      `point3(...)`.  Transcribing that flat form today still reproduces it
+//      verbatim: `INDETERMINATE <checker>#constraint[0]`, `undefined inputs:
+//      <checker>.subject`, exit 0, ~0.26 s.  That was never a kernel gap — it
+//      was a decode rejection.  `crates/reify-ir/src/geometry.rs:1051-1053`
+//      declares `NurbsSurface { control_points: Vec<Vec<[f64;3]>>, weights:
+//      Vec<Vec<f64>> }` — both NESTED (u-major × v) — but `point3_components`
+//      (`crates/reify-eval/src/geometry_ops.rs:1209`) accepts only
+//      `Value::Point`/`Value::Vector` with 3 components, so a flat list of bare
+//      `[x,y,z]` literals decodes to `Value::List` and is rejected, and the
+//      subject is never defined.  The compiler only gates arity
+//      (`check_arg_count_exact`, 6 — crates/reify-compiler/src/geometry.rs:2640),
+//      so a wrong-shape call compiles clean and fails silently downstream — no
+//      diagnostic points at the real defect.
+//
+//      `Operation::SurfaceNurbs` is genuinely ABSENT from
+//      `occt_capability_descriptor()` (crates/reify-kernel-occt/src/register.rs:
+//      101-163) — that fact still holds.  What was wrong was the INFERENCE that
+//      the absence prevents realization: it resolves instead via the
+//      DEFAULT_KERNEL_NAME fallback in engine_build.rs, which is exactly how
+//      the corrected call above realizes.
+//
+// The subject below is nonetheless the swept Bezier, not `nurbs_surface(...)`:
+// its numbers — 100 mm 0.003, 50 mm 0.007, 20 mm 0.013 (§§1.1/2 of
+// docs/notes/precision-refine-envelope-calibration.md) — are already committed
+// to the calibration tables, and swapping the subject now would invalidate
+// them.  `nurbs_surface(...)` is measurable and its own d-ladder is tracked
+// separately as follow-up ticket tkt_0RSV7JNW3WXWDSFJGRDMHDT63T — see the
+// commented alternative below.
 //
 // NOT wired into any probe set or auto-run gate.
 
@@ -36,11 +68,11 @@ module pnrg_envelope_spline
 #precision(20mm)
 
 // Subject: a circle swept along a cubic Bezier path — the measurable spline
-// surface.  To reproduce the nurbs_surface non-realization instead, substitute:
-//   let g = nurbs_surface([[0mm,0mm,0mm],[500mm,0mm,300mm],[1000mm,0mm,0mm],
-//                          [0mm,500mm,300mm],[500mm,500mm,800mm],[1000mm,500mm,300mm],
-//                          [0mm,1000mm,0mm],[500mm,1000mm,300mm],[1000mm,1000mm,0mm]],
-//                         [1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0],
+// surface.  To measure the nurbs_surface alternative instead, substitute:
+//   let g = nurbs_surface([[point3(0mm,0mm,0mm),point3(500mm,0mm,300mm),point3(1000mm,0mm,0mm)],
+//                          [point3(0mm,500mm,300mm),point3(500mm,500mm,800mm),point3(1000mm,500mm,300mm)],
+//                          [point3(0mm,1000mm,0mm),point3(500mm,1000mm,300mm),point3(1000mm,1000mm,0mm)]],
+//                         [[1.0,1.0,1.0],[1.0,1.0,1.0],[1.0,1.0,1.0]],
 //                         [0.0,0.0,0.0,1.0,1.0,1.0], [0.0,0.0,0.0,1.0,1.0,1.0], 2, 2)
 structure PnrgSpline {
     let g = sweep(circle(100mm), bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
