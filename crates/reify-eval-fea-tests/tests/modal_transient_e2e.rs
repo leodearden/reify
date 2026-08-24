@@ -147,7 +147,7 @@ fn read_real_list(v: &Value) -> Vec<f64> {
 /// helper cited above, and the two will drift. The right home is
 /// `reify-test-support` (alongside the `mm` / `kg` / `newton` dimensioned-Value
 /// family), so both crates import one copy — deliberately NOT done here because
-/// that crate is outside task #6093's locked scope; filed as follow-up work.
+/// that crate is outside task #6093's locked scope. Owned by **#6323** (part A).
 fn assert_dimensioned(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
     match v {
         Value::Scalar {
@@ -385,49 +385,29 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         rel_err * 100.0
     );
 
-    // (e) task #6093 — the damping coefficients this solve was ACTUALLY fed are
-    //     dimensioned at the value layer, with bit-identical SI magnitudes.
+    // (e) task #6093 — the damping coefficients this solve was ACTUALLY fed
+    //     are dimensioned at the value layer, with bit-identical SI
+    //     magnitudes: `RayleighDamping.alpha` / `.beta` migrated from bare
+    //     `0.0` / `0.0003` to `0.0Hz` / `0.0003s`. Exact equality, because
+    //     these are literal-derived (both unit factors are 1.0), not
+    //     solver-derived. The σ_measured check just above is the end-to-end
+    //     half of the same claim.
     //
-    //     `RayleighDamping.alpha` / `.beta` were retyped from the `Real`
-    //     placeholder to their registered named dimensions (`Frequency` = s⁻¹,
-    //     `Time`), so the fixture's ctor args migrate from bare `0.0` / `0.0003`
-    //     to `0.0Hz` / `0.0003s`.
+    //     Compile-cleanliness alone would prove nothing: the ctor
+    //     field-conformance pass judges a bare dimensionless literal
+    //     COMPATIBLE with a dimensioned slot, and tightening that verdict is
+    //     owned by docs/prds/v0_6/dimensioned-construction-strictness.md §7.1
+    //     (task #5627), not by this task.
     //
-    //     Compile-cleanliness proves nothing about that migration — not
-    //     because Reify has no ctor checking (it has one: the field-conformance
-    //     pass in `crates/reify-compiler/src/conformance/mod.rs`, corpus-gated
-    //     by `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`),
-    //     but because that pass judges a bare dimensionless literal COMPATIBLE
-    //     with a dimensioned slot: `general_leaf_param_family_is_validated`
-    //     matches `Type::Bool | Type::Int | Type::String | Type::Scalar { .. }`,
-    //     so a `Scalar` slot is on its ALLOWLIST and IS routed through the
-    //     shared `reject_if_incompatible` → `type_compatible` gate. The silence
-    //     is that gate's verdict, not an absent check, so a tightening has to
-    //     land on the compatibility judgement — and that negative pin is owned
-    //     by `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1
-    //     invariant I3 (task γ = #5627), not by this task. Reading the
-    //     evaluated cell is consequently the only way to see whether the corpus
-    //     actually carries the dimension. (Symbols cited by name, not
-    //     `file:line` — house rule.)
+    //     PROFILE REACH: this assertion rides the test's
+    //     `#[cfg_attr(debug_assertions, ignore)]` heavy-solve gate, so it runs
+    //     only under release (and the merge gate's `--profile both`). The
+    //     debug-runnable companion is
+    //     `modal_options_validation_tests::corpus_rayleigh_ctor_args_lower_to_dimensioned_literals`,
+    //     which compiles the same `.ri` file and inspects the lowered ctor
+    //     literals without an eigensolve; the remaining corpus sites are
+    //     owned by #6323 (part B).
     //
-    //     Piggybacks the eval above rather than standing alone: a second FEA
-    //     solve would cost a full extra eigensolve, and a synthetic inline
-    //     snippet would be GREEN before and after (ctor args are stored
-    //     verbatim regardless of the declared type), proving nothing about the
-    //     migration. Reading the real corpus file is what makes this RED while
-    //     `transient_step_response.ri` still says `beta: 0.0003`.
-    //
-    //     KNOWN LIMITATION (release-profile-only): this is the only pin
-    //     anywhere that a real `.ri` corpus file carries the dimension at the
-    //     VALUE layer, and it rides on this test's
-    //     `#[cfg_attr(debug_assertions, ignore)]` heavy-solve gate. A green
-    //     debug-profile run is therefore NOT evidence that the migration held;
-    //     only a release run (and the merge gate's `--profile both`) exercises
-    //     it. The cheap alternative does not exist — see the synthetic-snippet
-    //     note above — so this is recorded rather than restructured.
-    //
-    //     The exact-equality SI assertions are the numerical-inertness half of
-    //     the claim; the σ_measured check just above is the end-to-end half.
     let opts_cell = ValueCellId::new("CantileverStepResponse", "opts");
     let opts_val = eval_result
         .values

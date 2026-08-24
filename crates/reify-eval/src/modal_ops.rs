@@ -4050,19 +4050,11 @@ mod tests {
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
     /// `extract_damping` discriminates by `type_name`.
     ///
-    /// Both fields are DIMENSIONED (`Frequency` = s⁻¹, `Time`), matching the
-    /// stdlib declaration since task #6093 retyped them off the `Real`
-    /// placeholder, and matching what the migrated corpus now evaluates to.
-    /// Mirrors what task 4548 did for `Mode.frequency`: retype the declaration
-    /// and move the fixture builder in the same change, so the in-crate tests
-    /// stop exercising a shape real input no longer produces — the fixture
-    /// drift that lets a future reader-tightening pass unit tests and fail on
-    /// the corpus.
-    ///
-    /// `read_scalar_si` folds `Value::Scalar { si_value }` and `Value::Real` to
-    /// the same f64, so every assertion downstream of this builder sees
-    /// identical numbers; the reader itself stays deliberately tolerant
-    /// (gating it belongs to docs/prds/v0_6/dimension-checked-readers.md).
+    /// Fields are DIMENSIONED (`Frequency`, `Time`) to match both the stdlib
+    /// declaration (task #6093) and what the migrated corpus evaluates to, so
+    /// these fixtures cannot pass on a shape real input no longer produces.
+    /// `read_scalar_si` stays deliberately tolerant of bare `Real`; gating it
+    /// belongs to docs/prds/v0_6/dimension-checked-readers.md.
     fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
         struct_instance(
             "RayleighDamping",
@@ -4083,6 +4075,58 @@ mod tests {
                 ),
             ],
         )
+    }
+
+    /// α AND β are both consumed against an ω in **rad/s**, and the choice of
+    /// ω scale moves them by exactly 2π in OPPOSITE directions.
+    ///
+    /// The claim `modal_analysis.ri`'s ANGULAR-RATE TRAP comment makes, pinned
+    /// so it cannot rot into prose. It is also why `alpha` is declared
+    /// `Frequency` and not `AngularVelocity`: the rad/s convention lives in
+    /// ω, not in one of the two coupled coefficients.
+    ///
+    /// That the PRODUCER feeds ω = 2π·f is pinned separately, by
+    /// `trampoline_shapes_modal_result_with_rayleigh_damping`.
+    #[test]
+    fn rayleigh_coefficients_are_consumed_on_the_angular_rate_scale() {
+        // ζ = (α + β·ω²)/(2ω). Mass-proportional half at ω = 10 rad/s:
+        // α/(2ω) = 2/20 = 0.1 — α is divided by an ANGULAR rate, so an `alpha:
+        // 2.0Hz` literal is consumed as 2 rad/s (≈ 0.32 cycles/s), not 2 Hz.
+        let zeta_alpha = rayleigh_damping_ratio(2.0, 0.0, 10.0);
+        assert!(
+            (zeta_alpha - 0.1).abs() < 1e-15,
+            "ζ from the mass-proportional term must be α/(2ω) = 0.1; got {zeta_alpha}"
+        );
+
+        // The corpus fixture's stiffness half: β·ω/2 at the transient
+        // fixture's fundamental (f₁ ≈ 44.7 Hz ⇒ ω₁ ≈ 281 rad/s) ⇒ ζ₁ ≈ 0.042,
+        // the value examples/modal/transient_step_response.ri quotes.
+        let f1 = 44.7_f64;
+        let omega1 = 2.0 * std::f64::consts::PI * f1;
+        let zeta_beta = rayleigh_damping_ratio(0.0, 0.0003, omega1);
+        assert!(
+            (zeta_beta - 0.0003 * omega1 / 2.0).abs() < 1e-15,
+            "ζ from the stiffness-proportional term must be β·ω/2; got {zeta_beta}"
+        );
+
+        // SYMMETRY. Reading ω as cycles/s instead of rad/s would inflate the
+        // α contribution by 2π and deflate the β contribution by 2π. Both
+        // coefficients carry the convention, which is what makes typing only
+        // α as `AngularVelocity` (leaving β : `Time`) an incoherent pair.
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let zeta_alpha_cyc = rayleigh_damping_ratio(2.0, 0.0, f1);
+        let zeta_alpha_rad = rayleigh_damping_ratio(2.0, 0.0, omega1);
+        assert!(
+            (zeta_alpha_cyc / zeta_alpha_rad - two_pi).abs() < 1e-12,
+            "the α term must scale by 2π with the ω convention; got {}",
+            zeta_alpha_cyc / zeta_alpha_rad
+        );
+        let zeta_beta_cyc = rayleigh_damping_ratio(0.0, 0.0003, f1);
+        assert!(
+            (zeta_beta_cyc * two_pi / zeta_beta - 1.0).abs() < 1e-12,
+            "the β term must scale by 1/2π with the ω convention; got {}",
+            zeta_beta_cyc / zeta_beta
+        );
     }
 
     /// Assemble a `ModalOptions`-shaped instance from the given fields.

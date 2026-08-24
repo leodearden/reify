@@ -223,6 +223,12 @@ Per-mode damping ratio derived from Rayleigh parameters:
 ζ_i = (α + β·ω_i²) / (2·ω_i)
 ```
 
+`ω_i` is the ANGULAR frequency in rad/s (= 2π·`Mode.frequency`), so both
+coefficients are consumed on the rad/s scale: a caller reading cycles/s must
+scale α by 2π and β by 1/2π. The convention lives in ω and moves α and β
+symmetrically, which is why the declared pair stays the SI typing implied by
+C = α·M + β·K (α = s⁻¹, β = s) rather than α being typed `AngularVelocity`.
+
 This preserves mode-shape orthogonality (the decoupled modal ODEs stay
 1D-second-order), so transient response stays in real arithmetic.
 

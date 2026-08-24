@@ -128,17 +128,18 @@ structure def NoDamping : DampingDescriptor { }
 //           frequencies more than low. Useful for suppressing
 //           high-frequency numerical noise from explicit time integration.
 //
-// ANGULAR-RATE TRAP (read before writing an `Hz` literal here): the solver
-// consumes α as an ANGULAR rate. `rayleigh_damping_ratio` (reify-stdlib,
-// modal::free_vibration) evaluates (α + β·ω²)/(2·ω) with ω in rad/s, so α
-// must be the s⁻¹ magnitude on that same rad/s scale. `Hz` at this slot
-// therefore denotes plain s⁻¹, NOT cycles/s: `alpha: 2.0Hz` is consumed as
-// 2 rad/s, not 2·2π rad/s. Reify does carry the distinction
-// (`DimensionVector::ANGULAR_VELOCITY` is rad·s⁻¹, distinct from
-// `FREQUENCY`), and `Frequency` is declared here to match PRD §4.2's
-// stated "units 1/s"; a caller thinking in cycles/s must pre-multiply by
-// 2π itself, because nothing downstream will. (Inert across today's
-// corpus — every call site is `alpha: 0.0Hz`.)
+// ANGULAR-RATE TRAP: both coefficients are consumed against an ω in rad/s
+// (`rayleigh_damping_ratio` evaluates (α + β·ω²)/(2·ω); `modal_ops` builds
+// ω = 2π·f), so a caller reading cycles/s must scale α by 2π and β by 1/2π
+// itself. The convention lives in ω and hits α and β SYMMETRICALLY — which
+// is why α is not typed `AngularVelocity` while β stays `Time`: that would
+// encode the scale in one of two coupled coefficients. The declared pair is
+// the SI typing implied by C = α·M + β·K (α = [C]/[M] = s⁻¹,
+// β = [C]/[K] = s). Reify's `Frequency` cannot itself separate cycles/s
+// from plain s⁻¹ — that surface is owned by
+// docs/prds/v0_6/angle-units-surface-convergence.md, not by this
+// declaration. Pinned by
+// `modal_ops::tests::rayleigh_coefficients_are_consumed_on_the_angular_rate_scale`.
 //
 // Explicitly NOT constrained: alpha / beta are conventionally non-negative
 // but physically meaningful at zero ("stiffness-only" damping with α=0; or
