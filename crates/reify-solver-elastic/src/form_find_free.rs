@@ -368,9 +368,9 @@ pub fn form_find_free_surfaces(
                 d_at_current[(i, j)] += surface_mat[(i, j)];
             }
         }
-        let resid = all_node_equilibrium_residual(&d_at_current, &current);
+        let resid = all_node_equilibrium_residual_relative(&d_at_current, &current);
 
-        if resid <= FREE_SURFACE_EQUILIBRIUM_TOL {
+        if resid <= FREE_SURFACE_EQUILIBRIUM_REL_TOL {
             converged = true;
             last_result = Some(combined_result_at(members, &q, &current));
             break;
@@ -508,7 +508,7 @@ pub fn form_find_free_surfaces(
 
     // Re-classify D_combined at the final geometry to report the honest fixed-point
     // nullity (4 for a valid combined form) rather than an intermediate-iteration value.
-    // The convergence residual (< FREE_SURFACE_EQUILIBRIUM_TOL) guarantees the 4
+    // The convergence residual (< FREE_SURFACE_EQUILIBRIUM_REL_TOL) guarantees the 4
     // coordinate-translation modes are in null(D_combined) to machine precision, so
     // classify_spectrum reliably reports nullity 4 here.
     let surface_mat_final =
@@ -525,8 +525,31 @@ pub fn form_find_free_surfaces(
 }
 
 /// Equilibrium-residual convergence tolerance for the free-standing cotangent
-/// fixed point. Set ~10× below the golden's `1e-9` acceptance bound.
-const FREE_SURFACE_EQUILIBRIUM_TOL: f64 = 1e-10;
+/// fixed point, applied RELATIVE to `D`'s own magnitude (task 6413, twin of
+/// task 6119's anchored-path fix). The iteration stops once
+/// `‖D·x‖∞ / (1+scale) / d_scale` drops below this, where `d_scale = ‖D‖∞` —
+/// the honest free-standing fixed-point signal, additionally normalised so
+/// the bound is GAUGE-free, not just coordinate-scale-free.
+///
+/// `D_combined = CᵀQC + Σ_T σ_T·L_T` is exactly linear in the force
+/// densities `q` and the surface stresses `σ`, so an ABSOLUTE bound on the
+/// un-normalised residual makes convergence depend on the gauge: the same
+/// structure at `q` and at `λ·q` could take a different iteration count,
+/// land on different coordinates, or fail to converge outright — task
+/// 6413's reported defect. Dividing by `d_scale` cancels that one factor of
+/// `λ` exactly, since numerator and denominator each scale linearly with
+/// the gauge.
+///
+/// CALIBRATED, not guessed, so this change RE-ANCHORS rather than loosens
+/// the bound: `d_scale` MEASURED at `7.895` at the δ `GroupRatios` golden's
+/// converged state (`tensegrity_delta_combined_form_find.rs`), so the
+/// previous absolute `1e-10` corresponds to a relative `1.267e-11`. This
+/// relative `1e-11` is therefore ~1.27× TIGHTER (absolute stop ~`7.9e-11`)
+/// than the previous bound, and stays ~12.7× below that golden's
+/// independently-checked `EQUIL_TOL = 1e-9`. It is also the same value task
+/// 6119 chose for the anchored path's `SURFACE_EQUILIBRIUM_REL_TOL`, keeping
+/// the two paths consistent.
+const FREE_SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
 /// Iteration cap for the free-standing cotangent fixed point. Mirrors γ's
 /// MAX_SURFACE_ITERS — a generous backstop; well-posed inputs break out early.
@@ -567,11 +590,32 @@ fn assemble_surface_matrix(
     Ok(s)
 }
 
-/// Max-norm of the combined ALL-node equilibrium residual `‖D·x‖∞/(1+scale)`.
-/// In the free-standing case every node is free, so this checks the full
-/// combined-D null-space condition `x ∈ null(D(x))` at the fixed point.
+/// ALL-node equilibrium residual `‖D·x‖∞ / (1+scale) / d_scale` — the
+/// free-standing fixed-point signal, scaled by the coordinate magnitude AND
+/// by `d_scale = ‖D‖∞` (over ALL rows: unlike the anchored kernel's
+/// `free_equilibrium_residual_relative`, every node is free in the
+/// free-standing case, so there is no free-row restriction to apply), so the
+/// bound is both coordinate-scale-free AND GAUGE-free (task 6413, twin of
+/// task 6119). `D_combined = CᵀQC + Σ_T σ_T·L_T` is exactly linear in the
+/// force densities `q` and the surface stresses `σ`, so normalising only by
+/// coordinate scale would make convergence depend on the gauge; dividing by
+/// `d_scale` cancels that factor exactly, since numerator and denominator
+/// both scale linearly with a uniform q/σ rescaling. See
+/// [`FREE_SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the calibration that keeps
+/// this in a known, auditable relationship to the previous absolute bound.
+///
+/// `d_scale <= 0` (including NaN, via the `!(d_scale > 0.0)` spelling)
+/// returns `f64::INFINITY` rather than dividing by zero: a node block
+/// touched by neither a member nor a triangle has every row of `D`
+/// identically zero, so `resid` above is vacuously 0 — not because
+/// equilibrium was reached, but because nothing acts on the node at all.
+/// Returning `INFINITY` forces the fixed point to keep iterating (and
+/// ultimately report `SearchDidNotConverge` when nothing can act on the
+/// node) instead of breaking out at iteration 0 and echoing the caller's
+/// unsolved initial guess back as a "converged" result (task 6413, mirroring
+/// task 6119's identical guard on the anchored path).
 #[allow(clippy::needless_range_loop)] // `axis` indexes nodes[j][axis] inside the j-sum
-fn all_node_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
+fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
     let n = nodes.len();
     let mut resid = 0.0_f64;
     let mut scale = 0.0_f64;
@@ -589,7 +633,26 @@ fn all_node_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
             scale = scale.max(c.abs());
         }
     }
-    resid / (1.0 + scale)
+
+    // d_scale = ‖D‖∞ over ALL rows — see the guard-and-gauge rationale in the
+    // function doc above.
+    let mut d_scale = 0.0_f64;
+    for i in 0..n {
+        let mut row = 0.0_f64;
+        for j in 0..n {
+            row += d[(i, j)].abs();
+        }
+        d_scale = d_scale.max(row);
+    }
+    if !(d_scale > 0.0) {
+        return f64::INFINITY;
+    }
+
+    // Dividing by d_scale (in addition to the coordinate scale) is what makes
+    // this criterion gauge-invariant: D — and therefore both resid and
+    // d_scale — scale linearly with a uniform q/σ rescaling, so the ratio is
+    // exactly unchanged (task 6413).
+    resid / (1.0 + scale) / d_scale
 }
 
 /// Combined-D geometry recovery used by [`form_find_group_ratios_combined`]: it
@@ -2556,7 +2619,7 @@ mod tests {
         );
     }
 
-    // ── gauge lock (task 6413): all_node_equilibrium_residual must be
+    // ── gauge lock (task 6413): all_node_equilibrium_residual_relative must be
     // GAUGE-independent — the free-standing twin of task 6119's anchored-path
     // fix. D_combined = CᵀQC + Σ_T σ_T·L_T is exactly linear in q and σ, so an
     // absolute stop test on the raw residual makes convergence depend on the
@@ -2594,9 +2657,9 @@ mod tests {
         // `free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling`
         // in `form_find.rs` on the unmerged `task/6119` branch).
         //
-        // MEASURED RED on pristine (task 6413 premise verification): the
-        // un-normalised residual scales BY λ instead of staying fixed —
-        // 2.96064064605529031e0 vs 3.10445672607807210e6 (ratio exactly 2^20).
+        // MEASURED RED on pristine, this exact fixture: the un-normalised
+        // residual scales BY λ instead of staying fixed —
+        // 8.660254037844406e-2 vs 9.080934537986736e4 (ratio exactly 2^20).
         const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
         const LAMBDA_DOWN: f64 = 1.0 / 1_048_576.0; // 2^-20
         let nodes = canonical_prism();
@@ -2604,9 +2667,9 @@ mod tests {
         let d_up = combined_d_at_canonical_prism(0.2, LAMBDA_UP);
         let d_down = combined_d_at_canonical_prism(0.2, LAMBDA_DOWN);
 
-        let r1 = all_node_equilibrium_residual(&d1, &nodes);
-        let r_up = all_node_equilibrium_residual(&d_up, &nodes);
-        let r_down = all_node_equilibrium_residual(&d_down, &nodes);
+        let r1 = all_node_equilibrium_residual_relative(&d1, &nodes);
+        let r_up = all_node_equilibrium_residual_relative(&d_up, &nodes);
+        let r_down = all_node_equilibrium_residual_relative(&d_down, &nodes);
 
         assert_eq!(
             r1, r_up,
@@ -2631,7 +2694,7 @@ mod tests {
         // MEASURED RED on pristine: returns 0.0.
         let nodes = canonical_prism();
         let d = Mat::<f64>::zeros(6, 6);
-        let resid = all_node_equilibrium_residual(&d, &nodes);
+        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
         assert_eq!(
             resid,
             f64::INFINITY,
