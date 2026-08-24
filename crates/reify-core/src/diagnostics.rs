@@ -4360,65 +4360,28 @@ mod tests {
     // This is the shared RUNTIME code for "a builtin argument that must carry a
     // physical dimension was given a bare / wrongly-dimensioned value", emitted
     // from `crates/reify-eval/src/geometry_ops.rs`'s `arg_acceptance`-backed
-    // chokepoints. Copy/Clone/PartialEq/Eq/Hash/Debug are already covered by the
-    // variant-agnostic `diagnostic_code_derives` test above; what is genuinely
-    // variant-specific — and therefore pinned here — is (a) the exact PascalCase
-    // wire string, and (b) the DISTINCTNESS from the two codes that were
-    // considered and rejected during minting, which is the machine-checkable
-    // form of PRD Open Question 1's ruling
-    // (`docs/prds/v0_6/units-length-gate-completion.md`).
-
-    /// `DiagnosticCode::DimensionedArgRejected` is a real variant: it constructs,
-    /// is `Copy`, round-trips through `PartialEq`, and attaches via the
-    /// `Diagnostic::error(..).with_code(..)` builder that the eval-layer
-    /// chokepoints use.
-    ///
-    /// RED until step-2 adds the variant.
-    #[test]
-    fn dimensioned_arg_rejected_code_exists_and_attaches() {
-        let a = DiagnosticCode::DimensionedArgRejected;
-        let b: DiagnosticCode = a; // Copy — `a` still usable below
-        assert_eq!(a, b);
-
-        let d = Diagnostic::error("bare length arg").with_code(DiagnosticCode::DimensionedArgRejected);
-        assert_eq!(d.code, Some(DiagnosticCode::DimensionedArgRejected));
-
-        // Severity-neutral by construction: the SAME code rides a Warning at the
-        // two legacy quiet-degrade readers (`resolve_spec_arg` /
-        // `resolve_density_arg`, task 5743 step-6) and an Error at the op-failing
-        // chokepoint (`eval_named_arg_length`, step-4). Nothing about the code
-        // pins a severity.
-        let w = Diagnostic::warning("bare tol arg").with_code(DiagnosticCode::DimensionedArgRejected);
-        assert_eq!(w.code, Some(DiagnosticCode::DimensionedArgRejected));
-    }
-
-    /// PRD Open Question 1, decided in task 5743: the runtime dimensioned-arg
-    /// rejection gets its OWN code rather than reusing either candidate.
-    ///
-    /// - [`DiagnosticCode::DimensionMismatch`] is Add/Sub-specific (an
-    ///   operator-level invariant, `"dimension mismatch in {op}: {left} vs
-    ///   {right}"`), not a builtin parameter contract.
-    /// - [`DiagnosticCode::ArgTypeMismatch`] is the COMPILE-layer twin for the
-    ///   very same positions (PRD leaf η will emit it there). Sharing one code
-    ///   across both layers would make "which layer rejected this?" unanswerable
-    ///   from the code alone, which PRD decision D2 forbids.
-    ///
-    /// Asserting the three are pairwise distinct is what keeps a future
-    /// "simplification" from collapsing them back together silently.
-    ///
-    /// RED until step-2 adds the variant.
-    #[test]
-    fn dimensioned_arg_rejected_is_distinct_from_the_rejected_candidates() {
-        assert_ne!(
-            DiagnosticCode::DimensionedArgRejected,
-            DiagnosticCode::DimensionMismatch,
-        );
-        assert_ne!(
-            DiagnosticCode::DimensionedArgRejected,
-            DiagnosticCode::ArgTypeMismatch,
-        );
-        assert_ne!(DiagnosticCode::DimensionMismatch, DiagnosticCode::ArgTypeMismatch);
-    }
+    // chokepoints.
+    //
+    // As with `DimensionMismatch` above, Copy/Clone/PartialEq/Eq/Hash/Debug are
+    // already covered by the variant-agnostic `diagnostic_code_derives` test, so
+    // only the serde wire-format test is kept here — it is the one genuinely
+    // variant-specific, genuinely falsifiable claim (the exact PascalCase string
+    // the GUI reads).
+    //
+    // A reviewer amendment removed two tests that could not fail for any edit
+    // that still compiles: a `Copy`/`PartialEq` round-trip on this variant, and
+    // pairwise `assert_ne!`s against `DimensionMismatch` / `ArgTypeMismatch`
+    // (discriminant inequality between distinct unit variants is guaranteed by
+    // the `PartialEq` derive). The RULING those `assert_ne!`s were standing in
+    // for is PRD Open Question 1, decided in task 5743 — the runtime
+    // dimensioned-arg rejection gets its OWN code rather than reusing either
+    // candidate, because `DimensionMismatch` is Add/Sub-operator-specific and
+    // `ArgTypeMismatch` is the COMPILE-layer twin for the very same positions
+    // (PRD leaf η), and sharing one code across both layers would make "which
+    // layer rejected this?" unanswerable from the code alone (PRD decision D2).
+    // That ruling lives in the variant's own doc comment and in
+    // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
+    // not a runtime behaviour a test can pin.
 
     /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
     /// serializes as `"DimensionedArgRejected"` (PascalCase, from

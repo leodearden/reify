@@ -834,18 +834,19 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///   * `p` (`box(10mm,…)`) and `q` (`box(20mm,…)`) are independent, valid box
 ///     realizations with in-degree 0 → the Kahn schedule covers them (inserted
 ///     into the `realized` dedup set during the schedule walk).
-///   * `r = box(a, …)` reads the cyclic cell `a` → it is downstream of the cycle
-///     → `residue` → its `NodeId::Realization` is NOT in `pass.schedule`, so it
-///     reaches dispatch ONLY through the `for r_idx in 0..len { if !realized … }`
-///     fallback-append branch. `a` folds to `Value::Undef` (so `r`'s recorded box
-///     carries `width: Undef`), but its `height`/`depth` are the concrete literal
-///     `5mm` — distinct from `p`'s 10mm and `q`'s 20mm — so `r` is STILL directly
-///     observable, by HEIGHT, in the recorded ops. This lets the test pin the
-///     fallback-append branch dispatching the residue realization exactly once.
+///   * `r = fillet(box(5mm, 5mm, 5mm), a)` reads the cyclic cell `a` through the
+///     FILLET RADIUS → it is downstream of the cycle → `residue` → its
+///     `NodeId::Realization` is NOT in `pass.schedule`, so it reaches dispatch
+///     ONLY through the `for r_idx in 0..len { if !realized … }` fallback-append
+///     branch. `a` folds to `Value::Undef`, so `r`'s recorded FILLET carries
+///     `radius: Undef` — and that Undef-radius fillet is the op that is actually
+///     residue. `r`'s Box is fully concrete `5mm` (distinct from `p`'s 10mm and
+///     `q`'s 20mm), so it keys `r`'s realization in the recorded ops, but on its
+///     own it says nothing about WHICH branch dispatched it.
 ///
 /// Every box carries `height == width`, so matching recorded boxes by their
 /// concrete `Scalar` HEIGHT keys all three realizations uniformly (`p` → 0.010m,
-/// `q` → 0.020m, `r` → 0.005m) even though `r`'s WIDTH folded to `Undef`.
+/// `q` → 0.020m, `r` → 0.005m).
 ///
 /// Asserts, under `UnifiedDag`:
 ///   (a) δ surfaces `DiagnosticCode::EvalCycle` (confirming the planner is on the
@@ -854,7 +855,12 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///       the Kahn schedule + `realized` dedup, and `r` (5mm) via the fallback
 ///       append. A broken dedup set would double-count a scheduled box; a removed
 ///       fallback append would zero-count `r`; a dropped realization would
-///       zero-count its box.
+///       zero-count its box. AND
+///   (c) the Undef-radius `Fillet` — `r`'s residue-bearing tail op — reached the
+///       kernel exactly once. Without (c) the test's stated subject is unpinned:
+///       `r`'s Box alone is fully concrete, so `box_height_count(0.005) == 1`
+///       would hold whether or not `r` was classified as residue and whether or
+///       not the fallback-append branch ran at all (reviewer amendment).
 #[test]
 fn unified_dag_residue_realizations_dispatch_exactly_once() {
     // `let a` / `let b` form a Length-typed mutual cycle (the `+ 1mm` literal
@@ -904,7 +910,9 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
     );
 
     // (b) exactly-once dispatch for every realization, keyed by the box's concrete
-    //     `Scalar` HEIGHT (robust to `r`'s `Undef` width).
+    //     `Scalar` HEIGHT — the one key shared by all three realizations. `r`'s
+    //     Undef lives on its FILLET radius, not on any box dimension, so every
+    //     recorded box has a concrete height to match on.
     let ops = ops_ref.lock().unwrap().clone();
     let recorded: Vec<&GeometryOp> = ops.iter().map(|rec| &rec.op).collect();
     let box_height_count = |si_metres: f64| -> usize {
@@ -933,9 +941,39 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
     assert_eq!(
         box_height_count(0.005),
         1,
-        "the RESIDUE `r` (box 5mm, reads cyclic `a`) must dispatch EXACTLY ONCE via \
-         the `for r_idx in 0..len {{ if !realized … }}` fallback-append branch — \
+        "the RESIDUE `r` (`fillet(box(5mm,5mm,5mm), a)`, whose fillet radius reads \
+         the cyclic `a`) must dispatch EXACTLY ONCE via the \
+         `for r_idx in 0..len {{ if !realized … }}` fallback-append branch — \
          not dropped (zero) and not double-appended (two); recorded ops={recorded:?}",
+    );
+
+    // (c) the op that actually CARRIES the residue: `r`'s fillet, whose radius is
+    //     the cyclic `a` folded to `Undef`. `r`'s Box is fully concrete, so (b)
+    //     alone cannot distinguish "dispatched via the fallback-append branch"
+    //     from "dispatched however" — this is what keeps `r` pinned as residue.
+    let undef_radius_fillets = ops
+        .iter()
+        .filter(|rec| {
+            matches!(
+                &rec.op,
+                GeometryOp::Fillet {
+                    radius: Value::Undef,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        undef_radius_fillets, 1,
+        "`r`'s Fillet must reach the kernel EXACTLY ONCE carrying the cyclic \
+         `a` as an `Undef` radius — that Undef is what makes `r` residue, and \
+         therefore what makes the fallback-append branch the only path that can \
+         dispatch it. Zero means `r` stopped being residue (or was dropped) and \
+         assertion (b) above has gone vacuous; two means the dedup set broke. \
+         Note the MODIFY radius is deliberately un-gated by task 5743 (β gated \
+         the 26 primitive/profile slots only; the modify slots are #5744's), \
+         which is why an `Undef` still reaches the kernel here at all. \
+         recorded ops={recorded:?}",
     );
 }
 

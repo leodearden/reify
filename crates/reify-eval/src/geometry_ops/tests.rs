@@ -3597,9 +3597,16 @@
                         Some(reify_core::DiagnosticCode::DimensionedArgRejected),
                         "{rej:?}"
                     );
+                    // ANCHORED on `"{slot} argument expects"`, not a bare
+                    // `contains(slot)`: `wedge` has both `width` and
+                    // `top_width`, and "top_width" CONTAINS "width", so the
+                    // loose form passes when the wrong wedge slot is reported.
+                    // `ArgRejection::message` renders
+                    // `"{builtin}: {arg} argument expects …"`, so the anchored
+                    // shape is available for free.
                     assert!(
                         rej.message.contains(&kind.to_string())
-                            && rej.message.contains(slot)
+                            && rej.message.contains(&format!("{slot} argument expects"))
                             && rej
                                 .message
                                 .contains("pass a dimensioned length such as `5mm`"),
@@ -3624,8 +3631,11 @@
                 let err = result
                     .err()
                     .unwrap_or_else(|| panic!("{at}: an Undef dimension must drop the op"));
+                // `'{slot}'` QUOTED, matching `required_length_arg`'s wording:
+                // an unquoted `contains(slot)` cannot tell `width` from
+                // `top_width` (see the rejection arm above).
                 assert!(
-                    err.contains("unresolved (Undef)") && err.contains(*slot),
+                    err.contains("unresolved (Undef)") && err.contains(&format!("'{slot}'")),
                     "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
                      not \"missing or non-Length\"; got: {err:?}"
                 );
@@ -3644,9 +3654,16 @@
     /// — so they must STILL accept bare numbers after the origin triple is
     /// gated.
     ///
-    /// The fixture is the exact shape of `examples/half_space.ri:18`,
-    /// `half_space(0mm, 0mm, 0mm, 0, 0, 1)`: dimensioned point, bare normal. It
-    /// must compile with ZERO diagnostics, and each normal component must be
+    /// The fixture is the shape of `examples/half_space.ri:18` — dimensioned
+    /// point, bare normal — with THREE DISTINCT normal components
+    /// `(0.25, 0.5, 1)` rather than the corpus's literal `(0, 0, 1)`. A
+    /// two-zero normal cannot see an `nx`/`ny` transposition, and the sibling
+    /// primitive tables use distinct values (0.02 vs 0.05) for exactly that
+    /// reason. Corpus fidelity itself is pinned separately, end to end, by
+    /// `half_space_bare_normal_still_builds_with_a_dimensioned_point` in
+    /// `tests/harness_geometry/primitive_profile_length_units_e2e.rs`.
+    ///
+    /// It must compile with ZERO diagnostics, and each normal component must be
     /// stored as the bare `Real` it was written as — re-wrapping `nz` as a
     /// LENGTH `Scalar` would be just as wrong as rejecting it.
     ///
@@ -3665,8 +3682,10 @@
                 ("px".into(), literal_length(0.0)),
                 ("py".into(), literal_length(0.0)),
                 ("pz".into(), literal_length(0.0)),
-                ("nx".into(), literal_f64(0.0)),
-                ("ny".into(), literal_f64(0.0)),
+                // Three DISTINCT components so a slot transposition is
+                // detectable.
+                ("nx".into(), literal_f64(0.25)),
+                ("ny".into(), literal_f64(0.5)),
                 ("nz".into(), literal_f64(1.0)),
             ],
         };
@@ -3679,7 +3698,10 @@
             &HashMap::new(),
             &mut diagnostics,
         )
-        .expect("half_space(0mm,0mm,0mm, 0,0,1) is the shipped corpus shape and must compile");
+        .expect(
+            "half_space(0mm,0mm,0mm, 0.25,0.5,1) is the shipped corpus SHAPE \
+             (dimensioned point, bare normal) and must compile",
+        );
 
         let reify_ir::GeometryOp::HalfSpace { nx, ny, nz, .. } = compiled else {
             panic!("expected GeometryOp::HalfSpace, got {compiled:?}");
@@ -3687,8 +3709,8 @@
         assert_eq!(
             (nx, ny, nz),
             (
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.25),
+                reify_ir::Value::Real(0.5),
                 reify_ir::Value::Real(1.0),
             ),
             "the unit normal must be stored as the bare Reals it was written as, \
@@ -3707,8 +3729,9 @@
     /// arity-open and has no per-slot `ArgSpec`, so task 5661 gates it by
     /// STRIDE on the variadic route instead. See
     /// `compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf`, which
-    /// asserts both halves of that — the shared code reaching 5661's route,
-    /// and `Polygon` staying out of this table.
+    /// asserts that behaviourally: the shared code reaches 5661's route, and
+    /// the rejection mints the variadic display name `x1` rather than the
+    /// named-arg route's inert `c0`.
     ///
     /// Arg names are the compiler's, read from the lowering arms in
     /// `reify-compiler/src/geometry.rs`: `ellipse` takes `semi_major` /
@@ -3862,9 +3885,10 @@
                         Some(reify_core::DiagnosticCode::DimensionedArgRejected),
                         "{rej:?}"
                     );
+                    // Anchored — see the primitive table's note.
                     assert!(
                         rej.message.contains(&kind.to_string())
-                            && rej.message.contains(slot)
+                            && rej.message.contains(&format!("{slot} argument expects"))
                             && rej
                                 .message
                                 .contains("pass a dimensioned length such as `5mm`"),
@@ -3889,8 +3913,11 @@
                 let err = result
                     .err()
                     .unwrap_or_else(|| panic!("{at}: an Undef dimension must drop the op"));
+                // `'{slot}'` QUOTED, matching `required_length_arg`'s wording:
+                // an unquoted `contains(slot)` cannot tell `width` from
+                // `top_width` (see the rejection arm above).
                 assert!(
-                    err.contains("unresolved (Undef)") && err.contains(*slot),
+                    err.contains("unresolved (Undef)") && err.contains(&format!("'{slot}'")),
                     "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
                      not \"missing or non-Length\"; got: {err:?}"
                 );
@@ -3935,13 +3962,14 @@
     /// holds — only its consequence changed. Polygon is gated by the ARITY-OPEN
     /// variadic route, and must NOT be pulled into β's `required_length_value`
     /// `ArgSpec` chokepoint, which reads args BY NAME. Two independent
-    /// witnesses catch that over-broad edit:
-    ///   (i) the message names the DISPLAY coordinate `x1`, which only the
-    ///       variadic renderer mints; the named-arg route would surface the
-    ///       compiler's inert `c0` verbatim, since it has no vertex numbering
-    ///       to recover;
-    ///   (ii) `ProfileKind::Polygon` stays absent from [`BETA_PROFILE_SLOTS`],
-    ///       the table an author would have to extend to route it that way.
+    /// witness catches that over-broad edit: the message names the DISPLAY
+    /// coordinate `x1`, which only the variadic renderer mints; the named-arg
+    /// route would surface the compiler's inert `c0` verbatim, since it has no
+    /// vertex numbering to recover. (A companion assertion that
+    /// `ProfileKind::Polygon` stays absent from `BETA_PROFILE_SLOTS` was
+    /// dropped as a reviewer amendment: it asserted on this test file's own
+    /// `const`, exercised no production code, and could only be violated by an
+    /// edit that already fails `beta_profile_stored_slot`.)
     #[test]
     fn compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf() {
         let values = ValueMap::new();
@@ -3998,20 +4026,11 @@
         );
         assert!(
             rej.message.contains("x1") && !rej.message.contains("c0"),
-            "NEGATIVE SPACE (i): polygon must stay on the VARIADIC route, whose \
+            "NEGATIVE SPACE: polygon must stay on the VARIADIC route, whose \
              stride-2 renderer mints the DISPLAY name `x1`. The inert `c0` would \
              mean the arity-open vertex list had been pulled into β's \
              `required_length_value` named-arg chokepoint: {:?}",
             rej.message
-        );
-
-        assert!(
-            !BETA_PROFILE_SLOTS
-                .iter()
-                .any(|(kind, _)| *kind == reify_compiler::ProfileKind::Polygon),
-            "NEGATIVE SPACE (ii): `Polygon` must stay out of β's `ArgSpec` slot \
-             table — its vertex list is arity-open and has no per-slot `ArgSpec` \
-             to check against, which is why 5661 gated it by stride instead"
         );
     }
 
