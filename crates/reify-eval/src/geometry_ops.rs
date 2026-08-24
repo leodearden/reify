@@ -2249,11 +2249,18 @@ fn modify_chamfer(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let distance = eval_arg("distance")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Gated BEFORE the
+    // `edges` handling below, so the curated-edge zero-selector guard is
+    // reached only by a call whose magnitude already type-checked.
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::Chamfer {
@@ -2291,12 +2298,18 @@ fn modify_chamfer_asymmetric(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let d1 = eval_arg("d1")?;
-    let d2 = eval_arg("d2")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). ONE group read, not
+    // two `?`-chained single-slot calls: a bare `d1`/`d2` pair is written as
+    // one gesture, so both must be diagnosed in the SAME build.
+    let [d1, d2] = required_length_values(
+        ["d1", "d2"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::ChamferAsymmetric {
@@ -2336,11 +2349,17 @@ fn modify_shell(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let thickness = eval_arg("thickness")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Gated BEFORE the
+    // `open_faces` handling below.
+    let thickness = required_length_value(
+        "thickness",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let open_faces_expr =
         args.iter().find(|(n, _)| n == "open_faces").map(|(_, e)| e);
     if let Some(expr) = open_faces_expr {
@@ -2588,11 +2607,16 @@ fn modify_thicken(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let offset = eval_arg("offset")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ).
+    let offset = required_length_value(
+        "offset",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Thicken {
         target: target_id,
         offset,
@@ -2610,11 +2634,16 @@ fn modify_zone_slab(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let width = eval_arg("width")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ).
+    let width = required_length_value(
+        "width",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::ZoneSlab {
         target: target_id,
         width,
@@ -2632,11 +2661,16 @@ fn modify_offset_solid(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let distance = eval_arg("distance")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ).
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::OffsetSolid {
         target: target_id,
         distance,
@@ -2654,11 +2688,17 @@ fn modify_offset_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let distance = eval_arg("distance")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Gated BEFORE the
+    // `third` handling below.
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
     let (reference, direction) = match third_expr {
         None => (None, None),

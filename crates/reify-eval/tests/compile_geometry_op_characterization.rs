@@ -1738,17 +1738,19 @@ const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] =
 fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
     let args = match k {
         ModifyKind::Fillet => vec![("radius".to_string(), lit_len(0.005))],
-        ModifyKind::Chamfer => vec![("distance".to_string(), lit(0.005))],
+        ModifyKind::Chamfer => vec![("distance".to_string(), lit_len(0.005))],
         ModifyKind::ChamferAsymmetric => vec![
-            ("d1".to_string(), lit(0.004)),
-            ("d2".to_string(), lit(0.006)),
+            ("d1".to_string(), lit_len(0.004)),
+            ("d2".to_string(), lit_len(0.006)),
         ],
-        ModifyKind::Shell => vec![("thickness".to_string(), lit(0.002))],
+        ModifyKind::Shell => vec![("thickness".to_string(), lit_len(0.002))],
+        // `Draft`'s `angle` stays BARE: it is an ANGLE position owned by
+        // `docs/prds/v0_6/angle-units-surface-convergence.md`, not by this leaf.
         ModifyKind::Draft => vec![("angle".to_string(), lit(0.1))],
-        ModifyKind::Thicken => vec![("offset".to_string(), lit(0.003))],
-        ModifyKind::ZoneSlab => vec![("width".to_string(), lit(0.01))],
-        ModifyKind::OffsetSolid => vec![("distance".to_string(), lit(0.002))],
-        ModifyKind::OffsetCurve => vec![("distance".to_string(), lit(0.002))],
+        ModifyKind::Thicken => vec![("offset".to_string(), lit_len(0.003))],
+        ModifyKind::ZoneSlab => vec![("width".to_string(), lit_len(0.01))],
+        ModifyKind::OffsetSolid => vec![("distance".to_string(), lit_len(0.002))],
+        ModifyKind::OffsetCurve => vec![("distance".to_string(), lit_len(0.002))],
     };
     CompiledGeometryOp::Modify {
         kind: k,
@@ -1834,9 +1836,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         edges: [],
-        distance: Real(
-            0.005,
-        ),
+        distance: Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::ChamferAsymmetric => r#"Ok(
@@ -1845,12 +1891,100 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         edges: [],
-        d1: Real(
-            0.004,
-        ),
-        d2: Real(
-            0.006,
-        ),
+        d1: Scalar {
+            si_value: 0.004,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        d2: Scalar {
+            si_value: 0.006,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::Shell => r#"Ok(
@@ -1858,9 +1992,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        thickness: Real(
-            0.002,
-        ),
+        thickness: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         faces_to_remove: [],
         open_face_handles: [],
     },
@@ -1884,9 +2062,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        offset: Real(
-            0.003,
-        ),
+        offset: Scalar {
+            si_value: 0.003,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::ZoneSlab => r#"Ok(
@@ -1894,9 +2116,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        width: Real(
-            0.01,
-        ),
+        width: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::OffsetSolid => r#"Ok(
@@ -1904,9 +2170,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        distance: Real(
-            0.002,
-        ),
+        distance: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::OffsetCurve => r#"Ok(
@@ -1914,9 +2224,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
         target: GeometryHandleId(
             50,
         ),
-        distance: Real(
-            0.002,
-        ),
+        distance: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         reference: None,
         direction: None,
     },
