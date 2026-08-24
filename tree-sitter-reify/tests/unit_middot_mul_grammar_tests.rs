@@ -6,11 +6,14 @@
 //! could not read back.  The external scanner's `UNIT_MUL_OP` now fires on ASCII `*`
 //! OR U+00B7, both gated identically by `is_unit_start`.
 //!
-//! THIS FILE IS THE LIVE REGRESSION SIGNAL for that acceptance.  The mirrored rows in
-//! `tree-sitter-reify/test/corpus/unit_expr.txt` are documentation only — no gate
-//! anywhere executes the tree-sitter corpus (`scripts/verify.sh` never invokes
-//! `tree-sitter test`, and `tree-sitter-reify/package.json` has no scripts block), so
-//! the INV-SF-7 ambiguity obligation is discharged here, under `cargo nextest`.
+//! THIS FILE IS THE LIVE REGRESSION SIGNAL for that acceptance.  No gate anywhere
+//! executes the tree-sitter corpus (`scripts/verify.sh` never invokes `tree-sitter
+//! test`, and `tree-sitter-reify/package.json` has no scripts block), so the INV-SF-7
+//! ambiguity obligation is discharged here, under `cargo nextest`.
+//! `tree-sitter-reify/test/corpus/unit_expr.txt` keeps three illustrative U+00B7 rows
+//! as documentation and defers every negative and boundary case to this file — it is
+//! deliberately NOT a row-for-row mirror, because an unexecuted copy of these
+//! assertions would diverge from the parser silently.
 //!
 //! Assertions follow the house restraint used by the 13 sibling `*_grammar_tests.rs`:
 //! error PRESENCE via `has_error()`, never exact ERROR spans or the `UNEXPECTED`
