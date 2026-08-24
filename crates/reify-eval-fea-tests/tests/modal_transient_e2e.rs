@@ -403,8 +403,11 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
     //     debug-runnable companion is
     //     `modal_options_validation_tests::corpus_rayleigh_ctor_args_lower_to_dimensioned_literals`,
     //     which compiles the same `.ri` file and inspects the lowered ctor
-    //     literals without an eigensolve; the remaining corpus sites are
-    //     owned by #6323 (part B).
+    //     literals without an eigensolve. The other four migrated corpus sites
+    //     are guarded at the compile layer by
+    //     `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`,
+    //     which gates at ANY severity — reverting one to a bare literal is
+    //     rejected there (measured; see esc-6093-7).
     //
     let opts_cell = ValueCellId::new("CantileverStepResponse", "opts");
     let opts_val = eval_result

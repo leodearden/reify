@@ -513,8 +513,10 @@ structure CtorMisspelledLabelProbe {
 /// the lowered `RayleighDamping` ctor args. RED before task #6093's migration,
 /// while the file still said `alpha: 0.0, beta: 0.0003`. Companion to the
 /// release-gated value-layer pin (e) in
-/// `reify-eval-fea-tests/tests/modal_transient_e2e.rs`; the remaining migrated
-/// corpus sites are owned by #6323 (part B).
+/// `reify-eval-fea-tests/tests/modal_transient_e2e.rs`. The other migrated
+/// corpus sites are guarded by
+/// `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`,
+/// which gates at ANY severity.
 #[test]
 fn corpus_rayleigh_ctor_args_lower_to_dimensioned_literals() {
     let module = compile_source_with_stdlib(include_str!(
