@@ -372,42 +372,79 @@ structure Sib {
 }
 "#;
 
-/// Exactly the UNPINNED sibling may be flagged.
+/// BOTH siblings are flagged, and the diagnostics agree with the VALUES.
 ///
-/// This is why finding 1's fix is not the one-liner
-/// `reaching.iter().any(|r| global_reads.contains(r))`: `cells_reaching`'s
-/// additive SEEDING normalises `Sib.b1.bore` to `Bearing.bore`, whose reader
-/// `Bearing.fit` is shared by BOTH siblings — so a plain `contains` probe over
-/// the readers masks the genuinely free `b2` while both autos remain
-/// `Value::Undef`. That is the loud-correct-warning-becomes-a-silent-`Undef`
-/// failure this branch guards against everywhere else, and it is strictly worse
-/// than the false positive it would be curing.
+/// `Bearing` is reachable by TWO instance paths here, so
+/// `build_single_instance_alias_paths` drops it and `build_dependent_cells`
+/// stage (g) emits NO alias entry for `Sib.b1.fit` — layer 1 therefore cannot
+/// drive `Sib.b1.bore` through the child-side `let`, and neither auto is solved.
+/// `Sib.b1.bore` is nonetheless *semantically* pinned by
+/// `constraint self.b1.fit == 20mm`, so layer 4's re-projection disjunct WOULD
+/// unflag it — which is why that disjunct is gated on the same alias oracle
+/// stage (g) uses (review esc-5467-16 finding 2).
+///
+/// The three verdicts a candidate fix can produce are all reachable, and only
+/// one is correct:
+///
+/// * TWO warnings, both autos `Undef` — CORRECT and self-consistent. It is what
+///   `main` reported, and it is honest: nothing here is solved, and the user is
+///   told so for both. The v1 boundary that makes it true is documented on
+///   `build_single_instance_alias_paths`.
+/// * ONE warning (`Sib.b2.bore`), both autos `Undef` — the esc-5467-16 finding-2
+///   regression: `Sib.b1.bore` is silently `Undef` with NO diagnostic at all.
+///   Strictly worse than `main`.
+/// * ZERO warnings, both autos `Undef` — the reverse probe spelled as a plain
+///   `global_reads.contains(reader)`, letting b1's pin mask the genuinely free
+///   b2 through `cells_reaching`'s many-to-one normalised seeding.
+///
+/// The VALUE assertions are the load-bearing half and are not optional: a count
+/// alone cannot tell verdict 1 from verdict 2 turning into "one warning, b1
+/// solved", which WOULD be an improvement. Asserting `Undef` is what pins the
+/// warning to the solve.
 #[test]
 fn two_sibling_instances_sharing_a_child_side_let_are_flagged_independently() {
-    let result = eval_through_reify_check(
+    let result = eval_through_production_registry(
         TWO_SIBLINGS_SHARING_A_CHILD_SIDE_LET,
         "two-sibling child-side-let",
     );
 
-    let flagged = underdetermined(&result);
+    let flagged: Vec<&str> = underdetermined(&result)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for auto in ["Sib.b1.bore", "Sib.b2.bore"] {
+        assert!(
+            flagged.iter().any(|m| m.contains(auto)),
+            "`{auto}` is NOT solved here (asserted below), so it MUST be \
+             flagged. A missing diagnostic for `Sib.b1.bore` is the \
+             esc-5467-16 finding-2 regression: layer 4's re-projection \
+             unflagged it on an instance path stage (g) never aliased, so the \
+             loud correct warning became a silent `Undef`. Got {flagged:#?}",
+        );
+    }
     assert_eq!(
         flagged.len(),
-        1,
-        "EXACTLY ONE auto is free here (`Sib.b2.bore`). TWO means layer 4 still \
-         matches only the raw declaration id and `Sib.b1.bore` is the finding-1 \
-         false positive. ZERO means the reverse probe was spelled as a plain \
-         `global_reads.contains(reader)`, which lets b1's pin mask the \
-         genuinely free b2 — a FALSE NEGATIVE, and since neither sibling is \
-         actually solved here it turns a loud correct warning into a silent \
-         `Undef`. Got {flagged:#?}",
+        2,
+        "exactly the two autos, once each. Got {flagged:#?}",
     );
-    assert!(
-        flagged[0].message.contains("Sib.b2.bore"),
-        "the surviving diagnostic must name the UNPINNED sibling `Sib.b2.bore`; \
-         naming `Sib.b1.bore` instead means the probe is discriminating between \
-         the siblings backwards. Got: {}",
-        flagged[0].message,
-    );
+
+    // The half a count cannot express: the warnings are TRUE.
+    for (entity, member) in [
+        ("Sib.b1", "bore"),
+        ("Sib.b2", "bore"),
+        ("Sib.b1", "fit"),
+    ] {
+        let got = result.values.get(&ValueCellId::new(entity, member));
+        assert!(
+            matches!(got, None | Some(reify_ir::Value::Undef)),
+            "`{entity}.{member}` is expected to stay unresolved at this \
+             fixture's documented v1 boundary (`Bearing` has two instance \
+             paths, so stage (g) emits no alias). If it now RESOLVES, that is \
+             good news and the alias emitter was widened — drop the matching \
+             W_UNDERDETERMINED expectation above in the same change, and never \
+             the other way round. Got {got:?}",
+        );
+    }
 }
 
 /// The shape a pure instance re-projection provably CANNOT reach: the pinning
@@ -502,4 +539,82 @@ fn a_container_local_let_reading_one_sibling_does_not_mask_the_other() {
          got: {}",
         flagged[0].message,
     );
+}
+
+/// The member-name COLLISION counterexample that forces the declaring-template
+/// guard onto the RE-PROJECTION disjunct as well (review esc-5467-16 finding 1).
+///
+/// `Bearing.bore` is genuinely free: `Bearing.fit` is a literal `10mm` and
+/// `constraint self.fit == 10mm` is a tautology that never touches `bore`, while
+/// `Sib.fit` is an unconstrained `let`. The trap is that `Sib.fit` is REACHED as
+/// a reader of `Bearing.bore` (`self.b1.bore` normalises to the `Bearing.bore`
+/// reverse key), and an unguarded re-projection asks only
+/// `global_reads.contains(Bearing.<reader.member>)` = `Bearing.fit` — which
+/// `Bearing`'s own UNRELATED constraint put there. Nothing ties that id back to
+/// `Sib.fit`; only the member NAME is shared.
+const COLLIDING_MEMBER_NAME_IN_ANOTHER_ENTITY: &str = r#"
+structure Bearing {
+    param bore : Length = auto
+    let fit : Length = 10mm
+    constraint self.fit == 10mm
+}
+
+structure Sib {
+    sub b1 : Bearing
+    let fit : Length = self.b1.bore * 2.0
+}
+"#;
+
+/// The SAME model with the colliding reader renamed `fit` -> `margin` and
+/// nothing else changed. The verdict must not depend on that name.
+const NON_COLLIDING_MEMBER_NAME_IN_ANOTHER_ENTITY: &str = r#"
+structure Bearing {
+    param bore : Length = auto
+    let fit : Length = 10mm
+    constraint self.fit == 10mm
+}
+
+structure Sib {
+    sub b1 : Bearing
+    let margin : Length = self.b1.bore * 2.0
+}
+"#;
+
+/// A bare member-name collision in an UNRELATED entity must not unflag a
+/// genuinely free auto.
+///
+/// MEASURED before the guard moved onto the re-projection disjunct: the
+/// colliding spelling reported ZERO diagnostics while the renamed one reported
+/// the correct single `Bearing.bore` diagnostic — a LOST WARNING relative to
+/// `main`, whose one-hop read-set is `{Bearing.fit}` and which warns in both
+/// spellings. The two fixtures are asserted TOGETHER, and the renamed one is the
+/// control: asserting the colliding one alone could be satisfied by a fix that
+/// simply stopped unflagging everything.
+#[test]
+fn a_colliding_member_name_in_another_entity_does_not_mask_a_free_auto() {
+    for (src, what) in [
+        (COLLIDING_MEMBER_NAME_IN_ANOTHER_ENTITY, "colliding `Sib.fit`"),
+        (
+            NON_COLLIDING_MEMBER_NAME_IN_ANOTHER_ENTITY,
+            "renamed `Sib.margin`",
+        ),
+    ] {
+        let result = eval_through_reify_check(src, what);
+        let flagged = underdetermined(&result);
+        assert_eq!(
+            flagged.len(),
+            1,
+            "`Bearing.bore` is free in BOTH spellings — `Bearing.fit` is a \
+             literal and its constraint is a tautology, and `Sib.fit`/`Sib.margin` \
+             is an unconstrained `let`. ZERO for the {what} fixture means the \
+             re-projection disjunct matched on the reader's MEMBER NAME alone \
+             and honoured a reader that does not live in the declaring \
+             `Bearing`. Got {flagged:#?}",
+        );
+        assert!(
+            flagged[0].message.contains("Bearing.bore"),
+            "the {what} diagnostic must name `Bearing.bore`; got: {}",
+            flagged[0].message,
+        );
+    }
 }

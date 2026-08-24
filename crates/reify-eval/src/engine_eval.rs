@@ -851,14 +851,34 @@ fn detect_underdetermined<'t>(
 ///   nowhere in the closure. Pinned by
 ///   `an_auto_pinned_only_by_a_constraint_inside_its_declaring_child_is_not_flagged`.
 ///
-/// The guard `reader.entity == normalised(auto.entity)` narrows the second
-/// disjunct to readers that genuinely live in the auto's DECLARING template.
-/// Without it, `cells_reaching`'s normalised seeding can surface a reader that
-/// is template-local to the auto's CONTAINER instead — `Sib`'s own
-/// `let fit = self.b1.bore * 2` is reached from `Sib.b2.bore`'s normalised seed
-/// via the shared `Bearing.bore` key — and masking b2 with b1's pin is exactly
-/// the false negative the first disjunct is shaped to avoid. Pinned by
-/// `a_container_local_let_reading_one_sibling_does_not_mask_the_other`.
+/// # The two guards both disjuncts carry (review esc-5467-16)
+///
+/// * **DECLARING-TEMPLATE.** `reader.entity == normalised(auto.entity)` narrows
+///   BOTH disjuncts to readers that genuinely live in the auto's DECLARING
+///   template. Without it, `cells_reaching`'s normalised seeding can surface a
+///   reader that is template-local to the auto's CONTAINER instead — `Sib`'s own
+///   `let fit = self.b1.bore * 2` is reached from `Sib.b2.bore`'s normalised
+///   seed via the shared `Bearing.bore` key — and masking b2 with b1's pin is
+///   exactly the false negative the re-projection is shaped to avoid. Pinned by
+///   `a_container_local_let_reading_one_sibling_does_not_mask_the_other`. The
+///   SAME guard is load-bearing on re-projection for a second, independent
+///   reason: both disjuncts key on the reader's MEMBER NAME alone, so an
+///   unrelated entity that happens to own a member of the same name unflags a
+///   genuinely free auto. Pinned by
+///   `a_colliding_member_name_in_another_entity_does_not_mask_a_free_auto`.
+/// * **DRIVABILITY.** Re-projection additionally requires that stage (g) of
+///   [`build_dependent_cells`] will actually EMIT alias entries under this
+///   auto's own instance path — `single_instance_alias_paths()[declaring] ==
+///   auto.entity`. Re-projection is a claim about an INSTANCE-PATH spelling, and
+///   that spelling only carries a per-trial value when the alias exists;
+///   [`build_single_instance_alias_paths`] drops collection subs and any
+///   structure reachable by >=2 instance paths. Unflagging on a path layer 1
+///   cannot drive turns a loud, correct warning into a silent `Undef` —
+///   strictly worse than not widening at all. Pinned by
+///   `two_sibling_instances_sharing_a_child_side_let_are_flagged_independently`,
+///   which asserts the VALUES as well as the count. The template-local disjunct
+///   needs no such gate: it makes no instance-path claim, so it is answered in
+///   the template namespace layer 1 already solves in.
 ///
 /// # D1 / B2 identity
 ///
@@ -879,12 +899,38 @@ fn auto_is_pinned_through_a_reader(
     let declaring = index
         .normalize_ref(auto)
         .map_or_else(|| auto.entity.clone(), |norm| norm.entity);
+    // The stage-(g) alias oracle, shared with the emitter (see
+    // [`CellReadIndex::single_instance_alias_paths`]). `Some(true)` exactly when
+    // `build_dependent_cells` will emit alias entries keyed by THIS auto's own
+    // instance path, i.e. when layer 1 can actually drive the auto through the
+    // re-projected reader.
+    let drivable_through_this_instance_path = index
+        .single_instance_alias_paths()
+        .get(declaring.as_str())
+        .is_some_and(|path| *path == auto.entity);
     index.cells_reaching(&seed).iter().any(|reader| {
-        (reader.entity == declaring && template_local_reads.contains(reader))
-            || global_reads.contains(&ValueCellId::new(
-                auto.entity.clone(),
-                reader.member.clone(),
-            ))
+        // THE DECLARING-TEMPLATE GUARD, on BOTH disjuncts (review esc-5467-16
+        // finding 1). `cells_reaching`'s additive normalised seeding surfaces
+        // readers living in ANY entity, so nothing ties a reader back to the
+        // auto it was reached from; both disjuncts below key on the reader's
+        // MEMBER NAME alone, and a bare member-name collision across entities
+        // therefore unflags a genuinely free auto. MEASURED, before this guard
+        // moved onto disjunct 2: `Bearing{param bore=auto, let fit=10mm,
+        // constraint self.fit==10mm}` + `Sib{sub b1:Bearing,
+        // let fit=self.b1.bore*2}` reported ZERO diagnostics, while renaming
+        // `Sib.fit` -> `Sib.margin` and changing nothing else restored the
+        // correct single `Bearing.bore` diagnostic — a LOST WARNING relative to
+        // `main`, which warns in both spellings. Pinned by
+        // `a_colliding_member_name_in_another_entity_does_not_mask_a_free_auto`.
+        if reader.entity != declaring {
+            return false;
+        }
+        template_local_reads.contains(reader)
+            || (drivable_through_this_instance_path
+                && global_reads.contains(&ValueCellId::new(
+                    auto.entity.clone(),
+                    reader.member.clone(),
+                )))
     })
 }
 
@@ -1843,6 +1889,19 @@ struct CellReadIndex<'t> {
     /// eval performs at most ONE reverse-graph sweep in total, where before the
     /// hoist it performed one per scope holding autos.
     reverse: std::cell::OnceCell<HashMap<ValueCellId, Vec<ValueCellId>>>,
+    /// MEMOIZED structure-name -> its SINGLE non-collection instance path, the
+    /// stage-(g) alias oracle ([`build_single_instance_alias_paths`]), built
+    /// lazily on the first [`Self::single_instance_alias_paths`] call.
+    ///
+    /// SHARED, deliberately, by the TWO consumers that must agree on it
+    /// (G7 no-lockstep-duplication): [`build_dependent_cells`]' stage (g), which
+    /// EMITS the per-trial alias fold entries, and
+    /// [`auto_is_pinned_through_a_reader`]'s re-projection disjunct, which may
+    /// only unflag an auto on a path stage (g) can actually drive. Two
+    /// independent calls would let the emitter and the suppressor drift apart —
+    /// and a suppressor that unflags what the emitter dropped is exactly the
+    /// silent-`Undef` regression this branch guards against.
+    alias_paths: std::cell::OnceCell<HashMap<String, String>>,
     /// The templates this index was built over, and the budgets it was built
     /// at, retained so a consumer that needs a SECOND walk of the same shape —
     /// [`build_dependent_cells`]' stage-(g) [`build_single_instance_alias_paths`]
@@ -1881,6 +1940,7 @@ impl<'t> CellReadIndex<'t> {
             cell_map,
             path_map,
             reverse: std::cell::OnceCell::new(),
+            alias_paths: std::cell::OnceCell::new(),
             templates: all_templates,
             max_unfold_depth,
             max_unfold_nodes,
@@ -1901,6 +1961,22 @@ impl<'t> CellReadIndex<'t> {
     /// sites collapses to `is_some()`.
     fn normalize_ref(&self, id: &ValueCellId) -> Option<ValueCellId> {
         crate::resolve_order::normalize_cell_id(id, &self.path_map).filter(|norm| norm != id)
+    }
+
+    /// The stage-(g) alias oracle, memoized (see [`Self::alias_paths`]).
+    ///
+    /// A structure absent from this map is one stage (g) DROPS — a collection
+    /// sub, or a structure reachable by >=2 distinct instance paths — so no
+    /// per-trial alias entry is ever emitted for its cells under an instance
+    /// path, and layer 1 cannot drive an auto through them.
+    fn single_instance_alias_paths(&self) -> &HashMap<String, String> {
+        self.alias_paths.get_or_init(|| {
+            build_single_instance_alias_paths(
+                self.templates,
+                self.max_unfold_depth,
+                self.max_unfold_nodes,
+            )
+        })
     }
 
     /// FORWARD: every id transitively read by `seeds`, following each in-map
@@ -2406,11 +2482,10 @@ fn build_dependent_cells(
     //
     //     The alias is pushed AFTER its source so a downstream cell reading
     //     either spelling sees a fresh value first.
-    let alias_paths = build_single_instance_alias_paths(
-        index.templates,
-        index.max_unfold_depth,
-        index.max_unfold_nodes,
-    );
+    // SHARED with layer 4's re-projection disjunct — see
+    // [`CellReadIndex::single_instance_alias_paths`] for why the emitter and the
+    // suppressor must read ONE answer.
+    let alias_paths = index.single_instance_alias_paths();
     let mut out: Vec<(ValueCellId, CompiledExpr)> = Vec::with_capacity(sorted.len());
     for node in sorted {
         let NodeId::Value(id) = node else {
