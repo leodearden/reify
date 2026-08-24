@@ -1953,6 +1953,91 @@ describe('App parameter input: the reconciled unit/bare-number contract (task #5
       expect(input.value).toBe('20');
     });
   });
+
+  /**
+   * The same fixture plus a cell whose dimension NO curated ladder covers — the
+   * real in-tree `Money` shape, badge and all.
+   *
+   * Same mocking discipline as `renderCapacityInput`: the non-partial
+   * `vi.mock('../bridge')` factory with per-test `vi.mocked` overrides, the
+   * ladder map supplied through `getUnitLadders`, and the `waitFor` on the
+   * Volume picker as the synchronization point — which also proves the fetch
+   * resolved, so the uncovered cell below is genuinely uncovered rather than
+   * merely un-fetched.
+   */
+  async function renderWithUncoveredCell(): Promise<{
+    covered: HTMLInputElement;
+    uncovered: HTMLInputElement;
+  }> {
+    const state = capacityState();
+    state.values.push({
+      cell_id: 'Tank.unit_cost',
+      name: 'unit_cost',
+      value: '5',
+      unit: 'USD',
+      determinacy: 'determined',
+      entity_path: 'Tank.unit_cost',
+      kind: 'param',
+      freshness: 'final',
+      dimension: 'Money',
+      si_value: 5,
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(state);
+    vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
+      {
+        dimension: 'Volume',
+        units: [
+          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+        ],
+      },
+    ]);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
+    });
+
+    const inputFor = (cellId: string) =>
+      screen
+        .getByTestId(`prop-row-${cellId}`)
+        .querySelector('input[type="text"]') as HTMLInputElement;
+    return { covered: inputFor('Tank.capacity'), uncovered: inputFor('Tank.unit_cost') };
+  }
+
+  it('sends a bare number straight through for a cell no curated ladder covers', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+
+      const { covered, uncovered } = await renderWithUncoveredCell();
+
+      // The Money cell: `USD` is reachable only through the compiler's
+      // per-module `UnitRegistry`, which the engine's composed index excludes,
+      // so the bare number is the ONLY input either end accepts. Gating it would
+      // brick the row — 16 such declarations exist across examples/*.ri.
+      fireEvent.focus(uncovered);
+      fireEvent.input(uncovered, { target: { value: '6' } });
+      fireEvent.keyDown(uncovered, { key: 'Enter' });
+
+      expect(uncovered.hasAttribute('data-invalid')).toBe(false);
+      expect(bridge.setParameter).toHaveBeenCalledWith('Tank.unit_cost', '6');
+
+      await flushMacrotasks();
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // The LADDERED neighbour in the same panel is discriminated, in the same
+      // render: still refused inline, still never reaching the bridge. Without
+      // this the test could pass by the gate having been removed outright.
+      vi.mocked((bridge as any).setParameter).mockClear();
+      fireEvent.focus(covered);
+      fireEvent.input(covered, { target: { value: '20' } });
+      fireEvent.keyDown(covered, { key: 'Enter' });
+
+      expect(covered.hasAttribute('data-invalid')).toBe(true);
+      expect(bridge.setParameter).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('App re-evaluate error toast', () => {

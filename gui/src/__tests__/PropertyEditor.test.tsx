@@ -911,9 +911,19 @@ describe('PropertyEditor validation - quantity overflow rejection', () => {
 
 describe('PropertyEditor quantity literal acceptance with a live unit ladder (task #6028)', () => {
   /**
-   * Four cells covering every branch of the per-cell alphabet resolution:
+   * Five cells covering every branch of the per-cell alphabet resolution:
    * a Volume cell and a Density cell (both covered by the ladder map), a cell
-   * whose dimension the map does NOT cover, and a dimensionless cell.
+   * whose dimension the map does NOT cover, a dimensionless cell, and — for the
+   * coverage-conditional bare-number rule (task #5757 amend) — an uncovered
+   * cell that DOES carry a unit badge.
+   *
+   * c5 is the shape of the real in-tree case, which c3 does not reach: 16
+   * `param … : Money` declarations across `examples/*.ri` render with a `USD`
+   * badge and an si_value, and `USD` is parseable by neither this panel's
+   * alphabet nor the engine's composed index (it lives only in the compiler's
+   * per-module `UnitRegistry`). c3 has no badge at all, so it cannot show that
+   * a present-but-unparseable unit is still not enough to make the cell
+   * expressible.
    */
   function tankValues(): Record<string, ValueData> {
     return {
@@ -946,6 +956,15 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
         name: 'ratio',
         entity_path: 'Tank.ratio',
         value: '3',
+      }),
+      c5: makeValue({
+        cell_id: 'c5',
+        name: 'unit_cost',
+        entity_path: 'Tank.unit_cost',
+        value: '5',
+        unit: 'USD',
+        dimension: 'Money',
+        si_value: 5,
       }),
     };
   }
@@ -1112,12 +1131,6 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
       ['1e3', 'c1', 'Volume'],
       ['20', 'c2', 'Density'],
       ['7.8', 'c2', 'Density'],
-      // c3's dimension has NO curated ladder. Dimensionedness is a property of
-      // the cell, not of ladder coverage — a Torque cell still means N·m — so
-      // the bare number is refused there too, even though its unit picker has
-      // nothing to offer.
-      ['20', 'c3', 'Torque (no curated ladder)'],
-      ['-5', 'c3', 'Torque (no curated ladder)'],
     ])('rejects the bare number %s on cell %s, which is dimensioned — %s', (literal, cellId) => {
       expect(typeInto(literal, ladders, cellId).accepted).toBe(false);
     });
@@ -1132,6 +1145,77 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
       // in the panel is one. `typeInto` also asserts the value is submitted
       // VERBATIM, so this covers the accept side end-to-end.
       expect(typeInto(literal, ladders, 'c4').accepted).toBe(true);
+    });
+
+    // c3's dimension has NO curated ladder, so the gate does not fire there.
+    // The rule keys on EXPRESSIBILITY, not dimensionedness: `20` in a Volume
+    // cell is ambiguous because `20mm^3` and `20L` were both offered, but a
+    // Torque cell's picker offers nothing and its alphabet admits nothing, so
+    // refusing the bare number disambiguates nothing — it just removes the
+    // row's last accepted input. The backend agrees (`dimension_requires_unit`
+    // returns None for it), so refusing here would discard input the engine
+    // would have taken.
+    it.each([
+      ['20', 'c3', 'Torque (no curated ladder)'],
+      ['-5', 'c3', 'Torque (no curated ladder)'],
+    ])('accepts the bare number %s on cell %s, whose dimension is inexpressible — %s', (literal, cellId) => {
+      expect(typeInto(literal, ladders, cellId).accepted).toBe(true);
+    });
+
+    // c5 — the real in-tree Money shape. A badge is not expressibility: the
+    // cell displays `USD`, but no ladder carries it and neither alphabet admits
+    // it, so the cell is uncovered exactly as c3 is.
+    it.each([
+      ['6'],
+      ['0.5'],
+      ['-2'],
+    ])('accepts the bare number %s on the badged-but-uncovered Money cell', (literal) => {
+      // `typeInto` also asserts the literal reaches `onSetParam` VERBATIM, so
+      // this pins the submit side too — the panel must not helpfully append the
+      // badge on the way out.
+      expect(typeInto(literal, ladders, 'c5').accepted).toBe(true);
+    });
+
+    it.each([
+      ['6USD'],
+      ['5USD'],
+    ])('still refuses %s inline on the Money cell — the engine cannot parse it either', (literal) => {
+      // Matching the backend exactly is the whole contract: `USD` is reachable
+      // only through the compiler's per-module `UnitRegistry`, which
+      // `COMPOSED_UNIT_INDEX` excludes, so `parse_value_string` answers
+      // `Cannot parse value '6USD'`. Admitting it here would re-open the
+      // panel-accepts / engine-refuses gap task #5757 exists to close, just for
+      // a different label.
+      expect(typeInto(literal, ladders, 'c5').accepted).toBe(false);
+    });
+
+    it('seeds the badged-but-uncovered Money cell with the BARE magnitude', () => {
+      // `editSeedUnitLabel`'s `?? val.unit` fallback must not be allowed to
+      // pre-fill `5USD` here: that is text this very gate refuses, so focus+Enter
+      // on an untouched row would set data-invalid and submit nothing — the
+      // ergonomic hazard the #5757 amendment closed for covered cells. An
+      // uncovered cell reaches the bare-magnitude branch before the label lookup
+      // happens at all, and step-19's `isValidValue` re-check is the backstop
+      // that keeps it true if that ordering ever changes.
+      const onSetParam = vi.fn();
+      render(() => (
+        <PropertyEditor
+          values={tankValues()}
+          selectedEntity={null}
+          onSetParameter={onSetParam}
+          unitLadders={ladders}
+        />
+      ));
+      const row = screen.getByTestId('prop-row-c5');
+      const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+
+      fireEvent.focus(input);
+      expect(input.value).toBe('5');
+
+      // …so an untouched commit is a true no-op again.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(input.hasAttribute('data-invalid')).toBe(false);
+      expect(onSetParam).toHaveBeenCalledWith('c5', '5');
     });
 
     // Gating the bare-number branch must not weaken the QUANTITY branch beside
@@ -1793,15 +1877,14 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     expect(onSetParam).toHaveBeenCalledWith('c1', '90mm^3');
   });
 
-  it('(g3) a cell whose dimension has no curated ladder still seeds the bare magnitude', () => {
-    // The deliberate degradation. `editSeedUnitLabel` has no parseable label to
-    // offer for an uncovered dimension — `val.unit` there is a composed base-SI
-    // spelling (`kg·m^-3` and friends) that neither this gate nor
-    // `parse_value_string` reads — so the seed falls back to the magnitude
-    // alone rather than pre-filling the input with a unit the panel would
-    // reject. Committing unmodified is still refused, which is the PRD-ratified
-    // outcome for a dimensioned cell with no unit; what this pins is that the
-    // fallback is the OLD behaviour, not a new failure mode.
+  it('(g3) a cell whose dimension has no curated ladder seeds the bare magnitude, and commits it', () => {
+    // No longer a degradation — a consistency. An uncovered dimension has no
+    // label this gate accepts (`val.unit` here is a composed base-SI spelling,
+    // `kg·m^2·s^-2`, that neither this gate nor `parse_value_string` reads), so
+    // the seed is the bare magnitude; and since the bare-number rule keys on
+    // EXPRESSIBILITY, that seed is also a literal the panel and the engine both
+    // accept. Focus+Enter on an untouched row is a no-op here for the same
+    // reason it is on a covered cell: the seed is valid.
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor
@@ -1828,8 +1911,8 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     expect(input.value).toBe('12');
 
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.hasAttribute('data-invalid')).toBe(true);
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).toHaveBeenCalledWith('c9', '12');
   });
 
   it('(h) focusing a cell while a non-default unit is picked shows an explicit "editing in <default>" hint', () => {
