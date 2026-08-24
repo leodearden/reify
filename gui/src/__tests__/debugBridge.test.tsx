@@ -2048,63 +2048,10 @@ describe('debug bridge open_menu', () => {
     expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
   });
 
-  // (e)/(f) pin `open_menu`'s escape of its caller-supplied `name`, the last
-  // interpolation in bridge.ts to be routed through `escapeAttrValue`. Menu
-  // names are simple lowercase identifiers BY CONVENTION only — the tool
-  // boundary does not enforce it — so a typo'd or hostile name must reach the
-  // `menu trigger not found` diagnostic rather than dying inside the selector
-  // parser and surfacing as an opaque `{error: '<CSS parser message>'}`.
-  //
-  // Same negative/positive pair, and for the same measured reason, as (n)/(o)
-  // in the resolveByTestId block — measured against this handler, not assumed:
-  //
-  //   escape dropped from open_menu                → (e) FAILS, (f) fails
-  //   `v.replace(/["\\]/g, '')` — strip, not escape → (e) PASSES, (f) FAILS
-  //
-  // i.e. (e) alone would be satisfied by a helper that merely DELETED the
-  // metacharacters, and only (f) rejects that.
-  it('(e) a menu name carrying selector metacharacters returns the not-found error, not a CSS-parser throw', async () => {
-    const stores = makeStores();
-    await initDebugBridge(stores);
-
-    // Deliberately NO matching trigger: the point is that the lookup reaches
-    // its own not-found diagnostic instead of throwing inside querySelector.
-    for (const [i, badName] of ['fi"le', 'fi\\le', 'file"]'].entries()) {
-      const result = await dispatchCmd(3007 + i, 'open_menu', { name: badName });
-
-      // The diagnostic quotes the RAW name back, not the escaped form.
-      expect(result).toEqual({ error: `menu trigger not found: ${badName}` });
-    }
-  });
-
-  it('(f) a menu name that really contains a quote and a backslash still resolves and clicks', async () => {
-    const stores = makeStores();
-    await initDebugBridge(stores);
-
-    // Built with setAttribute rather than innerHTML so the attribute holds these
-    // bytes exactly, with no HTML-parser unescaping in between. No <MenuBar />
-    // here on purpose: it stamps only the conventional names, and this case is
-    // about the selector round-trip, not about menu state.
-    const name = 'fi"l\\e';
-    const el = document.createElement('button');
-    el.setAttribute('data-testid', `menu-trigger-${name}`);
-    document.body.appendChild(el);
-    const clickSpy = vi.fn();
-    el.addEventListener('click', clickSpy);
-    expect(el.getAttribute('data-testid')).toBe(`menu-trigger-${name}`);
-
-    try {
-      const result = await dispatchCmd(3010, 'open_menu', { name });
-
-      // No MenuBar mounted, so ctx.menuBar is undefined and `open` falls back to
-      // the requested name — the assertion that matters is that the element was
-      // FOUND and clicked.
-      expect(result).toEqual({ ok: true, open: name });
-      expect(clickSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      document.body.removeChild(el);
-    }
-  });
+  // `open_menu`'s escape of its caller-supplied `name` — a typo'd or hostile
+  // name must reach the `menu trigger not found` diagnostic rather than dying
+  // inside the selector parser — is pinned by the `open_menu name` row of the
+  // `debug bridge escapeAttrValue` table at the end of this file.
 });
 
 // ---------------------------------------------------------------------------
@@ -2594,6 +2541,36 @@ describe('debug bridge set_window_size', () => {
 // debug bridge tree-node expand/collapse (step-5 RED → step-6 GREEN)
 // ---------------------------------------------------------------------------
 
+/** Inject a chevron button that toggles the design-panel expandedSet on click. */
+function setupDesignPanel(path: string, initialExpanded = false) {
+  const expandedSet = new Set<string>();
+  if (initialExpanded) expandedSet.add(path);
+  const btn = document.createElement('button');
+  btn.setAttribute('data-testid', `chevron-${path}`);
+  btn.addEventListener('click', () => {
+    if (expandedSet.has(path)) expandedSet.delete(path);
+    else expandedSet.add(path);
+  });
+  document.body.appendChild(btn);
+  window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
+  return { expandedSet, btn };
+}
+
+/** Inject a constraint-row button that toggles the constraint-panel expandedSet on click. */
+function setupConstraintPanel(path: string, initialExpanded = false) {
+  const expandedSet = new Set<string>();
+  if (initialExpanded) expandedSet.add(path);
+  const btn = document.createElement('button');
+  btn.setAttribute('data-testid', `constraint-row-${path}`);
+  btn.addEventListener('click', () => {
+    if (expandedSet.has(path)) expandedSet.delete(path);
+    else expandedSet.add(path);
+  });
+  document.body.appendChild(btn);
+  window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expandedSet };
+  return { expandedSet, btn };
+}
+
 describe('debug bridge tree-node expand/collapse', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
@@ -2619,36 +2596,6 @@ describe('debug bridge tree-node expand/collapse', () => {
     expect(responseCall).toBeDefined();
     const payload = responseCall![1] as { id: number; result: string };
     return JSON.parse(payload.result);
-  }
-
-  /** Inject a chevron button that toggles the design-panel expandedSet on click. */
-  function setupDesignPanel(path: string, initialExpanded = false) {
-    const expandedSet = new Set<string>();
-    if (initialExpanded) expandedSet.add(path);
-    const btn = document.createElement('button');
-    btn.setAttribute('data-testid', `chevron-${path}`);
-    btn.addEventListener('click', () => {
-      if (expandedSet.has(path)) expandedSet.delete(path);
-      else expandedSet.add(path);
-    });
-    document.body.appendChild(btn);
-    window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
-    return { expandedSet, btn };
-  }
-
-  /** Inject a constraint-row button that toggles the constraint-panel expandedSet on click. */
-  function setupConstraintPanel(path: string, initialExpanded = false) {
-    const expandedSet = new Set<string>();
-    if (initialExpanded) expandedSet.add(path);
-    const btn = document.createElement('button');
-    btn.setAttribute('data-testid', `constraint-row-${path}`);
-    btn.addEventListener('click', () => {
-      if (expandedSet.has(path)) expandedSet.delete(path);
-      else expandedSet.add(path);
-    });
-    document.body.appendChild(btn);
-    window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expandedSet };
-    return { expandedSet, btn };
   }
 
   it('(a) expand_tree_node: node NOT expanded → clicks chevron once, returns { ok:true, path, expanded:true }', async () => {
@@ -2761,94 +2708,10 @@ describe('debug bridge tree-node expand/collapse', () => {
     expect(result.error).toContain('constraint');
   });
 
-  // (j) closes the coverage gap under driveTreeNode's CSS escape — one of the
-  // TWO escape call sites in bridge.ts that had no test of its own, the other
-  // being `resolveByTestId`'s testId arm, now pinned by (n)/(o) in the
-  // resolveByTestId block. `open_menu`'s `name`, the third, is pinned by (e)/(f)
-  // in the `debug bridge open_menu` block.
-  //
-  // (f) above reaches the same not-found branch but with a metacharacter-free
-  // path, so nothing else would notice if the escape were dropped here: an
-  // unescaped quote or backslash interpolated into the `[data-testid="…"]`
-  // selector makes document.querySelector THROW a DOMException, which the
-  // dispatcher surfaces as an opaque `{error: '<parser message>'}` — a hostile
-  // or simply typo'd path reading as a bridge malfunction rather than as "no
-  // such node".
-  //
-  // Same hostile-input list and same "not-found rather than parser-throw"
-  // assertion as (s) in the set_fea_channel block, which pins the sibling ladder
-  // in pickFeaChannelSelect.
-  it('(j) a path containing selector metacharacters returns the not-found error, not a CSS-parser throw', async () => {
-    const stores = makeStores();
-    await initDebugBridge(stores);
-
-    // Register both accessors reporting NOT-expanded and inject NO control, so
-    // expand_tree_node necessarily takes the `expandedNow !== wantExpanded`
-    // branch — the ONLY branch that runs the escape — and then fails the lookup.
-    // A fixture whose state already matched would skip the escape entirely and
-    // prove nothing.
-    const designExpanded = new Set<string>();
-    const constraintExpanded = new Set<string>();
-    window.__REIFY_DEBUG__!.designTree = { expanded: () => designExpanded };
-    window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => constraintExpanded };
-
-    const badPaths = ['Bracket."1"', 'Bracket.\\1', 'Bracket.1"]'];
-
-    for (const [i, path] of badPaths.entries()) {
-      // The branch precondition, asserted rather than assumed.
-      expect(designExpanded.has(path)).toBe(false);
-      expect(constraintExpanded.has(path)).toBe(false);
-
-      const design = await dispatch(9010 + i, 'expand_tree_node', { path });
-      expect(design).toEqual({ error: `tree node control not found: ${path}` });
-
-      // Both panels feed the same escape through a different testid prefix.
-      const constraint = await dispatch(9020 + i, 'expand_tree_node', {
-        path,
-        panel: 'constraint',
-      });
-      expect(constraint).toEqual({ error: `tree node control not found: ${path}` });
-    }
-  });
-
-  // (k) is (j)'s POSITIVE complement, and it exists because (j) alone does not
-  // pin what escapeAttrValue MEANS — only that it does not throw. Measured
-  // mutation matrix against escapeAttrValue (bridge.ts), which is why both
-  // cases are needed:
-  //
-  //   escape dropped from driveTreeNode          → (j) FAILS, (k) fails
-  //   `v.replace(/["\\]/g, '')` — strip, not escape → (j) PASSES, (k) FAILS
-  //
-  // A helper that DELETED the metacharacters still satisfies (j)'s
-  // not-found-rather-than-throw assertion, so only this case pins the actual
-  // semantics: a testid that really carries a quote and a backslash must still
-  // RESOLVE to its own element and be clicked.
-  //
-  // That matrix also settles which arm of the escape runs here: the strip
-  // mutation could only change a verdict if the hand-rolled `["\\]` fallback
-  // is live, i.e. jsdom exposes no global CSS and CSS.escape is never reached.
-  it('(k) a testid that really contains a quote and a backslash still resolves and clicks', async () => {
-    const stores = makeStores();
-    await initDebugBridge(stores);
-
-    // Both metacharacters in one fixture: the quote would terminate the selector
-    // string and the backslash would start an escape sequence inside it.
-    const path = 'Bracket."1"\\x';
-    const { expandedSet, btn } = setupDesignPanel(path, false);
-    const clickSpy = vi.fn();
-    btn.addEventListener('click', clickSpy);
-
-    // The fixture holds the RAW metacharacters — asserted, so the test cannot
-    // pass by accidentally storing a pre-escaped attribute.
-    expect(btn.getAttribute('data-testid')).toBe(`chevron-${path}`);
-    expect(expandedSet.has(path)).toBe(false);
-
-    const result = await dispatch(9030, 'expand_tree_node', { path });
-
-    expect(result).toEqual({ ok: true, path, expanded: true });
-    expect(clickSpy).toHaveBeenCalledTimes(1);
-    expect(expandedSet.has(path)).toBe(true);
-  });
+  // driveTreeNode's escape of the caller-supplied `path` — each panel feeds it
+  // through a different testid prefix — is pinned by the two
+  // `driveTreeNode path (…)` rows of the `debug bridge escapeAttrValue` table at
+  // the end of this file.
 });
 
 // ─── F2 LSP probe handlers (steps 7-14) ─────────────────────────────────────
@@ -4266,6 +4129,60 @@ describe('debug bridge viewport_state material-state probe', () => {
 // step-6 adds the `set_fea_channel` handler to buildHandlers() in bridge.ts.
 // ---------------------------------------------------------------------------
 
+/**
+ * Render the toolbar enabled, with errorIndicator among the available channels.
+ *
+ * Shared by the `debug bridge set_fea_channel` block below and by the
+ * `pickFeaChannelSelect viewportId` row of the `debug bridge escapeAttrValue`
+ * table at the end of this file.
+ *
+ * Returns a FRESH `FeaModeStore`, independent from the `stores` object
+ * passed to `initDebugBridge()` in each case — the `set_fea_channel`
+ * handler still never reads/writes the DebugStores `stores` object
+ * directly. It DOES read the debug context's FEA slots, so this helper
+ * registers the store there, exactly as App registers its keyed registry via
+ * `registerDebugPanel`. Do NOT skip this registration — the store-based
+ * propagation check (does the store's channel actually match after dispatch?)
+ * is meaningless unless the harness threads the SAME store the toolbar
+ * updates onto the debug context, mirroring the real App wiring.
+ *
+ * `viewportId` (#5670) selects which wiring is mirrored:
+ *  - omitted → no `data-viewport-id` on the toolbar, store registered on the
+ *    LEGACY scalar `ctx.feaMode` slot. Cases (a)-(k) of the set_fea_channel
+ *    block use this form, so they exercise the same fallback path a pre-#5670
+ *    caller would.
+ *  - given → the toolbar stamps `data-viewport-id`, and the store lands in
+ *    the keyed `ctx.feaModes` map under that id, as App's registry does.
+ *    `'design-main'` ALSO populates the scalar `ctx.feaMode` slot, because
+ *    App registers both (`registerDebugPanel('feaMode', registry.get(
+ *    'design-main'))` beside the keyed record). Mirroring that matters: it is
+ *    what makes (p) discriminating — without a populated scalar slot there is
+ *    nothing for a keyed lookup to wrongly fall back TO, so the test would
+ *    pass on absence rather than on the handler's refusal.
+ */
+function renderToolbarWithErrorIndicator(viewportId?: string) {
+  const store = createFeaModeStore();
+  store.setEnabled(true);
+  render(() => (
+    <FeaModeToolbar
+      store={store}
+      availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
+      viewportId={viewportId}
+    />
+  ));
+  const ctx = window.__REIFY_DEBUG__!;
+  if (viewportId === undefined) {
+    ctx.feaMode = store;
+  } else {
+    (ctx.feaModes ??= {})[viewportId] = store;
+    // App keeps the legacy scalar slot as a mirror of design-main's entry
+    // (exactly as `viewport` is kept beside `viewports`). Reproduce that, so
+    // the keyed cases run against the real two-slot production context.
+    if (viewportId === 'design-main') ctx.feaMode = store;
+  }
+  return store;
+}
+
 describe('debug bridge set_fea_channel', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
@@ -4289,55 +4206,6 @@ describe('debug bridge set_fea_channel', () => {
   });
 
   const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
-
-  /**
-   * Render the toolbar enabled, with errorIndicator among the available channels.
-   *
-   * Returns a FRESH `FeaModeStore`, independent from the `stores` object
-   * passed to `initDebugBridge()` in each test below — the `set_fea_channel`
-   * handler still never reads/writes the DebugStores `stores` object
-   * directly. It DOES read the debug context's FEA slots, so this helper
-   * registers the store there, exactly as App registers its keyed registry via
-   * `registerDebugPanel`. Do NOT skip this registration — the store-based
-   * propagation check (does the store's channel actually match after dispatch?)
-   * is meaningless unless the harness threads the SAME store the toolbar
-   * updates onto the debug context, mirroring the real App wiring.
-   *
-   * `viewportId` (#5670) selects which wiring is mirrored:
-   *  - omitted → no `data-viewport-id` on the toolbar, store registered on the
-   *    LEGACY scalar `ctx.feaMode` slot. Cases (a)-(k) below use this form, so
-   *    they exercise the same fallback path a pre-#5670 caller would.
-   *  - given → the toolbar stamps `data-viewport-id`, and the store lands in
-   *    the keyed `ctx.feaModes` map under that id, as App's registry does.
-   *    `'design-main'` ALSO populates the scalar `ctx.feaMode` slot, because
-   *    App registers both (`registerDebugPanel('feaMode', registry.get(
-   *    'design-main'))` beside the keyed record). Mirroring that matters: it is
-   *    what makes (p) discriminating — without a populated scalar slot there is
-   *    nothing for a keyed lookup to wrongly fall back TO, so the test would
-   *    pass on absence rather than on the handler's refusal.
-   */
-  function renderToolbarWithErrorIndicator(viewportId?: string) {
-    const store = createFeaModeStore();
-    store.setEnabled(true);
-    render(() => (
-      <FeaModeToolbar
-        store={store}
-        availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
-        viewportId={viewportId}
-      />
-    ));
-    const ctx = window.__REIFY_DEBUG__!;
-    if (viewportId === undefined) {
-      ctx.feaMode = store;
-    } else {
-      (ctx.feaModes ??= {})[viewportId] = store;
-      // App keeps the legacy scalar slot as a mirror of design-main's entry
-      // (exactly as `viewport` is kept beside `viewports`). Reproduce that, so
-      // the keyed cases run against the real two-slot production context.
-      if (viewportId === 'design-main') ctx.feaMode = store;
-    }
-    return store;
-  }
 
   /** The channel select belonging to one pane's toolbar. */
   function selectFor(viewportId: string) {
@@ -4694,26 +4562,11 @@ describe('debug bridge set_fea_channel', () => {
     expect(designMain.state.channel).toBe('errorIndicator');
   });
 
-  it('(s) a viewportId containing selector metacharacters returns selectNotFoundForViewport, not a CSS-parser throw', async () => {
-    // The id is interpolated into an attribute selector, so an unescaped quote
-    // or backslash makes document.querySelector THROW a DOMException, which the
-    // dispatcher converts into an opaque `{error: '<parser message>'}` — an
-    // unknown id reading as a bridge malfunction. Escaping keeps a hostile or
-    // simply typo'd id on the same "no toolbar for that pane" branch as (m).
-    const stores = makeStores();
-    await initDebugBridge(stores);
-    const designMain = renderToolbarWithErrorIndicator('design-main');
-
-    for (const [i, badId] of ['pane-"1"', 'pane-\\1', 'pane-1"]'].entries()) {
-      const result = await dispatchCmd(4117 + i, 'set_fea_channel', {
-        channel: 'errorIndicator',
-        viewportId: badId,
-      });
-
-      expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(badId) });
-    }
-    expect(designMain.state.channel).toBe('vonMises');
-  });
+  // (s), a viewportId carrying selector metacharacters, moved to the
+  // `pickFeaChannelSelect viewportId` row of the `debug bridge escapeAttrValue`
+  // table at the end of this file — which pins the same
+  // selectNotFoundForViewport-rather-than-parser-throw assertion plus the
+  // positive direction (s) never had.
 });
 
 describe('debug bridge resolveByTestId viewport scoping', () => {
@@ -4971,72 +4824,318 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // (n)/(o) close the coverage gap under `resolveByTestId`'s TESTID escape —
-  // the busiest escape call site in bridge.ts and, until these cases, an
-  // unpinned one. Every #5891 scoped tool (click_element, focus_element,
-  // scroll, element_screenshot, wait_for_selector and wait_for's selector arm)
-  // routes its caller-supplied testId through `idSel`, yet case (f) above
-  // covers only the sibling VIEWPORTID arm.
-  //
-  // Measured, not assumed: replacing `escapeAttrValue(testId)` with a raw
-  // `${testId}` in `resolveByTestId` left every test in this file plus
-  // waitFor.test.ts green before (n) existed. An unescaped quote or backslash
-  // makes document.querySelectorAll THROW a DOMException, which the dispatcher
-  // surfaces as an opaque `{error: '<CSS parser message>'}` — a typo'd or
-  // hostile testId reading as a bridge malfunction rather than as "no such
-  // element".
-  //
-  // Same shape as (j)/(k) in the tree-node block, which pin the same shared
-  // helper through `driveTreeNode`.
-  it('(n) a testId carrying selector metacharacters returns the notFound wording, not a CSS-parser throw', async () => {
-    const stores = makeStores();
-    await initDebugBridge(stores);
+  // (n)/(o), the TESTID escape — this resolver's busiest, since every #5891
+  // scoped tool reaches it — moved to the `resolveByTestId testId` row of the
+  // `debug bridge escapeAttrValue` table at the end of this file. Case (f)
+  // above keeps the sibling VIEWPORTID arm, which no row covers.
+});
 
-    // Deliberately NO matching element: the point is that the lookup reaches
-    // its own not-found diagnostic instead of dying inside the selector parser.
-    for (const [i, badId] of ['row-"1"', 'row-\\1', 'row-1"]'].entries()) {
-      const result = await dispatchCmd(5115 + i, 'click_element', { testId: badId });
+// ---------------------------------------------------------------------------
+// escapeAttrValue — every caller-supplied value bridge.ts interpolates into an
+// [attr="…"] selector, pinned by ONE table (task #6178 review amendment)
+// ---------------------------------------------------------------------------
 
-      expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFound(badId) });
+/**
+ * CSSOM's "serialize an identifier" algorithm, standing in for the `CSS.escape`
+ * jsdom does not provide (https://drafts.csswg.org/cssom/#serialize-an-identifier).
+ *
+ * It exists only to STUB the missing global. `escapeAttrValue`'s production arm
+ * IS `CSS.escape`, and jsdom exposes no global `CSS` at all (asserted by the
+ * first case below rather than assumed), so without a stub the one arm every
+ * real webview takes would have zero coverage anywhere in the suite — leaving
+ * the hand-rolled `["\\]` fallback, which production never reaches, as the only
+ * branch any test discriminated on.
+ *
+ * Faithful in exactly the way that matters here: it emits the hex escape
+ * (`\31 `) and escaped space (`\ `) the real implementation does. Those are
+ * IDENTIFIER escapes, and the property under test is that they still survive
+ * being placed inside a DOUBLE-QUOTED attribute value.
+ */
+function cssEscapePolyfill(value: string): string {
+  const s = String(value);
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i);
+    const ch = s.charAt(i);
+    if (c === 0x0000) {
+      out += '\uFFFD';
+    } else if (
+      (c >= 0x0001 && c <= 0x001f) ||
+      c === 0x007f ||
+      (i === 0 && c >= 0x0030 && c <= 0x0039) ||
+      (i === 1 && c >= 0x0030 && c <= 0x0039 && s.charCodeAt(0) === 0x002d)
+    ) {
+      out += `\\${c.toString(16)} `;
+    } else if (i === 0 && c === 0x002d && s.length === 1) {
+      out += `\\${ch}`;
+    } else if (
+      c >= 0x0080 ||
+      c === 0x002d ||
+      c === 0x005f ||
+      (c >= 0x0030 && c <= 0x0039) ||
+      (c >= 0x0041 && c <= 0x005a) ||
+      (c >= 0x0061 && c <= 0x007a)
+    ) {
+      out += ch;
+    } else {
+      out += `\\${ch}`;
     }
-  });
+  }
+  return out;
+}
 
-  // (o) is (n)'s POSITIVE complement, and it exists because (n) alone pins only
-  // that the helper does not THROW — which a helper that STRIPPED its
-  // metacharacters would satisfy just as well. Measured mutation matrix against
-  // `escapeAttrValue`, which is why both cases are needed:
-  //
-  //   escape dropped from resolveByTestId          → (n) FAILS, (o) fails
-  //   `v.replace(/["\\]/g, '')` — strip, not escape → (n) PASSES, (o) FAILS
-  //
-  // That matrix also settles which arm of the escape runs here: the strip
-  // mutation could only flip a verdict if the hand-rolled `["\\]` fallback is
-  // live. It is — jsdom exposes no global `CSS` (verified directly), so
-  // `CSS.escape` is never reached under vitest and NO test in this file
-  // exercises it. That branch is covered only by the real webview.
-  it('(o) a testId that really contains a quote and a backslash still resolves and clicks', async () => {
-    const stores = makeStores();
-    await initDebugBridge(stores);
+/**
+ * The two arms of `escapeAttrValue`, each forced deterministically rather than
+ * inferred from the environment: `vi.stubGlobal('CSS', undefined)` guarantees
+ * the fallback arm even if a future jsdom starts shipping a partial `CSS`, and
+ * the polyfill stub guarantees the production arm even though jsdom ships none.
+ */
+const ESCAPE_ARMS = [
+  { name: 'fallback', install: () => vi.stubGlobal('CSS', undefined) },
+  { name: 'CSS.escape', install: () => vi.stubGlobal('CSS', { escape: cssEscapePolyfill }) },
+] as const;
 
-    // Both metacharacters in one fixture: the quote would terminate the
-    // selector string and the backslash would start an escape sequence inside
-    // it. Built with setAttribute rather than innerHTML so the attribute holds
-    // these bytes exactly, with no HTML-parser unescaping in between.
-    const testId = 'row-"1"\\x';
-    const el = document.createElement('button');
-    el.setAttribute('data-testid', testId);
-    document.body.appendChild(el);
-    const clickSpy = vi.fn();
-    el.addEventListener('click', clickSpy);
+/** The values every row feeds its MISS half — each would corrupt a raw selector. */
+const escapeMetacharValues = (prefix: string) => [`${prefix}-"1"`, `${prefix}-\\1`, `${prefix}-1"]`];
 
-    // The fixture holds the RAW metacharacters — asserted, so the test cannot
-    // pass by accidentally storing a pre-escaped attribute.
-    expect(el.getAttribute('data-testid')).toBe(testId);
+/**
+ * The value every row feeds its HIT half.
+ *
+ * The quote would terminate the selector string and the backslash would start
+ * an escape sequence inside it — those two are what the fallback arm handles.
+ * The LEADING DIGIT and the SPACE matter only under the CSS.escape arm, which
+ * renders them as `\31 ` and `\ `; the digit leads the whole attribute value
+ * only at the sites that interpolate the value alone (testId, viewportId),
+ * while the space is escaped at every site.
+ */
+const escapeRoundTripValue = (prefix: string) => `1 ${prefix}-"1"\\x`;
 
-    const result = await dispatchCmd(5118, 'click_element', { testId });
+/** A row of the table below: one call site, dispatched one way, checked both ways. */
+type EscapeSite = {
+  /** Names the call site in every generated test title. */
+  label: string;
+  /** Keeps each row's fixture names distinct, so a leak between rows is visible. */
+  prefix: string;
+  /** The command + params this site is reached through. Identical for both halves. */
+  dispatch: (value: unknown) => [string, Record<string, unknown>];
+  /** Mount whatever the handler needs to REACH the escape WITHOUT matching;
+   *  returns any extra post-dispatch assertion (no-op when there is none). */
+  setUpMiss: () => () => void;
+  /** The diagnostic a non-matching value must produce — quoting the RAW value. */
+  expectMiss: (value: string) => unknown;
+  /** Mount an element whose attribute literally holds `value`; returns the
+   *  post-dispatch assertion that it was really driven (click spy, store, …). */
+  mountHit: (value: string) => () => void;
+  expectHit: (value: string) => unknown;
+};
 
+/**
+ * Every caller-supplied value `bridge.ts` interpolates into an `[attr="…"]`
+ * selector routes through the single `escapeAttrValue` helper, and each site
+ * used to carry its own hand-written negative/positive pair. This table states
+ * the shared parts ONCE, so a new call site is a row rather than another ~50
+ * lines of near-identical test and comment.
+ *
+ * Both halves are needed. Measured mutation matrix against `escapeAttrValue`:
+ *
+ *   escape dropped (raw `${value}` interpolated)  → MISS fails, HIT fails
+ *   `v.replace(/["\\]/g, '')` — strip, not escape → MISS PASSES, HIT fails
+ *
+ * The MISS half alone is satisfied by a helper that merely DELETED the
+ * metacharacters: it pins only that the lookup reaches its own diagnostic
+ * instead of throwing a DOMException inside the selector parser (which the
+ * dispatcher would surface as an opaque `{error: '<CSS parser message>'}` — a
+ * typo'd or hostile value reading as a bridge malfunction). Only the HIT half
+ * pins what the escape MEANS: a value that really carries those bytes still
+ * resolves to its own element and drives it.
+ *
+ * INVENTORY CAVEAT — these rows are the `escapeAttrValue` call sites reachable
+ * with a caller-supplied value, with ONE deliberate omission:
+ * `resolveByTestId`'s VIEWPORTID arm, whose negative half is case (f) of the
+ * `debug bridge resolveByTestId viewport scoping` block (it also asserts the
+ * no-cross-pane-bleed property, which no other row has). This table is NOT a
+ * proof that every selector interpolation in bridge.ts is escaped — grep
+ * `escapeAttrValue` when adding one.
+ */
+const ESCAPE_SITES: EscapeSite[] = [
+  // resolveByTestId's testId arm — the busiest site: every #5891 scoped tool
+  // (click_element, focus_element, scroll, element_screenshot,
+  // wait_for_selector and wait_for's selector arm) reaches the escape here.
+  {
+    label: 'resolveByTestId testId',
+    prefix: 'row',
+    dispatch: (value) => ['click_element', { testId: value }],
+    setUpMiss: () => () => {},
+    expectMiss: (value) => ({ error: RESOLVE_BY_TESTID_ERRORS.notFound(value) }),
+    mountHit: (value) => {
+      const { el, clickSpy } = mountTestIdTarget(value);
+      expect(el.getAttribute('data-testid')).toBe(value);
+      return () => expect(clickSpy).toHaveBeenCalledTimes(1);
+    },
     // A single match, so the response stays the bare success shape.
-    expect(result).toEqual({ ok: true });
-    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expectHit: () => ({ ok: true }),
+  },
+  // open_menu's `name` — menu names are simple lowercase identifiers BY
+  // CONVENTION only, and this tool boundary does not enforce it.
+  {
+    label: 'open_menu name',
+    prefix: 'file',
+    dispatch: (value) => ['open_menu', { name: value }],
+    setUpMiss: () => () => {},
+    expectMiss: (value) => ({ error: `menu trigger not found: ${value}` }),
+    mountHit: (value) => {
+      const { clickSpy } = mountTestIdTarget(`menu-trigger-${value}`);
+      return () => expect(clickSpy).toHaveBeenCalledTimes(1);
+    },
+    // No <MenuBar /> is mounted on purpose: it stamps only the conventional
+    // names, so `ctx.menuBar` is undefined and `open` falls back to the
+    // requested name. This row is about the selector round trip, not menu state.
+    expectHit: (value) => ({ ok: true, open: value }),
+  },
+  // driveTreeNode, design panel. Both panels feed the same escape through a
+  // different testid prefix, so each is its own row.
+  {
+    label: 'driveTreeNode path (design panel)',
+    prefix: 'Bracket',
+    dispatch: (value) => ['expand_tree_node', { path: value }],
+    setUpMiss: () => {
+      // Register the accessor reporting NOT-expanded and inject NO control, so
+      // the handler necessarily takes the `expandedNow !== wantExpanded` branch
+      // — the ONLY branch that runs the escape — and then fails the lookup. A
+      // fixture whose state already matched would skip the escape entirely.
+      const expanded = new Set<string>();
+      window.__REIFY_DEBUG__!.designTree = { expanded: () => expanded };
+      return () => expect(expanded.size).toBe(0);
+    },
+    expectMiss: (value) => ({ error: `tree node control not found: ${value}` }),
+    mountHit: (value) => {
+      const { expandedSet, btn } = setupDesignPanel(value, false);
+      const clickSpy = vi.fn();
+      btn.addEventListener('click', clickSpy);
+      expect(btn.getAttribute('data-testid')).toBe(`chevron-${value}`);
+      return () => {
+        expect(clickSpy).toHaveBeenCalledTimes(1);
+        expect(expandedSet.has(value)).toBe(true);
+      };
+    },
+    expectHit: (value) => ({ ok: true, path: value, expanded: true }),
+  },
+  {
+    label: 'driveTreeNode path (constraint panel)',
+    prefix: 'Constraint',
+    dispatch: (value) => ['expand_tree_node', { path: value, panel: 'constraint' }],
+    setUpMiss: () => {
+      const expanded = new Set<string>();
+      window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expanded };
+      return () => expect(expanded.size).toBe(0);
+    },
+    expectMiss: (value) => ({ error: `tree node control not found: ${value}` }),
+    mountHit: (value) => {
+      const { expandedSet, btn } = setupConstraintPanel(value, false);
+      const clickSpy = vi.fn();
+      btn.addEventListener('click', clickSpy);
+      expect(btn.getAttribute('data-testid')).toBe(`constraint-row-${value}`);
+      return () => {
+        expect(clickSpy).toHaveBeenCalledTimes(1);
+        expect(expandedSet.has(value)).toBe(true);
+      };
+    },
+    expectHit: (value) => ({ ok: true, path: value, expanded: true }),
+  },
+  // pickFeaChannelSelect's viewportId — the sibling ladder, and the only row
+  // whose success is a store write rather than a click.
+  {
+    label: 'pickFeaChannelSelect viewportId',
+    prefix: 'pane',
+    dispatch: (value) => ['set_fea_channel', { channel: 'errorIndicator', viewportId: value }],
+    setUpMiss: () => {
+      // A real toolbar under a DIFFERENT id, so the miss lands on "no toolbar
+      // for that pane" rather than on "no toolbar at all" — and so a selector
+      // that wrongly matched would be visible as a changed channel.
+      const designMain = renderToolbarWithErrorIndicator('design-main');
+      return () => expect(designMain.state.channel).toBe('vonMises');
+    },
+    expectMiss: (value) => ({ error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(value) }),
+    mountHit: (value) => {
+      const store = renderToolbarWithErrorIndicator(value);
+      expect(
+        document.querySelector(`[data-testid="fea-mode-channel-select"]`)!.getAttribute('data-viewport-id'),
+      ).toBe(value);
+      return () => expect(store.state.channel).toBe('errorIndicator');
+    },
+    expectHit: () => ({ ok: true }),
+  },
+];
+
+/** Append a button carrying `testId` VERBATIM, with a click spy attached. */
+function mountTestIdTarget(testId: string) {
+  // setAttribute rather than innerHTML so the attribute holds these bytes
+  // exactly, with no HTML-parser unescaping in between.
+  const el = document.createElement('button');
+  el.setAttribute('data-testid', testId);
+  document.body.appendChild(el);
+  const clickSpy = vi.fn();
+  el.addEventListener('click', clickSpy);
+  return { el, clickSpy };
+}
+
+describe('debug bridge escapeAttrValue (shared by every selector interpolation)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let nextId = 6100;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
   });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+    vi.unstubAllGlobals();
+  });
+
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
+
+  // The environment fact the arm table exists to work around, asserted rather
+  // than assumed: with no stub in place there is no global `CSS` under vitest,
+  // so `escapeAttrValue` takes its hand-rolled fallback and the CSS.escape arm
+  // is unreachable — which is why every row below runs twice.
+  it('jsdom exposes no global CSS, so only the stubbed arm reaches CSS.escape', () => {
+    expect(typeof (globalThis as { CSS?: unknown }).CSS).toBe('undefined');
+  });
+
+  for (const site of ESCAPE_SITES) {
+    for (const arm of ESCAPE_ARMS) {
+      it(`[${arm.name}] ${site.label}: a value carrying selector metacharacters reaches the not-found diagnostic, not a CSS-parser throw`, async () => {
+        arm.install();
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const verifyMiss = site.setUpMiss();
+
+        for (const value of escapeMetacharValues(site.prefix)) {
+          const result = await dispatchCmd(nextId++, ...site.dispatch(value));
+          expect(result).toEqual(site.expectMiss(value));
+        }
+        verifyMiss();
+      });
+
+      it(`[${arm.name}] ${site.label}: a value that really contains a quote and a backslash still resolves and drives`, async () => {
+        arm.install();
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const value = escapeRoundTripValue(site.prefix);
+        const verifyHit = site.mountHit(value);
+
+        const result = await dispatchCmd(nextId++, ...site.dispatch(value));
+
+        expect(result).toEqual(site.expectHit(value));
+        verifyHit();
+      });
+    }
+  }
 });
