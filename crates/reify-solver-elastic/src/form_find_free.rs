@@ -2555,4 +2555,87 @@ mod tests {
             FreeFormError::DegenerateTriangle,
         );
     }
+
+    // ── gauge lock (task 6413): all_node_equilibrium_residual must be
+    // GAUGE-independent — the free-standing twin of task 6119's anchored-path
+    // fix. D_combined = CᵀQC + Σ_T σ_T·L_T is exactly linear in q and σ, so an
+    // absolute stop test on the raw residual makes convergence depend on the
+    // overall force-density/stress scale, not just the physical equilibrium.
+
+    /// `D_combined = CᵀQC + Σ_T σ_T·L_T` at the canonical (symmetric) prism
+    /// geometry, for the closed-form line q and the top+bottom membrane
+    /// triangles at `sigma`, both scaled by `lambda` — the uniform gauge
+    /// change this task locks convergence against.
+    fn combined_d_at_canonical_prism(sigma: f64, lambda: f64) -> Mat<f64> {
+        let (members, _kinds) = triplex_topology();
+        let q: Vec<f64> = closed_form_q().iter().map(|v| v * lambda).collect();
+        let surfaces = prism_surfaces();
+        let sigmas = vec![sigma * lambda; surfaces.len()];
+        let nodes = canonical_prism();
+        let mut d = assemble_force_density_matrix(6, &members, &q);
+        let s = assemble_surface_matrix(6, &surfaces, &sigmas, &nodes)
+            .expect("canonical prism triangles are non-degenerate");
+        for i in 0..6 {
+            for j in 0..6 {
+                d[(i, j)] += s[(i, j)];
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn all_node_equilibrium_residual_is_gauge_invariant_under_uniform_scaling() {
+        // D_combined is exactly linear in q and σ, so a uniform gauge change
+        // q → λ·q, σ → λ·σ at fixed geometry scales D_combined by λ entrywise.
+        // λ = 2^20 / 2^-20 are powers of two, so the scaling is exact in
+        // IEEE-754 (an exponent-field shift, no mantissa rounding) and every
+        // downstream sum/max/divide commutes with it exactly — checked with
+        // assert_eq! on the raw f64, not a tolerance (mirrors task 6119's
+        // `free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling`
+        // in `form_find.rs` on the unmerged `task/6119` branch).
+        //
+        // MEASURED RED on pristine (task 6413 premise verification): the
+        // un-normalised residual scales BY λ instead of staying fixed —
+        // 2.96064064605529031e0 vs 3.10445672607807210e6 (ratio exactly 2^20).
+        const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
+        const LAMBDA_DOWN: f64 = 1.0 / 1_048_576.0; // 2^-20
+        let nodes = canonical_prism();
+        let d1 = combined_d_at_canonical_prism(0.2, 1.0);
+        let d_up = combined_d_at_canonical_prism(0.2, LAMBDA_UP);
+        let d_down = combined_d_at_canonical_prism(0.2, LAMBDA_DOWN);
+
+        let r1 = all_node_equilibrium_residual(&d1, &nodes);
+        let r_up = all_node_equilibrium_residual(&d_up, &nodes);
+        let r_down = all_node_equilibrium_residual(&d_down, &nodes);
+
+        assert_eq!(
+            r1, r_up,
+            "residual must be exactly gauge-invariant: base={r1:e} λ=2^20-scaled={r_up:e}",
+        );
+        assert_eq!(
+            r1, r_down,
+            "residual must be exactly gauge-invariant: base={r1:e} λ=2^-20-scaled={r_down:e}",
+        );
+    }
+
+    #[test]
+    fn all_node_equilibrium_residual_of_all_zero_d_is_infinity_not_vacuous_zero() {
+        // A node block touched by neither a member nor a triangle makes D
+        // identically zero, so the raw numerator ‖D·x‖∞ is vacuously 0 — not
+        // because equilibrium was reached, but because nothing acts on the
+        // node at all. Returning 0.0 (the pristine behaviour) would break the
+        // outer fixed-point loop out at iteration 0 and echo the caller's
+        // unsolved guess back as "converged" — the same hole task 6119 closed
+        // on the anchored path. Must return f64::INFINITY instead.
+        //
+        // MEASURED RED on pristine: returns 0.0.
+        let nodes = canonical_prism();
+        let d = Mat::<f64>::zeros(6, 6);
+        let resid = all_node_equilibrium_residual(&d, &nodes);
+        assert_eq!(
+            resid,
+            f64::INFINITY,
+            "all-zero D must report INFINITY (vacuous, not converged), got {resid}",
+        );
+    }
 }
