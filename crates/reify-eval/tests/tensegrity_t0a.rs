@@ -1128,13 +1128,17 @@ mod tensegrity_force_density_gauge {
     //! below match variants EXPLICITLY and panic on the wrong one, across all three
     //! emission sites: anchored line-only, anchored surfaces, free-standing.
     //!
-    //! SCOPE — gauge COVARIANCE (the last test) is line-only for TWO reasons. (1) The
-    //! gauge is the (q, σ) PAIR: `D = CᵀQC + Σ_T σ_T·L_T` is linear in the pair, not in
-    //! q alone, so a surfaces covariance experiment must rescale every σ_T by λ too —
-    //! scaling q alone shifts the q/σ balance and MOVES the free nodes, which is
-    //! physics, not the defect below. (2) Even rescaled as a pair, surfaces convergence
-    //! is judged on an ABSOLUTE tolerance on a residual not normalised by |D| (itself
-    //! linear in q) — solver-side, outside #6095's scope, filed as #6119 (dup #6124).
+    //! SCOPE — gauge COVARIANCE is asserted at BOTH emitters (the last two tests: anchored
+    //! via `solve_at`, free-standing via `solve_free_at`), because they reach the property by
+    //! different mechanisms — algebraic homogeneity of `D_ff x_f = −D_fa x_a` anchored, versus
+    //! homogeneity of the GroupRatios search that fixes the gauge from `reference_group` when
+    //! free-standing. Both fixtures are LINE-ONLY; the SURFACES path is the one deliberately
+    //! scoped out, for TWO reasons. (1) The gauge is the (q, σ) PAIR: `D = CᵀQC + Σ_T σ_T·L_T`
+    //! is linear in the pair, not in q alone, so a surfaces covariance experiment must rescale
+    //! every σ_T by λ too — scaling q alone shifts the q/σ balance and MOVES the free nodes,
+    //! which is physics, not a defect. (2) Even rescaled as a pair, surfaces convergence is
+    //! judged on an ABSOLUTE tolerance on a residual not normalised by |D| (itself linear in
+    //! q) — solver-side, outside #6095's scope, filed as #6119 (dup #6124).
 
     use reify_core::DimensionVector;
     use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -1300,17 +1304,27 @@ mod tensegrity_force_density_gauge {
         solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
     }
 
-    /// FREE-STANDING solve of the same prism (GroupRatios: struts→0, the six
-    /// horizontals→1, verticals→2; reference group 1) — the `build_result_free`
-    /// emission site, which the anchored solves above never reach.
-    fn solve_free() -> PersistentMap<String, Value> {
+    /// Seed ratios for `solve_free`, indexed by group: struts (compression) / horizontal
+    /// cables / vertical cables. Group 1 is the `reference_group`, so ITS magnitude is what
+    /// fixes the free path's gauge — the covariance test below rescales all three together.
+    const BASE_SEED: [f64; 3] = [-1.0, 1.0, 1.0];
+
+    /// FREE-STANDING solve of the same prism at the given per-group seed ratios (GroupRatios:
+    /// struts→0, the six horizontals→1, verticals→2; reference group 1) — the
+    /// `build_result_free` emission site, which the anchored solves above never reach.
+    fn solve_free_at(seed: &[f64]) -> PersistentMap<String, Value> {
         let inputs = [
             prism_tensegrity(),
             ints([0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]),
-            reals(&[-1.0, 1.0, 1.0]), // seed ratios
-            Value::Int(1),            // reference_group
+            reals(seed),
+            Value::Int(1), // reference_group
         ];
         solve_with(reify_eval::compute_targets::form_find::solve_form_find_free_trampoline, &inputs)
+    }
+
+    /// The free-standing solve at the base gauge.
+    fn solve_free() -> PersistentMap<String, Value> {
+        solve_free_at(&BASE_SEED)
     }
 
     fn list_field<'a>(fields: &'a PersistentMap<String, Value>, name: &str) -> &'a Vec<Value> {
@@ -1495,53 +1509,115 @@ mod tensegrity_force_density_gauge {
         assert_bridge_holds(&solve_free(), "free-standing");
     }
 
-    /// GAUGE COVARIANCE — the runtime proof of the adjudication. Rescaling the WHOLE
-    /// gauge by λ = 7 leaves the solved GEOMETRY identical and scales every member
-    /// force by exactly λ: q is a gauge-free ratio (nothing moves) while
-    /// `member_forces` is gauge-covariant (everything scales), which is precisely why
-    /// the force scale must come from a reference factor and cannot come from q. This
-    /// fixture is line-only, so σ is empty and the whole gauge IS q (see SCOPE above).
-    ///
-    /// λ = 7 is positive (strut-q<0 / cable-q>0 holds) and not a power of two (an exact
-    /// binary rescale cannot mask a real dependence). `D` is exactly linear in q, so λ
-    /// cancels in `D_ff x_f = −D_fa x_a`: invariant to ~1e-15, ~6 orders under 1e-9 m.
-    #[test]
-    fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
-        const LAMBDA: f64 = 7.0;
+    /// The gauge-rescale factor, shared by both covariance tests. Positive, so the
+    /// strut-q<0 / cable-q>0 sign contract survives it; not a power of two, so an exact
+    /// binary rescale cannot mask a real dependence.
+    const GAUGE_LAMBDA: f64 = 7.0;
 
-        let base = solve_at(&BASE_Q);
-        let scaled_q: Vec<f64> = BASE_Q.iter().map(|&q| q * LAMBDA).collect();
-        let scaled = solve_at(&scaled_q);
-
-        // Geometry is gauge-INVARIANT: q → λq moves no node.
-        let base_nodes = list_field(&base, "nodes");
-        let scaled_nodes = list_field(&scaled, "nodes");
-        assert_eq!(base_nodes.len(), scaled_nodes.len(), "same node count from both solves");
+    /// THE COVARIANCE ASSERTION, shared by both rescale tests: scaling the WHOLE gauge by λ
+    /// must leave the solved GEOMETRY exactly where it was while scaling every member force
+    /// by exactly λ. Tolerances are caller-supplied because the two emission paths reach the
+    /// property by DIFFERENT mechanisms (see each caller), and pretending otherwise would
+    /// either over-tighten the free path or silently slacken the anchored one.
+    fn assert_gauge_covariance(
+        base: &PersistentMap<String, Value>,
+        scaled: &PersistentMap<String, Value>,
+        node_tol: f64,
+        force_rel_tol: f64,
+        site: &str,
+    ) {
+        // Geometry is gauge-INVARIANT: the rescale moves no node.
+        let base_nodes = list_field(base, "nodes");
+        let scaled_nodes = list_field(scaled, "nodes");
+        assert_eq!(base_nodes.len(), scaled_nodes.len(), "{site}: same node count from both solves");
         for (i, (b, s)) in base_nodes.iter().zip(scaled_nodes.iter()).enumerate() {
             let (bp, sp) = (point_xyz(b), point_xyz(s));
             for (axis, (bc, sc)) in bp.iter().zip(sp.iter()).enumerate() {
                 assert!(
-                    (bc - sc).abs() <= 1e-9,
-                    "nodes[{i}][{axis}] moved from {bc} to {sc} under q → {LAMBDA}·q; the \
-                     solved geometry is nullity-invariant and must not move (task #6095)"
+                    (bc - sc).abs() <= node_tol,
+                    "{site}: nodes[{i}][{axis}] moved from {bc} to {sc} under a ×{GAUGE_LAMBDA} gauge \
+                     rescale (tol {node_tol} m); the solved geometry is nullity-invariant and \
+                     must not move (task #6095)"
                 );
             }
         }
 
         // Forces are gauge-COVARIANT: every one scales by exactly λ.
-        let base_forces = list_field(&base, "member_forces");
-        let scaled_forces = list_field(&scaled, "member_forces");
-        assert_eq!(base_forces.len(), scaled_forces.len(), "same member count from both solves");
+        let base_forces = list_field(base, "member_forces");
+        let scaled_forces = list_field(scaled, "member_forces");
+        assert_eq!(base_forces.len(), scaled_forces.len(), "{site}: same member count from both solves");
+        assert!(!base_forces.is_empty(), "{site}: a covariance check over zero members is vacuous");
         for (i, (b, s)) in base_forces.iter().zip(scaled_forces.iter()).enumerate() {
             let (bn, sn) = (force_si(b), force_si(s));
-            let expected = bn * LAMBDA;
+            let expected = bn * GAUGE_LAMBDA;
             assert!(
-                (sn - expected).abs() <= 1e-12 * expected.abs(),
-                "member_forces[{i}] must scale by exactly {LAMBDA} under q → {LAMBDA}·q: \
-                 {bn} · {LAMBDA} = {expected}, got {sn}. Member forces are gauge-covariant \
-                 outputs of a gauge-free input — that is why the absolute force scale comes \
-                 from q_ref ≡ 1 N/m and not from q (task #6095)"
+                (sn - expected).abs() <= force_rel_tol * expected.abs(),
+                "{site}: member_forces[{i}] must scale by exactly {GAUGE_LAMBDA} under the gauge \
+                 rescale: {bn} · {GAUGE_LAMBDA} = {expected}, got {sn} (rel tol {force_rel_tol}). \
+                 Member forces are gauge-covariant outputs of a gauge-free input — that is why \
+                 the absolute force scale comes from q_ref ≡ 1 N/m and not from q (task #6095)"
             );
         }
+    }
+
+    /// ANCHORED GAUGE COVARIANCE — the runtime proof of the adjudication. q is a gauge-free
+    /// ratio (nothing moves) while `member_forces` is gauge-covariant (everything scales),
+    /// which is precisely why the force scale must come from a reference factor and cannot
+    /// come from q. This fixture is line-only, so σ is empty and the whole gauge IS q (see
+    /// SCOPE above). MECHANISM: an exact algebraic identity — `D` is linear in q, so λ
+    /// cancels in `D_ff x_f = −D_fa x_a` by inspection. Invariant to ~1e-15 (≈6 orders under
+    /// the 1e-9 m tolerance) and exactly covariant to f64 round-off, hence 1e-12 relative.
+    #[test]
+    fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
+        let base = solve_at(&BASE_Q);
+        let scaled_q: Vec<f64> = BASE_Q.iter().map(|&q| q * GAUGE_LAMBDA).collect();
+        let scaled = solve_at(&scaled_q);
+        assert_gauge_covariance(&base, &scaled, 1e-9, 1e-12, "anchored line-only");
+    }
+
+    /// FREE-STANDING GAUGE COVARIANCE — the same claim at the OTHER emitter, where it holds
+    /// for an entirely different reason and so needs its own case. Anchored covariance is an
+    /// identity (above). Here the gauge is fixed by `reference_group`, whose magnitude is
+    /// HELD at its seed while every other group's magnitude is SEARCHED — coordinate descent
+    /// over a Σλ² eigenvalue objective, on log-spaced brackets seeded from `|seed_ratios|`
+    /// (`form_find_free.rs`). So "scale every seed ratio by λ ⇒ same geometry, λ-scaled
+    /// forces" is a property of that search's HOMOGENEITY, not algebra: the brackets and the
+    /// log grid scale with λ and the objective ordering is λ²-invariant, but a regression in
+    /// the bracketing or the warm start could break it with nothing else noticing.
+    ///
+    /// The homogeneity is not EXACT, which is why the relative tolerance is looser than the
+    /// anchored case's 1e-12: the search's two stopping rules (`OBJ_TOL = 1e-20` and the
+    /// stall guard's `1e-18·max(before, 1)`) are ABSOLUTE thresholds on an objective that
+    /// scales as λ², so the two runs stop at slightly different depths and the recovered
+    /// ratios differ in the last digits. Both still land far below the nullity classifier's
+    /// threshold, so this is the same solution — search noise, not gauge dependence.
+    ///
+    /// TOLERANCES ARE MEASURED, not guessed (λ = 7, this fixture): node residual 1.8e-12 m,
+    /// q and N relative residuals both 1.1e-10 — so 1e-9 m and 1e-8 leave ~2.5 and ~2 orders
+    /// of margin. A failure at these numbers is a real homogeneity regression; do not slacken
+    /// them without re-measuring, and do not tighten them to the anchored path's 1e-12, which
+    /// this path cannot meet by construction.
+    #[test]
+    fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
+        let base = solve_free_at(&BASE_SEED);
+        let scaled_seed: Vec<f64> = BASE_SEED.iter().map(|&r| r * GAUGE_LAMBDA).collect();
+        let scaled = solve_free_at(&scaled_seed);
+
+        // The echoed densities must scale too — that is what makes this a GAUGE rescale and
+        // not merely a different search that happened to land on the same shape.
+        let base_q = list_field(&base, "force_densities");
+        let scaled_q = list_field(&scaled, "force_densities");
+        assert_eq!(base_q.len(), scaled_q.len(), "same member count from both free solves");
+        for (i, (b, s)) in base_q.iter().zip(scaled_q.iter()).enumerate() {
+            let (bq, sq) = (bare_real("force_densities", b), bare_real("force_densities", s));
+            let expected = bq * GAUGE_LAMBDA;
+            assert!(
+                (sq - expected).abs() <= 1e-8 * expected.abs(),
+                "free-standing: force_densities[{i}] must scale by {GAUGE_LAMBDA} under a \
+                 whole-gauge seed rescale: {bq} · {GAUGE_LAMBDA} = {expected}, got {sq}"
+            );
+        }
+
+        assert_gauge_covariance(&base, &scaled, 1e-9, 1e-8, "free-standing");
     }
 }
