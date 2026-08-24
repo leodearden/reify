@@ -246,6 +246,39 @@ fn accept_four_factor_left_associative_chain() {
     assert_binary(l2, bytes, "m^2", "·", "kg");
 }
 
+/// `5W·(m/K)` and `5W/(m·K)` — `·` adjacent to a PAREN GROUP on either side.
+///
+/// `is_unit_start` accepts `(`, so this is a live accepted path.  It is pinned at
+/// the CST layer because the operator is NOT a field on the node: every consumer,
+/// including `lower_unit_expr`, recovers it from the source slice between the
+/// operands (`op_slice` here does the same), and a paren moves those boundaries.
+#[test]
+fn accept_middot_adjacent_to_paren_group() {
+    let source = "structure S { let x = 5W·(m/K) }";
+    let (tree, text) = parse_clean_unit_expr(source);
+    assert_eq!(text, "W·(m/K)");
+    let unit = find_node_by_kind(tree.root_node(), "unit_expr").unwrap();
+    assert_binary(unit, source.as_bytes(), "W", "·", "(m/K)");
+
+    // …and with the `·` INSIDE the group, under an outer `/`.
+    let source = "structure S { let x = 5W/(m·K) }";
+    let (tree, text) = parse_clean_unit_expr(source);
+    assert_eq!(text, "W/(m·K)");
+    let unit = find_node_by_kind(tree.root_node(), "unit_expr").unwrap();
+    let bytes = source.as_bytes();
+    assert_binary(unit, bytes, "W", "/", "(m·K)");
+    // Descend past the paren-group node to the mul it wraps — the same walk
+    // `lower_unit_expr` step 3 does (parens are anonymous tokens, not children),
+    // so `find_node_by_kind` is not usable here: it would match the group itself.
+    let group = unit.child_by_field_name("right").unwrap();
+    let mut cursor = group.walk();
+    let inner = group
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "unit_expr")
+        .expect("paren group must wrap an inner unit_expr");
+    assert_binary(inner, bytes, "m", "·", "K");
+}
+
 // ── REJECT: `·` is scoped to unit-multiply and nothing else ───────────────────
 //
 // All four fall out of the SINGLE `is_unit_start(lexer->lookahead)` post-check the

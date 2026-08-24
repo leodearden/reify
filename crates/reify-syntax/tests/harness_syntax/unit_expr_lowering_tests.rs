@@ -236,6 +236,35 @@ fn middot_density_and_acceleration_lower_like_star_twins() {
     assert_eq!(unit_of("9.81m·s^-2"), unit_of("9.81m*s^-2"));
 }
 
+/// `·` against a PARENTHESISED operand, both sides of the paren.
+///
+/// `is_unit_start` accepts `(`, so `·` immediately before a paren group is a live
+/// accepted path, and it is the only shape that drives `lower_unit_expr`'s
+/// paren-unwrap arm (step 3) BENEATH a `·`-spelled Mul.  The `*` spelling has this
+/// coverage via `thermal_conductivity_paren_unwrapped`; before this test the `·`
+/// spelling had none at any layer.
+///
+/// It matters more than the `*` twin because the operator is not a field on the
+/// node — `lower_unit_expr` reads it as the SOURCE SLICE between the two operands
+/// (`source[left.end_byte()..right.start_byte()]`) and, since #5784, matches that
+/// slice EXACTLY rather than by `contains('*')`.  A paren moves the operand
+/// boundaries, so this is precisely where an exact-match read could go wrong.
+#[test]
+fn middot_with_parenthesised_operand_lowers_like_star_twin() {
+    // `·` to the LEFT of the group: 5W·(m/K) → Mul(W, Div(m, K))
+    assert_eq!(
+        unit_of("5W·(m/K)"),
+        mul(bare("W"), div(bare("m"), bare("K")))
+    );
+    assert_eq!(unit_of("5W·(m/K)"), unit_of("5W*(m/K)"));
+    // `·` INSIDE the group, under an outer `/`: 5W/(m·K) → Div(W, Mul(m, K))
+    assert_eq!(
+        unit_of("5W/(m·K)"),
+        div(bare("W"), mul(bare("m"), bare("K")))
+    );
+    assert_eq!(unit_of("5W/(m·K)"), unit_of("5W/(m*K)"));
+}
+
 // ── The anti-silent-drop lock ────────────────────────────────────────────────
 //
 // This is the assertion that distinguishes "correct" from "silently dropped", and
@@ -287,11 +316,26 @@ fn middot_let_member_is_present_and_diagnostic_free() {
     );
 }
 
+/// Several `·`-bearing bindings in ONE structure all survive lowering.
+///
+/// Unique content over `middot_let_member_is_present_and_diagnostic_free`: that
+/// test pins ONE member surviving, this one pins that the count SCALES.  A drop
+/// that only bites the second or third binding — state carried across successive
+/// `lower_let` calls, say — leaves the single-member test green.
+///
+/// DELIBERATELY NOT COUPLED to `tests/prd-gate/fixtures/unit_middot_mul.ri`, which
+/// these three bindings happen to resemble.  This is a self-contained
+/// multi-binding case and carries NO obligation to stay in sync with that file;
+/// adding or removing a binding here is free.  The fixture-coupled assertion lives
+/// one layer up in `crates/reify-compiler/tests/harness_units/`
+/// `unit_middot_mul_tests.rs`, which READS the fixture from disk (and pins its `·`
+/// count and its cell count) instead of transcribing it — a hand-transcribed copy
+/// here would go stale silently while staying green, which is the exact drift the
+/// disk-reading test was built to avoid.
 #[test]
-fn middot_fixture_bindings_all_survive_lowering() {
-    // The three bindings of tests/prd-gate/fixtures/unit_middot_mul.ri, inline.
+fn middot_multiple_bindings_in_one_structure_all_survive_lowering() {
     let (decls, members, errors) = parse_shape(
-        "structure def UnitMiddotMul {\n\
+        "structure def S {\n\
          \x20   let torque_like = 5N·m\n\
          \x20   let with_div    = 5N·m/rad\n\
          \x20   let composed    = 5m^2·kg·s^-2\n\
