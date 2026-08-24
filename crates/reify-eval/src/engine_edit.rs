@@ -1562,6 +1562,12 @@ impl Engine {
                             // matches the pre-migration cache entry — a
                             // solver-resolved auto has no static expr
                             // dependency trace.
+                            //
+                            // Paired with edit_source's SolveResult::Solved
+                            // resolution back-prop arm below (~:3692) — this
+                            // pair silently diverged once already (edit_source
+                            // went unmigrated from #5056 until #6373); change
+                            // them together.
                             commit_cell_result(
                                 CommitLegs {
                                     values: &mut values,
