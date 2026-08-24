@@ -10220,6 +10220,140 @@ structure DCheck {
         );
     }
 
+    /// A module with TWO Output occurrences refuses BOTH, and each refusal names
+    /// the occurrence and destination it refused.
+    ///
+    /// The refusal itself is module-level — one bound anywhere refuses every
+    /// occurrence (a deliberate posture; see the `(2a)` comment in
+    /// `engine_build.rs` for why narrowing needs the realization graph). That
+    /// makes the shared message identical across occurrences, so without
+    /// per-occurrence attribution `cmd_build` prints the same ~300-char line once
+    /// per occurrence with nothing distinguishing the copies — `cmd_build`
+    /// surfaces `artifact.diagnostics` and never `artifact.path`, so the path
+    /// alone cannot tell them apart. This test is what pins the attribution
+    /// contract chosen at `(5a)`:
+    ///
+    /// * BOTH occurrences are refused (not just the first) — the shared
+    ///   diagnostic is attached to every refused artifact, so the CLI's
+    ///   "all N `: Output` occurrence(s) were deferred or failed" branch fires
+    ///   with the right N.
+    /// * Every refusal message carries the shared E_* token AND typed code, so
+    ///   the stable-token assertions in the CLI integration tests hold for any
+    ///   occurrence count.
+    /// * The two messages are DISTINCT and each names its own occurrence + path,
+    ///   mirroring the sibling subject-unresolved / kernel-export-failed
+    ///   artifacts, which name both for the same reason.
+    /// * `export_with_options` is still never called — the blast radius does not
+    ///   grow with the occurrence count.
+    #[test]
+    fn build_outputs_refuses_every_output_occurrence_with_per_occurrence_attribution() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub a = STLOutput(subject: part, resolution: 0.2mm, path: "a.stl")
+    sub b = STLOutput(subject: part, resolution: 0.2mm, path: "b.stl")
+}
+
+structure DCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            outputs.artifacts.len(),
+            2,
+            "BOTH Output occurrences must be recognized-and-refused, so the CLI's \
+             'all N `: Output` occurrence(s) were deferred or failed' branch reports \
+             the right N; got {:?}",
+            outputs
+                .artifacts
+                .iter()
+                .map(|a| a.path.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let mut messages = Vec::new();
+        for (art, (sub_name, file)) in outputs
+            .artifacts
+            .iter()
+            .zip([("a", "a.stl"), ("b", "b.stl")])
+        {
+            assert_eq!(
+                art.path,
+                PathBuf::from(format!("/tmp/d/{file}")),
+                "declaration-order walk must preserve each occurrence's declared path"
+            );
+            assert!(
+                art.bytes.is_empty(),
+                "every refused artifact carries ZERO bytes; `{sub_name}` got {}",
+                art.bytes.len()
+            );
+            let refusal = art
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == reify_core::Severity::Error)
+                .unwrap_or_else(|| {
+                    panic!("occurrence `{sub_name}` must carry an Error diagnostic")
+                });
+            assert_eq!(
+                refusal.code,
+                Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+                "every refusal carries the typed code, not just the first"
+            );
+            assert!(
+                refusal
+                    .message
+                    .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+                "every refusal embeds the E_* token the CLI integration tests match \
+                 on; `{sub_name}` got: {}",
+                refusal.message
+            );
+            assert!(
+                refusal.message.contains(&format!("`D.{sub_name}`")),
+                "the refusal must name the occurrence it refused (`D.{sub_name}`), so \
+                 repeated copies are distinguishable; got: {}",
+                refusal.message
+            );
+            assert!(
+                refusal.message.contains(&format!("/tmp/d/{file}")),
+                "the refusal must name the destination it refused, mirroring the \
+                 sibling subject-unresolved artifact; got: {}",
+                refusal.message
+            );
+            messages.push(refusal.message.clone());
+        }
+
+        assert_ne!(
+            messages[0], messages[1],
+            "the two refusals must NOT be byte-identical — an unattributed repeat of \
+             the module-level message carries zero information for the reader"
+        );
+
+        let exported = exported.lock().unwrap().clone();
+        assert!(
+            exported.is_empty(),
+            "no occurrence may reach export_with_options, however many are refused; \
+             got {exported:?}"
+        );
+    }
+
     /// The C2 negative: the SAME module with the bound-declaring structure
     /// DELETED exports completely normally.
     ///

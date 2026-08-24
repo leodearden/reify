@@ -5136,6 +5136,35 @@ impl Engine {
         //      The same helper backs the `reify build -o <file>` refusal in
         //      reify-cli's `cmd_build`, so the two export surfaces cannot word
         //      themselves differently or disagree about what counts as bounded.
+        //
+        //      THE MODULE-GLOBAL POSTURE IS DELIBERATE, NOT AN OVERSIGHT. One
+        //      bound anywhere in the module refuses EVERY Output occurrence,
+        //      including occurrences of structures that carry no bound. Refusing
+        //      only the "related" occurrences is not available here, and the
+        //      reason is structural rather than a matter of effort:
+        //
+        //        * `compute_representation_bounds` keys the table by the bound's
+        //          declared `StructureRef` TYPE — `D` for the canonical
+        //          `structure DCheck { param subject : D; constraint
+        //          RepresentationWithin(subject, 1mm) }` idiom.
+        //        * an occurrence's `subject` ARG is a `ValueRef` into the
+        //          hydrated value map (see (4) below) — `part`, a box handle in
+        //          that same fixture. It carries no declared structure name, and
+        //          in the canonical idiom the bounded type is the ENCLOSING
+        //          structure, not the subject's own.
+        //
+        //      So a key-membership test on the occurrence's subject would refuse
+        //      NOTHING for exactly the designs η targets. The real question —
+        //      "does this occurrence's subject belong to a realization of a
+        //      bounded structure?" — is C-BOUND's `realization_belongs_to`, which
+        //      answers it against `achieved_repr_tol` keys AFTER realization, not
+        //      from static IR at this point in the build. Narrowing therefore
+        //      needs the realization graph, which is a design change rather than
+        //      a local edit; it is filed as a follow-up and is orthogonal to
+        //      task θ (which narrows on achievability, not on subject
+        //      relatedness). Until then the broad posture is the safe direction:
+        //      it can refuse an export that would have been fine, never ship one
+        //      whose bound is unenforced (PRD §1.1).
         let refusal = crate::tolerance_combine::unenforced_representation_bound_diagnostic(module);
 
         // (2) Deterministic declaration-order walk of every occurrence sub:
@@ -5204,10 +5233,9 @@ impl Engine {
                 let path = resolve_artifact_path(&spec.path, design_dir, out_dir_override);
 
                 // (5a) η's refusal gate. Placed AFTER path resolution — so the
-                //      artifact carries the TRUE declared destination and a
-                //      caller can see WHICH export was refused — but BEFORE
-                //      subject-handle resolution, colour resolution and
-                //      `export_with_options`, so nothing is serialized.
+                //      refused artifact carries the TRUE declared destination —
+                //      but BEFORE subject-handle resolution, colour resolution
+                //      and `export_with_options`, so nothing is serialized.
                 //
                 //      A recognized-but-empty-bytes artifact, not an early
                 //      return with zero artifacts: with zero artifacts the CLI
@@ -5219,12 +5247,32 @@ impl Engine {
                 //      all. This is the same empty-bytes error-artifact idiom the
                 //      subject-unresolved and kernel-export-failed paths below
                 //      already use.
+                //
+                //      ATTRIBUTION GOES IN THE MESSAGE, NOT ONLY IN `path`. The
+                //      shared refusal is module-level, so a design with N Output
+                //      occurrences would otherwise print the SAME ~300-char line
+                //      N times with nothing distinguishing the copies: `cmd_build`
+                //      surfaces `artifact.diagnostics` and never `artifact.path`,
+                //      so the path alone is unreachable to the reader. Appending
+                //      the occurrence + destination mirrors the subject-unresolved
+                //      and kernel-export-failed wording below, which both name the
+                //      occurrence and the path for exactly this reason.
+                //      Pinned by `build_outputs_refuses_every_output_occurrence_
+                //      with_per_occurrence_attribution` in `tests.rs`.
                 if let Some(d) = &refusal {
+                    let mut d = d.clone();
+                    d.message = format!(
+                        "{} (refused Output occurrence `{}.{}` → {})",
+                        d.message,
+                        template.name,
+                        sub.name,
+                        path.display()
+                    );
                     artifacts.push(crate::ExportArtifact {
                         path: path.clone(),
                         format: export_format,
                         bytes: Vec::new(),
-                        diagnostics: vec![d.clone()],
+                        diagnostics: vec![d],
                     });
                     continue;
                 }
