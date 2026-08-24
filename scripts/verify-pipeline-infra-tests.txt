@@ -346,3 +346,16 @@ docs/reify-language-spec.tombstones  tests/infra/test_spec_anchor_lint.sh
 docs/notes/spec-anchor-contract.md   tests/infra/test_spec_anchor_lint.sh
 scripts/spec-anchor-lint.sh          tests/infra/test_spec_anchor_lint.sh
 tests/infra/test_spec_anchor_lint.sh tests/infra/test_spec_anchor_lint.sh
+
+# Task 6427: tests/infra/govtest_slice_reaper_lib.sh (the private per-run
+# systemd-slice lifecycle lib, task 6386) had NO row here, so a task-scope
+# --scope branch edit to the lib alone selected zero infra tests and its
+# guards never ran on the branch -- coverage was recovered only incidentally
+# at merge, because 6386's own diff also touches test_cpu_governed_exec_hostexcl.sh
+# (itself full-gate load-bearing), not because of anything in this map. A
+# future task touching only the lib would land with its guards unrun.
+# Two rows, same one-artifact-multiple-rows pattern as
+# scripts/lib_live_refs.sh above: the lib's own dedicated guard, plus the
+# pre-existing consumer whose slice-lifecycle assertions also exercise it.
+tests/infra/govtest_slice_reaper_lib.sh    tests/infra/test_govtest_slice_reaper.sh
+tests/infra/govtest_slice_reaper_lib.sh    tests/infra/test_cpu_load_governance.sh
