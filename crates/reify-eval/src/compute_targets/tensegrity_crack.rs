@@ -352,4 +352,122 @@ mod tests {
             "unexpected shape-arm message: {err}"
         );
     }
+
+    // ---- crack_scalar_list (task #6412, second hoist) -----------------------
+    //
+    // Earns the same treatment as `crack_dimensioned_scalar`: `membrane_load.rs`
+    // has this loop as a named helper and `tensegrity_load.rs::crack_forces`
+    // inlines the identical loop with FORCE/"Force" hardcoded — two copies, so
+    // the repo's single-definition-site norm applies.
+
+    /// Every entry is cracked in order, and the per-entry bare-`Real` escape
+    /// hatch survives the lift: a list may legitimately mix `3kN`-style
+    /// dimensioned scalars with bare `[1.0, …]` literals.
+    #[test]
+    fn crack_scalar_list_accepts_matching_dimension_entries() {
+        let all_dimensioned = Value::List(vec![
+            Value::Scalar {
+                si_value: -1000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 3000.0,
+                dimension: DimensionVector::FORCE,
+            },
+        ]);
+        assert_eq!(
+            crack_scalar_list(
+                &all_dimensioned,
+                "prestress",
+                DimensionVector::FORCE,
+                "Force",
+                TL_CODE,
+                TL_HINT,
+            ),
+            Ok(vec![-1000.0, 3000.0]),
+        );
+
+        let mixed = Value::List(vec![
+            Value::Real(-1000.0),
+            Value::Scalar {
+                si_value: 3000.0,
+                dimension: DimensionVector::FORCE,
+            },
+        ]);
+        assert_eq!(
+            crack_scalar_list(
+                &mixed,
+                "prestress",
+                DimensionVector::FORCE,
+                "Force",
+                TL_CODE,
+                TL_HINT,
+            ),
+            Ok(vec![-1000.0, 3000.0]),
+        );
+    }
+
+    /// The list-SHAPE arm. This is the one message the hoist deliberately
+    /// changes: `tensegrity_load.rs::crack_forces` used to hardcode "must be a
+    /// list of forces", and now reports the parameterized (strictly more
+    /// informative) "must be a list of Force scalars" that `membrane_load.rs`
+    /// already produced. Nothing in the repo pinned the old phrase — so it is
+    /// pinned here, at the single definition site, for the first time. The
+    /// `{other:?}` Debug tail is deliberately left unpinned.
+    #[test]
+    fn crack_scalar_list_rejects_non_list() {
+        let err = crack_scalar_list(
+            &Value::Real(1.0),
+            "prestress",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(
+                "E_TensegrityLoadInfeasible: prestress must be a list of Force scalars, got "
+            ),
+            "unexpected list-shape message: {err}"
+        );
+    }
+
+    /// The located `{what}[{i}]` entry index: an author whose third prestress
+    /// entry carries the wrong unit must be told WHICH entry, not merely that
+    /// "prestress" is wrong. This is the contract `crack_forces` /
+    /// `crack_pressures` inherit and that the membrane e2e tests (f3/f4) pin
+    /// end-to-end; pinning it here catches a regression at the unit level first.
+    #[test]
+    fn crack_scalar_list_labels_the_offending_entry_index() {
+        let second_entry_wrong = Value::List(vec![
+            Value::Scalar {
+                si_value: 3000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 1.0e5,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ]);
+        let err = crack_scalar_list(
+            &second_entry_wrong,
+            "prestress",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "E_TensegrityLoadInfeasible: prestress[1] has the wrong unit — expected a Force; \
+             check the call argument order (youngs_modulus is a Pressure, area is an Area, and \
+             prestress / loads are Forces)"
+        );
+        // Guards against both degenerate labellings: a constant index and a
+        // bare `what` with no index at all.
+        assert!(!err.contains("prestress[0]"), "must name entry 1, got: {err}");
+        assert!(err.contains("prestress[1]"), "must carry a located index: {err}");
+    }
 }
