@@ -28,7 +28,7 @@
 //!
 //! # `EXPECTED_INDETERMINATE` is not a `SKIP_SET`
 //!
-//! `examples/best_practices/INDEX.md:13` and
+//! `examples/best_practices/INDEX.md:14` and
 //! `.claude/skills/reify-design/SKILL.md:187-190` both forbid adding a
 //! `SKIP_SET` entry to this corpus — but that prohibition is scoped to the
 //! COMPILE gate ("a file that cannot reach a clean compile does not belong
@@ -424,7 +424,7 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 ///
 /// # This is NOT a `SKIP_SET`
 ///
-/// `examples/best_practices/INDEX.md:13` and
+/// `examples/best_practices/INDEX.md:14` and
 /// `.claude/skills/reify-design/SKILL.md:187-190` forbid adding a `SKIP_SET`
 /// entry to this corpus — but that prohibition is scoped to the COMPILE gate
 /// ("a file that cannot reach a clean compile does not belong here"). This
@@ -612,13 +612,10 @@ fn run_corpus_gate() -> Vec<GateFailure> {
 /// `audit_file` against `EXPECTED_INDETERMINATE`. Asserts ZERO
 /// `GateFailure`s on the live corpus.
 ///
-/// This is expected GREEN on the measured baseline (16 Satisfied / 3
-/// Indeterminate / 0 Violated, with all 3 Indeterminate listed in
-/// `EXPECTED_INDETERMINATE` above) — its RED-ness right now is only that
-/// `run_corpus_gate` does not exist yet. Note for a future reader: in-flight
-/// task #6181 will add `examples/best_practices/angle_crossings.ri`; the
-/// directory walk (`corpus_files`) picks it up with no edit needed here, and
-/// #6181's own recorded evidence is 12/12 OK, so this gate stays green.
+/// This is expected GREEN on the measured baseline (7 files, 31 constraints:
+/// 28 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
+/// listed in `EXPECTED_INDETERMINATE` above) — its RED-ness right now is
+/// only that `run_corpus_gate` does not exist yet.
 ///
 /// RED until `run_corpus_gate` exists.
 #[test]
