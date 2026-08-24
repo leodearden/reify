@@ -1921,6 +1921,269 @@ fn unit_table_ordering_invariant_holds() {
     );
 }
 
+// --- Composed unit accept-set: curated display ladders ∪ DSL builtin symbols ---
+//
+// Task #5757 replaces the hand-maintained five-entry `UNIT_TABLE` with an index
+// composed from two Rust-authored tables the GUI already depends on:
+//
+//   * `reify_core::display_units::unit_ladders()` — the curated per-dimension
+//     DISPLAY ladders. This is the SAME table the frontend derives its typed
+//     input alphabet from over the `get_unit_ladders` IPC command
+//     (`gui/src/stores/unitLadder.ts`), which is exactly why the two ends
+//     disagreed before: the frontend admitted every ladder rung and the
+//     backend parsed only five of them.
+//   * `reify_core::BUILTIN_UNITS` — the DSL's bare built-in unit symbols,
+//     contributing the SI bases no ladder carries (s, K, A, mol, cd).
+//
+// EVERY assertion below is driven off those two tables rather than off a
+// hand-mirrored list of unit strings, so a future ladder edit is covered
+// automatically and cannot silently widen or narrow what the GUI parses.
+// (A hand-written mirror would be a fifth curated label table — the drift
+// defect `unitLadder.ts`'s #5788 D6 note exists to prevent, restated in Rust.)
+
+/// The ladder-dimension NAME -> `DimensionVector` reverse lookup, resolved here
+/// independently of the implementation so these tests PIN the mapping rather
+/// than restate whatever the implementation happens to do.
+///
+/// Mirrors the first-match `NAMED_DIMENSIONS` scan `reify-compiler`'s
+/// `resolve_dimension_type` uses (that function is `pub(crate)`, so it cannot
+/// be called from here). Totality across the curated ladders is separately
+/// guaranteed by reify-core's own
+/// `every_ladder_dimension_round_trips_through_canonical_name`.
+fn dimension_for_ladder_name(name: &str) -> reify_core::DimensionVector {
+    reify_core::NAMED_DIMENSIONS
+        .iter()
+        .find(|(_, n)| *n == name)
+        .map(|(d, _)| *d)
+        .unwrap_or_else(|| {
+            panic!("curated ladder dimension {name:?} has no NAMED_DIMENSIONS entry")
+        })
+}
+
+/// (a) Every curated ladder rung resolves — in BOTH its raw superscript
+/// spelling (`mm³`) and its ASCII-normalized spelling (`mm^3`) — to that
+/// ladder's dimension, with `si_value == magnitude * si_scale`.
+///
+/// Both spellings are required because the backend is deliberately a strict
+/// SUPERSET of the frontend gate: `normalizeUnitLabel` is one-way, so the
+/// frontend only ever admits the ASCII spelling, while a user who copy-pastes
+/// the label they SEE in the unit picker types the superscript one. Accepting
+/// both can never cause a frontend-accepted value to be refused on commit,
+/// which is the only direction that reproduces the reported defect.
+///
+/// Checked with and without a dimension hint: the hinted branch is what
+/// `parse_value_string_for_cell` uses (the cell's declared dimension narrows
+/// the alphabet exactly as `PropertyEditor`'s `quantityReFor` does), the
+/// unhinted branch is what plain `parse_value_string` uses.
+#[test]
+fn resolve_unit_label_accepts_every_curated_ladder_rung_in_both_spellings() {
+    use crate::engine::{normalize_unit_label, resolve_unit_label};
+
+    // Any magnitude works; a non-unit one keeps a stray `* 1.0` from passing.
+    const MAGNITUDE: f64 = 3.0;
+
+    let ladders = crate::display_units::unit_ladders();
+    assert!(
+        !ladders.is_empty(),
+        "unit_ladders() must be non-vacuous — an empty table would make every \
+         assertion in this block pass trivially"
+    );
+
+    let mut rungs_checked = 0usize;
+    for ladder in &ladders {
+        let expected_dim = dimension_for_ladder_name(&ladder.dimension);
+        assert!(
+            !ladder.units.is_empty(),
+            "ladder {:?} must advertise at least one rung",
+            ladder.dimension
+        );
+        for opt in &ladder.units {
+            let expected_si = MAGNITUDE * opt.si_scale;
+            for spelling in [opt.label.clone(), normalize_unit_label(&opt.label)] {
+                for hint in [Some(expected_dim), None] {
+                    let (factor, dim) = resolve_unit_label(&spelling, hint.as_ref())
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "curated rung {spelling:?} (ladder {:?}, hint {hint:?}) must \
+                                 resolve — the frontend already admits it",
+                                ladder.dimension
+                            )
+                        });
+                    assert_eq!(
+                        dim, expected_dim,
+                        "{spelling:?} must resolve to the {:?} ladder's dimension",
+                        ladder.dimension
+                    );
+                    assert!(
+                        (MAGNITUDE * factor - expected_si).abs() < 1e-10,
+                        "{spelling:?}: {MAGNITUDE} * {factor} → {}, expected {expected_si} \
+                         (= {MAGNITUDE} * si_scale {})",
+                        MAGNITUDE * factor,
+                        opt.si_scale
+                    );
+                }
+                rungs_checked += 1;
+            }
+        }
+    }
+    assert!(
+        rungs_checked >= 20,
+        "expected the curated ladders to contribute at least 20 (rung, spelling) \
+         pairs; got {rungs_checked} — the table shrank unexpectedly"
+    );
+}
+
+/// The Rust mirror of `normalizeUnitLabel` (`gui/src/stores/unitLadder.ts`):
+/// the two superscript exponent glyphs and nothing else.
+///
+/// Pinned directly rather than only through its use above, so the two-character
+/// substitution is covered independently of the resolver that consumes it. Kept
+/// deliberately tiny — a divergence from the TypeScript twin is what would let
+/// the frontend and backend disagree about `mm^3` again.
+#[test]
+fn normalize_unit_label_rewrites_only_the_superscript_exponent_glyphs() {
+    use crate::engine::normalize_unit_label;
+
+    assert_eq!(normalize_unit_label("mm\u{00B2}"), "mm^2");
+    assert_eq!(normalize_unit_label("mm\u{00B3}"), "mm^3");
+    assert_eq!(normalize_unit_label("kg/m\u{00B3}"), "kg/m^3");
+    assert_eq!(normalize_unit_label("g/cm\u{00B3}"), "g/cm^3");
+    // Everything else is untouched, including labels already in ASCII form.
+    assert_eq!(normalize_unit_label("mm"), "mm");
+    assert_eq!(normalize_unit_label("mm^3"), "mm^3");
+    assert_eq!(normalize_unit_label("deg"), "deg");
+    assert_eq!(normalize_unit_label("MPa"), "MPa");
+}
+
+/// (b) Every `BUILTIN_UNITS` symbol resolves to its own factor and dimension.
+///
+/// This is the PRD's named delegation target (§M9): the five SI bases no
+/// curated ladder carries (s, K, A, mol, cd) reach the resolver only through
+/// this arm, and the eight that ARE also ladder rungs must come back with the
+/// builtin table's own values — which (d) below pins as bit-identical.
+#[test]
+fn resolve_unit_label_resolves_every_builtin_unit_symbol() {
+    use crate::engine::resolve_unit_label;
+
+    assert!(
+        !reify_core::BUILTIN_UNITS.is_empty(),
+        "BUILTIN_UNITS must be non-vacuous"
+    );
+    for &(symbol, factor, dimension) in reify_core::BUILTIN_UNITS {
+        let (got_factor, got_dim) = resolve_unit_label(symbol, None).unwrap_or_else(|| {
+            panic!("builtin unit symbol {symbol:?} must resolve through the composed index")
+        });
+        assert_eq!(
+            got_dim, dimension,
+            "builtin symbol {symbol:?} must resolve to its own dimension"
+        );
+        assert_eq!(
+            got_factor.to_bits(),
+            factor.to_bits(),
+            "builtin symbol {symbol:?} must resolve to its own factor \
+             ({factor}), got {got_factor}"
+        );
+    }
+}
+
+/// (c) Curated ladder labels are UNIQUE across all dimensions, in both
+/// spellings.
+///
+/// Load-bearing, not tidiness: with no dimension hint the resolver matches
+/// against the UNION of every ladder's rungs, so a label carried by two
+/// dimensions would make that branch silently ambiguous — first-match would
+/// decide which dimension a user's `5X` lands in.
+#[test]
+fn curated_ladder_labels_are_unique_across_every_dimension() {
+    use crate::engine::normalize_unit_label;
+    use std::collections::BTreeMap;
+
+    let ladders = crate::display_units::unit_ladders();
+    // label -> (dimension name, si_scale). A repeat within the SAME ladder is
+    // expected (a label with no superscript normalizes to itself); a repeat
+    // across ladders, or with a different scale, is the ambiguity.
+    let mut seen: BTreeMap<String, (String, f64)> = BTreeMap::new();
+    for ladder in &ladders {
+        for opt in &ladder.units {
+            for spelling in [opt.label.clone(), normalize_unit_label(&opt.label)] {
+                if let Some((prev_dim, prev_scale)) =
+                    seen.insert(spelling.clone(), (ladder.dimension.clone(), opt.si_scale))
+                {
+                    assert_eq!(
+                        (&prev_dim, prev_scale.to_bits()),
+                        (&ladder.dimension, opt.si_scale.to_bits()),
+                        "unit label {spelling:?} is carried by more than one curated ladder \
+                         ({prev_dim} @ {prev_scale} vs {} @ {}) — the union branch of \
+                         resolve_unit_label would resolve it ambiguously",
+                        ladder.dimension,
+                        opt.si_scale
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        seen.len() >= 20,
+        "expected at least 20 distinct curated labels across both spellings, got {}",
+        seen.len()
+    );
+}
+
+/// (d) Where the curated display ladders and the DSL builtin table OVERLAP,
+/// they must agree bit-for-bit on both factor and dimension.
+///
+/// The composed index reads from both. Today the eight shared labels (mm, cm,
+/// m, in, deg, rad, kg, g) carry identical values, so which source wins is
+/// unobservable — this test is what keeps it that way. If a future edit moves
+/// one table and not the other, the GUI would start parsing a unit differently
+/// from the DSL; that must fail loudly HERE rather than silently change what a
+/// user's typed `3in` means.
+#[test]
+fn curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap() {
+    use std::collections::BTreeSet;
+
+    let ladders = crate::display_units::unit_ladders();
+    let mut overlapping: BTreeSet<&str> = BTreeSet::new();
+    for ladder in &ladders {
+        let ladder_dim = dimension_for_ladder_name(&ladder.dimension);
+        for opt in &ladder.units {
+            let Some((factor, builtin_dim)) = reify_core::unit_symbol_to_si(&opt.label) else {
+                continue;
+            };
+            overlapping.insert(
+                reify_core::BUILTIN_UNITS
+                    .iter()
+                    .find(|(s, ..)| *s == opt.label)
+                    .map(|(s, ..)| *s)
+                    .expect("unit_symbol_to_si is a faithful view of BUILTIN_UNITS"),
+            );
+            assert_eq!(
+                builtin_dim, ladder_dim,
+                "{:?} is in both tables but the builtin table calls it {builtin_dim:?} \
+                 while the curated ladder puts it under {:?}",
+                opt.label, ladder.dimension
+            );
+            assert_eq!(
+                factor.to_bits(),
+                opt.si_scale.to_bits(),
+                "{:?} is in both tables with DIFFERENT factors: builtin {factor} vs \
+                 ladder si_scale {}",
+                opt.label,
+                opt.si_scale
+            );
+        }
+    }
+    // Non-vacuity floor, expressed as required MEMBERS rather than a count so
+    // adding a ladder rung that happens to be a builtin does not turn it red.
+    for expected in ["mm", "cm", "m", "in", "deg", "rad", "kg", "g"] {
+        assert!(
+            overlapping.contains(expected),
+            "{expected:?} must appear in BOTH the curated ladders and BUILTIN_UNITS; \
+             overlap was {overlapping:?}"
+        );
+    }
+}
+
 // --- Tessellation integration ---
 
 #[test]
