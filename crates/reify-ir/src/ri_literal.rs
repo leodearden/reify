@@ -106,7 +106,7 @@
 
 use crate::Value;
 use reify_core::DimensionVector;
-use reify_core::units::{ri_emittable_units, unit_symbol_to_si};
+use reify_core::units::{ri_compound_unit_expr, ri_emittable_units, unit_symbol_to_si};
 use std::fmt;
 
 /// Why a [`Value`] cannot be written as a `.ri` source literal.
@@ -194,6 +194,46 @@ fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
     s.strip_suffix(".0").map(str::to_owned).unwrap_or(s)
 }
 
+/// Which unit-resolution regime the TARGET module is asserted to provide
+/// (task #6400).
+///
+/// The two arms are not a preference — they are genuinely different
+/// preconditions, and the caller is the only party that can tell them apart.
+/// `reify-compiler`'s `expr.rs` forks on the shape of the emitted `UnitExpr`:
+/// a BARE unit resolves as `registry.lookup(..).or_else(|| unit_to_scalar(..))`
+/// while a COMPOUND one goes to `resolve_unit_expr`, which consults the
+/// per-module `UnitRegistry` and NOTHING else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitScope {
+    /// Bare built-in symbols only — today's shipped contract, and the default
+    /// every existing entry point delegates with.
+    ///
+    /// Round-trips in ANY module, including one that imports nothing and one
+    /// compiled `#no_prelude`, because the built-in table is an unconditional
+    /// `or_else` fallback behind the registry. Nothing about this arm is
+    /// contingent on what the target file imports.
+    BareBuiltinsOnly,
+    /// The caller ASSERTS that the target module resolves the SI base symbols
+    /// (`m`/`kg`/`s`/`K`/`rad`/`sr`/`USD`) to factor exactly `1.0`. Unlocks
+    /// compound emission, and with it every dimension that has no bare symbol
+    /// at all — Area, Volume, Force, Pressure, Density, Energy, SolidAngle,
+    /// Money.
+    ///
+    /// True for any module compiled with the stdlib prelude (`compile_with_stdlib`
+    /// seeds all stdlib modules unconditionally), and for one that imports
+    /// `std.units` and `std.si_units`. NOT true for a `#no_prelude` module, for
+    /// a `compile_project` module that imports neither, or inside a stdlib `fn`
+    /// body — those load with `unit_registry == None`, where a compound literal
+    /// does not compile at all.
+    ///
+    /// This crate CANNOT verify the assertion: it has no view of the target
+    /// module's registry, and inverting the crate DAG to get one is not on the
+    /// table. That unverifiability is precisely why this is a named opt-in
+    /// rather than the default — the precondition sits in the type at the call
+    /// site, where the caller must consciously make the claim.
+    SiBaseUnitsSeeded,
+}
+
 /// Serialize a [`Value`] as `.ri` source text that re-parses to that same value.
 ///
 /// Equivalent to [`value_to_ri_literal_with_unit`] with no unit preference.
@@ -232,6 +272,33 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
 pub fn value_to_ri_literal_with_unit(
     value: &Value,
     preferred_unit: Option<&str>,
+) -> Result<String, RiLiteralError> {
+    value_to_ri_literal_in_scope(value, preferred_unit, UnitScope::BareBuiltinsOnly)
+}
+
+/// Serialize a [`Value`] as `.ri` source text under an explicit
+/// [`UnitScope`] (task #6400).
+///
+/// The widening entry point. [`value_to_ri_literal`] and
+/// [`value_to_ri_literal_with_unit`] are exactly this function with
+/// [`UnitScope::BareBuiltinsOnly`], so the shipped contract is untouched on
+/// both the `Ok` and `Err` paths — pinned by `the_unhinted_entry_point_delegates`.
+///
+/// Under [`UnitScope::SiBaseUnitsSeeded`] a dimension with NO bare built-in
+/// symbol is written as a compound unit expression built from SI base symbols
+/// (`2.5m^2`, `101325kg/m/s^2`, `7850kg/m^3`) instead of being refused. See
+/// the module doc's qualification 3 for the precondition that carries, and
+/// `reify_core::units::ri_compound_unit_expr` for why bit-exactness on that
+/// path is structural rather than measured.
+///
+/// The compound attempt is made in exactly one place — inside the
+/// already-existing empty-bare-ladder branch — so a dimension that HAS a bare
+/// ladder can never reach it. `80mm` stays `80mm`; `0.08m^1` is unreachable,
+/// not merely unpreferred.
+pub fn value_to_ri_literal_in_scope(
+    value: &Value,
+    preferred_unit: Option<&str>,
+    scope: UnitScope,
 ) -> Result<String, RiLiteralError> {
     match value {
         Value::Bool(b) => Ok(if *b {
@@ -276,6 +343,42 @@ pub fn value_to_ri_literal_with_unit(
             }
             let ladder = ri_emittable_units(dimension);
             if ladder.is_empty() {
+                // THE ONLY behavioural edit the compound widening makes, and it
+                // sits inside this branch deliberately: containment is then
+                // STRUCTURAL rather than incidental. A dimension with a
+                // non-empty bare ladder cannot reach the compound path at all,
+                // so the hint logic, the ladder walk and the trailing
+                // "unreachable" `Err` below are byte-for-byte what task #5095
+                // shipped, and no value that is `Ok` today can change its
+                // literal.
+                //
+                // The magnitude is the SI value VERBATIM — no `exact_magnitude`
+                // call and no ladder search on this path. Every atom
+                // `ri_compound_unit_expr` writes has registry factor exactly
+                // 1.0, so `resolve_unit_expr` folds the whole expression to
+                // exactly 1.0 for ANY tree shape (`Unit → 1.0`;
+                // `Pow: 1.0.powi(n) == 1.0`; `Mul: 1.0 * 1.0 == 1.0`;
+                // `Div: 1.0 / 1.0 == 1.0`), and `expr.rs`'s single
+                // `si_value = value * factor` multiply is the IEEE identity.
+                // Bit-exactness here is therefore INDEPENDENT of the compiler's
+                // fold order rather than a mirror of it that could drift out of
+                // step with a future re-association.
+                //
+                // `preferred_unit` is deliberately not consulted: a hinted
+                // `mm^2` would fold `0.001.powi(2)` and reintroduce exactly the
+                // fold-order hazard this avoids.
+                //
+                // The finiteness guard above has already run, so a non-finite
+                // compound value returns `NonFiniteNumber` before anything here
+                // formats.
+                if scope == UnitScope::SiBaseUnitsSeeded
+                    && let Some(unit_expr) = ri_compound_unit_expr(dimension)
+                {
+                    return Ok(format!(
+                        "{}{unit_expr}",
+                        format_f64_shortest(*si_value, false)
+                    ));
+                }
                 return Err(RiLiteralError::UnrepresentableDimension {
                     dimension: *dimension,
                 });
