@@ -5507,18 +5507,32 @@ fn resolve_driving_params_from_ast(
                             // (Mul/Div/Pow) get their registry resolver in task γ (3803).
                             match unit {
                                 reify_ast::UnitExpr::Unit(unit) => {
-                                    // Look up the unit in UNIT_TABLE for SI scale.
-                                    match UNIT_TABLE.iter().find(|(u, _, _)| *u == unit.as_str()) {
-                                        Some((_, scale, _)) => Some(value * scale),
+                                    // Resolve through `reify_core::unit_symbol_to_si`, the DSL's
+                                    // own built-in symbol table (task #5757).
+                                    //
+                                    // DELIBERATELY NOT the ladder-backed `resolve_unit_label` the
+                                    // parameter-editor path uses. This site consumes an
+                                    // already-parsed `reify_ast::UnitExpr` from .ri SOURCE, so its
+                                    // admissible tokens are exactly what the lexer produced;
+                                    // admitting curated DISPLAY labels like `L` or `mm³` here would
+                                    // let the GUI resolve a literal the compiler itself rejects —
+                                    // a GUI/compiler disagreement in the opposite direction to the
+                                    // one #5757 fixes.
+                                    //
+                                    // Still narrower than the compiler: user-declared units from a
+                                    // module's `UnitRegistry` (`km`, `ft`, `psi`, …) resolve there
+                                    // and not here, and land in the `None` arm below.
+                                    match reify_core::unit_symbol_to_si(unit.as_str()) {
+                                        Some((factor, _)) => Some(value * factor),
                                         None => {
                                             // Unknown unit: emit debug so the silent value-loss is observable.
-                                            // Supported units: mm, cm, m, deg, rad.
                                             tracing::debug!(
                                                 target: "reify_gui::engine::literal_bind",
                                                 joint = %joint_cell_name,
                                                 unit = %unit,
-                                                "bind(joint, <quantity>) with unsupported unit — not in UNIT_TABLE; \
-                                                 initial_value_si will be None (supported units: mm, cm, m, deg, rad)"
+                                                "bind(joint, <quantity>) with a unit symbol outside \
+                                                 reify_core::BUILTIN_UNITS (a module-declared unit, or a \
+                                                 display-only label); initial_value_si will be None"
                                             );
                                             None
                                         }
@@ -6758,19 +6772,6 @@ pub(crate) fn resolve_unit_label(
         .find(|e| e.label == label)
         .map(|e| (e.si_scale, e.dimension))
 }
-
-/// Unit suffixes ordered by descending length — longest match first.
-///
-/// Exported as `pub(crate)` so tests can directly verify the ordering invariant
-/// without duplicating the table. The `debug_assert!` inside `parse_value_string`
-/// checks the same invariant at call-time in debug builds.
-pub(crate) const UNIT_TABLE: &[(&str, f64, DimensionVector)] = &[
-    ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
-    ("rad", 1.0, DimensionVector::ANGLE),
-    ("mm", 0.001, DimensionVector::LENGTH),
-    ("cm", 0.01, DimensionVector::LENGTH),
-    ("m", 1.0, DimensionVector::LENGTH),
-];
 
 /// Parse a value string into a Value.
 ///
