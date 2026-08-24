@@ -309,3 +309,67 @@ fn export_missing_output_path_returns_invalid_params() {
         other => panic!("expected InvalidParams, got: {other:?}"),
     }
 }
+
+// === reify_set_parameter schema: the unit contract (task #6184) ===
+
+/// `reify_set_parameter`'s `value` schema description must DECLARE the unit
+/// contract it silently relies on (INV-AD-4;
+/// `docs/prds/v0_6/angle-dimension-completion.md`, §9 B7).
+///
+/// This is a WIRE-VISIBLE CONTRACT, not a source docstring. The schema JSON is
+/// data served to every MCP client over `tools/list`, and its silence IS the
+/// defect: `mcp_context.rs` parses a bare `f64` out of this field and installs
+/// it as the cell's SI-coherent magnitude — for an Angle cell, RADIANS —
+/// applying no conversion and parsing no unit suffix. A client sending
+/// `1.5708` gets 1.5708 rad, not 1.5708°, and nothing on the wire says so.
+///
+/// The assertion is deliberately SMALL and semantic: two word-boundary token
+/// checks plus an additive check that the field still describes a string
+/// expression. It does NOT pin the sentence, regex the prose, or assert on any
+/// Rust doc comment — a wording-fragile pin here would be exactly the
+/// documentation meta-test this repo avoids.
+///
+/// Word boundaries matter, and are not pedantry: a naive
+/// `description.contains("si")` is satisfied by the CURRENT text, because
+/// "expre**si**on" contains it. That check would be green on arrival and would
+/// pin nothing.
+#[test]
+fn set_parameter_schema_declares_the_si_unit_contract() {
+    let registry = setup_registry();
+    let tools = registry.list_tools();
+    let info = tools
+        .iter()
+        .find(|t| t.name == "reify_set_parameter")
+        .expect("reify_set_parameter must be registered");
+
+    let description = info.input_schema["properties"]["value"]["description"]
+        .as_str()
+        .expect("reify_set_parameter's `value` property must carry a description string");
+    let lowered = description.to_lowercase();
+
+    // Word-boundary tokens, so substring accidents cannot satisfy the pin.
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    assert!(
+        words.contains(&"si"),
+        "the `value` schema description must name the SI contract as a word (the value is \
+         installed as the cell's SI-coherent magnitude with no conversion), but it reads: \
+         {description:?}"
+    );
+    assert!(
+        lowered.contains("radian"),
+        "the `value` schema description must name RADIANS — the angular crossing this contract \
+         exists for, where a client sending 1.5708 gets 1.5708 rad and not 1.5708 degrees — but \
+         it reads: {description:?}"
+    );
+
+    // Additive, not a rewrite: the field is still a string expression.
+    assert!(
+        words.contains(&"string") && words.contains(&"expression"),
+        "the unit contract must be ADDED to the `value` description, not replace what it already \
+         told clients (that the value is a string expression), but it reads: {description:?}"
+    );
+}
