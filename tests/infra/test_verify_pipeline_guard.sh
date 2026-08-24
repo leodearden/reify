@@ -18,6 +18,25 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# plan_capture_lib.sh (task 6426) — `plan_capture_complete` certifies a
+# --print-plan capture is not truncated, and `capture_print_plan` retries until
+# it is. Pair E (c)'s reachability preflight depends on both: without the
+# completeness certification a truncated capture reads as "injected path absent"
+# and fires a misleading failure. The lib's fork-free [[ ]] matching also keeps
+# that preflight clear of the pipe/EINTR spurious-failure class (esc-4574-42)
+# under the concurrent run_all.sh pool.
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
+# copy_list_preflight_lib.sh (task 6426) — `assert_source_closure_copied` is the
+# maintained companion of the verify.sh copy list reused by
+# make_runnable_verify_fixture below. It turns a future verify.sh source-line
+# addition into a precise "copy-list drift: missing <lib>" error at fixture-build
+# time, rather than an opaque downstream preflight failure. Same pairing
+# tests/infra/test_verify_throughput.sh uses for the same list.
+[ -f "$SCRIPT_DIR/copy_list_preflight_lib.sh" ] || { echo "ERROR: copy_list_preflight_lib.sh not found at $SCRIPT_DIR/copy_list_preflight_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
+
 _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
@@ -49,6 +68,62 @@ assert_exit() {
         echo "  FAIL: $desc (expected exit $expected, got $actual)"
         FAIL=$((FAIL + 1))
     fi
+}
+
+# make_runnable_verify_fixture <outvar> (task 6426) — materialize a throwaway
+# tree whose verify.sh is EXECUTABLE under --print-plan, not merely readable,
+# and assign the copied verify.sh path to <outvar>. Registers the tree in
+# _TMPDIRS so the existing EXIT trap cleans it up (no second trap).
+#
+# WHY A WHOLE TREE rather than a bare `cp verify.sh $tmp/verify.sh` (the shape
+# Pair B and the pre-6426 Pair E (c) fixture use): verify.sh resolves its libs
+# relative to its OWN directory, so a lone copy hard-fails with
+# "verify.sh: ERROR — scripts/occt-scope-lib.sh not found next to verify.sh"
+# (measured: exit 1 in 0.028s, empty stdout). That is perfectly fine for the
+# guard's source-text emitted-gate clause, which only READS verify.sh — but the
+# plan-derived clause RUNS it, so any case that drives the plan-derived half
+# needs a fixture that actually executes. (The lone-copy shape is still used
+# deliberately in (c-bis) to drive the FAIL-SOFT path.)
+#
+# THE COPY LIST is the maintained one from tests/infra/test_verify_throughput.sh
+# make_branch_fixture — reused verbatim rather than forked, so it inherits that
+# test's maintenance instead of drifting as a second copy. verify.sh `source`s
+# only seven of these DIRECTLY; the remainder are transitive under an
+# already-copied lib, which is why the list must not be trimmed to the
+# direct-source set. scripts/verify-pipeline-infra-tests.txt is added on top
+# because verify.sh READS it (select_infra_tests) without sourcing it, so the
+# source-closure preflight below cannot discover it.
+make_runnable_verify_fixture() {
+    local _outvar="$1" _dir _f
+    _dir="$(mktemp -d)"
+    _TMPDIRS+=("$_dir")
+    mkdir -p "$_dir/scripts" "$_dir/.config"
+    for _f in \
+        verify.sh \
+        occt-scope-lib.sh \
+        occt-touching-crates.txt \
+        release-scope-lib.sh \
+        release-sensitive-crates.txt \
+        affected-crates-lib.sh \
+        lib_test_semaphore.sh \
+        lib_slot_acquire.sh \
+        lib_clock_stop.sh \
+        cpu-admit.sh \
+        lib_proc_reaper.sh \
+        gen-nextest-config.sh \
+        heavy-test-filter-lib.sh \
+        verify-pipeline-infra-tests.txt
+    do
+        cp "$REPO_ROOT/scripts/$_f" "$_dir/scripts/$_f"
+    done
+    cp "$REPO_ROOT/.config/nextest.toml" "$_dir/.config/nextest.toml"
+    chmod +x "$_dir/scripts/verify.sh"
+    # Copy-list drift preflight (shared helper, task 5154): a NEW source line in
+    # verify.sh — direct, or transitive under an already-copied lib — fails here
+    # BY NAME instead of surfacing as an opaque "injected path absent from the
+    # plan" failure further down.
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$_dir/scripts" verify.sh || return 1
+    printf -v "$_outvar" '%s' "$_dir/scripts/verify.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -450,10 +525,12 @@ assert_exit "NORMALIZE: ./scripts/check-manifold-deps.sh stripped then matched (
 # Pair B uses for the sourced-lib clause. Proves the emitted-gate clause is a
 # LIVE derivation (a new plan-emitted gate is covered with no manifest edit)
 # and that it is surgical (only actually-emitted top-level scripts/ paths).
-_SYNTH_DIR_E="$(mktemp -d)"
-_TMPDIRS+=("$_SYNTH_DIR_E")
-_SYNTH_VERIFY_E="$_SYNTH_DIR_E/verify.sh"
-cp "$REPO_ROOT/scripts/verify.sh" "$_SYNTH_VERIFY_E"
+#
+# The fixture is built RUNNABLE (make_runnable_verify_fixture, above): the nine
+# EOF-appended emission-shape cases below only need verify.sh to be READABLE,
+# but the variable-assembled cases added by task 6426 need --print-plan to
+# actually EXECUTE on it. One fixture serves both injection mechanisms.
+make_runnable_verify_fixture _SYNTH_VERIFY_E
 cat >> "$_SYNTH_VERIFY_E" <<'SYNTH_PLAN_LINES_EOF'
 
 add_tool "./scripts/zzz-synthetic-gate.sh"
@@ -467,6 +544,37 @@ add_tool "if test -f tests/zzz-nonscripts-gate.sh; then bash tests/zzz-nonscript
 _zzz_variable_gate="./scripts/zzz-variable-assembled.sh"
 add_tool "$_zzz_variable_gate"
 SYNTH_PLAN_LINES_EOF
+
+# --- task 6426: a REACHABLE variable-assembled plan line --------------------
+# The heredoc above appends at EOF. That is enough for the SOURCE-TEXT half of
+# the emitted-gate clause, which only reads the file — but verify.sh `exit 0`s
+# at the end of its --print-plan block (scripts/verify.sh:3078), so an
+# EOF-appended statement is NEVER EXECUTED and can never reach the printed plan
+# (measured: 0 occurrences). To drive the PLAN-DERIVED half, the
+# variable-assembled line has to be injected INSIDE build_plan, where it runs.
+#
+# ANCHOR: the `add_tool "./scripts/tree-sitter-generate.sh"` statement
+# (scripts/verify.sh:2435), inserted immediately before it at the same
+# indentation — an unconditionally-reached RUN_RUST branch of build_plan under
+# the canonical widest invocation. Measured on this fixture: exactly one
+# occurrence in --print-plan output, and ZERO hits from the source-text grep
+# `^[[:space:]]*add(_tool)?[[:space:]]+` (the statement begins with the
+# assignment, not with `add_tool`) — i.e. exactly the residual gap task 6426
+# exists to close, reproduced end to end.
+#
+# If a future refactor moves, renames or deletes that anchor, the REACHABILITY
+# PREFLIGHT further down is what turns the resulting vacuity into a loud
+# failure rather than a silently-passing assertion.
+awk '
+    /^[[:space:]]*add_tool "\.\/scripts\/tree-sitter-generate\.sh"$/ && !_injected {
+        match($0, /^[[:space:]]*/)
+        print substr($0, 1, RLENGTH) "_zzz_pp_gate=\"./scripts/zzz-print-plan-variable.sh\"; add_tool \"$_zzz_pp_gate\""
+        _injected = 1
+    }
+    { print }
+' "$_SYNTH_VERIFY_E" > "$_SYNTH_VERIFY_E.injected"
+mv "$_SYNTH_VERIFY_E.injected" "$_SYNTH_VERIFY_E"
+chmod +x "$_SYNTH_VERIFY_E"
 
 # PIN (green on arrival): the bare './scripts/<x>.sh' emission shape derives.
 assert_exit "SELF-HEALING: zzz-synthetic-gate.sh auto-covered after plan-line injection (exit 0)" 0 \
@@ -556,19 +664,79 @@ assert_exit "SELF-HEALING: non-scripts/ emitted gate tests/zzz-nonscripts-gate.s
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate tests/zzz-nonscripts-gate.sh' \
     _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
 
-# PIN (green on arrival) — DOCUMENTED LIMITATION, deliberately asserting the
-# gap rather than closing it. The clause reads verify.sh's SOURCE TEXT, so it
-# only sees paths written LITERALLY in a plan line. A plan line assembled
-# through a variable -- `_cmd="./scripts/x.sh"; add_tool "$_cmd"`, the shape
-# verify.sh already uses for _gui_cmd / _sidecar_cmd / _ts_cmd at
-# scripts/verify.sh:2615-2617 -- derives nothing. This assertion exists so the
-# limitation cannot drift away from the wording in
-# scripts/verify-pipeline-paths.txt's EMITTED GATE SCRIPTS note (which is what
-# tells a future author to hand-register such a gate or rewrite it to a
-# literal): if someone later makes the derivation variable-aware, this case
-# goes RED and the doc gets updated in the same change.
-assert_exit "LIMITATION: variable-assembled add_tool \"\$_cmd\" is NOT derived (exit 1; documented, pinned)" 1 \
+# PIN (green on arrival) — RESIDUAL LIMITATION, deliberately asserting what the
+# clause still does NOT cover rather than closing it.
+#
+# TASK 6426 RESCOPED THIS CASE; do not read it as the old claim. The clause is
+# now a UNION of two derivations: (4a) a grep of verify.sh's SOURCE TEXT for
+# add()/add_tool() statements, and (4b) one canonical widest `--print-plan`
+# invocation that reads the RESOLVED plan. 4b closes the variable-assembled
+# shape for every plan line the canonical invocation REACHES — including the
+# _gui_cmd / _sidecar_cmd / _ts_cmd shape at scripts/verify.sh:2568-2574
+# (assembled) / :2651-2653 (emitted) that the old wording here named as
+# underived. The SELF-HEALING case below pins that closure directly.
+#
+# WHAT IS LEFT is the UNREACHED-BRANCH case, and this fixture is a faithful
+# instance of it: `_zzz_variable_gate` is appended at EOF, AFTER verify.sh's
+# --print-plan block `exit 0`s at scripts/verify.sh:3078, so build_plan never
+# executes the statement and NO invocation of any shape can emit it (measured:
+# 0 occurrences in this fixture's own printed plan). 4a cannot see it either,
+# because the path is behind a variable. Underived by BOTH halves of the union
+# — the honest successor to the old "source text only" limitation, not its
+# absence.
+#
+# READ THIS BEFORE "FIXING" IT. If someone later makes the derivation cover
+# unreached branches too (symbolic evaluation of build_plan, an N-way
+# invocation matrix), this case goes RED — and the residual-limitation wording
+# in scripts/verify-pipeline-guard.sh's 'emitted' bullet,
+# scripts/verify-pipeline-paths.txt's EMITTED GATE SCRIPTS note and
+# docs/notes/verify-pipeline-knobs.md must all be updated in the same change.
+assert_exit "RESIDUAL LIMITATION: variable-assembled plan line in a branch the canonical invocation never reaches derives nothing (exit 1; documented, pinned)" 1 \
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-variable-assembled.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# --- task 6426: the REACHABLE variable-assembled case -----------------------
+#
+# REACHABILITY PREFLIGHT (anti-vacuity; NOT optional). Assert the fixture's OWN
+# --print-plan output really does contain the injected path. Without it, a
+# future verify.sh refactor that moved or renamed the insertion anchor would
+# leave the RED DRIVER below asserting a path that is simply never emitted: it
+# would go silently VACUOUS — still "passing", because the clause would then
+# legitimately derive nothing — instead of red. That is the same anti-drift
+# role sub-block (a)'s hard-coded ground truth plays for the source-text half.
+#
+# plan_capture_complete certifies the capture is not truncated; an interrupted
+# capture reads as "path absent" and would fire the preflight for the wrong
+# reason. REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 follows verify.sh's own
+# --print-plan hermeticity scope note (scripts/verify.sh:1702-1714): the
+# nextest probe runs unconditionally in print mode and can otherwise fork cargo
+# and sleep before hard-failing.
+_PP_FIXTURE_DUMP=""
+capture_print_plan _PP_FIXTURE_DUMP 3 \
+    env DF_VERIFY_ROLE=merge REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+        bash "$_SYNTH_VERIFY_E" all --scope all --profile both --include-infra --print-plan \
+    || true
+
+assert "PREFLIGHT: fixture's own --print-plan capture is complete (not truncated)" \
+    plan_capture_complete "$_PP_FIXTURE_DUMP"
+
+assert "PREFLIGHT: fixture's own --print-plan emits scripts/zzz-print-plan-variable.sh (injection is REACHABLE)" \
+    plan_match "$_PP_FIXTURE_DUMP" 'zzz-print-plan-variable\.sh'
+
+# RED DRIVER (the gap task 6426 exists to close): a variable-assembled plan
+# line in a REACHED branch of build_plan. The source-text half cannot see it —
+# the statement begins with the assignment, not with `add_tool`, so the
+# '^[[ space ]]*add(_tool)?[[ space ]]+' statement anchor yields zero hits —
+# but the RESOLVED plan names it outright (exactly one occurrence, certified by
+# the preflight immediately above). Deriving from the EMITTED plan rather than
+# from the source text is what closes it, and closing it is what retires the
+# hand-registration advice in scripts/verify-pipeline-paths.txt.
+assert_exit "SELF-HEALING: variable-assembled add_tool \"\$_cmd\" in a REACHED plan branch IS derived via --print-plan (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-print-plan-variable.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+assert "--list includes scripts/zzz-print-plan-variable.sh (plan-derived, not source-text-derived)" \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" --list | grep -qxF scripts/zzz-print-plan-variable.sh' \
     _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
 
 # (d) MAP-WIRING: this guard's own oracle and static manifest must select this
