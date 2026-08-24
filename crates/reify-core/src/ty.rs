@@ -508,6 +508,8 @@ impl Type {
     }
 
     /// Shorthand for an orientation in N-dimensional space.
+    ///
+    /// See the `Orientation` variant doc: only `N=3` is inhabited today.
     pub fn orientation(n: usize) -> Self {
         Type::Orientation(n)
     }
