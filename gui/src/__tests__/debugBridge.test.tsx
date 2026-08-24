@@ -5123,6 +5123,35 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
     expect(typeof (globalThis as { CSS?: unknown }).CSS).toBe('undefined');
   });
 
+  // The one claim in `escapeAttrValue`'s docblock the rows below do NOT check:
+  // the fallback is deliberately NOT exhaustive — it escapes `"` and `\` only —
+  // whereas CSS.escape also covers raw control characters. A raw newline is
+  // invalid inside a CSS string per the CSS syntax spec, so in a real webview
+  // the fallback's output makes querySelector THROW; jsdom's selector engine is
+  // more lenient and instead silently fails to MATCH (measured here, and the
+  // reason this case asserts a not-found rather than a parser error). Either
+  // symptom is a failure the caller sees; what the case pins is the asymmetry —
+  // the same testid resolves under CSS.escape and does not under the fallback,
+  // which is exactly what "CSS.escape handles those too" means, and why the
+  // fallback is scoped to the one environment that has no CSS.escape to use.
+  it('the fallback arm is NOT exhaustive: a raw newline resolves only under CSS.escape', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const testId = 'row-with\nnewline';
+    const { el, clickSpy } = mountTestIdTarget(testId);
+    expect(el.getAttribute('data-testid')).toBe(testId);
+
+    vi.stubGlobal('CSS', undefined);
+    const viaFallback = await dispatchCmd(nextId++, 'click_element', { testId });
+    expect(viaFallback).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFound(testId) });
+    expect(clickSpy).not.toHaveBeenCalled();
+
+    vi.stubGlobal('CSS', { escape: cssEscapePolyfill });
+    const viaCssEscape = await dispatchCmd(nextId++, 'click_element', { testId });
+    expect(viaCssEscape).toEqual({ ok: true });
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
   for (const site of ESCAPE_SITES) {
     for (const arm of ESCAPE_ARMS) {
       it(`[${arm.name}] ${site.label}: a value carrying selector metacharacters reaches the not-found diagnostic, not a CSS-parser throw`, async () => {

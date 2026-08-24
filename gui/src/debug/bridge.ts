@@ -221,7 +221,11 @@ function pickFeaChannelSelect(
  * control character is also invalid inside a CSS string, so `escapeAttrValue`
  * can still yield a throwing selector under that arm. CSS.escape handles those
  * too, and it is present in every real webview — the fallback runs only where
- * `CSS` is undefined, which today is jsdom alone.
+ * `CSS` is undefined, which today is jsdom alone. That gap is pinned by `the
+ * fallback arm is NOT exhaustive…` in debugBridge.test.tsx's
+ * `debug bridge escapeAttrValue` block; note it measures the JSDOM symptom, a
+ * silent non-match, because jsdom's selector engine is more lenient than a
+ * webview's CSS parser.
  *
  * Takes `unknown` and coerces FIRST so the two arms cannot diverge on input
  * type. `CSS.escape` takes a WebIDL DOMString and so coerces its argument
