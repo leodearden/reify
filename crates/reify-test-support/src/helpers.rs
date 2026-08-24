@@ -740,9 +740,15 @@ pub fn run_modify_pipeline(
 /// lowest-level helper in the family: [`get_let_expr_in`] resolves a named template from a
 /// module and then delegates to this function.
 ///
+/// Matches on `id.member` alone; `id.entity` is not considered. A template
+/// holding two value cells with the same member name under different
+/// entities resolves to whichever one appears first in `value_cells` —
+/// see `test_get_let_expr_in_template_matches_member_ignoring_entity`.
+///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
 pub fn get_let_expr_in_template<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
@@ -773,6 +779,7 @@ pub fn get_let_expr_in_template<'a>(
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
@@ -799,6 +806,7 @@ pub fn get_let_expr_in<'a>(
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
 /// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+#[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
     name: &str,
@@ -1752,46 +1760,52 @@ mod tests {
         );
     }
 
-    /// get_let_expr_in_template should panic with "no value cell named" when
-    /// the cell name does not match any value cell in the template.
+    /// The two panic branches of `get_let_expr_in_template` ("no value cell
+    /// named" / "has no default expr") are intentionally NOT re-tested here.
+    /// `get_let_expr_in` delegates to `get_let_expr_in_template`, and
+    /// `test_get_let_expr_in_panics_on_missing_cell` /
+    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
+    /// exercise both branches through that delegation — duplicating them at
+    /// this layer would add coverage of the new entry point only, not of new
+    /// behavior (task #5831 review).
+    ///
+    /// What IS specific to this layer: `get_let_expr_in_template` matches on
+    /// `id.member` alone, so a template with two cells sharing a member name
+    /// under different entities is ambiguous. This test pins that the first
+    /// match in `value_cells` order wins, per the doc comment above the
+    /// function.
     #[test]
-    #[should_panic(expected = "no value cell named")]
-    fn test_get_let_expr_in_template_panics_on_missing_cell() {
-        let (template, _) = super::compile_first_template(r#"structure S { let x = 1.5 }"#);
-        super::get_let_expr_in_template(&template, "y");
-    }
+    fn test_get_let_expr_in_template_matches_member_ignoring_entity() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
 
-    /// get_let_expr_in_template should panic with "has no default expr" for a
-    /// value cell whose default_expr is None. Built directly with
-    /// TopologyTemplateBuilder::auto_param (which always produces
-    /// default_expr = None) rather than a compiled source, since a
-    /// source-level `param` always carries a default in well-formed compiled
-    /// output. This test needs NO CompiledModuleBuilder wrapper — dropping
-    /// that wrapper is precisely the ergonomic win of a template-scoped
-    /// helper over get_let_expr_in. The inline `assert!` below makes the
-    /// precondition explicit: if `auto_param` ever changes to synthesize a
-    /// placeholder default, the guard will fire loudly rather than silently
-    /// letting the test pass for the wrong reason.
-    #[test]
-    #[should_panic(expected = "has no default expr")]
-    fn test_get_let_expr_in_template_panics_on_missing_default_expr() {
-        let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", reify_core::Type::dimensionless_scalar())
+        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Bool(true),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Bool(true), Type::Int)),
+            )
             .build();
-        // Precondition: auto_param must produce default_expr = None; if that
-        // ever changes this guard fires before get_let_expr_in_template,
-        // surfacing the broken assumption clearly instead of silently
-        // exercising the wrong branch.
-        let cell = template
-            .value_cells
-            .iter()
-            .find(|vc| vc.id.member == "x")
-            .expect("auto_param should have added cell 'x'");
-        assert!(
-            cell.default_expr.is_none(),
-            "auto_param must produce default_expr = None for this test's intent"
+
+        let expr = super::get_let_expr_in_template(&template, "x");
+        assert_eq!(
+            expr.result_type,
+            Type::dimensionless_scalar(),
+            "get_let_expr_in_template matches by member name alone (ignoring id.entity); \
+             expected the FIRST cell named 'x' (entity 'First', dimensionless_scalar), \
+             got result_type {:?}",
+            expr.result_type
         );
-        super::get_let_expr_in_template(&template, "x");
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
