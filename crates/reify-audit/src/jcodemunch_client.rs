@@ -253,12 +253,32 @@ fn parse_tables_decl(meta_line: &str) -> Result<Vec<TableSpec>, String> {
     Ok(specs)
 }
 
+/// Parse a single `<prefix>:<table_name>:<col1>|<col2>|...[:<type1>|<type2>|...]`
+/// table spec from the `__tables=` declaration.
+///
+/// Accepts two grammars:
+/// - 4 segments `<prefix>:<table>:<col>|...:<type>|...` — the original
+///   shape, captured by every fixture under `tests/fixtures/jcodemunch/`
+///   (jcodemunch-mcp 1.108.27).
+/// - 3 segments `<prefix>:<table>:<col>|...` — the type list omitted.
+///   Measured live against jcodemunch-mcp 1.108.54's `find_references`
+///   response on 2026-08-22 (`r:__rows__:file|specifier|match_type`).
+///   Every column defaults to `ColType::Str` in this case.
+///
+/// This is a widening of the original 4-segment-only grammar, not a
+/// migration away from it — both shapes must keep decoding.
+///
+/// `columns.len() == col_types.len()` is an INVARIANT of every `TableSpec`
+/// this function returns: it is what keeps the `spec.col_types[i]` /
+/// `fields[i]` indexing in [`munch_decode`] in bounds. The 3-segment path
+/// therefore materialises a full `col_types` vector (`ColType` derives
+/// `Clone`) rather than leaving the field optional.
 fn parse_one_table_spec(spec: &str) -> Result<TableSpec, String> {
-    // Format: `<prefix>:<table_name>:<col1>|<col2>|...:<type1>|<type2>|...`
+    // Format: `<prefix>:<table_name>:<col1>|<col2>|...[:<type1>|<type2>|...]`
     let parts: Vec<&str> = spec.splitn(4, ':').collect();
-    if parts.len() != 4 {
+    if parts.len() != 3 && parts.len() != 4 {
         return Err(format!(
-            "table spec has {} colon-segments (expected 4): {:?}",
+            "table spec has {} colon-segments (expected 3 or 4): {:?}",
             parts.len(),
             spec
         ));
@@ -266,24 +286,29 @@ fn parse_one_table_spec(spec: &str) -> Result<TableSpec, String> {
     let prefix = parts[0].to_string();
     let table_name = parts[1].to_string();
     let columns: Vec<String> = parts[2].split('|').map(|s| s.to_string()).collect();
-    let type_strs: Vec<&str> = parts[3].split('|').collect();
-    if columns.len() != type_strs.len() {
-        return Err(format!(
-            "table {} has {} columns but {} types",
-            table_name,
-            columns.len(),
-            type_strs.len()
-        ));
-    }
-    let col_types = type_strs
-        .iter()
-        .map(|t| match *t {
-            "int" => ColType::Int,
-            "float" => ColType::Float,
-            "bool" => ColType::Bool,
-            _ => ColType::Str,
-        })
-        .collect();
+    let col_types = if let Some(types_part) = parts.get(3) {
+        let type_strs: Vec<&str> = types_part.split('|').collect();
+        if columns.len() != type_strs.len() {
+            return Err(format!(
+                "table {} has {} columns but {} types",
+                table_name,
+                columns.len(),
+                type_strs.len()
+            ));
+        }
+        type_strs
+            .iter()
+            .map(|t| match *t {
+                "int" => ColType::Int,
+                "float" => ColType::Float,
+                "bool" => ColType::Bool,
+                _ => ColType::Str,
+            })
+            .collect()
+    } else {
+        // 3-segment spec: type list omitted, every column is ColType::Str.
+        vec![ColType::Str; columns.len()]
+    };
     Ok(TableSpec {
         prefix,
         table_name,
