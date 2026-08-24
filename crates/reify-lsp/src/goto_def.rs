@@ -96,6 +96,38 @@ pub fn compute_goto_definition_with_parsed(
         }
     }
 
+    // Phase C (task 6388): the word NAMES a top-level declaration — a use site
+    // such as `sub b = Bracket()`, `let v = area(2mm)` or `param p : Pressure`.
+    //
+    // Ordering is load-bearing:
+    // - AFTER both member phases, so every pre-existing member resolution keeps
+    //   byte-identical behaviour and a member never loses to a same-named
+    //   declaration.
+    // - BEFORE cross-file Phase 2. `compute_goto_definition_cross_file_with_parsed`
+    //   delegates to this core at its Phase 1 slot, so placing Phase C here
+    //   makes a LOCAL declaration win over an IMPORT of the same name — the
+    //   correct conflict resolution, pinned by
+    //   `goto_def_local_declaration_wins_over_same_named_import`.
+    // - Cross-file Phase 0 (cursor inside an `import` span) still runs first, so
+    //   the cursor-on-import contract is untouched.
+    //
+    // When two top-level declarations share a name (already a semantic error)
+    // the FIRST in source order wins. The returned range is the NAME TOKEN —
+    // deliberately the same shape the cross-file path returns via
+    // `find_declaration_name_span`; closing that asymmetry is why task 6388
+    // exists. Member resolution above keeps returning the full member statement
+    // span, unchanged.
+    for decl in &parsed.declarations {
+        if let Some((name, tok)) = decl_name_token(decl, source)
+            && name == word
+        {
+            return Some(Location {
+                uri: uri.clone(),
+                range: span_to_range(source, tok),
+            });
+        }
+    }
+
     None
 }
 
