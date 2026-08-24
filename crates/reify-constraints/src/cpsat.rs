@@ -822,26 +822,47 @@ impl CpSatSolver {
 
     /// A ranking that makes NO ordering claim: one feasible point, no score.
     ///
-    /// Defined by delegation to [`ConstraintSolver::solve`] rather than by a
-    /// second enumeration, and that is the whole point. `solve` already
-    /// enumerates at `cap = 2` and derives `unique` from it, so this arm agrees
-    /// with `solve` about the same problem BY CONSTRUCTION — values, `unique`,
-    /// and every degenerate verdict alike — instead of by two implementations
-    /// happening to stay in step. `Infeasible` and `NoProgress` go through
-    /// `into_ranked_pass_through`, reify-ir's canonical anti-drift seam for
-    /// exactly these two arms (constraint.rs:349), which the trait default lift
-    /// also uses.
+    /// # Why this delegates instead of enumerating again
     ///
-    /// Reached from two places: an absent objective, and — deliberately — an
-    /// objective that failed to score EVERY model. On that second path
-    /// `FeasibilityOnly` is in tension with F-result I3's "iff no objective
-    /// governs the solve", and it is still the right answer: the alternative is
-    /// `BestFound` carrying `objective_score: None`, which is the pairing I4
-    /// forbids outright, and it would additionally assert a ranking quality over
-    /// a set nothing could be ranked in. Making no ordering claim is the honest
-    /// description of having no orderable scores.
-    fn feasibility_ranking(&self, problem: &ResolutionProblem) -> RankedSolveResult {
-        match self.solve(problem) {
+    /// A no-objective ranking needs exactly what `solve` already computes: one
+    /// feasible point, plus an honest `unique` derived from a `cap = 2`
+    /// enumeration — 2 being the minimum that distinguishes "exactly one model"
+    /// from "at least two", and the right cap here precisely BECAUSE a
+    /// feasibility ranking makes no ordering claim and so has no use for the
+    /// rest of the space.
+    ///
+    /// Writing that out a second time would produce a function identical to
+    /// `solve_with_budget` in everything but its return type — the lock-step
+    /// twin this whole task is written to avoid (PRD2 §3.9, G7). Delegating
+    /// makes `solve_ranked` and `solve` agree about the same problem BY
+    /// CONSTRUCTION, across every arm at once: values, `unique`, the
+    /// `Infeasible` diagnostic and its code, the budget-exhaustion reason
+    /// string. There is no second implementation that could drift, so there is
+    /// nothing to keep in step.
+    ///
+    /// `Infeasible` and `NoProgress` go through `into_ranked_pass_through`,
+    /// reify-ir's canonical anti-drift seam for exactly these two arms
+    /// (constraint.rs:349) — the same one the trait default lift uses.
+    ///
+    /// # The two callers
+    ///
+    /// An absent objective, and — deliberately — an objective that failed to
+    /// score EVERY model. On that second path `FeasibilityOnly` is in tension
+    /// with F-result I3's "iff no objective governs the solve", and it is still
+    /// the right answer: the alternative is `BestFound` carrying
+    /// `objective_score: None`, which is the pairing I4 forbids outright, and it
+    /// would additionally assert a ranking quality over a set nothing could be
+    /// ranked in. Making no ordering claim is the honest description of having
+    /// no orderable scores.
+    ///
+    /// `node_budget` is threaded rather than defaulted so a budget-parameterized
+    /// ranked solve cannot fall back into a full-budget `solve`.
+    fn feasibility_ranking(
+        &self,
+        problem: &ResolutionProblem,
+        node_budget: usize,
+    ) -> RankedSolveResult {
+        match self.solve_with_budget(problem, node_budget) {
             SolveResult::Solved { values, unique } => RankedSolveResult::Ranked {
                 candidates: vec![RankedCandidate {
                     values,
@@ -855,86 +876,58 @@ impl CpSatSolver {
                 .expect("Solved arm already handled above"),
         }
     }
-}
 
-/// Why an enumeration declined to answer, in the words a user eventually reads.
-///
-/// One function rather than a `format!` at each site: `ConstraintSolver::solve`
-/// is the first caller and `solve_ranked` (step β.10) is the second, and the
-/// whole point of the message is that the two agree about what happened to the
-/// same problem. A hand-copied string is exactly how they would stop agreeing.
-///
-/// Says explicitly what the search did NOT establish. The failure mode this
-/// message guards against is a reader — or a downstream agent — treating "no
-/// solutions came back" as "there are none".
-fn enumeration_budget_exhausted_reason(problem: &ResolutionProblem, node_budget: usize) -> String {
-    format!(
-        "CpSatSolver: enumeration node budget of {} exhausted while searching {} auto params \
-         with {} constraints; the search was TRUNCATED, so the constraints are not known to be \
-         unsatisfiable",
-        node_budget,
-        problem.auto_params.len(),
-        problem.constraints.len(),
-    )
-}
-
-impl ConstraintSolver for CpSatSolver {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        self.solve_with_budget(problem, ENUMERATION_NODE_BUDGET)
-    }
-
-    /// Rank every feasible model by the governing objective (PRD2 §4.2, D2;
-    /// F-result invariants I2/I4).
+    /// [`ConstraintSolver::solve_ranked`] with the node bound supplied
+    /// explicitly.
     ///
-    /// # What this replaces
+    /// THE body the trait method runs; `solve_ranked` adds nothing but
+    /// [`ENUMERATION_NODE_BUDGET`]. Same rationale as
+    /// [`CpSatSolver::solve_all_with_budget`] and
+    /// [`CpSatSolver::solve_with_budget`]: the truncated-enumeration arm below
+    /// is the one that must NOT claim `ProvenOptimal`, and pinning that needs a
+    /// unit test that reaches it in microseconds rather than by walking ~1e5
+    /// nodes.
     ///
-    /// Without this override, `CpSatSolver` inherits reify-ir's default lift
-    /// (constraint.rs:564): `solve()`'s answer wrapped in one candidate with
-    /// `objective_score: None` and `BestFound { Unreported }`. The lift is
-    /// honest about knowing nothing, but its practical effect is that a
-    /// `minimize` over a discrete model is SILENTLY IGNORED — `solve()` returns
-    /// the first feasible point in search order, so flipping the sense to
-    /// `maximize` returns the same point (PRD2 §2.3, spike rows n3/n3b).
+    /// # Degenerate arms, and where each one is decided
     ///
-    /// # Why `ProvenOptimal` is honest here
+    /// | enumeration outcome                        | ranked result |
+    /// |--------------------------------------------|---------------|
+    /// | `NotEnumerable { reason }`                 | `NoProgress { reason }` — verbatim |
+    /// | scored ≥ 1 model                           | `Ranked`, sorted, truncated |
+    /// | scored 0 models (empty, unscorable, or no objective) | whatever `solve` says, lifted by [`CpSatSolver::feasibility_ranking`] |
     ///
-    /// Earned by three properties of this search, not asserted. Domains are
-    /// FINITE and materialised before the search starts. Pruning is SOUND — a
-    /// branch is cut only when a constraint whose auto refs are all assigned
-    /// evaluates to `Bool(false)`; a non-`Bool` result takes the
-    /// skip-don't-prune arm — so no feasible point is ever lost. And the
-    /// per-trial fold means every point is scored against correctly
-    /// materialised dependent cells. So `complete == true` means every feasible
-    /// point was visited and scored, and the ascending minimum IS the global
-    /// minimum. Mixed discrete+continuous components never reach here (PRD2 ζ
-    /// owns them, and always reports `BestFound`), so the pure-discrete
-    /// precondition D2 puts on `ProvenOptimal` holds by construction.
-    ///
-    /// # Invariant I1
-    ///
-    /// This method adds information; it never changes what `solve` returns.
-    /// `solve` is untouched, and the argmin computed here is a separate
-    /// projection over the same enumeration.
-    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
-        // No objective ⇒ no ordering claim to make. Step β.10's arm; delegating
-        // to `solve` keeps `solve_ranked` and `solve` in agreement by
-        // construction rather than by coincidence.
+    /// The last row folds three cases together on purpose. `{ solutions: [],
+    /// complete: true }` is a proven contradiction and `solve` reports
+    /// `Infeasible`; `{ solutions: [], complete: false }` is a truncated search
+    /// and `solve` reports `NoProgress` naming the budget; an unscorable
+    /// objective still has feasible models and `solve` reports the first one.
+    /// Routing all three through `solve` means those three verdicts are decided
+    /// in exactly ONE place for both entry points, instead of being re-derived
+    /// here from the same `complete` flag and left to drift.
+    pub(crate) fn solve_ranked_with_budget(
+        &self,
+        problem: &ResolutionProblem,
+        node_budget: usize,
+    ) -> RankedSolveResult {
+        // No objective ⇒ no ordering claim to make, and nothing to enumerate
+        // past `cap = 2`. See `feasibility_ranking` for why this delegates.
         let Some(objective) = problem.objective.as_ref() else {
-            return self.feasibility_ranking(problem);
+            return self.feasibility_ranking(problem, node_budget);
         };
 
-        let (solutions, complete) = match self.solve_all(problem, ENUMERATION_SOLUTION_CAP) {
-            // Verbatim the reason `solve()` hands to `SolveResult::NoProgress`
-            // for this problem, so the two entry points give a user the same
-            // account of the same failure.
-            SolveAllResult::NotEnumerable { reason } => {
-                return RankedSolveResult::NoProgress { reason };
-            }
-            SolveAllResult::Enumerated {
-                solutions,
-                complete,
-            } => (solutions, complete),
-        };
+        let (solutions, complete) =
+            match self.solve_all_with_budget(problem, ENUMERATION_SOLUTION_CAP, node_budget) {
+                // Verbatim the reason `solve()` hands to `SolveResult::NoProgress`
+                // for this problem, so the two entry points give a user the same
+                // account of the same failure.
+                SolveAllResult::NotEnumerable { reason } => {
+                    return RankedSolveResult::NoProgress { reason };
+                }
+                SolveAllResult::Enumerated {
+                    solutions,
+                    complete,
+                } => (solutions, complete),
+            };
 
         // Score every model, remembering its ENUMERATION INDEX — the tiebreak
         // below needs it, and it is only available here.
@@ -980,7 +973,7 @@ impl ConstraintSolver for CpSatSolver {
         // candidate list) and not a claim of infeasibility either — the models
         // exist, they just could not be ordered. See `feasibility_ranking`.
         if scored.is_empty() {
-            return self.feasibility_ranking(problem);
+            return self.feasibility_ranking(problem, node_budget);
         }
 
         // Ascending score, ties broken by ascending enumeration index — the
@@ -1057,6 +1050,72 @@ impl ConstraintSolver for CpSatSolver {
             candidates,
             optimality,
         }
+    }
+}
+
+/// Why an enumeration declined to answer, in the words a user eventually reads.
+///
+/// Reached from ONE call site — [`CpSatSolver::solve_with_budget`] — and that is
+/// the design, not an accident waiting to be inlined: `solve_ranked` gets this
+/// same string by DELEGATING to `solve_with_budget` through
+/// [`CpSatSolver::feasibility_ranking`] rather than by composing its own
+/// account of the same event. Named as a function so that stays visible; a
+/// `format!` buried in a match arm invites the second entry point to grow a
+/// near-copy that says something subtly different about an identical solve.
+///
+/// Says explicitly what the search did NOT establish. The failure mode this
+/// message guards against is a reader — or a downstream agent — treating "no
+/// solutions came back" as "there are none".
+fn enumeration_budget_exhausted_reason(problem: &ResolutionProblem, node_budget: usize) -> String {
+    format!(
+        "CpSatSolver: enumeration node budget of {} exhausted while searching {} auto params \
+         with {} constraints; the search was TRUNCATED, so the constraints are not known to be \
+         unsatisfiable",
+        node_budget,
+        problem.auto_params.len(),
+        problem.constraints.len(),
+    )
+}
+
+impl ConstraintSolver for CpSatSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        self.solve_with_budget(problem, ENUMERATION_NODE_BUDGET)
+    }
+
+    /// Rank every feasible model by the governing objective (PRD2 §4.2, D2;
+    /// F-result invariants I2/I4).
+    ///
+    /// # What this replaces
+    ///
+    /// Without this override, `CpSatSolver` inherits reify-ir's default lift
+    /// (constraint.rs:564): `solve()`'s answer wrapped in one candidate with
+    /// `objective_score: None` and `BestFound { Unreported }`. The lift is
+    /// honest about knowing nothing, but its practical effect is that a
+    /// `minimize` over a discrete model is SILENTLY IGNORED — `solve()` returns
+    /// the first feasible point in search order, so flipping the sense to
+    /// `maximize` returns the same point (PRD2 §2.3, spike rows n3/n3b).
+    ///
+    /// # Why `ProvenOptimal` is honest here
+    ///
+    /// Earned by three properties of this search, not asserted. Domains are
+    /// FINITE and materialised before the search starts. Pruning is SOUND — a
+    /// branch is cut only when a constraint whose auto refs are all assigned
+    /// evaluates to `Bool(false)`; a non-`Bool` result takes the
+    /// skip-don't-prune arm — so no feasible point is ever lost. And the
+    /// per-trial fold means every point is scored against correctly
+    /// materialised dependent cells. So `complete == true` means every feasible
+    /// point was visited and scored, and the ascending minimum IS the global
+    /// minimum. Mixed discrete+continuous components never reach here (PRD2 ζ
+    /// owns them, and always reports `BestFound`), so the pure-discrete
+    /// precondition D2 puts on `ProvenOptimal` holds by construction.
+    ///
+    /// # Invariant I1
+    ///
+    /// This method adds information; it never changes what `solve` returns.
+    /// `solve` is untouched, and the argmin computed here is a separate
+    /// projection over the same enumeration.
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        self.solve_ranked_with_budget(problem, ENUMERATION_NODE_BUDGET)
     }
 }
 
@@ -1833,7 +1892,10 @@ mod solve_all_enumeration_tests {
     /// actual variant here means a domain-rejection regression reads as one.
     fn enumerated(result: SolveAllResult) -> (Vec<HashMap<ValueCellId, Value>>, bool) {
         match result {
-            SolveAllResult::Enumerated { solutions, complete } => (solutions, complete),
+            SolveAllResult::Enumerated {
+                solutions,
+                complete,
+            } => (solutions, complete),
             SolveAllResult::NotEnumerable { reason } => {
                 panic!("expected SolveAllResult::Enumerated; got NotEnumerable {{ {reason} }}")
             }
@@ -1929,10 +1991,7 @@ mod solve_all_enumeration_tests {
              problem must return byte-identical solution sequences",
         );
         assert_eq!(
-            (
-                at(&first_run[0], "a"),
-                at(&first_run[0], "b"),
-            ),
+            (at(&first_run[0], "a"), at(&first_run[0], "b"),),
             (Value::Bool(true), Value::Bool(true)),
             "the search visits variables in `auto_params` declaration order \
              (a, then b) and values in `DomainSpec` construction order \
@@ -2031,7 +2090,10 @@ mod solve_all_enumeration_tests {
                  — this string is what `solve()` hands to `NoProgress` and what \
                  a user eventually reads; got {reason:?}",
             ),
-            SolveAllResult::Enumerated { solutions, complete } => panic!(
+            SolveAllResult::Enumerated {
+                solutions,
+                complete,
+            } => panic!(
                 "an unbounded `Int` auto has no buildable domain, so enumeration \
                  must report NotEnumerable. Getting \
                  Enumerated {{ solutions: {solutions:?}, complete: {complete} }} \
@@ -2121,7 +2183,11 @@ mod solve_all_enumeration_tests {
              zero means `g` was folded BEFORE `f` and read the previous trial's \
              value; got {solutions:?}",
         );
-        assert_eq!(at(&solutions[0], "n"), Value::Int(3), "the one model is n = 3");
+        assert_eq!(
+            at(&solutions[0], "n"),
+            Value::Int(3),
+            "the one model is n = 3"
+        );
         assert!(complete, "a fully-explored 6-point space is complete");
     }
 
@@ -2388,8 +2454,10 @@ mod solve_all_enumeration_tests {
     /// could.
     #[test]
     fn solve_reports_budget_exhaustion_as_no_progress_rather_than_infeasible() {
-        let cut_short = CpSatSolver
-            .solve_with_budget(&only_solution_is_the_last_node(), BUDGET_BELOW_THE_ONLY_SOLUTION);
+        let cut_short = CpSatSolver.solve_with_budget(
+            &only_solution_is_the_last_node(),
+            BUDGET_BELOW_THE_ONLY_SOLUTION,
+        );
         let proven = CpSatSolver.solve_with_budget(&contradiction(), INERT_BUDGET);
 
         match cut_short {
@@ -2455,11 +2523,8 @@ mod solve_all_enumeration_tests {
             GENEROUS_CAP,
             ENUMERATION_NODE_BUDGET,
         ));
-        let truncated = enumerated(CpSatSolver.solve_all_with_budget(
-            &p,
-            GENEROUS_CAP,
-            TRUNCATING_BUDGET,
-        ));
+        let truncated =
+            enumerated(CpSatSolver.solve_all_with_budget(&p, GENEROUS_CAP, TRUNCATING_BUDGET));
 
         assert_eq!(
             public, explicit,
@@ -2567,10 +2632,8 @@ mod unique_honesty_tests {
     /// no CP-SAT solve has ever been in a position to make.
     #[test]
     fn a_problem_with_more_than_one_model_reports_non_unique() {
-        let (_, unique) = solved(CpSatSolver.solve(&a_or_b_with(vec![
-            bool_auto("a"),
-            bool_auto("b"),
-        ])));
+        let (_, unique) =
+            solved(CpSatSolver.solve(&a_or_b_with(vec![bool_auto("a"), bool_auto("b")])));
 
         assert!(
             !unique,
@@ -2594,10 +2657,8 @@ mod unique_honesty_tests {
     /// missing entry fails here rather than surfacing somewhere downstream.
     #[test]
     fn deriving_unique_does_not_change_which_model_solve_returns() {
-        let (values, _) = solved(CpSatSolver.solve(&a_or_b_with(vec![
-            bool_auto("a"),
-            bool_auto("b"),
-        ])));
+        let (values, _) =
+            solved(CpSatSolver.solve(&a_or_b_with(vec![bool_auto("a"), bool_auto("b")])));
 
         let expected: HashMap<ValueCellId, Value> = [
             (ValueCellId::new("S", "a"), Value::Bool(true)),
@@ -2662,11 +2723,8 @@ mod unique_honesty_tests {
     /// turning a true statement into a false one in the opposite direction.
     #[test]
     fn the_no_auto_params_fast_path_is_honestly_unique() {
-        let (values, unique) = solved(CpSatSolver.solve(&problem(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        )));
+        let (values, unique) =
+            solved(CpSatSolver.solve(&problem(Vec::new(), Vec::new(), Vec::new())));
 
         assert!(
             values.is_empty(),
@@ -3277,9 +3335,8 @@ mod solve_ranked_override_tests {
     /// exactly where the budget lands.
     #[test]
     fn a_budget_truncated_ranking_returns_the_best_of_what_it_saw_and_says_so() {
-        let (candidates, optimality) = ranked(
-            CpSatSolver.solve_ranked_with_budget(&twenty_ints(ObjectiveSense::Maximize), 5),
-        );
+        let (candidates, optimality) =
+            ranked(CpSatSolver.solve_ranked_with_budget(&twenty_ints(ObjectiveSense::Maximize), 5));
 
         assert!(
             candidates.len() >= 2 && candidates.len() < 20,
@@ -3295,10 +3352,7 @@ mod solve_ranked_override_tests {
              it, so returning it would mean the budget was not consulted",
         );
 
-        let best_seen = candidates
-            .iter()
-            .map(score)
-            .fold(f64::INFINITY, f64::min);
+        let best_seen = candidates.iter().map(score).fold(f64::INFINITY, f64::min);
         assert_eq!(
             score(&candidates[0]),
             best_seen,
@@ -3346,9 +3400,8 @@ mod solve_ranked_override_tests {
             )
         }
 
-        let (_, truncated) = ranked(
-            CpSatSolver.solve_ranked_with_budget(&twenty_ints(ObjectiveSense::Maximize), 5),
-        );
+        let (_, truncated) =
+            ranked(CpSatSolver.solve_ranked_with_budget(&twenty_ints(ObjectiveSense::Maximize), 5));
         let (_, complete) =
             ranked(CpSatSolver.solve_ranked(&twenty_ints(ObjectiveSense::Minimize)));
 
