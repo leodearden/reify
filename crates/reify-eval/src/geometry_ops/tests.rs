@@ -23171,6 +23171,371 @@
         );
     }
 
+    // ── decoded value-form LENGTH gate (units-length δ, task 5745) ────────────
+    //
+    // `accept_length_point3` is the THIRD route into β's Contract C chokepoint,
+    // beside the NAMED-ARG route (`eval_named_arg_length`) and the VARIADIC one
+    // (`accept_variadic_length_args`). It gates a POSITION that arrives as an
+    // already-decoded `Value::Point`/`Value::Vector` rather than as an argument
+    // list: the `decode_plane` / `decode_axis` ORIGINS and the NurbsSurface
+    // control-point grid.
+    //
+    // Because it bottoms out in the same `accept_length_value` call as the other
+    // two, its rejection wording is byte-identical BY CONSTRUCTION — that is what
+    // these rows assert, not a hand-rolled copy of the text. The `shape_err`
+    // rows are the counterweight: a wrong SHAPE is not a units rejection, so it
+    // keeps its pre-δ caller-supplied wording and pushes no diagnostic at all.
+    //
+    // See `docs/prds/v0_6/units-length-gate-completion.md` (D3 adversary
+    // finding, 2026-07-28 BINDING) for why the ORIGIN is gated while the plane
+    // NORMAL / axis DIRECTION beside it deliberately are not.
+
+    /// The exact `ArgRejection::message` template a δ rejection must mint, for
+    /// one argument name. Built from the same pieces `arg_acceptance` uses
+    /// (`length_spec`'s `type_name` + `migration_hint`) rather than pasted, so a
+    /// reword of the shared text fails here as a compile-time-visible diff at
+    /// ONE site instead of silently drifting per assertion.
+    fn expected_length_rejection(kind: &str, name: &str, got: &str) -> String {
+        format!(
+            "{kind}: {name} argument expects Length, got {got}; \
+             pass a dimensioned length such as `5mm`"
+        )
+    }
+
+    /// A `Value::Point` of three LENGTH-dimensioned components — the shape a
+    /// dimensioned `point3(1mm, 2mm, 3mm)` / `plane_yz(10mm)` origin actually
+    /// has once `reify-stdlib` has produced it.
+    fn length_point3(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Point(vec![
+            reify_ir::Value::length(x),
+            reify_ir::Value::length(y),
+            reify_ir::Value::length(z),
+        ])
+    }
+
+    /// A `Value::Vector` of three bare dimensionless `Real` components — the
+    /// shape a BARE `plane_yz(10)` / `point3(10, 0, 0)` origin has, and the one
+    /// δ exists to reject.
+    fn bare_real_vector3(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(x),
+            reify_ir::Value::Real(y),
+            reify_ir::Value::Real(z),
+        ])
+    }
+
+    /// The `shape_err` a caller hands the gate for a malformed (non-3-component,
+    /// non-`Point`/`Vector`) value. A distinctive sentinel so the assertions
+    /// below can prove it comes back VERBATIM rather than being reworded by the
+    /// gate.
+    const SHAPE_SENTINEL: &str = "<<caller-owned shape message, must survive verbatim>>";
+
+    /// (a) The fully clean path: three LENGTH components decode to their EXACT
+    /// SI f64s and push NO diagnostic.
+    ///
+    /// `assert_eq!` on the raw f64 rather than a tolerance is SOUND here and is
+    /// the point of the row: `accept_arg` returns `*si_value` by copy and the
+    /// gate performs no arithmetic whatsoever, so a dimensioned input must
+    /// decode BIT-IDENTICALLY to what `point3_components` returned pre-δ. That
+    /// is what makes the characterization goldens byte-stable across this
+    /// migration — an assertion, not an assumption.
+    #[test]
+    fn accept_length_point3_accepts_a_length_triple_exactly_and_quietly() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let got = accept_length_point3(
+            &length_point3(0.01, 0.02, 0.03),
+            ["ox", "oy", "oz"],
+            "mirror",
+            || SHAPE_SENTINEL.to_string(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            got,
+            Ok([0.01, 0.02, 0.03]),
+            "a LENGTH Point3 must decode to its exact SI metres — the gate does \
+             no arithmetic, so this is bit-identical to the pre-δ \
+             `point3_components` read"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "the clean path must push NO diagnostic at all; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) + (c) ALL FAILURES AT ONCE, FIRST error wins.
+    ///
+    /// A bare triple is written as one gesture (`point3(10, 0, 0)`), so it is
+    /// usually bare in EVERY member. Short-circuiting on the first component
+    /// would hand the author one coordinate name per rebuild — three edit-build
+    /// cycles to fix one line. Every member is therefore evaluated (each pushing
+    /// its own `Severity::Error` + `DimensionedArgRejected`) and only THEN is the
+    /// first error returned, matching `required_length_args` /
+    /// `accept_variadic_length_args`.
+    #[test]
+    fn accept_length_point3_rejects_every_bare_component_and_returns_the_first() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let got = accept_length_point3(
+            &bare_real_vector3(0.01, 0.02, 0.03),
+            ["ox", "oy", "oz"],
+            "mirror",
+            || SHAPE_SENTINEL.to_string(),
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            got,
+            Err("missing or non-Length argument 'ox' for mirror".to_string()),
+            "FIRST error wins, and its wording is lifted verbatim from \
+             `required_length_arg` so the decoded-value route reads like the \
+             named-arg one"
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "ALL THREE bare components must be diagnosed in ONE build, not just \
+             the first; got: {:?}",
+            diagnostics
+        );
+        for (d, name) in diagnostics.iter().zip(["ox", "oy", "oz"]) {
+            assert_eq!(
+                d.severity,
+                reify_core::Severity::Error,
+                "task 5743 promoted the shared `accept_length_value` rejection to \
+                 Error; the decoded-value route inherits it for free"
+            );
+            assert_eq!(
+                d.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "every `ArgSpec`-backed rejection carries the shared code \
+                 (INV-SF-6); got: {:?}",
+                d
+            );
+            assert_eq!(
+                d.message,
+                expected_length_rejection("mirror", name, "Real"),
+                "the wording is minted by `ArgRejection::message`, NOT by a \
+                 hand-rolled copy in the gate"
+            );
+        }
+    }
+
+    /// (d) STRICT `DimensionVector` equality (ratified decision 2): a component
+    /// that IS a dimensioned `Scalar` but carries the WRONG dimension is
+    /// rejected exactly like a bare `Real`, and the `got` label names the
+    /// dimension so the author can see what they actually passed.
+    #[test]
+    fn accept_length_point3_rejects_a_wrong_dimension_component() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let value = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.01),
+            reify_ir::Value::Scalar {
+                si_value: 2.0,
+                dimension: reify_core::DimensionVector::PRESSURE,
+            },
+            reify_ir::Value::length(0.03),
+        ]);
+        let got = accept_length_point3(
+            &value,
+            ["ox", "oy", "oz"],
+            "circular_pattern",
+            || SHAPE_SENTINEL.to_string(),
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            got,
+            Err("missing or non-Length argument 'oy' for circular_pattern".to_string()),
+            "the wrong-dimension component is the only failure, so it is the \
+             first error"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "only the wrong-dimension component may be diagnosed — its two LENGTH \
+             neighbours are clean; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Error);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        );
+        assert_eq!(
+            diagnostics[0].message,
+            expected_length_rejection("circular_pattern", "oy", "Pressure Scalar"),
+            "a PRESSURE Scalar is NOT a Length — strict `DimensionVector` \
+             equality, with the dimension named in the message"
+        );
+    }
+
+    /// (e) An `Undef` component is UNRESOLVED, not WRONG (PRD decision D10 /
+    /// INV-SF-1): during solver iteration an Undef cell is expected transient
+    /// state, and calling it "missing or non-Length" actively misleads. It gets
+    /// its own message and pushes NO diagnostic (quiet degradation).
+    #[test]
+    fn accept_length_point3_reports_an_undef_component_as_unresolved() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let value = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.01),
+            reify_ir::Value::Undef,
+            reify_ir::Value::length(0.03),
+        ]);
+        let got = accept_length_point3(
+            &value,
+            ["ox", "oy", "oz"],
+            "mirror",
+            || SHAPE_SENTINEL.to_string(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            got,
+            Err("argument 'oy' for mirror is unresolved (Undef)".to_string()),
+            "an Undef component gets the DISTINCT unresolved wording, lifted \
+             verbatim from `required_length_arg`"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an unresolved component degrades QUIETLY — no diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (e, second half) `Unresolved` at an EARLIER index beats `Invalid` at a
+    /// later one — the same precedence `required_length_args` encodes, and the
+    /// reason the gate records only the first error rather than the first
+    /// *hard* one.
+    #[test]
+    fn accept_length_point3_unresolved_beats_a_later_invalid() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let value = reify_ir::Value::Point(vec![
+            reify_ir::Value::Undef,
+            reify_ir::Value::Real(0.02),
+            reify_ir::Value::length(0.03),
+        ]);
+        let got = accept_length_point3(
+            &value,
+            ["ox", "oy", "oz"],
+            "mirror",
+            || SHAPE_SENTINEL.to_string(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            got,
+            Err("argument 'ox' for mirror is unresolved (Undef)".to_string()),
+            "the FIRST error wins by position, so an earlier Unresolved must not \
+             be masked by a later Invalid"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "the later bare `Real` is still diagnosed (every member is read) \
+             while the Undef stays quiet; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].message,
+            expected_length_rejection("mirror", "oy", "Real")
+        );
+    }
+
+    /// (f) A wrong SHAPE is NOT a units rejection: the caller-supplied
+    /// `shape_err()` comes back VERBATIM and no diagnostic is pushed. That is
+    /// what keeps every pre-δ wrong-variant / wrong-arity message byte-identical
+    /// across this migration — the gate replaces `point3_components`' ACCEPTANCE
+    /// policy, not its shape check.
+    #[test]
+    fn accept_length_point3_returns_the_caller_shape_error_verbatim() {
+        // Not a Point/Vector at all; a 2-component Point; a 4-component Vector.
+        let cases: [reify_ir::Value; 3] = [
+            reify_ir::Value::Real(1.0),
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.01),
+                reify_ir::Value::length(0.02),
+            ]),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.01),
+                reify_ir::Value::length(0.02),
+                reify_ir::Value::length(0.03),
+                reify_ir::Value::length(0.04),
+            ]),
+        ];
+        for value in cases {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let got = accept_length_point3(
+                &value,
+                ["ox", "oy", "oz"],
+                "mirror",
+                || SHAPE_SENTINEL.to_string(),
+                &mut diagnostics,
+            );
+            assert_eq!(
+                got,
+                Err(SHAPE_SENTINEL.to_string()),
+                "the caller's shape message must survive VERBATIM for {:?}",
+                value
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "a shape failure is not an `ArgSpec` rejection, so it pushes no \
+                 units diagnostic for {:?}; got: {:?}",
+                value,
+                diagnostics
+            );
+        }
+    }
+
+    /// (g) The `GridCoordName` lazy renderer, used verbatim in BOTH the
+    /// diagnostic and the `Err`.
+    ///
+    /// `control_points[0][1].y` names the exact grid cell AND axis, which is
+    /// what makes a NurbsSurface pole rejection actionable — "control_points is
+    /// not a Point3<Length>" over a 20×20 grid is not. It is a `Copy` `Display`
+    /// newtype rather than an eagerly-built `String` for `CoordName`'s reason:
+    /// the grid is arity-open and re-read on every solver iteration, while only
+    /// the rejection branches ever render a name.
+    #[test]
+    fn accept_length_point3_renders_grid_coordinate_names() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let got = accept_length_point3(
+            &bare_real_vector3(0.0, 0.01, 0.0),
+            [
+                GridCoordName::x(0, 1),
+                GridCoordName::y(0, 1),
+                GridCoordName::z(0, 1),
+            ],
+            "nurbs_surface",
+            || SHAPE_SENTINEL.to_string(),
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            format!("{}", GridCoordName::y(0, 1)),
+            "control_points[0][1].y",
+            "row, column and axis are all named, in `control_points[r][c].a` form"
+        );
+        assert_eq!(
+            got,
+            Err(
+                "missing or non-Length argument 'control_points[0][1].x' for nurbs_surface"
+                    .to_string()
+            ),
+            "the rendered grid name reaches the `Err` too, not only the diagnostic"
+        );
+        assert_eq!(diagnostics.len(), 3, "got: {:?}", diagnostics);
+        for (d, axis) in diagnostics.iter().zip(["x", "y", "z"]) {
+            assert_eq!(
+                d.message,
+                expected_length_rejection(
+                    "nurbs_surface",
+                    &format!("control_points[0][1].{axis}"),
+                    "Real"
+                )
+            );
+        }
+    }
+
     // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
 
     /// True producer→decode round-trip for plane_xy: the real stdlib producer
