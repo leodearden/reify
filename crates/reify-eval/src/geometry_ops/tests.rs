@@ -23536,6 +23536,192 @@
         }
     }
 
+    // ── δ: `decode_plane` gates its ORIGIN, not its NORMAL (task 5745) ────────
+
+    /// The pre-δ wrong-SHAPE message for a plane ORIGIN, which δ must keep
+    /// byte-identical: `accept_length_point3` receives it as `shape_err` and
+    /// returns it verbatim, because a wrong shape is not a units rejection.
+    const PLANE_ORIGIN_SHAPE_ERR: &str =
+        "Plane origin is not a valid 3-component numeric Point/Vector";
+
+    /// The pre-δ wrong-SHAPE message for a plane NORMAL. Unchanged for a
+    /// different reason: the normal is not gated at all, so it still reads
+    /// through bare `point3_components`.
+    const PLANE_NORMAL_SHAPE_ERR: &str =
+        "Plane normal is not a valid 3-component numeric Point/Vector";
+
+    /// Build a `Value::Plane` from an origin and a normal `Value`, both handed
+    /// in whole so a row can pair ANY origin shape with ANY normal shape — which
+    /// is the entire point of this block: the two halves are governed by
+    /// DIFFERENT rules after δ.
+    fn plane_of(origin: reify_ir::Value, normal: reify_ir::Value) -> reify_ir::Value {
+        reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(normal),
+        }
+    }
+
+    /// The ANTI-OVER-GATING half, and the more important of the pair: a
+    /// dimensioned LENGTH origin beside a BARE dimensionless normal is the fully
+    /// clean path. The normal MUST NOT be gated — a unit vector legitimately has
+    /// bare components, and `plane_yz(10mm)` produces exactly this shape, so
+    /// gating it would reject correct `.ri` code (D3 adversary finding,
+    /// 2026-07-28, BINDING).
+    #[test]
+    fn decode_plane_accepts_length_origin_beside_a_bare_normal() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let plane = plane_of(
+            length_point3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        let (origin, normal) = decode_plane(&plane, "mirror", &mut diagnostics)
+            .expect("a LENGTH origin beside a bare unit normal is the clean path");
+        assert_eq!(
+            origin,
+            [0.01, 0.02, 0.03],
+            "the gate copies `si_value` and does no arithmetic, so the origin is \
+             bit-identical to the pre-δ `point3_components` read"
+        );
+        assert_eq!(normal, [0.0, 0.0, 1.0], "the normal is still normalised");
+        assert!(
+            diagnostics.is_empty(),
+            "the clean path must emit NOTHING — in particular no units complaint \
+             about the deliberately-bare normal; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The headline δ behaviour for `decode_plane`: a BARE origin is rejected at
+    /// every component, with the same `ox`/`oy`/`oz` names and the same wording
+    /// the SCALAR form of the same builtin already used since task 5214. That
+    /// name choice is deliberate — `mirror(b, plane_yz(10))` and
+    /// `mirror(b, 10, 0, 0, 1, 0, 0)` are the same author mistake and now read
+    /// identically.
+    #[test]
+    fn decode_plane_rejects_a_bare_origin_at_every_component() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let plane = plane_of(
+            bare_real_vector3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        let got = decode_plane(&plane, "mirror", &mut diagnostics);
+        assert_eq!(
+            got,
+            Err("missing or non-Length argument 'ox' for mirror".to_string()),
+            "the caller-facing `Err` is the named-arg route's, verbatim"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "ALL THREE bare origin components are diagnosed in one build — and \
+             the bare NORMAL beside them contributes none; got: {:?}",
+            diagnostics
+        );
+        for (d, name) in diagnostics.iter().zip(["ox", "oy", "oz"]) {
+            assert_eq!(d.severity, reify_core::Severity::Error);
+            assert_eq!(
+                d.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+            );
+            assert_eq!(d.message, expected_length_rejection("mirror", name, "Real"));
+        }
+    }
+
+    /// Non-unit normals are still normalised SILENTLY over a LENGTH origin — the
+    /// plane equation is invariant to normal scale, and δ did not touch that.
+    #[test]
+    fn decode_plane_still_normalises_a_non_unit_normal_over_a_length_origin() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let plane = plane_of(
+            length_point3(0.0, 0.0, 0.0),
+            bare_real_vector3(0.0, 0.0, 2.0),
+        );
+        let (_, normal) = decode_plane(&plane, "mirror", &mut diagnostics)
+            .expect("a non-unit normal [0,0,2] normalises without error");
+        assert_eq!(normal, [0.0, 0.0, 1.0]);
+        assert!(
+            diagnostics.is_empty(),
+            "silent normalisation means silent: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Every PRE-EXISTING `decode_plane` rejection keeps its EXACT wording, and
+    /// pushes no units diagnostic. δ replaced `point3_components`' acceptance
+    /// policy for the origin, not the decoder's variant check, its normal read,
+    /// or its degeneracy check — so a reader who knew these messages before still
+    /// recognises them.
+    #[test]
+    fn decode_plane_pre_existing_rejections_are_unchanged() {
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(length_point3(0.0, 0.0, 0.0)),
+            direction: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+        };
+        let cases: Vec<(reify_ir::Value, String)> = vec![
+            // Wrong VARIANT — the message embeds the value's own `Display`.
+            (
+                axis.clone(),
+                format!("expected a Plane value, got {}", axis),
+            ),
+            (
+                reify_ir::Value::Undef,
+                format!("expected a Plane value, got {}", reify_ir::Value::Undef),
+            ),
+            // Wrong SHAPE, origin side: a 2-component origin is not a units
+            // failure, so it keeps the caller's pre-δ message and emits nothing.
+            (
+                plane_of(
+                    reify_ir::Value::Point(vec![
+                        reify_ir::Value::length(0.0),
+                        reify_ir::Value::length(0.0),
+                    ]),
+                    bare_real_vector3(0.0, 0.0, 1.0),
+                ),
+                PLANE_ORIGIN_SHAPE_ERR.to_string(),
+            ),
+            // Wrong SHAPE, normal side: read through bare `point3_components`,
+            // which is exactly why a `Value::Direction` normal still lands here.
+            (
+                plane_of(
+                    length_point3(0.0, 0.0, 0.0),
+                    reify_ir::Value::Direction {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 1.0,
+                    },
+                ),
+                PLANE_NORMAL_SHAPE_ERR.to_string(),
+            ),
+            // Degenerate normal over a clean LENGTH origin.
+            (
+                plane_of(
+                    length_point3(0.0, 0.0, 0.0),
+                    bare_real_vector3(0.0, 0.0, 0.0),
+                ),
+                "Plane has a degenerate normal: zero-magnitude vector \
+                 [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
+                 unit direction"
+                    .to_string(),
+            ),
+        ];
+
+        for (value, expected) in cases {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            assert_eq!(
+                decode_plane(&value, "mirror", &mut diagnostics),
+                Err(expected.clone()),
+                "pre-δ wording must survive byte-identical for {:?}",
+                value
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "none of these is an `ArgSpec` rejection, so none may push a \
+                 units diagnostic ({expected}); got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
     // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
 
     /// True producer→decode round-trip for plane_xy: the real stdlib producer
