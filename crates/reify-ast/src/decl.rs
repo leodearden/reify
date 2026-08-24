@@ -1916,3 +1916,291 @@ mod find_param_default_span_tests {
         );
     }
 }
+
+/// GOLDEN-MASTER (characterization) tests for the three member-recursion
+/// walkers, pinned against the CURRENT (pre-consolidation) hand-rolled
+/// implementations. This module must be green BEFORE `walk_members`/
+/// `MemberRecursionSet` exist — it is the safety net the consolidation is
+/// checked against, not a test of the new code.
+#[cfg(test)]
+mod member_recursion_set_tests {
+    use super::member_test_fixtures::*;
+    use super::{
+        MAX_MEMBER_NESTING_DEPTH, MemberDecl, find_named_member_span, find_param_default_span,
+        walk_specialization_scope_members,
+    };
+    use reify_core::SourceSpan;
+
+    /// One uniquely-named `param` (each carrying a default span, so
+    /// `find_param_default_span` is assertable too) planted in each of the
+    /// five nested member bodies the three walkers disagree on, plus one
+    /// top-level marker. Shared across all three entry points so a single
+    /// fixture pins the full 3-entry-point × 6-marker reachability table.
+    fn build_reachability_fixture() -> Vec<MemberDecl> {
+        vec![
+            param("marker_top", (0, 40), Some((10, 14))),
+            MemberDecl::Sub(sub_with_body(
+                "nested_sub",
+                Some(vec![param("marker_sub", (100, 140), Some((110, 114)))]),
+            )),
+            port(
+                "nested_port",
+                vec![param("marker_port", (200, 240), Some((210, 214)))],
+            ),
+            guarded(
+                vec![param("marker_then", (300, 340), Some((310, 314)))],
+                vec![],
+            ),
+            guarded(
+                vec![],
+                vec![param("marker_else", (400, 440), Some((410, 414)))],
+            ),
+            match_arm_group(vec![(
+                "A",
+                param("marker_arm", (500, 540), Some((510, 514))),
+            )]),
+        ]
+    }
+
+    /// Debug tag for a visited member: names the marker param, or names the
+    /// container (distinguishing the two `GuardedGroup`s by which branch is
+    /// non-empty, since neither carries its own name).
+    fn tag(member: &MemberDecl) -> String {
+        match member {
+            MemberDecl::Param(p) => format!("param:{}", p.name),
+            MemberDecl::Sub(s) => format!("sub:{}", s.name),
+            MemberDecl::Port(p) => format!("port:{}", p.name),
+            MemberDecl::GuardedGroup(g) => {
+                format!("guarded(then={},else={})", g.members.len(), g.else_members.len())
+            }
+            MemberDecl::MatchArmDeclGroup(_) => "match_arm_group".to_string(),
+            other => panic!("reachability fixture should not contain {other:?}"),
+        }
+    }
+
+    #[test]
+    fn walk_specialization_scope_members_reachability_table() {
+        let fixture = build_reachability_fixture();
+        let sub = sub_with_body("scope", Some(fixture));
+        let mut tags = Vec::new();
+        walk_specialization_scope_members(&sub, &mut |m| tags.push(tag(m)));
+
+        assert!(
+            tags.contains(&"param:marker_top".to_string()),
+            "top-level marker must be reached; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_sub".to_string()),
+            "SubDecl.body IS recursed into by walk_specialization_scope_members; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_then".to_string()),
+            "GuardedGroup.members is always recursed; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_else".to_string()),
+            "GuardedGroup.else_members is always recursed; tags={tags:?}"
+        );
+        assert!(
+            tags.contains(&"param:marker_arm".to_string()),
+            "MatchArmDeclGroup arms are always recursed; tags={tags:?}"
+        );
+        assert!(
+            !tags.contains(&"param:marker_port".to_string()),
+            "PortDecl.members must NOT be recursed by walk_specialization_scope_members; tags={tags:?}"
+        );
+
+        // Container nodes are visited themselves (not just skipped-through),
+        // and parent-before-children ordering holds for every container that
+        // does recurse.
+        let sub_idx = tags
+            .iter()
+            .position(|t| t == "sub:nested_sub")
+            .expect("Sub container itself must be visited");
+        assert!(
+            tags.iter().any(|t| t == "port:nested_port"),
+            "Port container itself must be visited, even though its body is not descended; tags={tags:?}"
+        );
+        let then_guard_idx = tags
+            .iter()
+            .position(|t| t == "guarded(then=1,else=0)")
+            .expect("then-branch GuardedGroup container must be visited");
+        let else_guard_idx = tags
+            .iter()
+            .position(|t| t == "guarded(then=0,else=1)")
+            .expect("else-branch GuardedGroup container must be visited");
+        let arm_group_idx = tags
+            .iter()
+            .position(|t| t == "match_arm_group")
+            .expect("MatchArmDeclGroup container itself must be visited");
+
+        let marker_sub_idx = tags.iter().position(|t| t == "param:marker_sub").unwrap();
+        let marker_then_idx = tags.iter().position(|t| t == "param:marker_then").unwrap();
+        let marker_else_idx = tags.iter().position(|t| t == "param:marker_else").unwrap();
+        let marker_arm_idx = tags.iter().position(|t| t == "param:marker_arm").unwrap();
+
+        assert!(
+            sub_idx < marker_sub_idx,
+            "parent-before-children: Sub container must precede its nested param"
+        );
+        assert!(
+            then_guard_idx < marker_then_idx,
+            "parent-before-children: then-branch GuardedGroup must precede its member"
+        );
+        assert!(
+            else_guard_idx < marker_else_idx,
+            "parent-before-children: else-branch GuardedGroup must precede its member"
+        );
+        assert!(
+            arm_group_idx < marker_arm_idx,
+            "parent-before-children: MatchArmDeclGroup must precede its arm's member"
+        );
+    }
+
+    #[test]
+    fn find_named_member_span_reachability_table() {
+        let fixture = build_reachability_fixture();
+        for name in [
+            "marker_top",
+            "marker_port",
+            "marker_then",
+            "marker_else",
+            "marker_arm",
+        ] {
+            assert!(
+                find_named_member_span(&fixture, name).is_some(),
+                "find_named_member_span must reach {name}"
+            );
+        }
+        assert!(
+            find_named_member_span(&fixture, "marker_sub").is_none(),
+            "find_named_member_span must NOT reach into SubDecl.body"
+        );
+    }
+
+    #[test]
+    fn find_param_default_span_reachability_table() {
+        let fixture = build_reachability_fixture();
+        for (name, expected_span) in [
+            ("marker_top", (10, 14)),
+            ("marker_then", (310, 314)),
+            ("marker_else", (410, 414)),
+            ("marker_arm", (510, 514)),
+        ] {
+            assert_eq!(
+                find_param_default_span(&fixture, name),
+                Some(SourceSpan::new(expected_span.0, expected_span.1)),
+                "find_param_default_span must reach {name}"
+            );
+        }
+        assert_eq!(
+            find_param_default_span(&fixture, "marker_sub"),
+            None,
+            "find_param_default_span must NOT reach into SubDecl.body"
+        );
+        assert_eq!(
+            find_param_default_span(&fixture, "marker_port"),
+            None,
+            "find_param_default_span must NOT reach into PortDecl.members"
+        );
+    }
+
+    // ── shared cross-cutting contract: depth bound ────────────────────────
+
+    #[test]
+    fn depth_bound_applies_identically_to_all_three_entry_points() {
+        let at_limit =
+            build_nested_guarded_members(MAX_MEMBER_NESTING_DEPTH, "deep_param", (10, 14));
+        let beyond_limit =
+            build_nested_guarded_members(MAX_MEMBER_NESTING_DEPTH + 1, "deep_param", (10, 14));
+
+        let mut names_at_limit = Vec::new();
+        walk_specialization_scope_members(
+            &sub_with_body("s", Some(at_limit.clone())),
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    names_at_limit.push(p.name.clone());
+                }
+            },
+        );
+        assert!(
+            names_at_limit.contains(&"deep_param".to_string()),
+            "walk_specialization_scope_members: a param at exactly MAX_MEMBER_NESTING_DEPTH must be reached"
+        );
+
+        let mut names_beyond_limit = Vec::new();
+        walk_specialization_scope_members(
+            &sub_with_body("s", Some(beyond_limit.clone())),
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    names_beyond_limit.push(p.name.clone());
+                }
+            },
+        );
+        assert!(
+            !names_beyond_limit.contains(&"deep_param".to_string()),
+            "walk_specialization_scope_members: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+
+        assert!(
+            find_named_member_span(&at_limit, "deep_param").is_some(),
+            "find_named_member_span: a param at exactly MAX_MEMBER_NESTING_DEPTH must be reached"
+        );
+        assert!(
+            find_named_member_span(&beyond_limit, "deep_param").is_none(),
+            "find_named_member_span: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+
+        assert_eq!(
+            find_param_default_span(&at_limit, "deep_param"),
+            Some(SourceSpan::new(10, 14)),
+            "find_param_default_span: a param at exactly MAX_MEMBER_NESTING_DEPTH must be reached"
+        );
+        assert_eq!(
+            find_param_default_span(&beyond_limit, "deep_param"),
+            None,
+            "find_param_default_span: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+    }
+
+    // ── shared cross-cutting contract: exit rules ─────────────────────────
+
+    #[test]
+    fn find_named_member_span_first_match_wins_over_ambiguous_guarded_branches() {
+        let members = vec![guarded(
+            vec![param("dup", (0, 40), Some((10, 14)))],
+            vec![param("dup", (50, 90), Some((60, 64)))],
+        )];
+        let found =
+            find_named_member_span(&members, "dup").expect("dup is declared in the then-branch");
+        assert_eq!(
+            found.span,
+            SourceSpan::new(0, 40),
+            "the then-branch declaration must win (first-match-wins)"
+        );
+        assert_eq!(
+            find_param_default_span(&members, "dup"),
+            None,
+            "find_param_default_span must refuse a doubly-declared name rather than resolve it"
+        );
+    }
+
+    #[test]
+    fn find_named_member_span_first_match_wins_over_ambiguous_match_arms() {
+        let members = vec![match_arm_group(vec![
+            ("A", param("dup", (0, 40), Some((10, 14)))),
+            ("B", param("dup", (50, 90), Some((60, 64)))),
+        ])];
+        let found = find_named_member_span(&members, "dup").expect("dup is declared in arm 0");
+        assert_eq!(
+            found.span,
+            SourceSpan::new(0, 40),
+            "arm 0's declaration must win (first-match-wins)"
+        );
+        assert_eq!(
+            find_param_default_span(&members, "dup"),
+            None,
+            "find_param_default_span must refuse a doubly-declared name rather than resolve it"
+        );
+    }
+}
