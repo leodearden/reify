@@ -1,6 +1,6 @@
 // Shared helpers for CLI integration tests.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use tempfile::TempDir;
 
@@ -38,13 +38,24 @@ pub fn example_path(name: &str) -> String {
 /// etc.).
 #[allow(dead_code)]
 pub fn run_subcommand(subcommand: &str, path: &str) -> (ExitStatus, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([subcommand, path])
+    run_args(None, &[subcommand, path])
+}
+
+/// The one `Command`/`Stdio` spawn every helper in this module shares.
+///
+/// `cwd == None` inherits the test binary's working directory — exactly what
+/// the unpinned helpers did before this was factored out, so their behaviour is
+/// unchanged (no `current_dir` call is made at all).
+fn run_args(cwd: Option<&Path>, args: &[&str]) -> (ExitStatus, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify"));
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
+        .stderr(Stdio::piped());
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().expect("failed to execute reify binary");
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -59,17 +70,23 @@ pub fn run_subcommand(subcommand: &str, path: &str) -> (ExitStatus, String, Stri
 /// `Command`/`Stdio` boilerplate is shared with `run_subcommand`.
 #[allow(dead_code)]
 pub fn run_with_args(args: &[&str]) -> (ExitStatus, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
+    run_args(None, args)
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    (output.status, stdout, stderr)
+/// Run `reify <args...>` with the child process's working directory pinned to
+/// `cwd`, returning `(status, stdout, stderr)`.
+///
+/// The cwd-pinned twin of [`run_with_args`], and the shared home for a helper
+/// the harness previously kept one private copy of per test module. Every test
+/// module here compiles into the SAME `harness_cli` binary, so a per-module copy
+/// is duplication rather than isolation.
+///
+/// Pinning matters whenever a test asserts on DESIGN-FILE-relative artifact
+/// paths (io-export B7): it keeps every artifact inside the caller's tempdir and
+/// guarantees a stray write cannot land in `tests/fixtures/` or the crate root.
+#[allow(dead_code)]
+pub fn run_with_args_in(cwd: &Path, args: &[&str]) -> (ExitStatus, String, String) {
+    run_args(Some(cwd), args)
 }
 
 /// Captures the output of a `reify build` invocation.

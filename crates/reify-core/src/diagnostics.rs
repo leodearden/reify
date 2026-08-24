@@ -6577,29 +6577,24 @@ mod tests {
     // Pairs with the export refusal built by
     // `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
     // and emitted from both `reify build -o <file>` and
-    // `Engine::build_outputs_with_result`. Variant-agnostic
-    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
-    // `diagnostic_code_derives` above; only the variant-specific round-trip and
-    // serde wire-format tests are added here.
-
-    /// `DiagnosticCode::RepresentationBoundUnenforcedOnExport` round-trips
-    /// through `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
-    ///
-    /// `Error` is load-bearing, not cosmetic: it is what the CLI's existing
-    /// `diagnostics.iter().any(|d| d.severity == Severity::Error)` exit gate
-    /// keys on, so the refusal produces a non-zero exit with no new CLI exit
-    /// logic.
-    #[test]
-    fn diagnostic_code_representation_bound_unenforced_on_export_with_code_round_trips() {
-        use super::Severity;
-        let d = Diagnostic::error("x")
-            .with_code(DiagnosticCode::RepresentationBoundUnenforcedOnExport);
-        assert_eq!(
-            d.code,
-            Some(DiagnosticCode::RepresentationBoundUnenforcedOnExport)
-        );
-        assert_eq!(d.severity, Severity::Error);
-    }
+    // `Engine::build_outputs_with_result`.
+    //
+    // Only the serde WIRE FORMAT is pinned here, because it is the only property
+    // of this variant that lives in this crate: `rename_all = "PascalCase"` makes
+    // the emitted string a compatibility surface for downstream consumers, and
+    // nothing else in reify-core observes the variant.
+    //
+    // Deliberately NOT tested here: a `Diagnostic::error(..).with_code(..)`
+    // round-trip. It would exercise the generic constructor and builder — whose
+    // behaviour is variant-agnostic and already covered by
+    // `diagnostic_code_derives` and the sibling code tests above — while
+    // asserting nothing specific to this variant. The contract that actually
+    // matters (the REFUSAL carries this code at `Severity::Error`, which is what
+    // `cmd_build`'s existing `any(|d| d.severity == Severity::Error)` exit gate
+    // keys on) is pinned where the refusal is BUILT and USED:
+    // `tolerance_combine::tests::unenforced_representation_bound_diagnostic_returns_error_for_direct_bound`,
+    // the `engine_build` Mode-B tests, and the CLI integration tests in
+    // `cli_representation_within.rs`.
 
     /// Under `feature = "serde"`,
     /// `DiagnosticCode::RepresentationBoundUnenforcedOnExport` serializes as

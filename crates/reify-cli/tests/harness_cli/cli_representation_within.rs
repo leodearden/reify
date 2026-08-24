@@ -140,30 +140,6 @@ fn check_non_representation_within_module_is_unaffected() {
 }
 // ── Export refusal (task η, #6170) ───────────────────────────────────────────
 
-/// Run `reify <args...>` with the child's working directory pinned to `cwd`.
-///
-/// Mirrors `cli_build_outputs.rs`'s local `run_in` (that helper is private to
-/// its own module). Mode B needs it because the fixture's `path: "o.stl"` is
-/// DESIGN-FILE-relative (io-export B7): pinning the child cwd to the tempdir
-/// that holds the copied design keeps every artifact — or, once η lands, its
-/// absence — inside the tempdir, and guarantees a stray write can never land in
-/// `tests/fixtures/` or the crate root.
-fn run_in(cwd: &std::path::Path, args: &[&str]) -> (bool, String, String) {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-    (
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
-}
-
 /// MODE A — the §1.1 headline. `reify build <bounded design> -o <tempdir>/out.step`
 /// must exit non-zero, name the refusal on stderr, and create NO file.
 ///
@@ -239,7 +215,8 @@ fn build_dash_o_refusal_does_not_overwrite_an_existing_file() {
 /// design-file-relative (io-export B7): running in place would write `o.stl`
 /// into `tests/fixtures/`. `!o.stl.exists()` plus the absence of `"Wrote "` on
 /// stdout is what proves the occurrence produced no file and the CLI did not
-/// claim otherwise.
+/// claim otherwise. `common::run_with_args_in` pins the child cwd to that
+/// tempdir, so a stray write cannot escape it by any route.
 #[test]
 fn build_without_dash_o_refuses_the_declared_output_occurrence() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -247,13 +224,13 @@ fn build_without_dash_o_refuses_the_declared_output_occurrence() {
     std::fs::copy(common::fixture_path("repr_within_with_stl_output.ri"), &ri)
         .expect("failed to copy the bounded fixture");
 
-    let (ok, stdout, stderr) = run_in(
+    let (status, stdout, stderr) = common::run_with_args_in(
         dir.path(),
         &["build", ri.to_str().expect("temp path is not valid UTF-8")],
     );
 
     assert!(
-        !ok,
+        !status.success(),
         "reify build (no -o) on a bounded design must exit non-zero.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
