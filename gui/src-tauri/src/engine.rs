@@ -5513,7 +5513,7 @@ fn resolve_driving_params_from_ast(
                                     // Resolve through `reify_core::unit_symbol_to_si`, the DSL's
                                     // own built-in symbol table (task #5757).
                                     //
-                                    // DELIBERATELY NOT the ladder-backed `resolve_unit_label` the
+                                    // DELIBERATELY NOT the ladder-backed `COMPOSED_UNIT_INDEX` the
                                     // parameter-editor path uses. This site consumes an
                                     // already-parsed `reify_ast::UnitExpr` from .ri SOURCE, so its
                                     // admissible tokens are exactly what the lexer produced;
@@ -6590,8 +6590,7 @@ pub(crate) fn normalize_unit_label(label: &str) -> String {
 /// One resolvable unit spelling in [`composed_unit_index`].
 #[derive(Debug)]
 pub(crate) struct ComposedUnit {
-    /// The exact spelling matched — suffix-wise by `parse_value_string`,
-    /// whole-string by [`resolve_unit_label`].
+    /// The exact spelling matched, suffix-wise, by `parse_value_string`.
     pub(crate) label: String,
     /// Conversion to canonical SI: `si_value = magnitude * si_scale`. Same
     /// direction as `reify_core::unit_symbol_to_si`'s factor and as
@@ -6642,6 +6641,32 @@ pub(crate) struct ComposedUnit {
 /// `strip_suffix` works on bytes, and the superscript glyphs are two bytes
 /// each. Pinned in debug builds by the `debug_assert!` in `parse_value_string`
 /// and in release builds by `unit_table_ordering_invariant_holds`.
+///
+/// ONE LABEL, ONE ANSWER. Ordering settles which label a string ends with;
+/// nothing has to settle what a label MEANS, because the index holds at most
+/// one entry per spelling. Three pinned invariants make that true:
+/// `curated_ladder_labels_are_unique_across_every_dimension`, reify-core's own
+/// uniqueness guard over `BUILTIN_UNITS`, and
+/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap` for
+/// the eight labels both tables carry.
+///
+/// That is why the lookup is flat, with NO narrowing by the declared dimension
+/// of the cell being edited. Task #5757 originally resolved dimension-first and
+/// fell back to the flat scan; its amendment review showed the first pass could
+/// never return anything the second would not, so it was only ever a second
+/// O(n) scan. If a future edit makes a label genuinely ambiguous, the first
+/// guard above fails loudly rather than letting first-match silently pick a
+/// dimension for the user.
+///
+/// A CROSS-DIMENSION LITERAL IS THEREFORE NOT REFUSED HERE, and that too is
+/// deliberate. The frontend's per-cell alphabet always carries the
+/// `BASE_UNIT_LABELS` floor (`mm`, `cm`, `m`, `deg`, `rad`) alongside the
+/// cell's own ladder, so a Length literal typed into a Volume cell is admitted
+/// by the panel; refusing it here with `Cannot parse value` would re-open the
+/// very frontend/backend disagreement this task closes, just in the opposite
+/// direction. It is not silently accepted either — it resolves to its OWN
+/// dimension and is refused one layer down by reify-eval's `DimensionMismatch`,
+/// which names both.
 static COMPOSED_UNIT_INDEX: std::sync::LazyLock<Vec<ComposedUnit>> =
     std::sync::LazyLock::new(|| {
         /// Register one spelling. `(label, dimension)` is the identity: the
@@ -6723,58 +6748,6 @@ pub(crate) fn composed_unit_index() -> &'static [ComposedUnit] {
     &COMPOSED_UNIT_INDEX
 }
 
-/// Resolve a unit LABEL to `(si_scale, dimension)`, optionally narrowed by the
-/// declared dimension of the cell being edited.
-///
-/// `si_value = magnitude * si_scale`.
-///
-/// Resolution order, mirroring the compiler's own "registry first, builtin
-/// fallback" shape in `reify-compiler/src/expr.rs`:
-///
-/// 1. **Dimension-directed.** Given a hint, an entry carrying exactly that
-///    dimension wins. This is the use `reify_core::units`' own doc-comment
-///    sanctions for the display table — legitimate "as a typed label→si_scale
-///    map once you already know the declared dimension" — and it is what makes
-///    `resolve_unit_label` mirror `PropertyEditor`'s per-cell `quantityReFor`
-///    narrowing rather than matching one flat global table.
-///
-/// 2. **The union**, over every ladder plus the builtins. This is the branch
-///    the frontend itself falls back to for cells with no dimension and for
-///    dimensions no curated ladder covers.
-///
-///    Arm 2 is deliberately NOT skipped when a hint is present. The frontend's
-///    per-dimension alphabet always carries the `BASE_UNIT_LABELS` floor
-///    (`mm`, `cm`, `m`, `deg`, `rad`) alongside the cell's own ladder, so
-///    refusing a floor label here would re-open the very frontend/backend
-///    disagreement this task closes, just in the opposite direction. A
-///    genuinely cross-dimension literal is not silently accepted: it resolves
-///    to its OWN dimension and is then refused one layer down by reify-eval's
-///    `DimensionMismatch`, which names both dimensions.
-///
-/// The `unit_symbol_to_si` arm the PRD names is folded into the index itself
-/// (its builtin half) rather than chained on here, because the other consumer —
-/// `parse_value_string` — scans by SUFFIX and has no candidate symbol to hand
-/// that function.
-///
-/// Arm 2 is unambiguous because curated labels are unique across ladders,
-/// pinned by `curated_ladder_labels_are_unique_across_every_dimension`.
-pub(crate) fn resolve_unit_label(
-    label: &str,
-    dimension_hint: Option<&DimensionVector>,
-) -> Option<(f64, DimensionVector)> {
-    if let Some(hint) = dimension_hint
-        && let Some(entry) = composed_unit_index()
-            .iter()
-            .find(|e| e.label == label && e.dimension == *hint)
-    {
-        return Some((entry.si_scale, entry.dimension));
-    }
-    composed_unit_index()
-        .iter()
-        .find(|e| e.label == label)
-        .map(|e| (e.si_scale, e.dimension))
-}
-
 /// Parse a value string into a Value, with no cell context.
 ///
 /// Supported formats:
@@ -6793,24 +6766,6 @@ pub(crate) fn resolve_unit_label(
 /// knows the declared type. (Both are crate-private, hence named rather than
 /// intra-doc linked from this `pub` item.)
 pub fn parse_value_string(s: &str) -> Result<Value, String> {
-    parse_value_string_with_unit_hint(s, None)
-}
-
-/// [`parse_value_string`], with an optional declared dimension used to steer
-/// unit resolution (task #5757).
-///
-/// The hint reaches [`resolve_unit_label`] only — it never narrows what this
-/// function will ACCEPT. See that function's arm 2 for why: the frontend's
-/// per-cell alphabet always carries the `BASE_UNIT_LABELS` floor alongside the
-/// cell's own ladder, so a Length literal typed into a Volume cell is admitted
-/// by the panel; refusing it here with `Cannot parse value` would re-open the
-/// frontend/backend disagreement this task closes, in the opposite direction.
-/// Such a literal instead resolves to its own dimension and is refused one
-/// layer down by reify-eval's `DimensionMismatch`, which names both dimensions.
-fn parse_value_string_with_unit_hint(
-    s: &str,
-    dimension_hint: Option<&DimensionVector>,
-) -> Result<Value, String> {
     let s = s.trim();
 
     // Booleans, ahead of the suffix scan.
@@ -6843,15 +6798,12 @@ fn parse_value_string_with_unit_hint(
         let Ok(v) = num_str.trim().parse::<f64>() else {
             continue;
         };
-        // Re-resolve the matched LABEL through the single resolution entry
-        // point so a dimension hint can prefer a different ladder's rung
-        // carrying the same spelling. It cannot miss — `entry.label` came from
-        // this very index — so `entry` itself is the total fallback.
-        let (si_scale, dimension) = resolve_unit_label(&entry.label, dimension_hint)
-            .unwrap_or((entry.si_scale, entry.dimension));
+        // The matched entry IS the answer. ONE LABEL, ONE ANSWER: the index
+        // holds at most one entry per spelling (see its doc), so there is
+        // nothing to disambiguate and no second lookup to make.
         return Ok(Value::Scalar {
-            si_value: v * si_scale,
-            dimension,
+            si_value: v * entry.si_scale,
+            dimension: entry.dimension,
         });
     }
 
@@ -6870,27 +6822,28 @@ fn parse_value_string_with_unit_hint(
 
 /// Parse a value string for a SPECIFIC declared cell type (task #5757).
 ///
-/// Two things the context-free [`parse_value_string`] cannot do:
+/// The one thing the context-free [`parse_value_string`] cannot do: **refuse a
+/// bare number for a dimensioned cell.** This is the GUI-side fix for the
+/// silent 1000× hazard: `parse_value_string("120")` yields `Value::Int(120)`,
+/// and reify-eval then ACCEPTS it into a `Length` cell —
+/// `value_type_kind_matches` maps Int/Real onto `Type::Scalar { .. }` with a
+/// dimension WILDCARD, and `validate_param_override` guards its dimension
+/// comparison on `let Value::Scalar { .. } = value`, which an Int never
+/// matches, so the dimension check is skipped entirely and `120` becomes 120
+/// METRES.
 ///
-/// 1. **Unit resolution is dimension-directed.** The cell's declared dimension
-///    becomes [`resolve_unit_label`]'s hint, so the backend resolves units the
-///    same way `PropertyEditor`'s per-cell `quantityReFor` alphabet does.
+/// Fixed HERE rather than in reify-eval deliberately: that Int/Real coercion is
+/// load-bearing there (it is what lets `edit_param` emit a Warning rather than a
+/// hard error — see the `edit_param_non_int_*_count_emits_warning` tests) and
+/// sits on the hot path for every param override in the workspace, not just GUI
+/// edits. Rejecting before `edit_check` is ever called fixes the user-visible
+/// defect with no risk to the evaluator.
 ///
-/// 2. **A bare number is refused for a dimensioned cell.** This is the GUI-side
-///    fix for the silent 1000× hazard: `parse_value_string("120")` yields
-///    `Value::Int(120)`, and reify-eval then ACCEPTS it into a `Length` cell —
-///    `value_type_kind_matches` maps Int/Real onto `Type::Scalar { .. }` with a
-///    dimension WILDCARD, and `validate_param_override` guards its dimension
-///    comparison on `let Value::Scalar { .. } = value`, which an Int never
-///    matches, so the dimension check is skipped entirely and `120` becomes 120
-///    METRES.
-///
-///    Fixed HERE rather than in reify-eval deliberately: that Int/Real coercion
-///    is load-bearing there (it is what lets `edit_param` emit a Warning rather
-///    than a hard error — see the `edit_param_non_int_*_count_emits_warning`
-///    tests) and sits on the hot path for every param override in the
-///    workspace, not just GUI edits. Rejecting before `edit_check` is ever
-///    called fixes the user-visible defect with no risk to the evaluator.
+/// Unit RESOLUTION is unchanged by the cell type — `parse_value_string` does all
+/// of it, against one flat index. See `COMPOSED_UNIT_INDEX` for why narrowing
+/// that lookup by the cell's declared dimension would be a dead branch, and why
+/// a cross-dimension literal is left for reify-eval's `DimensionMismatch`
+/// rather than refused here as an unparseable string.
 ///
 /// The gate is scoped as narrowly as it can be:
 ///
@@ -6902,9 +6855,16 @@ fn parse_value_string_with_unit_hint(
 ///     `canonical_name().is_some()`, so a COMPOSED dimension (which has no
 ///     `NAMED_DIMENSIONS` entry, hence no canonical name) is still gated. The
 ///     message then falls back to the `DimensionVector` Display form, the same
-///     degradation `to_display_units` already performs;
-///   * `Type::Int`, `Type::Real` and `Type::Scalar { DIMENSIONLESS }` cells are
-///     untouched, so every dimensionless slider in the panel keeps working.
+///     degradation `to_display_units` already performs — pinned directly by
+///     `parse_value_string_for_cell_falls_back_to_the_display_form_for_a_composed_dimension`,
+///     since no compiled `.ri` cell reaches this function with one;
+///   * `!dimension.is_dimensionless()` is the SINGLE load-bearing check. Every
+///     non-`Type::Scalar` cell type (`Type::Int`, `Type::Bool`, `Type::String`,
+///     …) yields no declared dimension at all and so cannot be gated, and a
+///     `Type::Scalar { DIMENSIONLESS }` cell — which is what `param x : Real`
+///     compiles to, `Real` being that type's Display form, not a variant of its
+///     own — falls on the permissive side of the check. That is what keeps every
+///     dimensionless slider in the panel working.
 ///
 /// The wording echoes the shape reify-eval's `arg_acceptance::ArgRejection`
 /// uses for the same defect class at the geometry-argument chokepoint
@@ -6915,14 +6875,9 @@ pub(crate) fn parse_value_string_for_cell(
     s: &str,
     cell_type: &reify_core::Type,
 ) -> Result<Value, String> {
-    let declared_dimension = match cell_type {
-        reify_core::Type::Scalar { dimension } => Some(*dimension),
-        _ => None,
-    };
+    let value = parse_value_string(s)?;
 
-    let value = parse_value_string_with_unit_hint(s, declared_dimension.as_ref())?;
-
-    if let Some(dimension) = declared_dimension
+    if let reify_core::Type::Scalar { dimension } = cell_type
         && !dimension.is_dimensionless()
         && matches!(value, Value::Int(_) | Value::Real(_))
     {

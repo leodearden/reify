@@ -1993,15 +1993,24 @@ fn dimension_for_ladder_name(name: &str) -> reify_core::DimensionVector {
 /// both can never cause a frontend-accepted value to be refused on commit,
 /// which is the only direction that reproduces the reported defect.
 ///
-/// Checked with and without a dimension hint: the hinted branch is what
-/// `parse_value_string_for_cell` uses (the cell's declared dimension narrows
-/// the alphabet exactly as `PropertyEditor`'s `quantityReFor` does), the
-/// unhinted branch is what plain `parse_value_string` uses.
+/// The lookup is FLAT — one label, one answer, with no per-cell dimension
+/// narrowing (see `COMPOSED_UNIT_INDEX`). This block is what makes that safe:
+/// together with `curated_ladder_labels_are_unique_across_every_dimension` and
+/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`, it
+/// pins that each spelling resolves to exactly the ladder that carries it.
+///
+/// Driven through `parse_value_string` — the real production entry point —
+/// rather than an index lookup only tests call, so the suffix scan and its
+/// longest-first ordering are exercised on every rung too. `3mm³` in particular
+/// also ends with the shorter Volume rung `m³`, and only the ordering keeps it
+/// from being read as 3 CUBIC METRES.
 #[test]
-fn resolve_unit_label_accepts_every_curated_ladder_rung_in_both_spellings() {
-    use crate::engine::{normalize_unit_label, resolve_unit_label};
+fn parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings() {
+    use crate::engine::normalize_unit_label;
 
     // Any magnitude works; a non-unit one keeps a stray `* 1.0` from passing.
+    // Kept integral so `format!` renders it without an exponent or a decimal
+    // point that could perturb the remainder parse.
     const MAGNITUDE: f64 = 3.0;
 
     let ladders = crate::display_units::unit_ladders();
@@ -2022,28 +2031,28 @@ fn resolve_unit_label_accepts_every_curated_ladder_rung_in_both_spellings() {
         for opt in &ladder.units {
             let expected_si = MAGNITUDE * opt.si_scale;
             for spelling in [opt.label.clone(), normalize_unit_label(&opt.label)] {
-                for hint in [Some(expected_dim), None] {
-                    let (factor, dim) = resolve_unit_label(&spelling, hint.as_ref())
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "curated rung {spelling:?} (ladder {:?}, hint {hint:?}) must \
-                                 resolve — the frontend already admits it",
-                                ladder.dimension
-                            )
-                        });
-                    assert_eq!(
-                        dim, expected_dim,
-                        "{spelling:?} must resolve to the {:?} ladder's dimension",
+                let literal = format!("{MAGNITUDE}{spelling}");
+                let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+                    panic!(
+                        "curated rung {spelling:?} (ladder {:?}) must parse — the \
+                         frontend already admits {literal:?}; got {e}",
                         ladder.dimension
-                    );
-                    assert!(
-                        (MAGNITUDE * factor - expected_si).abs() < 1e-10,
-                        "{spelling:?}: {MAGNITUDE} * {factor} → {}, expected {expected_si} \
-                         (= {MAGNITUDE} * si_scale {})",
-                        MAGNITUDE * factor,
-                        opt.si_scale
-                    );
-                }
+                    )
+                });
+                let reify_ir::Value::Scalar { si_value, dimension } = parsed else {
+                    panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+                };
+                assert_eq!(
+                    dimension, expected_dim,
+                    "{literal:?} must resolve to the {:?} ladder's dimension",
+                    ladder.dimension
+                );
+                assert!(
+                    (si_value - expected_si).abs() < 1e-10,
+                    "{literal:?} → {si_value}, expected {expected_si} \
+                     (= {MAGNITUDE} * si_scale {})",
+                    opt.si_scale
+                );
                 rungs_checked += 1;
             }
         }
@@ -2080,30 +2089,42 @@ fn normalize_unit_label_rewrites_only_the_superscript_exponent_glyphs() {
 /// (b) Every `BUILTIN_UNITS` symbol resolves to its own factor and dimension.
 ///
 /// This is the PRD's named delegation target (§M9): the five SI bases no
-/// curated ladder carries (s, K, A, mol, cd) reach the resolver only through
-/// this arm, and the eight that ARE also ladder rungs must come back with the
+/// curated ladder carries (s, K, A, mol, cd) reach the index only through this
+/// half of it, and the eight that ARE also ladder rungs must come back with the
 /// builtin table's own values — which (d) below pins as bit-identical.
+///
+/// Driven through `parse_value_string` for the same reason as (a). A unit
+/// magnitude would let a stray `* 1.0` pass, so the factor is checked at
+/// magnitude 3 and compared exactly: every builtin factor is a power-of-ten or
+/// exactly-representable constant, and multiplying it by 3.0 is the same single
+/// rounding the implementation performs, so `to_bits()` equality is reproducible
+/// rather than optimistic.
 #[test]
-fn resolve_unit_label_resolves_every_builtin_unit_symbol() {
-    use crate::engine::resolve_unit_label;
+fn parse_value_string_resolves_every_builtin_unit_symbol() {
+    const MAGNITUDE: f64 = 3.0;
 
     assert!(
         !reify_core::BUILTIN_UNITS.is_empty(),
         "BUILTIN_UNITS must be non-vacuous"
     );
     for &(symbol, factor, dimension) in reify_core::BUILTIN_UNITS {
-        let (got_factor, got_dim) = resolve_unit_label(symbol, None).unwrap_or_else(|| {
-            panic!("builtin unit symbol {symbol:?} must resolve through the composed index")
+        let literal = format!("{MAGNITUDE}{symbol}");
+        let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+            panic!("builtin unit symbol {symbol:?} must parse through the composed index; got {e}")
         });
+        let reify_ir::Value::Scalar { si_value, dimension: got_dim } = parsed else {
+            panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+        };
         assert_eq!(
             got_dim, dimension,
             "builtin symbol {symbol:?} must resolve to its own dimension"
         );
         assert_eq!(
-            got_factor.to_bits(),
-            factor.to_bits(),
-            "builtin symbol {symbol:?} must resolve to its own factor \
-             ({factor}), got {got_factor}"
+            si_value.to_bits(),
+            (MAGNITUDE * factor).to_bits(),
+            "builtin symbol {symbol:?} must resolve to its own factor ({factor}): \
+             {literal:?} → {si_value}, expected {}",
+            MAGNITUDE * factor
         );
     }
 }
@@ -2111,10 +2132,11 @@ fn resolve_unit_label_resolves_every_builtin_unit_symbol() {
 /// (c) Curated ladder labels are UNIQUE across all dimensions, in both
 /// spellings.
 ///
-/// Load-bearing, not tidiness: with no dimension hint the resolver matches
-/// against the UNION of every ladder's rungs, so a label carried by two
-/// dimensions would make that branch silently ambiguous — first-match would
-/// decide which dimension a user's `5X` lands in.
+/// Load-bearing, not tidiness: the resolver matches one flat index — the UNION
+/// of every ladder's rungs plus the builtins, with no per-cell dimension
+/// narrowing — so a label carried by two dimensions would make it silently
+/// ambiguous, first-match deciding which dimension a user's `5X` lands in. This
+/// guard is precisely what licenses that flat lookup.
 #[test]
 fn curated_ladder_labels_are_unique_across_every_dimension() {
     use crate::engine::normalize_unit_label;
@@ -2135,8 +2157,8 @@ fn curated_ladder_labels_are_unique_across_every_dimension() {
                         (&prev_dim, prev_scale.to_bits()),
                         (&ladder.dimension, opt.si_scale.to_bits()),
                         "unit label {spelling:?} is carried by more than one curated ladder \
-                         ({prev_dim} @ {prev_scale} vs {} @ {}) — the union branch of \
-                         resolve_unit_label would resolve it ambiguously",
+                         ({prev_dim} @ {prev_scale} vs {} @ {}) — resolve_unit_label \
+                         would resolve it ambiguously",
                         ladder.dimension,
                         opt.si_scale
                     );
@@ -2514,6 +2536,62 @@ fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
         .set_parameter("GateScope.width", "120")
         .expect_err("the dimensioned neighbour must still reject a bare number");
     assert!(err.contains("Length"), "got {err:?}");
+}
+
+/// A COMPOSED dimension — one with no `NAMED_DIMENSIONS` entry — is still
+/// gated, and the message falls back to the `DimensionVector` Display form.
+///
+/// Driven at `parse_value_string_for_cell` directly rather than through
+/// `set_parameter`, because no `.ri` param type reaches that function carrying
+/// a nameless dimension: the surface syntax names its dimension, so every
+/// compiled cell that gets here has a canonical name. That makes this the ONLY
+/// coverage of the `unwrap_or_else(|| dimension.to_string())` fallback.
+///
+/// What it protects, concretely: keying the gate on `canonical_name().is_some()`
+/// instead of on `!dimension.is_dimensionless()` would read as an equivalent
+/// refactor, pass every other test in this block, and silently re-open the
+/// 1000× hazard for exactly the cells whose units are hardest to guess.
+#[test]
+fn parse_value_string_for_cell_falls_back_to_the_display_form_for_a_composed_dimension() {
+    use reify_core::{DimensionVector, Type};
+
+    // m^7 — dimensionally meaningful, physically nobody's, and deliberately not
+    // in `NAMED_DIMENSIONS`. Asserted rather than assumed: if a future edit ever
+    // names it, this fails HERE with a clear reason instead of quietly testing
+    // the canonical-name path it was written to avoid.
+    let composed = DimensionVector::LENGTH.pow(7);
+    assert!(
+        composed.canonical_name().is_none(),
+        "this test needs a dimension with NO canonical name; {composed} has one now — \
+         pick another exponent vector"
+    );
+    assert!(
+        !composed.is_dimensionless(),
+        "m^7 must not be dimensionless, or the gate would correctly skip it"
+    );
+    let display_form = composed.to_string();
+
+    let err = crate::engine::parse_value_string_for_cell("120", &Type::Scalar {
+        dimension: composed,
+    })
+    .expect_err("a bare number must be refused for a cell with a composed dimension");
+    assert!(
+        err.contains(&display_form),
+        "the rejection must name the dimension in its Display form ({display_form:?}) \
+         when there is no canonical name to use; got {err:?}"
+    );
+    assert!(
+        err.contains("120"),
+        "the rejection must quote the offending input; got {err:?}"
+    );
+
+    // The gate stays scoped to Int/Real: a UNITED literal on the same composed
+    // cell parses fine here and is left for reify-eval's `DimensionMismatch`,
+    // which is the layer that actually knows the two dimensions disagree.
+    crate::engine::parse_value_string_for_cell("120mm", &Type::Scalar {
+        dimension: composed,
+    })
+    .expect("a united literal must still parse — the dimension check is reify-eval's");
 }
 
 /// A `Bool` for a `Length` cell still falls through to reify-eval.
@@ -10000,28 +10078,73 @@ fn literal_bind_still_defers_compound_unit_expressions_to_task_3803() {
     );
 }
 
-/// The display-only ladder labels are NOT admitted at this site.
+/// `bind(y_axis, 5MPa)` — `MPa` is a curated PRESSURE ladder rung, and a unit
+/// the compiler's own registry resolves, but NOT a `BUILTIN_UNITS` symbol.
+const SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 5MPa)])
+}
+"#;
+
+/// The DIRECTION of the delegation: this site resolves DSL symbols, never GUI
+/// display labels.
 ///
-/// `L` is not a DSL unit at all (`reify-compiler/stdlib/units.ri` declares no SI
-/// volume units) and the superscript spellings have never been lexable, so a
-/// `.ri` file cannot even carry them here. What this pins is the DIRECTION of
-/// the delegation: this site resolves through `unit_symbol_to_si`, whose table
-/// contains neither, so no future edit can route it through the ladder-backed
-/// `resolve_unit_label` and start resolving literals the compiler rejects.
+/// `MPa` is the discriminating case, and the reason this test drives the engine
+/// rather than just asserting things about `unit_symbol_to_si`. It is a rung of
+/// the curated Pressure ladder — so `COMPOSED_UNIT_INDEX` resolves it and the
+/// parameter editor parses `5MPa` happily — while `BUILTIN_UNITS` does not
+/// carry it. Rewiring this site to the ladder-backed index would therefore turn
+/// this `None` into a `Some`, which is exactly the regression the deferral note
+/// on the `Mul`/`Div`/`Pow` arm and the `unit_symbol_to_si` comment guard
+/// against: the GUI resolving a literal by a table the compiler does not share.
+///
+/// (`L` and the superscript spellings cannot be tested the same way — `L` is not
+/// a DSL unit at all, since `reify-compiler/stdlib/units.ri` declares no SI
+/// volume units, and superscripts have never been lexable, so no `.ri` file can
+/// carry either into this site. They are covered by the table assertion below.)
 #[test]
 fn literal_bind_universe_is_dsl_symbols_not_gui_display_labels() {
-    for label in ["L", "mm\u{00B3}", "kg/m\u{00B3}", "MPa", "mm^3"] {
-        assert!(
-            reify_core::unit_symbol_to_si(label).is_none(),
-            "{label:?} is a display label, not a DSL unit symbol — the bind site \
-             must not be able to resolve it"
-        );
-    }
+    // The premise: the two tables genuinely disagree about `MPa`.
+    assert!(
+        reify_core::unit_symbol_to_si("MPa").is_none(),
+        "premise: `MPa` must be outside BUILTIN_UNITS for this test to discriminate"
+    );
+    assert!(
+        crate::engine::composed_unit_index()
+            .iter()
+            .any(|e| e.label == "MPa"),
+        "premise: `MPa` must be IN the composed index (it is a curated Pressure \
+         ladder rung) for this test to discriminate"
+    );
+
+    // The behaviour: the bind site follows the DSL table, so it declines.
+    assert_eq!(
+        literal_bind_initial_value_si(SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE),
+        None,
+        "bind(y_axis, 5MPa) must NOT resolve — `MPa` is a display-ladder rung the \
+         GUI parameter editor parses, not a DSL builtin symbol. A Some here means \
+         this site was rewired to the ladder-backed composed index, letting the \
+         GUI resolve literals by a table the compiler does not share."
+    );
+
     // …while the symbols this site DOES admit are exactly the builtin ones.
     for label in ["in", "kg", "g", "s", "K", "A", "mol", "cd"] {
         assert!(
             reify_core::unit_symbol_to_si(label).is_some(),
             "{label:?} must be resolvable as a DSL unit symbol"
+        );
+    }
+    // And the display-only spellings are outside the DSL table entirely. No
+    // `.ri` source can carry these into the bind site (see the doc above), so
+    // the table is the only observable.
+    for label in ["L", "mm\u{00B3}", "kg/m\u{00B3}", "mm^3"] {
+        assert!(
+            reify_core::unit_symbol_to_si(label).is_none(),
+            "{label:?} is a display label, not a DSL unit symbol — the bind site \
+             must not be able to resolve it"
         );
     }
 }
