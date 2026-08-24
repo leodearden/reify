@@ -1,20 +1,31 @@
 //! Shared input-cracking helpers for the Tensegrity-consuming compute
-//! trampolines (`form_find.rs`, `tensegrity_load.rs`).
+//! trampolines (`form_find.rs`, `tensegrity_load.rs`, `membrane_load.rs`).
 //!
-//! Both trampolines crack a `Tensegrity` `Value::StructureInstance` into node
-//! coordinates + member connectivity, range-checking every index so the kernel
-//! never indexes out of bounds. Those helpers were near-verbatim copies that
-//! differed only in their `E_*Infeasible` diagnostic mnemonic (and an
-//! independently-drifted `crack_index_pairs` parameter order); centralising them
-//! here — the same single-definition-site discipline as the result builders in
-//! [`super`] (`point3_length` / `scalar_list`) — keeps each caller's located
-//! error wording while removing the copy, so the next Tensegrity-consuming
-//! trampoline reuses rather than re-clones.
+//! Each cracks a `Tensegrity` `Value::StructureInstance` into node coordinates +
+//! member connectivity (plus, for `membrane_load.rs`, surface triples),
+//! range-checking every index so the kernel never indexes out of bounds. Those
+//! helpers were near-verbatim copies that differed only in their
+//! `E_*Infeasible` diagnostic mnemonic (and an independently-drifted
+//! `crack_index_pairs` parameter order); centralising them here — the same
+//! single-definition-site discipline as the result builders in [`super`]
+//! (`point3_length` / `scalar_list`) — keeps each caller's located error wording
+//! while removing the copy, so the next Tensegrity-consuming trampoline reuses
+//! rather than re-clones. The same treatment folds the unit-checking scalar
+//! crackers in here alongside them: [`crack_dimensioned_scalar`] was a verbatim
+//! pair across `tensegrity_load.rs` and `membrane_load.rs`.
 //!
 //! Every fallible helper takes a `code: &str` diagnostic mnemonic (e.g.
 //! `"E_FormFindInfeasible"` or `"E_TensegrityLoadInfeasible"`) which is prefixed
 //! onto each message as `"{code}: …"`, so the located wording stays caller-owned.
+//! [`crack_dimensioned_scalar`] extends that convention with a second
+//! caller-owned string, `hint: &str` — the parenthetical argument-order advice.
+//! It is threaded in rather than inferred here because each trampoline's hint
+//! names that trampoline's OWN arguments (`membrane_load` has a
+//! `membrane_thickness`; `tensegrity_load` does not), so choosing it inside this
+//! module would mean enumerating its callers — exactly the coupling this file
+//! exists to remove.
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
 
 /// Extract an f64 from a `Scalar` (any dimension) or a bare `Real`.
@@ -27,6 +38,42 @@ pub(crate) fn scalar_f64(v: &Value) -> Option<f64> {
         Value::Scalar { si_value, .. } => Some(*si_value),
         Value::Real(r) => Some(*r),
         _ => None,
+    }
+}
+
+/// Crack a single dimensioned `Scalar` into an f64, requiring its unit to equal
+/// `expected`. A bare `Real` is still accepted — the dimensionless ergonomic
+/// escape hatch [`scalar_f64`] already allowed (so `[1.0, …]`-style literals keep
+/// working) — but a *dimensioned* `Scalar` whose unit disagrees (e.g. an Area
+/// passed where a Pressure is expected: the classic `youngs_modulus` ↔ `area`
+/// argument swap, or a Length where a Force is expected) is rejected with a
+/// located error rather than silently solving a physically wrong problem. This
+/// tightens the v1 form-find relaxation for the positionally-adjacent section
+/// scalars without losing the bare-`Real` ergonomics.
+///
+/// `label` is the human unit name shown in the diagnostic. `hint` is the
+/// caller-owned argument-order advice appended in parentheses — the same
+/// caller-owned-wording convention as `code` (see the module doc), threaded in
+/// rather than inferred because it names the *caller's* own arguments.
+pub(crate) fn crack_dimensioned_scalar(
+    v: &Value,
+    what: &str,
+    expected: DimensionVector,
+    label: &str,
+    code: &str,
+    hint: &str,
+) -> Result<f64, String> {
+    match v {
+        Value::Real(r) => Ok(*r),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == expected => Ok(*si_value),
+        Value::Scalar { .. } => Err(format!(
+            "{code}: {what} has the wrong unit — expected a {label}; \
+             check the call argument order ({hint})"
+        )),
+        other => Err(format!("{code}: {what} must be a scalar, got {other:?}")),
     }
 }
 
