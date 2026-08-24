@@ -6762,13 +6762,12 @@ pub(crate) fn resolve_unit_label(
     label: &str,
     dimension_hint: Option<&DimensionVector>,
 ) -> Option<(f64, DimensionVector)> {
-    if let Some(hint) = dimension_hint {
-        if let Some(entry) = composed_unit_index()
+    if let Some(hint) = dimension_hint
+        && let Some(entry) = composed_unit_index()
             .iter()
             .find(|e| e.label == label && e.dimension == *hint)
-        {
-            return Some((entry.si_scale, entry.dimension));
-        }
+    {
+        return Some((entry.si_scale, entry.dimension));
     }
     composed_unit_index()
         .iter()
@@ -6923,17 +6922,18 @@ pub(crate) fn parse_value_string_for_cell(
 
     let value = parse_value_string_with_unit_hint(s, declared_dimension.as_ref())?;
 
-    if let Some(dimension) = declared_dimension {
-        if !dimension.is_dimensionless() && matches!(value, Value::Int(_) | Value::Real(_)) {
-            let expected = dimension
-                .canonical_name()
-                .map(str::to_string)
-                .unwrap_or_else(|| dimension.to_string());
-            return Err(format!(
-                "expects {expected}, got the bare number '{s}'; pass a dimensioned \
-                 {expected} literal (this cell's unit picker lists the accepted units)"
-            ));
-        }
+    if let Some(dimension) = declared_dimension
+        && !dimension.is_dimensionless()
+        && matches!(value, Value::Int(_) | Value::Real(_))
+    {
+        let expected = dimension
+            .canonical_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| dimension.to_string());
+        return Err(format!(
+            "expects {expected}, got the bare number '{s}'; pass a dimensioned \
+             {expected} literal (this cell's unit picker lists the accepted units)"
+        ));
     }
 
     Ok(value)
