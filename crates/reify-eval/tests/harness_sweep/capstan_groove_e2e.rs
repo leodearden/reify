@@ -4,7 +4,7 @@
 //!
 //! Compiles the REAL design file `prj/printer_v01/dev_capstan.ri` through the
 //! full source → parse → compile(stdlib+checked) → Engine(real
-//! `OcctKernelHandle`) → tessellate pipeline and pins three properties of the
+//! `OcctKernelHandle`) → tessellate pipeline and pins four properties of the
 //! rope seat cut into the drum.
 //!
 //! Properties 1 and 2 read meshes and `volume()` cells, so they need a live
