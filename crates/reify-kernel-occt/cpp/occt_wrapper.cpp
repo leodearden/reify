@@ -1504,6 +1504,9 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     const OcctShape& profile,
     double ox, double oy, double oz,
@@ -2254,6 +2257,28 @@ std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, do
     });
 }
 
+// ANGULAR UNIT CONTRACT for every rotation/revolution entry point in this file
+// (INV-AD-4; #6184; docs/prds/v0_6/angle-dimension-completion.md).
+//
+// `angle_rad` arrives from reify's IR as SI RADIANS and is consumed here with
+// NO conversion, because OCCT's angular convention is radians universally:
+// `gp_Trsf::SetRotation(axis, angle)` and `BRepPrimAPI_MakeRevol(profile, axis,
+// angle)` both read radians. The reify-side `_rad` name and the OCCT-side
+// expectation therefore AGREE — and that agreement is the boundary declaration,
+// not an accident of both sides happening to pick the same unit.
+//
+// Contrast the two neighbouring conventions, so the reader does not
+// over-generalise from this one:
+//   - LENGTHS also cross this bridge unscaled (model space is SI metres), but
+//     ARE rescaled x1000 by the STEP writer at export time. Angles are not
+//     rescaled anywhere, because rad = 1 by SI coherence.
+//   - SolveSpace is the one genuine DEGREE crossing in the tree
+//     (`SLVS_C_ANGLE` reads `valA` in degrees); see
+//     `crates/reify-constraints/src/solvespace.rs`. Nothing in THIS file is in
+//     degrees.
+//
+// `rotate_around_shape`, `make_revolve` and `make_revolve_with_history` below
+// carry the same contract; this is the one place it is written out.
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad) {
     return wrap_occt_call("rotate_shape", [&]() {
         gp_Ax1 axis(gp_Pnt(0, 0, 0), gp_Dir(ax, ay, az));
@@ -2285,6 +2310,8 @@ std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, do
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted — see the ANGULAR UNIT
+// CONTRACT on `rotate_shape` above (#6184).
 std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
     double px, double py, double pz,
     double ax, double ay, double az,
@@ -3739,6 +3766,9 @@ std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,
