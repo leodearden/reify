@@ -5,7 +5,11 @@
 
 use crate::decompose::decompose_into_components;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
+use reify_ir::{
+    AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
+    ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
+    RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap,
+};
 use std::collections::HashMap;
 
 // ε-band constants (task ε — PRD §12.1).
@@ -133,6 +137,7 @@ impl SolverRegistry {
         &self,
         problem: &ResolutionProblem,
         want_optimality: bool,
+        dispatch: Option<&dyn ComputeDispatch>,
     ) -> (
         SolveResult,
         Option<OptimalityStatus>,
@@ -206,8 +211,11 @@ impl SolverRegistry {
         // objective to an arbitrary component of a nondeterministic `HashMap`
         // iteration while the other component's autos were solved
         // feasibility-only against stale seeds.
-        let components =
-            decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
+        let components = decompose_into_components(
+            &problem.auto_params,
+            &problem.constraints,
+            obj_refs.as_ref(),
+        );
 
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
@@ -402,10 +410,10 @@ impl SolverRegistry {
             let mut component_candidates: Option<Vec<RankedCandidate>> = None;
             let result = match &sub_problem.objective {
                 Some(obj) if obj.combination == ObjectiveCombination::Lexicographic => {
-                    solve_lexicographic(solver, &sub_problem)
+                    solve_lexicographic(solver, &sub_problem, dispatch)
                 }
                 Some(_) if want_optimality && is_objective_component => {
-                    match solver.solve_ranked(&sub_problem) {
+                    match solver.solve_ranked_with_dispatch(&sub_problem, dispatch) {
                         RankedSolveResult::Ranked {
                             candidates,
                             optimality,
@@ -439,7 +447,7 @@ impl SolverRegistry {
                         }
                     }
                 }
-                _ => solver.solve(&sub_problem),
+                _ => solver.solve_with_dispatch(&sub_problem, dispatch),
             };
 
             match result {
@@ -525,9 +533,33 @@ impl SolverRegistry {
 
 impl ConstraintSolver for SolverRegistry {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        // I1: delegate to the shared core with optimality recovery OFF, which
-        // reproduces the historical dispatch path byte-for-byte.
-        self.solve_inner(problem, false).0
+        // I1: delegate to the shared core with optimality recovery OFF and NO
+        // compute-dispatch hook, which reproduces the historical dispatch path
+        // byte-for-byte.
+        //
+        // Straight to `solve_inner`, NOT via `self.solve_with_dispatch(problem, None)`
+        // (task #4880): the trait's DEFAULT `solve_with_dispatch` calls `self.solve`,
+        // so routing through it would make `solve` -> `solve_with_dispatch` -> `solve`
+        // an infinite mutual recursion the moment the override below is deleted — a
+        // silent stack overflow at runtime rather than a compile error. Calling the
+        // shared core directly makes the two entry points independent.
+        self.solve_inner(problem, false, None).0
+    }
+
+    /// `solve`, forwarding a compute-dispatch hook to the inner solver of EVERY
+    /// decomposed component (task #4880 step-12).
+    ///
+    /// Overriding this is what stops the registry from swallowing the hook: the
+    /// `ConstraintSolver` trait default discards `dispatch` and re-enters
+    /// `self.solve`, so an `@optimized` call reached inside a component's cost
+    /// loop would fall back to `Value::Undef`. The production path matters here —
+    /// the CLI/GUI `configured_eval_engine` wires `SolverRegistry::production()`.
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        self.solve_inner(problem, false, dispatch).0
     }
 
     /// δ (task #5016) contract: `solve_ranked` is a best-of-K propagation, NOT
@@ -557,8 +589,29 @@ impl ConstraintSolver for SolverRegistry {
     /// distinct alternatives must dedupe by resolved-value fingerprint
     /// themselves.
     fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        // I1: no hook => byte-for-byte the historical ranked path.
+        //
+        // This half DOES still delegate to its `*_with_dispatch` sibling, unlike `solve`
+        // above, so it keeps the latent mutual-recursion shape that comment describes:
+        // deleting `solve_ranked_with_dispatch` below would fall back to the trait
+        // default, which re-enters here. Left as-is deliberately (task #4880) — breaking
+        // it needs the ~40-line Solved-arm lift in that method extracted into a shared
+        // helper, which is a refactor of ranked-lift behaviour, not part of wiring a
+        // compute-dispatch hook.
+        self.solve_ranked_with_dispatch(problem, None)
+    }
+
+    /// `solve_ranked`, forwarding a compute-dispatch hook to the inner solver of
+    /// every decomposed component (task #4880 step-12). Carries the full
+    /// `solve_ranked` contract documented above; `solve_ranked` is now its
+    /// `dispatch = None` specialisation.
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> RankedSolveResult {
         let (result, optimality, objective_score, objective_candidates) =
-            self.solve_inner(problem, true);
+            self.solve_inner(problem, true, dispatch);
         match result {
             SolveResult::Solved { values, unique } => {
                 // Prefer the optimality recovered from the objective component.
@@ -627,8 +680,15 @@ impl ConstraintSolver for SolverRegistry {
 /// uniqueness-verified).  The final stage's own `unique` verdict is preserved — given
 /// the accumulated ε-band constraints, the final rank may itself be uniquely determined.
 /// Infeasible / NoProgress from any stage propagates immediately.
-fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) -> SolveResult {
-    let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
+fn solve_lexicographic(
+    solver: &dyn ConstraintSolver,
+    base: &ResolutionProblem,
+    dispatch: Option<&dyn ComputeDispatch>,
+) -> SolveResult {
+    let obj = base
+        .objective
+        .as_ref()
+        .expect("solve_lexicographic: objective must be Some");
 
     // --- Group terms into ranks by distinct priority, sorted DESCENDING ---
     let priority_order: Vec<u32> = {
@@ -650,7 +710,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             objective: Some(ws_objective),
             ..base.clone()
         };
-        return solver.solve(&ws_problem);
+        return solver.solve_with_dispatch(&ws_problem, dispatch);
     }
 
     // Multi-rank staged loop.
@@ -682,7 +742,10 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         let free_auto_params: Vec<AutoParam> = base
             .auto_params
             .iter()
-            .map(|ap| AutoParam { free: true, ..ap.clone() })
+            .map(|ap| AutoParam {
+                free: true,
+                ..ap.clone()
+            })
             .collect();
 
         // β (task #5189): mirror the degenerate single-priority path above, which
@@ -700,10 +763,13 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             ..base.clone()
         };
 
-        let stage_result = solver.solve(&stage_problem);
+        let stage_result = solver.solve_with_dispatch(&stage_problem, dispatch);
 
         match stage_result {
-            SolveResult::Solved { values, unique: stage_unique } => {
+            SolveResult::Solved {
+                values,
+                unique: stage_unique,
+            } => {
                 // Warm-start the next stage from this stage's solution.
                 for (k, v) in &values {
                     current_values.insert(k.clone(), v.clone());
@@ -741,16 +807,29 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                 // Computed here, before `values` is moved into `last_result`, and only
                 // on the non-final path — the final stage builds no band.
                 if !is_final {
+                    // The ε-band anchor is one side of the SAME constraint the next
+                    // stage's cost surface evaluates, so it must be measured with the
+                    // same compute-dispatch hook (task #4880). Passing `None` here
+                    // while every stage solve above gets `dispatch` would make an
+                    // `@optimized` rank term evaluate to `Undef` -> `obj*` = `None` ->
+                    // band skipped, silently dropping the lexicographic ordering the
+                    // user asked for on a model where the hook works everywhere else.
+                    // Same two-sides-of-one-constraint-on-two-value-maps class as the
+                    // stale-`current_values` defect this block already documents.
                     let scored = crate::solver::build_scoring_values(
                         &current_values,
                         &values,
                         &base.dependent_cells,
                         &base.functions,
+                        dispatch,
                     );
-                    match eval_rank_cost(&rank_terms, &scored, &base.functions) {
+                    match eval_rank_cost(&rank_terms, &scored, &base.functions, dispatch) {
                         Some(obj_star) => {
-                            accumulated_constraints
-                                .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                            accumulated_constraints.extend(build_band_constraints(
+                                &rank_terms,
+                                obj_star,
+                                stage_idx,
+                            ));
                         }
                         None => {
                             tracing::warn!(
@@ -763,7 +842,10 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                     }
                 }
 
-                last_result = Some(SolveResult::Solved { values, unique: result_unique });
+                last_result = Some(SolveResult::Solved {
+                    values,
+                    unique: result_unique,
+                });
 
                 if is_final {
                     break;
@@ -792,6 +874,7 @@ fn eval_rank_cost(
     rank_terms: &[ObjectiveTerm],
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> Option<f64> {
     // I-UNITS backstop (PRD D2/I-UNITS, task α #5018): this does NOT re-diagnose —
     // the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, `check_objective_dimension_coherence`
@@ -808,7 +891,14 @@ fn eval_rank_cost(
     );
     let mut acc = 0.0_f64;
     for term in rank_terms {
-        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
+        // `dispatch = None` reconstructs `EvalContext::new(values, functions)`
+        // exactly, so the no-hook path is byte-identical to pre-#4880.
+        let ctx = reify_expr::EvalContext::new(values, functions);
+        let ctx = match dispatch {
+            Some(d) => ctx.with_compute_dispatch(d),
+            None => ctx,
+        };
+        let v = reify_expr::eval_expr(&term.expr, &ctx)
             .as_f64()
             .filter(|v| v.is_finite())?;
         match term.sense {
@@ -838,11 +928,13 @@ fn signed_term_expr(term: &ObjectiveTerm) -> CompiledExpr {
         ObjectiveSense::Minimize if is_unit => e,
         ObjectiveSense::Maximize if is_unit => CompiledExpr::unop(UnOp::Neg, e, e_type),
         ObjectiveSense::Minimize => {
-            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
+            let w_lit =
+                CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
         ObjectiveSense::Maximize => {
-            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
+            let w_lit =
+                CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
     }
@@ -892,6 +984,9 @@ fn build_band_constraints(
     let base_idx = stage_idx as u32 * 2;
     vec![
         (ConstraintNodeId::new("__lex_freeze__", base_idx), le_expr),
-        (ConstraintNodeId::new("__lex_freeze__", base_idx + 1), ge_expr),
+        (
+            ConstraintNodeId::new("__lex_freeze__", base_idx + 1),
+            ge_expr,
+        ),
     ]
 }

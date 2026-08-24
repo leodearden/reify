@@ -51,6 +51,12 @@ mod realization_read_gamma;
 mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::ComputeDispatchRegistry;
+// `pub(crate)`, not `pub`: `OptimizedComputeDispatcher`'s only constructor
+// (`from_engine`) is `pub(crate)` by design, so a `pub` re-export would name a type
+// no external crate can ever build. Re-exported at all only so this crate's own
+// engine_eval.rs / engine_edit.rs can reach it as `crate::OptimizedComputeDispatcher`
+// alongside the other engine items they import (task #4880).
+pub(crate) use engine_compute::OptimizedComputeDispatcher;
 // task A (#4934): ComputeFn/ComputeOutcome/DispatchError/RealizationReadHandle/
 // RealizedContent/StructuredComputeDetail moved to the OCCT-free
 // reify-compute-contract foundation crate; re-exported here so the

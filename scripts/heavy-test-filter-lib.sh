@@ -56,20 +56,25 @@ _REIFY_HEAVY_TEST_FILTER_LIB_SOURCED=1
 # runs) on the gate -- a whole-binary atom would evict all 247 tests to
 # relieve one. The atom's binary()/test() targets a `#[path]`-declared
 # submodule of the harness_fea_solver_e2e binary (crates/reify-eval/tests/
-# harness_fea_solver_e2e/fea_in_the_loop_producer.rs) that does not exist on
-# main yet -- the atom is INERT until that submodule lands and then
-# auto-applies; it is safe to land now regardless.
+# harness_fea_solver_e2e/fea_in_the_loop_producer.rs). That submodule LANDED
+# with task 4880; the atom was INERT until then and is now LIVE.
 #
-# TODO(#4880): when that task lands, confirm its submodule stem is EXACTLY
-# `fea_in_the_loop_producer`. The `test(/^<stem>::/)` clause fails OPEN, not
-# closed: a near-miss stem (`..._producer_e2e`, or the tests landing nested
+# STEM CONFIRMED AT LANDING (task 4880, 2026-08-24). The forcing-function
+# TODO that stood here asked the lander to verify the submodule stem is EXACTLY
+# `fea_in_the_loop_producer`, because the `test(/^<stem>::/)` clause fails OPEN,
+# not closed: a near-miss stem (`..._producer_e2e`, or the tests landing nested
 # under some other stem) makes the regex match nothing, and the ~490s test
-# silently returns to the merge gate with every drift-guard still green --
-# the exact silent-coverage-hole class those guards exist to prevent.
-# tests/infra/test_heavy_filter_atoms.sh Assertion F is the announce-or-assert
-# tripwire for that: while the stem is absent it PRINTS an explicit INERT
-# banner on every run, and the moment the file exists it upgrades to a hard
-# `mod <stem>;` assertion against the harness root. This cite going orphaned
-# under `reify-audit --pattern PTODO` when #4880 completes is the intended
-# forcing function -- resolve it by re-checking the stem, not by deleting it.
+# silently returns to the merge gate with every drift-guard still green -- the
+# exact silent-coverage-hole class those guards exist to prevent. Task 4880
+# landed the submodule at that exact stem, so the check is DISCHARGED, not
+# dropped: tests/infra/test_heavy_filter_atoms.sh Assertion F has taken over as
+# the standing guard. Its announce-or-assert branch has flipped from the INERT
+# banner to the hard `mod fea_in_the_loop_producer;` assertion against
+# crates/reify-eval/tests/harness_fea_solver_e2e.rs, so any FUTURE rename or
+# re-homing of the submodule now fails that assertion instead of silently
+# emptying this filterset. Do not re-home the submodule to another harness
+# binary without editing the atom below in the same diff -- task 4880's own
+# kLOC-cap split (harness_process_dfm.rs) deliberately moved the process_dfm_*
+# group out of harness_fea_solver_e2e rather than this submodule, for that
+# reason.
 export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval-fea-tests) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)) | (package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/))'
