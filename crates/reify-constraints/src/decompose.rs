@@ -438,6 +438,31 @@ pub(crate) fn dependent_cell_reach_delta(
 /// unlike the `_ if can_enumerate(..)` catch-all this replaced, where a
 /// false-positive probe left an enum auto routed at `DimensionalSolver`.
 ///
+/// # PRECONDITION on the `Logical` slot — read before wiring PRD2 γ
+///
+/// This function is generic ROUTING, but the capability it consults —
+/// `crate::cpsat::can_enumerate` — belongs to ONE concrete solver. That is a
+/// dependency inversion, and it is sound today only because of a fact outside
+/// this function: `SolverRegistry::production()` (registry.rs) leaves both the
+/// `logical` and `fallback` slots `None`, so every spelling falls through to
+/// `DimensionalSolver` and `CpSatSolver` is the only thing that could ever
+/// occupy `Logical`. Nothing in the TYPE system enforces that — the slot is an
+/// `Option<Box<dyn ConstraintSolver>>` and accepts any implementor.
+///
+/// So the anti-drift argument above ("routing and capability cannot disagree")
+/// holds only while CP-SAT is the sole `Logical` candidate. The moment PRD2 γ
+/// wires a DIFFERENT logical solver into that slot, components get routed by
+/// CP-SAT's acceptance set to a solver that never agreed to it, and the
+/// argument silently stops holding — with no test failing, because
+/// `production()` will still be the thing under test.
+///
+/// The fix at that point is NOT to patch this arm: it is to move the capability
+/// question behind the `ConstraintSolver` trait (e.g. `fn can_enumerate(&self,
+/// param, constraints) -> bool` defaulting to `false`) and have
+/// `SolverRegistry` ask its ACTUAL `logical` occupant. That refactor was
+/// deliberately left out of task #5467, whose lock set is the underdetermined
+/// /dependent-cell path, not the solver-capability trait surface.
+///
 /// # KNOWN ASYMMETRY, accepted
 ///
 /// A SYNTACTICALLY visible `Int` next to a `Bool` still classifies

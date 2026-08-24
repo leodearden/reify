@@ -56,11 +56,12 @@ fn collect_constraint_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
 ///
 /// # Cost, and why the caller MEMOIZES it
 ///
-/// Not free, and not uniformly cheap: the `Type::Int`-with-bounds arm
-/// materialises up to `MAX_INT_DOMAIN` (1000) `Value::Int`s and drops them
-/// immediately, the `Type::Enum` arm walks EVERY expression tree in
-/// `constraints`, and every rejecting arm allocates a throwaway `format!`
-/// String.
+/// Not free, and not uniformly cheap: the `Type::Enum` arm walks EVERY
+/// expression tree in `constraints`, and every rejecting arm allocates a
+/// throwaway `format!` String. It no longer materialises the integer domain —
+/// see [`DomainSpec`] — so the `Type::Int`-with-bounds arm costs a few
+/// comparisons rather than up to `MAX_INT_DOMAIN` (1000) `Value::Int`s built
+/// and dropped on the spot.
 ///
 /// `decompose_into_components_with_reads` therefore caches the verdict PER AUTO
 /// PARAM INDEX across its constraint loop, so a decomposition performs at most
@@ -73,7 +74,28 @@ pub(crate) fn can_enumerate(
     param: &AutoParam,
     constraints: &[(ConstraintNodeId, CompiledExpr)],
 ) -> bool {
-    build_variable_domain(param, constraints).is_ok()
+    domain_spec(param, constraints).is_ok()
+}
+
+/// A validated, not-yet-materialised description of an auto param's domain.
+///
+/// This type exists so the ACCEPT/REJECT decision and the MATERIALISATION are
+/// separable without becoming two authorities that can disagree. [`domain_spec`]
+/// owns every rejection; [`build_variable_domain`] is a TOTAL function over the
+/// spec it returns. There is deliberately no fallible arm on the materialising
+/// side — nothing there can reject, so nothing there can drift from what
+/// [`can_enumerate`] answered.
+///
+/// `IntRange` carries the validated bounds instead of the expanded values so a
+/// bare capability probe does not build (and immediately drop) up to
+/// `MAX_INT_DOMAIN` `Value::Int`s. `EnumVariants` still carries the collected
+/// variants because proving the enum arm ACCEPTS means proving at least one
+/// variant literal exists, which is the scan itself — there is nothing left to
+/// defer.
+enum DomainSpec {
+    Bool,
+    IntRange(i64, i64),
+    EnumVariants(Vec<Value>),
 }
 
 /// Build the domain for a single auto param based on its type.
@@ -81,16 +103,34 @@ pub(crate) fn can_enumerate(
 /// For Int: enumerate lo..=hi from bounds (capped at MAX_INT_DOMAIN)
 /// For Enum: extract variant literals from constraints
 ///
-/// NOTE: every `Err` arm below is also a routing input — see
-/// [`can_enumerate`], which is this function's `is_ok()` and is what
-/// `decompose::domain_of_auto` consults. Adding or removing a rejection here
-/// changes component routing too, deliberately and in the same edit.
+/// This is the MATERIALISING half only. It is total over [`DomainSpec`]: every
+/// rejection lives in [`domain_spec`], so this function cannot introduce an
+/// accept/reject opinion of its own and cannot drift from what
+/// [`can_enumerate`] answered.
 fn build_variable_domain(
     param: &AutoParam,
     constraints: &[(ConstraintNodeId, CompiledExpr)],
 ) -> Result<Vec<Value>, String> {
+    Ok(match domain_spec(param, constraints)? {
+        DomainSpec::Bool => vec![Value::Bool(true), Value::Bool(false)],
+        DomainSpec::IntRange(lo, hi) => (lo..=hi).map(Value::Int).collect(),
+        DomainSpec::EnumVariants(variants) => variants,
+    })
+}
+
+/// The SINGLE AUTHORITY on whether CP-SAT can build a domain for `param`, and
+/// on what that domain is.
+///
+/// NOTE: every `Err` arm below is also a routing input — see
+/// [`can_enumerate`], which is this function's `is_ok()` and is what
+/// `decompose::domain_of_auto` consults. Adding or removing a rejection here
+/// changes component routing too, deliberately and in the same edit.
+fn domain_spec(
+    param: &AutoParam,
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+) -> Result<DomainSpec, String> {
     match &param.param_type {
-        Type::Bool => Ok(vec![Value::Bool(true), Value::Bool(false)]),
+        Type::Bool => Ok(DomainSpec::Bool),
         Type::Int => {
             if let Some((lo, hi)) = param.bounds {
                 // Validate bounds are finite (rejects infinity and NaN)
@@ -123,7 +163,7 @@ fn build_variable_domain(
                         param.id, lo_i, hi_i, size, MAX_INT_DOMAIN
                     ));
                 }
-                Ok((lo_i..=hi_i).map(Value::Int).collect())
+                Ok(DomainSpec::IntRange(lo_i, hi_i))
             } else {
                 Err(format!(
                     "integer auto param {} has no bounds; cannot enumerate domain",
@@ -155,7 +195,7 @@ fn build_variable_domain(
                     param.id, type_name
                 ));
             }
-            Ok(variants)
+            Ok(DomainSpec::EnumVariants(variants))
         }
         other => Err(format!(
             "CpSatSolver does not support param type {:?} for {}",

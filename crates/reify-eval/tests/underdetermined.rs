@@ -504,16 +504,55 @@ fn an_auto_reachable_from_no_constraint_is_still_flagged() {
     }
 }
 
-/// (j) NON-REGRESSION — an `auto(free)` cell is never flagged, whether or not a
-/// `let` reaches it. The `is_auto() && !is_auto_free()` gate is what keeps the
-/// solver's "resolved via auto(free)" warning from being double-emitted, and
-/// the closure widening must not disturb it.
+/// (j) NON-REGRESSION — an `auto(free)` cell is never flagged, in a model where
+/// the closure machinery genuinely RUNS. The `is_auto() && !is_auto_free()`
+/// gate is what keeps the solver's "resolved via auto(free)" warning from being
+/// double-emitted, and the closure widening must not disturb it.
+///
+/// FIXTURE DESIGN — the two halves are deliberate, and neither may be dropped:
+///
+///   * `slack` is `auto(free)` and NO let or constraint reaches it, so it is
+///     absent from the read closure and `is_auto_free()` is the ONLY gate
+///     keeping it unflagged. Deleting that gate flags it ⇒ RED.
+///   * `a`/`b` are STRICT autos pinned only THROUGH `let s`, so the closure
+///     walk actually executes and must reach them. Degrading `read_closure` to
+///     a one-hop read set flags both ⇒ RED.
+///
+/// An earlier revision had only the first half — one bare `auto_param_free`
+/// with no let and no constraint. That fixture leaves `global_reads` empty, so
+/// zero closure code runs and the test would have stayed green with
+/// `read_closure` deleted outright, despite its name (review round 3,
+/// suggestion 3). The obvious repair — giving `slack` itself a reaching let —
+/// is WRONG in the other direction: it puts `slack` INSIDE the closure, where
+/// closure membership alone unflags it and the `is_auto_free()` gate stops
+/// being load-bearing. Both properties are wanted, so both fixtures are here,
+/// in ONE template evaluated ONCE.
 #[test]
 fn an_auto_free_cell_is_still_never_flagged_under_the_closure() {
     let template = TopologyTemplateBuilder::new("FreeDerived")
+        // Reached by NOTHING — the auto(free) gate is the only thing that can
+        // keep this unflagged.
         .auto_param_free("FreeDerived", "slack", Type::length())
-        // No constraint and no let touches `slack` — the ONLY thing keeping it
-        // unflagged is the auto(free) gate.
+        // Strict autos, pinned ONLY transitively through the let below — these
+        // are what force the closure walk to actually run.
+        .auto_param("FreeDerived", "a", Type::length())
+        .auto_param("FreeDerived", "b", Type::length())
+        .let_binding(
+            "FreeDerived",
+            "s",
+            Type::length(),
+            binop(
+                BinOp::Add,
+                value_ref("FreeDerived", "a"),
+                value_ref("FreeDerived", "b"),
+            ),
+        )
+        .constraint(
+            "FreeDerived",
+            0,
+            None,
+            eq(value_ref("FreeDerived", "s"), literal(mm(10.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -523,16 +562,22 @@ fn an_auto_free_cell_is_still_never_flagged_under_the_closure() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let count = result
+    let under_diags: Vec<_> = result
         .diagnostics
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+        .collect();
     assert_eq!(
-        count, 0,
-        "an `auto(free)` cell is intentionally free by author declaration and \
-         must never be flagged — flagging it would double-emit against the \
-         solver's 'resolved via auto(free)' warning; got: {:?}",
+        under_diags.len(),
+        0,
+        "NOTHING may be flagged here, and the two ways this can fail have \
+         different causes. `FreeDerived.slack` appearing means the \
+         `is_auto_free()` gate was dropped — an `auto(free)` cell is \
+         intentionally free by author declaration, and flagging it \
+         double-emits against the solver's 'resolved via auto(free)' warning. \
+         `FreeDerived.a`/`.b` appearing means the read closure stopped \
+         following `let s` transitively and degraded to a one-hop read set. \
+         Got: {:?}",
         result.diagnostics,
     );
 }
