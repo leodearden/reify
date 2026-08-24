@@ -766,54 +766,31 @@ fn find_named_member_span_depth<'a>(
     name: &str,
     depth: usize,
 ) -> Option<MemberSpanInfo<'a>> {
-    if depth > MAX_MEMBER_NESTING_DEPTH {
-        return None;
+    // The `_ => ControlFlow::Continue(())` wildcard below is a name-matching
+    // predicate over Param/Let, not a recursion-set decision — only
+    // `walk_members`'s own match is exhaustiveness-load-bearing. Hoisting the
+    // Param/Let name test ahead of the recursion arms cannot reorder
+    // anything, because Param/Let have no recursion arm; first-match-wins is
+    // `Break` propagating out through `walk_members`'s `?`.
+    match walk_members(
+        members,
+        MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+        depth,
+        &mut |member| match member {
+            MemberDecl::Param(p) if p.name == name => ControlFlow::Break(MemberSpanInfo {
+                span: p.span,
+                doc: p.doc.as_deref(),
+            }),
+            MemberDecl::Let(l) if l.name == name => ControlFlow::Break(MemberSpanInfo {
+                span: l.span,
+                doc: l.doc.as_deref(),
+            }),
+            _ => ControlFlow::Continue(()),
+        },
+    ) {
+        ControlFlow::Break(info) => Some(info),
+        ControlFlow::Continue(()) => None,
     }
-    for member in members {
-        match member {
-            MemberDecl::Param(p) if p.name == name => {
-                return Some(MemberSpanInfo {
-                    span: p.span,
-                    doc: p.doc.as_deref(),
-                });
-            }
-            MemberDecl::Let(l) if l.name == name => {
-                return Some(MemberSpanInfo {
-                    span: l.span,
-                    doc: l.doc.as_deref(),
-                });
-            }
-            MemberDecl::GuardedGroup(g) => {
-                if let Some(result) = find_named_member_span_depth(&g.members, name, depth + 1) {
-                    return Some(result);
-                }
-                if let Some(result) = find_named_member_span_depth(&g.else_members, name, depth + 1)
-                {
-                    return Some(result);
-                }
-            }
-            MemberDecl::Port(port) => {
-                if let Some(result) = find_named_member_span_depth(&port.members, name, depth + 1) {
-                    return Some(result);
-                }
-            }
-            // Spec §6.4 (task 2372): recurse into each arm's member to find
-            // named declarations inside match-arm clusters.
-            MemberDecl::MatchArmDeclGroup(g) => {
-                for arm in &g.arms {
-                    if let Some(result) = find_named_member_span_depth(
-                        std::slice::from_ref(&*arm.member),
-                        name,
-                        depth + 1,
-                    ) {
-                        return Some(result);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Accumulator for [`collect_param_default_candidates`].
