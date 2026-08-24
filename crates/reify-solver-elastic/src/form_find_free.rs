@@ -898,9 +898,28 @@ fn form_find_group_ratios_combined(
     })
 }
 
-/// Eigenvalue-gap objective for the free-standing combined fixed point: the sum
-/// of squares of the `SEARCH_TARGET_NULLITY` smallest-|λ| eigenvalues of
-/// `D_combined = CᵀQC + Σ_T σ_T·L_T` at force densities `q` and geometry `x`.
+/// Eigenvalue-gap objective for the free-standing combined fixed point: the
+/// sum of squares of the `SEARCH_TARGET_NULLITY` smallest-|λ| eigenvalues of
+/// `D_combined = CᵀQC + Σ_T σ_T·L_T` at force densities `q` and geometry `x`,
+/// each NORMALISED by `max_mag = max|λ_i|` over the full spectrum (task
+/// 6413) so the objective is GAUGE-invariant: under a uniform `q → λ·q`,
+/// `σ → λ·σ` rescaling every eigenvalue of `D` scales by `λ`, so an
+/// un-normalised sum-of-squares would scale by `λ²` and drive
+/// [`combined_geometry_descent_step`]'s finite-difference gradient — and
+/// therefore its backtracking line search — to different accept/reject
+/// decisions depending on the force-density/stress scale (task 6413's
+/// reported defect). Dividing each eigenvalue by `max_mag` (which also
+/// scales by `λ`) cancels that factor exactly, making the gradient
+/// gauge-invariant too, so the SAME `geo_step` produces the SAME
+/// displacement regardless of gauge.
+///
+/// `max_mag <= 0` (including NaN, via the `!(max_mag > 0.0)` spelling)
+/// returns `0.0`: an identically-zero `D` (or an all-zero spectrum) has no
+/// spectral gap left to close, so a perfect (zero) score is the honest
+/// answer — unlike [`all_node_equilibrium_residual_relative`]'s vacuous-zero
+/// hazard, this objective is not itself the outer loop's convergence gate
+/// (the residual is), so there is no equivalent risk of prematurely
+/// signalling convergence.
 ///
 /// The line-only `D` is geometry-independent and rank-deficient by 4 for a whole
 /// *affine family* of realisations. The membrane cotangent weights DO depend on
@@ -924,11 +943,19 @@ fn combined_eig_gap_objective(
                     d[(i, j)] += surface_mat[(i, j)];
                 }
             }
-            classify_spectrum(&d, NULLITY_REL_TOL)
+            let spec = classify_spectrum(&d, NULLITY_REL_TOL);
+            let max_mag = spec
                 .eigenvalues
                 .iter()
+                .map(|v| v.abs())
+                .fold(0.0_f64, f64::max);
+            if !(max_mag > 0.0) {
+                return 0.0;
+            }
+            spec.eigenvalues
+                .iter()
                 .take(SEARCH_TARGET_NULLITY)
-                .map(|v| v * v)
+                .map(|v| (v / max_mag) * (v / max_mag))
                 .sum()
         }
         Err(_) => f64::INFINITY,
