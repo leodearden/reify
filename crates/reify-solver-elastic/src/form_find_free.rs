@@ -182,6 +182,18 @@ pub fn form_find_free(
 /// combined free-node equilibrium residual `‖D(x)·x‖` settles to machine
 /// precision), mirroring γ's `form_find_anchored_surfaces`.
 ///
+/// [`ForceDensitySpec::Explicit`] admissibility: with `σ > 0` present, the
+/// membrane's cotangent weights are part of `D`, so `q` must be a COMBINED
+/// self-stress — a line-only self-stress (one satisfying the surface-free `D`)
+/// is generally NOT admissible once surfaces contribute. For the triplex +
+/// two equilateral membrane triangles worked example, every cotangent in the
+/// surface stencil is `cot(60°) = 1/√3`, so the surface term collapses to a
+/// uniform extra weight `w = σ·cot(60°)/2 = σ/(2√3)` on the six horizontal
+/// cables; the admissible combined closed form is
+/// `q_strut = -(√3 + σ/2)`, `q_horiz = 1`, `q_vert = +(√3 + σ/2)`. A `q` with
+/// no combined equilibrium at any geometry still returns
+/// [`FreeFormError::SearchDidNotConverge`] rather than a wrong answer.
+///
 /// # Errors
 /// - [`FreeFormError::DimensionMismatch`] — `members`/`kinds` disagree, or
 ///   out-of-range node indices.
@@ -347,14 +359,39 @@ pub fn form_find_free_surfaces(
             break;
         }
 
+        // (2b) Null-space geometry recovery — the Explicit branch's missing half.
+        // `combined_geometry_descent_step` below minimises the eigen-gap objective, which
+        // drives D_combined toward NULLITY 4; it does NOT drive the coordinate vector x INTO
+        // null(D_combined). Those are different conditions, and the residual we test above is
+        // the latter. The GroupRatios branch gets the missing half implicitly (it re-searches q
+        // at this geometry each iteration, via `form_find_group_ratios_combined`'s own call to
+        // `form_find_explicit_combined_relaxed`); with q FIXED here the only remaining lever is
+        // x, so project it onto the 4 smallest-|λ| eigenvectors of D_combined at the current
+        // geometry — the free-standing analogue of the anchored kernel's per-iteration
+        // `solve_reduced` move.
+        if matches!(spec, ForceDensitySpec::Explicit(_)) {
+            current =
+                form_find_explicit_combined_relaxed(&current, members, kinds, &q, &surface_mat)?
+                    .nodes;
+        }
+
         // (3) Relax the geometry one descent step on the eigenvalue-gap objective
-        // at fixed q.  The line-only D is rank-deficient by 4 for a whole affine
-        // family of geometries (the bootstrap is a slightly-non-symmetric member);
-        // only at the symmetric realisation does the geometry-dependent membrane
-        // term let the combined D reach nullity 4.  The force-density search alone
-        // cannot get there (a force group shares one magnitude across its members,
-        // so it cannot cancel the per-edge cotangent asymmetry) — the geometry
-        // must move.  This is the free-standing analogue of γ's anchored
+        // at fixed q — the SECOND half of a two-part relaxation (project into
+        // null₄(D_combined) in (2b) above, then one eigen-gap descent step here).
+        // Both halves are required and neither suffices alone: MEASURED on
+        // σ=0.05/perturbed×1 that projection alone plateaus at a non-equilibrium
+        // fixed point of the projection map (residual settles at ~2.66e-5), while
+        // descent alone (i.e. (2b) absent) never leaves the starting residual
+        // (~2.84) because it drives D toward nullity 4 without ever moving x into
+        // null(D). Projection-then-descent drops the residual 5 orders of
+        // magnitude in one combined iteration and then grinds the rest.  The
+        // line-only D is rank-deficient by 4 for a whole affine family of
+        // geometries (the bootstrap is a slightly-non-symmetric member); only at
+        // the symmetric realisation does the geometry-dependent membrane term let
+        // the combined D reach nullity 4.  The force-density search alone cannot
+        // get there (a force group shares one magnitude across its members, so it
+        // cannot cancel the per-edge cotangent asymmetry) — the geometry must
+        // move.  This is the free-standing analogue of γ's anchored
         // `solve_reduced` relaxation, with the rigid/scale gauge left free.
         let (next, next_step) = combined_geometry_descent_step(
             n,
