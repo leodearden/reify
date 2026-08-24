@@ -4023,9 +4023,12 @@ impl<'a> Lowering<'a> {
         //    - The `op` field aliases the external-scanner tokens (`_unit_mul_op`
         //      / `_unit_div_op`), which `child_by_field_name` does NOT expose. So
         //      detect the arm by the `left`+`right` fields and read the operator
-        //      from the source slice between them; units are contiguous (no
-        //      whitespace inside a unit_expr), so that slice is exactly one of
-        //      `*`, `·` or `/`.
+        //      from the source slice between them.  Unit ATOMS are contiguous, so
+        //      that slice is normally exactly one of `*`, `·` or `/` — but it is
+        //      not guaranteed to be: a comment between two parenthesised groups
+        //      lands in the slice too (measured: `5(m)/*c*/*(s)` yields
+        //      `/*c*/*`), which is why `classify_unit_op` is TOTAL rather than a
+        //      three-way match.
         //    - `*` and `·` (U+00B7 MIDDLE DOT, the SI-conventional multiply) are
         //      two spellings of ONE operator, both yielding `UnitExpr::Mul` —
         //      task #5784 / PRD
@@ -4605,12 +4608,25 @@ impl<'a> Lowering<'a> {
 /// Classification of the operator slice between a `unit_expr`'s `left` and
 /// `right` operands — see [`Lowering::lower_unit_expr`], the sole caller.
 ///
-/// Split out of the method so the two non-happy-path arms are REACHABLE FROM A
-/// TEST.  Neither can be produced through today's grammar (the external scanner
-/// emits only `*`, `·` and `/` as `_unit_mul_op`/`_unit_div_op`), and defensive
-/// code whose first observation is in production is exactly the shape INV-SF-7
-/// warns about.  The `classify_unit_op_*` tests at the bottom of this file are
-/// therefore the only place `Missing` and `Unrecognized` are pinned.
+/// Split out of the method so the non-happy-path arms are REACHABLE FROM A TEST:
+/// defensive code whose first observation is in production is exactly the shape
+/// INV-SF-7 warns about.
+///
+/// [`UnitOp::Unrecognized`] is NOT hypothetical — it is reachable through today's
+/// grammar.  Measured on this branch (task #5784 amendment pass): the external
+/// scanner emits only `*`, `·` and `/` as `_unit_mul_op`/`_unit_div_op`, but
+/// comments are `extras`, so a comment sitting between two parenthesised unit
+/// groups is part of the operator slice — `5(m)/*c*/*(s)` classifies as
+/// `Unrecognized("/*c*/*")` and is rejected with a diagnostic naming it.  Before
+/// #5784 the same input matched the old `op_text.contains('/')` test and lowered
+/// to `Div` — a well-typed WRONG value, which is precisely why the match is now
+/// exact and total.  `unit_expr_lowering_tests::comment_between_unit_operands_*`
+/// drives that path end to end; the `classify_unit_op_*` tests below pin the
+/// classification itself.
+///
+/// [`UnitOp::Missing`] has NOT been observed from any source: 50-odd malformed
+/// inputs probed during that pass (instrumented build) never reached it.  Treat
+/// it as defensive, not as proven-unreachable.
 #[derive(Debug, PartialEq, Eq)]
 enum UnitOp<'a> {
     /// `*` or `·` (U+00B7 MIDDLE DOT) — two spellings of ONE operator, both
@@ -4630,8 +4646,10 @@ enum UnitOp<'a> {
 
 /// Classify the operator slice between a `unit_expr`'s two operands.
 ///
-/// Units are contiguous (no whitespace inside a `unit_expr`), so in a
-/// well-formed parse the trimmed slice is exactly `*`, `·` or `/`.
+/// In a well-formed parse the trimmed slice is exactly `*`, `·` or `/`, because
+/// unit atoms are contiguous.  It is NOT exactly that in general: comments are
+/// parser `extras`, so `5(m)/*c*/*(s)` hands this function the slice `/*c*/*`
+/// (measured).  Hence the total match — see [`UnitOp`].
 ///
 /// Matched EXACTLY rather than by `contains`, and every arm is total, because the
 /// caller cannot afford an unhandled operator: a bare `None` out of
@@ -7040,13 +7058,13 @@ mod tests {
 
     // ── `classify_unit_op` — the non-happy-path arms of `lower_unit_expr` ─────
     //
-    // Task #5784 (angle-units leaf κ).  `UnitOp::Missing` and
-    // `UnitOp::Unrecognized` are unreachable through today's grammar — the
-    // external scanner emits only `*`, `·` and `/` as `_unit_mul_op` /
-    // `_unit_div_op` — so these three tests are the ONLY observation of their
-    // behaviour.  What they pin is the classification and the verbatim operator
-    // text handed to the diagnostic; the message wording itself is built at the
-    // single call site in `lower_unit_expr`.
+    // Task #5784 (angle-units leaf κ).  These pin the CLASSIFICATION and the
+    // verbatim operator text handed to the diagnostic; the message wording itself
+    // is built at the single call site in `lower_unit_expr`, and is covered end
+    // to end by `unit_expr_lowering_tests::comment_between_unit_operands_*`
+    // (`Unrecognized` is reachable from real source — see the [`UnitOp`] doc).
+    // `UnitOp::Missing` has no such end-to-end case: no probed source reached it,
+    // so these unit tests remain its only observation.
 
     #[test]
     fn classify_unit_op_maps_both_mul_spellings_to_one_operator() {

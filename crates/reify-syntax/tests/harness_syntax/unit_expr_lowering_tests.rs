@@ -282,11 +282,29 @@ fn middot_with_parenthesised_operand_lowers_like_star_twin() {
 /// Parse `source` and return (declaration count, member count of the first
 /// structure, parse-error messages).
 fn parse_shape(source: &str) -> (usize, usize, Vec<String>) {
+    let (decls, members, errors) = parse_shape_spanned(source);
+    (decls, members, errors.into_iter().map(|(m, _)| m).collect())
+}
+
+/// Like [`parse_shape`], but keeps each diagnostic's byte span next to its
+/// message.
+///
+/// The negative locks below need the span: a message-only check for the offending
+/// character is satisfied by SOURCE ECHO.  Measured on this branch, the targeted
+/// diagnostics are `syntax error: · m` spanning `[28..32]` — starting exactly at
+/// the `·` — while nearby malformed inputs (`5N·/m`) produce the whole-line form
+/// `invalid let: let x = 5N·/m` spanning `[18..32]`, i.e. starting at `let`.  Both
+/// strings contain `·`; only the first POINTS at it.
+fn parse_shape_spanned(source: &str) -> (usize, usize, Vec<(String, reify_core::SourceSpan)>) {
     let module = reify_syntax::parse(
         source,
         reify_core::ModulePath::single("unit_expr_lowering_test"),
     );
-    let errors: Vec<String> = module.errors.iter().map(|e| e.message.clone()).collect();
+    let errors: Vec<(String, reify_core::SourceSpan)> = module
+        .errors
+        .iter()
+        .map(|e| (e.message.clone(), e.span))
+        .collect();
     let decl_count = module.declarations.len();
     let member_count = match module.declarations.first() {
         Some(Declaration::Structure(s)) => s.members.len(),
@@ -368,18 +386,31 @@ fn middot_multiple_bindings_in_one_structure_all_survive_lowering() {
 /// binding as a member carrying the ERROR node, so the observable outcome is a
 /// loud member — not a vanished one, and not a dropped declaration.  Measured on
 /// this branch: all three sources give `(decls, members) == (1, 1)` with one
-/// `syntax error: …` diagnostic naming the middle dot.
+/// `syntax error: …` diagnostic starting at the middle dot.
+///
+/// "Points at" is asserted POSITIONALLY, on the span.  An earlier version tested
+/// `message.contains('·')`, which any diagnostic that echoes the source line
+/// satisfies: `5N·/m` produces `invalid let: let x = 5N·/m` spanning the whole
+/// binding from `let`, and would have passed a message-only check while pointing
+/// nowhere near the operator.  Measured spans for the three sources below:
+/// `5N· m` → `[28..32]`, `5N ·m` → `[29..32]`, `5N·3` → `[28..31]`, each starting
+/// exactly at the `·` byte.
 fn assert_loud_middot_parse_error(source: &str) {
-    let (decls, members, errors) = parse_shape(source);
+    let (decls, members, errors) = parse_shape_spanned(source);
     assert!(
         !errors.is_empty(),
         "`{source}` must produce a parse diagnostic — `·` is not a general \
          operator, and a diagnostic-free parse here is the INV-SF-7 silent-drop \
          shape this block exists to forbid"
     );
+    let middot_at = source
+        .find('·')
+        .expect("this helper is only for `·`-bearing sources") as u32;
     assert!(
-        errors.iter().any(|e| e.contains('·')),
-        "`{source}`: the diagnostic must point at the middle dot, got {errors:?}"
+        errors.iter().any(|(_, span)| span.start == middot_at),
+        "`{source}`: a diagnostic must POINT AT the middle dot (start byte \
+         {middot_at}), not merely mention it in an echoed source line; got \
+         {errors:?}"
     );
     assert_eq!(decls, 1, "`{source}`: expected exactly one declaration");
     assert_eq!(
@@ -409,4 +440,67 @@ fn digit_after_middot_is_a_parse_error() {
     // Unlike `/`, there is no general `·` binary operator to recover into, so
     // this is an error rather than a BinOp.
     assert_loud_middot_parse_error("structure def S { let x = 5N·3 }");
+}
+
+// ── The `Unrecognized` operator arm, driven end to end ───────────────────────
+//
+// #5784 amendment pass.  `classify_unit_op`'s `Unrecognized` arm is NOT dead
+// defensive code, and the three `classify_unit_op_*` unit tests beside it in
+// `ts_parser.rs` pin only the classifier — they never reach the `push_error` call
+// site, so nothing observed the diagnostic's wording or span.  These two tests do.
+//
+// The arm is reachable because comments are parser `extras`: one sitting between
+// two PARENTHESISED unit groups is inside the operator slice that
+// `lower_unit_expr` cuts out of the source.  Measured on this branch:
+//
+//   5(m)/*c*/*(s)   slice = "/*c*/*"   →   unrecognized unit operator `/*c*/*`
+//
+// Before κ the same input matched the old `op_text.contains('/')` test and
+// lowered to `Div(m, s)` — a well-typed WRONG value carrying no diagnostic at
+// all, the exact INV-SF-7 `parse-is-value-faithful` shape.  Rejecting it loudly
+// is the improvement; accepting it as `Mul` would be a separate change (it needs
+// a decision about which comment forms a unit expression may contain), so what is
+// pinned here is TODAY's contract, not an endorsement of it.
+
+/// A comment inside a unit expression: the operator slice is not an operator.
+const COMMENTED_UNIT_MUL: &str = "structure def S { let x = 5(m)/*c*/*(s) }";
+
+#[test]
+fn unrecognized_unit_operator_drops_the_member_loudly() {
+    let (decls, members, errors) = parse_shape_spanned(COMMENTED_UNIT_MUL);
+    assert!(
+        !errors.is_empty(),
+        "`{COMMENTED_UNIT_MUL}` must not lower silently: an unrecognised operator \
+         slice that returns a bare `None` drops the binding with zero diagnostics, \
+         which is the INV-SF-7 failure this arm exists to close"
+    );
+    assert_eq!(decls, 1, "the declaration itself must survive");
+    assert_eq!(
+        members, 0,
+        "measured: the binding is dropped — but LOUDLY, per the diagnostic \
+         asserted above.  Got {members} members with {errors:?}"
+    );
+}
+
+#[test]
+fn unrecognized_unit_operator_names_the_offending_slice() {
+    let (_, _, errors) = parse_shape_spanned(COMMENTED_UNIT_MUL);
+    let messages: Vec<&str> = errors.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec!["unrecognized unit operator `/*c*/*` in unit expression"],
+        "the diagnostic must quote the operator slice VERBATIM and be the only \
+         one emitted — a second, differently worded diagnostic here means \
+         `check_and_lower!` is also firing on the same node"
+    );
+    // The span must cover the whole unit expression `(m)/*c*/*(s)`, so an editor
+    // underlines the construct that was rejected rather than the file.
+    let unit_start = COMMENTED_UNIT_MUL.find("(m)").expect("`(m)` in source") as u32;
+    let unit_end = (COMMENTED_UNIT_MUL.find("(s)").expect("`(s)` in source") + "(s)".len()) as u32;
+    let (_, span) = errors.first().expect("one diagnostic, asserted above");
+    assert_eq!(
+        (span.start, span.end),
+        (unit_start, unit_end),
+        "the diagnostic must span the unit expression it rejected"
+    );
 }
