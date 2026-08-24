@@ -240,14 +240,24 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
 /// 1. **Determinism.** `into_compiled` drains a `HashMap`, so its `Vec` order
 ///    varies per process under std's `RandomState`. Source order does not, and
 ///    these items carry no `sort_text` to re-impose an order downstream.
-/// 2. **A single signature source.** `format_type_alias_signature` needs the
-///    parsed declaration (for `type_params` and the `type_expr` surface
-///    spelling), so it is always available here — keeping the completion
-///    `detail` byte-identical to hover with no divergent fallback. Rendering
-///    from the compiled entry instead would drop the type-parameter list
-///    (`type Rate = Q / Time` where hover says `type Rate<Q: Dimension> = Q / Time`),
-///    and compiled `type_expr` is `Some` only for PARAMETERIZED aliases —
-///    precisely the case that would render wrong.
+/// 2. **A single signature source.** `format_type_alias_signature` takes the
+///    parsed `reify_ast::TypeAliasDecl`, which is always available here —
+///    keeping the completion `detail` byte-identical to hover with no divergent
+///    fallback. The compiled entry could not feed it: `CompiledTypeAlias`
+///    carries `type_params` as `reify_ir::TypeParam`, not the
+///    `reify_ast::TypeParamDecl` that `format_type_params` consumes, so
+///    rendering from it would need a SECOND, IR-shaped renderer of the same
+///    user-visible grammar — the exact drift this reuse avoids.
+///
+///    Note what is NOT a reason: `type_expr` being `None`. Every entry in
+///    `compiled.type_aliases` has `type_expr == Some(..)`, parameterized or
+///    not — both `resolve_alias_dfs` registration sites clone it
+///    unconditionally (`crates/reify-compiler/src/type_resolution.rs:3790`
+///    and `:3827`) and `into_compiled` carries it through verbatim. The `None`
+///    arm arises only for NON-PARAMETRIC PRELUDE entries built by
+///    `from_compiled_for_prelude`, and those are excluded from
+///    `type_aliases` by `seeded_names`. So `type_expr.is_none()` is not a
+///    parameterized-alias discriminator and must not be used as one.
 /// 3. **O(D + A) instead of O(D × A).** Completion fires per keystroke, and the
 ///    previous shape rescanned every declaration once per alias.
 ///
@@ -256,15 +266,21 @@ fn push_type_alias_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext)
     if ctx.compiled.type_aliases.is_empty() {
         return;
     }
-    let in_document: HashSet<&str> = ctx
+    let mut in_document: HashSet<&str> = ctx
         .compiled
         .type_aliases
         .iter()
         .map(|a| a.name.as_str())
         .collect();
     for decl in &ctx.parsed.declarations {
+        // `remove` doubles as the membership test and the emitted-once guard: a
+        // document that declares the same alias twice (a normal transient state
+        // while editing) parses as two `TypeAlias` decls but compiles to one
+        // entry, and a plain `contains` would offer the name twice. Draining the
+        // set on first use keeps each name to a single item without a second
+        // allocation. Task #6341.
         if let reify_ast::Declaration::TypeAlias(t) = decl
-            && in_document.contains(t.name.as_str())
+            && in_document.remove(t.name.as_str())
         {
             items.push(CompletionItem {
                 label: t.name.clone(),
@@ -1611,6 +1627,66 @@ mod tests {
             aliases,
             vec!["Zeta", "Alpha", "Mid"],
             "aliases must be offered in source order, not HashMap order"
+        );
+    }
+
+    /// Shadow path. `phase_aliases` SKIPS prelude seeding for any name the user
+    /// redeclares (`crates/reify-compiler/src/compile_builder/aliases_phase.rs`),
+    /// so a user alias that reuses a prelude alias name is registered as
+    /// user-declared and must still be offered — it is never marked into
+    /// `seeded_names` and so is never filtered out of `compiled.type_aliases`.
+    ///
+    /// This is the one boundary the two negative tests above cannot pin: they
+    /// assert "prelude alias absent" using names the user never declares, so if
+    /// the compiler ever DID mark a shadowed name as seeded, the alias would
+    /// silently vanish from completion and hover while every one of those tests
+    /// kept passing (more strongly, even). `Rate` is a real stdlib prelude alias.
+    #[test]
+    fn completion_offers_user_alias_that_shadows_a_prelude_alias() {
+        let source = "type Rate = Length
+structure Foo {
+    param x: 
+}";
+        // Line 2, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(2, 13));
+
+        let shadowing: Vec<&CompletionItem> = items.iter().filter(|i| i.label == "Rate").collect();
+        assert_eq!(
+            shadowing.len(),
+            1,
+            "the shadowing user alias 'Rate' must be offered exactly once, got: {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(shadowing[0].kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(
+            shadowing[0].detail,
+            Some("type Rate = Length".to_string()),
+            "the shadowing alias must render the USER's body, not the prelude's"
+        );
+    }
+
+    /// A document that declares the same alias twice parses as two `TypeAlias`
+    /// declarations but compiles to a single entry (the compiler emits a
+    /// duplicate-alias diagnostic and keeps one). Since the loop is driven from
+    /// the parse, a plain membership test would push the name twice. Half-typed
+    /// duplicate declarations are a normal transient state while editing, so the
+    /// list must stay free of cosmetic duplicates in an already-erroring buffer.
+    #[test]
+    fn completion_offers_a_duplicated_alias_only_once() {
+        let source = "type Speed = Length / Time
+type Speed = Length
+                      structure Foo {
+    param x: 
+}";
+        // Line 3, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(3, 13));
+
+        let speeds = items.iter().filter(|i| i.label == "Speed").count();
+        assert_eq!(
+            speeds,
+            1,
+            "a doubly-declared alias must be offered once, got {speeds} items: {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
         );
     }
 

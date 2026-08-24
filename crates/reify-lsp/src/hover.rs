@@ -247,6 +247,17 @@ pub(crate) fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> Strin
 /// `reify_ast::TypeParamDecl` has no `Display` impl, so each entry is formatted by
 /// hand: bounds are joined with `" + "` (matching the trait-refinement join in the
 /// Trait hover arm) and a default is appended via `TypeExpr`'s `Display`. Task #6341.
+///
+/// **MIRRORED GRAMMAR — keep in sync.** `render_type_params` in
+/// `crates/reify-doc-build/src/build.rs` (task #6342) renders this same
+/// user-visible grammar (`name`, `": "` + bounds joined with `" + "`, `" = "` +
+/// default) for generated docs. The two exist separately only because they
+/// consume different shapes — `reify_ast::TypeParamDecl` here,
+/// `reify_ir::TypeParam` there — and the crates have no shared home for an
+/// AST/IR-agnostic renderer. Change one and the other must change too, or hover
+/// and the generated docs will disagree about the same declaration; if a shared
+/// crate ever becomes available, hoist a single renderer parameterized over the
+/// bound-name iterator.
 fn format_type_params(params: &[reify_ast::TypeParamDecl]) -> String {
     if params.is_empty() {
         return String::new();
@@ -1459,6 +1470,28 @@ structure Bolt {
         assert!(
             !md.contains("resolves to"),
             "a redundant resolves-to line must be suppressed, got: {md}"
+        );
+    }
+
+    /// Shadow path, hover half. A user alias reusing a prelude alias name is
+    /// registered as user-declared (`phase_aliases` skips prelude seeding for any
+    /// redeclared name), so it must render the USER's body and still reach
+    /// `compiled.type_aliases` for the resolves-to line. If the compiler ever
+    /// marked a shadowed name as prelude-seeded, `into_compiled` would drop it and
+    /// the resolves-to line would silently vanish while the negative tests above
+    /// (which use never-shadowed names) kept passing. `Rate` is a real stdlib alias.
+    #[test]
+    fn hover_on_user_alias_shadowing_a_prelude_alias_uses_the_user_body() {
+        let source = "type Rate = Length\n";
+        let position = Position::new(0, 6); // on 'Rate'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("type Rate = Length"),
+            "the USER's body must render, not the prelude's, got: {md}"
+        );
+        assert!(
+            md.contains("resolves to `Scalar[m]`"),
+            "the shadowing alias must still reach compiled.type_aliases, got: {md}"
         );
     }
 
