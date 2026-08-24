@@ -143,10 +143,33 @@ fn lit_raw(v: Value) -> CompiledExpr {
     CompiledExpr::literal(v, reify_core::Type::dimensionless_scalar())
 }
 
-/// A `Value::Vector` of 3 dimensionless `Real` components (accepted by the
-/// production `point3_components` decoder used by `decode_axis`/`decode_plane`).
+/// A `Value::Vector` of 3 dimensionless `Real` components — the shape a
+/// unit-vector DIRECTION has.
+///
+/// Since task 5745 this is the right fixture for exactly the un-gated
+/// positions of `decode_axis`/`decode_plane`: the axis DIRECTION and the plane
+/// NORMAL. Their ORIGINS are LENGTH-gated and use [`point3_len`] instead — a
+/// bare `Real` triple in an origin is now rejected, which is the whole point of
+/// δ.
 fn vec3_value(c: [f64; 3]) -> Value {
     Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])])
+}
+
+/// A `Value::Point` of 3 LENGTH-dimensioned components (SI metres) — the shape
+/// a dimensioned `point3(1mm, 2mm, 3mm)` origin has once `reify-stdlib` has
+/// produced it, and what the `decode_axis`/`decode_plane` ORIGIN positions
+/// require since task 5745.
+///
+/// The numeric SI values are IDENTICAL to what `vec3_value` carried before the
+/// migration: the gate returns `si_value` by copy and performs no arithmetic, so
+/// the captured goldens stay byte-identical across this change. Any golden churn
+/// here is a defect to investigate, not to re-baseline.
+fn point3_len(c: [f64; 3]) -> Value {
+    Value::Point(vec![
+        Value::length(c[0]),
+        Value::length(c[1]),
+        Value::length(c[2]),
+    ])
 }
 
 /// A `Value::Axis` for the Circular pattern value-form sub-branch (decoded by
@@ -160,9 +183,13 @@ fn axis_value(origin: [f64; 3], direction: [f64; 3]) -> Value {
 
 /// A `Value::Plane` for the Mirror pattern value-form sub-branch (decoded by
 /// `decode_plane`; the normal is normalized to unit length by production).
+///
+/// The ORIGIN is a LENGTH `Point` and the NORMAL a bare `Real` `Vector` — the
+/// ORIGIN-vs-DIRECTION split task 5745 drew, and the shape a real
+/// `plane_yz(10mm)` actually has.
 fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
     Value::Plane {
-        origin: Box::new(vec3_value(origin)),
+        origin: Box::new(point3_len(origin)),
         normal: Box::new(vec3_value(normal)),
     }
 }

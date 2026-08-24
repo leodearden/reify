@@ -947,12 +947,6 @@ fn accept_variadic_length_args(
 /// since a unit vector legitimately has bare components. [`point3_components`]
 /// therefore SURVIVES δ as the un-gated decoder for exactly those three
 /// positions — it is not dead, and must not be deleted or renamed.
-// `#[allow(dead_code)]` is TRANSIENT and scoped to task 5745's step ladder: this
-// helper lands ADDITIVE (with its unit rows) so the workspace stays green at
-// every commit, and acquires its first production caller one commit later when
-// `decode_plane`'s origin is switched over. Remove the attribute then — it must
-// not outlive the migration.
-#[allow(dead_code)]
 fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
@@ -1447,8 +1441,29 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
     Ok([v[0] / mag, v[1] / mag, v[2] / mag])
 }
 
-/// Decode a [`Value::Plane`] into `(origin, unit_normal)` — a pair of SI
-/// metre triples returned as `([f64; 3], [f64; 3])`.
+/// Decode a [`Value::Plane`] into `(origin, unit_normal)` — an SI metre triple
+/// and a dimensionless unit vector, returned as `([f64; 3], [f64; 3])`.
+///
+/// The two halves are governed by DIFFERENT rules, which is the whole content of
+/// this decoder after task 5745:
+///
+/// - the ORIGIN is a POINT IN SPACE and is LENGTH-gated through
+///   [`accept_length_point3`], the decoded-value route into the Contract C
+///   chokepoint. Its components must be LENGTH-dimensioned `Scalar`s; a bare
+///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected with the SAME
+///   `ox`/`oy`/`oz` names and the SAME `ArgRejection::message` wording the
+///   SCALAR form of `mirror` has used since task 5214. Until δ this route
+///   BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached the kernel
+///   as a 10 SI-**metre** plane offset with zero diagnostics while its scalar
+///   sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was rejected — the 1000× hazard
+///   arriving through the route an author is most likely to take (PRD decision
+///   D3);
+/// - the NORMAL is a DIMENSIONLESS unit vector and stays on the bare
+///   [`point3_components`] read. Gating it would reject correct `.ri` code — a
+///   unit vector legitimately has bare components, and `plane_yz(10mm)` produces
+///   exactly that shape. This is the D3 adversary finding's ORIGIN-vs-DIRECTION
+///   split (2026-07-28, BINDING), the same split already drawn between
+///   `ox`/`oy`/`oz` and `nx`/`ny`/`nz` in the scalar form.
 ///
 /// The normal is normalized to unit length.  Non-unit normals are accepted and
 /// normalized silently (the plane equation is invariant to normal scale).
@@ -1458,23 +1473,43 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
 /// - `Ok((origin, unit_normal))` — origin in metres, normal dimensionless unit vector.
 /// - `Err(message)` — for any of:
 ///   - wrong value variant (not `Value::Plane`), including `Value::Undef`;
-///   - origin or normal with non-numeric / non-finite components;
+///   - an origin component that is not a finite LENGTH (a `Severity::Error`
+///     carrying [`reify_core::DiagnosticCode::DimensionedArgRejected`] is pushed
+///     per offending component — ALL THREE in one build, FIRST error returned);
+///   - origin or normal of the wrong SHAPE (not a 3-component `Point`/`Vector`),
+///     or a normal with non-numeric / non-finite components — these keep their
+///     pre-δ wording and push no diagnostic, because a wrong shape is not a
+///     units rejection;
 ///   - zero-magnitude normal.
 ///
 /// # Visibility
 /// `pub(crate)` — co-located with the mirror/circular_pattern eval consumers
 /// and available to sibling modules in `reify-eval`.  Widened to `pub` only
 /// when a cross-crate consumer lands (task 3465, design open).
-pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+pub(crate) fn decode_plane(
+    value: &reify_ir::Value,
+    kind_label: impl std::fmt::Display + Copy,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<([f64; 3], [f64; 3]), String> {
     let (origin_val, normal_val) = match value {
         reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         other => {
             return Err(format!("expected a Plane value, got {}", other));
         }
     };
-    let origin_arr = point3_components(origin_val).ok_or_else(|| {
-        "Plane origin is not a valid 3-component numeric Point/Vector".to_string()
-    })?;
+    // The plane ORIGIN is a point in space — LENGTH-gated. The shape message is
+    // handed through unchanged as `shape_err`, so a wrong-arity origin still
+    // reads exactly as it did pre-δ.
+    let origin_arr = accept_length_point3(
+        origin_val,
+        ["ox", "oy", "oz"],
+        kind_label,
+        || "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        diagnostics,
+    )?;
+    // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
+    // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
+    // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
         "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
     })?;
@@ -3432,8 +3467,8 @@ fn pattern_mirror(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
-        let (plane_origin, plane_normal) =
-            decode_plane(&plane_val).map_err(|e| format!("mirror: {}", e))?;
+        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)
+            .map_err(|e| format!("mirror: {}", e))?;
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
             plane_origin,
@@ -8451,7 +8486,14 @@ pub(crate) fn try_eval_topology_selector(
                 _ => return None,
             };
             let plane_val = values.get(plane_cell_id)?;
-            let (plane_origin, plane_normal) = match decode_plane(plane_val) {
+            // The `Err(_) => return None` fall-through is UNCHANGED: a
+            // non-decodable plane leaves the selector cell Undef. What changed is
+            // that a BARE origin is no longer one of the silent cases — the gate
+            // has already pushed its `Severity::Error` +
+            // `DimensionedArgRejected` diagnostic by the time we get here, so
+            // `reify eval` exits 1 through INV-SF-2's pure severity fold rather
+            // than producing an unexplained empty split.
+            let (plane_origin, plane_normal) = match decode_plane(plane_val, "split", diagnostics) {
                 Ok(pair) => pair,
                 Err(_) => return None,
             };

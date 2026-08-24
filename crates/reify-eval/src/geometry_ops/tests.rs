@@ -23732,7 +23732,10 @@
         // plane_xy(3mm) → Plane at z=0.003 m, normal=[0,0,1]
         let z_si = 0.003_f64;
         let val = reify_stdlib::eval_builtin("plane_xy", &[reify_ir::Value::length(z_si)]);
-        let (origin, normal) = decode_plane(&val).expect("plane_xy should decode cleanly");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let (origin, normal) = decode_plane(&val, "mirror", &mut diagnostics)
+            .expect("plane_xy should decode cleanly");
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
             (origin[0] - 0.0).abs() < 1e-12,
             "ox must be 0.0, got {}",
@@ -23772,7 +23775,10 @@
         // plane_xz(5mm) → Plane at y=0.005 m, normal=[0,1,0]
         let z_si = 0.005_f64;
         let val = reify_stdlib::eval_builtin("plane_xz", &[reify_ir::Value::length(z_si)]);
-        let (origin, normal) = decode_plane(&val).expect("plane_xz should decode cleanly");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let (origin, normal) = decode_plane(&val, "mirror", &mut diagnostics)
+            .expect("plane_xz should decode cleanly");
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
             (origin[0] - 0.0).abs() < 1e-12,
             "ox must be 0.0, got {}",
@@ -23812,7 +23818,10 @@
         // plane_yz(7mm) → Plane at x=0.007 m, normal=[1,0,0]
         let z_si = 0.007_f64;
         let val = reify_stdlib::eval_builtin("plane_yz", &[reify_ir::Value::length(z_si)]);
-        let (origin, normal) = decode_plane(&val).expect("plane_yz should decode cleanly");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let (origin, normal) = decode_plane(&val, "mirror", &mut diagnostics)
+            .expect("plane_yz should decode cleanly");
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
             (origin[0] - z_si).abs() < 1e-12,
             "ox must be {z_si}, got {}",
@@ -23863,8 +23872,9 @@
             origin: Box::new(origin),
             normal: Box::new(non_unit_normal),
         };
-        let (_, normal) =
-            decode_plane(&plane).expect("non-unit normal [0,0,2] should normalize without error");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let (_, normal) = decode_plane(&plane, "mirror", &mut diagnostics)
+            .expect("non-unit normal [0,0,2] should normalize without error");
         assert!(
             (normal[0] - 0.0).abs() < 1e-12,
             "nx must be 0.0, got {}",
@@ -23900,7 +23910,7 @@
             direction: Box::new(dir),
         };
         assert!(
-            decode_plane(&axis).is_err(),
+            decode_plane(&axis, "mirror", &mut Vec::new()).is_err(),
             "Value::Axis must be rejected by decode_plane (wrong variant)"
         );
     }
@@ -23909,7 +23919,7 @@
     #[test]
     fn decode_plane_rejects_undef() {
         assert!(
-            decode_plane(&reify_ir::Value::Undef).is_err(),
+            decode_plane(&reify_ir::Value::Undef, "mirror", &mut Vec::new()).is_err(),
             "Value::Undef must be rejected by decode_plane"
         );
     }
@@ -23933,7 +23943,7 @@
             normal: Box::new(zero_normal),
         };
         assert!(
-            decode_plane(&plane).is_err(),
+            decode_plane(&plane, "mirror", &mut Vec::new()).is_err(),
             "zero-magnitude normal must be rejected by decode_plane (never pass through as [0,0,0])"
         );
     }
