@@ -1896,6 +1896,29 @@ mod tests {
             }
         }
 
+        /// How the stub answers `tools/call` — the third axis, dispatched
+        /// on the recorded request's `params.name` so different tools can
+        /// be answered differently within one session.
+        ///
+        /// Orthogonal to [`InitializeReply`] and [`ToolsListReply`]: reached
+        /// only after a healthy handshake, independent of the `tools/list`
+        /// advertisement.
+        #[derive(Clone, Copy)]
+        enum ToolCallReply {
+            /// No tool-call bodies configured — every `tools/call` gets the
+            /// inert `200 {}` reply with no session header, exactly what
+            /// every mode answered before this axis existed. What `start()`
+            /// / `start_with()` / `start_with_tools()` use, so their wire
+            /// behaviour is unchanged by this axis's addition.
+            Inert,
+            /// `name` → MUNCH body pairs. A `tools/call` whose `params.name`
+            /// matches an entry is answered
+            /// `{"result":{"content":[{"type":"text","text":<munch>}]}}`,
+            /// replaying `ASSIGNED_SESSION`. A name with no matching entry
+            /// falls back to the same inert reply as `Inert`.
+            Munch(&'static [(&'static str, &'static str)]),
+        }
+
         /// One recorded request: lowercased header names → values, plus the
         /// parsed JSON body.
         #[derive(Clone, Debug)]
@@ -1996,21 +2019,39 @@ mod tests {
             }
 
             /// Vary only the handshake. `tools/list` is never called by
-            /// these tests, so its reply is an inert empty advertisement.
+            /// these tests, so its reply is an inert empty advertisement,
+            /// and `tools/call` is inert too.
             fn start_with(reply: InitializeReply) -> Self {
-                Self::start_full(reply, ToolsListReply::Names(&[]))
+                Self::start_full(reply, ToolsListReply::Names(&[]), ToolCallReply::Inert)
             }
 
             /// Vary only the `tools/list` reply, behind a healthy handshake.
+            /// `tools/call` stays inert.
             fn start_with_tools(tools_reply: ToolsListReply) -> Self {
-                Self::start_full(InitializeReply::WithSession, tools_reply)
+                Self::start_full(InitializeReply::WithSession, tools_reply, ToolCallReply::Inert)
+            }
+
+            /// Vary only the `tools/call` reply, behind a healthy handshake
+            /// and an inert (empty) `tools/list` advertisement — `list_tools`
+            /// is never called by these tests.
+            fn start_with_tool_calls(tool_call_reply: ToolCallReply) -> Self {
+                Self::start_full(
+                    InitializeReply::WithSession,
+                    ToolsListReply::Names(&[]),
+                    tool_call_reply,
+                )
             }
 
             /// Bind an ephemeral loopback port and start serving, answering
-            /// `initialize` per `reply` and `tools/list` per `tools_reply`.
-            /// The listener is bound once and kept — never dropped and
-            /// re-bound — so nothing else can win the port in between.
-            fn start_full(reply: InitializeReply, tools_reply: ToolsListReply) -> Self {
+            /// `initialize` per `reply`, `tools/list` per `tools_reply`, and
+            /// `tools/call` per `tool_call_reply`. The listener is bound
+            /// once and kept — never dropped and re-bound — so nothing else
+            /// can win the port in between.
+            fn start_full(
+                reply: InitializeReply,
+                tools_reply: ToolsListReply,
+                tool_call_reply: ToolCallReply,
+            ) -> Self {
                 let listener =
                     TcpListener::bind("127.0.0.1:0").expect("bind loopback stub");
                 let addr = listener.local_addr().expect("stub local_addr");
@@ -2050,6 +2091,15 @@ mod tests {
                     };
                     let req_id = recorded.body.get("id").cloned().unwrap_or(Value::Null);
                     let method = recorded.method().to_string();
+                    // Extract the tool-call name before `recorded` is moved
+                    // into the request log below.
+                    let tool_call_name = recorded
+                        .body
+                        .get("params")
+                        .and_then(|p| p.get("name"))
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     requests_thread
                         .lock()
                         .expect("stub request log")
@@ -2098,6 +2148,37 @@ mod tests {
                             })
                             .to_string();
                             write_response(&mut stream, 200, None, body.as_bytes())
+                        }
+                        "tools/call" => {
+                            let munch = match tool_call_reply {
+                                ToolCallReply::Munch(pairs) => pairs
+                                    .iter()
+                                    .find(|(n, _)| *n == tool_call_name)
+                                    .map(|(_, m)| *m),
+                                ToolCallReply::Inert => None,
+                            };
+                            match munch {
+                                Some(munch) => {
+                                    let body = json!({
+                                        "jsonrpc": "2.0",
+                                        "id": req_id,
+                                        "result": {
+                                            "content": [{"type": "text", "text": munch}],
+                                        },
+                                    })
+                                    .to_string();
+                                    write_response(
+                                        &mut stream,
+                                        200,
+                                        Some(ASSIGNED_SESSION),
+                                        body.as_bytes(),
+                                    )
+                                }
+                                // No body configured for this tool name —
+                                // same inert reply every mode used before
+                                // this axis existed.
+                                None => write_response(&mut stream, 200, None, b"{}"),
+                            }
                         }
                         _ => write_response(&mut stream, 200, None, b"{}"),
                     }
@@ -2357,6 +2438,110 @@ mod tests {
                 ToolsListReply::EntryWithoutName,
                 "a tool entry with no string `name`",
             );
+        }
+
+        // --------------------------------------------------------------
+        // step-5 / step-6: RealJCodemunchOps end-to-end — the filed crash
+        // --------------------------------------------------------------
+
+        /// Hermetic reproduction of the filed crash: `get_changed_symbols`
+        /// must not panic when the wire reports a declaration line beyond
+        /// the declaring file's current length (observed 2026-08-22:
+        /// `index out of bounds: the len is 13165 but the index is 18319`
+        /// at `extract_suppression`, against a 13165-line
+        /// `crates/reify-eval/src/engine_build.rs`).
+        ///
+        /// Drives the full production route:
+        /// `RealJCodemunchOps::get_changed_symbols` → `call_tool` →
+        /// `decode_tool_result` → `changed_symbols_from_wire` → the
+        /// suppression-enrichment loop → `extract_suppression`. A 4-segment
+        /// `added_symbols` payload (the shape every captured fixture uses)
+        /// declares one symbol `widget` at line 99 in `a.rs`, but the
+        /// tempdir's `a.rs` is only 3 lines — reproducing the past-EOF
+        /// condition without touching the workspace.
+        #[test]
+        fn get_changed_symbols_does_not_panic_when_the_wire_line_is_past_eof() {
+            const MUNCH_PAST_EOF: &str = concat!(
+                "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+                "\n",
+                "x=1 __stypes= __tables=t:added_symbols:name|file|line:str|str|int\n",
+                "t,widget,a.rs,99\n",
+            );
+
+            let tmp = tempfile::TempDir::new().expect("create tempdir");
+            std::fs::write(tmp.path().join("a.rs"), "line one\nline two\nline three\n")
+                .expect("write a.rs");
+
+            let stub = RecordingStub::start_with_tool_calls(ToolCallReply::Munch(&[(
+                "get_changed_symbols",
+                MUNCH_PAST_EOF,
+            )]));
+            let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
+                .expect("handshake against the recording stub must succeed");
+
+            // Must return, not panic.
+            let symbols = ops.get_changed_symbols("s^1", "s");
+
+            assert_eq!(symbols.len(), 1, "expected exactly the one declared symbol");
+            let sym = &symbols[0];
+            assert_eq!(sym.name, "widget");
+            assert_eq!(sym.line, 99);
+            assert!(
+                !sym.has_allow_dead_code && !sym.has_cfg_test && sym.g_allow_marker.is_none(),
+                "declaration line could not be located past EOF — suppression \
+                 flags must be the neutral (false, false, None), not fabricated \
+                 from an unrelated block of the file; got {sym:?}",
+            );
+        }
+
+        /// Pins today's `RealJCodemunchOps::find_references` scoping
+        /// contract (`lib.rs:1206-1213`: production impls MUST scope to
+        /// `symbol.file`) through the production route, over the real-wire
+        /// 3-segment payload from
+        /// `munch_decode_accepts_a_three_segment_table_spec_as_all_str`.
+        /// Only the first row's file matches `symbol.file`, so exactly one
+        /// reference must survive `filter_refs_to_file`. This half already
+        /// passes once steps 2 and 4 have landed — it is here to pin
+        /// defects 1 and 3 through the production route, not to add a new
+        /// RED case of its own.
+        #[test]
+        fn find_references_decodes_the_real_wire_through_real_ops() {
+            const MUNCH_REAL_WIRE: &str = concat!(
+                "#MUNCH/1 tool=find_references enc=gen1\n",
+                "\n",
+                "@1=crates/reify-audit/\n",
+                "\n",
+                "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
+                "r,@1src/jcodemunch_client.rs,crate,named\n",
+                "r,@1tests/p1.rs,reify_audit,named\n",
+            );
+
+            let tmp = tempfile::TempDir::new().expect("create tempdir");
+            let stub = RecordingStub::start_with_tool_calls(ToolCallReply::Munch(&[(
+                "find_references",
+                MUNCH_REAL_WIRE,
+            )]));
+            let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
+                .expect("handshake against the recording stub must succeed");
+
+            let symbol = ChangedSymbol {
+                name: "JCodemunchOps".to_string(),
+                file: "crates/reify-audit/src/jcodemunch_client.rs".to_string(),
+                line: 1,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            };
+            let refs = ops.find_references(&symbol);
+
+            assert_eq!(
+                refs.len(),
+                1,
+                "find_references must scope to symbol.file per lib.rs:1206-1213; \
+                 got {refs:?}",
+            );
+            assert_eq!(refs[0].file, symbol.file);
+            assert_eq!(refs[0].line, 0, "the real wire reports no line");
         }
     }
 }
