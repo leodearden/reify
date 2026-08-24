@@ -47,8 +47,8 @@ Optimization directives can appear in purpose declarations or inline. `minimize`
 ## Quantifiers
 
 ```
-forall x in collection: predicate(x)    // Universal
-exists x in collection: predicate(x)    // Existential
+forall x in collection: predicate(x)    // Universal — pdoccover:allow — grammar metavariable in a quantifier production
+exists x in collection: predicate(x)    // Existential — pdoccover:allow — grammar metavariable in a quantifier production
 ```
 
 Vacuous truth: `forall x in []: P(x)` evaluates to `true`.
