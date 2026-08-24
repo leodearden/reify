@@ -31,31 +31,18 @@
 //! arbitrary mid-band position. #5580 retired the pre-existing `groove_mouth`
 //! captive-channel knob for exactly that reason.
 //!
-//! Note what MECHANICALLY retires here, and what the assertion nonetheless
-//! still pins. With an equal-radii seat the arc centre was the ONLY land radius
-//! admitting the rope at all. An oversize arc opens a whole BAND of admitting
-//! land radii, `|land_r − seat_c| ≤ sqrt(groove_r² − (rope_dia/2)²)` — a
-//! half-width of 1.055 mm at the defaults, so ≈ 2.11 mm wide — and #5580's "a
-//! half-round is the only depth that admits the rope" reasoning retires with
-//! it: `land_r == seat_c` is now a design CHOICE (for the maximised mouth and
-//! for the closed form's half-seated premise), not a necessity, and the
-//! necessity argument must not be reinstated.
-//!
-//! The assertion does NOT admit that whole band, though, and is not meant to.
-//! It demands the chord's MAXIMUM: `MIN_MOUTH_CLEARANCE_FRAC` is derived from
-//! the same DIN ratio the design multiplies into `groove_r`, so the required
-//! `rope_dia·1.06` is bit-identically `2·groove_r`, attained only at
-//! `land_r == seat_c`. With the 1e-9 relative slack that leaves a window of
-//! `|land_r − seat_c| ≤ groove_r·sqrt(2e-9)` = 4.5e-5·`groove_r` = 0.14 µm —
-//! i.e. the mouth assertion pins the seat depth, via the DIN clearance margin
-//! rather than via a bare `land_r == seat_c`. That is safe rather than brittle
-//! because `dev_capstan.ri` sets `land_r = seat_c` bit-exactly and its own
-//! two-sided band sanctions only a `groove_r·1e-6` window, so no seat depth the
-//! file admits can trip it. The volume gate's premise guard below is the same
-//! `groove_r·1e-6` window and is therefore the TIGHTER, independent restatement
-//! of the same pin (3.18 nm vs 0.14 µm here). A deliberate in-band cut-back —
-//! which the oversize arc now makes mechanically legal — would have to move all
-//! three together: this assertion, that premise guard, and the in-file band.
+//! Note what MECHANICALLY retires here. With an equal-radii seat the arc centre
+//! was the ONLY land radius admitting the rope at all; an oversize arc opens a
+//! whole BAND of them, so #5580's "a half-round is the only depth that admits
+//! the rope" reasoning retires with it and must not be reinstated —
+//! `land_r == seat_c` is now a design CHOICE (for the maximised mouth and for
+//! the closed form's half-seated premise), not a necessity. The assertion is
+//! narrower than that band and is meant to be: it demands the chord's MAXIMUM,
+//! so it still pins the seat depth, routing the pin through the DIN clearance
+//! margin rather than through a bare `land_r == seat_c`. The band half-width,
+//! the pin window and the three places a deliberate in-band cut-back would have
+//! to move together are derived at the assertion itself, and printed by it on
+//! failure — not restated here.
 //!
 //! **2. The seat removes the right stock
 //! (`capstan_seat_volume_delta_matches_half_pi_r2_l`).** The volume the helical
@@ -360,10 +347,8 @@ fn dev_capstan() -> &'static TessellateResult {
 fn dev_capstan_scalars() -> &'static reify_eval::CheckResult {
     static V: OnceLock<reify_eval::CheckResult> = OnceLock::new();
     V.get_or_init(|| {
-        let mut engine = reify_eval::Engine::new(
-            Box::new(reify_constraints::SimpleConstraintChecker),
-            None,
-        );
+        let mut engine =
+            reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
         engine.check(compiled_dev_capstan())
     })
 }
@@ -551,9 +536,8 @@ fn finished_drum(result: &TessellateResult) -> &reify_eval::MeshSurface {
 ///      `land_r == seat_c`: it catches a re-introduced depth offset in EITHER
 ///      direction, and it states the mechanical requirement rather than one
 ///      particular way of meeting it. Because `1.06·rope_dia` IS that chord's
-///      maximum `2·groove_r`, it still pins the depth — to 0.14 µm at the
-///      defaults — it just routes the pin through the DIN clearance margin.
-///      See the module header;
+///      maximum `2·groove_r` it still pins the depth; the window and its
+///      consequences are derived in the comment at the assertion itself;
 ///   3. the drum the kernel actually produced HAS that seat — read back off
 ///      the finished mesh, not off the scalars. (1) and (2) are arithmetic
 ///      over four scalar cells, and would stay green for a sweep placed at the
@@ -599,23 +583,24 @@ fn capstan_seat_admits_the_rope_radially() {
     // clear of the land, a case (1) already rejects — it just keeps the failure
     // message numeric instead of NaN.
     //
-    // The chord is still maximised at `land_r == seat_c`, but that maximum is no
-    // longer merely `rope_dia`: a DIN 15061 arc makes it `2·groove_r =
-    // 1.06·rope_dia`, so this asserts a strict 6 % clearance rather than #5580's
-    // bare admission.
-    //
-    // MECHANICALLY the admitting band is now wide — any land within a half-width
-    // `sqrt(groove_r² − (rope_dia/2)²) = 1.055 mm` of the arc centre still passes
-    // a rope, so #5580's "a half-round is the ONLY depth that admits the rope"
-    // reasoning retires here and must not be reinstated. This ASSERTION does not
-    // admit that band: `min_mouth` is bit-identically `2·groove_r` (see below),
-    // the chord's maximum, so it holds only within `groove_r·sqrt(2e-9)` =
-    // 0.14 µm of `land_r == seat_c`. That is deliberate — the design pins
-    // `land_r = seat_c` bit-exactly — and it is the LOOSER of the two depth pins
-    // here; the volume gate's premise guard restates it at `groove_r·1e-6`
-    // (3.18 nm). Do not weaken that guard on the belief that this one is
-    // permissive about depth, and do not introduce an in-band cut-back without
-    // moving both plus dev_capstan.ri's own band.
+    // This is the authoritative derivation of the depth pin the module header
+    // refers to. The chord is maximised at `land_r == seat_c`, and under a DIN
+    // arc that maximum is `2·groove_r = 1.06·rope_dia`, so this asserts a strict
+    // 6 % clearance rather than #5580's bare admission. MECHANICALLY the
+    // admitting band is wide — any land within `sqrt(groove_r² − (rope_dia/2)²)`
+    // = 1.055 mm of the arc centre still passes a rope, and the failure message
+    // computes that half-width rather than quoting it, so it cannot go stale
+    // unobserved. This ASSERTION does not admit that band: `min_mouth` is
+    // bit-identically `2·groove_r` (see below), the chord's maximum, so it holds
+    // only within `groove_r·sqrt(2e-9)` = 0.14 µm of `land_r == seat_c`. That is
+    // deliberate — the design pins `land_r = seat_c` bit-exactly and its own
+    // two-sided band sanctions only a `groove_r·1e-6` window, so no seat depth
+    // the file admits can trip it — and it is the LOOSER of the two depth pins
+    // here; the volume gate's premise guard restates it at that same
+    // `groove_r·1e-6` (3.18 nm). Do not weaken that guard on the belief that
+    // this one is permissive about depth, and do not introduce an in-band
+    // cut-back without moving all three: this assertion, that premise guard, and
+    // dev_capstan.ri's own band.
     //
     // The comparison keeps a relative epsilon: the tie MOVED, it did not vanish.
     // `MIN_MOUTH_CLEARANCE_FRAC` is derived from the same DIN ratio the design
@@ -630,6 +615,12 @@ fn capstan_seat_admits_the_rope_radially() {
     let offset = land_r - seat_c;
     let mouth = 2.0 * (groove_r.powi(2) - offset.powi(2)).max(0.0).sqrt();
     let min_mouth = rope_dia * (1.0 + MIN_MOUTH_CLEARANCE_FRAC);
+    // Half-width of the band of land radii that mechanically admit the rope,
+    // computed rather than quoted so the failure message cannot carry a stale
+    // figure. Reported only; this assertion is deliberately narrower.
+    let admit_half = (groove_r.powi(2) - (rope_dia / 2.0).powi(2))
+        .max(0.0)
+        .sqrt();
     assert!(
         mouth >= min_mouth * (1.0 - 1e-9),
         "the rope seat's mouth must admit the rope RADIALLY with DIN 15061 \
@@ -640,7 +631,10 @@ fn capstan_seat_admits_the_rope_radially() {
          2·groove_r; here land_r − seat_c = {:.4} mm, so a shallower land closes \
          the mouth over the rope and a deeper one closes it back under. A mouth \
          at exactly rope_dia means the arc reverted to a slip fit — see \
-         `capstan_seat_arc_is_din_15061_oversize`. \
+         `capstan_seat_arc_is_din_15061_oversize`. Mechanically any land within \
+         sqrt(groove_r² − (rope_dia/2)²) = {:.4} mm of seat_c still passes a \
+         rope; this assertion is narrower than that on purpose (see the comment \
+         above it). \
          (pitch_r = {:.4} mm, seat_c = {:.4} mm, groove_r = {:.4} mm, \
          land_r = {:.4} mm)",
         mouth * 1e3,
@@ -648,6 +642,7 @@ fn capstan_seat_admits_the_rope_radially() {
         min_mouth * 1e3,
         rope_dia * 1e3,
         offset * 1e3,
+        admit_half * 1e3,
         pitch_r * 1e3,
         seat_c * 1e3,
         groove_r * 1e3,
@@ -713,11 +708,14 @@ fn capstan_seat_admits_the_rope_radially() {
          check would move in lockstep with any seat-depth edit and stay green. \
          Against seat_c — derived from pitch_r, groove_r and rope_dia — this is \
          the design claim itself, and a land raised back above the arc centre \
-         (the pre-#5580 submerged channel) lands here.",
+         (the pre-#5580 submerged channel) lands here. Residual {:.2} % of \
+         groove_r — that is the figure MESH_RADIAL_TOL_FRAC is sized against, \
+         computed here rather than quoted.",
         seat_c * 1e3,
         land_max * 1e3,
         tol * 1e3,
-        land_r * 1e3
+        land_r * 1e3,
+        100.0 * (land_max - seat_c).abs() / groove_r
     );
     assert!(
         (seat_min - groove_bottom).abs() <= tol,
@@ -727,11 +725,14 @@ fn capstan_seat_admits_the_rope_radially() {
          {:.4} mm (tol {:.4} mm). This reference does not mention groove_r at \
          all, so it holds for any seat arc radius. A seat that never breaks \
          through leaves this at the land radius {:.4} mm; a seat cut past the \
-         rope's underside drives it below.",
+         rope's underside drives it below. Residual {:.2} % of groove_r — that \
+         is the figure MESH_RADIAL_TOL_FRAC is sized against, computed here \
+         rather than quoted.",
         groove_bottom * 1e3,
         seat_min * 1e3,
         tol * 1e3,
-        land_r * 1e3
+        land_r * 1e3,
+        100.0 * (seat_min - groove_bottom).abs() / groove_r
     );
 }
 
