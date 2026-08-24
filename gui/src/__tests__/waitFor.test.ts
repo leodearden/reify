@@ -736,6 +736,21 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   // at — whereas (j) hands back {ok:true, waited_ms:0} for a teardown that never
   // happened, and a green is believed without being looked at.
   //
+  // THESE THREE CASES PIN A DEFECT; THEY DO NOT ENDORSE IT. The behaviour is
+  // measured and current, and the tool descriptions plus the recipe doc are
+  // today's whole mitigation — but the remedy is known: have resolveByTestId
+  // expose the full match list it ALREADY computes and let the UNSCOPED
+  // predicate quantify over it (state:'visible' -> matches.some(isElementVisible),
+  // state:'gone' -> matches.every(el => !isElementVisible(el))), which closes all
+  // three faces at once. Task #6178 scoped this finding to documentation only,
+  // so the fix is tracked separately, by #6564.
+  // TODO(#6564): when that lands these three cases INVERT — (h) waits for the
+  // later pane instead of going green early, (i) goes green off the later pane,
+  // (j) times out — so read a failure here as "the fix landed and these were not
+  // updated with it", not as a regression. The DRIVE path (click_element and
+  // friends) must stay first-match-plus-reported-guess either way; that is
+  // #5891's deliberate back-compat contract, not the same question.
+  //
   // CALLER-FACING FAILURE PATH for (h): a harness that waits UNSCOPED and then
   // acts SCOPED on pane-1 gets a green wait off design-main — pane 0 in document
   // order — while pane-1 is still mounting, and then a `notFoundForViewport` on
