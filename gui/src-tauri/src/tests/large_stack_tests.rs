@@ -403,29 +403,6 @@ fn run_on_worker_survives_deep_recursion_over_default_stack() {
     );
 }
 
-/// (j) [`crate::large_stack::WORKER_THREAD_NAME`] fits Linux's 15-byte
-/// `pthread_setname_np` budget and is DISTINCT from both per-call tier names, so
-/// a profiler row or backtrace says which tier the work arrived on.
-#[test]
-fn worker_thread_name_is_distinct_and_fits_the_linux_budget() {
-    use crate::large_stack::{COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, WORKER_THREAD_NAME};
-
-    assert!(
-        WORKER_THREAD_NAME.len() <= 15,
-        "thread name must fit Linux's 15-byte pthread_setname_np limit \
-         (std SILENTLY ignores an over-long name), got {} bytes: {WORKER_THREAD_NAME:?}",
-        WORKER_THREAD_NAME.len()
-    );
-    assert_ne!(
-        WORKER_THREAD_NAME, COMPILE_THREAD_NAME,
-        "the persistent worker must be distinguishable from the per-call compile thread"
-    );
-    assert_ne!(
-        WORKER_THREAD_NAME, ENGINE_THREAD_NAME,
-        "the persistent worker must be distinguishable from the fire-and-forget engine thread"
-    );
-}
-
 // ── Shared-worker robustness (task 5772) ─────────────────────────────────────
 //
 // The properties a PER-CALL spawn never needed. A per-call thread's death costs
@@ -723,31 +700,41 @@ fn lsp_lane_runs_jobs_on_its_own_named_thread() {
     );
 }
 
-/// (q) [`crate::large_stack::LSP_WORKER_THREAD_NAME`] is distinct from every
-/// other large-stack thread name and fits Linux's 15-byte `pthread_setname_np`
-/// budget (`std` SILENTLY ignores an over-long name, so this must be asserted
-/// rather than assumed).
+/// (q) Every large-stack thread name is DISTINCT from every other, so a
+/// backtrace, `top -H` row or profiler capture says which TIER — and which LANE
+/// — the work is on.
+///
+/// Distinctness is the whole content of the property: a shared label would make
+/// a keystroke-path stall and a geometry-evaluation stall indistinguishable in
+/// exactly the capture where telling them apart matters.
+///
+/// The other half the two per-constant tests this replaces used to assert —
+/// `len() <= 15`, Linux's `pthread_setname_np` budget, which `std` silently
+/// ignores when exceeded — is proven at COMPILE time by the
+/// `const _: () = assert!(..)` block beside each constant in `large_stack.rs`.
+/// A runtime assertion for it cannot fail in any build that exists, so carrying
+/// one was dead weight; the const asserts are the real guard.
 #[test]
-fn lsp_worker_thread_name_is_distinct_and_fits_the_linux_budget() {
+fn large_stack_thread_names_are_pairwise_distinct() {
     use crate::large_stack::{
         COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME,
     };
 
-    assert!(
-        LSP_WORKER_THREAD_NAME.len() <= 15,
-        "thread name must fit Linux's 15-byte pthread_setname_np limit, got {} bytes: \
-         {LSP_WORKER_THREAD_NAME:?}",
-        LSP_WORKER_THREAD_NAME.len()
-    );
-    for (other, what) in [
-        (WORKER_THREAD_NAME, "the persistent ENGINE lane"),
+    let names = [
         (COMPILE_THREAD_NAME, "the per-call compile thread"),
         (ENGINE_THREAD_NAME, "the fire-and-forget engine thread"),
-    ] {
-        assert_ne!(
-            LSP_WORKER_THREAD_NAME, other,
-            "the LSP lane must be distinguishable from {what}"
-        );
+        (WORKER_THREAD_NAME, "the persistent ENGINE lane"),
+        (LSP_WORKER_THREAD_NAME, "the persistent LSP lane"),
+    ];
+
+    for (i, (name, what)) in names.iter().enumerate() {
+        for (other, other_what) in &names[i + 1..] {
+            assert_ne!(
+                name, other,
+                "{what} and {other_what} must be distinguishable in a backtrace \
+                 or profiler row"
+            );
+        }
     }
 }
 
