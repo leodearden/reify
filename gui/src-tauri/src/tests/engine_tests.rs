@@ -20015,3 +20015,120 @@ fn unit_hint_from_default_literal_returns_none_for_a_non_dimensioned_default() {
         );
     }
 }
+
+/// Fixture for the `apply_param_to_source` cluster: a unit-mixing source (`mm`
+/// AND `m` defaults so the hint-discrimination test has something to
+/// discriminate against) whose header comment is deliberately non-ASCII (`°`)
+/// so a `chars()`-based splice would be off by the multi-byte delta while a
+/// byte-offset splice is not.
+fn writeback_source() -> &'static str {
+    r#"// header — unit-mixing fixture, non-ASCII (°) so byte offsets ≠ char offsets
+structure def Part {
+    param width: Length = 80mm
+    param depth: Length = 0.5m
+    param no_default: Length
+
+    let body = box(width, width, depth)
+}"#
+}
+
+/// tempdir-backed session: writes `writeback_source()` to `<tmp>/part.ri` and
+/// `load_file`s it, so `apply_param_to_source` has a canonical on-disk file
+/// to write back to (INV-GUI-3). Mirrors the tempdir pattern already used at
+/// `tests/commands_tests.rs:125`. The returned `TempDir` must be kept alive
+/// (bind it, don't discard it) for as long as the session is used.
+fn writeback_session() -> (tempfile::TempDir, std::path::PathBuf, EngineSession) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("part.ri");
+    std::fs::write(&path, writeback_source()).expect("write part.ri should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, session)
+}
+
+#[test]
+fn apply_param_to_source_writes_disk_source_map_and_eval_state_consistently() {
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param width: Length = 120mm"),
+        "disk text should contain the rewritten default, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("80mm"),
+        "disk text should no longer contain the old default, got: {disk_text}"
+    );
+
+    // source_map ≡ disk: the in-memory buffer the engine parses from must be
+    // byte-identical to what commit_state just wrote to disk.
+    let (_key, source_map_text) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should succeed after a successful write-back");
+    assert_eq!(
+        source_map_text, disk_text,
+        "source_map text must equal disk text (INV-GUI-3 three-way consistency)"
+    );
+
+    // eval state ≡ source: the returned GuiState must already report the new
+    // value, not the pre-edit one.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!(width.value, "120");
+    assert_eq!(width.unit, "mm");
+}
+
+#[test]
+fn apply_param_to_source_rewrites_only_the_default_span() {
+    let (_dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let expected = writeback_source().replace("80mm", "120mm");
+    assert_eq!(
+        disk_text, expected,
+        "only the default span should change — comments, whitespace, and every \
+         other param must be preserved byte for byte (PRD D6 splice preserves \
+         user formatting/comments)"
+    );
+}
+
+#[test]
+fn apply_param_to_source_honours_the_replaced_literals_unit() {
+    let (_dir, path, mut session) = writeback_session();
+
+    // si_value 0.25 — must round-trip through the `m` hint read off the
+    // replaced "0.5m" literal, not hop to the canonical ladder's `250mm`.
+    // This is the case that discriminates hint-honouring from the ladder;
+    // Part.width's 80mm→120mm cannot, because `mm` is the ladder's first
+    // rung anyway.
+    session
+        .apply_param_to_source("Part.depth", &mm(250.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param depth: Length = 0.25m"),
+        "expected the replaced literal's unit (m) to be honoured, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("250mm"),
+        "must not fall back to the canonical ladder's mm when the hint is \
+         honourable, got: {disk_text}"
+    );
+}
