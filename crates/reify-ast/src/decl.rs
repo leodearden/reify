@@ -8,6 +8,9 @@
 //! Critically: NO ir-tier type references — `cargo build -p reify-ast` enforces this
 //! and the dag_invariant.rs test pins it at the Cargo.toml level.
 
+use std::convert::Infallible;
+use std::ops::ControlFlow;
+
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
 use crate::ast::{Expr, TypeExpr};
@@ -607,48 +610,155 @@ where
     F: FnMut(&'a MemberDecl),
 {
     if let Some(body) = sub.body.as_ref() {
-        walk_members_depth(body, visitor, 0);
+        // `Infallible` as the break type statically pins "this wrapper visits
+        // everything and never exits early" — the closure always returns
+        // `Continue`, so `walk_members` can never actually produce a `Break`.
+        let _: ControlFlow<Infallible> = walk_members(
+            body,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                visitor(m);
+                ControlFlow::Continue(())
+            },
+        );
     }
 }
 
-fn walk_members_depth<'a, F>(members: &'a [MemberDecl], visitor: &mut F, depth: usize)
+/// Which optional bodies a member-recursion walk descends into.
+///
+/// The single place the member-recursion set is declared as data, replacing
+/// the three independent hand-rolled recursion sets this module used to
+/// carry (one per walker). `GuardedGroupDecl.{members,else_members}` and
+/// `MatchArmDeclArmDecl.member` are recursed UNCONDITIONALLY by every caller
+/// today, so only the two cells that actually differ — `SubDecl.body` and
+/// `PortDecl.members` — are modeled as flags.
+///
+/// | const | used by | `SubDecl.body` | `PortDecl.members` |
+/// |---|---|---|---|
+/// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no |
+/// | `NAMED_MEMBER_LOOKUP` | `find_named_member_span_depth` | no | yes |
+/// | `PARAM_DEFAULT_LOOKUP` | `collect_param_default_candidates` | no | no |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MemberRecursionSet {
+    sub_body: bool,
+    port_body: bool,
+}
+
+impl MemberRecursionSet {
+    /// Used by [`walk_specialization_scope_members`] (spec §8.7): a nested
+    /// specialization scope is a child of its enclosing one, but a port body
+    /// is forbidden inside a specialization scope (task 2369) and so is
+    /// never descended into here.
+    const SPECIALIZATION_SCOPE: Self = Self {
+        sub_body: true,
+        port_body: false,
+    };
+    /// Used by `find_named_member_span_depth` (hover/goto-definition): a
+    /// port-body param/let IS addressable by its bare name for these
+    /// purposes, but a `sub`'s body holds specialization overrides of a
+    /// child instance, not the child's own declarations.
+    const NAMED_MEMBER_LOOKUP: Self = Self {
+        sub_body: false,
+        port_body: true,
+    };
+    /// Used by `collect_param_default_candidates` (cell-id resolution):
+    /// neither a port-body param (addressed only by the composite
+    /// `<port>.<param>` name) nor a `sub`'s specialization-override body is
+    /// an editable top-level cell, so neither is descended into.
+    const PARAM_DEFAULT_LOOKUP: Self = Self {
+        sub_body: false,
+        port_body: false,
+    };
+}
+
+/// The single member-recursion walker behind
+/// [`walk_specialization_scope_members`], `find_named_member_span_depth`, and
+/// `collect_param_default_candidates`.
+///
+/// Visits every member of `members`, invoking `visitor` on each one
+/// (parent-before-children), and recurses according to `set` — see
+/// [`MemberRecursionSet`] for which optional bodies are conditional and which
+/// are unconditional. `visitor` returns [`ControlFlow`] so one walker can
+/// serve both a visit-everything caller (`Continue(())` always, using an
+/// uninhabited `Infallible` break type to make "never exits early" a
+/// static property) and an early-exit caller (`Break` on a match); a `Break`
+/// unwinds out of every nesting level via `?`, not just the innermost loop.
+/// Recursion is bounded by [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack
+/// overflow on pathological input.
+fn walk_members<'a, B, F>(
+    members: &'a [MemberDecl],
+    set: MemberRecursionSet,
+    depth: usize,
+    visitor: &mut F,
+) -> ControlFlow<B>
 where
-    F: FnMut(&'a MemberDecl),
+    F: FnMut(&'a MemberDecl) -> ControlFlow<B>,
 {
     if depth > MAX_MEMBER_NESTING_DEPTH {
-        return;
+        return ControlFlow::Continue(());
     }
     for member in members {
-        visitor(member);
+        visitor(member)?;
         match member {
-            // Spec §8.7 nested-sub criterion: a nested SubDecl whose own
-            // body is `Some(_)` opens its own specialization scope. Visit
-            // the outer Sub first (parent-before-children), then descend.
+            // Spec §8.7 nested-sub criterion: a nested SubDecl whose own body
+            // is `Some(_)` opens its own specialization scope — descended
+            // into only when `set.sub_body`. Deliberately does NOT descend
+            // into `s.keyed_members[].overrides` (a `Vec<MemberDecl>`): no
+            // walker ever has, so a specialization scope nested inside a
+            // keyed entry's overrides is unreached by all three callers
+            // today. Preserved as-is — see the task's follow-up note.
             MemberDecl::Sub(s) => {
-                if let Some(nested) = s.body.as_ref() {
-                    walk_members_depth(nested, visitor, depth + 1);
+                if set.sub_body
+                    && let Some(nested) = s.body.as_ref()
+                {
+                    walk_members(nested, set, depth + 1, visitor)?;
+                }
+            }
+            // Port bodies — descended into only when `set.port_body`.
+            MemberDecl::Port(p) => {
+                if set.port_body {
+                    walk_members(&p.members, set, depth + 1, visitor)?;
                 }
             }
             // Spec §8.7 + shadow_lint.rs:39-43: `where { … } else { … }`
-            // members are siblings inside the enclosing specialization
-            // scope. Recurse into both branches so the visitor sees their
-            // members at the same logical level as the parent's other
-            // direct children.
+            // members are siblings inside the enclosing scope, recursed into
+            // UNCONDITIONALLY — every caller today agrees on this cell.
             MemberDecl::GuardedGroup(g) => {
-                walk_members_depth(&g.members, visitor, depth + 1);
-                walk_members_depth(&g.else_members, visitor, depth + 1);
+                walk_members(&g.members, set, depth + 1, visitor)?;
+                walk_members(&g.else_members, set, depth + 1, visitor)?;
             }
             // Spec §6.4 (task 2372): match-arm decl clusters desugar each arm
-            // to a same-name guarded decl. Recurse into each arm's member so
-            // the visitor sees per-arm declarations as children of the group.
+            // to a same-name guarded decl, recursed into UNCONDITIONALLY —
+            // every caller today agrees on this cell too.
             MemberDecl::MatchArmDeclGroup(g) => {
                 for arm in &g.arms {
-                    walk_members_depth(std::slice::from_ref(&*arm.member), visitor, depth + 1);
+                    walk_members(std::slice::from_ref(&*arm.member), set, depth + 1, visitor)?;
                 }
             }
-            _ => {}
+            // LOAD-BEARING: no `_` wildcard here. `MemberDecl` is not
+            // `#[non_exhaustive]`, so listing every remaining variant
+            // explicitly means a newly added variant fails THIS match at
+            // compile time rather than silently defaulting to "never
+            // descended into" — the exact silent-omission failure mode this
+            // consolidation exists to prevent.
+            MemberDecl::Param(_)
+            | MemberDecl::Let(_)
+            | MemberDecl::Constraint(_)
+            | MemberDecl::ConstraintInst(_)
+            | MemberDecl::Minimize(_)
+            | MemberDecl::Maximize(_)
+            | MemberDecl::AssociatedType(_)
+            | MemberDecl::Fn(_)
+            | MemberDecl::Connect(_)
+            | MemberDecl::Chain(_)
+            | MemberDecl::MetaBlock(_)
+            | MemberDecl::ForallConnect(_)
+            | MemberDecl::ForallConstraint(_)
+            | MemberDecl::Relate(_) => {}
         }
     }
+    ControlFlow::Continue(())
 }
 
 fn find_named_member_span_depth<'a>(
