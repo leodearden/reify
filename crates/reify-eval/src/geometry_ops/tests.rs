@@ -5778,6 +5778,235 @@
         );
     }
 
+    // ---- esc-5743-4 folded into task 5744 step-8: pattern_arbitrary's
+    //      offset triple must be reported ALL AT ONCE ----
+
+    /// Helper: an `arbitrary_pattern` op in the scalar-triple form, from a flat
+    /// list of `(arg name, expr)` pairs. Keeps the three rows below varying only
+    /// their bindings.
+    fn gamma_arbitrary_pattern(
+        args: Vec<(&str, reify_ir::CompiledExpr)>,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: args
+                .into_iter()
+                .map(|(name, expr)| (name.to_string(), expr))
+                .collect(),
+        }
+    }
+
+    /// Count the wrong-type rejection diagnostics in `diagnostics`.
+    fn gamma_expects_length_count(diagnostics: &[Diagnostic]) -> usize {
+        diagnostics
+            .iter()
+            .filter(|d| d.message.contains("expects Length"))
+            .count()
+    }
+
+    /// ALL FAILURES AT ONCE for `arbitrary_pattern`'s offset triple: a fully
+    /// BARE `t0_dx`/`t0_dy`/`t0_dz` must report all THREE in ONE build.
+    ///
+    /// An offset triple is written as one gesture —
+    /// `arbitrary_pattern(g, [(5, 0, 0)])` — so a bare triple is usually bare in
+    /// every member. Reporting one member per build costs the author three
+    /// edit-build cycles to fix one line, which is exactly the complaint
+    /// esc-5743-4 recorded.
+    ///
+    /// The COUNT is the load-bearing half, per
+    /// `assert_every_bare_position_reported`'s `reported == gated.len()` idiom:
+    /// a names-only check stays green if the group read is split back into
+    /// `?`-chained `required_length_arg` calls, because the first call's `?`
+    /// returns before the second is attempted. Only `== 3` catches that.
+    ///
+    /// SCOPE: this is a diagnostics-COMPLETENESS change, not a behaviour
+    /// change. A bare offset triple is already rejected today (see
+    /// `compile_geometry_op_arbitrary_pattern_bare_offset_rejected` above);
+    /// only the number of slots named per build moves.
+    ///
+    /// RED until step-9 replaces the `length_arg` closure and its three
+    /// `?`-chained calls with one `required_length_args` group read.
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_reports_every_bare_offset_in_one_build() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        // Three DISTINCT bare values, so a component transposition is
+        // detectable in the reported wording rather than aliasing.
+        let op = gamma_arbitrary_pattern(vec![
+            ("t0_dx", literal_f64(0.01)),
+            ("t0_dy", literal_f64(0.02)),
+            ("t0_dz", literal_f64(0.03)),
+        ]);
+
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a fully bare arbitrary_pattern offset triple must drop the op; got: {result:?}"
+        );
+
+        for name in ["t0_dx", "t0_dy", "t0_dz"] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(name) && d.message.contains("expects Length")),
+                "the all-at-once report must name `{name}`; got: {diagnostics:?}"
+            );
+        }
+        assert_eq!(
+            gamma_expects_length_count(&diagnostics),
+            3,
+            "all THREE offset components must be reported in ONE build — this is \
+             the half that catches the group read being split back into \
+             `?`-chained single-slot calls; got: {diagnostics:?}"
+        );
+    }
+
+    /// The LOOP boundary of the group read: with TWO fully bare transforms, the
+    /// build must report the FIRST transform's group — all three of `t0_*` — and
+    /// stop there, and the caller-facing `Err` must be the FIRST error.
+    ///
+    /// Two things are pinned, and they pull in opposite directions:
+    ///   (a) WIDE ENOUGH — all three of `t0_dx`/`t0_dy`/`t0_dz` are named, so
+    ///       the all-at-once guarantee reaches inside a loop iteration;
+    ///   (b) NOT WIDER — `t1_*` is NOT reported, because the `?` on the first
+    ///       iteration's group read propagates before `idx` advances. That is
+    ///       the pre-existing loop semantics and step-9 must not change it: the
+    ///       all-at-once guarantee holds WITHIN one `required_length_args` call,
+    ///       and each iteration is its own call.
+    ///
+    /// Asserting (b) is what stops a well-meant "report everything" rewrite from
+    /// turning one bad transform into an unbounded diagnostic storm.
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_bare_two_transforms_reports_the_first_group() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = gamma_arbitrary_pattern(vec![
+            ("t0_dx", literal_f64(0.01)),
+            ("t0_dy", literal_f64(0.02)),
+            ("t0_dz", literal_f64(0.03)),
+            ("t1_dx", literal_f64(0.04)),
+            ("t1_dy", literal_f64(0.05)),
+            ("t1_dz", literal_f64(0.06)),
+        ]);
+
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result
+            .err()
+            .expect("two bare transforms must drop the op");
+        assert!(
+            err.contains("'t0_dx'"),
+            "the caller-facing Err must stay the FIRST error (`t0_dx`), preserving \
+             `required_length_args`' documented first-error-wins ordering; got: {err:?}"
+        );
+
+        for name in ["t0_dx", "t0_dy", "t0_dz"] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(name) && d.message.contains("expects Length")),
+                "(a) the FIRST transform's whole group must be reported — missing \
+                 `{name}`; got: {diagnostics:?}"
+            );
+        }
+        for name in ["t1_dx", "t1_dy", "t1_dz"] {
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(name)),
+                "(b) the SECOND transform must NOT be reported — the `?` on \
+                 iteration 0's group read propagates before `idx` advances, and \
+                 widening that would turn one bad transform into an unbounded \
+                 diagnostic storm; got: {diagnostics:?}"
+            );
+        }
+        assert_eq!(
+            gamma_expects_length_count(&diagnostics),
+            3,
+            "exactly the first group's three components; got: {diagnostics:?}"
+        );
+    }
+
+    /// UNRESOLVED-NOT-MASKED inside the group: `t0_dx` = `Value::Undef` with
+    /// `t0_dy`/`t0_dz` bare must return the DISTINCT "unresolved (Undef)" `Err`,
+    /// not "missing or non-Length".
+    ///
+    /// This is the precedence half of `required_length_args`' contract — the
+    /// first error wins, so an `Unresolved` member must not be masked by a later
+    /// `Invalid` one. It matters because `Undef` is expected TRANSIENT state
+    /// during solver iteration: reporting it as "missing or non-Length" sends
+    /// the author hunting for a units bug in a cell that is merely not resolved
+    /// yet (D10 / INV-SF-1).
+    ///
+    /// The bare siblings still push their own rejection diagnostics — an
+    /// `Undef` member suppresses only its OWN diagnostic, not the group's — so
+    /// the count is 2, not 0 and not 3.
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_undef_offset_is_not_masked_by_a_later_bare_one() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = gamma_arbitrary_pattern(vec![
+            ("t0_dx", literal_undef()),
+            ("t0_dy", literal_f64(0.02)),
+            ("t0_dz", literal_f64(0.03)),
+        ]);
+
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result
+            .err()
+            .expect("an Undef offset component must drop the op");
+        assert!(
+            err.contains("unresolved (Undef)") && err.contains("'t0_dx'"),
+            "an Undef member must not be masked by the later bare ones — expected \
+             the DISTINCT unresolved wording naming `t0_dx`; got: {err:?}"
+        );
+        assert!(
+            !err.contains("missing or non-Length"),
+            "\"missing or non-Length\" actively misleads for a cell that is merely \
+             unresolved during solver iteration; got: {err:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("t0_dx") && d.message.contains("expects Length")),
+            "the Undef member must push NO rejection diagnostic of its own; got: {diagnostics:?}"
+        );
+        assert_eq!(
+            gamma_expects_length_count(&diagnostics),
+            2,
+            "the two BARE siblings must still each be reported — an Undef member \
+             suppresses only its OWN diagnostic, not the group's; got: {diagnostics:?}"
+        );
+    }
+
     #[test]
     fn compile_geometry_op_linear_pattern_2d_missing_spacing2_returns_none() {
         let step_handles = vec![GeometryHandleId(42)];
