@@ -132,10 +132,13 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * inline and the backend path is only reached by callers that bypass this gate
  * (`MechanismPanel`, via `handleSetParameter`).
  *
- * Separately, {@link acceptsBareNumber} refuses a bare number for a cell that
- * carries a dimension, mirroring the backend's `parse_value_string_for_cell`.
- * The `App.test.tsx` block that used to pin the degradation above now pins this
- * reconciled contract in both directions.
+ * Separately, {@link acceptsBareNumber} refuses a bare number for a cell whose
+ * dimension THIS alphabet can express — i.e. one with a curated ladder —
+ * mirroring the backend's `parse_value_string_for_cell`. The two are the same
+ * question asked twice, which is why they read the same map: a cell may only be
+ * told to supply a unit when a unit is on offer for it. The `App.test.tsx`
+ * block that used to pin the degradation above now pins this reconciled
+ * contract in both directions.
  *
  * Still deferred, and NOT this: compound unit EXPRESSIONS in .ri source at the
  * `bind(joint, <quantity>)` site (`UnitExpr::Mul`/`Div`/`Pow`), which are task
@@ -199,47 +202,70 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  * Whether a cell with this dimension accepts a BARE number as typed input
  * (task #5757).
  *
- * THE RULE: a cell that carries a dimension needs a unit. `20` in a `Volume`
- * cell is ambiguous — 20 what? — and the engine used to resolve that ambiguity
- * by silently reading it as 20 CUBIC METRES, the same 1000× hazard the .ri
- * geometry-argument gate rejects with "pass a dimensioned length such as
- * `5mm`". This is the panel's inline mirror of that rule.
+ * THE RULE: a cell needs a unit exactly when one CAN be typed for it. `20` in a
+ * `Volume` cell is ambiguous — 20 what? — and the engine used to resolve that
+ * ambiguity by silently reading it as 20 CUBIC METRES, the same 1000× hazard
+ * the .ri geometry-argument gate rejects with "pass a dimensioned length such
+ * as `5mm`". This is the panel's inline mirror of that rule.
  *
- * A pure, total function of the dimension string. It enumerates no unit
- * strings, consults no ladder data and takes no ladder map, so it cannot drift
- * from the Rust-authored curated table and does not weaken the standing #5788
- * D6 prohibition documented on {@link quantityUnitAlphabet}. It also cannot
- * narrow when the `get_unit_ladders` fetch fails, unlike everything else in
- * this validation vocabulary.
+ * EXPRESSIBILITY IS THE KEY, NOT DIMENSIONEDNESS. That ambiguity presupposes a
+ * unit COULD have been typed: `20` is ambiguous in a Volume cell precisely
+ * because `20mm^3` and `20L` were both on offer. For a dimension no curated
+ * ladder covers, the picker offers nothing and {@link quantityUnitAlphabet}
+ * admits nothing, so refusing the bare number disambiguates nothing — it
+ * removes the cell's LAST accepted input and bricks the row.
  *
- * DIMENSIONEDNESS IS A PROPERTY OF THE CELL, NOT OF LADDER COVERAGE. A `Torque`
- * cell has no curated ladder — the unit picker has nothing to offer it — and a
- * bare number is refused there all the same. Keying on coverage instead would
- * silently re-admit the hazard for every uncovered dimension.
+ * The concrete case this was breaking: `Money`. Sixteen `param … : Money`
+ * declarations across `examples/*.ri` spell their literals `NUSD`, and `USD` is
+ * reachable only through the compiler's per-module `UnitRegistry`, which the
+ * engine's `COMPOSED_UNIT_INDEX` deliberately excludes — so neither `6` nor
+ * `6USD` was accepted and the cell could not be edited at all.
  *
- * THE BACKEND IS THE AUTHORITATIVE GATE: `parse_value_string_for_cell` in
- * `gui/src-tauri/src/engine.rs` refuses a `Value::Int`/`Value::Real` for a
- * non-dimensionless `Type::Scalar`, and does so for every caller of
- * `set_parameter` — including `MechanismPanel`, which reaches
- * `handleSetParameter` without passing through `PropertyEditor`'s gate. This
- * predicate exists to make the refusal INLINE, keeping the typed text on screen
- * for correction instead of discarding it behind an async error toast.
+ * Not a weakening, and the guarantee that replaces the old one is stronger for
+ * being checkable: GATED ⟺ a rung exists in this cell's own ladder ⟺ the
+ * picker and the alphabet can express it. It reuses {@link ladderForDimension}
+ * rather than indexing the map, so "what counts as covered" has ONE definition,
+ * shared with `pickerLadder`, `editSeedUnitLabel` and `quantityReFor`. It still
+ * enumerates no unit strings — only map membership — so the standing #5788 D6
+ * prohibition documented on {@link quantityUnitAlphabet} is untouched.
+ *
+ * THE BACKEND IS THE AUTHORITATIVE GATE and agrees exactly:
+ * `parse_value_string_for_cell` in `gui/src-tauri/src/engine.rs` refuses a
+ * `Value::Int`/`Value::Real` only for a dimension its `LADDER_COVERAGE` table
+ * records, and does so for every caller of `set_parameter` — including
+ * `MechanismPanel`, which reaches `handleSetParameter` without passing through
+ * `PropertyEditor`'s gate. This predicate exists to make the refusal INLINE,
+ * keeping the typed text on screen for correction instead of discarding it
+ * behind an async error toast.
+ *
+ * IT FAILS OPEN. With `ladders` undefined or empty — the `get_unit_ladders`
+ * fetch not resolved, or failed — nothing is expressible, so nothing is gated.
+ * That is the safe direction: the backend stays authoritative, and
+ * over-rejecting here would discard input the engine would have accepted. It
+ * adds no new degradation either, since {@link quantityUnitAlphabet} already
+ * collapses to {@link BASE_UNIT_LABELS} on that same path.
  *
  * IT DOES NOT COST THE ORDINARY EDIT A UNIT KEYSTROKE. `PropertyEditor`'s
- * `editSeed` seeds a dimensioned cell's input with a unit-bearing literal
+ * `editSeed` seeds a COVERED cell's input with a unit-bearing literal
  * (magnitude + the cell's default ladder rung), so committing an untouched row
  * is still a no-op and changing only the digits still submits a united literal.
- * A predicate like this one is only safe to add alongside a seed like that.
+ * A predicate like this one is only safe to add alongside a seed like that. An
+ * UNCOVERED cell seeds the bare magnitude, which is now consistent rather than
+ * a degradation: that seed is a literal both ends accept.
  *
- * KNOWN ASYMMETRY, deliberate: the backend serialises a COMPOSED dimension (one
- * with no `NAMED_DIMENSIONS` entry) as the empty string, indistinguishable here
- * from a dimensionless or non-scalar cell. Such a cell is therefore allowed
- * through by this predicate and caught only by the backend, which sees the real
- * `DimensionVector`. Erring toward admitting is the safe direction: over-
- * rejecting here would discard input the engine would have accepted.
+ * THE ASYMMETRY THAT REMAINS runs the documented safe direction only — the
+ * backend accepts spellings this gate refuses (raw superscripts, the SI bases
+ * no ladder carries: `s`, `K`, `A`, `mol`, `cd`, and cross-dimension labels).
+ * A COMPOSED dimension is no longer part of it: the backend serialises one as
+ * the empty string, indistinguishable here from dimensionless, and since the
+ * coverage-conditional rule the backend does not gate it either — so the two
+ * ends now AGREE on it.
  */
-export function acceptsBareNumber(dimension: string | undefined): boolean {
-  return !dimension;
+export function acceptsBareNumber(
+  dimension: string | undefined,
+  ladders: UnitLadderMap | undefined,
+): boolean {
+  return !dimension || ladderForDimension(ladders ?? {}, dimension) === undefined;
 }
 
 /**

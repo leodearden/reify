@@ -73,19 +73,23 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 // the backend parse_value_string is more lenient (accepts "5 mm") but the
 // frontend intentionally enforces the stricter rule.
 //
-// The bare-number half is not unconditional (task #5757): a cell that carries a
-// DIMENSION requires a unit, gated by `acceptsBareNumber` in the same module.
-// Unlike the whitespace rule above, this one is NOT the frontend being
-// deliberately stricter — it mirrors the backend exactly. `set_parameter`
-// refuses a bare number for a dimensioned cell too, so gating here only decides
-// whether the user finds out inline, with the typed text kept for correction,
-// or asynchronously via a toast that discards it.
+// The bare-number half is not unconditional (task #5757): a cell whose
+// dimension a curated ladder COVERS requires a unit, gated by
+// `acceptsBareNumber` in the same module. Coverage, not dimensionedness, is the
+// key — where no unit can be typed, refusing the bare number would leave the
+// row with no accepted input at all. Unlike the whitespace rule above, this one
+// is NOT the frontend being deliberately stricter — it mirrors the backend
+// exactly, reading the same ladder map the engine's `LADDER_COVERAGE` is built
+// from. So gating here only decides whether the user finds out inline, with the
+// typed text kept for correction, or asynchronously via a toast that discards
+// it.
 //
 // The rule and the edit buffer have to be designed together: `editSeed` below
-// seeds a dimensioned cell with a unit-BEARING literal, so an unmodified commit
+// seeds a COVERED cell with a unit-BEARING literal, so an unmodified commit
 // stays a no-op and a digits-only edit keeps its unit. Seeding the bare
-// magnitude would have pre-filled every dimensioned row with text this very
-// grammar refuses.
+// magnitude would have pre-filled every such row with text this very grammar
+// refuses. An UNCOVERED cell seeds the bare magnitude, which the same rule then
+// accepts — so both kinds of row commit untouched.
 
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
@@ -418,16 +422,22 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    * unmodified commit a true no-op again and keeps the unit through a
    * digits-only edit.
    *
-   * The composed seed is checked against `isValidValue` rather than assumed
-   * good: a dimension with no curated ladder (Torque) has no label this gate
-   * accepts, and neither does the ladders-not-fetched path. Those cells fall
-   * back to the bare magnitude — still refused on commit, but no worse than
-   * before, and the user sees the number they were looking at rather than a
-   * unit spelling the panel would reject.
+   * An UNCOVERED cell (Torque, Money, or any cell on the ladders-not-fetched
+   * path) takes the first branch and seeds the bare magnitude — which the
+   * coverage-conditional rule then ACCEPTS, so its untouched commit is a no-op
+   * too. `editSeedUnitLabel`'s `?? val.unit` fallback is therefore not reached
+   * for those cells, which is what stops a `USD`/`kg·m^-3` badge pre-filling
+   * the input with a spelling neither end can parse.
+   *
+   * The composed seed is still checked against `isValidValue` rather than
+   * assumed good: a malformed ladder payload can be present-but-rungless, which
+   * counts as covered here while offering no usable label. Such a cell falls
+   * back to the bare magnitude — refused on commit, but the user sees the
+   * number they were looking at rather than a unit spelling the panel rejects.
    */
   function editSeed(val: ValueData): string {
     const magnitude = displayValue(val);
-    if (acceptsBareNumber(val.dimension)) return magnitude;
+    if (acceptsBareNumber(val.dimension, props.unitLadders)) return magnitude;
     const unit = editSeedUnitLabel(val);
     if (!unit) return magnitude;
     const seeded = `${magnitude}${unit}`;
@@ -462,11 +472,17 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     if (value === '') return false;
     const dimension = props.values[cellId]?.dimension;
     // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity).
-    // `acceptsBareNumber` gates the whole branch (task #5757): a cell that carries a
-    // dimension needs a unit, because the engine used to resolve `20` in a Volume cell
-    // silently as 20 CUBIC METRES. Read from the same `dimension` the quantity branch
-    // below consults for `quantityReFor`, so both halves are scoped to the same cell.
-    if (acceptsBareNumber(dimension) && NUMBER_RE.test(value) && Number.isFinite(Number(value))) {
+    // `acceptsBareNumber` gates the whole branch (task #5757): a cell whose dimension a
+    // curated ladder covers needs a unit, because the engine used to resolve `20` in a
+    // Volume cell silently as 20 CUBIC METRES. It reads the same `dimension` AND the same
+    // ladder map the quantity branch below consults for `quantityReFor`, so the gate and
+    // the per-cell alphabet are two consumers of one coverage notion — a cell is told to
+    // supply a unit only when the alphabet beside it can express one.
+    if (
+      acceptsBareNumber(dimension, props.unitLadders) &&
+      NUMBER_RE.test(value) &&
+      Number.isFinite(Number(value))
+    ) {
       return true;
     }
     // Group 1 is the whole signed numeric literal, so the overflow check reads
