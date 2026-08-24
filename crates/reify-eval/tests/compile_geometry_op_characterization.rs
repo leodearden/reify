@@ -2580,7 +2580,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         SweepKind::Loft => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::Extrude => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit(0.02))],
+            vec![("distance".to_string(), lit_len(0.02))],
         ),
         SweepKind::Revolve => (
             vec![GeomRef::Step(0)],
@@ -2599,7 +2599,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::ExtrudeSymmetric => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit(0.02))],
+            vec![("distance".to_string(), lit_len(0.02))],
         ),
         SweepKind::SweepGuided => (
             vec![GeomRef::Step(0), GeomRef::Step(1), GeomRef::Step(2)],
@@ -2611,11 +2611,13 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::Pipe => (
             vec![GeomRef::Step(0)],
-            vec![("radius".to_string(), lit(0.005))],
+            vec![("radius".to_string(), lit_len(0.005))],
         ),
         SweepKind::ExtrudeInfinite => (
             vec![GeomRef::Step(0)],
             vec![
+                // `dx`/`dy`/`dz` are a dimensionless DIRECTION, not a length —
+                // they stay on `lit` (task 5744 boundary). Golden unchanged.
                 ("dx".to_string(), lit(0.0)),
                 ("dy".to_string(), lit(0.0)),
                 ("dz".to_string(), lit(1.0)),
@@ -2651,9 +2653,53 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         profile: GeometryHandleId(
             60,
         ),
-        distance: Real(
-            0.02,
-        ),
+        distance: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         SweepKind::Revolve => r#"Ok(
@@ -2689,9 +2735,53 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         profile: GeometryHandleId(
             60,
         ),
-        distance: Real(
-            0.02,
-        ),
+        distance: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         SweepKind::SweepGuided => r#"Ok(
@@ -2729,9 +2819,53 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         path: GeometryHandleId(
             60,
         ),
-        radius: Real(
-            0.005,
-        ),
+        radius: Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         SweepKind::ExtrudeInfinite => r#"Ok(

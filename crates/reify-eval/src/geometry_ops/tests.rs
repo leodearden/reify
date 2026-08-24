@@ -2022,18 +2022,38 @@
         );
     }
 
+    /// A NON-FINITE distance drops the op — e.g. a divide-by-zero in a
+    /// parametric expression reaching `extrude`.
+    ///
+    /// The distance is a LENGTH-dimensioned NaN, NOT a bare `Real` NaN
+    /// (task 5744, units-length γ, D7/C6). Before γ gated `sweep_extrude` a
+    /// bare `literal_f64(f64::NAN)` reached the site's own `is_finite()` guard;
+    /// after it, the units chokepoint rejects the bare value FIRST, and this
+    /// test would have silently degraded into a duplicate of the bare-rejection
+    /// rows in `compile_geometry_op_sweep_magnitude_slots_follow_the_three_state_contract`
+    /// while still passing its `is_err()`. `literal_length` keeps it on the
+    /// NON-FINITE arm, which is a genuinely different code path with a
+    /// genuinely different diagnostic. The `1e-15` sibling below is the
+    /// precedent for the shape.
+    ///
+    /// The Warning is asserted, not just the `Err`: `is_err()` alone cannot
+    /// distinguish the non-finite arm from the wrong-type arm, so without it a
+    /// regression back to a bare-path read would leave this green. The
+    /// caller-facing `Err` wording is deliberately NOT asserted — its
+    /// "missing or non-Length" residual for a non-finite LENGTH is owned by
+    /// task 6157, and pinning it here would make that fix a two-file change.
     #[test]
     fn compile_geometry_op_extrude_nan_distance_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Extrude with NaN distance — should return None (runtime edge case, not invariant)
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Extrude,
             profiles: vec![GeomRef::Step(0)],
-            args: vec![("distance".into(), literal_f64(f64::NAN))],
+            args: vec![("distance".into(), literal_length(f64::NAN))],
         };
 
+        let mut diagnostics = Vec::new();
         let result = compile_geometry_op(
             &op,
             &values,
@@ -2041,23 +2061,35 @@
             &[],
             &HashMap::new(),
             &HashMap::new(),
-            &mut Vec::new(),
+            &mut diagnostics,
         );
         assert!(result.is_err(), "NaN extrude distance should return None");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("non-finite Length")
+                    && d.message.contains("distance")),
+            "the NON-FINITE arm must be the one that fired (a Length NaN IS a \
+             Length, so the wrong-dimension wording would misdescribe it); \
+             got: {diagnostics:?}"
+        );
     }
 
+    /// The `+inf` half of [`compile_geometry_op_extrude_nan_distance_returns_none`];
+    /// see its doc for why the distance is a LENGTH-dimensioned infinity rather
+    /// than a bare `Real` one.
     #[test]
     fn compile_geometry_op_extrude_inf_distance_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Extrude with Inf distance — should return None (runtime edge case, not invariant)
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Extrude,
             profiles: vec![GeomRef::Step(0)],
-            args: vec![("distance".into(), literal_f64(f64::INFINITY))],
+            args: vec![("distance".into(), literal_length(f64::INFINITY))],
         };
 
+        let mut diagnostics = Vec::new();
         let result = compile_geometry_op(
             &op,
             &values,
@@ -2065,9 +2097,16 @@
             &[],
             &HashMap::new(),
             &HashMap::new(),
-            &mut Vec::new(),
+            &mut diagnostics,
         );
         assert!(result.is_err(), "Inf extrude distance should return None");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("non-finite Length")
+                    && d.message.contains("distance")),
+            "the NON-FINITE arm must be the one that fired; got: {diagnostics:?}"
+        );
     }
 
     #[test]

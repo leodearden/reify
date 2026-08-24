@@ -1550,15 +1550,30 @@ fn build_scale_negative_factor_emits_diagnostic() {
 /// 1. Call kernel exactly once — for the preceding Sphere that provides the
 ///    profile handle — but never call kernel for the Extrude op itself.
 /// 2. Return geometry_output=None (the realization as a whole fails).
-/// 3. Emit a Warning whose message contains 'extrude dropped', 'degenerate', and 'NaN'
-///    (the site-specific diagnostic from lib.rs:3670).
+/// 3. Emit a Warning naming the `distance` argument, `extrude`, and
+///    `non-finite Length`.
 /// 4. Emit an Error containing 'failed to compile geometry operation'.
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
 ///    called for the Extrude op).
 ///
-/// Uses NaN rather than 0.0 to exercise the non-finite arm of the check at
-/// lib.rs:3667-3678, complementing the existing zero-distance test in
-/// stress_sweep_degenerate.rs which covers the near-zero arm.
+/// Uses NaN rather than 0.0 to exercise the NON-FINITE arm, complementing the
+/// existing zero-distance test in stress_sweep_degenerate.rs which covers the
+/// near-zero arm.
+///
+/// WHICH non-finite arm MOVED, and why (task 5744, units-length γ, D7/C6):
+/// this fixture already supplied a LENGTH-dimensioned NaN, so once γ routed
+/// `sweep_extrude`'s `distance` through the R7 chokepoint the rejection moved
+/// UPSTREAM of the site-specific guard. `accept_length_value` now reports
+/// "argument 'distance' for extrude evaluated to a non-finite Length" and
+/// returns before `sweep_extrude`'s own `is_finite()` check is reached, so the
+/// old `["extrude dropped", "degenerate", "NaN"]` needles can no longer match.
+/// The needles are re-pointed at the chokepoint's wording rather than the test
+/// being weakened: the behaviour asserted in 1/2/4/5 is unchanged, and the
+/// message is strictly more informative (it names the ARGUMENT, which
+/// "extrude dropped: distance=NaN is degenerate" only did by accident of
+/// interpolating the value). The site-specific guard itself is retained as
+/// defence-in-depth for callers that bypass `compile_geometry_op`; see the
+/// comment above it in `geometry_ops.rs`.
 #[test]
 fn build_extrude_nonfinite_distance_emits_diagnostic() {
     use reify_compiler::SweepKind;
@@ -1606,7 +1621,7 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
-        &["extrude dropped", "degenerate", "NaN"],
+        &["distance", "extrude", "non-finite Length"],
     );
 }
 

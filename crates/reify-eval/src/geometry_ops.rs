@@ -3468,7 +3468,10 @@ fn sweep_extrude(
         step_handles,
         named_steps,
     )?;
-    let distance = eval_named_arg(
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Before this gate a
+    // bare `distance` was read as SI METRES by `Value::as_f64`, and the only
+    // guard below is a degeneracy floor a 1000×-too-large value sails past.
+    let distance = required_length_value(
         "distance",
         kind,
         args,
@@ -3476,8 +3479,14 @@ fn sweep_extrude(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
+    )?;
+    // RETAINED as defence-in-depth, not dead code: the near-zero arm is still
+    // reachable (a finite 0 is ACCEPTED by the units gate — D1 does not
+    // special-case it). Post-γ the NON-FINITE sub-condition and the `None` arm
+    // are unreachable *through* `compile_geometry_op`, because
+    // `accept_length_value` rejects a non-finite Length and only a numeric
+    // Length reaches here; they are kept for C2's corollary — any future
+    // caller that bypasses the funnel still meets a guard.
     match distance.as_f64() {
         Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
         Some(v) => {
@@ -3620,7 +3629,10 @@ fn sweep_extrude_symmetric(
         step_handles,
         named_steps,
     )?;
-    let distance = eval_named_arg(
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Before this gate a
+    // bare `distance` was read as SI METRES by `Value::as_f64`, and the only
+    // guard below is a degeneracy floor a 1000×-too-large value sails past.
+    let distance = required_length_value(
         "distance",
         kind,
         args,
@@ -3628,8 +3640,14 @@ fn sweep_extrude_symmetric(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
+    )?;
+    // RETAINED as defence-in-depth, not dead code: the near-zero arm is still
+    // reachable (a finite 0 is ACCEPTED by the units gate — D1 does not
+    // special-case it). Post-γ the NON-FINITE sub-condition and the `None` arm
+    // are unreachable *through* `compile_geometry_op`, because
+    // `accept_length_value` rejects a non-finite Length and only a numeric
+    // Length reaches here; they are kept for C2's corollary — any future
+    // caller that bypasses the funnel still meets a guard.
     match distance.as_f64() {
         Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
         Some(v) => {
@@ -3828,7 +3846,10 @@ fn sweep_pipe(
         step_handles,
         named_steps,
     )?;
-    let radius = eval_named_arg(
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Before this gate a
+    // bare `radius` was read as SI METRES by `Value::as_f64`, and the only
+    // guard below is a degeneracy floor a 1000×-too-large value sails past.
+    let radius = required_length_value(
         "radius",
         kind,
         args,
@@ -3836,8 +3857,7 @@ fn sweep_pipe(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'radius' for {}", kind))?;
+    )?;
     Ok(reify_ir::GeometryOp::Pipe {
         path: path_handle,
         radius,
