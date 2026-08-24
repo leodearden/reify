@@ -1898,25 +1898,47 @@ fn parse_value_string_unit_table_ordering_invariant() {
     }
 }
 
-// --- UNIT_TABLE descending-length ordering ---
+// --- Composed unit index descending-length ordering ---
 
-/// Directly assert that UNIT_TABLE is sorted by descending suffix length.
+/// Directly assert that the composed unit index is sorted by descending suffix
+/// BYTE length.
 ///
-/// The debug_assert in parse_value_string vanishes in release builds; this
-/// #[test] provides coverage in both debug and release builds. It references
-/// the pub(crate) const UNIT_TABLE extracted from parse_value_string in step-4.
+/// The `debug_assert!` in `parse_value_string` vanishes in release builds; this
+/// `#[test]` provides coverage in both. That is the whole reason it exists
+/// alongside the assertion, and the reason survives task #5757 retargeting it
+/// from the retired five-entry `UNIT_TABLE` onto
+/// `composed_unit_index()` — the index is now DERIVED from two other tables, so
+/// the ordering is produced by a sort rather than by hand, and a future change
+/// to how it is built must not silently drop it.
+///
+/// Byte length, not char count: `strip_suffix` works on bytes and the curated
+/// superscript glyphs (`mm²`, `kg/m³`) are two bytes each.
 #[test]
 fn unit_table_ordering_invariant_holds() {
-    use crate::engine::UNIT_TABLE;
+    use crate::engine::composed_unit_index;
 
-    let sorted = UNIT_TABLE.windows(2).all(|w| w[0].0.len() >= w[1].0.len());
+    let index = composed_unit_index();
+    assert!(
+        !index.is_empty(),
+        "the composed unit index must be non-vacuous — an empty one satisfies \
+         the ordering invariant trivially"
+    );
+    let sorted = index
+        .windows(2)
+        .all(|w| w[0].label.len() >= w[1].label.len());
     assert!(
         sorted,
-        "UNIT_TABLE entries must be sorted by descending suffix length (longest first). \
-         Adjacent pairs: {:?}",
-        UNIT_TABLE
+        "composed unit index entries must be sorted by descending suffix byte \
+         length (longest first), or `m` shadows `cm` and `m^3` shadows \
+         `kg/m^3`. Adjacent pairs: {:?}",
+        index
             .windows(2)
-            .map(|w| (w[0].0, w[0].0.len(), w[1].0, w[1].0.len()))
+            .map(|w| (
+                w[0].label.as_str(),
+                w[0].label.len(),
+                w[1].label.as_str(),
+                w[1].label.len()
+            ))
             .collect::<Vec<_>>()
     );
 }
@@ -2182,6 +2204,199 @@ fn curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap() {
              overlap was {overlapping:?}"
         );
     }
+}
+
+// --- parse_value_string over the composed accept-set (task #5757) ---
+
+/// Assert `parse_value_string(input)` yields a `Scalar` with the expected SI
+/// magnitude and dimension.
+///
+/// Expected values are exact by construction — `si_value = magnitude *
+/// si_scale`, with the scale read from the same curated table the resolver
+/// reads — so the 1e-10 absolute tolerance (the convention established by
+/// `parse_value_string_all_units_correct` on values of this magnitude) only
+/// absorbs the multiplication.
+fn assert_parses_to_scalar(input: &str, expected_si: f64, expected_dim: reify_core::DimensionVector) {
+    use reify_ir::Value;
+
+    let v = parse_value_string(input).unwrap_or_else(|e| panic!("{input:?} should parse: {e}"));
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension, expected_dim,
+                "{input:?} must carry dimension {expected_dim:?}, got {dimension:?}"
+            );
+            assert!(
+                (si_value - expected_si).abs() < 1e-10,
+                "{input:?} → {si_value}, expected {expected_si}"
+            );
+        }
+        other => panic!("{input:?} must parse to Value::Scalar, got {other:?}"),
+    }
+}
+
+/// The nineteen labels the property editor admitted and `parse_value_string`
+/// refused — the reported defect — now parse.
+///
+/// One representative per resolution branch: an `in` that was in the DSL
+/// builtin table but missing from the GUI's; the compound Area/Volume/Density
+/// spellings that are in NEITHER the builtin table nor the .ri lexer's reach
+/// and exist only as curated display labels; the single-rung coherent-SI
+/// ladders (N, J, W); and `L`, which is not a DSL unit at all
+/// (`reify-compiler/stdlib/units.ri` declares no SI volume units) and is
+/// reachable ONLY through the display ladders.
+#[test]
+fn parse_value_string_accepts_the_ladder_labels_the_property_editor_admits() {
+    use reify_core::DimensionVector;
+
+    // Was in reify_core::BUILTIN_UNITS but absent from the GUI's five-entry table.
+    assert_parses_to_scalar("3in", 3.0 * 0.0254, DimensionVector::LENGTH);
+
+    // Volume — `L` and the compound spellings, none of them DSL unit symbols.
+    assert_parses_to_scalar("5L", 0.005, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5mm^3", 5e-9, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5cm^3", 5e-6, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5m^3", 5.0, DimensionVector::VOLUME);
+
+    // Area.
+    assert_parses_to_scalar("2mm^2", 2e-6, DimensionVector::AREA);
+    assert_parses_to_scalar("2cm^2", 2e-4, DimensionVector::AREA);
+    assert_parses_to_scalar("2m^2", 2.0, DimensionVector::AREA);
+
+    // Mass — `kg`/`g` were builtins the GUI table lacked.
+    assert_parses_to_scalar("4kg", 4.0, DimensionVector::MASS);
+    assert_parses_to_scalar("4g", 0.004, DimensionVector::MASS);
+
+    // Pressure.
+    assert_parses_to_scalar("10Pa", 10.0, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("10kPa", 1e4, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("10MPa", 1e7, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("10GPa", 1e10, DimensionVector::PRESSURE);
+
+    // Density — the compound-with-solidus spellings.
+    assert_parses_to_scalar("2kg/m^3", 2.0, DimensionVector::MASS_DENSITY);
+    assert_parses_to_scalar("2g/cm^3", 2000.0, DimensionVector::MASS_DENSITY);
+
+    // The single-rung coherent-SI ladders.
+    assert_parses_to_scalar("750N", 750.0, DimensionVector::FORCE);
+    assert_parses_to_scalar("120J", 120.0, DimensionVector::ENERGY);
+    assert_parses_to_scalar("40W", 40.0, DimensionVector::POWER);
+}
+
+/// The raw superscript spellings parse too, making the backend a strict
+/// SUPERSET of the frontend gate.
+///
+/// `normalizeUnitLabel` is one-way, so the property editor admits only the
+/// ASCII form and a user who copy-pastes the label shown in the unit picker
+/// types the superscript one. Accepting both can never cause a
+/// frontend-accepted value to be refused, which is the only direction that
+/// reproduces the reported defect.
+#[test]
+fn parse_value_string_also_accepts_the_raw_superscript_ladder_spellings() {
+    use reify_core::DimensionVector;
+
+    assert_parses_to_scalar("5mm\u{00B3}", 5e-9, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5m\u{00B3}", 5.0, DimensionVector::VOLUME);
+    assert_parses_to_scalar("2cm\u{00B2}", 2e-4, DimensionVector::AREA);
+    assert_parses_to_scalar("2kg/m\u{00B3}", 2.0, DimensionVector::MASS_DENSITY);
+}
+
+/// The SI base symbols no curated ladder carries reach the parser through the
+/// `BUILTIN_UNITS` half of the composed index — the delegation the units-length
+/// PRD §M9 names.
+#[test]
+fn parse_value_string_accepts_the_builtin_symbols_no_ladder_carries() {
+    use reify_core::DimensionVector;
+
+    assert_parses_to_scalar("2s", 2.0, DimensionVector::TIME);
+    assert_parses_to_scalar("300K", 300.0, DimensionVector::TEMPERATURE);
+    assert_parses_to_scalar("5A", 5.0, DimensionVector::CURRENT);
+    assert_parses_to_scalar("3mol", 3.0, DimensionVector::AMOUNT_OF_SUBSTANCE);
+    assert_parses_to_scalar("7cd", 7.0, DimensionVector::LUMINOUS_INTENSITY);
+}
+
+/// Longest-suffix-first plus the remainder-must-parse guard together
+/// disambiguate the compound labels.
+///
+/// `5kg/m^3` is the interesting one: `m^3` is also a registered label and also
+/// a suffix of the input, but stripping it leaves `"5kg/"`, which is not a
+/// finite f64 — so even if the ordering ever regressed, the candidate is
+/// rejected and the scan continues to `kg/m^3`. Ordering and the remainder
+/// guard are independent defences; this pins both.
+#[test]
+fn parse_value_string_compound_labels_are_not_shadowed_by_their_own_suffixes() {
+    use reify_core::DimensionVector;
+
+    // `m^3` (Volume) is a suffix of `kg/m^3` (Density).
+    assert_parses_to_scalar("5kg/m^3", 5.0, DimensionVector::MASS_DENSITY);
+    // `cm^3` (Volume) is a suffix of `g/cm^3` (Density).
+    assert_parses_to_scalar("5g/cm^3", 5000.0, DimensionVector::MASS_DENSITY);
+    // `Pa` (Pressure, 1.0) is a suffix of `MPa`/`kPa`/`GPa`.
+    assert_parses_to_scalar("5MPa", 5e6, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("5kPa", 5e3, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("5GPa", 5e9, DimensionVector::PRESSURE);
+    // `m^2` (Area) is a suffix of `mm^2`/`cm^2`.
+    assert_parses_to_scalar("5mm^2", 5e-6, DimensionVector::AREA);
+    // The pre-existing case, restated against the widened table: `m` must not
+    // shadow `cm`, and now also must not shadow `in`/`mm`.
+    assert_parses_to_scalar("100cm", 1.0, DimensionVector::LENGTH);
+    assert_parses_to_scalar("100mm", 0.1, DimensionVector::LENGTH);
+}
+
+/// Widening the accept-set must not change anything else `parse_value_string`
+/// does.
+///
+/// The legacy five are re-asserted here as a regression LOCK alongside
+/// `parse_value_string_all_units_correct` (which pins the same five in the
+/// pre-#5757 style): they are the units every existing GUI test and call site
+/// uses, so a change in what they mean would be a silent unit bug across the
+/// whole panel. Bare numbers, booleans and the unparseable case are pinned
+/// because the new suffix scan runs BEFORE all three.
+#[test]
+fn parse_value_string_widening_does_not_disturb_the_non_ladder_paths() {
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
+
+    // The legacy five, unchanged.
+    assert_parses_to_scalar("5mm", 0.005, DimensionVector::LENGTH);
+    assert_parses_to_scalar("5cm", 0.05, DimensionVector::LENGTH);
+    assert_parses_to_scalar("5m", 5.0, DimensionVector::LENGTH);
+    assert_parses_to_scalar("90deg", std::f64::consts::FRAC_PI_2, DimensionVector::ANGLE);
+    assert_parses_to_scalar("1rad", 1.0, DimensionVector::ANGLE);
+
+    // Bare numbers still yield Int/Real — `parse_value_string` itself stays
+    // dimension-agnostic. The bare-number REJECTION is a separate, cell-scoped
+    // gate (`parse_value_string_for_cell`), because this function has callers
+    // with no cell context.
+    assert!(matches!(parse_value_string("10"), Ok(Value::Int(10))));
+    assert!(matches!(parse_value_string("-3"), Ok(Value::Int(-3))));
+    match parse_value_string("2.0") {
+        Ok(Value::Real(f)) => assert!((f - 2.0).abs() < 1e-10, "2.0 → {f}"),
+        other => panic!("`2.0` must parse to Value::Real, got {other:?}"),
+    }
+    match parse_value_string("1e3") {
+        Ok(Value::Real(f)) => assert!((f - 1000.0).abs() < 1e-10, "1e3 → {f}"),
+        other => panic!("`1e3` must parse to Value::Real, got {other:?}"),
+    }
+
+    // Booleans still short-circuit ahead of the suffix scan.
+    assert!(matches!(parse_value_string("true"), Ok(Value::Bool(true))));
+    assert!(matches!(parse_value_string("false"), Ok(Value::Bool(false))));
+
+    // And an unknown suffix still errors, with the message the frontend pins.
+    let err = parse_value_string("10xyz").expect_err("`10xyz` must not parse");
+    assert!(
+        err.contains("Cannot parse value") && err.contains("10xyz"),
+        "unknown-unit error must name the input; got {err:?}"
+    );
+    // A registered label with no numeric part is still not a value.
+    assert!(parse_value_string("mm^3").is_err(), "bare `mm^3` must not parse");
+    // A number with a nearly-right suffix is still refused rather than being
+    // silently truncated to the shorter registered label it ends with.
+    assert!(parse_value_string("10zPa").is_err(), "`10zPa` must not parse");
 }
 
 // --- Tessellation integration ---
