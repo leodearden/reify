@@ -48,6 +48,9 @@ tauri-plugin-shell = { version = "2", optional = true }
 # dependent's features. That is a silent dependency on some other crate in the
 # build keeping them enabled, and it breaks the moment `reify-gui` is built with
 # a narrower feature slice.
+#
+# The same principle applies to the TEST target — see the `tokio` entry under
+# `[dev-dependencies]`, which names what the tests alone need.
 tokio = { workspace = true, features = ["process", "time", "sync", "rt"] }
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 serde = { workspace = true, features = ["derive"] }
@@ -61,6 +64,18 @@ reify-build-utils.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
+# The test target's own tokio slice, named for the same reason the normal
+# dependency above names its own: `#[tokio::test]` expands to a `macros` +
+# runtime pair, and this crate's tests use both flavours — the bare
+# `#[tokio::test]` (a CURRENT-THREAD runtime, so `rt`) and
+# `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` in
+# `claude_bridge_tests.rs` (so `rt-multi-thread`). `macros` in particular was
+# arriving purely by unification from the workspace root, i.e. from whichever
+# OTHER crate in the build happened to enable it; a narrower slice would have
+# broken the test target exactly as it would have broken `main.rs`. Cargo unions
+# these with the normal dependency's features when building tests, so `sync` /
+# `time` / `process` are not repeated here.
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 reify-eval = { workspace = true, features = ["test-instrumentation"] }
 reify-mcp = { workspace = true, features = ["test-support"] }
 reify-lsp = { workspace = true, features = ["test-support"] }
