@@ -1007,10 +1007,6 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
 /// every solver iteration, while only the rejection branches ever render a name.
 /// A `String` per coordinate would cost a 20×20 grid 1200 heap allocations per
 /// rebuild on the fully clean path, which is the interactive hot path.
-// `#[allow(dead_code)]`, TRANSIENT as above: `GridCoordName` is exercised by the
-// step-1 unit rows immediately, but its production caller is the NurbsSurface
-// control-point loop, which lands later in the same ladder. Remove then.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct GridCoordName {
     /// Row index into the control-point grid (the `u` direction).
@@ -1026,7 +1022,6 @@ struct GridCoordName {
 /// [`Stride`] records, and for the same reason: the renderer runs only once an
 /// author already has a broken `.ri` file, the worst possible place to discover
 /// an index typo.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 enum Axis3 {
     X,
@@ -1034,7 +1029,6 @@ enum Axis3 {
     Z,
 }
 
-#[allow(dead_code)]
 impl Axis3 {
     /// The axis letter, as it appears in the rendered name.
     fn letter(self) -> &'static str {
@@ -1046,7 +1040,6 @@ impl Axis3 {
     }
 }
 
-#[allow(dead_code)]
 impl GridCoordName {
     /// The X coordinate of the pole at `[row][col]`.
     fn x(row: usize, col: usize) -> Self {
@@ -1847,7 +1840,10 @@ pub(crate) fn compile_geometry_op(
                     .ok_or_else(|| "nurbs_surface: missing v_degree argument".to_string())?;
 
                     // Decode control_points: Value::List(rows) → Vec<Vec<[f64; 3]>>.
-                    // Each inner element is decoded via point3_components (SI metres).
+                    // Each pole is a POSITION in space, so every coordinate goes
+                    // through the Contract C length gate (task 5745) — this arm
+                    // is the SURFACE sibling of the variadic `nurbs` CURVE poles
+                    // task 5658 gated, and it was the last decoded-value bypass.
                     let cp_rows = match cp_val {
                         reify_ir::Value::List(rows) => rows,
                         other => {
@@ -1860,32 +1856,71 @@ pub(crate) fn compile_geometry_op(
                             );
                         }
                     };
-                    let control_points: Vec<Vec<[f64; 3]>> = cp_rows
-                        .iter()
-                        .enumerate()
-                        .map(|(ri, rv)| -> Result<Vec<[f64; 3]>, String> {
-                            match rv {
-                                reify_ir::Value::List(pts) => pts
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(ci, pt)| {
-                                        point3_components(pt).ok_or_else(|| {
-                                            format!(
-                                                "nurbs_surface: control_points[{}][{}] must be \
-                                                 a Point3<Length>, got {:?}",
-                                                ri, ci, pt
-                                            )
-                                        })
-                                    })
-                                    .collect(),
-                                other => Err(format!(
+                    // Explicit LOOPS, not the nested `.map(…).collect()` adaptor
+                    // pair this replaced, for two reasons. Mechanically, two lazy
+                    // closures cannot cleanly reborrow the `&mut Vec<Diagnostic>`
+                    // that `accept_length_point3` needs. Behaviourally — and this
+                    // is the reason that matters — `collect::<Result<_,_>>()`
+                    // SHORT-CIRCUITS on the first bad pole, which would report one
+                    // coordinate per rebuild. A grid is written as one gesture, so
+                    // a bare grid is usually bare in every cell; the loops are what
+                    // deliver task 5743's every-member guarantee across the WHOLE
+                    // grid, with the FIRST error returned (same precedence as
+                    // `required_length_args`).
+                    let mut control_points: Vec<Vec<[f64; 3]>> = Vec::with_capacity(cp_rows.len());
+                    let mut cp_err: Option<String> = None;
+                    for (ri, rv) in cp_rows.iter().enumerate() {
+                        let reify_ir::Value::List(pts) = rv else {
+                            // A malformed ROW is a structural failure, not a units
+                            // one: it stops the read outright, exactly as before.
+                            // `cp_err.unwrap_or_else` keeps FIRST-error-wins across
+                            // BOTH kinds — a bare pole in an earlier row must not be
+                            // masked by a malformed later row.
+                            return Err(cp_err.unwrap_or_else(|| {
+                                format!(
                                     "nurbs_surface: control_points row {} must be a List of \
                                      points, got {:?}",
-                                    ri, other
-                                )),
+                                    ri, rv
+                                )
+                            }));
+                        };
+                        let mut row_out: Vec<[f64; 3]> = Vec::with_capacity(pts.len());
+                        for (ci, pt) in pts.iter().enumerate() {
+                            match accept_length_point3(
+                                pt,
+                                [
+                                    GridCoordName::x(ri, ci),
+                                    GridCoordName::y(ri, ci),
+                                    GridCoordName::z(ri, ci),
+                                ],
+                                kind,
+                                || {
+                                    format!(
+                                        "nurbs_surface: control_points[{}][{}] must be \
+                                         a Point3<Length>, got {:?}",
+                                        ri, ci, pt
+                                    )
+                                },
+                                diagnostics,
+                            ) {
+                                Ok(p) => row_out.push(p),
+                                Err(e) => {
+                                    // Continue rather than bail, so EVERY remaining
+                                    // pole is still read and diagnosed. The filler
+                                    // never escapes: `cp_err` is returned below,
+                                    // before `control_points` is used for anything.
+                                    row_out.push([0.0; 3]);
+                                    if cp_err.is_none() {
+                                        cp_err = Some(e);
+                                    }
+                                }
                             }
-                        })
-                        .collect::<Result<_, _>>()?;
+                        }
+                        control_points.push(row_out);
+                    }
+                    if let Some(e) = cp_err {
+                        return Err(e);
+                    }
 
                     // Validate grid shape (non-empty + rectangular).
                     let n_u = control_points.len();
@@ -1922,6 +1957,18 @@ pub(crate) fn compile_geometry_op(
                     }
 
                     // Decode weights: Value::List(rows) → Vec<Vec<f64>>.
+                    //
+                    // DELIBERATELY NOT LENGTH-GATED, and neither are the four reads
+                    // that follow — each dimensionless for a stated reason, the
+                    // same four `accept_variadic_length_args`' table already
+                    // records for the `nurbs` CURVE poles, of which this arm is the
+                    // SURFACE sibling:
+                    //   - `weights`  — rational blending factors;
+                    //   - `u_knots` / `v_knots` — parameter-space values;
+                    //   - `u_degree` / `v_degree` — polynomial degrees, i.e. counts.
+                    // None is a quantity in metres, so demanding a dimension of them
+                    // would reject correct `.ri` code. They stay on the bare
+                    // `as_f64` / `Value::Int` paths untouched by task 5745.
                     let w_rows = match w_val {
                         reify_ir::Value::List(rows) => rows,
                         other => {
