@@ -619,6 +619,51 @@ fn dispatch_without_a_worker_still_propagates_panics() {
     );
 }
 
+/// (o2) The `SendError` recovery arm of the BLOCKING lane: a job handed back by
+/// a dead queue still runs, INLINE on the submitting frame, and its value
+/// reaches the caller.
+///
+/// The mirror of (z), and a DIFFERENT code path from (n)'s `None` arm: `None`
+/// means "there was never a lane", while this means "the lane existed and its
+/// consumer is gone", which is reached only after the job has been boxed and
+/// pushed. Both must honour the same "never lose a result" promise, and until
+/// this test that half rested on prose.
+///
+/// Note the OPPOSITE expectation from (z): the blocking lane's jobs are plain
+/// sync closures with a stated runtime-agnostic precondition (see `dispatch`),
+/// so running the recovered job right here is legal and is the cheapest place to
+/// run it. The async lane's job pre-bakes a `Handle::block_on` and therefore
+/// must go off-frame — the two arms differ because their JOB TYPES differ, not
+/// by oversight.
+///
+/// Provoked deterministically with a SYNTHETIC sender whose consumer is already
+/// gone: no real lane, no `pthread_create` failure, no timing.
+#[test]
+fn dispatch_recovers_a_handed_back_job_inline_on_the_caller() {
+    use crate::large_stack::{JobSender, dispatch};
+
+    // Consumer dropped before any send: every `send` fails at once with
+    // `SendError(job)`, which is the arm under test.
+    let (tx, rx) = std::sync::mpsc::channel();
+    drop(rx);
+    let dead = JobSender::new("test-dead-blocking", tx);
+
+    let caller_id = std::thread::current().id();
+
+    let (value, ran_on) = dispatch(Some(&dead), || (99u32, std::thread::current().id()));
+
+    assert_eq!(
+        value, 99,
+        "a job handed back by a dead queue must still be run and its value \
+         delivered — degraded, never lost"
+    );
+    assert_eq!(
+        ran_on, caller_id,
+        "the blocking lane's recovered job runs INLINE in the submitting frame, \
+         which its runtime-agnostic precondition makes legal"
+    );
+}
+
 // ── Named LANES: one mechanism, two instances (task 5772) ────────────────────
 //
 // `lsp_request` also needs a large stack, and the task asks for ONE worker
