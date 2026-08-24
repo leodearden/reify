@@ -204,11 +204,202 @@ fn domain_spec(
     }
 }
 
-/// Recursive backtracking search with forward-checking.
+/// The result of an ALL-SOLUTIONS enumeration (PRD2 §4.2, task β #5468).
+///
+/// # Why an enum, and not the `{ solutions, complete }` struct §4.2 sketches
+///
+/// [`build_variable_domain`] can REJECT an auto param outright — an unbounded
+/// `Int`, a variant-less `Enum`, an unsupported type — and `solve()` has always
+/// mapped that to `SolveResult::NoProgress { reason }`. A bare struct has
+/// nowhere to put that rejection but `{ solutions: [], complete: ? }`, which is
+/// exactly the shape a PROVEN CONTRADICTION produces. Two opposite verdicts —
+/// "this model is unsatisfiable" and "I cannot even build a domain for it" —
+/// would then be indistinguishable to every consumer, which is the silent
+/// failure D5 exists to forbid. Keeping the rejection on its own variant also
+/// lets `solve()` keep its `NoProgress` mapping byte-identical to pre-β
+/// behaviour (D1), so the two cannot drift.
+#[derive(Debug)]
+pub enum SolveAllResult {
+    /// A domain was built for every auto param and the search ran.
+    Enumerated {
+        /// Every solution found, in deterministic search order (D4): auto
+        /// params in `auto_params` declaration order, values in `DomainSpec`
+        /// construction order. No RNG, no clock.
+        solutions: Vec<HashMap<ValueCellId, Value>>,
+        /// `true` iff the search EXHAUSTED the space — i.e. every point was
+        /// visited and either collected or pruned.
+        ///
+        /// `false` means the search STOPPED EARLY (the solution `cap`, or the
+        /// node budget added in step β.4); it does NOT mean the space is empty.
+        /// The distinction is load-bearing in both directions:
+        /// `{ solutions: [], complete: true }` is a PROOF of unsatisfiability,
+        /// while `{ solutions: [], complete: false }` proves nothing at all —
+        /// and every honesty claim built on this carrier (`unique`,
+        /// `ProvenOptimal`) is conjoined with this flag rather than asserted.
+        ///
+        /// Deliberately CONSERVATIVE at the cap boundary: the cap is checked at
+        /// the push, so a search whose `cap`-th solution happened to be the last
+        /// one in the space still reports `false`. It did not prove it had
+        /// exhausted anything, and saying so would be a guess dressed as a
+        /// proof.
+        complete: bool,
+    },
+    /// No domain could be built for at least one auto param; no search ran.
+    ///
+    /// `reason` is verbatim the `domain_spec` rejection string `solve()` hands
+    /// to `SolveResult::NoProgress`, so the two entry points cannot drift.
+    NotEnumerable {
+        /// The `domain_spec` rejection, naming the param it could not enumerate.
+        reason: String,
+    },
+}
+
+/// Everything a backtracking search READS but never mutates, gathered so the
+/// recursion carries four parameters instead of nine.
+///
+/// Not merely cosmetic: `backtrack` already sat at seven parameters, and the
+/// enumeration generalisation adds an output vector, a solution cap and (step
+/// β.4) a node budget on top. Threading those positionally would trip
+/// `clippy::too_many_arguments` under the workspace's `-D warnings` gate, and —
+/// more to the point — a nine-argument recursive call is where a transposed
+/// pair of same-typed arguments hides. The MUTABLE search state (`assignment`,
+/// the collected solutions) stays out of here deliberately, so the borrow
+/// checker keeps enforcing the split rather than the reader having to.
+struct SearchContext<'a> {
+    variables: &'a [Variable],
+    /// Constraints paired with their pre-computed cell refs.
+    constraints: &'a [(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)],
+    auto_param_ids: &'a HashSet<ValueCellId>,
+    functions: &'a [reify_ir::CompiledFunction],
+    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
+    /// Stop once this many solutions have been collected.
+    cap: usize,
+}
+
+/// The owned half of a search's inputs — what [`build_search_inputs`] produces
+/// and [`SearchContext`] borrows.
+struct SearchInputs {
+    variables: Vec<Variable>,
+    auto_param_ids: HashSet<ValueCellId>,
+    constraints: Vec<(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)>,
+    /// The starting `ValueMap`: `current_values` with every auto id stripped
+    /// back out. See the strip's own rationale below — it is load-bearing, not
+    /// hygiene.
+    assignment: ValueMap,
+}
+
+/// Build the inputs a CP-SAT search needs, or report why it cannot.
+///
+/// THE single preamble, consumed by both `ConstraintSolver::solve` and
+/// [`CpSatSolver::solve_all`]. It exists as one function rather than two copies
+/// because the auto-id strip below is a correctness repair (task #5467) that a
+/// second, hand-copied preamble would silently omit — which is precisely how the
+/// spike this task adapts got it wrong.
+fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, String> {
+    // Build variable domains. `domain_spec`'s rejections come through here, and
+    // are the ONLY error this function can produce.
+    let mut variables = Vec::with_capacity(problem.auto_params.len());
+    for param in &problem.auto_params {
+        variables.push(Variable {
+            id: param.id.clone(),
+            domain: build_variable_domain(param, &problem.constraints)?,
+        });
+    }
+
+    // Collect auto param IDs for forward-checking
+    let auto_param_ids: HashSet<ValueCellId> =
+        problem.auto_params.iter().map(|ap| ap.id.clone()).collect();
+
+    // Pre-compute constraint refs
+    let constraints: Vec<_> = problem
+        .constraints
+        .iter()
+        .map(|(id, expr)| (id.clone(), expr.clone(), collect_constraint_refs(expr)))
+        .collect();
+
+    // Initialize assignment with current_values (for non-auto-param refs).
+    //
+    // The parenthetical is load-bearing, so it is ENFORCED rather than
+    // merely intended (task #5467): every auto id is stripped back out
+    // below. `current_values` is the engine's whole value map
+    // (`build_solver_problem`'s `current_values = values.clone()`) and DOES
+    // carry same-scope
+    // auto entries, so without the strip an unassigned auto holds a STALE
+    // CONCRETE value instead of being absent — and `backtrack_all`'s
+    // forward-check then prunes a feasible branch off a value the search
+    // had not chosen yet. Three real sources, (iii) first because it needs
+    // no eval layer at all and so is reachable purely inside this crate:
+    //
+    //  (iii) `SolverRegistry::solve_lexicographic` warm-starts stage N+1
+    //        from stage N's solution INSIDE one `solve()` call.
+    //  (i)   A second `Engine::eval_cached` at the same `VersionId` serves a
+    //        previously-SOLVED auto straight back from cache into `values`,
+    //        which is then cloned to here.
+    //  (ii)  A `param_override` on an auto cell, written as `Determined` yet
+    //        still admitted to `auto_params` by `build_auto_param_list`.
+    //
+    // (ii) is NOT staleness and is not described as such: it is a user's
+    // explicit pin, and stripping it means CP-SAT searches that auto's whole
+    // domain and can answer with a value the override did not name. It is
+    // stripped anyway because that is what the only production-reachable
+    // solver already does — `solver.rs`'s `build_trial_values` clones
+    // `current_values` and OVERWRITES every auto id in it at every trial
+    // point, so `DimensionalSolver` ignores such an override too. Honouring
+    // it here and nowhere else would make the two solvers disagree about the
+    // same model. Pinned by
+    // `an_overridden_auto_is_searched_rather_than_pinned_to_its_seed`.
+    // Whether an overridden auto belongs in `auto_params` AT ALL is the real
+    // upstream question and lives in `build_auto_param_list`.
+    //
+    // Strip ONLY the auto ids: `current_values` is the sole channel by
+    // which a CP-SAT constraint sees a NON-auto base value (pinned
+    // connector autos are inserted there by `build_solver_problem`), so
+    // starting from
+    // an empty map instead would silently break every such model.
+    //
+    // Clone-then-`remove` rather than a filtered rebuild: `ValueMap`
+    // (reify-ir/src/value.rs) wraps a persistent `im::HashMap`, so `Clone`
+    // is an O(1) structural share and this loop is O(#auto_params) —
+    // cheaper than an O(|current_values|) rebuild, and `ValueMap` has no
+    // `FromIterator` impl to `collect` into anyway.
+    let mut assignment = problem.current_values.clone();
+    for id in &auto_param_ids {
+        assignment.remove(id);
+    }
+
+    Ok(SearchInputs {
+        variables,
+        auto_param_ids,
+        constraints,
+        assignment,
+    })
+}
+
+/// Recursive backtracking search with forward-checking, collecting EVERY
+/// solution it reaches until `ctx.cap` is met.
 ///
 /// At each level, picks the next unassigned variable, tries each domain value,
 /// materialises `dependent_cells` against that trial assignment, evaluates all
 /// constraints whose variables are fully assigned, and prunes on violation.
+/// When every variable is assigned, the point is a solution: it is pushed to
+/// `out` and the search continues from the next sibling.
+///
+/// Returns `true` iff the subtree at this node was EXHAUSTED — every point
+/// below it visited and either collected or pruned. `false` means the search
+/// stopped early because `ctx.cap` solutions had been collected, and it
+/// propagates all the way out: the caller's `complete` flag is exactly this
+/// return value at the root.
+///
+/// # Why there is ONE backtracker and not two (PRD2 §3.9, G7)
+///
+/// `solve()` is `solve_all(problem, 1)` plus the first-solution extraction, and
+/// it is written that way rather than as a sibling function. The spike this task
+/// adapts kept a separate `backtrack_all` alongside `backtrack`; both the
+/// per-trial fold below and the seed strip in [`build_search_inputs`] were
+/// missing from that copy, which is the lock-step-twin failure mode in its most
+/// literal form — a correctness repair applied to one twin and not the other.
+/// With one function, the α (#5467) regression locks guarding `solve()` guard
+/// the enumeration path too, by construction.
 ///
 /// # Why the fold is inside the value loop (task #5467, PRD2 §3 decision 9)
 ///
@@ -216,6 +407,10 @@ fn domain_spec(
 /// `auto_refs`, so `all_assigned` is vacuously true and the constraint is
 /// evaluated against that cell's stale/absent base value. `eval_expr` returns a
 /// non-`Bool`, the skip-don't-prune arm fires, and the search prunes nothing.
+/// On the first-solution path that surfaced as the wrong VALUE; on the
+/// enumeration path it surfaces as the wrong CARDINALITY — the entire domain
+/// product comes back as "solutions", with `complete: true` then licensing a
+/// `ProvenOptimal` ranking over a set full of infeasible points.
 ///
 /// # Why no explicit unwind is needed
 ///
@@ -229,17 +424,23 @@ fn domain_spec(
 /// `two_autos_*_abandoned_sibling_branch` unit below pins this, because the
 /// argument is not obvious from the code alone.
 ///
+/// It holds unchanged under enumeration, and for the same reason: collecting a
+/// solution at the base case does not stop the search, so the very next trial
+/// re-folds every cell before reading one. The collected `HashMap` is a copy
+/// taken at the base case, so nothing a later branch folds can reach back into
+/// an already-collected solution.
+///
 /// That `Undef` re-evaluation is TRUE ONLY GIVEN THE STRIPPED SEED, and the
-/// guarantor is named deliberately (task #5467): `solve` removes every auto id
-/// from the `current_values` seed before the search starts (see the seed site
-/// there). A deeper auto is therefore genuinely ABSENT, not holding a stale
-/// value carried in from a previous resolution round or an earlier
-/// lexicographic stage. WITHOUT that strip this fold is not self-correcting:
-/// it materialises dependent cells from a mix of trial and stale values, and
-/// the `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The same stale seed
-/// also defeats `all_assigned` on the direct path, with no dependent cell
-/// involved at all — which is why the repair belongs at the seed and not in
-/// `fold_dependent_cells`. The `*_stale_*` units below pin both arms.
+/// guarantor is named deliberately (task #5467): [`build_search_inputs`]
+/// removes every auto id from the `current_values` seed before the search
+/// starts (see the seed site there). A deeper auto is therefore genuinely
+/// ABSENT, not holding a stale value carried in from a previous resolution
+/// round or an earlier lexicographic stage. WITHOUT that strip this fold is not
+/// self-correcting: it materialises dependent cells from a mix of trial and
+/// stale values, and the `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The
+/// same stale seed also defeats `all_assigned` on the direct path, with no
+/// dependent cell involved at all — which is why the repair belongs at the seed
+/// and not in `fold_dependent_cells`. The `*_stale_*` units below pin both arms.
 ///
 /// # Cost of the TOTAL fold, and why the obvious saving is unsound as stated
 ///
@@ -247,7 +448,7 @@ fn domain_spec(
 /// `O(|dependent_cells| · Π|domain_i|)` expression evaluations plus one
 /// persistent-map insert each — and a `Type::Int` domain runs to
 /// `MAX_INT_DOMAIN` = 1000 values, so the multiplier is not academic. The
-/// obvious saving is to hand `backtrack` each cell's transitive auto set
+/// obvious saving is to hand this function each cell's transitive auto set
 /// (`decompose::dependent_cell_auto_reads`, which `SolverRegistry::solve_inner`
 /// already builds once per solve) and SKIP a cell at a depth where any of its
 /// autos is still unassigned — the folded value would be `Undef` there anyway,
@@ -265,28 +466,36 @@ fn domain_spec(
 /// Not done here: CP-SAT is landed-but-unwired — unreachable in production
 /// until PRD2 γ — so nothing pays this cost yet, and the change needs its own
 /// unwind-safety units rather than a rider on an amendment pass.
-fn backtrack(
-    variables: &[Variable],
+fn backtrack_all(
+    ctx: &SearchContext<'_>,
     var_index: usize,
     assignment: &mut ValueMap,
-    constraints: &[(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)],
-    auto_param_ids: &HashSet<ValueCellId>,
-    functions: &[reify_ir::CompiledFunction],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-) -> Option<HashMap<ValueCellId, Value>> {
-    // Base case: all variables assigned
-    if var_index >= variables.len() {
+    out: &mut Vec<HashMap<ValueCellId, Value>>,
+) -> bool {
+    // No room left for another solution. Reached only for `cap == 0` — every
+    // other path short-circuits at the base case below — but stated here so the
+    // function is TOTAL over `cap` rather than relying on a caller to rule the
+    // degenerate case out.
+    if out.len() >= ctx.cap {
+        return false;
+    }
+
+    // Base case: all variables assigned — this point IS a solution.
+    if var_index >= ctx.variables.len() {
         // Extract solution
         let mut solution = HashMap::new();
-        for var in variables {
+        for var in ctx.variables {
             if let Some(val) = assignment.get(&var.id).cloned() {
                 solution.insert(var.id.clone(), val);
             }
         }
-        return Some(solution);
+        out.push(solution);
+        // Room for another? If not, stop the WHOLE search — `false` unwinds to
+        // the root and becomes `complete: false` there.
+        return out.len() < ctx.cap;
     }
 
-    let var = &variables[var_index];
+    let var = &ctx.variables[var_index];
 
     for value in &var.domain {
         // Assign this variable
@@ -306,24 +515,27 @@ fn backtrack(
         // adds no dispatch capability cpsat did not already have.
         crate::solver::fold_dependent_cells(
             assignment,
-            dependent_cells,
-            functions,
-            |id| auto_param_ids.contains(id),
+            ctx.dependent_cells,
+            ctx.functions,
+            |id| ctx.auto_param_ids.contains(id),
             None,
         );
 
         // Forward-check: evaluate all constraints whose auto-param refs are fully assigned
         let mut feasible = true;
-        for (_, expr, refs) in constraints {
+        for (_, expr, refs) in ctx.constraints {
             // Only check constraints where ALL referenced auto params have been assigned
-            let auto_refs: Vec<_> = refs.iter().filter(|r| auto_param_ids.contains(r)).collect();
+            let auto_refs: Vec<_> = refs
+                .iter()
+                .filter(|r| ctx.auto_param_ids.contains(r))
+                .collect();
             let all_assigned = auto_refs.iter().all(|r| assignment.get(r).is_some());
             if !all_assigned {
                 continue;
             }
 
-            let ctx = EvalContext::new(assignment, functions);
-            let result = eval_expr(expr, &ctx);
+            let ctx_eval = EvalContext::new(assignment, ctx.functions);
+            let result = eval_expr(expr, &ctx_eval);
             match result {
                 Value::Bool(true) => {} // satisfied, continue
                 Value::Bool(false) => {
@@ -336,29 +548,73 @@ fn backtrack(
             }
         }
 
-        if feasible
-            && let Some(solution) = backtrack(
-                variables,
-                var_index + 1,
-                assignment,
-                constraints,
-                auto_param_ids,
-                functions,
-                dependent_cells,
-            )
-        {
-            return Some(solution);
+        // A `false` from the child means the search STOPPED, not that this
+        // branch failed — unwind immediately rather than trying the next
+        // sibling, so the cap short-circuits the whole search rather than
+        // merely the deepest level.
+        if feasible && !backtrack_all(ctx, var_index + 1, assignment, out) {
+            assignment.remove(&var.id);
+            return false;
         }
     }
 
     // Undo assignment (remove from map)
     assignment.remove(&var.id);
-    None
+    // Every value in this variable's domain was tried and none of them stopped
+    // the search: this subtree is exhausted.
+    true
+}
+
+impl CpSatSolver {
+    /// Enumerate solutions to `problem`, collecting at most `cap` of them.
+    ///
+    /// The honest-enumeration core (PRD2 §4.2, task β #5468). `solve()` is this
+    /// function at `cap = 1` plus the first-solution extraction; `unique`
+    /// derivation (step β.6) is this function at `cap = 2` — the minimum that
+    /// can tell "exactly one model" from "at least two"; the `solve_ranked`
+    /// argmin override (step β.8) is this function at a large cap plus a scored
+    /// sort.
+    ///
+    /// Deterministic (D4): variables are visited in `auto_params` declaration
+    /// order and values in `DomainSpec` construction order — `[true, false]` for
+    /// `Bool`, ascending `lo..=hi` for `Int`, constraint-scan order for `Enum`.
+    /// No RNG, no clock.
+    ///
+    /// See [`SolveAllResult::Enumerated::complete`] for what a `false` there
+    /// does and does not license a caller to conclude.
+    pub fn solve_all(&self, problem: &ResolutionProblem, cap: usize) -> SolveAllResult {
+        let mut inputs = match build_search_inputs(problem) {
+            Ok(inputs) => inputs,
+            Err(reason) => return SolveAllResult::NotEnumerable { reason },
+        };
+
+        let ctx = SearchContext {
+            variables: &inputs.variables,
+            constraints: &inputs.constraints,
+            auto_param_ids: &inputs.auto_param_ids,
+            functions: &problem.functions,
+            dependent_cells: &problem.dependent_cells,
+            cap,
+        };
+
+        let mut solutions = Vec::new();
+        let complete = backtrack_all(&ctx, 0, &mut inputs.assignment, &mut solutions);
+
+        SolveAllResult::Enumerated {
+            solutions,
+            complete,
+        }
+    }
 }
 
 impl ConstraintSolver for CpSatSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        // Fast path: no auto params → already solved
+        // Fast path: no auto params → already solved.
+        //
+        // `unique: true` here is HONEST and must stay: with zero autos there is
+        // exactly one assignment — the empty one — so it is trivially the unique
+        // solution. This is NOT the hardcoded flag step β.6 replaces; that one
+        // is on the `Solved` arm below.
         if problem.auto_params.is_empty() {
             return SolveResult::Solved {
                 values: HashMap::new(),
@@ -366,100 +622,26 @@ impl ConstraintSolver for CpSatSolver {
             };
         }
 
-        // Build variable domains
-        let mut variables = Vec::with_capacity(problem.auto_params.len());
-        for param in &problem.auto_params {
-            match build_variable_domain(param, &problem.constraints) {
-                Ok(domain) => variables.push(Variable {
-                    id: param.id.clone(),
-                    domain,
-                }),
-                Err(reason) => return SolveResult::NoProgress { reason },
-            }
-        }
-
-        // Collect auto param IDs for forward-checking
-        let auto_param_ids: HashSet<ValueCellId> =
-            problem.auto_params.iter().map(|ap| ap.id.clone()).collect();
-
-        // Pre-compute constraint refs
-        let constraints_with_refs: Vec<_> = problem
-            .constraints
-            .iter()
-            .map(|(id, expr)| (id.clone(), expr.clone(), collect_constraint_refs(expr)))
-            .collect();
-
-        // Initialize assignment with current_values (for non-auto-param refs).
-        //
-        // The parenthetical is load-bearing, so it is ENFORCED rather than
-        // merely intended (task #5467): every auto id is stripped back out
-        // below. `current_values` is the engine's whole value map
-        // (`build_solver_problem`'s `current_values = values.clone()`) and DOES
-        // carry same-scope
-        // auto entries, so without the strip an unassigned auto holds a STALE
-        // CONCRETE value instead of being absent — and `backtrack`'s
-        // forward-check then prunes a feasible branch off a value the search
-        // had not chosen yet. Three real sources, (iii) first because it needs
-        // no eval layer at all and so is reachable purely inside this crate:
-        //
-        //  (iii) `SolverRegistry::solve_lexicographic` warm-starts stage N+1
-        //        from stage N's solution INSIDE one `solve()` call.
-        //  (i)   A second `Engine::eval_cached` at the same `VersionId` serves a
-        //        previously-SOLVED auto straight back from cache into `values`,
-        //        which is then cloned to here.
-        //  (ii)  A `param_override` on an auto cell, written as `Determined` yet
-        //        still admitted to `auto_params` by `build_auto_param_list`.
-        //
-        // (ii) is NOT staleness and is not described as such: it is a user's
-        // explicit pin, and stripping it means CP-SAT searches that auto's whole
-        // domain and can answer with a value the override did not name. It is
-        // stripped anyway because that is what the only production-reachable
-        // solver already does — `solver.rs`'s `build_trial_values` clones
-        // `current_values` and OVERWRITES every auto id in it at every trial
-        // point, so `DimensionalSolver` ignores such an override too. Honouring
-        // it here and nowhere else would make the two solvers disagree about the
-        // same model. Pinned by
-        // `an_overridden_auto_is_searched_rather_than_pinned_to_its_seed`.
-        // Whether an overridden auto belongs in `auto_params` AT ALL is the real
-        // upstream question and lives in `build_auto_param_list`.
-        //
-        // Strip ONLY the auto ids: `current_values` is the sole channel by
-        // which a CP-SAT constraint sees a NON-auto base value (pinned
-        // connector autos are inserted there by `build_solver_problem`), so
-        // starting from
-        // an empty map instead would silently break every such model.
-        //
-        // Clone-then-`remove` rather than a filtered rebuild: `ValueMap`
-        // (reify-ir/src/value.rs) wraps a persistent `im::HashMap`, so `Clone`
-        // is an O(1) structural share and this loop is O(#auto_params) —
-        // cheaper than an O(|current_values|) rebuild, and `ValueMap` has no
-        // `FromIterator` impl to `collect` into anyway.
-        let mut assignment = problem.current_values.clone();
-        for id in &auto_param_ids {
-            assignment.remove(id);
-        }
-
-        // Run backtracking search
-        match backtrack(
-            &variables,
-            0,
-            &mut assignment,
-            &constraints_with_refs,
-            &auto_param_ids,
-            &problem.functions,
-            &problem.dependent_cells,
-        ) {
-            Some(solution) => SolveResult::Solved {
-                values: solution,
-                unique: true,
-            },
-            None => SolveResult::Infeasible {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "CpSatSolver: no satisfying assignment found for {} auto params with {} constraints",
-                    problem.auto_params.len(),
-                    problem.constraints.len()
-                ))
-                .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
+        // `solve()` IS `solve_all(problem, 1)` plus the first-solution
+        // extraction — one backtracker, one preamble, one fold (PRD2 §3.9 G7).
+        // At `cap = 1` the base case stops the search the instant it collects a
+        // solution, so this explores exactly the nodes the pre-β `backtrack`
+        // explored, in the same order, and returns the same point.
+        match self.solve_all(problem, 1) {
+            SolveAllResult::NotEnumerable { reason } => SolveResult::NoProgress { reason },
+            SolveAllResult::Enumerated { solutions, .. } => match solutions.into_iter().next() {
+                Some(values) => SolveResult::Solved {
+                    values,
+                    unique: true,
+                },
+                None => SolveResult::Infeasible {
+                    diagnostics: vec![Diagnostic::error(format!(
+                        "CpSatSolver: no satisfying assignment found for {} auto params with {} constraints",
+                        problem.auto_params.len(),
+                        problem.constraints.len()
+                    ))
+                    .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
+                },
             },
         }
     }
