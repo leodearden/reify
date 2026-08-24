@@ -2399,6 +2399,168 @@ fn parse_value_string_widening_does_not_disturb_the_non_ladder_paths() {
     assert!(parse_value_string("10zPa").is_err(), "`10zPa` must not parse");
 }
 
+// --- set_parameter: bare numbers are not valid for a dimensioned cell ---
+//
+// Task #5757 defect 1. `parse_value_string("120")` yields `Value::Int(120)`,
+// and reify-eval then ACCEPTS it into a `Length` cell: `value_type_kind_matches`
+// maps Int/Real onto `Type::Scalar { .. }` with a dimension WILDCARD, and
+// `validate_param_override` guards its dimension comparison on
+// `let Value::Scalar { .. } = value`, which an Int never matches — so the
+// dimension check is skipped entirely and `120` silently becomes 120 METRES.
+//
+// The fix is scoped to the GUI boundary rather than to reify-eval: that
+// Int/Real coercion is deliberate and load-bearing there (it is what lets
+// `edit_param` emit a Warning instead of a hard error), and it is on the hot
+// path for every param override in the workspace. Rejecting before `edit_check`
+// is ever called fixes the user-visible defect with no risk to the evaluator,
+// and yields a better message besides, because the GUI knows the cell.
+//
+// The controls in this block are what stop the gate over-rejecting — each one
+// covers a distinct fall-through the gate must NOT swallow.
+
+/// One dimensioned param and one `Real` param.
+///
+/// Lets the bare-number gate be shown firing on the former and not on the
+/// latter without dragging in the heavy `RigidDensityScale` mass-props fixture
+/// — whose own `density_scale : Real` edit is separately pinned by
+/// `commands_tests.rs::warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass`,
+/// an unrelated #5338 regression lock that must keep passing.
+const BARE_NUMBER_GATE_SRC: &str = r#"structure def GateScope {
+    param width : Length = 80mm
+    param scale : Real = 1.0
+    let body = box(width, width, width)
+}"#;
+
+/// A bare number typed into a dimensioned cell is refused, and the message
+/// names both the expected dimension and the offending input.
+#[test]
+fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Bracket.width", "120")
+        .expect_err("a bare number must not be accepted for a Length cell");
+    assert!(
+        err.contains("Length"),
+        "the rejection must name the expected dimension so the user knows what \
+         to supply; got {err:?}"
+    );
+    assert!(
+        err.contains("120"),
+        "the rejection must quote the offending input; got {err:?}"
+    );
+
+    // The float spelling is the same defect, and reify-eval's Int/Real wildcard
+    // covers both — so the gate must too.
+    let err = session
+        .set_parameter("Bracket.width", "120.5")
+        .expect_err("a bare float must not be accepted for a Length cell either");
+    assert!(
+        err.contains("Length") && err.contains("120.5"),
+        "the bare-float rejection must name the dimension and the input; got {err:?}"
+    );
+}
+
+/// The gate must not narrow what a dimensioned cell accepts WITH a unit —
+/// including a unit the retired five-entry table lacked.
+#[test]
+fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("a Length literal in a legacy-table unit must still be accepted");
+
+    // `in` was in the DSL builtin registry all along and absent from the GUI's
+    // five-entry table — PRD §6 boundary row 17.
+    session
+        .set_parameter("Bracket.width", "3in")
+        .expect("`in` must be accepted now that the accept-set is composed");
+}
+
+/// An UNDIMENSIONED cell still takes a bare number.
+///
+/// The gate keys on `!dimension.is_dimensionless()`, so `Real`, `Int` and
+/// `Scalar { DIMENSIONLESS }` cells are untouched. Without this the gate would
+/// break every dimensionless slider in the panel.
+#[test]
+fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(BARE_NUMBER_GATE_SRC, "bare_number_gate")
+        .expect("initial load");
+
+    session
+        .set_parameter("GateScope.scale", "2.0")
+        .expect("a Real cell must still take a bare number");
+    session
+        .set_parameter("GateScope.scale", "3")
+        .expect("a Real cell must still take a bare integer");
+
+    // Same session, same panel: the dimensioned neighbour is still gated.
+    let err = session
+        .set_parameter("GateScope.width", "120")
+        .expect_err("the dimensioned neighbour must still reject a bare number");
+    assert!(err.contains("Length"), "got {err:?}");
+}
+
+/// A `Bool` for a `Length` cell still falls through to reify-eval.
+///
+/// The gate is scoped to `Value::Int`/`Value::Real` precisely so every other
+/// variant keeps producing reify-eval's own diagnostics — here the
+/// `TypeKindMismatch` that `set_parameter_edit_check_err_still_fires_solve_finished`
+/// depends on. A broader gate would silently change that test's observable.
+#[test]
+fn set_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismatch() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Bracket.width", "true")
+        .expect_err("a Bool for a Length cell must still be rejected");
+    assert!(
+        err.contains("type-kind mismatch"),
+        "the Bool path must still surface reify-eval's TypeKindMismatch, not the \
+         new bare-number message; got {err:?}"
+    );
+}
+
+/// An unknown cell still reports "Unknown parameter", which also locks in the
+/// cell-lookup-before-parse ordering the dimension-aware parse requires.
+#[test]
+fn set_parameter_unknown_cell_still_reports_unknown_parameter() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Nonexistent.param", "50mm")
+        .expect_err("an unknown cell must still be rejected");
+    assert!(
+        err.contains("Unknown parameter"),
+        "got {err:?}"
+    );
+}
+
 // --- Tessellation integration ---
 
 #[test]
