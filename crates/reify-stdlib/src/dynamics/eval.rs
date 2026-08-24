@@ -52,6 +52,12 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
 /// `Scalar`). Mirrors `dynamics_ops::cell_f64`; non-numeric cells yield `None`.
+///
+/// **This is where the dimension is ERASED.** The `Value::Scalar` arm takes
+/// `si_value` and DISCARDS the `DimensionVector` outright, so every `f64` this
+/// function returns is an undimensioned SI magnitude and the caller carries the
+/// dimensional meaning implicitly. See [`compliance_cell_f64`] for the full
+/// declaration of that contract and why it is not gated here (#6184).
 fn cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n) => Some(*n as f64),
@@ -98,6 +104,39 @@ fn cell_mass_f64(v: &Value) -> Option<f64> {
 /// `Scalar`. Used by `joint_compliance` to read `spring_rate`, `damping`,
 /// and `neutral` from a flexure joint Map in either the bare-Scalar shape
 /// that `make_flexure_joint` emits today or an Option-wrapped future shape.
+///
+/// # Dimension erasure — a declared, deliberate one (INV-AD-4; #6184)
+///
+/// This reader takes the SI-coherent magnitude and DISCARDS the
+/// `DimensionVector` (the erasure itself happens in [`cell_f64`]). Every value
+/// it returns is an undimensioned SI `f64`, and `joint_compliance` — the sole
+/// caller — carries the dimensional meaning implicitly in whichever generalized
+/// coordinate the joint declares.
+///
+/// The ANGULAR cases are why this site is declared here rather than left
+/// implicit: for a ROTATIONAL PRB flexure joint, `spring_rate` may be
+/// `ROTATIONAL_STIFFNESS` (N·m/rad², i.e. carrying rad⁻²) and `neutral` is an
+/// ANGLE (this module's own tests use `neutral = π/12` with `position = π/6`).
+/// Under rad = 1 SI coherence the erased `f64` is NUMERICALLY CORRECT — the
+/// defect INV-AD-4 names is that nothing DECLARED it.
+///
+/// ## Contrast: the house declared-bridge pattern
+///
+/// The guarded sibling is `spring_rate_for_lumped_dof` in
+/// `crates/reify-eval/src/modal_ops.rs`, whose `StiffnessSkipKind` enum REFUSES
+/// `ROTATIONAL_STIFFNESS` outright (and refuses any other unexpected dimension
+/// rather than silently propagating an upstream labelling bug).
+///
+/// The two differ for a real reason, not by oversight: that model's eigenvalue
+/// is `λ = k / m_body`, which is only valid for ONE dimension, so it MUST gate —
+/// `k_θ / m` is dimensionally wrong and the correct eigenvalue there is
+/// `k_θ / I_body`. `joint_compliance` instead consumes the value in whatever
+/// generalized coordinate the joint already declares, so a gate here would need
+/// that coordinate's dimension threaded in — which is exactly the
+/// dimension-checked-readers work PRD 5 owns (see the PRD-5 reader-gating
+/// bookmark in `docs/prds/v0_6/angle-dimension-completion.md`). Adding a guard
+/// here today would be a behaviour change, which this declarations-only leaf
+/// deliberately does not make.
 fn compliance_cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Option(Some(inner)) => compliance_cell_f64(inner),
