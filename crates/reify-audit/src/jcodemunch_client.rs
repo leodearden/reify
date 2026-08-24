@@ -1760,6 +1760,41 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // step-6 / step-7: extract_suppression totality guard boundary cases
+    //
+    // Pins the guard added in step-6 exactly, so a later widening of
+    // `decl_line_1based == 0 || decl_line_1based > lines.len()` cannot go
+    // unnoticed: the boundary `== lines.len()` (declaration on the final
+    // line) must still scan upward — the guard is strictly `>`, not `>=`.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn extract_suppression_boundary_cases() {
+        // decl_line_1based == lines.len() (declaration on the final line)
+        // must still scan upward for attrs above it.
+        let src = ["fn placeholder() {}", "#[allow(dead_code)]", "pub fn my_fn() {}"];
+        let (allow, _cfg, _g) = extract_suppression(&src, 3);
+        assert!(
+            allow,
+            "decl_line_1based == lines.len() must still scan upward for attrs"
+        );
+
+        // An empty `lines` slice is out of range for any decl_line_1based.
+        let (allow, cfg, g) = extract_suppression(&[], 1);
+        assert!(
+            !allow && !cfg && g.is_none(),
+            "extract_suppression(&[], 1) must return the neutral triple"
+        );
+
+        // decl_line_1based == 0 is out of range regardless of lines' length.
+        let (allow, cfg, g) = extract_suppression(&["a"], 0);
+        assert!(
+            !allow && !cfg && g.is_none(),
+            "extract_suppression(&[\"a\"], 0) must return the neutral triple"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // decode_tool_result: MUNCH takes priority over structuredContent
     // ------------------------------------------------------------------
 
@@ -1822,6 +1857,87 @@ mod tests {
         assert!(
             diagnostic.is_none(),
             "readable file must return no diagnostic; got: {diagnostic:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // step-7 / step-8: stale_decl_line_diagnostic
+    //
+    // The operator-visible half of the step-6 fix: a symbol whose wire line
+    // is out of range no longer panics (step-6), but must not silently
+    // degrade into unexplained P1 orphan findings either. This pure helper
+    // summarises the out-of-range symbols collected by
+    // `RealJCodemunchOps::get_changed_symbols`'s enrichment loop into ONE
+    // diagnostic line, mirroring the "return the diagnostic, let the
+    // caller `eprintln!` it" idiom of `read_source_lines_for_enrichment`
+    // above (including its `reify-audit: jcodemunch` message prefix).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn stale_decl_line_diagnostic_summarises_out_of_range_symbols() {
+        assert!(
+            stale_decl_line_diagnostic(&[]).is_none(),
+            "empty slice must produce no diagnostic on the happy path"
+        );
+
+        let one = vec![(
+            "crates/reify-eval/src/engine_build.rs".to_string(),
+            18321usize,
+            13165usize,
+        )];
+        let msg = stale_decl_line_diagnostic(&one).expect("one entry must produce a diagnostic");
+        assert!(
+            msg.contains("reify-audit: jcodemunch"),
+            "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
+        );
+        assert!(
+            msg.contains("1 symbol"),
+            "diagnostic must name the affected count 1; got: {msg}"
+        );
+        assert!(
+            msg.contains("crates/reify-eval/src/engine_build.rs"),
+            "diagnostic must name the path; got: {msg}"
+        );
+        assert!(
+            msg.contains("18321"),
+            "diagnostic must name the wire line 18321; got: {msg}"
+        );
+        assert!(
+            msg.contains("13165"),
+            "diagnostic must name the file's line count 13165; got: {msg}"
+        );
+
+        let three = vec![
+            (
+                "crates/reify-eval/src/engine_build.rs".to_string(),
+                18321,
+                13165,
+            ),
+            ("crates/other/src/lib.rs".to_string(), 500, 100),
+            ("crates/third/src/mod.rs".to_string(), 42, 10),
+        ];
+        let msg3 =
+            stale_decl_line_diagnostic(&three).expect("three entries must produce a diagnostic");
+        assert!(
+            msg3.contains("3 symbol"),
+            "diagnostic must name the affected count 3; got: {msg3}"
+        );
+        assert!(
+            msg3.contains("crates/reify-eval/src/engine_build.rs"),
+            "diagnostic must name only the first entry's path; got: {msg3}"
+        );
+        assert!(
+            !msg3.contains("crates/other/src/lib.rs"),
+            "diagnostic must not name the second entry's path; got: {msg3}"
+        );
+        assert!(
+            !msg3.contains("crates/third/src/mod.rs"),
+            "diagnostic must not name the third entry's path; got: {msg3}"
+        );
+        assert_eq!(
+            msg3.lines().count(),
+            1,
+            "diagnostic must stay one line regardless of the affected count; got: {msg3:?}"
         );
     }
 
