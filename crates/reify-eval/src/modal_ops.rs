@@ -8976,6 +8976,111 @@ mod tests {
         }
     }
 
+    /// The 2-mode, 3-node `displacement_at` reconstruction fixture, shared by
+    /// `displacement_at_reconstructs_phi_projected_series` and
+    /// `displacement_at_series_entries_are_length_dimensioned`.
+    ///
+    /// Extracted so the mode shapes, the modal-coordinate series and the
+    /// hand-derived projection coefficients exist exactly ONCE. As two
+    /// copy-pasted fixtures they could be retuned in one test and not the other,
+    /// leaving the second asserting stale magnitudes while its own docs claimed
+    /// to re-verify "the same closed-form Φ-projection" as the first.
+    ///
+    /// Node layout: `MODE0_SHAPE` / `MODE1_SHAPE` are full-DOF flat xyz triples
+    /// (3·n_nodes = 9 ⇒ 3 nodes). Node 2 carries the largest ‖Φ₀‖ and is
+    /// therefore the fundamental antinode a NON-numeric location resolves to;
+    /// node 1 is a distinct, lower-deflection node. So querying "1" and "tip"
+    /// resolves to different nodes and must yield different series.
+    struct TwoModeTipFixture {
+        /// The `DisplacementTimeHistory` to feed `displacement_at_trampoline`.
+        history: Value,
+        /// ξ₀(tⱼ) — mode-0 modal coordinates, one entry per timestep.
+        mc0: Vec<f64>,
+        /// ξ₁(tⱼ) — mode-1 modal coordinates, one entry per timestep.
+        mc1: Vec<f64>,
+        /// Timestep count (= `t_samples.len()` = each `mcᵢ.len()`).
+        n_times: usize,
+    }
+
+    impl TwoModeTipFixture {
+        /// Full-DOF mode shapes: flat xyz per node, 3 nodes each.
+        const MODE0_SHAPE: [f64; 9] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0];
+        const MODE1_SHAPE: [f64; 9] = [0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4];
+
+        /// The query direction ẑ — the bending axis.
+        const DIR: [f64; 3] = [0.0, 0.0, 1.0];
+
+        /// Projection coefficients (Φ₀[node]·ẑ, Φ₁[node]·ẑ) at node 1 — the
+        /// explicit numeric-index case.
+        const NODE1_COEFFS: (f64, f64) = (0.5, -0.7);
+        /// The same at node 2, the fundamental antinode a non-numeric location
+        /// resolves to.
+        const ANTINODE_COEFFS: (f64, f64) = (1.0, 0.4);
+
+        /// The z component of a full-DOF flat-xyz `shape` at `node`.
+        fn z_at(shape: &[f64; 9], node: usize) -> f64 {
+            shape[node * 3 + 2]
+        }
+
+        fn new() -> Self {
+            let mode0 = mode_struct(40.0, 0.01, &Self::MODE0_SHAPE);
+            let mode1 = mode_struct(250.0, 0.02, &Self::MODE1_SHAPE);
+            let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+
+            let mc0 = vec![1.0, 2.0, 3.0, 4.0];
+            let mc1 = vec![0.1, 0.2, 0.3, 0.4];
+            let t_samples_s = [0.0, 0.01, 0.02, 0.03];
+            let history =
+                displacement_history(modal_result, &t_samples_s, &[mc0.clone(), mc1.clone()]);
+
+            // The coefficients above are hand-derived from the shape arrays; pin
+            // that derivation here so retuning a shape cannot silently leave the
+            // coefficients — and with them BOTH tests' expectations — describing
+            // the old fixture. `direction` is ẑ, so the projection Φᵢ[node]·ẑ is
+            // exactly each shape's z component at that node.
+            assert_eq!(
+                Self::NODE1_COEFFS,
+                (
+                    Self::z_at(&Self::MODE0_SHAPE, 1),
+                    Self::z_at(&Self::MODE1_SHAPE, 1)
+                ),
+                "NODE1_COEFFS must stay the z components of each mode shape at node 1"
+            );
+            assert_eq!(
+                Self::ANTINODE_COEFFS,
+                (
+                    Self::z_at(&Self::MODE0_SHAPE, 2),
+                    Self::z_at(&Self::MODE1_SHAPE, 2)
+                ),
+                "ANTINODE_COEFFS must stay the z components of each mode shape at node 2"
+            );
+
+            // Node 2 must genuinely be the fundamental antinode (max ‖Φ₀‖), or
+            // the "tip" cases below would silently resolve elsewhere.
+            let phi0_z = |node| Self::z_at(&Self::MODE0_SHAPE, node).abs();
+            assert!(
+                phi0_z(2) > phi0_z(0) && phi0_z(2) > phi0_z(1),
+                "node 2 must be the strict max-‖Φ₀‖ antinode"
+            );
+
+            Self {
+                history,
+                mc0,
+                mc1,
+                n_times: t_samples_s.len(),
+            }
+        }
+
+        /// The closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] — the same
+        /// mode-order summation `reconstruct_series` performs, over the same
+        /// coordinates, in the same order.
+        fn expected_series(&self, (c0, c1): (f64, f64)) -> Vec<f64> {
+            (0..self.n_times)
+                .map(|j| c0 * self.mc0[j] + c1 * self.mc1[j])
+                .collect()
+        }
+    }
+
     /// step-15 (RED → GREEN in step-16): `displacement_at` reconstructs the exact
     /// Φ-projected single-location series u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j],
     /// returning a non-Undef `List<Length>` (PRD §5.2) — covering the task's
@@ -8994,28 +9099,16 @@ mod tests {
     /// RED: the step-10 stub returns an empty list (length 0, not n_times).
     #[test]
     fn displacement_at_reconstructs_phi_projected_series() {
-        // node 2 is the fundamental antinode (max ‖Φ₀‖); node 1 is a distinct,
-        // lower-deflection node, so "1" and "tip" must give different series.
-        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
-        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
-        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
-
-        let mc0 = vec![1.0, 2.0, 3.0, 4.0];
-        let mc1 = vec![0.1, 0.2, 0.3, 0.4];
-        let mode_coords = vec![mc0.clone(), mc1.clone()];
-        let t_samples_s = [0.0, 0.01, 0.02, 0.03];
-        let n_times = t_samples_s.len();
-        let history = displacement_history(modal_result, &t_samples_s, &mode_coords);
-
-        let dir = [0.0, 0.0, 1.0];
+        let fx = TwoModeTipFixture::new();
+        let n_times = fx.n_times;
 
         // Invoke the trampoline for `location` and return the List<Length> as
         // Vec<f64> of SI metres (`read_scalar_si` tolerates either spelling).
         let query = |location: &str| -> Vec<f64> {
             let value_inputs = vec![
-                history.clone(),
+                fx.history.clone(),
                 Value::String(location.to_string()),
-                vec3_value(dir),
+                vec3_value(TwoModeTipFixture::DIR),
             ];
             let outcome = displacement_at_trampoline(
                 &value_inputs,
@@ -9053,17 +9146,9 @@ mod tests {
             }
         };
 
-        // Closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] (same mode-order
-        // summation as `reconstruct_series`).
-        let expect = |c0: f64, c1: f64| -> Vec<f64> {
-            (0..n_times)
-                .map(|j| c0 * mc0[j] + c1 * mc1[j])
-                .collect::<Vec<_>>()
-        };
-
         // Case A — numeric "1" → node 1: c0 = Φ₀[1]·ẑ = 0.5, c1 = Φ₁[1]·ẑ = -0.7.
         let got_node1 = query("1");
-        let want_node1 = expect(0.5, -0.7);
+        let want_node1 = fx.expected_series(TwoModeTipFixture::NODE1_COEFFS);
         for (j, (g, w)) in got_node1.iter().zip(want_node1.iter()).enumerate() {
             assert!(
                 (g - w).abs() < 1e-12,
@@ -9074,7 +9159,7 @@ mod tests {
         // Case B — non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0,
         // c1 = Φ₁[2]·ẑ = 0.4.
         let got_tip = query("tip");
-        let want_tip = expect(1.0, 0.4);
+        let want_tip = fx.expected_series(TwoModeTipFixture::ANTINODE_COEFFS);
         for (j, (g, w)) in got_tip.iter().zip(want_tip.iter()).enumerate() {
             assert!(
                 (g - w).abs() < 1e-12,
@@ -9109,26 +9194,18 @@ mod tests {
     /// as the neighbouring `displacement_at_reconstructs_phi_projected_series`,
     /// so the dimension change is proven not to have perturbed the values: SI
     /// base unit for LENGTH is metres and `reconstruct_series` already produces
-    /// metres, making this a pure re-wrap with no numeric conversion.
+    /// metres, making this a pure re-wrap with no numeric conversion. "The same"
+    /// is literal, not a claim: both tests read `TwoModeTipFixture`, so neither
+    /// can be retuned without the other following.
     #[test]
     fn displacement_at_series_entries_are_length_dimensioned() {
-        // Same fixture as the sibling test: node 2 is the fundamental antinode.
-        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
-        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
-        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
-
-        let mc0 = vec![1.0, 2.0, 3.0, 4.0];
-        let mc1 = vec![0.1, 0.2, 0.3, 0.4];
-        let mode_coords = vec![mc0.clone(), mc1.clone()];
-        let t_samples_s = [0.0, 0.01, 0.02, 0.03];
-        let n_times = t_samples_s.len();
-        let history = displacement_history(modal_result, &t_samples_s, &mode_coords);
+        let fx = TwoModeTipFixture::new();
 
         // Non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0, c1 = Φ₁[2]·ẑ = 0.4.
         let value_inputs = vec![
-            history,
+            fx.history.clone(),
             Value::String("tip".to_string()),
-            vec3_value([0.0, 0.0, 1.0]),
+            vec3_value(TwoModeTipFixture::DIR),
         ];
         let outcome = displacement_at_trampoline(
             &value_inputs,
@@ -9151,10 +9228,12 @@ mod tests {
             !items.is_empty(),
             "displacement_at must not return an empty list"
         );
-        assert_eq!(items.len(), n_times, "series length must equal n_times");
+        assert_eq!(items.len(), fx.n_times, "series length must equal n_times");
 
-        // u[j] = c0·mc0[j] + c1·mc1[j] — the same summation `reconstruct_series` does.
-        let want: Vec<f64> = (0..n_times).map(|j| 1.0 * mc0[j] + 0.4 * mc1[j]).collect();
+        // u[j] = c0·mc0[j] + c1·mc1[j] — the same summation `reconstruct_series`
+        // does, read off the SHARED fixture so it cannot drift from the sibling
+        // test's expectation.
+        let want = fx.expected_series(TwoModeTipFixture::ANTINODE_COEFFS);
 
         for (j, item) in items.iter().enumerate() {
             let Value::Scalar {
