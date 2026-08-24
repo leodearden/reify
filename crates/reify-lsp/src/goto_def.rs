@@ -316,6 +316,37 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
 /// home declaration token uniformly as a `SourceSpan`, independent of the
 /// `Location`/`uri` packaging that goto-def needs.
+///
+/// # This helper is the RENAME/REFERENCES oracle, not just a goto-def target
+///
+/// It serves CROSS-FILE go-to-definition *and* is consumed by `references.rs`
+/// at three points: the `collect_structure_name_spans` home token
+/// (references.rs:1294), `resolve_cross_file_home` step 2 → `CrossFileHome::Structure`
+/// (:1401), and the cross-file rename producer (:1565).
+///
+/// Its kind list is therefore DELIBERATELY NARROWER than
+/// [`crate::analysis::decl_name_and_span`], which task 6388 introduced as the
+/// uniform, wildcard-free source of declaration names for the SAME-FILE path.
+/// The two are separate on purpose, and this one must not be "unified" onto the
+/// other.
+///
+/// **Adding a kind here is a rename/references change, not a goto-def change.**
+/// The use-site collectors `collect_uses` / `collect_idents_in_expr` walk
+/// `ExprKind::Ident` in EXPRESSIONS only — never type expressions — and
+/// `collect_structure_name_spans` adds only `sub _ = Name` construction sites.
+/// So a type-position-only kind (TypeAlias / Unit / Constraint / Joint /
+/// Purpose) admitted here yields a rename that moves the DECLARATION token and
+/// silently misses every use site; because Invariant 5 only checks that edited
+/// buffers re-PARSE clean, such a rename passes validation while leaving the
+/// buffer referencing a name that no longer exists.
+///
+/// Measured, not assumed: temporarily adding a `TypeAlias` arm here turns
+/// `compute_references_cross_file` on `type Pressure = Force` /
+/// `param p : Pressure` from `None` into a one-element set holding the
+/// declaration token alone — the `param p : Pressure` use is absent.
+///
+/// Guarded by `references::tests::
+/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
@@ -856,7 +887,10 @@ mod tests {
     /// invented, so no assertion can be doomed by a surface-syntax guess.
     const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
         ("structure S { param x : Length = 5mm }", "S"),
-        ("occurrence def Welding { param method : Length }", "Welding"),
+        (
+            "occurrence def Welding { param method : Length }",
+            "Welding",
+        ),
         ("enum Dir { In, Out }", "Dir"),
         ("fn id_length(x: Length) -> Length { x }", "id_length"),
         ("trait Rigid { param mass : Mass }", "Rigid"),
@@ -955,9 +989,7 @@ mod tests {
         // language-semantics question this task does not answer; pinning the
         // current None keeps the boundary explicit rather than latent.
         let source = "purpose Exploration() {\n    structure def InPurpose {\n        param x : Length = 5mm\n    }\n}";
-        let offset = source
-            .find("InPurpose")
-            .expect("source declares InPurpose");
+        let offset = source.find("InPurpose").expect("source declares InPurpose");
         let position = crate::convert::offset_to_position(source, offset as u32 + 1);
         assert!(
             compute_goto_definition(source, &test_uri(), position).is_none(),

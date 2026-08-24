@@ -2568,7 +2568,10 @@ mod tests {
     /// table is duplicated rather than shared).
     const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
         ("structure S { param x : Length = 5mm }", "S"),
-        ("occurrence def Welding { param method : Length }", "Welding"),
+        (
+            "occurrence def Welding { param method : Length }",
+            "Welding",
+        ),
         ("enum Dir { In, Out }", "Dir"),
         ("fn id_length(x: Length) -> Length { x }", "id_length"),
         ("trait Rigid { param mass : Mass }", "Rigid"),
