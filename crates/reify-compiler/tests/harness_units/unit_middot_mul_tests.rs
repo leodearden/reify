@@ -3,9 +3,17 @@
 //! Task #5784 (angle-units leaf κ; PRD
 //! `docs/prds/v0_6/angle-units-surface-convergence.md` cluster C, ratified
 //! decision 7a).  `Display for DimensionVector` joins base-unit parts with `·`, so
-//! `reify eval` prints `7850 kg·m^-3` and `5 m^2·kg·s^-2·rad^-1` — strings Reify
-//! could not read back.  κ closes the read direction; normalising the emitted
-//! labels is leaf λ and the round-trip property test is leaf μ (#5789).
+//! `reify eval` prints lines like `7850 kg·m^-3` and `5 m^2·kg·s^-2·rad^-1`.  κ
+//! makes the UNIT SUBSTRING of such a line readable — `7850kg·m^-3` now parses and
+//! evaluates identically to `7850kg*m^-3`.
+//!
+//! κ does NOT make the whole eval line round-trippable, and the tests here do not
+//! claim it does: the SPACE between magnitude and unit is a separate, still-open
+//! blocker.  Measured on this branch, `let a = 7850 kg·m^-3` and its `*` twin
+//! `let a = 7850 kg*m^-3` BOTH exit 1 with `Parse error: invalid let: …`, so that
+//! gap is pre-existing rather than a `·` regression.  Normalising the emitted
+//! labels is leaf λ; the round-trip property test is leaf μ (#5789), which must
+//! not assume the space is already handled.
 //!
 //! WHAT THIS FILE LOCKS THAT THE GRAMMAR AND LOWERING TESTS CANNOT
 //! `tree-sitter-reify/tests/unit_middot_mul_grammar_tests.rs` proves the CST is
@@ -75,13 +83,38 @@ fn let_cell_si_value(quantity: &str) -> (f64, DimensionVector) {
 
 /// The committed prd-gate fixture, compiled with the stdlib.
 ///
-/// Returns the compiled module.  Asserts nothing on its own so each numbered
-/// assertion below reports its own failure.
+/// Pins the U+00B7 SPELLING before compiling — the one property every assertion
+/// below is blind to.  `·` and `*` lower to the same `UnitExpr::Mul`, so each
+/// (si_value, dimension) comparison against a `*`-spelled twin is invariant under
+/// replacing `·` with `*` in the fixture.  Measured on this branch:
+/// `sed -i 's/·/*/g' tests/prd-gate/fixtures/unit_middot_mul.ri` left all four
+/// tests in this file GREEN.  Exercising U+00B7 is the fixture's entire reason to
+/// exist, so the spelling must be asserted directly rather than inferred.
+///
+/// Counted over NON-COMMENT lines only: the fixture's header quotes `·` several
+/// times in prose, and a whole-file count would go RED on an unrelated comment
+/// edit while still saying nothing about the `let` lines.
+///
+/// Returns the compiled module.  Asserts nothing about the COMPILE on its own, so
+/// each numbered assertion below reports its own failure.
 fn compile_fixture() -> reify_compiler::CompiledModule {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/prd-gate/fixtures/unit_middot_mul.ri");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
+    let code_only = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        code_only.matches('·').count(),
+        4,
+        "the fixture's `let` lines must still spell their unit-multiplies with \
+         U+00B7 MIDDLE DOT (torque_like x1, with_div x1, composed x2); found {} \
+         in:\n{code_only}",
+        code_only.matches('·').count()
+    );
     compile_source_with_stdlib(&src)
 }
 
@@ -131,6 +164,20 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
         .iter()
         .find(|t| t.name == "UnitMiddotMul")
         .expect("UnitMiddotMul template not found in the compiled fixture");
+    // The loop below iterates the PINNED table, not the fixture's cells, so a
+    // fourth `let` added to the fixture would be silently ignored.  Pin the count.
+    assert_eq!(
+        template.value_cells.len(),
+        3,
+        "UnitMiddotMul must have exactly the three value cells this test pins; \
+         got {:?} — a binding was added to or removed from the fixture without \
+         updating the table below",
+        template
+            .value_cells
+            .iter()
+            .map(|c| c.id.member.as_str())
+            .collect::<Vec<_>>()
+    );
     // (fixture member name, the `*`-spelled twin of the RHS committed on that line)
     for (member, star_twin) in [
         ("torque_like", "5N*m"),
@@ -215,10 +262,18 @@ fn each_middot_binding_matches_its_star_twin() {
     ]);
 }
 
-/// (iv) The two shapes `Display for DimensionVector` actually emits are readable.
+/// (iv) The UNIT SUBSTRINGS of the lines `Display for DimensionVector` emits are
+/// readable.
 ///
-/// These are not in the fixture, but they are the strings that motivated κ: the
-/// density and torque renderings a user copies out of `reify eval` output.
+/// These are not in the fixture, but they are the shapes that motivated κ: the
+/// density, acceleration and torque unit renderings a user copies out of `reify
+/// eval` output.
+///
+/// The inputs are whitespace-STRIPPED, and deliberately so — they are NOT verbatim
+/// eval output.  `reify eval` prints `7850 kg·m^-3` WITH a space, and that verbatim
+/// line still does not parse; its `*` twin `7850 kg*m^-3` fails identically, so the
+/// magnitude/unit space is a separate open blocker rather than a `·` regression.
+/// These are the right inputs for what κ closed.
 #[test]
 fn display_shaped_middot_literals_match_their_star_twins() {
     assert_twins(&[
@@ -226,4 +281,13 @@ fn display_shaped_middot_literals_match_their_star_twins() {
         ("9.81m·s^-2", "9.81m*s^-2"),
         ("5m^2·kg·s^-2·rad^-1", "5m^2*kg*s^-2*rad^-1"),
     ]);
+}
+
+/// (v) `·` adjacent to a parenthesised operand evaluates like its `*` twin.
+///
+/// `is_unit_start` accepts `(`, so this is a live accepted path, and it is the one
+/// that drives `lower_unit_expr`'s paren-unwrap arm beneath a `·`-spelled Mul.
+#[test]
+fn middot_beside_a_paren_group_matches_its_star_twin() {
+    assert_twins(&[("5W·(m/K)", "5W*(m/K)"), ("5W/(m·K)", "5W/(m*K)")]);
 }
