@@ -2187,6 +2187,58 @@ impl EngineSession {
         self.build_gui_state()
     }
 
+    /// Write `value` back into the session's canonical `.ri` file as the
+    /// source-of-truth edit for `cell_id_str`'s default literal (INV-GUI-3,
+    /// task 5096 γ, PRD `docs/prds/v0_6/ai-native-editing.md` §6.1).
+    ///
+    /// Core happy path — see the rustdoc landed alongside step 10 for the
+    /// full contract (atomicity ledger, phase ordering, non-literal-default
+    /// behaviour); steps 6 and 8 harden the rejection/precondition handling
+    /// around this core splice-recompile-write sequence.
+    pub fn apply_param_to_source(
+        &mut self,
+        cell_id_str: &str,
+        value: &Value,
+    ) -> Result<GuiState, String> {
+        let span = self
+            .resolve_param_default_span(cell_id_str)
+            .ok_or_else(|| format!("no rewritable default literal for '{cell_id_str}'"))?;
+        let (_, source) = self
+            .resolve_source()
+            .ok_or_else(|| "no module loaded".to_string())?;
+
+        let old = &source[span.start as usize..span.end as usize];
+        let literal =
+            reify_ir::value_to_ri_literal_with_unit(value, unit_hint_from_default_literal(old))
+                .map_err(|e| format!("cannot serialize value for '{cell_id_str}': {e}"))?;
+
+        let mut new_source = String::with_capacity(source.len() - old.len() + literal.len());
+        new_source.push_str(&source[..span.start as usize]);
+        new_source.push_str(&literal);
+        new_source.push_str(&source[span.end as usize..]);
+
+        let path = self
+            .core
+            .file_path()
+            .ok_or_else(|| "session has no on-disk .ri file to write".to_string())?
+            .to_path_buf();
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| format!("path {} is not valid UTF-8", path.display()))?;
+
+        // The recompile runs BEFORE the disk write: it is the step that can
+        // legitimately reject the edit (type/dimension mismatch), and writing
+        // disk first would leave the on-disk `.ri` holding text the engine
+        // rejected — the FS-watcher would then reload the broken file into
+        // the GUI. Ordering recompile→write makes that state unreachable.
+        let state = self.update_source(path_str, &new_source)?;
+
+        std::fs::write(&path, &new_source)
+            .map_err(|e| format!("Error writing {}: {e}", path.display()))?;
+
+        Ok(state)
+    }
+
     /// Task #5338: drop the geometry-derived value retention for one ENTITY —
     /// the WARM-EDIT sibling of the `sync_demand` visibility prune and of the
     /// `commit_state` full clear. Those three are the only invalidation triggers
