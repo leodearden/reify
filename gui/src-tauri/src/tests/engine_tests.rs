@@ -16,6 +16,10 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, lit
 
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
 use crate::mcp_context::TauriToolContext;
+use crate::tests::test_helpers::{
+    assert_rigid_mass_props_determined, find_moi_principal_constraint,
+    rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
+};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -17366,96 +17370,11 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
 
 // ── Task 5194: Rigid auto-derived mass-property cells surface in the GUI panel ──
 //
-// A `structure def X : Rigid` auto-derives four geometry-query lets via the
-// stdlib `Rigid : Physical` traits (crates/reify-compiler/stdlib/structural_physical.ri):
-//   mass              = volume(geometry) * material.density
-//   centroid          = centroid(geometry)
-//   moment_of_inertia = moment_of_inertia(geometry, body_density)
-//   moi_principal     = eigenvalues(moment_of_inertia)   (+ PD constraint [0] > 0)
-//
-// These are populated ONLY by the kernel-bearing build's `run_post_processes`
-// (mass/centroid via geometry queries; moment_of_inertia via the topology-selector
-// pass; moi_principal via the derived-let pass). The GUI property panel, however,
-// sources cell values from the kernel-LESS `check.values` (eval / warm edit_param),
-// so all four read `undetermined` and the `moi_principal[0] > 0` PD constraint reads
-// `Indeterminate`. The fix overlays the kernel-derived `tessellate_snapshot`
-// `result.values` / `result.constraint_results` onto the panel in `build_gui_state`.
-
-/// Shared harness for the task-5194 GUI tests: an `EngineSession` whose
-/// `MockGeometryKernel` is pre-seeded with volume / centroid / inertia-tensor
-/// replies for `GeometryHandleId` 1..=4.
-///
-/// The id RANGE (not just id 1) covers the post-edit rebuild handle drift: the
-/// mock's `next_id` is monotonic and NOT reset between builds, so the initial
-/// load realizes the box to id 1 but a subsequent `set_parameter` rebuild
-/// re-executes the box and allocates a fresh id (2, 3, …). Seeding 1..=4 keeps
-/// the geometry queries answered across both the load and warm-edit rebuilds.
-///
-/// The inertia tensor is diagonal `diag(1, 2, 3)` (positive) so `moi_principal`
-/// eigenvalues are `[1, 2, 3]` and the PD constraint `moi_principal[0] > 0` is
-/// satisfiable. Seeded magnitudes are arbitrary stand-ins — the tests assert on
-/// determinacy / constraint status, not analytic values (the OCCT-gated
-/// crates/reify-eval/tests/rigid_moment_of_inertia_autoderive_smoke.rs owns the
-/// exact-magnitude checks).
-fn rigid_mass_props_session() -> EngineSession {
-    use reify_ir::{GeometryHandleId, Value};
-    let checker = SimpleConstraintChecker;
-    let mut kernel = MockGeometryKernel::new();
-    for id in 1..=4u64 {
-        let h = GeometryHandleId(id);
-        kernel = kernel
-            .with_volume_result(h, Value::Real(0.003))
-            .with_centroid_result(
-                h,
-                Value::String("{\"x\":0.05,\"y\":0.05,\"z\":0.15}".to_string()),
-            )
-            .with_inertia_tensor_result(
-                h,
-                7850.0,
-                Value::List(vec![
-                    Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
-                    Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
-                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
-                ]),
-            );
-    }
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
-}
-
-/// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,
-/// resolved from this crate's manifest dir (two levels up → workspace root),
-/// mirroring `load_file_returns_gui_state`.
-fn rigid_mass_props_fixture_path() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/rigid_mass_props_smoke.ri")
-}
-
-/// Locate the `moi_principal[0] > 0` positive-definiteness constraint injected by
-/// the stdlib `Rigid` trait, matching on either its formatted expression or its
-/// collected `parameter_ids` (both carry the `moi_principal` cell name).
-fn find_moi_principal_constraint(state: &crate::types::GuiState) -> &crate::types::ConstraintData {
-    state
-        .constraints
-        .iter()
-        .find(|c| {
-            c.expression.contains("moi_principal")
-                || c.parameter_ids.iter().any(|p| p.contains("moi_principal"))
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected the Rigid `moi_principal[0] > 0` PD constraint; have: {:?}",
-                state
-                    .constraints
-                    .iter()
-                    .map(|c| (c.expression.as_str(), &c.parameter_ids, c.status.as_str()))
-                    .collect::<Vec<_>>()
-            )
-        })
-}
+// The shared harness for these tests — `rigid_mass_props_session()`,
+// `rigid_mass_props_fixture_path()` and `find_moi_principal_constraint()`, plus
+// the section banner explaining the auto-derived cells — was promoted verbatim
+// to `crate::tests::test_helpers` by task #5338 (pre-1) so the command-level
+// entry-point tests in `commands_tests.rs` can reuse the same seeded kernel.
 
 /// Task 5194 (step-1, RED): on GUI **load**, a `: Rigid` body's auto-derived
 /// mass-property cells must surface as `determined` in the property panel, and
@@ -17574,6 +17493,232 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
     );
 }
 
+/// Task #5338 (step-1, RED): a `: Rigid` body's auto-derived mass-property cells
+/// must survive REPEATED `build_gui_state` rebuilds under the frontend's
+/// SELECTIVE demand posture, with no intervening edit.
+///
+/// This mirrors production argv-launch exactly. `main()` loads the file at
+/// startup (cold, `full_scope`), the frontend then boots, calls `sync_demand`
+/// with the visible realization keys — flipping demand SELECTIVE and `full_scope`
+/// OFF — and calls `get_initial_state`, which rebuilds. That second build is the
+/// state the GUI actually paints.
+///
+/// RED against the pre-fix panel, at rebuild #2 or later: the first SELECTIVE
+/// tessellate stores the realization's `input_cone_hash`
+/// (engine_build.rs `refresh_and_gate_demanded_realizations`), so every
+/// subsequent one finds it HASH-EXEMPT, excludes it from the seed, never calls
+/// `execute_realization_ops`, never hydrates a
+/// `Value::GeometryHandle { kernel_handle: Some(..) }`, and therefore emits
+/// `Undef` for all four mass-prop cells in `TessellateResult.values`.
+/// `surface_geometry_derived_cells` treats that delta as a full SNAPSHOT and
+/// silently leaves the absent cells undetermined — a violation of the engine's
+/// own DELTA CONTRACT (engine_build.rs `demand_scoped_unified_pass` docs), which
+/// states that an absent realization means "retain the previous value", not "the
+/// value is gone".
+///
+/// The `sync_demand` call is load-bearing: `eval()` / `check()` set
+/// `full_scope = true` and `refresh_and_gate_demanded_realizations` early-returns
+/// empty under `full_scope`, so the hash gate is INERT on any cold/load build and
+/// the bug is unreachable there. That is exactly why a debug-MCP `open_file`
+/// "heals" a degraded session.
+///
+/// The loop asserts after EACH of three rebuilds rather than after one: the
+/// invariant is "repeated rebuilds must not degrade a determined cell"; WHICH
+/// iteration the hash gate first bites is an implementation detail of the gate.
+///
+/// Determinacy / constraint status only — never analytic magnitudes.
+#[test]
+fn rigid_mass_props_survive_repeated_rebuild_under_selective_demand() {
+    let mut session = rigid_mass_props_session();
+
+    // (1) Cold load — runs under `full_scope`, so the mass props DO surface.
+    //     This re-pins task 5194's landed behaviour as the baseline.
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+    assert_rigid_mass_props_determined(&state, "load");
+
+    // (2) The frontend's post-load handshake: report the visible realizations,
+    //     flipping the engine to SELECTIVE demand (`full_scope` OFF). Nothing
+    //     else in the GUI turns `full_scope` off, so this is what arms the
+    //     input-cone-hash reuse gate.
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the loaded fixture must render at least one realization mesh — an empty \
+         key list would make sync_demand a no-op and this test vacuous; meshes: {:?}",
+        state
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+    session.sync_demand(&keys);
+
+    // (3) Three successive re-renders with NO intervening edit — exactly what the
+    //     GUI does on every frame-driving state refresh. None may degrade.
+    for i in 1..=3 {
+        let state = session
+            .build_gui_state()
+            .unwrap_or_else(|e| panic!("build_gui_state rebuild #{i} should succeed; got {e}"));
+        assert_rigid_mass_props_determined(&state, &format!("rebuild #{i}"));
+    }
+}
+
+/// Task #5338 amendment (reviewer suggestion 3): `set_active_fea_case` is a FIFTH
+/// GuiState-producing entry point, and it must not revert a `: Rigid` body's
+/// auto-derived mass-prop cells.
+///
+/// It deliberately does NOT re-evaluate or re-tessellate — it clones the cached
+/// mesh payload, re-applies the FEA channels, and rebuilds `values` /
+/// `constraints` from the kernel-LESS `last_check`. That rebuild is where the
+/// gap sat: `build_values` leaves `mass` / `centroid` / `moment_of_inertia` /
+/// `moi_principal` Undef and the `moi_principal[0] > 0` PD constraint
+/// Indeterminate, and unlike `build_gui_state` this path never called
+/// `surface_geometry_derived_cells`, so a case switch silently undid what the
+/// previous rebuild had determined (pre-existing since task 5194).
+///
+/// The `sync_demand` + rebuild before the switch is load-bearing: it flips the
+/// engine to the frontend's SELECTIVE posture, so the retention cache — not a
+/// fresh full-scope delta — is the only thing the case switch can source the
+/// cells from, which is exactly the production situation.
+#[test]
+fn rigid_mass_props_survive_an_fea_case_switch() {
+    let mut session = rigid_mass_props_session();
+
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+    assert_rigid_mass_props_determined(&state, "cold load");
+
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the loaded fixture must render at least one realization mesh — an empty \
+         key list would make sync_demand a no-op and this test vacuous"
+    );
+    session.sync_demand(&keys);
+    let state = session
+        .build_gui_state()
+        .expect("the selective rebuild before the case switch should succeed");
+    assert_rigid_mass_props_determined(&state, "selective rebuild");
+
+    // An unknown case name is deliberate and harmless — `set_active_fea_case`
+    // falls back to the lex-first default, and the fixture carries no FEA case at
+    // all. What is under test is the REBUILD it performs, not case selection.
+    let state = session
+        .set_active_fea_case("overload")
+        .expect("set_active_fea_case should succeed on a loaded module");
+    assert_rigid_mass_props_determined(&state, "after the FEA case switch");
+}
+
+/// Task #5338 amendment round 3 (reviewer suggestion 7) — the debug full-scene
+/// projection must not leave FULL-SCENE meshes in `tess_mesh_cache`, where the
+/// next `set_active_fea_case` would serve them.
+///
+/// `build_gui_state_full_scene` brackets `demand_is_full_scope` and
+/// `geometry_derived_cache`, and its doc claims the read is "READ-ONLY with
+/// respect to the production posture". The inner full-scope `build_gui_state`
+/// also ASSIGNS `tess_mesh_cache` / `tess_diag_cache`, and `set_active_fea_case`
+/// clones the mesh cache verbatim to re-source per-case channels without
+/// re-tessellating — so without those two in the bracket, a debug-MCP read
+/// followed by a case switch hands back meshes for realizations the user hid.
+///
+/// The scene is made FEA-bearing via `inject_check_for_test` +
+/// `make_multi_case_value_map` (the established pattern in this file) because
+/// `tess_mesh_cache` is deliberately populated only for FEA scenes; a non-FEA
+/// scene sets it to `None` and the leak has no carrier.
+///
+/// Sequence: full-scope load of a TWO-body module → FEA rebuild (cache holds both)
+/// → `sync_demand` naming only body `a` + rebuild (production posture: cache holds
+/// one) → `build_gui_state_full_scene` (the debug read, which internally sees both)
+/// → `set_active_fea_case`. The case switch must still see ONE body.
+#[test]
+fn full_scene_debug_read_does_not_leak_hidden_meshes_into_the_fea_case_switch() {
+    use reify_eval::CheckResult;
+
+    const TWO_BODY_SRC: &str = r#"pub structure LeakTwoBody {
+    let a = box(30mm, 30mm, 30mm)
+    let b = box(20mm, 20mm, 20mm)
+}"#;
+
+    let mut session = rigid_mass_props_session();
+    session
+        .load_from_source(TWO_BODY_SRC, "leak_two_body")
+        .expect("load_from_source must succeed");
+
+    // Make the scene FEA-bearing so `build_gui_state` populates `tess_mesh_cache`.
+    session.inject_check_for_test(CheckResult {
+        values: make_multi_case_value_map(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    });
+    let full = session
+        .build_gui_state()
+        .expect("the FEA-bearing full-scope rebuild must succeed");
+    let all_keys = visible_realization_keys(&full);
+    assert_eq!(
+        all_keys.len(),
+        2,
+        "the fixture must realize TWO bodies — with one body there is no hidden \
+         mesh to leak and this test is vacuous; got {all_keys:?}"
+    );
+
+    // Production posture: hide body `b`, keep `a`.
+    let kept: Vec<String> = all_keys
+        .iter()
+        .filter(|k| k.contains("realization[0]"))
+        .cloned()
+        .collect();
+    assert_eq!(kept.len(), 1, "expected exactly one kept key; got {kept:?}");
+    session.sync_demand(&kept);
+    let selective = session
+        .build_gui_state()
+        .expect("the selective rebuild must succeed");
+    assert_eq!(
+        selective.meshes.len(),
+        1,
+        "the selective rebuild must dispatch only the visible body — this is the \
+         posture the debug read must not disturb; got {:?}",
+        selective
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // The debug-MCP read. Internally full-scope, so it SEES both bodies…
+    let debug_state = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene must succeed");
+    assert_eq!(
+        debug_state.meshes.len(),
+        2,
+        "the debug projection is supposed to return the complete realized scene — \
+         if it does not, this test can no longer detect the leak it exists for"
+    );
+
+    // …and must leave nothing of that behind for the case switch.
+    let switched = session
+        .set_active_fea_case("overload")
+        .expect("set_active_fea_case must succeed");
+    assert_eq!(
+        switched.meshes.len(),
+        1,
+        "a case switch after a debug full-scene read must serve the PRODUCTION \
+         mesh set, not the full scene — `set_active_fea_case` clones \
+         `tess_mesh_cache` verbatim, so an unbracketed debug read hands the user \
+         meshes for realizations they hid; got {:?}",
+        switched
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
 // ── Task 5074 step-1: from_engine must delegate to the canonical A1
 // production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
 // task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.
@@ -17656,3 +17801,169 @@ mod gui_feature_tests {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5094 α — EngineSession::resolve_param_default_span (INV-GUI-3 substrate)
+//
+// The happy-path assertions slice the SOURCE with the returned span. That is
+// what makes PRD v0_6 ai-native-editing §6.1's "default expression range only,
+// never the whole `param … = …` decl" observable rather than merely structural:
+// a span that covered the decl, or included the `=`, would produce a different
+// slice and fail here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Slice `bracket_source()` with a span the resolver returned.
+fn slice_bracket(span: reify_core::SourceSpan) -> &'static str {
+    &bracket_source()[span.start as usize..span.end as usize]
+}
+
+#[test]
+fn resolve_param_default_span_slices_the_default_literal_only() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Bracket.width")
+        .expect("Bracket.width has a default literal");
+    let slice = slice_bracket(span);
+
+    assert_eq!(
+        slice, "80mm",
+        "span must cover the default expression exactly"
+    );
+    // §6.1 invariant, from the observable side: expression range ONLY.
+    assert!(
+        !slice.contains("param"),
+        "span must not reach back over the `param` keyword, got {slice:?}"
+    );
+    assert!(
+        !slice.contains('='),
+        "span must not include the `=`, got {slice:?}"
+    );
+}
+
+#[test]
+fn resolve_param_default_span_resolves_a_non_first_member() {
+    // `thickness` is the THIRD param in bracket_source(). A single case on the
+    // first member would not catch a first-member / off-by-one bias.
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Bracket.thickness")
+        .expect("Bracket.thickness has a default literal");
+    assert_eq!(slice_bracket(span), "5mm");
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_with_no_module_loaded() {
+    // parsed_cache is None on a fresh session (and on load_from_compiled-injected
+    // sessions). Must degrade to None, never panic.
+    let session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    assert_eq!(session.resolve_param_default_span("Bracket.width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_unknown_entity() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("Nope.width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_unknown_member() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("Bracket.nope"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
+    // No '.' — parse_cell_id returns Err, which this method maps to None.
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
+    // The source below declares a REAL `sub` with a specialization override, so
+    // "Holder.child.width" is an instance path that actually exists rather than a
+    // name nothing could ever match. That distinction is what gives this test
+    // teeth: `Holder` ALSO declares its own `param width = 10mm`, so a plausible
+    // wrong implementation — one that split the cell_id on the LAST '.', or that
+    // otherwise took `width` as the member and `Holder` as the entity — would
+    // return Some(span-of-"10mm") here and let a caller rewrite the SHARED
+    // structure default when the user only asked to change one instance's value.
+    // That is precisely the silent-wrong-edit INV-GUI-3 exists to prevent.
+    //
+    // `parse_cell_id` splits on the FIRST '.', so the member is "child.width",
+    // which matches no ParamDecl.name (member names never contain a '.') — hence
+    // None, which γ surfaces as a structured error.
+    const SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
+                       structure def Holder {\n\
+                           param width : Length = 10mm\n\
+                           sub child : Leaf { width = 90mm }\n\
+                       }";
+
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(SRC, "holder")
+        .expect("load should succeed");
+
+    // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
+    // below cannot be blamed on the entity or the source failing to load.
+    let own = session
+        .resolve_param_default_span("Holder.width")
+        .expect("Holder.width is a plain param with a default");
+    assert_eq!(&SRC[own.start as usize..own.end as usize], "10mm");
+
+    assert_eq!(
+        session.resolve_param_default_span("Holder.child.width"),
+        None,
+        "an instance path must not resolve to the shared structure's own default"
+    );
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_param_without_default() {
+    // PRD §6.1's explicit "returns None if the param has no default literal to
+    // rewrite". Shape verified against real source (examples/appearance_surface.ri:16,
+    // `param name : String` inside a structure def).
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source("structure def S { param t : Length }", "s")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("S.t"), None);
+}
+
+#[test]
+fn resolve_param_default_span_resolves_an_occurrence_entity() {
+    // Shape taken from real source (examples/m5_occurrence_process.ri:5-9,
+    // `occurrence def Machining { … param feed_rate : Real = 100 }`), minus the
+    // ports. A cell_id naming an occurrence is a real, reachable input:
+    // OccurrenceDef is field-for-field equivalent to StructureDef for this
+    // purpose (same name/members/span), and the compiled side does not
+    // distinguish the two — reify_eval::source_location::find_parsed_decl_containing_offset,
+    // the walk get_containing_definition already delegates to, matches BOTH.
+    const SRC: &str = "occurrence def Machining { param feed_rate : Real = 100 }";
+
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(SRC, "machining")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Machining.feed_rate")
+        .expect("Machining.feed_rate has a default literal");
+    assert_eq!(&SRC[span.start as usize..span.end as usize], "100");
+}

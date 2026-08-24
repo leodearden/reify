@@ -596,23 +596,63 @@ fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
 /// Load a file into the engine and return the initial state.
 ///
 /// The input `path` is canonicalised to an absolute realpath via
-/// [`crate::path_key::canonicalize_document_key`] before being passed to
-/// [`load_file_into_engine`], which propagates the canonical key into the
-/// engine's `file_path` field (used later by `update_source` for import
-/// resolution). [`UnresolvedGuiState::resolve`] then runs AFTER the engine
-/// lock is released, so the returned [`GuiState::files`] contains absolute
-/// paths rather than bare module-key filenames without the engine mutex
-/// being held across the canonicalize filesystem calls (#5193).
+/// [`crate::path_key::canonicalize_document_key`], then handed to
+/// [`load_initial_file_impl`] — a THIN WRAPPER, deliberately: the two entry
+/// points differ ONLY in who canonicalises (this one does it; argv already
+/// holds a canonical `PathBuf` from [`resolve_initial_file_path`]), so the
+/// load-and-resolve body itself must not be duplicated or the two could drift
+/// (#5338 amendment). Canonicalising here is also what structurally satisfies
+/// `load_initial_file_impl`'s already-canonical precondition for this caller.
 pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
 ) -> Result<GuiState, String> {
     let canonical = crate::path_key::canonicalize_document_key(path);
-    let state = crate::engine_lock::with_engine_lock(engine, |s| {
-        load_file_into_engine(s, Path::new(&canonical))
-    })
-    .and_then(std::convert::identity)?;
-    Ok(state.resolve(Path::new(&canonical)))
+    load_initial_file_impl(engine, Path::new(&canonical))
+}
+
+/// The ONE load-and-resolve body behind both file-open entry points: the
+/// startup **argv** launch (`main()` → here directly) and File-Open
+/// ([`open_file_engine_impl`], which canonicalises and delegates), alongside
+/// `debug_server::open_source_into_engine_and_refresh_baseline` on the shared
+/// [`load_file_into_engine`] choke-point (#5193).
+///
+/// `main()` previously called `EngineSession::load_file` inline and DISCARDED the
+/// returned `GuiState`, so [`UnresolvedGuiState::resolve`] never ran on the argv
+/// path at all. Routing argv through here leaves ONE load body behind both entry
+/// points (they can no longer drift), applies `resolve` to the state this function
+/// returns, and makes the startup state observable to tests (#5338).
+///
+/// SCOPE OF THAT CLAIM — [`UnresolvedGuiState::resolve`] mutates only the returned
+/// `GuiState`, never engine state, and `main()` uses the return value for its `Err`
+/// arm only. The frontend's startup path (`initApp` → `get_initial_state` →
+/// [`crate::engine::EngineSession::build_gui_state`]) rebuilds `files[]` from the
+/// stem-only `source_map()` keys, so an argv-LAUNCHED GUI still paints stem-only
+/// `files[].path` — the #5193 identity split is closed at THIS boundary (which is
+/// what `load_initial_file_impl_matches_open_file_engine_impl_contract` pins), not
+/// end to end on the argv launch. Delivering it end to end means applying the same
+/// resolve where the frontend reads it — at `build_gui_state`, against the session's
+/// canonical `file_path` — which changes `files[].path` for every `get_initial_state`
+/// consumer (including the live-edit `file_key` join in `build_files_with_live_edit`)
+/// and is therefore out of scope here. Filed as a follow-up under ticket
+/// `tkt_0RSMMJKNAYC6YCYNNNA86P9AYQ`, not as a tracked-pattern comment, since the
+/// curator assigns the task id asynchronously and a cite must resolve to a live task
+/// to be valid.
+///
+/// `path` MUST already be canonical — [`resolve_initial_file_path`] is the argv
+/// string → canonical `PathBuf` step and stays the caller's responsibility, and
+/// [`open_file_engine_impl`] runs [`crate::path_key::canonicalize_document_key`]
+/// before delegating. Handed a non-canonical path, the engine's `file_path` and
+/// the returned `files[].path` entries would carry that non-canonical spelling.
+/// [`UnresolvedGuiState::resolve`] runs AFTER the engine lock is released, so the
+/// mutex is not held across its `std::fs::canonicalize` syscalls.
+pub fn load_initial_file_impl(
+    engine: &Mutex<EngineSession>,
+    path: &Path,
+) -> Result<GuiState, String> {
+    let state = crate::engine_lock::with_engine_lock(engine, |s| load_file_into_engine(s, path))
+        .and_then(std::convert::identity)?;
+    Ok(state.resolve(path))
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for

@@ -224,6 +224,112 @@ fn helix_bare_radius_drops_op_dimensioned_builds() {
 }
 
 // ---------------------------------------------------------------------------
+// The VARIADIC curve constructors (task 5658, R2) — same leaf signal, one
+// layer further out
+//
+// `interp` / `bezier` / `nurbs` take an arity-open flat coordinate stream that
+// the compiler names positionally (`c0`…`cN`). Only this file can show that the
+// DISPLAY names the gate mints (`x1`, `y1`, …) are what a `.ri` author actually
+// sees, because the unit tests hand-build the `CompiledGeometryOp` and so never
+// exercise parse → compile → build agreement on an arity-open signature.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn interp_bare_coordinate_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "interp",
+        "x1",
+        r#"structure def BareInterp {
+            let w = interp(0, 0, 0, 10, 0, 0, 20, 0, 0)
+        }"#,
+        r#"structure def DimInterp {
+            let w = interp(0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 20mm, 0mm, 0mm)
+        }"#,
+        |op| matches!(op, GeometryOp::InterpCurve { .. }),
+    );
+}
+
+#[test]
+fn bezier_bare_coordinate_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "bezier",
+        "x1",
+        r#"structure def BareBezier {
+            let w = bezier(0, 0, 0, 5, 10, 0, 10, 0, 0)
+        }"#,
+        r#"structure def DimBezier {
+            let w = bezier(0mm, 0mm, 0mm, 5mm, 10mm, 0mm, 10mm, 0mm, 0mm)
+        }"#,
+        |op| matches!(op, GeometryOp::BezierCurve { .. }),
+    );
+}
+
+/// `nurbs` is the one variadic curve constructor with dimensionless
+/// neighbours, and the DIMENSIONED control here is the e2e half of the scope
+/// lock: `degree`, `n_points`, the weights and the knots are deliberately left
+/// BARE in it, so its zero-units-diagnostic assertion goes red if the gate
+/// over-reaches past the pole span.
+///
+/// That control is also the DOC PIN. Its call is byte-identical to the
+/// fully-dimensioned example task 5658 wrote into the two author- and
+/// agent-facing docs — `crates/reify-mcp/src/tools/chunks/geometry.md` (served
+/// verbatim to the in-GUI assistant) and `docs/reify-stdlib-reference.md` — so
+/// the documented 14-arg form is compile-smoked (`parse_and_compile`, the
+/// STRICT path) and build-smoked here rather than merely asserted in prose. The
+/// sibling `stdlib_geometry_ops_smoke.ri` fixture's nurbs call is a 10-arg,
+/// knot-less form the eval layer rejects outright ("nurbs() requires at least 1
+/// knot value"), so it does NOT cover the documented shape. If you reword either
+/// doc's example, update this literal in the same commit.
+#[test]
+fn nurbs_bare_pole_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "nurbs",
+        "x1",
+        r#"structure def BareNurbs {
+            let w = nurbs(1, 2, 0, 0, 0, 10, 0, 0, 1, 1, 0, 0, 1, 1)
+        }"#,
+        r#"structure def DimNurbs {
+            let w = nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
+        }"#,
+        |op| matches!(op, GeometryOp::NurbsCurve { .. }),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The variadic PROFILE constructor (task 5661)
+// ---------------------------------------------------------------------------
+
+/// `polygon`'s flat 2-D vertex pairs — the pre-5658 bare variadic reader's last
+/// consumer (gating this retired it, so `eval_all_args_to_f64` no longer
+/// exists), and the only arity-open PROFILE signature in the language.
+///
+/// Two things only this layer can show. First that a `.ri` author actually sees
+/// the DISPLAY name `x1` rather than the compiler's inert positional `c0` — the
+/// unit tests build their `CompiledGeometryOp` by hand, so they cannot prove
+/// the compiler really mints `c0`…`cN` here. Second that parse → compile →
+/// build agree on a variadic PROFILE, a shape the R2 curve rows never exercise.
+///
+/// Six args satisfies the compiler-side precondition (">= 6 args for 3 points",
+/// even count — `reify-compiler/src/geometry.rs:1631`), and the dimensioned
+/// control is byte-identical to the call already smoked by
+/// `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs:213`
+/// so the doc example and this signal cannot drift.
+#[test]
+fn polygon_bare_vertex_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "polygon",
+        "x1",
+        r#"structure def BarePolygon {
+            let r = polygon(0, 0, 10, 0, 5, 10)
+        }"#,
+        r#"structure def DimPolygon {
+            let r = polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
+        }"#,
+        |op| matches!(op, GeometryOp::PolygonProfile { .. }),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The desugaring cross-check — the highest-risk unknown in task 5623
 // ---------------------------------------------------------------------------
 

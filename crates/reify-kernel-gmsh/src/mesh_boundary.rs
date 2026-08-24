@@ -37,6 +37,7 @@ use reify_ir::ElementOrderTag;
 use std::borrow::Cow;
 #[cfg(has_gmsh)]
 use crate::{
+    CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE,
     auto_size::AutoSizeConfig,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
     options::MeshingOptions,
@@ -654,23 +655,28 @@ fn run_meshing_with_entity_queries(
 
     // Classify surfaces + create geometry.
     //
-    // NOTE (task 3591, at time of writing): the feature angle is FRAC_PI_4
-    // (45°), NOT the FRAC_PI_2 (90°) that `mesh_to_volume` uses. Volume meshing
-    // only needs a closed watertight surface, but ATTRIBUTION additionally needs
-    // gmsh to reconstruct the B-rep topology (faces / edges / corner points). A
-    // cube's dihedral angle is exactly 90°, so a 90° feature angle fails to
-    // separate adjacent faces: gmsh then emits a degenerate decomposition with
-    // no corner (dim-0) entities, yielding zero OnVertex attributions. FRAC_PI_4
-    // puts the cube's 90° edges safely above the threshold so corners, edges and
-    // faces are recovered. See `tests/node_attachment_producer.rs` (signal test)
-    // and `tests/gmsh_classify_diagnostics.rs` (pinned re-meshing property).
-    ffi::classify_surfaces(
-        std::f64::consts::FRAC_PI_4,
-        1,
-        1,
-        std::f64::consts::FRAC_PI_4,
-        0,
-    )?;
+    // NOTE: this producer and `mesh_to_volume` now share ONE definition of the
+    // classify angles — [`CLASSIFY_FEATURE_ANGLE`] / [`CLASSIFY_CURVE_ANGLE`],
+    // defined in `kernel_real.rs` and re-exported from the crate root. Until
+    // #6200 `mesh_to_volume` passed FRAC_PI_2 (90°) here while this path passed
+    // FRAC_PI_4 (45°); consuming the constant removes the second definition, so
+    // the two producers cannot drift apart again.
+    //
+    // WHY the value must stay strictly below 90° (task 3591's finding, and
+    // #6200's root cause): a cube's dihedral angle is exactly 90° and gmsh's
+    // sharp-edge test is strictly-greater-than, so a 90° feature angle
+    // registers none of a box's own edges and fails to separate adjacent
+    // faces. gmsh then falls back to a topological split with no corner
+    // (dim-0) entities, which costs BOTH producers: attribution yields zero
+    // OnVertex attachments, and volume meshing hands HXT a region smaller than
+    // the solid (measured on a box: aabb fill 0.74, B-rep census
+    // dim0/dim1/dim2 = 4/4/2). At 45° the cube's 90° edges are safely above
+    // the threshold and corners, edges and faces are all recovered (census
+    // 8/14/8, fill 1.000000). See `tests/node_attachment_producer.rs` (signal
+    // test), `tests/classify_feature_angle.rs` (B-rep census guard),
+    // `tests/volume_fill_fraction.rs` (fill guard) and
+    // `tests/gmsh_classify_diagnostics.rs` (pinned re-meshing property).
+    ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)?;
     ffi::create_geometry(&[])?;
 
     // Wrap in surface loop + volume

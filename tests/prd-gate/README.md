@@ -4,6 +4,39 @@ Executable capability probes for PRD §4 D1 (`scripts/prd-capability-check.py`).
 Consumed by γ/D3 (decompose-phase verification workflow) and dark-factory D4
 (dispatch-time substrate re-diff).
 
+## Where fixtures live (standard, Leo 2026-08-21)
+
+**A committed `.ri` fixture that exists as PRD or capability-manifest evidence lives
+here, in `tests/prd-gate/fixtures/`.** Cite it by **full repo-relative path**
+(`tests/prd-gate/fixtures/<name>.ri`) everywhere — probe sets, capability manifests,
+PRD prose and task `metadata.files`. Bare `fixtures/<name>.ri` and bare stems are
+unresolvable by machine and must not be used.
+
+`docs/prds/**/fixtures/` is **DEPRECATED**. It grew as a parallel convention and is
+being emptied by task #6431; do not add files there.
+
+The other three tiers, keyed on *who consumes the file* rather than who motivated it:
+
+| Tier | Home | Why |
+|---|---|---|
+| Ephemeral decompose-time probe | `/tmp/prd-gate-fixtures/` | never committed; see the `/prd` overlay's `references/grammar-gate.md` |
+| **Committed PRD / manifest evidence** | **`tests/prd-gate/fixtures/`** | executed by probe sets; walked by the GUI grammar ledger; covered by the coupling carve-out |
+| User-facing design that must keep working | `examples/` → `examples/best_practices/` + `INDEX.md` | swept by `crates/reify-compiler/tests/examples_smoke.rs` |
+| Purely one crate's test detail, not PRD evidence | `crates/<crate>/tests/fixtures/` | crate-local, no PRD coupling |
+
+**A fixture read by a compiled test target does not get special placement — it gets
+registration.** Add its basename to `_RUST_COUPLED_RI_FIXTURES` (`scripts/verify.sh:1080`)
+so an edit to it correctly escalates `pre-commit` to the heavy checks. You do not have to
+remember: `tests/infra/test_verify_scope.sh`'s PG-DRIFT scenario re-derives the coupled
+set from `git grep` over tracked sources and turns RED until the fixture is registered.
+This mechanism is the reason this directory is the standard — it exists here and nowhere
+else.
+
+Note that fixtures here are **not** required to parse or to pass `reify check`: several
+are deliberately unparseable or deliberately failing, because they are *probe* inputs
+whose expected observation is a rejection. Nothing in the repo compiles this directory
+wholesale.
+
 ## Committed-probe-set format (JSON)
 
 ```json

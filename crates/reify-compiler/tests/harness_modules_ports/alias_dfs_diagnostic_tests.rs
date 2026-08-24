@@ -20,9 +20,8 @@
 //!   which the test pins via the `"dimension type in alias expression"` fragment
 //!   — unique to that helper's error path.
 
-mod common;
 
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::Severity;
 
 /// Shared source for the two Scalar-with-use-site regression tests below.

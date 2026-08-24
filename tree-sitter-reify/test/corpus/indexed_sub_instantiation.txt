@@ -1,0 +1,92 @@
+; NOTE: This corpus documents the CST shape of the indexer clause on the sub
+; instantiation arm — `sub idlers[i in 0..4] = …` (task α,
+; docs/prds/v0_6/indexed-sub-instantiation.md §3.1).
+;
+; LOAD-BEARING: the expected S-expressions below ARE validated on every merge —
+; not by `tree-sitter test` (which dark-factory-orchestrator.yaml does not run),
+; but by `corpus_cases_match_the_live_parser` in
+; tree-sitter-reify/tests/indexed_sub_grammar_tests.rs, which include_str!s THIS
+; file, reparses each case with the live grammar and compares `to_sexp()` output.
+; So a grammar change that alters the indexed-sub CST fails there until these
+; expectations are updated too — this file cannot silently drift. That Rust file
+; remains the canonical CST contract; this one is documentation OF the grammar,
+; never a second source of truth. It also pins the case count (3), so dropping a
+; case below is itself a failure.
+;
+; SCOPE: this file pins the CST shape ONLY — a green case means "the grammar
+; shape is right", never "this source compiles". These sources are still
+; rejected one layer down by the interim α→β rejection; rationale lives at the
+; `TODO(#5482)` site in `lower_sub` (crates/reify-syntax/src/ts_parser.rs).
+;
+; Sources are kept MINIMAL on purpose: because the guard compares whole-root
+; S-expressions, any node shape a case drags in becomes pinned here too, and an
+; unrelated grammar change to (say) named arguments or `transform3(…)` would
+; then fail an indexed-sub test. So no case carries constructor arguments or a
+; compound pose — that the indexer coexists with those is pinned by
+; `indexed_sub_cst_exposes_binder_and_domain_fields`, in hand-written field
+; assertions that are indifferent to their internal shape.
+;
+; Heads-up for future readers: `tree-sitter test` is 218/219 on main because of
+; the pre-existing and unrelated test/corpus/imaginary_literal.txt failure
+; (task #5492). That red is NOT your regression — scope any run with
+; `tree-sitter test -f 'indexed sub'` rather than reading a bare full-suite red.
+
+================================================================================
+indexed sub — indexer clause + at pose
+================================================================================
+
+structure S {
+  sub idlers[i in 0..4] = Pulley() at origin
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      binder: (identifier)
+      domain: (range_expression
+        lower: (number_literal)
+        upper: (number_literal))
+      structure_name: (identifier)
+      pose: (identifier))))
+
+================================================================================
+indexed sub — indexer clause + bare ctor, no pose
+================================================================================
+
+structure S {
+  sub legs[k in 0..3] = Leg()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      binder: (identifier)
+      domain: (range_expression
+        lower: (number_literal)
+        upper: (number_literal))
+      structure_name: (identifier))))
+
+================================================================================
+indexed sub — bare instantiation unchanged (no indexer, no binder/domain fields)
+================================================================================
+
+structure S {
+  sub a = Foo()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))

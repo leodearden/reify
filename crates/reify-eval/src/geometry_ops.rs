@@ -242,8 +242,11 @@ pub(crate) enum LengthArg {
     /// (quiet degradation, matching `resolve_scalar_dim_arg`).
     Unresolved,
     /// The argument is missing, non-finite, or defined-but-not-a-LENGTH (a bare
-    /// `Real`/`Int` or a wrong-dimension `Scalar`). Exactly one
-    /// `Severity::Warning` describing which has already been pushed.
+    /// `Real`/`Int` or a wrong-dimension `Scalar`). Exactly one diagnostic
+    /// describing which has already been pushed: `Severity::Error` carrying
+    /// `DiagnosticCode::DimensionedArgRejected` for the DIMENSION rejection
+    /// (task 5743), `Severity::Warning` for the missing-arg and non-finite arms.
+    /// See [`eval_named_arg_length`]'s table for the per-state breakdown.
     Invalid,
 }
 
@@ -264,7 +267,9 @@ pub(crate) enum LengthArg {
 /// [`eval_named_arg_f64`] — whose `Value::as_f64` silently reads a BARE
 /// `Value::Real(10.0)` as **10 SI metres** and a `10mm` Scalar as `0.01` m —
 /// this helper REJECTS a bare `Real`/`Int` or a wrong-dimension `Scalar`
-/// (one `Severity::Warning` via `ArgRejection::message`), so a dimensionless
+/// (one `Severity::Error` carrying
+/// [`reify_core::DiagnosticCode::DimensionedArgRejected`], worded by
+/// `ArgRejection::message` — see the table below), so a dimensionless
 /// spacing can never scatter instances 1000× too far, and a bare `translate`
 /// component can never displace a part by a kilometre. Same hazard and
 /// discipline as `joints::read_length3` (the canonical "reject bare Real to
@@ -278,7 +283,17 @@ pub(crate) enum LengthArg {
 /// | `Value::Undef` (unresolved param/cell)     | [`LengthArg::Unresolved`] | no — quiet degradation |
 /// | finite LENGTH `Scalar`                     | [`LengthArg::Length`]  | no                      |
 /// | non-finite LENGTH `Scalar` (NaN / ±inf)    | [`LengthArg::Invalid`] | yes — `Severity::Warning` |
-/// | bare `Real`/`Int`, wrong-dimension `Scalar`| [`LengthArg::Invalid`] | yes — `Severity::Warning` |
+/// | bare `Real`/`Int`, wrong-dimension `Scalar`| [`LengthArg::Invalid`] | yes — `Severity::Error` + [`reify_core::DiagnosticCode::DimensionedArgRejected`] |
+///
+/// The last two rows differ deliberately, and the table is written to describe
+/// the code rather than an aspiration. Only the DIMENSION rejection is promoted
+/// to `Error` + code by task 5743 (contract C1(iv)): it is the one backed by an
+/// `arg_acceptance::ArgRejection`, whose `message` solely owns the wording the
+/// code documents. A non-finite LENGTH `Scalar` was `Accepted` by `accept_arg`
+/// — it IS a Length, it is merely NaN/±inf — so it produces no `ArgRejection`
+/// and cannot carry a dimension-rejection code; its promotion is tracked with
+/// the other severity residuals in task 5743's follow-up rather than smuggled in
+/// here.
 ///
 /// Callers go through [`required_length_arg`] / [`required_length_value`],
 /// which map each non-`Length` state to its own `Err` message so
@@ -293,8 +308,6 @@ pub(crate) fn eval_named_arg_length(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> LengthArg {
-    use crate::arg_acceptance::{Acceptance, accept_arg, length_spec};
-
     // A missing arg is `Invalid`, not `Unresolved`: `eval_named_arg` has
     // already pushed its own missing-arg Warning naming the culprit.
     let Some(value) = eval_named_arg(
@@ -308,7 +321,40 @@ pub(crate) fn eval_named_arg_length(
     ) else {
         return LengthArg::Invalid;
     };
-    match accept_arg(&value, &length_spec()) {
+    accept_length_value(name, kind_label, &value, diagnostics)
+}
+
+/// The VALUE-LEVEL core of the Contract C length gate: classify an
+/// already-evaluated `Value` as a finite LENGTH, and push the rejection
+/// diagnostic when it is not.
+///
+/// Lifted verbatim out of [`eval_named_arg_length`] (task 5658) so the two
+/// routes into the chokepoint — the NAMED-ARG one and the VARIADIC one
+/// ([`accept_variadic_length_args`]) — share ONE `accept_arg(&value,
+/// &length_spec())` call. That is what makes their rejection wording
+/// byte-identical BY CONSTRUCTION rather than by convention, which matters
+/// because the wording is the user-facing contract (PRD decision D9): the
+/// `expects Length` phrasing and the `5mm` migration hint are minted in exactly
+/// one place, [`ArgRejection::message`](crate::arg_acceptance::ArgRejection),
+/// and a second hand-rolled copy would drift the moment either is reworded.
+///
+/// The state table is [`eval_named_arg_length`]'s, minus the missing-arg row
+/// (a variadic position cannot be missing — it is present or the arity check
+/// already failed).
+///
+/// `name` is `impl Display + Copy` rather than `&str` so a caller whose name is
+/// COMPUTED can hand over a lazy renderer instead of an eagerly-built `String`
+/// ([`CoordName`], the arity-open variadic case). Every `to_string()` below sits
+/// inside a rejection branch, so the accepted path renders nothing.
+pub(crate) fn accept_length_value(
+    name: impl std::fmt::Display + Copy,
+    kind_label: impl std::fmt::Display + Copy,
+    value: &reify_ir::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> LengthArg {
+    use crate::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+    match accept_arg(value, &length_spec()) {
         Acceptance::Accepted(si) if si.is_finite() => LengthArg::Length(si),
         Acceptance::Accepted(_) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -319,7 +365,44 @@ pub(crate) fn eval_named_arg_length(
         }
         Acceptance::Undefined => LengthArg::Unresolved,
         Acceptance::Rejected(rej) => {
-            diagnostics.push(Diagnostic::warning(rej.message(&kind_label.to_string(), name)));
+            // SEVERITY: deliberately PROMOTED to Error (task 5743, units-length β).
+            //
+            // Contract C1(iv) requires the eval-layer rejection ITSELF to carry
+            // Error severity, so `reify eval` exits nonzero through the PURE
+            // severity gate at `reify-cli/src/main.rs` (INV-SF-2 — that gate is a
+            // fold over Severity::Error with no per-code escalation list, so a new
+            // code needs no registration there). The alternative considered and
+            // REJECTED was leaving this a Warning and leaning on the paired
+            // op-compile Error: it satisfies the exit code by accident rather than
+            // by contract, and it labels a fail-closed rejection as advisory.
+            //
+            // The promotion is an exit-code NO-OP today: every caller routes the
+            // resulting `Err` through `engine_build`'s "failed to compile geometry
+            // operation" Error, which already drops the op. Only the severity LABEL
+            // moves — so this is safe to land ahead of the slot migration.
+            //
+            // Because this is the SHARED value-level helper, the retrofit lands at
+            // every already-shipped Contract C site at once, across BOTH routes into
+            // it. NAMED-ARG route: pattern spacing (linear_pattern /
+            // linear_pattern_2d), the mirror-plane origin, the circular-pattern axis
+            // origin, the arbitrary-pattern offsets, and 5623's transform / sweep /
+            // curve positions. VARIADIC route ([`accept_variadic_length_args`], task
+            // 5658): the `interp` / `bezier` coordinate triples and the `nurbs` pole
+            // span, joined by `polygon`'s 2-D vertex PAIRS when task 5661 landed.
+            // Task 5743 then gated the raw-`Value` primitive/profile fields on top of
+            // both. Picking the promotion up for the variadic route is a
+            // BONUS of landing after 5658 rather than a cost: it is what makes
+            // INV-SF-6 (a `DiagnosticCode` on every `ArgSpec`-backed rejection) hold
+            // across the WHOLE merged Contract C surface, not just the half this
+            // leaf gated.
+            //
+            // The wording is untouched — `ArgRejection::message` remains its sole
+            // owner (see `DiagnosticCode::DimensionedArgRejected`'s doc), so the
+            // ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit identical text.
+            diagnostics.push(
+                Diagnostic::error(rej.message(&kind_label.to_string(), &name.to_string()))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
             LengthArg::Invalid
         }
     }
@@ -361,10 +444,37 @@ pub(crate) fn required_length_arg(
     }
 }
 
-/// As [`required_length_arg`], re-wrapped as a LENGTH `Value::Scalar` for the
-/// IR spacing slots (`LinearPattern`/`LinearPattern2D`), whose representation
-/// is deliberately unchanged by this check — the kernel still reads a
-/// dimensioned spacing `Value`.
+/// As [`required_length_arg`], re-wrapped as a LENGTH `Value::Scalar`.
+///
+/// This is the SINGULAR form of the **R7 raw-Value chokepoint**: the one place
+/// a length-semantic `reify_ir::GeometryOp` *field* is produced. Every such
+/// field goes through here or through its group sibling
+/// [`required_length_values`] (which this delegates to at `N == 1`, so
+/// `reify_ir::Value::length` is still called from exactly one site) — the IR
+/// spacing slots (`LinearPattern`/`LinearPattern2D`), and since task 5743 the
+/// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
+/// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
+/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`). The stored
+/// representation is deliberately unchanged by the check — the kernel still
+/// reads a dimensioned `Value` — so gating a slot is a one-line swap of its
+/// `eval_arg` read for one of these two, and inherits C1's three-state
+/// mapping, its wording, and its `Undef` handling for free.
+///
+/// Reach for [`required_length_values`] whenever a builtin has MORE THAN ONE
+/// gated slot: this singular form is `?`-chained at its call sites, so a
+/// per-field read reports only the first bare dimension.
+///
+/// DESIGN ALTERNATIVE CONSIDERED AND REJECTED (decision D3, recorded at the
+/// implementation site so it is findable from the code rather than only from
+/// the PRD): make the IR **typed by construction** — a dimensioned newtype over
+/// the length-semantic `Value` fields, so a bare `Real` in a length slot is a
+/// COMPILE error in Rust instead of a runtime rejection. That is the ENDGAME
+/// and it is strictly stronger than this guard, which can only catch what
+/// actually flows through it. It is deliberately NOT built here because it
+/// touches 46 `reify-ir` `GeometryOp` fields, both geometry kernels and a
+/// 24k-line test module, and because it is best folded into the separate
+/// `Real` → `Scalar{DIMENSIONLESS}` unification rather than done twice. See
+/// `docs/prds/v0_6/units-length-gate-completion.md` §3 D3.
 pub(crate) fn required_length_value(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
@@ -374,8 +484,8 @@ pub(crate) fn required_length_value(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::Value, String> {
-    required_length_arg(
-        name,
+    required_length_values(
+        [name],
         kind_label,
         args,
         values,
@@ -383,7 +493,48 @@ pub(crate) fn required_length_value(
         meta_map,
         diagnostics,
     )
-    .map(reify_ir::Value::length)
+    .map(|[v]| v)
+}
+
+/// The GROUP form of [`required_length_value`]: read a whole set of
+/// length-semantic raw-`Value` fields in one call, diagnosing EVERY failing
+/// member, and re-wrap each as a LENGTH `Scalar`.
+///
+/// This is [`required_length_args`] (the `f64` group reader) with the R7
+/// re-wrap applied, and it is the SINGLE site at which `reify_ir::Value::length`
+/// mints a length-semantic `GeometryOp` field — [`required_length_value`] is
+/// the `N == 1` special case of it, not a second minting site.
+///
+/// ALL FAILURES AT ONCE, restated here because it is the reason this exists
+/// (reviewer amendment, task 5743): a primitive's `width`/`height`/`depth` and
+/// a profile's `semi_major`/`semi_minor` are written as ONE gesture, exactly
+/// like a `translate` triple, so a bare primitive is usually bare in EVERY
+/// dimension. Reading them through per-field `?`-chained
+/// [`required_length_value`] calls short-circuits on the first failure and
+/// hands the author one arg name per rebuild — three edit-build cycles to fix
+/// `box(20, 20, 10)`, four for `wedge`. Routing the WHOLE gated set of a
+/// builtin through one call is what makes [`required_length_args`]'
+/// every-member guarantee (and its `Unresolved`-beats-a-later-`Invalid`
+/// precedence) reach the primitive and profile slots too.
+fn required_length_values<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[reify_ir::Value; N], String> {
+    required_length_args(
+        names,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|si| si.map(reify_ir::Value::length))
 }
 
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
@@ -408,7 +559,9 @@ pub(crate) fn required_length_value(
 /// is usually bare in EVERY member, and short-circuiting would hand the author
 /// one arg name per rebuild: three edit-build cycles to fix one line, six for
 /// `line_segment`. Every member is therefore evaluated (each pushing its own
-/// `Severity::Warning` via [`required_length_arg`]) and only then is the FIRST
+/// diagnostic via [`required_length_arg`] — a `Severity::Error` carrying
+/// `DiagnosticCode::DimensionedArgRejected` for a dimension rejection, per
+/// [`eval_named_arg_length`]'s table) and only then is the FIRST
 /// error returned — so the caller-facing `Err` wording, and the
 /// `Unresolved`-beats-a-later-`Invalid` precedence it encodes, are unchanged.
 /// Grouping the WHOLE gated set of a builtin into one call (rather than several
@@ -480,34 +633,254 @@ fn required_length_origin3(
     )
 }
 
-/// Evaluate all args in a variadic curve constructor to f64 values.
+/// Evaluate every positional arg of a variadic builtin to a `Value`, in arg
+/// order — the pure half of the variadic read, with no acceptance policy and no
+/// diagnostics of its own.
 ///
-/// Returns `None` if any arg evaluates to a non-finite value, pushing a
-/// warning diagnostic for each bad arg.  Used by InterpCurve, BezierCurve,
-/// and NurbsCurve to avoid duplicating the same eval-and-collect loop.
-pub(crate) fn eval_all_args_to_f64(
-    label: &str,
+/// Splitting eval from acceptance (task 5658) is what lets `nurbs` gate a span
+/// it cannot compute until the args are evaluated: its pole span is
+/// `2 .. 2 + n_points * 3`, and `n_points` IS one of the args. A single fused
+/// helper taking a per-position predicate could not express that ordering.
+///
+/// The result is POSITIONALLY ALIGNED with `args` — exactly one `Value` per
+/// argument, in the same order — which is the invariant every consumer that
+/// indexes `args[i]` for a diagnostic name relies on
+/// ([`accept_variadic_length_args`], `curve_nurbs_curve`'s phase-1 head loop).
+pub(crate) fn eval_all_args_to_values(
     args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Vec<f64>> {
+) -> Vec<reify_ir::Value> {
+    let ctx = eval_ctx_with_meta(values, functions, meta_map);
     args.iter()
-        .map(|(name, expr)| {
-            let v = reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map));
-            match v.as_f64() {
-                Some(f) if f.is_finite() => Some(f),
+        .map(|(_, expr)| reify_expr::eval_expr(expr, &ctx))
+        .collect()
+}
+
+/// The flat variadic position `flat`, rendered ON DEMAND as the coordinate name
+/// an author would recognise: `x1`, `y1`, `z1`, `x2`, … for a 3-D stream, or
+/// `x1`, `y1`, `x2`, `y2`, … for a 2-D one.
+///
+/// The compiler names variadic args positionally (`c0`…`cN`) and those names
+/// are inert — `c3` in a diagnostic tells a `.ri` author nothing. This mints
+/// the same naming task 5623 established for `line_segment`'s endpoints, so a
+/// variadic rejection reads like every other Contract C one.
+///
+/// The STRIDE is carried as data because the route now serves both widths
+/// (task 5661): `interp`/`bezier`/`nurbs` stream 3-D triples, `polygon` streams
+/// 2-D vertex PAIRS. A stride-3 renderer applied to pairs would name six
+/// positions `x1,y1,z1,x2,y2,z2` — wrong axis letters AND wrong vertex numbers,
+/// i.e. a diagnostic that actively misdirects the author. One renderer for both
+/// widths also means a reworded name cannot drift between them.
+///
+/// The stride is a [`Stride`] enum rather than a bare `usize` so that no
+/// out-of-range width is REPRESENTABLE. The renderer both indexes and divides
+/// by it, so a `0` would panic on divide-by-zero and a `4` would panic indexing
+/// past the axis table — and both would fire ONLY on the rejection path, i.e.
+/// only once an author already has a broken `.ri` file, which is the worst
+/// possible place to discover a stride typo. Deriving the axis letters FROM the
+/// variant (`Stride::axes`) also means the letter table and the point width
+/// cannot disagree: the stride IS the table's length.
+///
+/// A `Copy` struct over the index rather than a `String`-returning function,
+/// because the gate predicate in [`accept_variadic_length_args`] names EVERY
+/// position on EVERY rebuild while only the rejection branches ever read the
+/// name. Every variadic consumer is arity-open, so a `String` per position
+/// would cost a 500-point spline 1500 heap allocations per solver iteration —
+/// and a 500-vertex polygon 1000 — on the fully clean path, where geometry
+/// rebuild is the interactive hot path. The `Display` impl defers that
+/// `format!` to the branches that actually build a diagnostic or an `Err`.
+#[derive(Clone, Copy)]
+struct CoordName {
+    /// Position in the flat coordinate stream, renumbered from the start of the
+    /// gated span (see `curve_nurbs_curve`, which offsets by its pole start).
+    flat: usize,
+    /// How wide one point is in that stream.
+    stride: Stride,
+}
+
+/// How many coordinates one point occupies in a flat variadic stream, and — by
+/// the same token — which axis letters name them. See [`CoordName`] for why
+/// this is an enum and not a `usize`.
+#[derive(Clone, Copy)]
+enum Stride {
+    /// A vertex in a plane: `x1, y1, x2, y2, x3, y3, …`.
+    Xy,
+    /// A point in space: `x1, y1, z1, x2, y2, z2, …`.
+    Xyz,
+}
+
+impl Stride {
+    /// The axis letters, in stream order. The slice LENGTH is the stride, so
+    /// the two can never disagree and the modulo below is in bounds by
+    /// construction.
+    fn axes(self) -> &'static [&'static str] {
+        match self {
+            Stride::Xy => &["x", "y"],
+            Stride::Xyz => &["x", "y", "z"],
+        }
+    }
+}
+
+impl CoordName {
+    /// A coordinate in a 3-D stream: `x1, y1, z1, x2, y2, z2, …`.
+    fn xyz(flat: usize) -> Self {
+        Self {
+            flat,
+            stride: Stride::Xyz,
+        }
+    }
+
+    /// A coordinate in a 2-D stream: `x1, y1, x2, y2, x3, y3, …`.
+    fn xy(flat: usize) -> Self {
+        Self {
+            flat,
+            stride: Stride::Xy,
+        }
+    }
+}
+
+impl std::fmt::Display for CoordName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let axes = self.stride.axes();
+        write!(
+            f,
+            "{}{}",
+            axes[self.flat % axes.len()],
+            self.flat / axes.len() + 1
+        )
+    }
+}
+
+/// Read an already-evaluated VARIADIC argument list, routing the
+/// length-semantic positions through the Contract C chokepoint and leaving the
+/// rest on the bare `as_f64` read — the variadic counterpart to
+/// [`required_length_args`].
+///
+/// `gated(i)` returns `Some(`[`CoordName`]`)` for a position that must be a
+/// finite LENGTH, and `None` for one that is legitimately dimensionless. The
+/// predicate hands back the INDEX to name, not a rendered name, so the fully
+/// clean path allocates nothing (see [`CoordName`]).
+///
+/// Per-arg triage for EVERY consumer of this route — the three variadic curve
+/// constructors (task 5658) and `polygon`'s 2-D vertex pairs (task 5661) — is
+/// written down HERE, in one place, so task 5752's closure-guard allowlist can
+/// lift it verbatim from a single site. A new consumer adds its rows to this
+/// table rather than to its own call site; a second location is how the
+/// allowlist silently goes stale.
+///
+/// | builtin   | positions                | class         | justification                          |
+/// |-----------|--------------------------|---------------|----------------------------------------|
+/// | `interp`  | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a point in space         |
+/// | `bezier`  | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a control point          |
+/// | `nurbs`   | 0 `degree`               | dimensionless | a polynomial degree, i.e. a count      |
+/// | `nurbs`   | 1 `n_points`             | dimensionless | a count                                |
+/// | `nurbs`   | `2 .. 2+3n` poles        | **LENGTH**    | coordinate of a control point          |
+/// | `nurbs`   | `2+3n .. 2+4n` weights   | dimensionless | rational blending factor               |
+/// | `nurbs`   | `2+4n ..` knots          | dimensionless | parameter-space value                  |
+/// | `polygon` | every arg (`2n`, `n>=3`) | **LENGTH**    | coordinate of a vertex in the XY plane |
+///
+/// Corroborated by `docs/reify-stdlib-reference.md`, which already declares the
+/// TARGET signatures as `Point<N,Length>` control points with `Real` weights and
+/// knots, and polygon's vertices as `Point2<Length>` — this gate makes the flat
+/// positional form honour the declared types.
+///
+/// `polygon` is the SIMPLEST row in the table, and the only 2-D one (hence
+/// [`CoordName::xy`]; the curve rows are [`CoordName::xyz`]). It has no
+/// dimensionless position at ANY arity — no direction vector, no count, no
+/// angle, no weight, no knot — so its gated span is the whole argument list and
+/// it needs no per-arity allowlist key, unlike `nurbs`.
+///
+/// ALL FAILURES AT ONCE, for [`required_length_args`]' reason and by the same
+/// mechanism: the positions are deliberately NOT `?`-chained. A coordinate
+/// stream is written as one gesture — `interp(0, 0, 0, 10, 0, 0)` — so a bare
+/// stream is usually bare in EVERY member, and short-circuiting would hand the
+/// author one coordinate name per rebuild. Every position is therefore read
+/// (each pushing its own diagnostic — a `Severity::Error` carrying
+/// `DiagnosticCode::DimensionedArgRejected` for a GATED position's dimension
+/// rejection, since task 5743's promotion sits in the shared
+/// [`accept_length_value`]; a `Severity::Warning` for the un-gated non-finite
+/// branch) and only then is the FIRST error
+/// returned, so an `Unresolved` position cannot be masked by a later `Invalid`
+/// one.
+///
+/// The three `Err` wordings are copied from [`required_length_arg`] and — for
+/// the un-gated branch — from the bare variadic reader this route replaced
+/// (`eval_all_args_to_f64`, deleted in task 5661 once `profile_polygon` became
+/// its last caller), so the caller-facing text stays shared with the named-arg
+/// route rather than forking. An `Undefined` position gets
+/// the DISTINCT "unresolved (Undef)" message rather than a silent continue
+/// (PRD decision D10 / INV-SF-1): during solver iteration an Undef cell is
+/// expected transient state, and calling it "missing or non-Length" is
+/// actively misleading.
+///
+/// `args` and `vals` MUST be positionally aligned — `vals[i]` is the evaluation
+/// of `args[i]` — because the un-gated branch reads `args[i]` for its diagnostic
+/// name. Every caller satisfies that by deriving `vals` from
+/// [`eval_all_args_to_values`]`(args, …)`, which is aligned by construction; the
+/// `debug_assert_eq!` below is what stops a future caller passing a SLICED or
+/// filtered `vals` (plausible — `nurbs` already slices spans out of the RESULT)
+/// and silently degrading those diagnostics to an unactionable `arg '?'`.
+fn accept_variadic_length_args(
+    label: &str,
+    args: &[(String, reify_ir::CompiledExpr)],
+    vals: &[reify_ir::Value],
+    gated: &dyn Fn(usize) -> Option<CoordName>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<f64>, String> {
+    debug_assert_eq!(
+        args.len(),
+        vals.len(),
+        "accept_variadic_length_args: args and vals must be positionally aligned"
+    );
+    let mut out = vec![0.0_f64; vals.len()];
+    let mut first_err: Option<String> = None;
+
+    for (i, value) in vals.iter().enumerate() {
+        let err = match gated(i) {
+            Some(display) => match accept_length_value(display, label, value, diagnostics) {
+                LengthArg::Length(si) => {
+                    out[i] = si;
+                    None
+                }
+                LengthArg::Unresolved => Some(format!(
+                    "argument '{}' for {} is unresolved (Undef)",
+                    display, label
+                )),
+                LengthArg::Invalid => Some(format!(
+                    "missing or non-Length argument '{}' for {}",
+                    display, label
+                )),
+            },
+            // Un-gated: today's bare read, wording and all.
+            None => match value.as_f64() {
+                Some(f) if f.is_finite() => {
+                    out[i] = f;
+                    None
+                }
                 _ => {
+                    let name = args.get(i).map_or("?", |(n, _)| n.as_str());
                     diagnostics.push(Diagnostic::warning(format!(
                         "{} arg '{}' is non-finite",
                         label, name
                     )));
-                    None
+                    Some(format!("failed to evaluate all {} args to f64", label))
                 }
-            }
-        })
-        .collect()
+            },
+        };
+        // FIRST error wins — same precedence as `required_length_args`.
+        if let Some(e) = err
+            && first_err.is_none()
+        {
+            first_err = Some(e);
+        }
+    }
+
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
 
 /// Canonicalize sub-handle `kernel_handle` ids into the canonical edge/face
@@ -1612,14 +1985,22 @@ fn prim_box(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    // ONE grouped read, not three `?`-chained ones: a bare `box(20, 20, 10)`
+    // is bare in every dimension, so every failing slot must be diagnosed in a
+    // single build (see `required_length_values`).
+    let [width, height, depth] = required_length_values(
+        ["width", "height", "depth"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Box {
-        width: eval_arg("width")?,
-        height: eval_arg("height")?,
-        depth: eval_arg("depth")?,
+        width,
+        height,
+        depth,
     })
 }
 
@@ -1631,14 +2012,16 @@ fn prim_cylinder(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    Ok(reify_ir::GeometryOp::Cylinder {
-        radius: eval_arg("radius")?,
-        height: eval_arg("height")?,
-    })
+    let [radius, height] = required_length_values(
+        ["radius", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::Cylinder { radius, height })
 }
 
 fn prim_sphere(
@@ -1649,12 +2032,12 @@ fn prim_sphere(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    // One gated slot, so the singular form is the whole set — nothing to
+    // short-circuit past.
     Ok(reify_ir::GeometryOp::Sphere {
-        radius: eval_arg("radius")?,
+        radius: required_length_value(
+            "radius", kind, args, values, functions, meta_map, diagnostics,
+        )?,
     })
 }
 
@@ -1666,14 +2049,19 @@ fn prim_tube(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    let [outer_r, inner_r, height] = required_length_values(
+        ["outer_r", "inner_r", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Tube {
-        outer_r: eval_arg("outer_r")?,
-        inner_r: eval_arg("inner_r")?,
-        height: eval_arg("height")?,
+        outer_r,
+        inner_r,
+        height,
     })
 }
 
@@ -1685,14 +2073,19 @@ fn prim_cone(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    let [bottom_radius, top_radius, height] = required_length_values(
+        ["bottom_radius", "top_radius", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Cone {
-        bottom_radius: eval_arg("bottom_radius")?,
-        top_radius: eval_arg("top_radius")?,
-        height: eval_arg("height")?,
+        bottom_radius,
+        top_radius,
+        height,
     })
 }
 
@@ -1704,15 +2097,20 @@ fn prim_wedge(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    let [width, depth, height, top_width] = required_length_values(
+        ["width", "depth", "height", "top_width"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Wedge {
-        width: eval_arg("width")?,
-        depth: eval_arg("depth")?,
-        height: eval_arg("height")?,
-        top_width: eval_arg("top_width")?,
+        width,
+        depth,
+        height,
+        top_width,
     })
 }
 
@@ -1724,13 +2122,18 @@ fn prim_torus(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    let [major_radius, minor_radius] = required_length_values(
+        ["major_radius", "minor_radius"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Torus {
-        major_radius: eval_arg("major_radius")?,
-        minor_radius: eval_arg("minor_radius")?,
+        major_radius,
+        minor_radius,
     })
 }
 
@@ -1742,14 +2145,41 @@ fn prim_half_space(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // `half_space` is the ONE primitive whose args are split across the units
+    // boundary, so it is the ONE primitive that reads its args through two
+    // different paths.
+    //
+    // `(px, py, pz)` is a point on the boundary plane — length-semantic, and
+    // gated: a bare component would be read as SI METRES by `Value::as_f64`
+    // (the `12` vs `12mm` 1000× hazard). `(nx, ny, nz)` is the outward unit
+    // NORMAL — a dimensionless direction, which stays on the bare-accepting
+    // `eval_named_arg` path. That is the same split already documented at
+    // `required_length_origin3` for the co-located `ax`/`ay`/`az` and
+    // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
+    // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
+    //
+    // The point triple goes through the GROUP reader — the same
+    // `["px", "py", "pz"]` call `transform_rotate_around` makes — so it
+    // inherits all-failures-at-once, `Unresolved`-beats-`Invalid` precedence
+    // and the borrow ordering the group readers document (see
+    // `required_length_args`), rather than restating any of them here.
+    let [px, py, pz] = required_length_values(
+        ["px", "py", "pz"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
         eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
             .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
     };
     Ok(reify_ir::GeometryOp::HalfSpace {
-        px: eval_arg("px")?,
-        py: eval_arg("py")?,
-        pz: eval_arg("pz")?,
+        px,
+        py,
+        pz,
         nx: eval_arg("nx")?,
         ny: eval_arg("ny")?,
         nz: eval_arg("nz")?,
@@ -3492,15 +3922,21 @@ fn curve_interp_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let coords = eval_all_args_to_f64(
+    // EVERY position is a coordinate of a point in space, so every position is
+    // gated (task 5658's R2 sweep). `interp` is arity-open and has no
+    // dimensionless neighbour at all — no direction vector, no count, no angle
+    // — so the gate closure is unconditional.
+    //
+    // The literal `"interp"` label, not `CurveKind`'s `Display` (which renders
+    // `interp_curve`): the diagnostic must name the builtin the author wrote.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+    let coords = accept_variadic_length_args(
         "interp",
         args,
-        values,
-        functions,
-        meta_map,
+        &vals,
+        &|i| Some(CoordName::xyz(i)),
         diagnostics,
-    )
-    .ok_or_else(|| "failed to evaluate all interp args to f64".to_string())?;
+    )?;
     let points: Vec<[f64; 3]> =
         coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
     Ok(reify_ir::GeometryOp::InterpCurve { points })
@@ -3514,15 +3950,18 @@ fn curve_bezier_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let coords = eval_all_args_to_f64(
+    // EVERY position is a coordinate of a control point, so every position is
+    // gated (task 5658's R2 sweep). Like `interp` and `line_segment`, `bezier`
+    // has no dimensionless neighbour — no direction vector, no count, no angle
+    // — so the gate closure is unconditional.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+    let coords = accept_variadic_length_args(
         "bezier",
         args,
-        values,
-        functions,
-        meta_map,
+        &vals,
+        &|i| Some(CoordName::xyz(i)),
         diagnostics,
-    )
-    .ok_or_else(|| "failed to evaluate all bezier args to f64".to_string())?;
+    )?;
     let control_points: Vec<[f64; 3]> =
         coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
     Ok(reify_ir::GeometryOp::BezierCurve { control_points })
@@ -3536,40 +3975,91 @@ fn curve_nurbs_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let vals = eval_all_args_to_f64(
-        "nurbs",
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )
-    .ok_or_else(|| "failed to evaluate all nurbs args to f64".to_string())?;
+    // TWO-PHASE, and the phasing is load-bearing (task 5658's R2 sweep).
+    //
+    // Per-arg triage — written down so task 5752's closure guard can lift it:
+    //
+    //   0 `degree`   — a polynomial degree, i.e. a count  → dimensionless
+    //   1 `n_points` — a count                            → dimensionless
+    //   `2 .. 2+3n`  — coordinates of control points      → **LENGTH**, gated
+    //   `2+3n..2+4n` — weights, rational blending factors → dimensionless
+    //   `2+4n ..`    — knots, parameter-space values      → dimensionless
+    //
+    // Note for 5752: the gated span is ARITY-DEPENDENT (it is a function of
+    // `n_points`, itself an argument), so an allowlist that probes arities
+    // 0..=14 needs its keys per-arity — `2..8` is right only at n_points=2.
+    //
+    // WHY the phases: the span cannot be known before evaluation, so units
+    // cannot be checked first. Running structural validation first is also what
+    // keeps the ARITY diagnostics ahead of the units ones — otherwise an author
+    // whose nurbs is too short would be told to dimension a coordinate the
+    // curve does not have enough arguments to have.
+    //
+    // TWO accepted behaviour changes, both on the non-finite WEIGHT / KNOT
+    // path, both verified not to move any existing assertion:
+    //
+    //   ORDER — a non-finite weight or knot is now reported AFTER the
+    //   degree/n_points/arity checks rather than before (same wording, same
+    //   drop, later position in the order). Only `degree` and `n_points` keep
+    //   their pre-checks ahead of the structural gates, because those two gates
+    //   read them.
+    //
+    //   MULTIPLICITY — EVERY non-finite weight and knot is now reported in one
+    //   build, not just the first. The pre-5658 reader (`eval_all_args_to_f64`,
+    //   deleted in 5661 once `profile_polygon` became its last caller)
+    //   short-circuited at the first `None` via `collect::<Option<_>>()`;
+    //   `accept_variadic_length_args` loops to completion, so a nurbs with two
+    //   NaN knots emits two warnings where it previously emitted one. That is
+    //   the same all-at-once policy the gated positions follow, extended to the
+    //   un-gated ones for free.
+    //
+    // Both are pinned in `geometry_ops/tests.rs`, by
+    // `compile_geometry_op_nurbs_non_finite_weight_and_knot_drop_the_op` and
+    // `compile_geometry_op_nurbs_reports_every_non_finite_knot_in_one_build`.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+
+    // ── Phase 1: STRUCTURE ────────────────────────────────────────────────
+    // Bare read of degree/n_points only — today's read, today's wording,
+    // today's `Err`.
+    let mut head = [0.0_f64; 2];
+    for (i, slot) in head.iter_mut().enumerate().take(vals.len()) {
+        match vals[i].as_f64() {
+            Some(f) if f.is_finite() => *slot = f,
+            _ => {
+                let name = args.get(i).map_or("?", |(n, _)| n.as_str());
+                diagnostics.push(Diagnostic::warning(format!(
+                    "nurbs arg '{}' is non-finite",
+                    name
+                )));
+                return Err("failed to evaluate all nurbs args to f64".to_string());
+            }
+        }
+    }
     if vals.len() < 2 {
         diagnostics.push(Diagnostic::error(
             "nurbs() requires at least degree and n_points arguments".to_string(),
         ));
         return Err("nurbs() requires at least degree and n_points".into());
     }
-    if vals[0] < 1.0 || vals[0] != vals[0].trunc() || vals[0] > 25.0 {
+    if head[0] < 1.0 || head[0] != head[0].trunc() || head[0] > 25.0 {
         diagnostics.push(Diagnostic::error(format!(
             "nurbs() degree must be a positive integer (1..25), got {}",
-            vals[0]
+            head[0]
         )));
-        return Err(format!("nurbs() degree invalid: {}", vals[0]));
+        return Err(format!("nurbs() degree invalid: {}", head[0]));
     }
-    let degree = vals[0] as usize;
-    if vals[1] < 2.0 || vals[1] != vals[1].trunc() || vals[1] > (vals.len() as f64)
+    let degree = head[0] as usize;
+    if head[1] < 2.0 || head[1] != head[1].trunc() || head[1] > (vals.len() as f64)
     {
         diagnostics.push(Diagnostic::error(
             format!(
                 "nurbs() n_points must be a positive integer >= 2 and consistent with argument count, got {}",
-                vals[1]
+                head[1]
             ),
         ));
-        return Err(format!("nurbs() n_points invalid: {}", vals[1]));
+        return Err(format!("nurbs() n_points invalid: {}", head[1]));
     }
-    let n_points = vals[1] as usize;
+    let n_points = head[1] as usize;
     let expected_min = 2 + n_points * 3 + n_points;
     if vals.len() < expected_min {
         diagnostics.push(Diagnostic::error(format!(
@@ -3581,8 +4071,25 @@ fn curve_nurbs_curve(
             n_points
         ));
     }
+    // ── Phase 2: UNITS ────────────────────────────────────────────────────
+    // Only the pole span is gated; every other position keeps the bare
+    // `as_f64` + finiteness read the helper already performs, so the weights
+    // and knots behave exactly as before. `i - pole_start` renumbers from the
+    // span, so the first control point's x reads `x1` rather than `x2`.
     let pole_start = 2;
     let pole_end = pole_start + n_points * 3;
+    let vals = accept_variadic_length_args(
+        "nurbs",
+        args,
+        &vals,
+        &|i| {
+            (pole_start..pole_end)
+                .contains(&i)
+                .then(|| CoordName::xyz(i - pole_start))
+        },
+        diagnostics,
+    )?;
+
     let weight_end = pole_end + n_points;
     let control_points: Vec<[f64; 3]> = vals[pole_start..pole_end]
         .chunks_exact(3)
@@ -3626,14 +4133,16 @@ fn profile_rectangle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    Ok(reify_ir::GeometryOp::RectangleProfile {
-        width: eval_arg("width")?,
-        height: eval_arg("height")?,
-    })
+    let [width, height] = required_length_values(
+        ["width", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::RectangleProfile { width, height })
 }
 
 fn profile_circle(
@@ -3644,12 +4153,11 @@ fn profile_circle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    // One gated slot — see `prim_sphere`.
     Ok(reify_ir::GeometryOp::CircleProfile {
-        radius: eval_arg("radius")?,
+        radius: required_length_value(
+            "radius", kind, args, values, functions, meta_map, diagnostics,
+        )?,
     })
 }
 
@@ -3661,12 +4169,40 @@ fn profile_polygon(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let coords =
-        eval_all_args_to_f64("polygon", args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| {
-                "polygon() has invalid (non-numeric or non-finite) coordinates"
-                    .to_string()
-            })?;
+    // Per-arg triage (task 5661's R2 residual) lives in ONE place — the shared
+    // table in `accept_variadic_length_args`' doc, which task 5752's
+    // closure-guard allowlist lifts verbatim — and is deliberately NOT restated
+    // here; polygon's row is `every arg (2n, n>=3)` → LENGTH.
+    //
+    // Three DELIBERATE wording/behaviour deltas, all inherited from the shared
+    // chokepoint rather than chosen here (which is the point — Contract C
+    // wording is byte-identical BY CONSTRUCTION, not by convention):
+    //
+    //   ERR TEXT — the local "polygon() has invalid (non-numeric or non-finite)
+    //   coordinates" becomes the shared "missing or non-Length argument
+    //   '{coord}' for polygon", or "argument '{coord}' for polygon is
+    //   unresolved (Undef)" for an Undef position (PRD D10 / INV-SF-1).
+    //
+    //   NO UN-GATED BRANCH — `accept_variadic_length_args`' "failed to evaluate
+    //   all polygon args to f64" wording is unreachable here, because every
+    //   position is gated. Same shape as `interp` and `bezier`.
+    //
+    //   MULTIPLICITY — a non-finite vertex is now reported for EVERY bad
+    //   position in one build, not just the first: the pre-5661 reader
+    //   short-circuited via `collect::<Option<_>>()`.
+    //
+    // The label stays the literal `"polygon"`, which here happens to equal
+    // `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
+    // which renders `interp_curve`. Spelling it out keeps today's label bytes
+    // and leaves `_kind` unused, as in `curve_interp_curve`.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+    let coords = accept_variadic_length_args(
+        "polygon",
+        args,
+        &vals,
+        &|i| Some(CoordName::xy(i)),
+        diagnostics,
+    )?;
     let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
     Ok(reify_ir::GeometryOp::PolygonProfile { points })
 }
@@ -3679,13 +4215,18 @@ fn profile_ellipse(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    let [semi_major, semi_minor] = required_length_values(
+        ["semi_major", "semi_minor"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::EllipseProfile {
-        semi_major: eval_arg("semi_major")?,
-        semi_minor: eval_arg("semi_minor")?,
+        semi_major,
+        semi_minor,
     })
 }
 
@@ -8735,7 +9276,12 @@ fn resolve_density_arg(
         Acceptance::Accepted(si) => Some(si),
         Acceptance::Undefined => None,
         Acceptance::Rejected(rej) => {
-            diagnostics.push(Diagnostic::warning(rej.message(helper_name, "density")));
+            // Contract A. Same shared code as the LENGTH chokepoint (INV-SF-6),
+            // deliberately still `Severity::Warning` — see `resolve_spec_arg`.
+            diagnostics.push(
+                Diagnostic::warning(rej.message(helper_name, "density"))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
             None
         }
     }
@@ -8868,7 +9414,29 @@ fn resolve_spec_arg(
         Acceptance::Accepted(si) => Some(si),
         Acceptance::Undefined => None,
         Acceptance::Rejected(rej) => {
-            diagnostics.push(Diagnostic::warning(rej.message(builtin, arg_name)));
+            // SEVERITY SPLIT — deliberate, and the reason is load-bearing
+            // (task 5743, units-length β / decision D9).
+            //
+            // This emit gains the shared `DimensionedArgRejected` code so
+            // INV-SF-6 holds everywhere an `ArgSpec` rejection is emitted, but
+            // KEEPS `Severity::Warning`, unlike the promoted chokepoint at
+            // `eval_named_arg_length` (which returns a hard `Err` that drops the
+            // op). The difference is in kind, not in taste: this helper returns
+            // `Option<f64>` and its callers CONTINUE on `None` with no paired
+            // op-compile Error, so promoting it would flip `reify eval` from exit
+            // 0 to exit 1 for `edges_at_height` z/tol, `geo_equiv` tol,
+            // `faces_by_normal` tol (an ANGLE position owned by PRD 3) and the
+            // density ladder — positions no PRD §6 boundary row covers and whose
+            // migration this leaf does not own. The promotion is filed as a
+            // follow-up rather than smuggled in with the code.
+            //
+            // Structurally this covers Contract C's `resolve_length_scalar_arg`,
+            // the arbitrary-dimension `resolve_scalar_dim_arg`, and the hint-less
+            // ANGLE spec that PRD 3 will later give a migration hint.
+            diagnostics.push(
+                Diagnostic::warning(rej.message(builtin, arg_name))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
             None
         }
     }

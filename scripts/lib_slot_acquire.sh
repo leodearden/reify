@@ -140,8 +140,17 @@ slot_emit_event() {
 #   be able to substitute an ERR-exit for that contract: diagnostics never
 #   change control flow.
 #
-#   A DISTINCT marker family from @@REIFY_CLOCK_*@@, and outside run_all.sh's
-#   sanitizer prefix by design -- stated once, in docs/notes/verify-pipeline-knobs.md.
+#   A DISTINCT marker family from @@REIFY_CLOCK_*@@ -- but NOT, since task
+#   #6389, outside run_all.sh's re-emission sanitizer. Which side of that line
+#   an emission falls on is decided by WHERE it is written, not by its prefix:
+#   a sentinel captured from a run_all POOL MEMBER's stdout/stderr is
+#   neutralized on re-emission ($_RA_SLOT_SANITIZE), because run_all is a test
+#   runner and a member-captured sentinel is a quoted or fixture one, never a
+#   real starved acquire; run_all's OWN pool-wait sentinel rides the worker
+#   subshell's inherited parent fd 2, never enters that path, and reaches
+#   dark-factory untouched -- which it must, being the only classification
+#   route for the one finite-WAIT path outside DF's basename allowlist.
+#   Stated once, in docs/notes/verify-pipeline-knobs.md.
 # ---------------------------------------------------------------------------
 slot_emit_timeout() {
     printf '@@REIFY_SLOT_TIMEOUT@@ reason=%s slots=%s waited=%s disposition=%s lock=%s\n' \

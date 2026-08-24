@@ -350,10 +350,16 @@ parameters are unit-less in the joint's local frame.
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
 compiler's current lowering for a few of these constructors (`polygon`,
-`line_segment`, `arc`, `interp`, `bezier`) accepts only flat positional
+`line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat positional
 coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
+
+The flat form is only a SHAPE divergence, not a units one: every argument the
+structured signature types as a `Length` must still be written dimensioned in
+the flat form (`0mm`, not `0`), and a bare number is rejected rather than read
+as SI metres. Arguments the structured signature types as `Real` or `Int` —
+weights, knots, degrees, counts, and direction components — stay dimensionless.
 
 **3D solids:**
 
@@ -418,6 +424,8 @@ fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
 // current compiler form: polygon(x1, y1, x2, y2, ...) — variadic flat
 // coordinate pairs, at least 6 args (3 points), even count; see geometry.rs:1570
+// EVERY coordinate is a Length, at every arity, per the section note above:
+// polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm) — a bare number is rejected.
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
@@ -442,6 +450,13 @@ fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
 // current compiler form: same list -> flat-args divergence as `interp` above
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
+// current compiler form: nurbs(degree, n_points, coords…, weights…, knots…) —
+// one flat positional stream, with degree FIRST (not last as above) and an
+// explicit n_points that the structured form derives from the list. Only
+// `coords…` is length-semantic and must be dimensioned; degree, n_points,
+// weights and knots are the `Int`/`Real` above and stay dimensionless. Knot
+// count is n_points + degree + 1. e.g.
+// nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
 
 // Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
 // fn nurbs_surface(/* NURBS surface parameters */) -> Surface

@@ -1,38 +1,7 @@
+use crate::git_env::sanitize;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-/// Git environment variables that redirect *which repository* a command
-/// operates on — the same defining criterion as, and an independent copy of,
-/// `reify_audit::git_env::REPO_REDIRECT_VARS`. A copy rather than a re-export:
-/// the dependency edge runs `reify-audit` -> `reify-test-support` (see
-/// `Cargo.toml`), so this crate cannot depend on `reify-audit` to reuse its
-/// copy directly.
-///
-/// `crates/reify-audit/src/git_env.rs` carries a unit test
-/// (`repo_redirect_vars_matches_reify_test_support_orphan_audit_copy`)
-/// asserting the two lists stay equal, so a divergence between them now fails
-/// `cargo test` rather than resting on a "keep in sync" comment.
-pub const REPO_REDIRECT_VARS: &[&str] = &[
-    "GIT_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_WORK_TREE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_PREFIX",
-];
-
-/// Remove every [`REPO_REDIRECT_VARS`] entry from `cmd`'s environment. See
-/// [`REPO_REDIRECT_VARS`] for why this crate keeps its own copy of this
-/// function rather than calling `reify_audit::git_env::sanitize`.
-pub fn sanitize(cmd: &mut Command) -> &mut Command {
-    for var in REPO_REDIRECT_VARS {
-        cmd.env_remove(var);
-    }
-    cmd
-}
 
 /// Build the (unexecuted) `audit-orphan-producers.sh` command: scope/format
 /// args, `current_dir`, and [`sanitize`]. Split out of [`run_orphan_audit`] so
@@ -92,10 +61,11 @@ enum OrphanAudit {
 /// Pinned against the script by
 /// `exclude_crates_const_matches_audit_script_declaration`: a divergence
 /// between the two fails `cargo test` rather than resting on a "keep in
-/// sync" comment — the same duplication-pinning pattern
-/// `crates/reify-audit/src/git_env.rs`'s
-/// `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy` uses one
-/// layer out.
+/// sync" comment. That pin is the duplication-pinning pattern this codebase
+/// reaches for whenever a value genuinely cannot be single-sourced across a
+/// language boundary — and it is the last resort, not the default: where a
+/// value CAN be single-sourced it should be, as [`sanitize`]'s own move into
+/// `crate::git_env` did.
 const EXCLUDE_CRATES: &[&str] = &["reify-test-support"];
 
 /// True when `scope`'s crate segment (the path component immediately after
@@ -127,8 +97,7 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
 /// [`sanitize`] is supposed to establish: that the child resolves the SAME
 /// repository the caller asked it to scan. That is why the probe still has
 /// teeth despite reusing the spawn's own sanitizer: it independently catches
-/// an incomplete `REPO_REDIRECT_VARS` list (the drift risk
-/// `crates/reify-audit/src/git_env.rs`'s module doc names), a `.git` file
+/// an incomplete [`crate::git_env::REPO_REDIRECT_VARS`] list, a `.git` file
 /// pointing at another checkout, a symlinked or embedded checkout, or a
 /// `CARGO_MANIFEST_DIR` `.parent()` walk that lands on the wrong level — any
 /// of which would make the real script silently scan a different tree than
@@ -286,14 +255,12 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     }
 
     // Sanitize repo-redirect git env vars before spawning (via
-    // build_audit_command -> sanitize): the script's first action is
-    // `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and an ambient
-    // GIT_DIR/GIT_WORK_TREE (exported into a hook's entire process tree)
-    // overrides BOTH cwd and an explicit `-C`. Full rationale and failure
-    // mode, and why this crate keeps its own REPO_REDIRECT_VARS/sanitize
-    // copy rather than calling reify_audit::git_env::sanitize (the
-    // dependency edge runs the other way): crates/reify-audit/src/git_env.rs
-    // module doc, "Resolved non-central case".
+    // build_audit_command -> crate::git_env::sanitize): the script's first
+    // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, so an ambient
+    // redirect var, not this call's `repo_root`, would decide which checkout it
+    // enumerates. Why such a var beats both cwd and an explicit `-C`, and what
+    // that costs: `crate::git_env`'s module doc, where the sanitizer is
+    // defined.
     let output = build_audit_command(script, scope, repo_root)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));
@@ -798,10 +765,9 @@ mod tests {
 
     /// Pins `orphan_audit.rs`'s `EXCLUDE_CRATES` const against
     /// `scripts/audit-orphan-producers.sh`'s own `EXCLUDE_CRATES = {...}`
-    /// declaration (the source of truth for SET MEMBERSHIP) — the same
-    /// duplication-pinning pattern `crates/reify-audit/src/git_env.rs`'s
-    /// `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy` uses
-    /// one layer out, rather than resting on a "keep in sync" comment.
+    /// declaration (the source of truth for SET MEMBERSHIP) — the
+    /// duplication-pinning pattern this codebase reaches for across a
+    /// language boundary, rather than resting on a "keep in sync" comment.
     ///
     /// Pins ONLY the set's *contents* — NOT [`scope_is_excluded_crate`]'s
     /// matching *rule*. The script's own `discover_sources` excludes a
@@ -986,16 +952,27 @@ mod tests {
         );
     }
 
-    /// Mirrors `git_env.rs`'s `both_entry_points_remove_every_repo_redirect_var`:
-    /// asserts the constructed script-spawn `Command` records a removal
+    /// Asserts the constructed script-spawn `Command` records a removal
     /// (`env_remove` -> `(key, None)` in `get_envs()`) for every
-    /// [`REPO_REDIRECT_VARS`] entry. Unlike the two tests above, this one
-    /// never spawns the script and needs neither `git` nor `python3` on
-    /// `PATH` — it only inspects `Command` metadata, so the paths passed in
-    /// are deliberately nonexistent. A regression that dropped [`sanitize`]
-    /// from [`build_audit_command`], or dropped an entry from
-    /// [`REPO_REDIRECT_VARS`], fails this test even though the smoke tests
-    /// above never poison the environment to notice.
+    /// [`crate::git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
+    /// script spawn sanitizes from the SHARED definition, not from a
+    /// module-local copy. Uses [`crate::git_env::removed_vars`], the same
+    /// removal-collecting helper the definition site's own tests and
+    /// `reify_audit::git_env`'s tests use, so every assertion site in the
+    /// workspace reads the `(key, None)` encoding through one place.
+    ///
+    /// This covers the WIRING only — that [`build_audit_command`] applies the
+    /// sanitizer. That the sanitizer actually defeats an ambient redirect var
+    /// against real git is proved once, at the definition site, by
+    /// `crate::git_env`'s `sanitize_makes_dash_c_authoritative_against_real_git`.
+    ///
+    /// Unlike the two tests above, this one never spawns the script and needs
+    /// neither `git` nor `python3` on `PATH` — it only inspects `Command`
+    /// metadata, so the paths passed in are deliberately nonexistent. A
+    /// regression that dropped [`sanitize`] from [`build_audit_command`], or
+    /// dropped an entry from [`crate::git_env::REPO_REDIRECT_VARS`], fails
+    /// this test even though the smoke tests above never poison the
+    /// environment to notice.
     #[test]
     fn build_audit_command_removes_every_repo_redirect_var() {
         let cmd = build_audit_command(
@@ -1003,12 +980,8 @@ mod tests {
             "crates/reify-audit/src",
             Path::new("/nonexistent/repo-root"),
         );
-        let removed: Vec<String> = cmd
-            .get_envs()
-            .filter(|(_, v)| v.is_none())
-            .map(|(k, _)| k.to_string_lossy().into_owned())
-            .collect();
-        for var in REPO_REDIRECT_VARS {
+        let removed = crate::git_env::removed_vars(&cmd);
+        for var in crate::git_env::REPO_REDIRECT_VARS {
             assert!(
                 removed.iter().any(|r| r == var),
                 "build_audit_command must REMOVE `{var}` (env_remove -> \

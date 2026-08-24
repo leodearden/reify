@@ -1,6 +1,7 @@
     use super::*;
     use reify_compiler::{
-        CompiledGeometryOp, CurveKind, GeomRef, PatternKind, SweepKind, TransformKind,
+        CompiledGeometryOp, CurveKind, GeomRef, PatternKind, ProfileKind, SweepKind,
+        TransformKind,
     };
     use reify_ir::GeometryHandleId;
 
@@ -667,6 +668,18 @@
                 reify_core::Severity::Warning,
                 "(c) diagnostic must be Warning severity"
             );
+            // units-length β (task 5743 step-5): Contract A's rejection gains the
+            // SAME shared code as the LENGTH chokepoint — one runtime code across
+            // dimensions, per PRD Open Question 1 — while keeping Warning severity,
+            // because this reader quiet-degrades to None with no paired op-compile
+            // Error (see `resolve_scalar_bound_arg_eval_and_diagnostics`'s doc).
+            // RED until step-6.
+            assert_eq!(
+                diags[0].code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "(c) density rejection must carry the shared code; got: {:?}",
+                diags[0]
+            );
         }
 
         // (d) ValueRef → Scalar{LENGTH} → None + 1 Warning [keep reject]
@@ -849,6 +862,27 @@
     /// the expected dimension is Accepted (0 diags); a defined-but-wrong value
     /// (wrong dimension, dimensionless, or non-Scalar) is Rejected with exactly
     /// one Warning naming the builtin, the arg, and the expected type.
+    ///
+    /// EXTENDED by units-length β (task 5743 step-5): the Rejected arms now also
+    /// carry `DiagnosticCode::DimensionedArgRejected`, so INV-SF-6 holds
+    /// everywhere an `ArgSpec` rejection is emitted — while the severity stays
+    /// `Severity::Warning` and the helper still returns `None`.
+    ///
+    /// The severity asymmetry against `eval_named_arg_length` (promoted to Error
+    /// in step-4) is DELIBERATE, not an oversight, and is asserted here so it
+    /// cannot be silently "fixed":
+    ///
+    /// `resolve_spec_arg` returns `Option<f64>` and its callers CONTINUE on
+    /// `None` with no paired op-compile Error — quiet degradation, build
+    /// proceeds. Promoting it would therefore flip `reify eval` from exit 0 to
+    /// exit 1 for `edges_at_height` z/tol, `geo_equiv` tol, `faces_by_normal`
+    /// tol (an ANGLE position owned by PRD 3) and the density ladder. None of
+    /// those is in this leaf's 26-slot slice or in PRD §6's boundary rows, and
+    /// nobody in this PRD owns their migration. Sharing the CODE while splitting
+    /// the SEVERITY scopes INV-SF-2's promotion to the positions this leaf owns;
+    /// the promotion is filed as a follow-up.
+    ///
+    /// RED until step-6 attaches the code: today `diags[0].code` is `None`.
     #[test]
     fn resolve_scalar_bound_arg_eval_and_diagnostics() {
         // (a) inline ANGLE literal → Some(rad), 0 diagnostics.
@@ -918,7 +952,18 @@
                 1,
                 "(c) must push exactly 1 Warning, got: {diags:?}"
             );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(c) severity stays Warning — see this test's doc comment for why \
+                 the quiet-degrade readers are NOT promoted with step-4's chokepoint"
+            );
+            assert_eq!(
+                diags[0].code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "(c) the shared runtime code rides the Warning too (INV-SF-6); got: {:?}",
+                diags[0]
+            );
             let msg = diags[0].message.to_lowercase();
             assert!(
                 msg.contains("edges_at_height"),
@@ -958,7 +1003,19 @@
                 1,
                 "(d) must push exactly 1 Warning, got: {diags:?}"
             );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(d) severity stays Warning — `faces_by_normal` tol is an ANGLE \
+                 position owned by PRD 3, outside this leaf's slice"
+            );
+            assert_eq!(
+                diags[0].code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "(d) ONE shared runtime code across dimensions — PRD 3 (ANGLE) reuses \
+                 THIS variant rather than minting a per-dimension sibling; got: {:?}",
+                diags[0]
+            );
             let msg = diags[0].message.to_lowercase();
             assert!(
                 msg.contains("faces_by_normal"),
@@ -2909,6 +2966,1072 @@
                 ("spacing".into(), spacing_expr),
             ],
         }
+    }
+
+    // NOTE (task 5743 merge): step-3 added its own `literal_undef` fixture here.
+    // Task 5658 landed a byte-identical one on `main`, up with the other fixture
+    // helpers and with a strictly richer doc, so the duplicate was dropped rather
+    // than renamed — the tests below call THAT one. Do not re-add a local copy:
+    // two definitions in this module are an E0428 build error, not a shadow.
+
+    // ---- units-length β (task 5743 step-3): the eval_named_arg_length retrofit ----
+    //
+    // These drive the SHARED `eval_named_arg_length` chokepoint through real,
+    // already-shipped Contract C callers (`linear_pattern` spacing and the
+    // `mirror` plane origin) rather than calling the helper in isolation, so the
+    // retrofit is proven where users actually meet it. The same edit reaches
+    // `linear_pattern_2d`, `circular_pattern` and the arbitrary-pattern offsets.
+
+    /// The `eval_named_arg_length` REJECTION is a `Severity::Error` carrying
+    /// `DiagnosticCode::DimensionedArgRejected`, and its wording is still
+    /// produced ONLY by `arg_acceptance::ArgRejection::message`.
+    ///
+    /// Covers all three rejection shapes at a shipped spacing slot: a bare
+    /// `Value::Int`, a bare `Value::Real`, and a defined-but-wrong-dimension
+    /// `Scalar`. For each, EXACTLY ONE rejection diagnostic is pushed (no
+    /// cascade), it is `Error` severity, it carries the new code, and it still
+    /// names the builtin, the arg, `"Length"`, and the byte-unchanged migration
+    /// hint that `length_spec` owns.
+    ///
+    /// RED until step-4 promotes the emit at `geometry_ops.rs`'s
+    /// `eval_named_arg_length` from `Diagnostic::warning(..)` to
+    /// `Diagnostic::error(..).with_code(..)`: today the severity is `Warning`
+    /// and the code is `None`.
+    #[test]
+    fn eval_named_arg_length_rejection_is_error_with_dimensioned_arg_rejected_code() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, spacing_expr) in [
+            (
+                "bare Int",
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Int(20),
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+            ),
+            ("bare Real", literal_f64(0.02)),
+            (
+                "wrong-dimension Scalar (MASS)",
+                literal_scalar(0.02, reify_core::DimensionVector::MASS),
+            ),
+        ] {
+            let op = linear_pattern_with_spacing(spacing_expr);
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "{label} spacing must drop the op, got: {result:?}"
+            );
+
+            let rejections: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.message.contains("argument expects Length"))
+                .collect();
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{label}: exactly ONE rejection diagnostic (no cascade); got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{label}: contract C1(iv) requires the eval-layer rejection ITSELF to be \
+                 Error severity, so `reify eval` exits nonzero through the pure severity \
+                 gate; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{label}: the rejection must carry the shared runtime code; got: {rej:?}"
+            );
+
+            // Wording is byte-unchanged and still owned solely by
+            // `ArgRejection::message` — the retrofit moves severity + code, never text.
+            // NB: the kind_label a `PatternKind::Linear` op carries is `"linear"`,
+            // not `"linear_pattern"` — measured from the live diagnostic, not assumed.
+            for needle in [
+                "linear",
+                "spacing",
+                "Length",
+                "pass a dimensioned length such as `5mm`",
+            ] {
+                assert!(
+                    rej.message.contains(needle),
+                    "{label}: rejection message must contain {needle:?}; got: {:?}",
+                    rej.message
+                );
+            }
+        }
+    }
+
+    /// The retrofit is at the SHARED helper, so it lands at every Contract C
+    /// caller at once — pinned here at the `mirror` plane origin, a different
+    /// shipped call site from the spacing test above. A gate applied only to the
+    /// pattern-spacing path would pass that test and fail this one.
+    ///
+    /// RED until step-4.
+    #[test]
+    fn eval_named_arg_length_retrofit_reaches_mirror_origin_too() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                // BARE origin x — the other two components are proper Lengths.
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_err(), "bare mirror origin must drop the op");
+
+        let rej = diagnostics
+            .iter()
+            .find(|d| d.message.contains("argument expects Length"))
+            .unwrap_or_else(|| panic!("expected a Length rejection; got: {diagnostics:?}"));
+        assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+        assert_eq!(
+            rej.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{rej:?}"
+        );
+        assert!(
+            rej.message.contains("ox") && rej.message.contains("mirror"),
+            "{:?}",
+            rej.message
+        );
+    }
+
+    /// The two NON-rejection states of `eval_named_arg_length` are untouched by
+    /// the retrofit — neither pushes ANY diagnostic.
+    ///
+    /// (a) A finite LENGTH `Scalar` is `Accepted`: the op compiles, spacing is
+    ///     stored as a dimensioned `Value`, and diagnostics stay EMPTY. Without
+    ///     this arm an over-broad "always emit an Error" change would pass the
+    ///     rejection tests above.
+    /// (b) `Value::Undef` is `Undefined`: the value layer stays QUIET (decision
+    ///     D10 / INV-SF-1 — loud at the chokepoint, quiet at `accept_arg`), so
+    ///     no rejection diagnostic is pushed even though the op is dropped with
+    ///     the DISTINCT `is unresolved (Undef)` wording. During solver iteration
+    ///     an Undef cell is expected transient state, and asserting
+    ///     `"non-Length"` for it would be actively wrong.
+    #[test]
+    fn eval_named_arg_length_accepted_and_undefined_paths_push_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // (a) Accepted — dimensioned spacing.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_pattern_with_spacing(literal_length(0.02)),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_ok(), "dimensioned spacing must compile: {result:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "an Accepted LENGTH Scalar must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+
+        // (b) Undefined — quiet at the value layer, distinct Err at the chokepoint.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_pattern_with_spacing(literal_undef()),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef spacing must drop the op");
+        assert!(
+            err.contains("unresolved (Undef)"),
+            "Undef must use the DISTINCT unresolved wording, not \"missing or non-Length\"; \
+             got: {err:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("argument expects Length")),
+            "Undef must push NO rejection diagnostic (D10 quiet value layer); got: {diagnostics:?}"
+        );
+    }
+
+    // ---- units-length β (task 5743 step-7): the R7 chokepoint at the box slots ----
+
+    /// Helper: a `PrimitiveKind::Box` op whose `slot` arg is `expr` and whose
+    /// other two dimensions are valid LENGTHs. Lets each slot's three-state
+    /// table vary ONLY the value under test.
+    fn box_primitive_with(slot: &str, expr: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+        let arg = |name: &str| -> (String, reify_ir::CompiledExpr) {
+            (
+                name.into(),
+                if name == slot {
+                    expr.clone()
+                } else {
+                    literal_length(0.05)
+                },
+            )
+        };
+        CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![arg("width"), arg("height"), arg("depth")],
+        }
+    }
+
+    /// Contract C1's THREE-STATE mapping at every `box` length slot, asserted
+    /// through `compile_geometry_op` — the sole IR-build funnel (contract C2).
+    ///
+    /// Each of `width` / `height` / `depth` is exercised independently, so a
+    /// gate applied to only one slot cannot pass this test.
+    ///
+    /// (i)  ACCEPTED — a LENGTH `Scalar` yields `Ok`, and the stored
+    ///      `GeometryOp::Box` field is a LENGTH `Value::Scalar` whose `si_value`
+    ///      is BYTE-IDENTICAL to the input SI metres (the chokepoint must not
+    ///      re-scale or re-wrap).
+    /// (ii) REJECTED — a bare `Real`, a bare `Int`, a bare ZERO and a
+    ///      wrong-dimension (MASS) `Scalar` each yield `Err`, push exactly one
+    ///      `Severity::Error` carrying `DimensionedArgRejected` with the `5mm`
+    ///      hint, and name both the builtin and the offending argument.
+    ///      Bare ZERO is in the table on purpose: PRD boundary row 3 / decision
+    ///      D1 says `0` is NOT special-cased. It is the likeliest thing for a
+    ///      well-meaning "but zero has no units" patch to carve out, and
+    ///      carving it out reopens the hazard for `box(0, 0, 0)`.
+    /// (iii) UNDEFINED — `Value::Undef` yields `Err` whose message is the
+    ///      EXISTING distinct `"argument 'width' for box is unresolved (Undef)"`
+    ///      wording, NOT the "missing or non-Length" text, and pushes NO
+    ///      rejection diagnostic (D10 / INV-SF-1: loud at the chokepoint, quiet
+    ///      at `accept_arg`). During solver iteration an Undef cell is expected
+    ///      transient state, so claiming "non-Length" for it would be wrong.
+    ///
+    /// RED until step-8 routes `prim_box` through `required_length_value`: today
+    /// every one of these bare values is silently stored in the `GeometryOp`
+    /// field and read as SI METRES downstream — `box(20, 20, 10)` is a 20-metre
+    /// box, which is exactly the 1000× hazard this leaf closes.
+    #[test]
+    fn compile_geometry_op_box_length_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+
+        for slot in ["width", "height", "depth"] {
+            // (i) ACCEPTED.
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &box_primitive_with(slot, literal_length(0.02)),
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            let op = result
+                .unwrap_or_else(|e| panic!("{slot}: a LENGTH Scalar must be accepted, got: {e}"));
+            let reify_ir::GeometryOp::Box {
+                width,
+                height,
+                depth,
+            } = op
+            else {
+                panic!("{slot}: expected GeometryOp::Box, got {op:?}");
+            };
+            let stored = match slot {
+                "width" => width,
+                "height" => height,
+                _ => depth,
+            };
+            assert_eq!(
+                stored,
+                reify_ir::Value::Scalar {
+                    si_value: 0.02,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+                "{slot}: the stored field must stay a LENGTH Scalar with a \
+                 byte-identical SI value"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "{slot}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+            );
+
+            // (ii) REJECTED.
+            for (label, expr) in [
+                ("bare Real", literal_f64(0.02)),
+                (
+                    "bare Int",
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Int(20),
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                ),
+                // D1 / PRD boundary row 3: zero is NOT special-cased.
+                ("bare ZERO", literal_f64(0.0)),
+                (
+                    "wrong-dimension Scalar (MASS)",
+                    literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                ),
+            ] {
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &box_primitive_with(slot, expr),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                assert!(
+                    result.is_err(),
+                    "{slot} / {label}: must drop the op, got: {result:?}"
+                );
+
+                let rejections: Vec<&Diagnostic> = diagnostics
+                    .iter()
+                    .filter(|d| d.message.contains("argument expects Length"))
+                    .collect();
+                assert_eq!(
+                    rejections.len(),
+                    1,
+                    "{slot} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                );
+                let rej = rejections[0];
+                assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                assert_eq!(
+                    rej.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{rej:?}"
+                );
+                assert!(
+                    rej.message.to_lowercase().contains("box")
+                        && rej.message.contains(slot)
+                        && rej
+                            .message
+                            .contains("pass a dimensioned length such as `5mm`"),
+                    "{slot} / {label}: must name the builtin, the arg and carry the \
+                     migration hint; got: {:?}",
+                    rej.message
+                );
+            }
+
+            // (iii) UNDEFINED.
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &box_primitive_with(slot, literal_undef()),
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            let err = result
+                .err()
+                .unwrap_or_else(|| panic!("{slot}: an Undef dimension must drop the op"));
+            assert!(
+                err.contains("unresolved (Undef)") && err.contains(slot),
+                "{slot}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                 not \"missing or non-Length\"; got: {err:?}"
+            );
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("argument expects Length")),
+                "{slot}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+            );
+        }
+    }
+
+    // ---- units-length β (task 5743 step-9): the remaining 18 primitive slots ----
+
+    /// The β slice's remaining seven primitives, each as
+    /// `(kind, &[(arg name, is_length_semantic)])` in the op's own field order.
+    ///
+    /// The `bool` is the SLICE BOUNDARY made data: `true` marks a slot this leaf
+    /// gates, `false` marks one it must leave alone. Only `half_space` carries
+    /// `false` entries — `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal, not a
+    /// point in space, and the same split is already documented at
+    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    ///
+    /// Arg names are the compiler's, read from the lowering arms in
+    /// `reify-compiler/src/geometry.rs` — `outer_r`/`inner_r` (not
+    /// `outer_radius`), `px`/`py`/`pz` (not `ox`/`oy`/`oz`).
+    const BETA_PRIMITIVE_SLOTS: &[(reify_compiler::PrimitiveKind, &[(&str, bool)])] = &[
+        (
+            reify_compiler::PrimitiveKind::Cylinder,
+            &[("radius", true), ("height", true)],
+        ),
+        (reify_compiler::PrimitiveKind::Sphere, &[("radius", true)]),
+        (
+            reify_compiler::PrimitiveKind::Tube,
+            &[("outer_r", true), ("inner_r", true), ("height", true)],
+        ),
+        (
+            reify_compiler::PrimitiveKind::Cone,
+            &[
+                ("bottom_radius", true),
+                ("top_radius", true),
+                ("height", true),
+            ],
+        ),
+        (
+            reify_compiler::PrimitiveKind::Wedge,
+            &[
+                ("width", true),
+                ("depth", true),
+                ("height", true),
+                ("top_width", true),
+            ],
+        ),
+        (
+            reify_compiler::PrimitiveKind::Torus,
+            &[("major_radius", true), ("minor_radius", true)],
+        ),
+        (
+            reify_compiler::PrimitiveKind::HalfSpace,
+            &[
+                ("px", true),
+                ("py", true),
+                ("pz", true),
+                // NOT gated: a dimensionless unit normal.
+                ("nx", false),
+                ("ny", false),
+                ("nz", false),
+            ],
+        ),
+    ];
+
+    /// Helper: build one of [`BETA_PRIMITIVE_SLOTS`]' primitives with `slot`
+    /// bound to `expr` and every other arg bound to a valid value for its own
+    /// kind — a LENGTH `Scalar` for a length-semantic slot, a bare `Real` for a
+    /// dimensionless one. Lets each slot's three-state table vary ONLY the
+    /// value under test.
+    fn beta_primitive_with(
+        kind: reify_compiler::PrimitiveKind,
+        arg_names: &[(&str, bool)],
+        slot: &str,
+        expr: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Primitive {
+            kind,
+            args: arg_names
+                .iter()
+                .map(|(name, is_length)| {
+                    let bound = if *name == slot {
+                        expr.clone()
+                    } else if *is_length {
+                        literal_length(0.05)
+                    } else {
+                        literal_f64(1.0)
+                    };
+                    ((*name).to_string(), bound)
+                })
+                .collect(),
+        }
+    }
+
+    /// Helper: read the field named `slot` out of a compiled primitive
+    /// `GeometryOp`. Keeps the slot table above the single source of truth for
+    /// which names exist, instead of repeating a destructuring `let else` per
+    /// primitive.
+    fn beta_stored_slot(op: &reify_ir::GeometryOp, slot: &str) -> reify_ir::Value {
+        use reify_ir::GeometryOp as G;
+        let found = match (op, slot) {
+            (G::Cylinder { radius, .. }, "radius") => Some(radius),
+            (G::Cylinder { height, .. }, "height") => Some(height),
+            (G::Sphere { radius }, "radius") => Some(radius),
+            (G::Tube { outer_r, .. }, "outer_r") => Some(outer_r),
+            (G::Tube { inner_r, .. }, "inner_r") => Some(inner_r),
+            (G::Tube { height, .. }, "height") => Some(height),
+            (G::Cone { bottom_radius, .. }, "bottom_radius") => Some(bottom_radius),
+            (G::Cone { top_radius, .. }, "top_radius") => Some(top_radius),
+            (G::Cone { height, .. }, "height") => Some(height),
+            (G::Wedge { width, .. }, "width") => Some(width),
+            (G::Wedge { depth, .. }, "depth") => Some(depth),
+            (G::Wedge { height, .. }, "height") => Some(height),
+            (G::Wedge { top_width, .. }, "top_width") => Some(top_width),
+            (G::Torus { major_radius, .. }, "major_radius") => Some(major_radius),
+            (G::Torus { minor_radius, .. }, "minor_radius") => Some(minor_radius),
+            (G::HalfSpace { px, .. }, "px") => Some(px),
+            (G::HalfSpace { py, .. }, "py") => Some(py),
+            (G::HalfSpace { pz, .. }, "pz") => Some(pz),
+            _ => None,
+        };
+        found
+            .unwrap_or_else(|| panic!("no slot '{slot}' on {op:?}"))
+            .clone()
+    }
+
+    /// Contract C1's THREE-STATE mapping at the 18 remaining primitive LENGTH
+    /// slots — `cylinder` radius/height, `sphere` radius, `tube`
+    /// outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge`
+    /// width/depth/height/top_width, `torus` major_radius/minor_radius and
+    /// `half_space` px/py/pz — asserted through `compile_geometry_op`, the sole
+    /// IR-build funnel (contract C2).
+    ///
+    /// This is the box test's table, driven over the slot table rather than
+    /// re-spelled per primitive. Every slot is exercised INDEPENDENTLY (the
+    /// other args stay valid), so a gate applied to only some slots of a
+    /// primitive — say `tube`'s two radii but not its `height` — cannot pass.
+    ///
+    /// RED until step-10 routes the seven remaining `prim_*` fns through
+    /// `required_length_value`: today each bare value is stored in the
+    /// `GeometryOp` field unchallenged and read as SI METRES downstream, so
+    /// `cylinder(10, 20)` is a 10-metre-radius cylinder.
+    #[test]
+    fn compile_geometry_op_remaining_primitive_length_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+
+        for (kind, arg_names) in BETA_PRIMITIVE_SLOTS {
+            for (slot, is_length) in arg_names.iter() {
+                if !*is_length {
+                    // Slice boundary — covered by the dedicated negative test
+                    // below, not by this rejection table.
+                    continue;
+                }
+                let at = format!("{kind}.{slot}");
+
+                // (i) ACCEPTED — stored unchanged, no diagnostics.
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_primitive_with(*kind, arg_names, slot, literal_length(0.02)),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let op = result
+                    .unwrap_or_else(|e| panic!("{at}: a LENGTH Scalar must be accepted, got: {e}"));
+                assert_eq!(
+                    beta_stored_slot(&op, slot),
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "{at}: the stored field must stay a LENGTH Scalar with a \
+                     byte-identical SI value"
+                );
+                assert!(
+                    diagnostics.is_empty(),
+                    "{at}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+                );
+
+                // (ii) REJECTED — the same four shapes as the box table, incl.
+                // bare ZERO (D1 / PRD boundary row 3: `0` is NOT special-cased).
+                for (label, expr) in [
+                    ("bare Real", literal_f64(0.02)),
+                    (
+                        "bare Int",
+                        reify_ir::CompiledExpr::literal(
+                            reify_ir::Value::Int(20),
+                            reify_core::Type::dimensionless_scalar(),
+                        ),
+                    ),
+                    ("bare ZERO", literal_f64(0.0)),
+                    (
+                        "wrong-dimension Scalar (MASS)",
+                        literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                    ),
+                ] {
+                    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                    let result = compile_geometry_op(
+                        &beta_primitive_with(*kind, arg_names, slot, expr),
+                        &values,
+                        &[],
+                        &[],
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &mut diagnostics,
+                    );
+                    assert!(
+                        result.is_err(),
+                        "{at} / {label}: must drop the op, got: {result:?}"
+                    );
+
+                    let rejections: Vec<&Diagnostic> = diagnostics
+                        .iter()
+                        .filter(|d| d.message.contains("argument expects Length"))
+                        .collect();
+                    assert_eq!(
+                        rejections.len(),
+                        1,
+                        "{at} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                    );
+                    let rej = rejections[0];
+                    assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                    assert_eq!(
+                        rej.code,
+                        Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                        "{rej:?}"
+                    );
+                    // ANCHORED on `"{slot} argument expects"`, not a bare
+                    // `contains(slot)`: `wedge` has both `width` and
+                    // `top_width`, and "top_width" CONTAINS "width", so the
+                    // loose form passes when the wrong wedge slot is reported.
+                    // `ArgRejection::message` renders
+                    // `"{builtin}: {arg} argument expects …"`, so the anchored
+                    // shape is available for free.
+                    assert!(
+                        rej.message.contains(&kind.to_string())
+                            && rej.message.contains(&format!("{slot} argument expects"))
+                            && rej
+                                .message
+                                .contains("pass a dimensioned length such as `5mm`"),
+                        "{at} / {label}: must name the builtin, the arg and carry the \
+                         migration hint; got: {:?}",
+                        rej.message
+                    );
+                }
+
+                // (iii) UNDEFINED — the DISTINCT unresolved wording, and no
+                // rejection diagnostic (D10 / INV-SF-1).
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_primitive_with(*kind, arg_names, slot, literal_undef()),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{at}: an Undef dimension must drop the op"));
+                // `'{slot}'` QUOTED, matching `required_length_arg`'s wording:
+                // an unquoted `contains(slot)` cannot tell `width` from
+                // `top_width` (see the rejection arm above).
+                assert!(
+                    err.contains("unresolved (Undef)") && err.contains(&format!("'{slot}'")),
+                    "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                     not \"missing or non-Length\"; got: {err:?}"
+                );
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("argument expects Length")),
+                    "{at}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    /// SLICE BOUNDARY, and the load-bearing half of step-9: `half_space`'s
+    /// `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal — a direction, not a point
+    /// — so they must STILL accept bare numbers after the origin triple is
+    /// gated.
+    ///
+    /// The fixture is the shape of `examples/half_space.ri:18` — dimensioned
+    /// point, bare normal — with THREE DISTINCT normal components
+    /// `(0.25, 0.5, 1)` rather than the corpus's literal `(0, 0, 1)`. A
+    /// two-zero normal cannot see an `nx`/`ny` transposition, and the sibling
+    /// primitive tables use distinct values (0.02 vs 0.05) for exactly that
+    /// reason. Corpus fidelity itself is pinned separately, end to end, by
+    /// `half_space_bare_normal_still_builds_with_a_dimensioned_point` in
+    /// `tests/harness_geometry/primitive_profile_length_units_e2e.rs`.
+    ///
+    /// It must compile with ZERO diagnostics, and each normal component must be
+    /// stored as the bare `Real` it was written as — re-wrapping `nz` as a
+    /// LENGTH `Scalar` would be just as wrong as rejecting it.
+    ///
+    /// Without this assertion an over-broad gate that also caught the normal
+    /// would pass the rejection table above while breaking the shipped corpus.
+    /// The same dimensionless-direction carve-out is already documented at
+    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    #[test]
+    fn compile_geometry_op_half_space_normal_stays_dimensionless() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::HalfSpace,
+            args: vec![
+                ("px".into(), literal_length(0.0)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
+                // Three DISTINCT components so a slot transposition is
+                // detectable.
+                ("nx".into(), literal_f64(0.25)),
+                ("ny".into(), literal_f64(0.5)),
+                ("nz".into(), literal_f64(1.0)),
+            ],
+        };
+        let compiled = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect(
+            "half_space(0mm,0mm,0mm, 0.25,0.5,1) is the shipped corpus SHAPE \
+             (dimensioned point, bare normal) and must compile",
+        );
+
+        let reify_ir::GeometryOp::HalfSpace { nx, ny, nz, .. } = compiled else {
+            panic!("expected GeometryOp::HalfSpace, got {compiled:?}");
+        };
+        assert_eq!(
+            (nx, ny, nz),
+            (
+                reify_ir::Value::Real(0.25),
+                reify_ir::Value::Real(0.5),
+                reify_ir::Value::Real(1.0),
+            ),
+            "the unit normal must be stored as the bare Reals it was written as, \
+             neither rejected nor re-wrapped as a LENGTH Scalar"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a bare unit normal must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+    }
+
+    // ---- units-length β (task 5743 step-11): the 5 profile slots ----
+
+    /// The β slice's three gated profiles, as `(kind, &[arg name])` in the op's
+    /// own field order. `Polygon` is deliberately ABSENT: its vertex list is
+    /// arity-open and has no per-slot `ArgSpec`, so task 5661 gates it by
+    /// STRIDE on the variadic route instead. See
+    /// `compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf`, which
+    /// asserts that behaviourally: the shared code reaches 5661's route, and
+    /// the rejection mints the variadic display name `x1` rather than the
+    /// named-arg route's inert `c0`.
+    ///
+    /// Arg names are the compiler's, read from the lowering arms in
+    /// `reify-compiler/src/geometry.rs`: `ellipse` takes `semi_major` /
+    /// `semi_minor`, NOT `a` / `b`.
+    const BETA_PROFILE_SLOTS: &[(reify_compiler::ProfileKind, &[&str])] = &[
+        (
+            reify_compiler::ProfileKind::Rectangle,
+            &["width", "height"],
+        ),
+        (reify_compiler::ProfileKind::Circle, &["radius"]),
+        (
+            reify_compiler::ProfileKind::Ellipse,
+            &["semi_major", "semi_minor"],
+        ),
+    ];
+
+    /// Helper: build one of [`BETA_PROFILE_SLOTS`]' profiles with `slot` bound
+    /// to `expr` and every sibling bound to a valid LENGTH.
+    fn beta_profile_with(
+        kind: reify_compiler::ProfileKind,
+        arg_names: &[&str],
+        slot: &str,
+        expr: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Profile {
+            kind,
+            args: arg_names
+                .iter()
+                .map(|name| {
+                    let bound = if *name == slot {
+                        expr.clone()
+                    } else {
+                        literal_length(0.05)
+                    };
+                    ((*name).to_string(), bound)
+                })
+                .collect(),
+        }
+    }
+
+    /// Helper: read the field named `slot` out of a compiled profile
+    /// `GeometryOp`.
+    fn beta_profile_stored_slot(op: &reify_ir::GeometryOp, slot: &str) -> reify_ir::Value {
+        use reify_ir::GeometryOp as G;
+        let found = match (op, slot) {
+            (G::RectangleProfile { width, .. }, "width") => Some(width),
+            (G::RectangleProfile { height, .. }, "height") => Some(height),
+            (G::CircleProfile { radius }, "radius") => Some(radius),
+            (G::EllipseProfile { semi_major, .. }, "semi_major") => Some(semi_major),
+            (G::EllipseProfile { semi_minor, .. }, "semi_minor") => Some(semi_minor),
+            _ => None,
+        };
+        found
+            .unwrap_or_else(|| panic!("no slot '{slot}' on {op:?}"))
+            .clone()
+    }
+
+    /// Contract C1's THREE-STATE mapping at the 5 profile LENGTH slots —
+    /// `rectangle` width/height, `circle` radius, `ellipse`
+    /// semi_major/semi_minor — asserted through `compile_geometry_op`, the sole
+    /// IR-build funnel (contract C2).
+    ///
+    /// Identical in shape to the primitive tables above, because a profile
+    /// dimension is length-semantic for exactly the same reason a primitive
+    /// dimension is: `Value::as_f64` reads a bare component as SI METRES, so
+    /// `circle(10)` is a 10-metre-radius circle unless the chokepoint stops it.
+    /// Extruded into a solid, that error is as expensive as any primitive's.
+    ///
+    /// RED until step-12 routes `profile_rectangle` / `profile_circle` /
+    /// `profile_ellipse` through `required_length_value`.
+    #[test]
+    fn compile_geometry_op_profile_length_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+
+        for (kind, arg_names) in BETA_PROFILE_SLOTS {
+            for slot in arg_names.iter() {
+                let at = format!("{kind}.{slot}");
+
+                // (i) ACCEPTED — stored unchanged, no diagnostics.
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_profile_with(*kind, arg_names, slot, literal_length(0.02)),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let op = result
+                    .unwrap_or_else(|e| panic!("{at}: a LENGTH Scalar must be accepted, got: {e}"));
+                assert_eq!(
+                    beta_profile_stored_slot(&op, slot),
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "{at}: the stored field must stay a LENGTH Scalar with a \
+                     byte-identical SI value"
+                );
+                assert!(
+                    diagnostics.is_empty(),
+                    "{at}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+                );
+
+                // (ii) REJECTED — bare Real / bare Int / bare ZERO (D1: `0` is
+                // NOT special-cased) / wrong-dimension Scalar.
+                for (label, expr) in [
+                    ("bare Real", literal_f64(0.02)),
+                    (
+                        "bare Int",
+                        reify_ir::CompiledExpr::literal(
+                            reify_ir::Value::Int(20),
+                            reify_core::Type::dimensionless_scalar(),
+                        ),
+                    ),
+                    ("bare ZERO", literal_f64(0.0)),
+                    (
+                        "wrong-dimension Scalar (MASS)",
+                        literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                    ),
+                ] {
+                    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                    let result = compile_geometry_op(
+                        &beta_profile_with(*kind, arg_names, slot, expr),
+                        &values,
+                        &[],
+                        &[],
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &mut diagnostics,
+                    );
+                    assert!(
+                        result.is_err(),
+                        "{at} / {label}: must drop the op, got: {result:?}"
+                    );
+
+                    let rejections: Vec<&Diagnostic> = diagnostics
+                        .iter()
+                        .filter(|d| d.message.contains("argument expects Length"))
+                        .collect();
+                    assert_eq!(
+                        rejections.len(),
+                        1,
+                        "{at} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                    );
+                    let rej = rejections[0];
+                    assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                    assert_eq!(
+                        rej.code,
+                        Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                        "{rej:?}"
+                    );
+                    // Anchored — see the primitive table's note.
+                    assert!(
+                        rej.message.contains(&kind.to_string())
+                            && rej.message.contains(&format!("{slot} argument expects"))
+                            && rej
+                                .message
+                                .contains("pass a dimensioned length such as `5mm`"),
+                        "{at} / {label}: must name the builtin, the arg and carry the \
+                         migration hint; got: {:?}",
+                        rej.message
+                    );
+                }
+
+                // (iii) UNDEFINED — the DISTINCT unresolved wording, and no
+                // rejection diagnostic (D10 / INV-SF-1).
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_profile_with(*kind, arg_names, slot, literal_undef()),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{at}: an Undef dimension must drop the op"));
+                // `'{slot}'` QUOTED, matching `required_length_arg`'s wording:
+                // an unquoted `contains(slot)` cannot tell `width` from
+                // `top_width` (see the rejection arm above).
+                assert!(
+                    err.contains("unresolved (Undef)") && err.contains(&format!("'{slot}'")),
+                    "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                     not \"missing or non-Length\"; got: {err:?}"
+                );
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("argument expects Length")),
+                    "{at}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    /// SCOPE BOUNDARY, INVERTED AT THE MERGE: `polygon`'s coordinate pairs are
+    /// gated — by task 5661's VARIADIC route, NOT by this leaf's raw-`Value`
+    /// one — and that rejection now carries THIS leaf's shared code.
+    ///
+    /// This assertion deliberately flipped. β authored it as negative space
+    /// (`..._coords_are_not_gated_by_this_leaf`, asserting bare polygon
+    /// coordinates compiled with ZERO diagnostics) while `profile_polygon`
+    /// still read its whole variadic list through the bare
+    /// `eval_all_args_to_f64`, which had no `ArgSpec` to check against. Task
+    /// 5661 then landed on main, routed `profile_polygon` through
+    /// `accept_variadic_length_args`, and retired that helper. Merging main
+    /// therefore made the old assertion FALSE — it is re-aimed here, not
+    /// suppressed, and this note exists so a reader cannot mistake the flip for
+    /// a regression that was quietly papered over.
+    ///
+    /// What it asserts INSTEAD is the merge's dividend, and the invariant β
+    /// exists to establish. 5661's commit message states that routing polygon
+    /// through `accept_length_value` "is exactly what makes polygon inherit
+    /// task 5743's shared code when it lands and retrofits the SINGLE minting
+    /// site (PRD D9 / INV-SF-6)". So a bare polygon vertex must now be
+    /// rejected at `Severity::Error` carrying `DimensionedArgRejected`: D9 /
+    /// INV-SF-6 holds across the WHOLE merged Contract C surface — named-arg,
+    /// variadic AND R7 raw-`Value` — rather than only the half this leaf gated.
+    /// It is the 2-D stride-2 sibling of
+    /// [`compile_geometry_op_variadic_pole_rejection_is_error_with_the_shared_code`],
+    /// which pins the same claim on the 3-D triples.
+    ///
+    /// The NEGATIVE-SPACE half is kept, because the boundary β drew still
+    /// holds — only its consequence changed. Polygon is gated by the ARITY-OPEN
+    /// variadic route, and must NOT be pulled into β's `required_length_value`
+    /// `ArgSpec` chokepoint, which reads args BY NAME. Two independent
+    /// witness catches that over-broad edit: the message names the DISPLAY
+    /// coordinate `x1`, which only the variadic renderer mints; the named-arg
+    /// route would surface the compiler's inert `c0` verbatim, since it has no
+    /// vertex numbering to recover. (A companion assertion that
+    /// `ProfileKind::Polygon` stays absent from `BETA_PROFILE_SLOTS` was
+    /// dropped as a reviewer amendment: it asserted on this test file's own
+    /// `const`, exercised no production code, and could only be violated by an
+    /// edit that already fails `beta_profile_stored_slot`.)
+    #[test]
+    fn compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf() {
+        let values = ValueMap::new();
+
+        // BARE x1; every other coordinate is a proper Length, so the rejection
+        // under test is the only one. Three vertices, matching POLYGON_GATE —
+        // the minimum the compiler accepts, and the minimum that can see a
+        // stride slip.
+        let op = polygon_with_coords(&[
+            literal_f64(0.0),
+            literal_length(0.0),
+            literal_length(0.01),
+            literal_length(0.0),
+            literal_length(0.005),
+            literal_length(0.01),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a bare polygon vertex coordinate must drop the op (task 5661); \
+             got: {result:?}"
+        );
+
+        // The `ArgRejection` diagnostic SPECIFICALLY, not "some Error naming
+        // the arg": the accompanying op-compile Error also contains the arg
+        // name and the word "Length", so the looser shape would have passed
+        // before 5743's promotion too.
+        let rej = diagnostics
+            .iter()
+            .find(|d| d.message.contains("argument expects Length"))
+            .unwrap_or_else(|| panic!("expected a Length rejection; got: {diagnostics:?}"));
+        assert_eq!(
+            rej.severity,
+            reify_core::Severity::Error,
+            "5743 promoted the ONE shared `accept_length_value` rejection arm, \
+             so polygon's variadic route inherits Error severity: {rej:?}"
+        );
+        assert_eq!(
+            rej.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "INV-SF-6: every `ArgSpec`-backed rejection carries the shared code, \
+             on the variadic route as well as the named-arg and raw-`Value` \
+             ones: {rej:?}"
+        );
+        assert!(
+            rej.message.contains("x1") && !rej.message.contains("c0"),
+            "NEGATIVE SPACE: polygon must stay on the VARIADIC route, whose \
+             stride-2 renderer mints the DISPLAY name `x1`. The inert `c0` would \
+             mean the arity-open vertex list had been pulled into β's \
+             `required_length_value` named-arg chokepoint: {:?}",
+            rej.message
+        );
     }
 
     /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
@@ -5618,14 +6741,26 @@
         // `arg_acceptance::accept_arg` and worded by `ArgRejection::message`
         // ("… dx argument expects Length, got …") rather than by
         // `eval_named_arg_f64`'s generic "non-numeric/non-finite" arm.
+        //
+        // SEVERITY MIGRATION (task 5743): the same rejection is now an ERROR
+        // carrying `DiagnosticCode::DimensionedArgRejected`, because 5743
+        // promoted the shared `accept_length_value` arm this position routes
+        // through (contract C1(iv) / INV-SF-2). The test's SUBJECT is unchanged
+        // — it still pins 5623's wording migration — so the severity was
+        // RETARGETED rather than the assertion weakened, and the code is now
+        // asserted too. Its sibling `…_nan_dx_…` deliberately still expects a
+        // Warning: a NaN LENGTH was ACCEPTED by `accept_arg` (it IS a Length),
+        // so it carries no `ArgRejection` and no dimension-rejection code.
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_core::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Error)
+                    && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
                     && d.message.contains("expects Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'expects Length', 'dx', and 'translate', got: {:?}",
+            "expected an Error carrying DimensionedArgRejected and mentioning \
+             'expects Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -5781,9 +6916,11 @@
     // rejection arms were originally written out per builtin; they were
     // byte-identical modulo the labels, so the contract now lives once in
     // `assert_length_gated` and each builtin contributes only its data row
-    // (builder + gated position list). Gating the next family — variadic curve
-    // coordinates (task 5658), `profile_polygon` pairs (5661) — is a row, not
-    // another copy of the arms.
+    // (builder + gated position list). Gating a further family is a ROW, not
+    // another copy of the arms — as the two that followed showed: the variadic
+    // curve coordinates (task 5658) and `profile_polygon`'s 2-D vertex pairs
+    // (5661) each cost one `LengthGateCase` plus one table entry. The point
+    // still stands for whatever family comes next.
     //
     // Each family's ACCEPTED test stays hand-written below: those assert
     // distinct SI values into distinct IR fields (the field-ordering pins) and
@@ -6737,6 +7874,913 @@
     }
 
     // ---------------------------------------------------------------------------
+    // `interp`'s VARIADIC coordinate triples (task 5658, R2 sweep)
+    //
+    // `interp(x1, y1, z1, x2, y2, z2, …)` is arity-open: every position is a
+    // coordinate of a point in space, so EVERY position is gated and there is
+    // no dimensionless neighbour at all.
+    //
+    // Two things distinguish this family from R1's named-arg rows. First it
+    // reaches the Contract C chokepoint through `accept_variadic_length_args`
+    // rather than `eval_named_arg_length`, so this row is what proves the two
+    // routes mint byte-identical wording. Second the compiler names these args
+    // positionally (`c0`…`cN`), which is useless in a diagnostic — the gated
+    // names below are the DISPLAY names `CoordName` renders, and asserting
+    // them is what keeps a rejection reading like every other Contract C one.
+    // ---------------------------------------------------------------------------
+
+    /// Build a variadic `Curve` op of `kind` from a flat coordinate stream,
+    /// under the positional `c0`…`cN` names the compiler actually mints.
+    fn variadic_curve(
+        kind: CurveKind,
+        c: &[reify_ir::CompiledExpr],
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind,
+            args: c
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (format!("c{i}"), e.clone()))
+                .collect(),
+        }
+    }
+
+    /// Build an `interp` op from its six gated coordinates (2 points), in gate
+    /// order.
+    fn interp_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        variadic_curve(CurveKind::InterpCurve, c)
+    }
+
+    /// `interp`'s row in the shared gate table.
+    const INTERP_GATE: LengthGateCase = LengthGateCase {
+        label: "interp",
+        build: interp_with_coords,
+        // DISPLAY names, not the inert `c0`…`c5` the compiler mints.
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_interp_length_gate_rejects_every_coordinate() {
+        assert_length_gated(INTERP_GATE);
+    }
+
+    /// The severity promotion (task 5743) reaches the VARIADIC route too, not
+    /// only the named-arg one — and merging task 5658 is what made that true.
+    ///
+    /// 5658 lifted the rejection emit out of `eval_named_arg_length` into the
+    /// shared `accept_length_value`, which `accept_variadic_length_args` also
+    /// calls; 5743 then promoted that ONE arm. So `interp`/`bezier`/`nurbs` pole
+    /// rejections inherit `Severity::Error` + `DimensionedArgRejected` for free,
+    /// and INV-SF-6 (a `DiagnosticCode` on every `ArgSpec`-backed rejection)
+    /// holds across the WHOLE merged Contract C surface rather than half of it.
+    ///
+    /// This asserts the `ArgRejection` diagnostic SPECIFICALLY — the one worded
+    /// "argument expects Length" — rather than "some Error naming the arg". That
+    /// distinction is the whole point: the op-compile Error which accompanies it
+    /// ("missing or non-Length argument 'x1' for interp") ALSO contains both the
+    /// arg name and the word "Length", so the looser shape passed before the
+    /// promotion as well. The sibling e2e in `geometry_length_args_units_e2e.rs`
+    /// is deliberately that looser shape (it is testing op-dropping, not
+    /// severity), which is why this discriminating unit assertion exists here.
+    #[test]
+    fn compile_geometry_op_variadic_pole_rejection_is_error_with_the_shared_code() {
+        let values = ValueMap::new();
+
+        // BARE x1; every other coordinate is a proper Length, so the rejection
+        // under test is the only one.
+        let op = interp_with_coords(&[
+            literal_f64(0.0),
+            literal_length(0.0),
+            literal_length(0.0),
+            literal_length(0.01),
+            literal_length(0.0),
+            literal_length(0.0),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_err(), "a bare interp pole must drop the op");
+
+        let rej = diagnostics
+            .iter()
+            .find(|d| d.message.contains("argument expects Length"))
+            .unwrap_or_else(|| panic!("expected a Length rejection; got: {diagnostics:?}"));
+        assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+        assert_eq!(
+            rej.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{rej:?}"
+        );
+        assert!(
+            rej.message.contains("x1") && rej.message.contains("interp"),
+            "the variadic route must report the DISPLAY name, not the compiler's \
+             inert `c0`: {:?}",
+            rej.message
+        );
+    }
+
+    /// Six DISTINCT Length coordinates are accepted and land in their own IR
+    /// slots, in order. Distinctness pins the flat-stream → `chunks_exact(3)`
+    /// grouping (an all-equal fixture could not see a transposed triple), and
+    /// the SI values are exactly what the bare form would have misread as
+    /// 12/34/56/78/90/11 **metres**.
+    #[test]
+    fn compile_geometry_op_interp_length_coordinates_accepted() {
+        let values = ValueMap::new();
+
+        let op = interp_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::InterpCurve { points }) => {
+                assert_eq!(points, vec![[0.012, 0.034, 0.056], [0.078, 0.090, 0.011]]);
+            }
+            other => panic!(
+                "expected Ok(InterpCurve) for six Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length coordinates are the fully clean path and must emit \
+             no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The MIXED group on the VARIADIC route — the mirror of
+    /// [`compile_geometry_op_translate_unresolved_beats_a_later_bare_component`],
+    /// which pins the same precedence on the NAMED-ARG route.
+    ///
+    /// `LengthArg::Unresolved` is the one arm of `accept_variadic_length_args`
+    /// that deliberately pushes NO diagnostic and mints its own distinct
+    /// "unresolved (Undef)" wording (PRD decision D10 / INV-SF-1), and neither
+    /// shared-contract helper can reach it: [`assert_length_gated`] makes exactly
+    /// ONE position bad per iteration and [`assert_every_bare_position_reported`]
+    /// makes every position bad the SAME way, so both are structurally blind to
+    /// two DIFFERENT failure classes meeting in one coordinate stream. Here `x1`
+    /// is `Undef` (Unresolved) and `y1` is a bare `Real` (Invalid):
+    ///
+    ///   - PRECEDENCE — the FIRST error wins, so the caller-facing `Err` is
+    ///     `x1`'s "unresolved (Undef)" and never `y1`'s "missing or non-Length".
+    ///     A regression that reclassified an Undef coordinate as `Invalid` would
+    ///     hand the author a misleading "expects Length" during ordinary solver
+    ///     iteration — where an Undef cell is expected transient state, not an
+    ///     author error — and would stay green under every other variadic test.
+    ///   - NO SHORT-CIRCUIT — `y1` is still diagnosed even though `x1` already
+    ///     failed, which is the diagnostic-COUNT half of the all-at-once
+    ///     guarantee the doc comment on the helper claims.
+    #[test]
+    fn compile_geometry_op_interp_unresolved_beats_a_later_bare_coordinate() {
+        let values = ValueMap::new();
+
+        // x1 unresolved, y1 bare (the 1000× hazard), the rest clean Lengths.
+        let op = interp_with_coords(&[
+            literal_undef(),
+            literal_f64(5.0),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("an unresolved x1 with a bare y1 must drop the interp op");
+
+        assert!(
+            err.contains("x1") && err.contains("unresolved (Undef)"),
+            "the FIRST failing coordinate wins, so the error must carry x1's \
+             unresolved-Undef wording — the variadic route mints the same \
+             distinct message the named-arg route does; got: {err:?}"
+        );
+        assert!(
+            !err.contains("y1"),
+            "y1's later Invalid must not mask x1's Unresolved in the \
+             caller-facing error; got: {err:?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("x1")),
+            "an unresolved coordinate degrades QUIETLY at the value level — its \
+             whole report is the caller-facing Err, with no warning of its own, \
+             because an Undef cell mid-solve is not an author error; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("y1") && d.message.contains("expects Length")),
+            "y1 must STILL be diagnosed in the SAME build even though x1 failed \
+             first — the all-at-once guarantee, which a `?`-chain would have \
+             short-circuited; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `bezier`'s VARIADIC control-point triples (task 5658, R2 sweep)
+    //
+    // Like `interp`, every position is a control-point coordinate and there is
+    // no dimensionless neighbour. Carried at THREE control points rather than
+    // two so the row also proves `CoordName` keeps numbering past the first
+    // point — a `% 3` / `/ 3` slip that produced `x1,y1,z1,x1,y1,z1,…` would
+    // pass a two-point fixture's per-position sweep but collapse the count
+    // assertion here.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `bezier` op from its nine gated coordinates (3 control points),
+    /// in gate order.
+    fn bezier_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        variadic_curve(CurveKind::BezierCurve, c)
+    }
+
+    /// `bezier`'s row in the shared gate table — the WIDEST gated set in the
+    /// whole Contract C table at nine positions.
+    const BEZIER_GATE: LengthGateCase = LengthGateCase {
+        label: "bezier",
+        build: bezier_with_coords,
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2", "x3", "y3", "z3"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_bezier_length_gate_rejects_every_coordinate() {
+        assert_length_gated(BEZIER_GATE);
+    }
+
+    /// Nine DISTINCT Length coordinates land in their own IR slots, in order —
+    /// pinning the flat-stream → `chunks_exact(3)` grouping across three
+    /// control points.
+    #[test]
+    fn compile_geometry_op_bezier_length_coordinates_accepted() {
+        let values = ValueMap::new();
+
+        let op = bezier_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+            literal_length(0.023),
+            literal_length(0.045),
+            literal_length(0.067),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::BezierCurve { control_points }) => {
+                assert_eq!(
+                    control_points,
+                    vec![
+                        [0.012, 0.034, 0.056],
+                        [0.078, 0.090, 0.011],
+                        [0.023, 0.045, 0.067],
+                    ]
+                );
+            }
+            other => panic!(
+                "expected Ok(BezierCurve) for nine Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "nine finite Length coordinates are the fully clean path and must \
+             emit no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `nurbs`' POLE coordinates (task 5658, R2 sweep) — and the dimensionless
+    // tail it must NOT reach
+    //
+    // `nurbs(degree, n_points, poles…, weights…, knots…)` is the only variadic
+    // curve constructor with dimensionless neighbours, and they sit on BOTH
+    // sides of the gated span. Its per-arg triage:
+    //
+    //   degree    — a polynomial degree, i.e. a count      → dimensionless
+    //   n_points  — a count                                → dimensionless
+    //   poles     — coordinates of control points          → **LENGTH**
+    //   weights   — rational blending factors              → dimensionless
+    //   knots     — parameter-space values                 → dimensionless
+    //
+    // The gated span `2 .. 2 + n_points * 3` is a function of `n_points`, which
+    // is itself an argument — so it cannot be known before evaluation, which is
+    // why the production read is two-phase (structure first, then units) and
+    // why the tests below lock BOTH the gate and its boundary.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `nurbs` op from its six gated POLE coordinates, supplying its own
+    /// BARE degree / n_points / weights / knots.
+    ///
+    /// degree=1, n_points=2 → 6 poles at `c2..c7`, 2 weights, and
+    /// `n_points + degree + 1 = 4` knots: 14 positional args in all.
+    ///
+    /// Supplying the un-gated neighbours HERE is what turns
+    /// [`assert_every_bare_position_reported`]'s `reported == gated.len()` count
+    /// into a genuine SCOPE LOCK — they stay bare, so the count goes red if the
+    /// gate over-reaches onto a weight, a knot, the degree or n_points.
+    fn nurbs_with_poles(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        let mut args = vec![literal_f64(1.0), literal_f64(2.0)];
+        args.extend(c.iter().cloned());
+        args.extend([
+            literal_f64(1.0),
+            literal_f64(1.0), // weights
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0), // knots
+        ]);
+        variadic_curve(CurveKind::NurbsCurve, &args)
+    }
+
+    /// `nurbs`' row in the shared gate table — the only variadic row with
+    /// un-gated neighbours, hence the only one whose count assertion is also a
+    /// scope lock.
+    const NURBS_GATE: LengthGateCase = LengthGateCase {
+        label: "nurbs",
+        build: nurbs_with_poles,
+        // Numbered from the POLE span, not from the flat arg index: `c2` is the
+        // first control point's x, so it must read `x1`.
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_nurbs_length_gate_rejects_every_pole_coordinate() {
+        assert_length_gated(NURBS_GATE);
+    }
+
+    /// NEGATIVE LOCK on the triage, at a SECOND arity.
+    ///
+    /// degree=2 / n_points=3 → 9 poles at `c2..c10`, 3 weights, 6 knots. Run at
+    /// an arity different from every other nurbs fixture on purpose: the pole
+    /// span is COMPUTED from `n_points`, and a hardcoded `2..8` would pass the
+    /// whole degree-1 table and fail only here.
+    ///
+    /// The gate must not demand a dimension where a count, a rational blending
+    /// weight or a parameter-space knot legitimately has none — so a fully
+    /// valid nurbs with LENGTH poles and BARE everything else must build with
+    /// no units diagnostic at all.
+    #[test]
+    fn compile_geometry_op_nurbs_dimensionless_neighbours_still_accepted() {
+        let values = ValueMap::new();
+
+        let mut args = vec![literal_f64(2.0), literal_f64(3.0)];
+        // 9 pole coordinates, all dimensioned.
+        for i in 0..9 {
+            args.push(literal_length(0.001 * (i as f64 + 1.0)));
+        }
+        // 3 weights + 6 knots, all deliberately BARE.
+        args.extend([literal_f64(1.0), literal_f64(0.5), literal_f64(1.0)]);
+        args.extend([
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+        ]);
+        let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsCurve {
+                control_points,
+                weights,
+                knots,
+                degree,
+            }) => {
+                assert_eq!(control_points.len(), 3);
+                assert_eq!(weights, vec![1.0, 0.5, 1.0]);
+                assert_eq!(knots, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+                assert_eq!(degree, 2);
+            }
+            other => panic!(
+                "expected Ok(NurbsCurve) for LENGTH poles with BARE degree / \
+                 n_points / weights / knots at degree=2, n_points=3 — the gated \
+                 span must be COMPUTED from n_points, not hardcoded; got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+            "a nurbs degree, n_points, weight or knot is legitimately \
+             dimensionless and must NOT be gated; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Six DISTINCT Length poles land in `control_points` in order, AND the
+    /// dimensionless tail lands verbatim.
+    ///
+    /// Pinning `weights` / `knots` / `degree` to the bare values that were
+    /// passed is the half that matters: a future refactor that widened the
+    /// gated span would start SI-converting them, and an assertion on
+    /// `control_points` alone could not see it.
+    #[test]
+    fn compile_geometry_op_nurbs_length_poles_accepted() {
+        let values = ValueMap::new();
+
+        let op = nurbs_with_poles(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsCurve {
+                control_points,
+                weights,
+                knots,
+                degree,
+            }) => {
+                assert_eq!(
+                    control_points,
+                    vec![[0.012, 0.034, 0.056], [0.078, 0.090, 0.011]]
+                );
+                assert_eq!(weights, vec![1.0, 1.0]);
+                assert_eq!(knots, vec![0.0, 0.0, 1.0, 1.0]);
+                assert_eq!(degree, 1);
+            }
+            other => panic!(
+                "expected Ok(NurbsCurve) for six Length poles, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length poles with a bare tail are the fully clean path \
+             and must emit no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// ERROR-PRECEDENCE lock — the reason `nurbs`' production read is
+    /// two-phase.
+    ///
+    /// Both shapes pass DIMENSIONLESS scalars in what would become pole
+    /// positions, reproducing `curve_constructors_e2e.rs`'s two negative tests
+    /// (`nurbs_fewer_than_2_args_emits_diagnostic`,
+    /// `nurbs_insufficient_coordinate_args_emits_diagnostic`). If the units gate
+    /// ran before structural validation, the author would be told to dimension a
+    /// coordinate of a curve that does not have enough arguments to HAVE that
+    /// coordinate — so the ARITY diagnostic must still win.
+    #[test]
+    fn compile_geometry_op_nurbs_arity_diagnostics_precede_the_length_gate() {
+        let values = ValueMap::new();
+        let dimensionless =
+            |v: f64| literal_scalar(v, reify_core::DimensionVector::DIMENSIONLESS);
+
+        for (shape, args, want) in [
+            (
+                "only degree",
+                vec![dimensionless(3.0)],
+                "nurbs() requires at least degree and n_points arguments",
+            ),
+            (
+                "degree=3, n_points=4, 3 trailing args",
+                vec![
+                    dimensionless(3.0),
+                    dimensionless(4.0),
+                    dimensionless(0.0),
+                    dimensionless(0.0),
+                    dimensionless(0.0),
+                ],
+                "nurbs() got fewer arguments than expected",
+            ),
+        ] {
+            let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a structurally invalid nurbs ({shape}) must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains(want)),
+                "the ARITY diagnostic {want:?} must still fire for {shape} — \
+                 structural validation runs BEFORE the units gate; got: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+                "a structurally invalid nurbs ({shape}) must not also demand a \
+                 dimension on a coordinate it does not have enough arguments to \
+                 have; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Build a 14-arg degree=1 / n_points=2 nurbs with every position finite and
+    /// well-formed, as a mutable base the non-finite rows below poke a NaN into.
+    ///
+    /// Positions: `c0` degree, `c1` n_points, `c2`…`c7` poles, `c8`/`c9`
+    /// weights, `c10`…`c13` knots (`n_points + degree + 1 = 4`).
+    fn nurbs_clean_args() -> Vec<reify_ir::CompiledExpr> {
+        let mut args = vec![literal_f64(1.0), literal_f64(2.0)];
+        for i in 0..6 {
+            args.push(literal_length(0.001 * (i as f64 + 1.0)));
+        }
+        args.extend([literal_f64(1.0), literal_f64(1.0)]); // weights  c8, c9
+        args.extend([
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+        ]); // knots    c10..c13
+        args
+    }
+
+    /// The UN-GATED branch of `accept_variadic_length_args` — the one that
+    /// reproduces, for `nurbs`' dimensionless weights and knots, the bare read
+    /// the pre-5658 variadic reader performed for every position (that reader,
+    /// `eval_all_args_to_f64`, was deleted in task 5661 once `profile_polygon`
+    /// became its last caller; the BEHAVIOUR pinned below is unchanged).
+    ///
+    /// [`compile_geometry_op_nurbs_dimensionless_neighbours_still_accepted`]
+    /// only ever passes FINITE bare neighbours, so the whole non-finite arm was
+    /// unpinned: a typo in the duplicated `"{label} arg '{name}' is non-finite"`
+    /// format string, or a dropped `Some(...)` on `first_err`, would silently
+    /// let a NaN weight or knot through into `GeometryOp::NurbsCurve`.
+    ///
+    /// The expected name is the POSITIONAL `cN` the compiler mints, NOT a
+    /// coordinate display name — an un-gated position has no `x1`/`y1` reading,
+    /// and asserting that is what keeps the gated and un-gated naming from being
+    /// quietly unified.
+    #[test]
+    fn compile_geometry_op_nurbs_non_finite_weight_and_knot_drop_the_op() {
+        let values = ValueMap::new();
+
+        for (what, idx, name) in [("weight", 8_usize, "c8"), ("knot", 10, "c10")] {
+            let mut args = nurbs_clean_args();
+            args[idx] = literal_f64(f64::NAN);
+            let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+
+            assert!(
+                result.is_err(),
+                "a NaN {what} must DROP the op rather than reach \
+                 GeometryOp::NurbsCurve; got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message == format!("nurbs arg '{name}' is non-finite")),
+                "the un-gated branch must reproduce the pre-5658 bare \
+                 reader's wording verbatim for a NaN {what}, naming the \
+                 POSITIONAL '{name}'; got: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+                "a {what} is legitimately dimensionless — a non-finite one must \
+                 be reported as non-finite, never as a units rejection; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// MULTIPLICITY lock on the second accepted behaviour change in
+    /// `curve_nurbs_curve` (the one the `ONE accepted behaviour change` comment
+    /// used to omit).
+    ///
+    /// The pre-5658 reader short-circuited via `collect::<Option<_>>()`, so it
+    /// reported only the FIRST non-finite arg. `accept_variadic_length_args`
+    /// loops to completion, so BOTH NaN knots are reported in one build — the
+    /// same all-at-once policy the gated positions follow, now extended to the
+    /// un-gated ones. Pinned because it is a user-visible diagnostic count that
+    /// a re-`?`-chaining refactor would silently halve.
+    #[test]
+    fn compile_geometry_op_nurbs_reports_every_non_finite_knot_in_one_build() {
+        let values = ValueMap::new();
+
+        let mut args = nurbs_clean_args();
+        args[10] = literal_f64(f64::NAN);
+        args[11] = literal_f64(f64::INFINITY);
+        let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "two non-finite knots must drop the op; got: {:?}",
+            result
+        );
+
+        let reported: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("nurbs arg '") && d.message.ends_with("is non-finite"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            reported,
+            vec![
+                "nurbs arg 'c10' is non-finite",
+                "nurbs arg 'c11' is non-finite"
+            ],
+            "EVERY non-finite knot is reported in one build, in arg order — not \
+             just the first, which is what the old `?`-chained read did; got \
+             all diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // `polygon`'s VARIADIC 2-D vertex pairs (task 5661, R2 residual)
+    //
+    // `polygon(x1, y1, x2, y2, …)` is arity-open and EVERY position is a
+    // coordinate of a vertex in the XY plane — no direction vector, no count,
+    // no angle, no weight, no knot — so the gate closure is unconditional and
+    // there is no dimensionless neighbour to lock. That makes polygon the
+    // SIMPLEST row in the program, and it was the pre-5658 bare variadic
+    // reader's last consumer: gating it retired that reader entirely.
+    //
+    // Two things distinguish it from R2's curve rows. It is a PROFILE op form,
+    // not a `Curve` one, so it needs its own builder. And its stride is TWO,
+    // not three — the pairs are the reason `CoordName` carries a per-point
+    // stride at all, and the reason the fixture below is three vertices wide.
+    // ---------------------------------------------------------------------------
+
+    /// Build a variadic `Profile` op of `ProfileKind::Polygon` from a flat
+    /// coordinate stream, under the positional `c0`…`cN` names the compiler
+    /// actually mints.
+    ///
+    /// Mirrors [`variadic_curve`] for the Profile op form, which has no
+    /// `kind`-agnostic builder of its own — the other three `ProfileKind`s take
+    /// NAMED args (`width`/`height`, `radius`, `semi_major`/`semi_minor`), so
+    /// Polygon is the only variadic member of its family.
+    fn polygon_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        CompiledGeometryOp::Profile {
+            kind: ProfileKind::Polygon,
+            args: c
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (format!("c{i}"), e.clone()))
+                .collect(),
+        }
+    }
+
+    /// `polygon`'s row in the shared gate table — THREE vertices, deliberately.
+    ///
+    /// A two-vertex fixture cannot see a STRIDE slip: a renderer still hard-
+    /// coding stride 3 would name a four-position stream `x1, y1, z1, x2`, and
+    /// the only two names such a fixture asserts (`x1`, `y1`) still match. At
+    /// three vertices the stride-3 renderer yields `x1, y1, z1, x2, y2, z2`, so
+    /// the `x2` / `y2` / `x3` / `y3` arms all go red on exactly that bug — and
+    /// three vertices is also the minimum the compiler accepts anyway
+    /// (`reify-compiler/src/geometry.rs:1631`: ">= 6 args for 3 points").
+    const POLYGON_GATE: LengthGateCase = LengthGateCase {
+        label: "polygon",
+        build: polygon_with_coords,
+        // DISPLAY names, not the inert `c0`…`c5` the compiler mints. Stride 2:
+        // `x1, y1` is vertex 1, `x2, y2` is vertex 2, `x3, y3` is vertex 3.
+        gated: &["x1", "y1", "x2", "y2", "x3", "y3"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_polygon_length_gate_rejects_every_coordinate() {
+        assert_length_gated(POLYGON_GATE);
+    }
+
+    /// The ACCEPTED half: six DISTINCT finite Length coordinates build the op
+    /// with no units diagnostic, and land in the IR as PAIRS.
+    ///
+    /// The values are distinct because that is what pins the `chunks_exact(2)`
+    /// grouping — an all-equal fixture could not tell a pair grouping from a
+    /// `chunks_exact(3)` slip. They are also exactly the SI magnitudes the bare
+    /// reader would have misread: written as `12mm, 34mm, …` they are the
+    /// metres below, but a bare `polygon(12, 34, …)` was silently read as 12
+    /// and 34 **metres** — the 1000× hazard this gate closes.
+    #[test]
+    fn compile_geometry_op_polygon_length_vertices_accepted() {
+        let values = ValueMap::new();
+
+        let op = polygon_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::PolygonProfile { points }) => {
+                assert_eq!(
+                    points,
+                    vec![[0.012, 0.034], [0.056, 0.078], [0.090, 0.011]]
+                );
+            }
+            other => panic!(
+                "expected Ok(PolygonProfile) for six Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length coordinates are the fully clean path and must emit \
+             no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The MIXED group on polygon's variadic route — the 2-D mirror of
+    /// [`compile_geometry_op_interp_unresolved_beats_a_later_bare_coordinate`],
+    /// pinning PRD decision D10 / INV-SF-1 for the pair stride.
+    ///
+    /// This is the assertion a plausible hand-rolled 2-D reader fails: one that
+    /// silently CONTINUES on an Undef vertex (treating it as transient and
+    /// substituting a zero) would build the op, and one that reclassified it as
+    /// `Invalid` would hand the author "expects Length" for a cell that is
+    /// merely unresolved mid-solve. Neither shared-contract helper can reach
+    /// this arm — [`assert_length_gated`] makes exactly ONE position bad per
+    /// iteration and [`assert_every_bare_position_reported`] makes every
+    /// position bad the SAME way.
+    #[test]
+    fn compile_geometry_op_polygon_unresolved_beats_a_later_bare_vertex() {
+        let values = ValueMap::new();
+
+        // x1 unresolved, y1 bare (the 1000× hazard), the rest clean Lengths.
+        let op = polygon_with_coords(&[
+            literal_undef(),
+            literal_f64(5.0),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("an unresolved x1 with a bare y1 must drop the polygon op");
+
+        assert!(
+            err.contains("x1") && err.contains("unresolved (Undef)"),
+            "the FIRST failing coordinate wins, so the error must carry x1's \
+             unresolved-Undef wording — polygon's 2-D route mints the same \
+             distinct message the 3-D and named-arg routes do; got: {err:?}"
+        );
+        assert!(
+            !err.contains("y1"),
+            "y1's later Invalid must not mask x1's Unresolved in the \
+             caller-facing error; got: {err:?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("x1")),
+            "an unresolved vertex coordinate degrades QUIETLY at the value level \
+             — its whole report is the caller-facing Err, with no warning of its \
+             own, because an Undef cell mid-solve is not an author error; got: \
+             {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("y1") && d.message.contains("expects Length")),
+            "y1 must STILL be diagnosed in the SAME build even though x1 failed \
+             first — the all-at-once guarantee, which the pre-5661 reader's \
+             `collect::<Option<_>>()` short-circuit could not offer; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Test: ALL FAILURES AT ONCE, across every R1 family
     // ---------------------------------------------------------------------------
 
@@ -6748,6 +8792,11 @@
     /// and covers the two widest sets — `line_segment`'s six endpoint
     /// coordinates and `arc`'s centre-plus-radius four — alongside the triples,
     /// so no family can be quietly split back into chained reads.
+    ///
+    /// R2's variadic rows (task 5658) ride the same loop, and for them the
+    /// count assertion is doing a second job: their builders supply their own
+    /// un-gated neighbours, so `reported == gated.len()` also goes red if the
+    /// variadic gate OVER-reaches past its coordinate span.
     #[test]
     fn compile_geometry_op_length_gate_reports_every_bare_position_in_one_build() {
         for case in [
@@ -6757,6 +8806,10 @@
             LINE_SEGMENT_GATE,
             HELIX_GATE,
             ARC_GATE,
+            INTERP_GATE,
+            BEZIER_GATE,
+            NURBS_GATE,
+            POLYGON_GATE,
         ] {
             assert_every_bare_position_reported(case);
         }

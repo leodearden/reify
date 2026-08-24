@@ -4,7 +4,7 @@
 //! into the unit registry of importing modules, and that private units remain
 //! invisible across module boundaries.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

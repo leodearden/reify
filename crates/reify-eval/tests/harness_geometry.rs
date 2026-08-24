@@ -32,6 +32,8 @@ mod geometry_let_value_cell_gamma;
 mod geometry_query_kernel_dispatch;
 #[path = "harness_geometry/geometry_sub_ref_e2e.rs"]
 mod geometry_sub_ref_e2e;
+#[path = "harness_geometry/primitive_profile_length_units_e2e.rs"]
+mod primitive_profile_length_units_e2e;
 #[path = "harness_geometry/symbolic_geometry_eval.rs"]
 mod symbolic_geometry_eval;
 #[path = "harness_geometry/symbolic_selector_composition_eval.rs"]

@@ -3801,6 +3801,68 @@ pub enum DiagnosticCode {
     /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
     /// too-deep precedent).
     ExpressionNestingTooDeep,
+    /// Origin: `crates/reify-eval/src/geometry_ops.rs` — the eval-layer
+    /// `arg_acceptance`-backed chokepoints, i.e. `eval_named_arg_length`
+    /// (every LENGTH-semantic geometry arg: primitive/profile dimensions,
+    /// pattern spacing, mirror-plane and circular-pattern axis origins), plus
+    /// the two quiet-degrade readers `resolve_spec_arg` and
+    /// `resolve_density_arg`.
+    ///
+    /// Canonical message form:
+    /// `"{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}"`
+    ///
+    /// The wording is owned SOLELY by
+    /// `crates/reify-eval/src/arg_acceptance::ArgRejection::message` — producers
+    /// attach this code, they never re-phrase the text. That single-owner rule is
+    /// what lets the ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit
+    /// byte-identical diagnostics, and it is why the migration hint (e.g.
+    /// ``"pass a dimensioned length such as `5mm`"``) lives on the `ArgSpec`
+    /// rather than at any call site.
+    ///
+    /// Emitted when a builtin argument that carries a PHYSICAL DIMENSION by
+    /// contract is given a bare/dimensionless number or a value of the wrong
+    /// dimension. The hazard is the silent 1000x one: `Value::as_f64` reads a
+    /// bare `12` as SI **metres**, so `box(12, ...)` is a 12-metre box, not a
+    /// 12mm one.
+    ///
+    /// SEVERITY-NEUTRAL: this code pins the *reason*, not the *severity*. It
+    /// rides `Severity::Error` at the op-failing chokepoint (`eval_named_arg_length`,
+    /// whose `Err` makes `compile_geometry_op` drop the op), and deliberately
+    /// keeps `Severity::Warning` at the two legacy quiet-degrade readers
+    /// (`resolve_spec_arg` / `resolve_density_arg`), which return `None` and let
+    /// the build continue. Promoting those two is a real exit-code change for
+    /// `edges_at_height` / `geo_equiv` / `faces_by_normal` / the density ladder
+    /// and is tracked as its own follow-up — do not "fix" the asymmetry by
+    /// reading this doc as a severity contract.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIMENSIONED_ARG_REJECTED`
+    /// (see `docs/prds/v0_6/units-length-gate-completion.md`).
+    ///
+    /// Minting rationale (PRD Open Question 1, DECIDED HERE by task 5743):
+    /// - Distinct from [`DimensionMismatch`], whose documented origin is
+    ///   reify-compiler's binary-op / range-bounds sites and whose canonical form
+    ///   `"dimension mismatch in {op}: {left} vs {right}"` is an OPERATOR-level
+    ///   invariant (Add/Sub-specific), not a builtin parameter contract.
+    /// - Distinct from [`ArgTypeMismatch`], which was the closer candidate and
+    ///   was considered seriously — its own doc says its `{type_name}`
+    ///   deliberately mirrors this runtime `ArgRejection::message` wording. It is
+    ///   rejected because its documented Origin is the COMPILE layer
+    ///   (`builtin_signatures` / conformance), and PRD decision D2 keeps compile
+    ///   and eval as two first-class, independently observable layers: PRD leaf
+    ///   eta will emit `ArgTypeMismatch` at the compile layer for these very same
+    ///   argument positions, so sharing one code would make "which layer rejected
+    ///   this?" unanswerable from the code alone.
+    /// - ONE shared runtime code, not one per dimension: PRDs 3 (ANGLE) and 5
+    ///   (readers) are chartered to reuse THIS variant and must NOT mint
+    ///   per-dimension siblings.
+    ///
+    /// Cost of minting is near zero: `DiagnosticCode` is `#[non_exhaustive]`,
+    /// has no `impl` block anywhere in the workspace (no `as_str`/`Display`/
+    /// `FromStr`/exhaustive match-on-self), no exhaustiveness test, no docs
+    /// registry, no `reify-audit` check and no mirrored GUI enum — so this is a
+    /// one-variant addition that serde round-trips automatically (same
+    /// non-breaking argument as `ExpressionNestingTooDeep` above).
+    DimensionedArgRejected,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4291,6 +4353,47 @@ mod tests {
     fn diagnostic_code_dimension_mismatch_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::DimensionMismatch).unwrap();
         assert_eq!(s, "\"DimensionMismatch\"");
+    }
+
+    // --- DimensionedArgRejected tests (units-length β, task 5743 step-1) ---
+    //
+    // This is the shared RUNTIME code for "a builtin argument that must carry a
+    // physical dimension was given a bare / wrongly-dimensioned value", emitted
+    // from `crates/reify-eval/src/geometry_ops.rs`'s `arg_acceptance`-backed
+    // chokepoints.
+    //
+    // As with `DimensionMismatch` above, Copy/Clone/PartialEq/Eq/Hash/Debug are
+    // already covered by the variant-agnostic `diagnostic_code_derives` test, so
+    // only the serde wire-format test is kept here — it is the one genuinely
+    // variant-specific, genuinely falsifiable claim (the exact PascalCase string
+    // the GUI reads).
+    //
+    // A reviewer amendment removed two tests that could not fail for any edit
+    // that still compiles: a `Copy`/`PartialEq` round-trip on this variant, and
+    // pairwise `assert_ne!`s against `DimensionMismatch` / `ArgTypeMismatch`
+    // (discriminant inequality between distinct unit variants is guaranteed by
+    // the `PartialEq` derive). The RULING those `assert_ne!`s were standing in
+    // for is PRD Open Question 1, decided in task 5743 — the runtime
+    // dimensioned-arg rejection gets its OWN code rather than reusing either
+    // candidate, because `DimensionMismatch` is Add/Sub-operator-specific and
+    // `ArgTypeMismatch` is the COMPILE-layer twin for the very same positions
+    // (PRD leaf η), and sharing one code across both layers would make "which
+    // layer rejected this?" unanswerable from the code alone (PRD decision D2).
+    // That ruling lives in the variant's own doc comment and in
+    // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
+    // not a runtime behaviour a test can pin.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
+    /// serializes as `"DimensionedArgRejected"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). This is the wire form the GUI reads as an
+    /// opaque string (`gui/src/types.ts`), so it is a compatibility surface.
+    ///
+    /// RED until step-2 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn dimensioned_arg_rejected_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DimensionedArgRejected).unwrap();
+        assert_eq!(s, "\"DimensionedArgRejected\"");
     }
 
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---

@@ -360,4 +360,269 @@ assert_exit "PRECISION: scripts/zzz-not-infra.sh OUTSIDE tests/infra -> fast-pat
 assert_exit "PRECISION: other/tests/infra/test_z.sh unanchored -> fast-path-safe (exit 1)" 1 \
     run_guard requires-full-gate other/tests/infra/test_z.sh
 
+# ---------------------------------------------------------------------------
+# Pair E — emitted-gate plan-line derivation (task 6320)
+# ---------------------------------------------------------------------------
+#
+# ORIGIN: task 6243's reviewer_comprehensive completeness comment — 6243
+# registered two emitted gate scripts by hand
+# (check-nan-safe-ordering.sh, check-compute-trampoline-registration.sh) and
+# the reviewer observed that its siblings share the identical defect.
+#
+# DEFECT: verify.sh's lint plan invokes these gate scripts via EMITTED plan
+# lines -- add() / add_tool() (scripts/verify.sh:1507 / :1571, the only two
+# PLAN+= sites) -- and never `source`s them. The guard's live sourced-lib
+# clause therefore cannot see them, so a gate-script-only diff is classified
+# config-only and takes the dark-factory merge-worker trivial-pass fast-path,
+# skipping the full gate. That is exactly the #4618/#4624 -> #4288 ambush
+# class Pair B already guards for sourced libs: the gate script lands green
+# without ever having been run, and the NEXT task eats the RED.
+#
+# Fix shape: a LIVE derivation clause (like Pair B's, not like a manifest
+# row), so a future emitted gate is covered with no manifest edit at all.
+
+echo ""
+echo "-- Pair E: emitted-gate plan-line derivation --"
+
+# (a) GROUND-TRUTH: a hard-coded, literal list of every gate script emitted by
+# verify.sh's plan today. Deliberately NOT derived from verify.sh: a
+# derivation-driven loop alone would go silently VACUOUS (not red) if a future
+# plan-emission refactor broke the extraction, so this hard-coded tier is the
+# anti-drift net. Mirrors Pair B's REAL-LIB-loop + GROUND-TRUTH split and Pair
+# C's (a)/(b) split for the same reason.
+#
+# RED until step-2 adds the emitted-gate derivation clause for the first SEVEN
+# entries (measured exit 1 at HEAD fee75336ca); the last two are already GREEN
+# via their task-6243 rows in scripts/verify-pipeline-paths.txt.
+#
+# AMENDMENT (reviewer_comprehensive completeness): tests/sync_comments_test.sh
+# is the TENTH emitted gate and shares the identical ambush class -- verify.sh
+# :2627 emits `add_tool "if test -f tests/sync_comments_test.sh; then ... bash
+# tests/sync_comments_test.sh; ..."`. It was missed purely because the first
+# cut of the derivation hard-coded a `scripts/` prefix; measured exit 1 (fast-
+# path safe) with no row in verify-pipeline-paths.txt or doc-sync-paths.txt.
+# Listing it HERE, in the prefix-agnostic ground truth, is what keeps the
+# clause honest about covering the whole emitted-gate class rather than one
+# directory of it.
+for _gate in \
+    scripts/check-manifold-deps.sh \
+    scripts/check-infra-classification-manifest.sh \
+    scripts/check-harness-baseline-registration.sh \
+    scripts/tree-sitter-generate.sh \
+    scripts/ensure-gui-sidecar-placeholder.sh \
+    scripts/check_event_inventory.sh \
+    scripts/test_pm_standardization.sh \
+    scripts/check-nan-safe-ordering.sh \
+    scripts/check-compute-trampoline-registration.sh \
+    tests/sync_comments_test.sh
+do
+    assert_exit "GROUND-TRUTH: $_gate is load-bearing (emitted by verify.sh's plan; exit 0)" 0 \
+        run_guard requires-full-gate "$_gate"
+    assert "--list includes $_gate (emitted gate; hard-coded ground truth)" \
+        bash -c 'bash "$1" --list | grep -qxF "$2"' \
+        _ "$GUARD_SH" "$_gate"
+done
+
+# (b) DIFF-SHAPE coverage, mirroring Pair A / Pair D, driven through
+# scripts/check-manifold-deps.sh -- an emitted gate that is NOT in any
+# manifest today, so each of these is a genuine RED against the pre-step-2
+# guard rather than a restatement of an already-covered manifest row.
+
+# INCIDENT-SIM: the ambush shape -- a gate-script-only diff must NOT fast-path.
+assert_exit "INCIDENT-SIM: scripts/check-manifold-deps.sh (gate-only diff) -> full gate required (exit 0)" 0 \
+    run_guard requires-full-gate scripts/check-manifold-deps.sh
+
+# MIXED: a config-only file alongside an emitted gate still forces the full gate.
+assert_exit "MIXED: docs/note.md + scripts/check-manifold-deps.sh -> full gate required (exit 0)" 0 \
+    run_guard requires-full-gate docs/note.md scripts/check-manifold-deps.sh
+
+# STDIN form: piped paths (large diffs that would exceed ARG_MAX as argv).
+assert_exit "STDIN: emitted gate piped in -> full gate required (exit 0)" 0 \
+    bash -c 'printf "docs/x.md\nscripts/check-manifold-deps.sh\n" | bash "$1" requires-full-gate' \
+    _ "$GUARD_SH"
+
+# NORMALIZE: a caller-prefixed './' is stripped before the match runs.
+assert_exit "NORMALIZE: ./scripts/check-manifold-deps.sh stripped then matched (exit 0)" 0 \
+    run_guard requires-full-gate ./scripts/check-manifold-deps.sh
+
+# (c) SELF-HEALING + PRECISION, driven through a throwaway verify.sh copy via
+# REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH -- the same synthetic-injection idiom
+# Pair B uses for the sourced-lib clause. Proves the emitted-gate clause is a
+# LIVE derivation (a new plan-emitted gate is covered with no manifest edit)
+# and that it is surgical (only actually-emitted top-level scripts/ paths).
+_SYNTH_DIR_E="$(mktemp -d)"
+_TMPDIRS+=("$_SYNTH_DIR_E")
+_SYNTH_VERIFY_E="$_SYNTH_DIR_E/verify.sh"
+cp "$REPO_ROOT/scripts/verify.sh" "$_SYNTH_VERIFY_E"
+cat >> "$_SYNTH_VERIFY_E" <<'SYNTH_PLAN_LINES_EOF'
+
+add_tool "./scripts/zzz-synthetic-gate.sh"
+add_tool "if test -f scripts/zzz-synthetic-guarded.sh; then bash scripts/zzz-synthetic-guarded.sh; fi"
+#   add_tool "./scripts/zzz-comment-only-gate.sh"
+add_tool "./other/scripts/zzz-nested.sh"
+add "./scripts/zzz-bare-add-gate.sh"
+add './scripts/zzz-singlequote-gate.sh'
+add_tool "./scripts/zzz-right.sha256sums"
+add_tool "if test -f tests/zzz-nonscripts-gate.sh; then bash tests/zzz-nonscripts-gate.sh; fi"
+_zzz_variable_gate="./scripts/zzz-variable-assembled.sh"
+add_tool "$_zzz_variable_gate"
+SYNTH_PLAN_LINES_EOF
+
+# PIN (green on arrival): the bare './scripts/<x>.sh' emission shape derives.
+assert_exit "SELF-HEALING: zzz-synthetic-gate.sh auto-covered after plan-line injection (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-synthetic-gate.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# PIN (green on arrival): the guarded 'if test -f …; then bash scripts/<x>.sh; fi'
+# shape derives too -- that is the real shape of check_event_inventory.sh and
+# test_pm_standardization.sh at verify.sh:2630-2631, so this pins the exact
+# emission form sub-block (a)'s ground truth depends on.
+assert_exit "SELF-HEALING: zzz-synthetic-guarded.sh ('if test -f …; then bash …' shape) auto-covered (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-synthetic-guarded.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# PIN (green on arrival): a sibling never mentioned in ANY plan line stays
+# fast-path-safe. Proves the clause flags only actually-emitted gates, not
+# every script under scripts/ (mirrors Pair B's PRECISION negative).
+assert_exit "PRECISION: scripts/zzz-not-emitted.sh never emitted -> fast-path-safe (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-not-emitted.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# PIN (green on arrival): a COMMENTED-OUT add_tool line must not make its path
+# load-bearing. Pins the '^[[:space:]]*add(_tool)?' statement anchor -- the same
+# hardening clause 3's source-statement grep carries.
+assert_exit "PRECISION: scripts/zzz-comment-only-gate.sh in a '#' comment line -> fast-path-safe (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-comment-only-gate.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# RED DRIVER (the genuine failure this sub-block exists for): an emitted
+# 'other/scripts/zzz-nested.sh' must NOT be mis-derived as the top-level
+# 'scripts/zzz-nested.sh'. The extraction has no LEFT path boundary yet, so
+# grep -o matches the 'scripts/…' tail of the nested path and wrongly promotes
+# an unrelated top-level script to load-bearing. Step-4 adds the boundary.
+# (Pair D's (j) unanchored-substring negative is this same property for the
+# infra-test glob clause.)
+assert_exit "PRECISION: other/scripts/zzz-nested.sh must NOT promote scripts/zzz-nested.sh (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-nested.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# --- (c) AMENDMENT cases (reviewer_comprehensive) -------------------------
+# Five further EMISSION SHAPES the clause's regex either claims to handle or
+# must exclude, none of which the four lines above exercised. Each is injected
+# through the same synthetic verify.sh, so none depends on the live tree
+# happening to contain the shape today (which is exactly why sub-block (a)'s
+# hard-coded ground truth, pinned to today's ten gates, cannot cover them).
+
+# PIN (green on arrival): the BARE `add "..."` emission shape derives, not just
+# `add_tool "..."`. This is how scripts/ensure-gui-sidecar-placeholder.sh
+# actually reaches the plan (scripts/verify.sh:2350, :2603), so without this
+# case the '(_tool)?' optional group has no direct pin -- only the indirect
+# ground-truth entry in (a), which a future refactor of that one gate would
+# silently take with it.
+assert_exit "SELF-HEALING: bare add \"...\" shape (not add_tool) derives zzz-bare-add-gate.sh (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-bare-add-gate.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# RED DRIVER: a SINGLE-QUOTED plan line must derive too. The first cut of the
+# statement anchor required a literal double quote
+# ('^[[:space:]]*add(_tool)?[[:space:]]+"'), so `add './scripts/x.sh'` was
+# invisible -- and single quotes are the natural spelling for a literal gate
+# invocation that needs no interpolation. verify.sh already emits that shape
+# today (scripts/verify.sh:2610, `add 'wait "$_VERIFY_NODE_BG_PID"'`), so this
+# is a live idiom, not a hypothetical one. The '#'-comment exclusion the clause
+# relies on comes from the '^[[:space:]]*add' anchor itself, NOT from the quote
+# character, so accepting either quote costs no precision (the comment-only
+# case below still passes).
+assert_exit "SELF-HEALING: single-quoted add '...' plan line derives zzz-singlequote-gate.sh (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-singlequote-gate.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# RED DRIVER: the RIGHT path boundary, the mirror of the left one above. The
+# character class includes '.', so with no right anchor an emitted
+# 'scripts/zzz-right.sha256sums' backtracks to a 'scripts/zzz-right.sh' match
+# and promotes an unrelated same-stem script to load-bearing. Conservative in
+# polarity (a spurious full gate, never a skipped one) but it is precisely the
+# over-match asymmetry the left-boundary comment claims to have closed.
+assert_exit "PRECISION: emitted scripts/zzz-right.sha256sums must NOT promote scripts/zzz-right.sh (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-right.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# RED DRIVER: an emitted gate OUTSIDE scripts/ is the same ambush class and
+# must derive as well. Live instance: tests/sync_comments_test.sh
+# (scripts/verify.sh:2627), covered by (a)'s ground truth; this synthetic case
+# pins the prefix-agnostic property itself, so a future gate under any repo
+# directory is covered without another amendment.
+assert_exit "SELF-HEALING: non-scripts/ emitted gate tests/zzz-nonscripts-gate.sh derives (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate tests/zzz-nonscripts-gate.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# PIN (green on arrival) — DOCUMENTED LIMITATION, deliberately asserting the
+# gap rather than closing it. The clause reads verify.sh's SOURCE TEXT, so it
+# only sees paths written LITERALLY in a plan line. A plan line assembled
+# through a variable -- `_cmd="./scripts/x.sh"; add_tool "$_cmd"`, the shape
+# verify.sh already uses for _gui_cmd / _sidecar_cmd / _ts_cmd at
+# scripts/verify.sh:2615-2617 -- derives nothing. This assertion exists so the
+# limitation cannot drift away from the wording in
+# scripts/verify-pipeline-paths.txt's EMITTED GATE SCRIPTS note (which is what
+# tells a future author to hand-register such a gate or rewrite it to a
+# literal): if someone later makes the derivation variable-aware, this case
+# goes RED and the doc gets updated in the same change.
+assert_exit "LIMITATION: variable-assembled add_tool \"\$_cmd\" is NOT derived (exit 1; documented, pinned)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-variable-assembled.sh' \
+    _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# (d) MAP-WIRING: this guard's own oracle and static manifest must select this
+# test as a per-task fail-fast pole.
+#
+# MEASURED GAP this closes: select_infra_tests() (scripts/verify.sh:1254-1280)
+# matches artifact fields by EXACT repo-relative path, and at HEAD fee75336ca
+# scripts/verify-pipeline-infra-tests.txt had NO row for either
+# scripts/verify-pipeline-guard.sh or scripts/verify-pipeline-paths.txt. The
+# nearest row, 'scripts/verify.sh -> tests/infra/test_verify_*.sh', does not
+# fire on them. So a guard-only or manifest-only task-scope (--scope
+# branch/staged) verify selected ZERO infra poles -- including this task's own
+# diff -- and the new emitted-gate derivation clause could regress with no
+# fail-fast signal at all until the merge-tier tests/infra/run_all.sh pool.
+#
+# This is the CHEAP per-task complement to the full-gate route, not a
+# substitute for it -- the same two-lever pairing the task-5252 block in
+# scripts/verify-pipeline-infra-tests.txt already describes, and the same
+# "citing-test subset" cost point as the task-4955 doc-sync rows. This test is
+# hermetic (no cargo, no git), so the pole is nearly free.
+#
+# Matched by GLOB EXPANSION rather than by literal string, so a future
+# broadening to e.g. tests/infra/test_verify_pipeline_*.sh still satisfies it.
+# Precedent shape: tests/infra/test_target_per_lane_independence.sh:293
+# ("verify-pipeline-infra-tests.txt maps <artifact> -> this test") and
+# test_warm_lane_gc_sweep.sh block F.
+
+VP_INFRA_MAP="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+_SELF_TEST_PATH="$SCRIPT_DIR/test_verify_pipeline_guard.sh"
+
+# _map_selects_this_test <artifact-path> — mirror select_infra_tests()'s parse
+# exactly (same active-row filter, same two-field `read`), then expand each
+# matching row's glob under $REPO_ROOT and report success if the expansion
+# contains THIS file.
+_map_selects_this_test() {
+    local _want="$1" _artifact _glob _line _expanded
+    [ -f "$VP_INFRA_MAP" ] || return 1
+    while IFS= read -r _line; do
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob" ]     || continue
+        [ "$_artifact" = "$_want" ] || continue
+        for _expanded in "$REPO_ROOT"/$_glob; do
+            [ "$_expanded" = "$_SELF_TEST_PATH" ] && return 0
+        done
+    done < <(grep -v '^\s*#' "$VP_INFRA_MAP" | grep -v '^\s*$')
+    return 1
+}
+
+# RED until step-6 adds the two rows.
+assert "MAP-WIRING: verify-pipeline-infra-tests.txt maps scripts/verify-pipeline-guard.sh -> this test" \
+    _map_selects_this_test scripts/verify-pipeline-guard.sh
+
+assert "MAP-WIRING: verify-pipeline-infra-tests.txt maps scripts/verify-pipeline-paths.txt -> this test" \
+    _map_selects_this_test scripts/verify-pipeline-paths.txt
+
 test_summary

@@ -18,12 +18,55 @@
 # and `.unwrap_or` sit on separate lines (e.g. modal_ops.rs
 # `frequency_ascending_order`). In practice `Ordering::Equal` as an `unwrap_or`
 # fallback is always a comparator fallback; a legitimately-guarded site opts out
-# via the escape below. `f64::total_cmp` produces no `unwrap_or`, so the
-# sanctioned fix is never flagged.
+# via the escape below.
 #
-# COVERED SCOPE (exactly — mirrors the task 5093 spec): the FEA numeric crates
-# reify-solver-elastic, reify-kernel-gmsh, reify-fdm, reify-shell-extract,
-# reify-mesh-morph, plus reify-eval's compute_targets/ and modal_ops.rs.
+# ACCEPTED OVER-FLAG (measured, task 5159). This header used to claim that
+# "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix is never
+# flagged". THAT IS FALSE: the fragment match also flags a comparator built
+# the sanctioned way, when the `Option<Ordering>` being defaulted comes from
+# `find`/`max_by`/`min_by` instead of from `partial_cmp`:
+#     .map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Equal)
+# Live instances: `impl Ord for SampledField` in crates/reify-ir/src/value.rs
+# (two — the nested `cmp_floats` helper and the `axis_grids` leg), both
+# OUTSIDE the covered scope below, so the gate is green on the real tree.
+#
+# The over-flag is RETAINED DELIBERATELY — do not "tidy" the matcher. The
+# reasoning is recorded once, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" §G; it is
+# NOT restated here, because three copies of one argument is the drift the
+# same decision exists to stop. Behaviour you need at this file: the site is
+# flagged, and `// nan-safe:allow — <reason>` is the sanctioned response.
+# Pinned by block (hJ) of tests/infra/test_nan_safe_ordering_guard_wired.sh.
+#
+# COVERED SCOPE (exactly): the FEA numeric crates reify-solver-elastic,
+# reify-kernel-gmsh, reify-fdm, reify-shell-extract, reify-mesh-morph, plus
+# reify-eval's compute_targets/ and modal_ops.rs — the task 5093 spec — AND
+# reify-stdlib, added by task #6376 once its four class-A sites were hardened
+# and its three class-B sites annotated. That widening was HALF of decision
+# 9's trigger: reify-constraints is named by the same trigger and is still
+# excluded, pending its own follow-up ticket.
+#
+# THE RULE behind that list (so a new crate can be judged, not guessed): the
+# covered scope is the PHYSICAL/GEOMETRIC NUMERIC SOLVE PATH. Cache-eviction
+# scores, warm-pool cost ordering, version/event ordering and IR `Value`
+# ordering are deliberately OUT — a mis-sorted eviction candidate costs a
+# cache miss, a mis-sorted principal stress is a wrong engineering answer.
+#
+# The excluded set, the per-site census behind the call, and the condition
+# under which the scope widens are recorded ONCE, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" (task
+# 5159) — read it before touching SCOPE_PATHSPECS. Do NOT add or remove an
+# entry without updating decision 9 AND the (hK) exclusion pins in
+# tests/infra/test_nan_safe_ordering_guard_wired.sh — the three are meant to
+# fail together.
+#
+# WARNING: this scope is NARROWER than INV-FEA-3's registry wording used to
+# suggest ("numeric crates"), and decision 9's 2026-08-20 census found
+# genuinely UNGUARDED sites outside it (reify-constraints and reify-eval's
+# engine_build.rs — reify-stdlib was on this list until task #6376 hardened
+# it and brought it into scope above) owned by filed follow-up hardening,
+# NOT by this gate. Do not read this gate's green as evidence that they are
+# safe.
 #
 # PRODUCTION-CODE VIEW: each raw line is reduced to its production code by a
 # single LEFT-TO-RIGHT LEXER (`_strip_line`), not a comment-tail regex strip.
@@ -97,6 +140,13 @@ fi
 
 # Covered-scope pathspecs. Single-star git pathspecs are NOT path-boundary-aware,
 # so 'crates/reify-fdm/*.rs' matches every tracked .rs at any depth under it.
+#
+# Scope rule: the physical/geometric numeric solve path (see COVERED SCOPE in
+# the header). Adding or removing an entry here requires updating
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" and the
+# (hK) pins in tests/infra/test_nan_safe_ordering_guard_wired.sh in the same
+# change — those pins assert the current exclusions and will fail if this
+# list moves without them.
 SCOPE_PATHSPECS=(
     'crates/reify-solver-elastic/*.rs'
     'crates/reify-kernel-gmsh/*.rs'
@@ -105,6 +155,7 @@ SCOPE_PATHSPECS=(
     'crates/reify-mesh-morph/*.rs'
     'crates/reify-eval/src/compute_targets/*.rs'
     'crates/reify-eval/src/modal_ops.rs'
+    'crates/reify-stdlib/*.rs'
 )
 
 # Tracked .rs sources in scope, minus integration-test dirs (tests/ excluded per

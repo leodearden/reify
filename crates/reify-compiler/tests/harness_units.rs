@@ -31,3 +31,16 @@ mod common;
 
 #[path = "harness_units/torque_unit_tests.rs"]
 mod torque_unit_tests;
+
+// Task #5095 (ai-native-editing β): the `.ri` source-literal serializer's
+// parse-back round-trip property. Consolidated here rather than landed as a
+// standalone `tests/ri_literal_roundtrip.rs` — that form is
+// `reason=unregistered-standalone` to
+// scripts/check-harness-baseline-registration.sh, and the sanctioned remedy is
+// consolidation, not a new baseline grandfather row. `harness_units` is the
+// right root because the property under test is exactly that every unit symbol
+// the serializer emits re-parses as the same bare built-in; it needs no
+// `common` helper (it drives `reify_test_support::eval_source` directly), so it
+// does not re-declare one.
+#[path = "harness_units/ri_literal_roundtrip.rs"]
+mod ri_literal_roundtrip;
