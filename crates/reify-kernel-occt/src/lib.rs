@@ -17,6 +17,22 @@
 /// directories, and `false` otherwise (stub types are used instead).
 /// Downstream crates can check this to skip OCCT-dependent tests
 /// at runtime.
+///
+/// **This constant is never evidence that anything was tested.** When
+/// `cfg!(has_occt)` is false, this crate's `#[cfg(all(test, has_occt))]`
+/// modules and its `#![cfg(has_occt)]` integration binaries are not compiled
+/// at all — the suite reports zero tests REPORTED, not zero tests FAILED, and
+/// nothing downstream can tell the difference from a passing run. So a
+/// runtime check here cannot guard build-time OCCT presence; it can only ever
+/// be tautological (inside a `has_occt` module) or destructive (outside one,
+/// where it would break the sanctioned OCCT-free stub build whose contract
+/// suite lives in `stubs.rs`). Task 6343 deleted the const-assert that tried.
+///
+/// Build-time OCCT presence is gated instead by the OCCT arm of
+/// `scripts/check-manifold-deps.sh`, which `scripts/verify.sh` emits as a plan
+/// entry on every `RUN_RUST=1` verify — before any compile, where it cannot be
+/// cfg'd away. That arm also pins the resolved SONAME and records it in the
+/// verify log. Its guard is `tests/infra/test_occt_deps_preflight.sh`.
 pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 
 // Re-export register::OCCT_KERNEL_VERSION at the crate root so downstream
@@ -5107,16 +5123,6 @@ mod tests {
             adaptive: false,
         });
         assert_operation_fails_with(result, "GeometryOp::Surface");
-    }
-
-    #[test]
-    fn occt_available_is_true_when_built_with_occt() {
-        const {
-            assert!(
-                crate::OCCT_AVAILABLE,
-                "OCCT_AVAILABLE should be true on a system with OCCT installed"
-            )
-        };
     }
 
     #[test]

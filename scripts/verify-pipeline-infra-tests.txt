@@ -294,3 +294,21 @@ scripts/with-jcodemunch-serve.sh    tests/infra/test_with_jcodemunch_serve.sh
 # "pre-existing self-protection gap" note in scripts/doc-sync-paths.txt).
 scripts/verify-pipeline-guard.sh     tests/infra/test_verify_pipeline_guard.sh
 scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
+
+# Task 6343: the OCCT presence/SONAME preflight arm of
+# scripts/check-manifold-deps.sh. Same one-artifact-multiple-rows pattern as
+# check-infra-classification-manifest.sh above — the gate script itself, plus
+# each artifact whose content the guard's drift-pins mirror:
+#   - crates/reify-build-utils/src/lib.rs   (NativeDep::Occt candidate lists +
+#     sentinels; the bash block is a declared MIRROR, pinned equal order-wise)
+#   - scripts/setup-dev.sh                  (its dpkg OCCT expectation must be
+#     a member of OCCT_ACCEPTED_SONAMES)
+# check-manifold-deps.sh needs no scripts/verify-pipeline-paths.txt row: it is
+# emitted-not-sourced by verify.sh, so the guard's emitted-gate clause already
+# auto-derives it as load-bearing. These rows are the cheap per-task fail-fast
+# complement to that full-gate route. Under-declaration here would only lose
+# fail-fast, never soundness — the merge-tier --scope all run executes the test
+# regardless.
+scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
+crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
+scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
