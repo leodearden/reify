@@ -8,11 +8,11 @@
 //! rope seat cut into the drum.
 //!
 //! Properties 1 and 2 read meshes and `volume()` cells, so they need a live
-//! OCCT kernel and skip without one. Property 3 is scalar-only and runs
+//! OCCT kernel and skip without one. Properties 3 and 4 are scalar-only and run
 //! unguarded off a second, kernel-free evaluation of the same compiled module
-//! ([`dev_capstan_scalars`]) — it is the only slip-fit gate here, and a
-//! stub-degraded OCCT is silent in this repo (CLAUDE.md "Native deps"; #6343),
-//! so it must not skip with the others.
+//! ([`dev_capstan_scalars`]). A stub-degraded OCCT is silent in this repo
+//! (CLAUDE.md "Native deps"; #6343), and they are the only slip-fit checks that
+//! survive it, so they must not skip with the others.
 //!
 //! **1. The seat admits the rope (`capstan_seat_admits_the_rope_radially`).**
 //! The seat is a HALF-ROUND: the swept section's arc centre sits ON the land
@@ -93,10 +93,17 @@
 //! design's own `seat_c` cell equal to this module's recomputation of it,
 //! which is what keeps the SEATED rope's centreline on the D/d circle
 //! `pitch_r` and the seat bottom on that rope's own underside. This is the
-//! module's only non-lockstep pin on the arc ratio itself: see
-//! [`DIN_15061_SEAT_RATIO`]. Gates (1) and (2) are both parametrized by the
-//! file's own `groove_r` and would stay green through a revert to a slip fit,
-//! so this one is not redundant with them.
+//! only check anywhere that pins the arc RATIO rather than one side of it, and
+//! it survives a kernel-less machine where the mouth gate does not: see
+//! [`DIN_15061_SEAT_RATIO`] for the measured account of what each of the other
+//! checks does and does not catch.
+//!
+//! **4. The file's own guard rails hold, kernel-free
+//! (`capstan_constraints_hold_without_a_kernel`).** `Capstan`'s constraint set
+//! — the oversize-arc bound `groove_r > rope_dia/2`, the two-sided `land_r`
+//! band, the groove-bottom-to-bore wall, the clearance lead and `flange_r >
+//! land_r` — is pure scalar and resolves with no planner, so it is checked here
+//! as well as in the OCCT-guarded `capstan_surfaces_only_the_finished_drum`.
 //!
 //! Why band (2) is ±3 % and not the ±2 % this module carried before #5580: the
 //! old budget was written for a correction term worth ~2 % of the swept
@@ -169,13 +176,34 @@ const CAPSTAN_ENTITY: &str = "Capstan";
 /// `seat_arc_ratio` cell back out would assert nothing but that the file equals
 /// itself.
 ///
-/// It is load-bearing rather than stylistic. Both of this module's other gates
-/// are parametrized by the file's own `groove_r`, so a silent revert to a
-/// slip-fit `groove_r = rope_dia/2` leaves BOTH green: the volume gate's closed
-/// form would simply predict the smaller ΔV, and the mesh gate's land reference
-/// [`seat_arc_centre`] would simply move back onto `pitch_r`.
-/// [`capstan_seat_arc_is_din_15061_oversize`] is the only assertion here that
-/// catches it.
+/// It is load-bearing rather than stylistic — but not for the reason first
+/// recorded here, which #5683's review measured false and this corrects. A
+/// slip-fit revert (`seat_arc_ratio = 0.5`) is caught in THREE places, not one.
+/// Measured on this branch:
+///
+/// * as the file stands, its own `constraint groove_r > rope_dia / 2` goes
+///   Violated. That surfaces kernel-free in
+///   [`capstan_constraints_hold_without_a_kernel`] and, as a `ConstraintViolated`
+///   Error diagnostic, takes all three OCCT gates down in the shared
+///   tessellation prologue before any of them reaches its own assertion;
+/// * relax that constraint so it cannot fire first, and the MOUTH gate still
+///   catches the revert unaided — 6.0000 mm of chord against a required
+///   6.3600 mm — because its `min_mouth` derives from
+///   [`MIN_MOUTH_CLEARANCE_FRAC`] and so from THIS constant, not from the
+///   file's `groove_r`;
+/// * only the VOLUME gate really stays green (measured green in that same run):
+///   its closed form is parametrized by the file's own `groove_r`, so it simply
+///   predicts the correspondingly smaller ΔV — see [`HALF_ROUND_REL_TOL`].
+///
+/// What makes this gate non-redundant is therefore narrower than first claimed,
+/// and twofold. It is the only check anywhere that pins the RATIO rather than
+/// one side of it: every other check above is an inequality (`groove_r >
+/// rope_dia/2`, `mouth >= 1.06·rope_dia`, `lead > 2·groove_r`), so any ratio in
+/// `(0.5, lead/(2·rope_dia)) = (0.5, 0.583)` at the file's defaults satisfies
+/// all of them — measured at 0.55, where this assertion is the ONLY red of the
+/// five. And it runs kernel-free, where the mouth gate and the prologue are
+/// both behind `OCCT_AVAILABLE` — exactly the failure mode
+/// [`dev_capstan_scalars`] exists for.
 const DIN_15061_SEAT_RATIO: f64 = 0.53;
 
 /// Fractional clearance the DIN ratio buys at the seat mouth, straight out of
@@ -304,8 +332,8 @@ fn dev_capstan() -> &'static TessellateResult {
     R.get_or_init(tessellate_dev_capstan)
 }
 
-/// The design's evaluated cells WITHOUT any geometry kernel, computed once per
-/// test binary.
+/// The design's evaluated cells AND checked constraints, WITHOUT any geometry
+/// kernel, computed once per test binary.
 ///
 /// Everything hanging off [`dev_capstan`] needs a live OCCT kernel and therefore
 /// skips wholesale where OCCT is absent or degraded to stubs — a documented,
@@ -318,30 +346,43 @@ fn dev_capstan() -> &'static TessellateResult {
 /// the thing that goes quiet on a kernel-less machine, so it reads its cells
 /// from here instead.
 ///
+/// It is `check()` rather than `eval()` so the file's own constraints come back
+/// too: `Capstan`'s whole guard-rail set is pure scalar and resolves fine with
+/// no planner, which is what
+/// [`capstan_constraints_hold_without_a_kernel`] gates.
+///
 /// `Engine::new(checker, None)` evaluates with no planner at all (the pattern in
 /// `crates/reify-eval/tests/auto_binding_sites_remaining_resolution.rs`). The
 /// geometry and `volume()` cells cannot resolve that way, so eval diagnostics
-/// are deliberately NOT asserted clean here and this map is good for SCALAR
-/// cells only — the OCCT path is what gates the rest. Parse and compile ARE
-/// asserted clean, in the shared [`compile_dev_capstan`].
-fn dev_capstan_scalars() -> &'static ValueMap {
-    static V: OnceLock<ValueMap> = OnceLock::new();
+/// are deliberately NOT asserted clean here and this result is good for SCALAR
+/// cells and scalar constraints only — the OCCT path is what gates the rest.
+/// Parse and compile ARE asserted clean, in [`compile_dev_capstan`].
+fn dev_capstan_scalars() -> &'static reify_eval::CheckResult {
+    static V: OnceLock<reify_eval::CheckResult> = OnceLock::new();
     V.get_or_init(|| {
-        let compiled = compile_dev_capstan();
         let mut engine = reify_eval::Engine::new(
             Box::new(reify_constraints::SimpleConstraintChecker),
             None,
         );
-        engine.eval(&compiled).values
+        engine.check(compiled_dev_capstan())
     })
 }
 
-/// Read, parse and compile `prj/printer_v01/dev_capstan.ri`, asserting both
-/// stages are Error-diagnostic-free.
+/// The compiled design, computed once per test binary.
 ///
-/// Shared by the two memoized entry points ([`dev_capstan`]'s tessellation and
-/// [`dev_capstan_scalars`]'s kernel-free evaluation) so they cannot drift onto
-/// different sources or different compile entries.
+/// Both entry points above borrow from here, so they cannot drift onto
+/// different sources or different compile entries AND the read → parse →
+/// compile work is done once rather than once per entry point (before #5683's
+/// review this function was *shared* but not memoized, so any machine with a
+/// live OCCT compiled the file twice per test binary).
+fn compiled_dev_capstan() -> &'static reify_compiler::CompiledModule {
+    static C: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
+    C.get_or_init(compile_dev_capstan)
+}
+
+/// Read, parse and compile `prj/printer_v01/dev_capstan.ri`, asserting both
+/// stages are Error-diagnostic-free. Use [`compiled_dev_capstan`] rather than
+/// calling this directly.
 fn compile_dev_capstan() -> reify_compiler::CompiledModule {
     let source = std::fs::read_to_string(DEV_CAPSTAN)
         .unwrap_or_else(|e| panic!("failed to read design file {DEV_CAPSTAN}: {e}"));
@@ -375,7 +416,7 @@ fn compile_dev_capstan() -> reify_compiler::CompiledModule {
 /// asserting the pipeline is Error-diagnostic-free at every stage. Use
 /// [`dev_capstan`] rather than calling this directly.
 fn tessellate_dev_capstan() -> TessellateResult {
-    let compiled = compile_dev_capstan();
+    let compiled = compiled_dev_capstan();
 
     // ---- Tessellate with a real OCCT kernel via SingleKernelHolder ----
     let mut planner = reify_geometry::SingleKernelHolder::new();
@@ -385,7 +426,7 @@ fn tessellate_dev_capstan() -> TessellateResult {
         Some(Box::new(planner)),
     );
 
-    let result = engine.tessellate_realizations(&compiled);
+    let result = engine.tessellate_realizations(compiled);
     let geom_errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -700,17 +741,17 @@ fn capstan_seat_admits_the_rope_radially() {
 /// zero-clearance slip fit, and oversizing it must not have moved the rope off
 /// the D/d circle.
 ///
-/// This is the module's conformance pin to an EXTERNAL standard, and the only
-/// assertion here that can catch a revert to `groove_r = rope_dia/2`: both
-/// other gates are parametrized by the file's own `groove_r` and would stay
-/// green. See [`DIN_15061_SEAT_RATIO`] for why it references the standard's
-/// number rather than the design's `seat_arc_ratio` cell.
+/// This is the module's conformance pin to an EXTERNAL standard: the only check
+/// anywhere that pins the arc RATIO to DIN's 0.53 rather than to one side of
+/// it, and it runs without a live OCCT kernel where the mouth gate does not.
+/// See [`DIN_15061_SEAT_RATIO`] for the measured account of what each of the
+/// other checks does and does not catch, and for why this one references the
+/// standard's number rather than the design's `seat_arc_ratio` cell.
 ///
 /// Every claim here is scalar arithmetic over four cells — no mesh, no volume,
 /// no geometry — so this gate reads [`dev_capstan_scalars`] and carries NO
-/// `OCCT_AVAILABLE` guard. It is the module's only slip-fit gate, and OCCT
-/// going absent or stub-degraded is silent in this repo, so it deliberately
-/// keeps running where the other three skip.
+/// `OCCT_AVAILABLE` guard: OCCT going absent or stub-degraded is silent in this
+/// repo, so it deliberately keeps running where the mesh and volume gates skip.
 ///
 /// Two claims, from the file's own cells:
 ///   1. **DIN conformance** — `groove_r == 0.53·rope_dia` (3.180 mm here).
@@ -742,7 +783,7 @@ fn capstan_seat_admits_the_rope_radially() {
 /// reading 27.180 mm against a recomputed 24.180 mm.
 #[test]
 fn capstan_seat_arc_is_din_15061_oversize() {
-    let cells = dev_capstan_scalars();
+    let cells = &dev_capstan_scalars().values;
 
     let rope_dia = capstan_cell(cells, "rope_dia", DimensionVector::LENGTH);
     let pitch_r = capstan_cell(cells, "pitch_r", DimensionVector::LENGTH);
@@ -759,9 +800,14 @@ fn capstan_seat_arc_is_din_15061_oversize() {
          groove_r of exactly rope_dia/2 = {:.4} mm is a zero-clearance SLIP FIT \
          — the seat then has no mouth clearance and a load-ovalised braid \
          pinches at the seat bottom. This assertion references the standard's \
-         0.53 and NOT the file's seat_arc_ratio cell, deliberately: the volume \
-         and mesh gates are both parametrized by groove_r and would stay green \
-         through exactly this revert.",
+         0.53 and NOT the file's seat_arc_ratio cell, deliberately: reading the \
+         cell back would assert only that the file equals itself. If groove_r \
+         has gone all the way back to rope_dia/2, expect the mouth gate and the \
+         file's own `groove_r > rope_dia / 2` constraint red alongside this one \
+         — only the volume gate is parametrized by groove_r and stays green. \
+         Anywhere else in (0.5, lead/(2·rope_dia)) this is the ONLY red, every \
+         other check being a one-sided inequality; it is also the only one of \
+         them that runs without a live OCCT kernel.",
         din_groove_r * 1e3,
         rope_dia * 1e3,
         groove_r * 1e3,
@@ -805,6 +851,88 @@ fn capstan_seat_arc_is_din_15061_oversize() {
         groove_r * 1e3,
         rope_dia * 1e3,
         seat_c * 1e3
+    );
+}
+
+// ── The file's own guard rails hold, with no kernel ──────────────────────────
+
+/// `Capstan`'s own constraints — the file's guard-rail set for the rope seat —
+/// must all be satisfied at its defaults, WITHOUT a live geometry kernel.
+///
+/// [`capstan_surfaces_only_the_finished_drum`] already asserts this, but it is
+/// behind `OCCT_AVAILABLE`, so on exactly the kernel-less or stub-degraded
+/// machine [`dev_capstan_scalars`] exists to defend against, the constraints
+/// carrying the seat's whole safety story went entirely unchecked: `groove_r >
+/// rope_dia/2` (oversize arc, anti-pinch and mouth clearance in one
+/// inequality), the two-sided `land_r` band pinning the seat depth to `seat_c`,
+/// the groove-bottom-to-bore wall `seat_c - groove_r > bore_r`, the
+/// clearance lead `lead > groove_r * 2.0`, and `flange_r > land_r`. Every one is
+/// scalar arithmetic over param and `let` cells, so every one resolves with no
+/// planner at all — measured on this branch, 7 of 7 `Capstan` constraints come
+/// back `Satisfied` kernel-free and none `Indeterminate`.
+///
+/// This is a coverage extension, not a second pin on the arc ratio: the file's
+/// inequality catches a revert to `groove_r = rope_dia/2` but says nothing about
+/// DIN's 0.53 — see [`DIN_15061_SEAT_RATIO`].
+#[test]
+fn capstan_constraints_hold_without_a_kernel() {
+    let checked = dev_capstan_scalars();
+
+    let capstan: Vec<_> = checked
+        .constraint_results
+        .iter()
+        .filter(|c| c.id.entity == CAPSTAN_ENTITY)
+        .collect();
+    assert!(
+        !capstan.is_empty(),
+        "expected kernel-free constraint results for entity `{CAPSTAN_ENTITY}`, got \
+         none out of {} checked — `check()` with no planner must still evaluate the \
+         scalar constraint set; entities checked: {:?}",
+        checked.constraint_results.len(),
+        checked
+            .constraint_results
+            .iter()
+            .map(|c| &c.id.entity)
+            .collect::<Vec<_>>()
+    );
+
+    // Indeterminate is tolerated but not counted: a constraint reading a
+    // `volume()` or geometry cell cannot resolve with no planner, and this file
+    // has none such today. Requiring the REMAINDER to be non-empty is what stops
+    // that tolerance from making the gate vacuous — an empty resolved set would
+    // otherwise pass the satisfaction assertion below trivially.
+    let indeterminate: Vec<_> = capstan
+        .iter()
+        .filter(|c| c.satisfaction == Satisfaction::Indeterminate)
+        .collect();
+    let resolved: Vec<_> = capstan
+        .iter()
+        .filter(|c| c.satisfaction != Satisfaction::Indeterminate)
+        .collect();
+    assert!(
+        !resolved.is_empty(),
+        "all {} of `{CAPSTAN_ENTITY}`'s constraints came back Indeterminate with no \
+         planner, so this gate would pass vacuously. They are all scalar today, so \
+         this means an input cell stopped evaluating: {indeterminate:#?}",
+        capstan.len()
+    );
+
+    let unsatisfied: Vec<_> = resolved
+        .iter()
+        .filter(|c| c.satisfaction != Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        unsatisfied.is_empty(),
+        "every `{CAPSTAN_ENTITY}` constraint that resolves without a geometry kernel \
+         must be Satisfied at the file's defaults ({} of {} resolved were not, {} were \
+         Indeterminate). These are the rope seat's guard rails — the oversize-arc \
+         bound `groove_r > rope_dia / 2`, the two-sided `land_r` band around `seat_c`, \
+         the groove-bottom-to-bore wall, the clearance lead and `flange_r > land_r` — \
+         and unlike `capstan_surfaces_only_the_finished_drum` this says so on a \
+         machine with no OCCT: {unsatisfied:#?}",
+        unsatisfied.len(),
+        resolved.len(),
+        indeterminate.len()
     );
 }
 
