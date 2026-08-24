@@ -1109,17 +1109,12 @@ fn cli_reify_eval_prints_membrane_patch() {
 // fold costs zero cap pressure AND adds zero compile units (the C1/C2 contract's
 // actual objective, which a fresh single-module harness root would defeat).
 //
-// KNOWN DEVIATION, recorded so the next author need not re-derive it: the C2 contract's
-// own stated remedy for a harness AT its cap is to SPLIT it into a second
-// `harness_<subsystem2>.rs`, not to spill into an override binary — using an override stem
-// as an overflow destination is not something `tests/infra/harness-layout-lib.sh` sanctions
-// in so many words, and it does cost single-focus semantics here (a form-find trampoline
-// gauge suite has no relation to `tensegrity_t0a`'s T0a-constructor / `tensegrity_wires`
-// focus, so readers filtering `tensegrity_t0a::` will not expect to find it). The deviation
-// is taken deliberately because the alternative — splitting a 19.8-kLOC shared commons —
-// is far outside this task's locked scope. Two follow-ups therefore stand: relocate this
-// module to `harness_fea_solver_e2e/tensegrity_force_density_gauge.rs` once that unit is
-// split, and record the overflow rule (or refuse it) beside `_HL_OVERRIDE_STEMS`.
+// KNOWN DEVIATION, taken deliberately and TRACKED — the C2 contract's stated remedy for a
+// harness at its cap is to SPLIT it, not to spill into an override binary, and the spill
+// costs single-focus semantics here. Task **#6461** carries the full derivation and either
+// ratifies or refuses the overflow rule beside `_HL_OVERRIDE_STEMS`; task **#6121** splits
+// this harness, at which point this module belongs at
+// `harness_fea_solver_e2e/tensegrity_force_density_gauge.rs`.
 mod tensegrity_force_density_gauge {
     //! Runtime lock on the tensegrity force-density **dimensional bridge** (task
     //! #6095). NORMATIVE statement: the "Dimensional bridge" paragraph in
@@ -1150,6 +1145,18 @@ mod tensegrity_force_density_gauge {
     // this module is nested in the SAME compile unit, so `super::` resolves it directly —
     // no private copy needed (unlike the `#[path]` siblings across unit boundaries).
     use super::make_node as node;
+
+    // DUPLICATION, tracked not silent: the prism geometry + `MEMBERS` topology below is a
+    // THIRD copy of the canonical triplex (see `canonical_prism_nodes()` /
+    // `triplex_tensegrity()` in `harness_fea_solver_e2e/tensegrity_t1b_form_find_e2e.rs`
+    // and the combined fixture in `…/tensegrity_delta_combined_form_find_e2e.rs`), and
+    // `membrane_tensegrity()` re-derives the kernel's `tent_membrane()` golden. A topology
+    // or node-order change must be mirrored by hand across all three, so hoisting the
+    // shared fixture into `reify-test-support` (already a dev-dep of every call site) is
+    // tracked by task **#6152**. It could not be done in #6095: neither
+    // `crates/reify-test-support/` nor the two `harness_fea_solver_e2e/` modules are in
+    // that task's locked module set, and widening it is exactly the scope breach the lock
+    // exists to prevent.
 
     /// Struts-then-cables member order — the one index space `force_densities` and
     /// `member_forces` share: 3 struts, then top / bottom / vertical cable triples.
@@ -1326,14 +1333,37 @@ mod tensegrity_force_density_gauge {
         }
     }
 
-    /// Value of a **bare** `Value::Real`; a dimensioned Scalar is what Leg B forbids.
+    /// Value of a **bare** `Value::Real`. This pins TWO separable things and the arms below
+    /// keep them apart, because conflating them sends the next author after a phantom
+    /// dimensional regression. (1) The Leg B DIMENSIONAL claim: a qᵢ/σ echo carrying a
+    /// *dimensioned* tag is the genuine violation. (2) The bare-Real REPRESENTATION, which is
+    /// merely what both trampolines emit today — a `Value::Scalar { dimension: DIMENSIONLESS }`
+    /// would still satisfy the `List<Real>` declaration AND Leg B, and the value model treats
+    /// it as interchangeable with `Value::Real` elsewhere (`compute_targets::tensegrity_crack::
+    /// scalar_f64` accepts both; geometry_ops / modal_ops explicitly accept DIMENSIONLESS
+    /// scalars). The strict match is kept — a representation flip should be a deliberate
+    /// re-pin, not a silent drift — but it is REPORTED as representation drift, not as Leg B.
     fn bare_real(field: &str, v: &Value) -> f64 {
         match v {
             Value::Real(r) => *r,
+            Value::Scalar { si_value, dimension } if dimension.is_dimensionless() => panic!(
+                "{field} entries are a DIMENSIONLESS Value::Scalar ({si_value}), not a bare \
+                 Value::Real. This is REPRESENTATION drift, NOT a Leg B violation: the \
+                 `List<Real>` declaration and the dimensionless ruling both still hold, and \
+                 the two forms are interchangeable elsewhere in the value model. If the echo \
+                 representation moved on purpose, re-pin this extractor deliberately (#6095)"
+            ),
+            Value::Scalar { dimension, .. } => panic!(
+                "{field} entries carry a DIMENSIONED tag ({dimension:?}) where the \
+                 `List<Real>` declaration requires none — THIS is the Leg B violation: the \
+                 qᵢ/σ are nullity-invariant ratios with no absolute scale, per the \
+                 dimension-checked-readers ruling upheld by #6095"
+            ),
             other => panic!(
-                "{field} entries must be a bare Value::Real (dimensionless), matching the \
-                 `List<Real>` declaration — the qᵢ/σ are nullity-invariant ratios per the \
-                 dimension-checked-readers Leg B ruling upheld by #6095; got {other:?}"
+                "{field} entries must be a bare Value::Real per the `List<Real>` \
+                 declaration; got a variant that is neither Real nor Scalar, so neither the \
+                 Leg B dimensional claim nor the bare-Real representation can be judged \
+                 (#6095): {other:?}"
             ),
         }
     }
