@@ -13,6 +13,34 @@ use std::collections::{HashMap, HashSet};
 /// If bounds produce a larger range, the solver returns NoProgress.
 const MAX_INT_DOMAIN: i64 = 1000;
 
+/// Maximum number of search NODES one enumeration may visit (PRD2 §10 Q1,
+/// "budget ~1e5 leaves" — resolved here, in task β #5468, as §10 Q1 directs).
+///
+/// # Why a node bound exists at all
+///
+/// A solution `cap` bounds SOLUTIONS COLLECTED; it does not bound NODES
+/// VISITED, and the gap between those is where an unbounded solve hides.
+/// `ConstraintSolver::solve` enumerates at `cap = 2`, because 2 is the minimum
+/// that can tell "exactly one model" from "at least two" and so the minimum
+/// that can derive `unique` honestly. But a problem with exactly ONE model
+/// never reaches that second collection: proving no second solution exists
+/// means refuting every remaining point — i.e. EXHAUSTING the space. Two
+/// `Type::Int` autos at [`MAX_INT_DOMAIN`] is 10^6 leaves, and every node on
+/// the way pays a total `fold_dependent_cells` pass plus a full constraint
+/// sweep. Without this bound, `solve()` would silently regress from "stop at
+/// the first solution" to "walk the whole product" on every uniquely-solvable
+/// model — the common case, not a pathological one.
+///
+/// # What happens when it bites
+///
+/// The search reports `complete: false` on THE SAME channel the solution cap
+/// already uses. That is deliberate: `complete` keeps meaning exactly one
+/// thing — "the space was exhausted" — so every honesty claim conjoined with
+/// it (`unique`, `OptimalityStatus::ProvenOptimal`) stays sound without any
+/// consumer having to know WHICH truncation mode fired, and no second,
+/// drifting notion of completeness can grow (D5).
+const ENUMERATION_NODE_BUDGET: usize = 100_000;
+
 /// A discrete constraint solver using backtracking search with forward-checking.
 ///
 /// Named CpSatSolver to match the OR-Tools CP-SAT interface from the task spec,
@@ -274,6 +302,10 @@ struct SearchContext<'a> {
     dependent_cells: &'a [(ValueCellId, CompiledExpr)],
     /// Stop once this many solutions have been collected.
     cap: usize,
+    /// Stop once this many search nodes have been visited, whether or not any
+    /// solution turned up. See [`ENUMERATION_NODE_BUDGET`] for why the two
+    /// bounds are both needed and why they share one `complete` channel.
+    node_budget: usize,
 }
 
 /// The owned half of a search's inputs — what [`build_search_inputs`] produces
@@ -386,9 +418,15 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 ///
 /// Returns `true` iff the subtree at this node was EXHAUSTED — every point
 /// below it visited and either collected or pruned. `false` means the search
-/// stopped early because `ctx.cap` solutions had been collected, and it
-/// propagates all the way out: the caller's `complete` flag is exactly this
-/// return value at the root.
+/// stopped early — because `ctx.cap` solutions had been collected, or because
+/// `ctx.node_budget` nodes had been visited — and it propagates all the way
+/// out: the caller's `complete` flag is exactly this return value at the root.
+///
+/// The two stop conditions deliberately share that ONE return channel rather
+/// than reporting themselves separately. A caller asking "did you see the whole
+/// space?" gets a sound answer either way, and cannot accidentally handle one
+/// truncation mode while forgetting the other. Which bound fired is a matter
+/// for the reason string a caller composes, not for the search's own contract.
 ///
 /// # Why there is ONE backtracker and not two (PRD2 §3.9, G7)
 ///
@@ -471,6 +509,7 @@ fn backtrack_all(
     var_index: usize,
     assignment: &mut ValueMap,
     out: &mut Vec<HashMap<ValueCellId, Value>>,
+    nodes: &mut usize,
 ) -> bool {
     // No room left for another solution. Reached only for `cap == 0` — every
     // other path short-circuits at the base case below — but stated here so the
@@ -498,6 +537,23 @@ fn backtrack_all(
     let var = &ctx.variables[var_index];
 
     for value in &var.domain {
+        // Every trial value IS a node — counted here rather than at the base
+        // case, so an infeasible-heavy space (where most branches are pruned
+        // long before a leaf) is bounded just as tightly as a solution-rich
+        // one. Leaf-counting would leave the 10^6-node walk this budget exists
+        // to prevent entirely unbounded whenever the constraints prune well.
+        //
+        // `remove` before returning for the same reason the cap's unwind does:
+        // a PREVIOUS iteration of this loop left its value in `assignment`, and
+        // this iteration has not inserted yet. Checking before the insert also
+        // makes the function total over `node_budget == 0` — it stops before
+        // doing any work at all rather than always visiting one node first.
+        *nodes += 1;
+        if *nodes >= ctx.node_budget {
+            assignment.remove(&var.id);
+            return false;
+        }
+
         // Assign this variable
         assignment.insert(var.id.clone(), value.clone());
 
@@ -552,7 +608,7 @@ fn backtrack_all(
         // branch failed — unwind immediately rather than trying the next
         // sibling, so the cap short-circuits the whole search rather than
         // merely the deepest level.
-        if feasible && !backtrack_all(ctx, var_index + 1, assignment, out) {
+        if feasible && !backtrack_all(ctx, var_index + 1, assignment, out, nodes) {
             assignment.remove(&var.id);
             return false;
         }
@@ -561,7 +617,8 @@ fn backtrack_all(
     // Undo assignment (remove from map)
     assignment.remove(&var.id);
     // Every value in this variable's domain was tried and none of them stopped
-    // the search: this subtree is exhausted.
+    // the search — neither the solution cap nor the node budget — so this
+    // subtree is exhausted.
     true
 }
 
@@ -582,7 +639,29 @@ impl CpSatSolver {
     ///
     /// See [`SolveAllResult::Enumerated::complete`] for what a `false` there
     /// does and does not license a caller to conclude.
+    ///
+    /// Bounded by [`ENUMERATION_NODE_BUDGET`]; this function is exactly
+    /// [`CpSatSolver::solve_all_with_budget`] at that budget, mirroring this
+    /// crate's existing `solve` / `solve_with_dispatch` and `solve_ranked` /
+    /// `solve_ranked_impl` specialization idiom. The parameterized form exists
+    /// so a unit test can observe the bound without burning ~1e5 nodes to do
+    /// it — a test that had to would be quietly deleted the first time CI got
+    /// slow, and the bound would then be pinned by nothing.
     pub fn solve_all(&self, problem: &ResolutionProblem, cap: usize) -> SolveAllResult {
+        self.solve_all_with_budget(problem, cap, ENUMERATION_NODE_BUDGET)
+    }
+
+    /// [`CpSatSolver::solve_all`] with the node bound supplied explicitly.
+    ///
+    /// THE body both entry points run; `solve_all` adds nothing but the
+    /// production constant. See [`ENUMERATION_NODE_BUDGET`] for what
+    /// `node_budget` bounds and why it is not the same thing as `cap`.
+    pub(crate) fn solve_all_with_budget(
+        &self,
+        problem: &ResolutionProblem,
+        cap: usize,
+        node_budget: usize,
+    ) -> SolveAllResult {
         let mut inputs = match build_search_inputs(problem) {
             Ok(inputs) => inputs,
             Err(reason) => return SolveAllResult::NotEnumerable { reason },
@@ -595,20 +674,31 @@ impl CpSatSolver {
             functions: &problem.functions,
             dependent_cells: &problem.dependent_cells,
             cap,
+            node_budget,
         };
 
         let mut solutions = Vec::new();
-        let complete = backtrack_all(&ctx, 0, &mut inputs.assignment, &mut solutions);
+        let mut nodes = 0usize;
+        let complete = backtrack_all(&ctx, 0, &mut inputs.assignment, &mut solutions, &mut nodes);
 
         SolveAllResult::Enumerated {
             solutions,
             complete,
         }
     }
-}
 
-impl ConstraintSolver for CpSatSolver {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+    /// [`ConstraintSolver::solve`] with the node bound supplied explicitly.
+    ///
+    /// THE body the trait method runs; `solve` adds nothing but
+    /// [`ENUMERATION_NODE_BUDGET`]. Same rationale as
+    /// [`CpSatSolver::solve_all_with_budget`]: the budget-exhaustion arm below
+    /// is a user-visible behaviour change and has to be reachable from a unit
+    /// test that runs in microseconds.
+    pub(crate) fn solve_with_budget(
+        &self,
+        problem: &ResolutionProblem,
+        node_budget: usize,
+    ) -> SolveResult {
         // Fast path: no auto params → already solved.
         //
         // `unique: true` here is HONEST and must stay: with zero autos there is
@@ -627,14 +717,23 @@ impl ConstraintSolver for CpSatSolver {
         // At `cap = 1` the base case stops the search the instant it collects a
         // solution, so this explores exactly the nodes the pre-β `backtrack`
         // explored, in the same order, and returns the same point.
-        match self.solve_all(problem, 1) {
+        match self.solve_all_with_budget(problem, 1, node_budget) {
             SolveAllResult::NotEnumerable { reason } => SolveResult::NoProgress { reason },
-            SolveAllResult::Enumerated { solutions, .. } => match solutions.into_iter().next() {
+            SolveAllResult::Enumerated {
+                solutions,
+                complete,
+            } => match solutions.into_iter().next() {
                 Some(values) => SolveResult::Solved {
                     values,
                     unique: true,
                 },
-                None => SolveResult::Infeasible {
+                // Nothing found — and `complete` is the ENTIRE discriminator
+                // between the two opposite verdicts that share this shape.
+                //
+                // Exhausted the space and found nothing: that is a PROOF of
+                // unsatisfiability, and `Infeasible` is the honest answer. The
+                // diagnostic is byte-identical to pre-β (D1).
+                None if complete => SolveResult::Infeasible {
                     diagnostics: vec![Diagnostic::error(format!(
                         "CpSatSolver: no satisfying assignment found for {} auto params with {} constraints",
                         problem.auto_params.len(),
@@ -642,8 +741,45 @@ impl ConstraintSolver for CpSatSolver {
                     ))
                     .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
                 },
+                // Stopped early and found nothing: that proves NOTHING. A
+                // truncated search has not shown the constraints unsatisfiable,
+                // and `Infeasible` is a diagnostic a user acts on by editing
+                // their model — emitting it here sends them to rewrite a design
+                // that was never wrong. `NoProgress` says the only true thing
+                // available: the solver declined to answer, and why. This is the
+                // loud direction D5 requires.
+                None => SolveResult::NoProgress {
+                    reason: enumeration_budget_exhausted_reason(problem, node_budget),
+                },
             },
         }
+    }
+}
+
+/// Why an enumeration declined to answer, in the words a user eventually reads.
+///
+/// One function rather than a `format!` at each site: `ConstraintSolver::solve`
+/// is the first caller and `solve_ranked` (step β.10) is the second, and the
+/// whole point of the message is that the two agree about what happened to the
+/// same problem. A hand-copied string is exactly how they would stop agreeing.
+///
+/// Says explicitly what the search did NOT establish. The failure mode this
+/// message guards against is a reader — or a downstream agent — treating "no
+/// solutions came back" as "there are none".
+fn enumeration_budget_exhausted_reason(problem: &ResolutionProblem, node_budget: usize) -> String {
+    format!(
+        "CpSatSolver: enumeration node budget of {} exhausted while searching {} auto params \
+         with {} constraints; the search was TRUNCATED, so the constraints are not known to be \
+         unsatisfiable",
+        node_budget,
+        problem.auto_params.len(),
+        problem.constraints.len(),
+    )
+}
+
+impl ConstraintSolver for CpSatSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        self.solve_with_budget(problem, ENUMERATION_NODE_BUDGET)
     }
 }
 
