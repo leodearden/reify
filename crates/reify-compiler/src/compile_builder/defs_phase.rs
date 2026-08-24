@@ -85,6 +85,19 @@ fn compile_constraint_def(
     //    checking now needs it).
     // `None` (never `Type::Error`) is stored when the param is unannotated or
     // resolution fails; type resolution failure is already diagnosed below.
+
+    // Install the module's enum names as the ambient fallback set for param
+    // type resolution (task 6416), mirroring entity.rs's struct-param scope and
+    // functions.rs's fn-param/return scopes. Without this, `param g : Zq`
+    // resolves to None and `CompiledConstraintParam.ty` stays None, which makes
+    // task 4546's instantiation-site arg type check in `expand_constraint_inst`
+    // (it skips params whose `ty` is None) silently inert for every enum-typed
+    // param. Dropped at end of this function; nothing after the params loop
+    // below resolves types, so its reach is exactly that loop.
+    let _enum_scope = crate::type_resolution::EnumNameScope::new(
+        enum_defs.iter().map(|e| e.name.clone()).collect(),
+    );
+
     let params: Vec<CompiledConstraintParam> = c
         .params
         .iter()
