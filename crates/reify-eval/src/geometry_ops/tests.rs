@@ -24349,6 +24349,158 @@
         );
     }
 
+    // ── δ SCOPE LOCK: the three DIRECTION positions stay un-gated (task 5745) ─
+    //
+    // READ THIS BEFORE ASSUMING THESE ROWS ARE VACUOUS. Every assertion in this
+    // block is GREEN BY CONSTRUCTION — δ deliberately did not touch these three
+    // positions, so there was never a RED phase for them. They are a NEGATIVE
+    // LOCK against a future over-gating edit (and against task 5752's
+    // closure-guard allowlist going stale), not a red-then-green cycle. A
+    // reviewer who deletes them as "tests that never failed" removes the only
+    // executable statement of where the gate deliberately STOPS.
+    //
+    // The split they pin is the D3 adversary finding (2026-07-28, BINDING),
+    // recorded in `docs/prds/v0_6/units-length-gate-completion.md`: a POSITION is
+    // a quantity in metres and must be dimensioned; a DIRECTION is a unit vector
+    // whose components are legitimately bare, and gating one would reject
+    // correct `.ri` code rather than catch a bug. That is the same split the
+    // SCALAR forms already drew between `ox`/`oy`/`oz` and `ax`/`ay`/`az` /
+    // `nx`/`ny`/`nz`.
+    //
+    // The justifications below are written to be lifted VERBATIM into task
+    // 5752's allowlist, satisfying D14's per-entry-justification requirement
+    // from a single site — a second location is how an allowlist goes stale.
+    //
+    // | site                  | position              | why it stays bare                          |
+    // |-----------------------|-----------------------|--------------------------------------------|
+    // | `decode_plane`        | plane NORMAL          | dimensionless unit vector, normalised by `unit_vector3` |
+    // | `decode_axis`         | axis DIRECTION        | dimensionless unit vector, normalised by `unit_vector3` |
+    // | `modify_offset_curve` | `third` → `direction` | its own production diagnostic already calls it "a direction vec3" |
+
+    /// SCOPE LOCK (a) — `offset_curve`'s 3rd argument. GREEN by construction.
+    ///
+    /// A bare dimensionless `vec3(0, 0, 1)` in the `third` position must still
+    /// reach `GeometryOp::OffsetCurve { direction: Some([0,0,1]) }` with no units
+    /// complaint. The surrounding production diagnostic already calls this
+    /// argument "a direction vec3"; gating it would reject correct `.ri` code.
+    ///
+    /// This is the one `point3_components` caller that is neither a plane nor an
+    /// axis, so it is the one most likely to be swept up by a future edit that
+    /// reasons "this helper is the un-gated one, gate it everywhere".
+    #[test]
+    fn delta_scope_lock_offset_curve_direction_stays_dimensionless() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                (
+                    "third".into(),
+                    reify_ir::CompiledExpr::literal(
+                        bare_real_vector3(0.0, 0.0, 1.0),
+                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                    ),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve { direction, .. }) => {
+                assert_eq!(
+                    direction,
+                    Some([0.0, 0.0, 1.0]),
+                    "a bare vec3 direction must still be accepted verbatim"
+                );
+            }
+            other => panic!("expected Ok(OffsetCurve), got {:?}", other),
+        }
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)),
+            "no units rejection may be raised for `offset_curve`'s direction; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// SCOPE LOCK (b) — the plane NORMAL and the axis DIRECTION, co-located so
+    /// the whole ORIGIN-vs-DIRECTION split is readable in ONE place. GREEN by
+    /// construction.
+    ///
+    /// The δ blocks above already assert each of these beside its own gated
+    /// origin; restating them together here is deliberate. Someone auditing
+    /// "which positions did δ decide NOT to gate?" should find one answer, not
+    /// have to reconstruct it from three separate sections.
+    #[test]
+    fn delta_scope_lock_plane_normal_and_axis_direction_stay_dimensionless() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(length_point3(0.01, 0.0, 0.0)),
+            normal: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+        };
+        let (plane_origin, plane_normal) = decode_plane(&plane, "mirror", &mut diagnostics)
+            .expect("a bare NORMAL over a LENGTH origin must decode clean");
+        assert_eq!(plane_origin, [0.01, 0.0, 0.0]);
+        assert_eq!(plane_normal, [0.0, 0.0, 1.0]);
+
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(length_point3(0.0, 0.02, 0.0)),
+            direction: Box::new(bare_real_vector3(1.0, 0.0, 0.0)),
+        };
+        let (axis_origin, axis_dir) = decode_axis(&axis, "circular", &mut diagnostics)
+            .expect("a bare DIRECTION over a LENGTH origin must decode clean");
+        assert_eq!(axis_origin, [0.0, 0.02, 0.0]);
+        assert_eq!(axis_dir, [1.0, 0.0, 0.0]);
+
+        assert!(
+            diagnostics.is_empty(),
+            "neither decoder may say anything about a deliberately-bare unit \
+             vector; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// SCOPE LOCK (c) — `point3_components` SURVIVES δ, and still accepts a bare
+    /// `Real` triple. GREEN by construction.
+    ///
+    /// δ's capability manifest carries `delivered_check: expect: present` for
+    /// `fn point3_components` precisely because the obvious misreading of this
+    /// task is "the gate replaces the bare decoder, so delete it". It does not:
+    /// the helper remains the CORRECT decoder for exactly the three
+    /// dimensionless positions in the table above, and `accept_length_point3`
+    /// mirrors its shape check rather than subsuming it.
+    #[test]
+    fn delta_scope_lock_point3_components_survives_and_accepts_bare_reals() {
+        assert_eq!(
+            point3_components(&bare_real_vector3(0.0, 0.0, 1.0)),
+            Some([0.0, 0.0, 1.0]),
+            "the bare decoder is not dead code — it is what reads the three \
+             un-gated DIRECTION positions"
+        );
+        // And it still reads a dimensioned Point identically, which is why the
+        // gated positions could migrate without any numeric change: both helpers
+        // surface the same `si_value`.
+        assert_eq!(
+            point3_components(&length_point3(0.01, 0.02, 0.03)),
+            Some([0.01, 0.02, 0.03])
+        );
+    }
+
     // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
 
     /// True producer→decode round-trip for plane_xy: the real stdlib producer
