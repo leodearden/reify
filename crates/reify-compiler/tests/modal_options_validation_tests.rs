@@ -603,11 +603,12 @@ fn corpus_rayleigh_ctor_args_lower_to_dimensioned_literals() {
 // ─── task-6093: declared dimensions propagate to field reads ─────────────────
 
 /// The retype's user-observable consequence: a field READ now carries the
-/// declared dimension. Asserts (i) `damping.beta + 1.0s` / `damping.alpha +
-/// 1.0Hz` type-check (RED while the params were `Real`), and (ii) `damping.beta
-/// + 1.0` is now REJECTED (RED the other way — this is what proves the retype
-/// tightened rather than widened). Asserted on diagnostic substance,
-/// "dimension mismatch in addition", not exact prose.
+/// declared dimension. Asserts (i) that `damping.beta + 1.0s` and
+/// `damping.alpha + 1.0Hz` type-check (RED while the params were `Real`), and
+/// (ii) that adding a bare `1.0` to `damping.beta` is now REJECTED (RED the
+/// other way — this is what proves the retype tightened rather than widened).
+/// Asserted on diagnostic substance, "dimension mismatch in addition", not
+/// exact prose.
 ///
 /// A bare-`Real` CTOR ARG stays silent by design; that negative pin is owned by
 /// docs/prds/v0_6/dimensioned-construction-strictness.md §7.1 (task #5627) and
