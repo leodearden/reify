@@ -69,6 +69,11 @@ enum GeometricPattern {
         distance_si: f64,
     },
     /// angle(line_a, line_b) == angle_deg
+    ///
+    /// `angle_deg` is POST-CONVERSION DEGREES, not radians. The pattern
+    /// deliberately stores the SolveSpace-side unit so the value that reaches
+    /// `add_constraint_wrkpl` needs no further thought — see the marshalling
+    /// boundary in `extract_angle_pattern` for the crossing itself (#6184).
     Angle {
         line_a: LineRef,
         line_b: LineRef,
@@ -226,6 +231,24 @@ fn try_angle_eq(
         if qn.contains("angle") && args.len() == 2 {
             let line_a = extract_line_ref(&args[0], auto_params)?;
             let line_b = extract_line_ref(&args[1], auto_params)?;
+            // THE ANGULAR MARSHALLING BOUNDARY (INV-AD-4; #6184).
+            //
+            // Everything UPSTREAM of this line is SI RADIANS: `extract_scalar_si`
+            // yields the SI-coherent magnitude of an Angle scalar, and reify's
+            // DSL/IR are radians throughout (rad = 1 by SI coherence).
+            // Everything DOWNSTREAM is DEGREES: libslvs' `SLVS_C_ANGLE` reads
+            // its `valA` in degrees, which is the one genuine degree crossing in
+            // the tree — every other IO boundary reify has is SI.
+            //
+            // So `to_degrees()` here IS the boundary, and the `angle_rad` ->
+            // `angle_deg` rename across it is the contract made visible in the
+            // names. Nothing downstream is in radians; nothing upstream is in
+            // degrees.
+            //
+            // Same convention, already declared, at the two sibling crossings:
+            // the `SketchConstraint::Angle` arm below ("Degrees, not radians:
+            // `SLVS_C_ANGLE` reads `valA` in degrees"), and the
+            // `SketchConstraint` enum doc in `crates/reify-constraints/src/sketch.rs`.
             let angle_rad = extract_scalar_si(val_expr)?;
             let angle_deg = angle_rad.to_degrees();
             return Some(GeometricPattern::Angle {
@@ -1781,6 +1804,9 @@ fn add_pattern_to_builder(
                 line_b: line_b_e,
             } = builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             // Angle constraints require a workplane in SolveSpace.
+            // Degrees, not radians: `SLVS_C_ANGLE` reads `valA` in degrees, and
+            // `angle_deg` was already converted at the marshalling boundary in
+            // `extract_angle_pattern` — no conversion is owed here (#6184).
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
                 SLVS_C_ANGLE,
