@@ -10,16 +10,22 @@
 //! [`length_spec`] so both emit identical rejection text.
 //!
 //! The positions currently routed through the Contract C chokepoint, by family.
-//! TWO routes reach it, both bottoming out in the same
+//! THREE routes reach it, all bottoming out in the same
 //! `accept_arg(&value, &length_spec())` call so their rejection wording is
 //! byte-identical by construction: the NAMED-ARG route
-//! (`eval_named_arg_length`) and, since task 5658, the VARIADIC route
+//! (`eval_named_arg_length`); since task 5658 the VARIADIC route
 //! (`accept_variadic_length_args`, for the arity-open positional coordinate
-//! streams whose args the compiler names inertly `c0`…`cN`). Since task 5661
-//! that route carries 2-D vertex PAIRS as well as 3-D triples, which is why its
-//! coordinate renderer (`CoordName`) carries a per-point STRIDE: at stride 3 a
-//! pair stream would be named `x1,y1,z1,x2,…`, misdirecting the author on both
-//! the axis letter and the vertex number.
+//! streams whose args the compiler names inertly `c0`…`cN`); and since task
+//! 5745 the DECODED-VALUE route (`accept_length_point3`, for a position that
+//! arrives already assembled into a composite `Value` by a stdlib producer —
+//! `plane_yz(10mm)` → `Value::Plane`, `point3(…)` → `Value::Point` — and so
+//! never passes through an argument-name read at all). Since task 5661 the
+//! variadic route carries 2-D vertex PAIRS as well as 3-D triples, which is why
+//! its coordinate renderer (`CoordName`) carries a per-point STRIDE: at stride 3
+//! a pair stream would be named `x1,y1,z1,x2,…`, misdirecting the author on both
+//! the axis letter and the vertex number. The decoded-value route has the
+//! analogous renderer problem in a GRID rather than a stream, and answers it the
+//! same way (`GridCoordName`, rendering `control_points[r][c].{x|y|z}`).
 //!
 //! | family    | builtin / position                                   | task |
 //! |-----------|------------------------------------------------------|------|
@@ -34,11 +40,19 @@
 //! | profile   | `rectangle` width/height, `circle` radius, `ellipse` semi_major/semi_minor (5 fields) | 5743 |
 //! | modify    | `fillet` radius, `chamfer` distance, `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset, `zone_slab` width, `offset_solid`/`offset_curve` distance (9 fields) | 5744 |
 //! | sweep     | `extrude`/`extrude_symmetric` distance, `pipe` radius (3 fields) | 5744 |
+//! | decoded value | `decode_plane` / `decode_axis` ORIGINS `ox`/`oy`/`oz`; the `nurbs_surface` control-point GRID (the SURFACE sibling of the curve poles 5658 gated) — via the decoded-value route | 5745 |
 //!
-//! The last four rows are the R7 **raw-`Value`** positions: unlike every row
-//! above them, these 38 are stored into their `GeometryOp` field as a `Value`
-//! and read by the kernel via `as_f64`, never through a named-arg `f64` helper.
-//! They reach the chokepoint through `geometry_ops`' `required_length_values`
+//! The two **5743** rows (`primitive` + `profile`) and the two **5744** rows
+//! (`modify` + `sweep`) are the R7 **raw-`Value`** positions: unlike the
+//! named-arg rows above them, these 38 are stored into their `GeometryOp`
+//! field as a `Value` and read by the kernel via `as_f64`, never through a
+//! named-arg `f64` helper. (The **5745** `decoded value` row below them is a
+//! THIRD route, not a raw-`Value` one: its coordinates are already assembled
+//! into a composite `Value` by a producer and are read back out by
+//! `point3_components`, so it reaches the chokepoint via `accept_length_point3`
+//! rather than via `required_length_value`.)
+//!
+//! Those 38 reach the chokepoint through `geometry_ops`' `required_length_values`
 //! (and its `N == 1` wrapper `required_length_value`), which layers over the
 //! named-arg route (`required_length_args` → `required_length_arg` →
 //! `eval_named_arg_length`) and re-wraps each ACCEPTED SI f64 back into a
@@ -54,15 +68,14 @@
 //! triple (esc-5743-4), which now reads through `required_length_args`.
 //! Task 5743 also attached `reify_core::DiagnosticCode::DimensionedArgRejected`
 //! to every `ArgSpec`-backed rejection emitted in `geometry_ops`, retrofitting
-//! the previously code-less Contract C sites on BOTH routes at once.
+//! the previously code-less Contract C sites on both of the routes that existed
+//! then. Task 5745's decoded-value route inherits the code for free, by calling
+//! the same shared `accept_length_value`.
 //!
 //! Contract C is NOT yet exhaustive, and this note stays open until the closure
 //! guard of task 5752 replaces it with a pointer. What remains un-gated, and
 //! who owns it:
 //!
-//! - `point3_components` (`geometry_ops.rs`) and the decoded value-form routes
-//!   — `decode_plane` / `decode_axis` origins, and NurbsSurface control points
-//!   (the SURFACE sibling of the curve poles 5658 gated) — task 5745.
 //! - The SEVERITY residuals — task 6157. Task 5743 promoted the shared
 //!   `accept_length_value` rejection from `Warning` to `Error` + code, but
 //!   deliberately left three classes alone: the quiet-degrade readers
@@ -74,6 +87,24 @@
 //!   `ArgRejection` to hang a dimension-rejection code on; and the inline
 //!   non-`ArgSpec` `ArgRejection` sites (`Int`, `Point<Length>`, `Vec3`,
 //!   `Range`, `String` — including `resolve_int_value_ref`) plus Contract B.
+//!
+//! Deliberately NOT gated, and not a residual — the DECODED-VALUE counterparts
+//! of the unit-vector row below, each with the justification task 5752's
+//! closure-guard allowlist can lift verbatim (D14). All three are the remaining
+//! `point3_components` callers, which is why that helper SURVIVES task 5745
+//! rather than being replaced by the gate:
+//!
+//! - the `decode_plane` plane NORMAL — a dimensionless unit vector, normalised
+//!   by `unit_vector3`; the plane equation is invariant to its scale;
+//! - the `decode_axis` axis DIRECTION — likewise a dimensionless unit vector,
+//!   normalised by `unit_vector3`;
+//! - `offset_curve`'s 3rd argument when it is not a reference Surface — its own
+//!   production diagnostic already calls it "a direction vec3".
+//!
+//! Gating any of the three would REJECT CORRECT `.ri` CODE, since a unit vector
+//! legitimately has bare components. This is the D3 adversary finding
+//! (2026-07-28, BINDING) — the same ORIGIN-vs-DIRECTION split the SCALAR forms
+//! already draw, restated for the decoded-value route.
 //!
 //! Deliberately NOT gated, and not a residual: unit-vector DIRECTIONS
 //! (`ax`/`ay`/`az`, `nx`/`ny`/`nz`, and `extrude_infinite`'s `dx`/`dy`/`dz`),
