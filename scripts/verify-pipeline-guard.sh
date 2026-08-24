@@ -54,13 +54,39 @@
 #             gate-script-only diff is fast-path eligible and lands without
 #             ever having been run (task 6320; the #4618/#4624 -> #4288
 #             ambush class, doc-side analogue in 'doc-sync' below).
-#             LIMITATION (deliberate, pinned by Pair E's LIMITATION case in
-#             tests/infra/test_verify_pipeline_guard.sh): this reads verify.sh's
-#             SOURCE TEXT, so it sees only paths written LITERALLY in a plan
-#             line. A plan line assembled through a variable
-#             (`_cmd="./scripts/x.sh"; add_tool "$_cmd"` — the shape used for
-#             _gui_cmd / _sidecar_cmd / _ts_cmd) derives nothing and still
-#             needs a verify-pipeline-paths.txt row (or a rewrite to a literal).
+#             A UNION OF TWO DERIVATIONS (task 6426):
+#               (4a) SOURCE-TEXT — grep verify.sh's add()/add_tool() STATEMENTS
+#                    for literal paths. Covers every literal path in every plan
+#                    shape, needs no fork, and works on a verify.sh that cannot
+#                    run at all.
+#               (4b) PLAN-DERIVED — extract paths from the RESOLVED plan printed
+#                    by ONE canonical widest invocation:
+#                      DF_VERIFY_ROLE=merge bash verify.sh all --scope all \
+#                          --profile both --include-infra --print-plan
+#                    This is what covers a plan line assembled through a
+#                    VARIABLE (`_cmd="./scripts/x.sh"; add_tool "$_cmd"` — the
+#                    _gui_cmd / _sidecar_cmd / _ts_cmd shape), which begins with
+#                    the assignment rather than with `add_tool` and is therefore
+#                    invisible to 4a. Inspect it alone with --list-plan-derived.
+#             MONOTONICITY is the safety argument for the whole design: 4b can
+#             only ever ADD to the set. If --print-plan fails, times out, or
+#             emits nothing, the classifier degrades to 4a's source-text floor —
+#             never below what it covered before task 6426, and never fail-open.
+#             That is why the two are a union and not a replacement: an empty
+#             derivation reads as "fast-path safe", so a replacement would
+#             re-open the very ambush class this clause exists to close.
+#             RESIDUAL LIMITATION (deliberate, pinned by Pair E's RESIDUAL
+#             LIMITATION case in tests/infra/test_verify_pipeline_guard.sh): 4b
+#             derives whatever the ONE canonical invocation RESOLVES, so a plan
+#             line reachable only under some other shape — a branch of
+#             build_plan that invocation never takes — is underived by 4b, and
+#             underived by 4a too if its path is behind a variable. A gate wired
+#             that way still needs a verify-pipeline-paths.txt row (or a rewrite
+#             to a literal path, or to a branch the canonical invocation
+#             reaches). Note the widenings in that invocation are load-bearing
+#             precisely because they shrink this residual: measured, dropping
+#             --include-infra and role=merge takes the derived set from 12 gates
+#             to 6.
 #   doc-sync: docs cross-referenced by tests/infra doc-sync checks, from
 #             scripts/doc-sync-paths.txt (the doc-side analogue of the
 #             manifest source above — see that file's header for the
