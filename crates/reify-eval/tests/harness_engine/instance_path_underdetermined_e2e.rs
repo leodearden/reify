@@ -434,9 +434,26 @@ fn two_sibling_instances_sharing_a_child_side_let_are_flagged_independently() {
         ("Sib.b2", "bore"),
         ("Sib.b1", "fit"),
     ] {
-        let got = result.values.get(&ValueCellId::new(entity, member));
+        // Cell LOSS and cell-present-but-`Undef` are DIFFERENT outcomes, and
+        // collapsing them (`matches!(got, None | Some(Undef))`) would let a
+        // regression in the sub-override minting path — the cell vanishing
+        // from the value map altogether — satisfy an assertion whose whole
+        // purpose is to prove the warning above is TRUE about a real cell.
+        // So: presence first, with its own message, then the value.
+        let id = ValueCellId::new(entity, member);
+        let got = result.values.get(&id).unwrap_or_else(|| {
+            panic!(
+                "`{entity}.{member}` is MISSING from the value map entirely. \
+                 That is cell LOSS, not the expected unresolved-at-the-v1-\
+                 boundary outcome: the sub-override site (reify-compiler \
+                 entity.rs) stopped minting the cell, so the \
+                 W_UNDERDETERMINED assertion above is now describing a cell \
+                 that does not exist. Available: {:?}",
+                result.values.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+        });
         assert!(
-            matches!(got, None | Some(reify_ir::Value::Undef)),
+            matches!(got, reify_ir::Value::Undef),
             "`{entity}.{member}` is expected to stay unresolved at this \
              fixture's documented v1 boundary (`Bearing` has two instance \
              paths, so stage (g) emits no alias). If it now RESOLVES, that is \

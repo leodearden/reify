@@ -49,33 +49,55 @@ fn warnings_only(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Dia
         .collect()
 }
 
-/// The cell ids named by every `Underdetermined`-coded diagnostic, sorted.
-///
-/// Matched by CODE, not by a substring on the rendered `W_UNDERDETERMINED`
-/// text, then the id is read back out of the message — `Diagnostic` carries no
-/// structured cell field, and the message's `auto parameter '<id>'` prefix is
-/// itself pinned verbatim by κ #4019's tests in `tests/underdetermined.rs`, so
-/// this parse cannot silently drift.
-fn underdetermined_cell_ids(diagnostics: &[reify_core::Diagnostic]) -> Vec<String> {
-    let mut ids: Vec<String> = diagnostics
+/// Every `Underdetermined`-coded diagnostic, matched on the STRUCTURED code.
+fn underdetermined_diags(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Diagnostic> {
+    diagnostics
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .map(|d| {
-            d.message
-                .split('\'')
-                .nth(1)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "a W_UNDERDETERMINED message must name its cell in \
-                         single quotes (`auto parameter '<id>'`); got: {}",
-                        d.message
-                    )
-                })
-                .to_string()
-        })
-        .collect();
-    ids.sort();
-    ids
+        .collect()
+}
+
+/// Assert that the `Underdetermined` diagnostics name EXACTLY `expected_ids` —
+/// one diagnostic per id, and no diagnostic left over.
+///
+/// The id is matched by CONTAINMENT on the rendered message rather than parsed
+/// back out of it. An earlier revision recovered the id with
+/// `d.message.split('\'').nth(1)`, which coupled the whole assertion set to
+/// message PUNCTUATION: the rendered text quotes two things (`auto parameter
+/// '<id>' in scope '<scope>'`), so requoting to backticks — or merely letting
+/// an apostrophe into the prose ahead of the id — would either panic the parse
+/// or silently hand back the wrong substring, converting a cosmetic wording
+/// change into a spurious failure or, worse, a false pass.
+///
+/// Both drift directions still fail loudly: a MISSING id fails its own
+/// per-id assertion and names itself, and an UNEXPECTED extra diagnostic fails
+/// the count. Only the fragile prose parse is gone.
+fn assert_underdetermined_ids_exactly(
+    diagnostics: &[reify_core::Diagnostic],
+    expected_ids: &[&str],
+    context: &str,
+) {
+    let flagged = underdetermined_diags(diagnostics);
+    for expected in expected_ids {
+        let hits = flagged
+            .iter()
+            .filter(|d| d.message.contains(expected))
+            .count();
+        assert_eq!(
+            hits, 1,
+            "{context}: expected EXACTLY ONE W_UNDERDETERMINED naming `{expected}`, got {hits}. \
+             Full diagnostics:\n{diagnostics:#?}",
+        );
+    }
+    assert_eq!(
+        flagged.len(),
+        expected_ids.len(),
+        "{context}: W_UNDERDETERMINED count drifted — expected exactly {} ({expected_ids:?}), \
+         got {}. An EXTRA entry means a cell that used to resolve is now flagged. \
+         Full diagnostics:\n{diagnostics:#?}",
+        expected_ids.len(),
+        flagged.len(),
+    );
 }
 
 // ── Test (a): LET auto strict resolves uniquely ───────────────────────────────
@@ -580,17 +602,15 @@ fn example_auto_binding_sites_ri_all_four_resolve() {
     // Asserted as a SET, not a bare count, so a failure says WHICH id drifted.
     // A mismatch means the derivation above or the fixture changed — STOP and
     // re-derive; never edit this list to match an observed run.
-    let underdetermined_ids = underdetermined_cell_ids(&result.diagnostics);
-    assert_eq!(
-        underdetermined_ids,
-        vec!["AllFourSites.__connector_0.gain".to_string()],
+    assert_underdetermined_ids_exactly(
+        &result.diagnostics,
+        &["AllFourSites.__connector_0.gain"],
         "W_UNDERDETERMINED set drifted from the per-cell derivation above. \
          `AutoBindingSites.b.bore` and/or `AllFourSites.bolt.length` appearing \
          means the read closure dropped the RAW instance-path spelling that \
          entity.rs:3130 / :3025 used to declare them; the connect-param entry \
          disappearing means the separate, pre-existing D5 gap was fixed and \
-         this baseline needs a conscious update. Full diagnostics:\n{:#?}",
-        result.diagnostics,
+         this baseline needs a conscious update",
     );
 
     let snap = engine.snapshot().expect("snapshot should exist");

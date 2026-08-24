@@ -2085,13 +2085,30 @@ impl<'t> CellReadIndex<'t> {
         // entirely rather than performed as a known no-op — one `ValueCellId`
         // clone (two `String` allocations) per read edge on the common path
         // instead of three.
+        // The already-seen early return is what keeps the normalisation cost
+        // proportional to the closure SIZE rather than to the read-edge COUNT:
+        // the walk calls `push` once per read EDGE, so on a wide fan-in (many
+        // cells reading one `let`) an id already in the closure would otherwise
+        // pay `normalize_ref` -> `normalize_cell_id` -> `strip_collection_indices`
+        // — a `String` allocation for any indexed spelling, plus two more inside
+        // `ValueCellId::new` on a hit — once per repeat.
+        //
+        // It is sound because `push` is the ONLY writer and it always inserts
+        // raw AND norm together, so `raw in closure` implies `norm(raw) in
+        // closure`, and there is never a second insert left to perform. The one
+        // shape that looks like a counter-example — an id that entered as some
+        // OTHER id's norm, so no `push` ever ran on it as a raw — is covered by
+        // idempotence: `normalize_ref` answers `None` for an already-normalised
+        // id (it `filter`s out `norm == id`), so its "missing" second insert is
+        // a no-op anyway.
         let push = |closure: &mut HashSet<ValueCellId>,
                         frontier: &mut Vec<ValueCellId>,
                         id: ValueCellId| {
-            let norm = self.normalize_ref(&id);
-            if closure.insert(id.clone()) {
-                frontier.push(id);
+            if !closure.insert(id.clone()) {
+                return;
             }
+            let norm = self.normalize_ref(&id);
+            frontier.push(id);
             if let Some(norm) = norm
                 && closure.insert(norm.clone())
             {
