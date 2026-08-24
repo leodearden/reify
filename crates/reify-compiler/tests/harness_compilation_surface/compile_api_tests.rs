@@ -94,24 +94,12 @@ fn compile_linear_pattern_produces_realization() {
     );
 }
 
-/// A geometry-let `linear_pattern` lowers a NAMED `target` argument slot typed
-/// `Geometry`, read straight off the public `CompiledGeometryOp::Pattern`
-/// surface. Task 5389.
-///
-/// DELIBERATELY NARROW — this asserts the ARG-SLOT fact and nothing else. The
-/// neighbouring structural fact (the target resolves to the geometry let by
-/// name rather than degrading to the positional `GeomRef::Step(0)` fallback) is
-/// ALREADY pinned by variant AND by name in
-/// `tests/harness_langcore/let_scope_tests.rs::linear_pattern_let_bound_ops`,
-/// together with its `circular_pattern`/`mirror` siblings: that file's
-/// `tgt_matches` discriminator has a `(GeomRef::Sub(name), Tgt::Sub(ename))` arm
-/// comparing the bound names, so the `ExpectedOp`/`Tgt` harness does NOT abstract
-/// `GeomRef` away. That is the canonical coverage, and the one
-/// `examples/pattern_composition.ri` cites; re-asserting it here would only
-/// couple two files to a single lowering change.
-///
-/// Spacing is `20mm`, not a bare `20` — same task-5652 LENGTH-slot reason as the
-/// fixtures above.
+/// A geometry-let `linear_pattern` lowers its `target` arg slot typed
+/// `Geometry` (task 5389). The surrounding structural fact — that the target
+/// resolves to the geometry let by name rather than to the positional
+/// `GeomRef::Step(0)` fallback — is already pinned by
+/// `tests/harness_langcore/let_scope_tests.rs::linear_pattern_let_bound_ops`
+/// and is deliberately not restated here.
 #[test]
 fn geometry_let_pattern_lowers_a_named_geometry_target_slot() {
     let source = r#"structure S {
