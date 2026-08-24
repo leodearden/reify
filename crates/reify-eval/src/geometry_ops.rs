@@ -3406,12 +3406,33 @@ fn pattern_arbitrary(
         // Offsets are translations (length-semantic): require a finite LENGTH
         // Scalar per component. A bare/dimensionless offset is rejected (op
         // dropped) rather than silently read as SI metres by `Value::as_f64`.
-        let mut length_arg = |name: &str| -> Result<f64, String> {
-            required_length_arg(name, kind, args, values, functions, meta_map, diagnostics)
-        };
-        let dx = length_arg(&format!("t{}_dx", idx))?;
-        let dy = length_arg(&format!("t{}_dy", idx))?;
-        let dz = length_arg(&format!("t{}_dz", idx))?;
+        //
+        // ONE GROUP READ, not three `?`-chained single-slot calls (esc-5743-4,
+        // discharged by task 5744): an offset triple is written as one gesture,
+        // so a bare triple is usually bare in every member and the chained form
+        // named only `t{idx}_dx` per build — three edit-build cycles to fix one
+        // line. `required_length_args` evaluates every member (each pushing its
+        // own diagnostic) and returns only the FIRST error, so the caller-facing
+        // `Err` wording and its `Unresolved`-beats-a-later-`Invalid` precedence
+        // are unchanged. The all-at-once guarantee holds WITHIN one call, so the
+        // loop still stops at the first bad transform — deliberately, since
+        // widening it would turn one bad transform into a diagnostic storm.
+        //
+        // Naming the two siblings as locals (rather than passing temporaries)
+        // is what lets the array borrow them; it also drops the closure and with
+        // it the `&mut diagnostics` capture that `required_length_args`' BORROW
+        // ORDERING note warns about, satisfying that contract by construction.
+        let dy_name = format!("t{}_dy", idx);
+        let dz_name = format!("t{}_dz", idx);
+        let [dx, dy, dz] = required_length_args(
+            [&dx_name, &dy_name, &dz_name],
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )?;
         // Scalar-triple form: translation-only, so the rotation quaternion is
         // identity. Mirrors `ApplyTransform`'s scalar-first `[qw,qx,qy,qz]`.
         transforms.push(([1.0, 0.0, 0.0, 0.0], [dx, dy, dz]));
