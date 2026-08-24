@@ -5911,9 +5911,7 @@
             &HashMap::new(),
             &mut diagnostics,
         );
-        let err = result
-            .err()
-            .expect("two bare transforms must drop the op");
+        let err = result.expect_err("two bare transforms must drop the op");
         assert!(
             err.contains("'t0_dx'"),
             "the caller-facing Err must stay the FIRST error (`t0_dx`), preserving \
@@ -5980,9 +5978,7 @@
             &HashMap::new(),
             &mut diagnostics,
         );
-        let err = result
-            .err()
-            .expect("an Undef offset component must drop the op");
+        let err = result.expect_err("an Undef offset component must drop the op");
         assert!(
             err.contains("unresolved (Undef)") && err.contains("'t0_dx'"),
             "an Undef member must not be masked by the later bare ones — expected \
