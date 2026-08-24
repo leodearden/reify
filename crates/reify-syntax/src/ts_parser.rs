@@ -4018,32 +4018,22 @@ impl<'a> Lowering<'a> {
             return Some(UnitExpr::Pow(Box::new(base), exponent));
         }
 
-        // 2. Mul/Div: `left (*|·|/) right`, left-associative. The `op` field aliases
-        //    the external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
-        //    `child_by_field_name` does NOT expose — so detect the arm by the
-        //    `left`+`right` fields and read the operator from the source slice
-        //    between the two operands. Units are contiguous (no whitespace inside
-        //    a unit_expr), so that slice is exactly `*`, `·` or `/`.
+        // 2. Mul/Div: `left (*|·|/) right`, left-associative. Two facts drive it:
         //
-        //    `·` (U+00B7 MIDDLE DOT) is the SI-conventional multiply and lowers to
-        //    the SAME `UnitExpr::Mul` as `*` — task #5784 / PRD
-        //    `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2, which is
-        //    what lets `Display for DimensionVector` output (`7850 kg·m^-3`) be
-        //    read back in.
+        //    - The `op` field aliases the external-scanner tokens (`_unit_mul_op`
+        //      / `_unit_div_op`), which `child_by_field_name` does NOT expose. So
+        //      detect the arm by the `left`+`right` fields and read the operator
+        //      from the source slice between them; units are contiguous (no
+        //      whitespace inside a unit_expr), so that slice is exactly one of
+        //      `*`, `·` or `/`.
+        //    - `*` and `·` (U+00B7 MIDDLE DOT, the SI-conventional multiply) are
+        //      two spellings of ONE operator, both yielding `UnitExpr::Mul` —
+        //      task #5784 / PRD
+        //      `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2.
         //
-        //    Matched EXACTLY, not by `contains`, and the fallthrough DIAGNOSES
-        //    rather than returning a bare `None`. A silent `None` here propagates
-        //    through `lower_quantity_literal` and `lower_let` as a DROPPED member,
-        //    and `check_and_lower!` never notices because it keys off a CST that
-        //    `is_error()` — so an operator the scanner accepts but this match does
-        //    not recognise becomes a diagnostic-free missing binding. That is the
-        //    INV-SF-7 `parse-is-value-faithful` failure shape
-        //    (`docs/legibility/design-invariants.md`), so the arm is closed
-        //    structurally instead of being patched one operator at a time.
-        //
-        //    The classification itself lives in the free `classify_unit_op` so its
-        //    two non-happy-path arms are reachable from a test — see the
-        //    `classify_unit_op_*` tests at the bottom of this file.
+        //    `classify_unit_op` owns the match; its doc covers why the slice is
+        //    matched EXACTLY and why the fallthrough diagnoses rather than
+        //    returning a bare `None` (INV-SF-7 `parse-is-value-faithful`).
         if let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
@@ -4056,14 +4046,10 @@ impl<'a> Lowering<'a> {
             return match classify_unit_op(op_text) {
                 UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
                 UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
-                // Operator token MISSING (empty slice) — tree-sitter's error
-                // recovery spliced the operands together, so the tree ALREADY
-                // carries an ERROR/MISSING node and `check_and_lower!` reports the
-                // real syntax error. Adding "unrecognized unit operator ``" on top
-                // of it would be a second, worse-worded diagnostic for one defect,
-                // so this arm drops through silently. That is not the INV-SF-7
-                // silent-drop shape: the drop is loud at the level the user
-                // observes, just not twice.
+                // Silent BY DESIGN, and not the INV-SF-7 shape: error recovery
+                // spliced the operands together, so the tree already carries the
+                // ERROR/MISSING node `check_and_lower!` reports. The drop is loud
+                // where the user observes it — just not reported twice.
                 UnitOp::Missing => None,
                 UnitOp::Unrecognized(other) => {
                     self.push_error(
@@ -4646,6 +4632,16 @@ enum UnitOp<'a> {
 ///
 /// Units are contiguous (no whitespace inside a `unit_expr`), so in a
 /// well-formed parse the trimmed slice is exactly `*`, `·` or `/`.
+///
+/// Matched EXACTLY rather than by `contains`, and every arm is total, because the
+/// caller cannot afford an unhandled operator: a bare `None` out of
+/// `lower_unit_expr` propagates through `lower_quantity_literal` and `lower_let`
+/// as a DROPPED member, while `check_and_lower!` stays silent (it keys off a CST
+/// that `is_error()`, and a scanner-accepted operator produces no error node).
+/// The user then sees a binding vanish with no diagnostic — the INV-SF-7
+/// `parse-is-value-faithful` failure shape (`docs/legibility/design-invariants.md`).
+/// Returning [`UnitOp::Unrecognized`] instead of `None` closes that structurally,
+/// rather than one operator at a time.
 fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
     match op_text.trim() {
         "*" | "·" => UnitOp::Mul,

@@ -313,49 +313,31 @@ structure S {
 ;###############################################################################
 ; U+00B7 MIDDLE DOT (`·`) as unit_mul — task #5784, angle-units leaf κ
 ;
-; COMMENT LINES IN A CORPUS FILE MUST BE `;`-PREFIXED, NEVER `#`-PREFIXED.
-; `tree-sitter test` treats everything between a row's `---` separator and the
-; next `===` divider as that row's expected S-expression, and `#` is NOT a comment
-; there. A `#`-prefixed header is therefore absorbed as tokens into the expected
-; tree of the row ABOVE it, silently breaking THAT row rather than anything here.
-; That is not hypothetical: the `#` spelling of this header broke the preceding
-; row (`negative: 5kg/1`), whose expectation grew a spurious tail
-; `(`·`) (scanner.c corpus: (10/10 (183) ONLY: (ERROR)))` — 230 parses, 1 failed.
-; `;` is the S-expression comment character and IS stripped. Same prose idiom:
-; test/corpus/imaginary_literal.txt:1-30.
+; PRD docs/prds/v0_6/angle-units-surface-convergence.md cluster C, decision 7a.
+; UNIT_MUL_OP fires on ASCII `*` OR U+00B7, both gated by `is_unit_start`
+; (scanner.c) and both lowering to the SAME `UnitExpr::Mul` — so the rows below
+; are identical to their `*`-spelled twins earlier in this file.
 ;
-; PRD docs/prds/v0_6/angle-units-surface-convergence.md cluster C, ratified
-; decision 7a. The external scanner's UNIT_MUL_OP token now fires on ASCII `*`
-; OR U+00B7 (the middle dot), both gated identically by `is_unit_start`
-; (scanner.c). `·` is the SI-conventional multiply, and `Display for
-; DimensionVector` emits it — so accepting it is what makes `reify eval` output
-; such as `7850 kg·m^-3` readable back in. `·` and `*` lower to the SAME
-; `UnitExpr::Mul`, hence the identical trees below and their `*`-spelled twins
-; earlier in this file.
+; DOCUMENTATION, NOT ENFORCEMENT: no gate executes this corpus (scripts/verify.sh
+; never invokes `tree-sitter test`, and package.json has no scripts block). The
+; live regression signal for everything below is
+; tree-sitter-reify/tests/unit_middot_mul_grammar_tests.rs, which cargo runs.
 ;
-; THESE ROWS ARE DOCUMENTATION, NOT ENFORCEMENT. No gate anywhere executes this
-; corpus: scripts/verify.sh never invokes `tree-sitter test`, and
-; tree-sitter-reify/package.json has no scripts block. The LIVE regression signal
-; for everything below is tree-sitter-reify/tests/unit_middot_mul_grammar_tests.rs,
-; which cargo nextest runs.
+; Two rules when editing this file, both learned the hard way:
+;   1. Comments are `;`-prefixed, NEVER `#`. Everything between a row's `---` and
+;      the next `===` is that row's expected tree, and `#` is not a comment
+;      there — a `#` header is absorbed into the row ABOVE and breaks THAT row.
+;   2. Re-pin the `(UNEXPECTED 183)` tokens (183 = 0xB7) from a `tree-sitter test`
+;      diff ONLY. They are a GLR error-recovery rendering artifact, not a language
+;      contract — only the presence of an error is contractual — and
+;      `tree-sitter parse` renders the same node as a nested `(ERROR (ERROR))`,
+;      which produces a pin that FAILS under `tree-sitter test`.
+; Both idioms also appear in test/corpus/imaginary_literal.txt:1-30.
 ;
 ; Every expected tree here was transcribed from a real parse, never hand-written.
-; Check green-ness MANUALLY, and always on the FULL corpus — never a filtered
-; subset. A filtered run passes all 11 rows below while leaving a broken
-; neighbour invisible, which is precisely how the `#` bug above survived review:
-;   bash scripts/tree-sitter-generate.sh
-;   cd tree-sitter-reify && tree-sitter test
-; (without the generate step `tree-sitter test` aborts with "No language found" —
-; the generated parser is gitignored). Measured green at the commit that fixed
-; this header: 230 parses, 0 failures.
-;
-; The `(UNEXPECTED 183)` tokens in the negative rows (183 = 0xB7) are a GLR
-; error-recovery RENDERING ARTIFACT, not a language contract — only the presence
-; of an error is contractual. They must be re-pinned from the `tree-sitter test`
-; diff ONLY: `tree-sitter parse` renders the same node as a nested
-; `(ERROR (ERROR))`, and copying that form in produces a pin that fails
-; `tree-sitter test`. See the same warning, and the same artifact drifting across
-; grammar changes, in test/corpus/imaginary_literal.txt:11-22.
+; Check manually on the FULL corpus — a filtered run hides a broken neighbour:
+;   bash scripts/tree-sitter-generate.sh && cd tree-sitter-reify && tree-sitter test
+; (without the generate step: "No language found" — the parser is gitignored).
 ;###############################################################################
 
 ================================================================================
