@@ -4407,6 +4407,103 @@ structure Assembly {
         );
     }
 
+    #[test]
+    fn rename_and_references_unaffected_by_same_file_goto_def_declaration_names() {
+        // TASK 6388 NON-REGRESSION GUARD — the executable form of that task's
+        // CRITICAL-CONSTRAINT audit.
+        //
+        // 6388 made same-file go-to-definition resolve top-level declaration
+        // names UNIFORMLY across all kinds, via its own scanner
+        // (`analysis::decl_name_and_span` + `goto_def::decl_name_token`). It did
+        // NOT widen `goto_def::find_declaration_name_span`, which is the
+        // rename/references oracle (consumed here at the
+        // `collect_structure_name_spans` home token, at `resolve_cross_file_home`
+        // step 2, and by the cross-file rename producer).
+        //
+        // WHY THAT SEPARATION MUST HOLD: the five kinds below are now navigable
+        // by same-file goto-def but are NOT collectible as uses.
+        // `collect_uses`/`collect_idents_in_expr` walk `ExprKind::Ident` in
+        // EXPRESSIONS only, never type expressions, and
+        // `collect_structure_name_spans` adds only `sub _ = Name` construction
+        // sites. Admitting any of these kinds to the rename oracle would move
+        // the DECLARATION token while silently missing every type-position use
+        // — and because Invariant 5 only checks that edited buffers re-PARSE
+        // clean, such a rename passes validation yet leaves the buffer
+        // referencing a name that no longer exists. (Same shape as the
+        // `is_renameable_cross_file` CAVEAT at references.rs:1625-1642, which
+        // documents the residual gap for the ADMITTED Structure/Occurrence.)
+        //
+        // Asserted on the RENAME/REFERENCES behaviour deliberately, NOT on
+        // `find_declaration_name_span` returning None for these kinds: #6341 is
+        // concurrently adding a TypeAlias arm to that helper, and a negative pin
+        // there would collide with it. The rename refusal stays true either way,
+        // because `classify_top_level_decl` (references.rs:1606) does not
+        // classify TypeAlias and `prepare_rename_cross_file` bails on its `?`.
+        let (_docs, resolver) = canonical_workspace();
+
+        let kinds: &[(&str, &str)] = &[
+            ("type Pressure = Force", "Pressure"),
+            ("unit meter : Length", "meter"),
+            ("constraint def Foo { x > 0 }", "Foo"),
+            (
+                "joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)",
+                "ball",
+            ),
+            (
+                "purpose lightweight(subject : Structure) { minimize subject.mass }",
+                "lightweight",
+            ),
+        ];
+
+        let uri = Url::parse("file:///proj/guard.ri").unwrap();
+        for (source, name) in kinds {
+            let parsed = reify_syntax::parse(source, ModulePath::single("guard"));
+            let decl = occurrences(source, name)[0];
+            let pos = offset_to_position(source, decl as u32);
+
+            assert!(
+                prepare_rename(source, &parsed, pos).is_none(),
+                "single-file prepare_rename must refuse the {name:?} declaration \
+                 name (goto-def navigability must not imply renameability): {source}"
+            );
+            assert!(
+                prepare_rename_cross_file(source, &parsed, &uri, pos, &resolver).is_none(),
+                "cross-file prepare_rename_cross_file must refuse the {name:?} \
+                 declaration name: {source}"
+            );
+        }
+
+        // And pin the references INCOMPLETENESS explicitly rather than leaving it
+        // latent: with a type-alias declaration plus a type-POSITION use, the
+        // cross-file reference set must not claim to cover that use.
+        let alias_src = "type Pressure = Force\nstructure S {\n    param p : Pressure = 1.0\n}";
+        let parsed_alias = reify_syntax::parse(alias_src, ModulePath::single("guard_alias"));
+        let alias_uri = Url::parse("file:///proj/guard_alias.ri").unwrap();
+        let occ = occurrences(alias_src, "Pressure");
+        assert_eq!(occ.len(), 2, "fixture: declaration + one type-position use");
+        let refs = compute_references_cross_file(
+            alias_src,
+            &parsed_alias,
+            &alias_uri,
+            offset_to_position(alias_src, occ[0] as u32),
+            true,
+            &workspace_docs(&[(alias_uri.clone(), alias_src)]),
+            &resolver,
+        );
+        let use_pos = offset_to_position(alias_src, occ[1] as u32);
+        match &refs {
+            None => {} // Refused outright — the honest answer.
+            Some(locs) => assert!(
+                !locs
+                    .iter()
+                    .any(|l| l.uri == alias_uri && l.range.start == use_pos),
+                "the cross-file reference set must NOT claim to cover the \
+                 `param p : Pressure` type-position use — the use-site collectors \
+                 walk expression identifiers only. Got: {locs:?}"
+            ),
+        }
+    }
+
     // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
 
     /// Apply LSP `TextEdit`s to `source`, splicing in DESCENDING start order so
