@@ -2249,15 +2249,11 @@ fn modify_chamfer(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let distance = required_length_value(
-        "distance",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let distance = eval_arg("distance")?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::Chamfer {
@@ -2295,15 +2291,12 @@ fn modify_chamfer_asymmetric(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [d1, d2] = required_length_values(
-        ["d1", "d2"],
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let d1 = eval_arg("d1")?;
+    let d2 = eval_arg("d2")?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::ChamferAsymmetric {
@@ -2343,15 +2336,11 @@ fn modify_shell(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let thickness = required_length_value(
-        "thickness",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let thickness = eval_arg("thickness")?;
     let open_faces_expr =
         args.iter().find(|(n, _)| n == "open_faces").map(|(_, e)| e);
     if let Some(expr) = open_faces_expr {
@@ -2599,15 +2588,11 @@ fn modify_thicken(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let offset = required_length_value(
-        "offset",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let offset = eval_arg("offset")?;
     Ok(reify_ir::GeometryOp::Thicken {
         target: target_id,
         offset,
@@ -2625,15 +2610,11 @@ fn modify_zone_slab(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let width = required_length_value(
-        "width",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let width = eval_arg("width")?;
     Ok(reify_ir::GeometryOp::ZoneSlab {
         target: target_id,
         width,
@@ -2651,15 +2632,11 @@ fn modify_offset_solid(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let distance = required_length_value(
-        "distance",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let distance = eval_arg("distance")?;
     Ok(reify_ir::GeometryOp::OffsetSolid {
         target: target_id,
         distance,
@@ -2677,15 +2654,11 @@ fn modify_offset_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let distance = required_length_value(
-        "distance",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let distance = eval_arg("distance")?;
     let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
     let (reference, direction) = match third_expr {
         None => (None, None),
@@ -3455,7 +3428,7 @@ fn sweep_extrude(
         step_handles,
         named_steps,
     )?;
-    let distance = required_length_value(
+    let distance = eval_named_arg(
         "distance",
         kind,
         args,
@@ -3463,7 +3436,8 @@ fn sweep_extrude(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    )
+    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
     match distance.as_f64() {
         Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
         Some(v) => {
@@ -3606,7 +3580,7 @@ fn sweep_extrude_symmetric(
         step_handles,
         named_steps,
     )?;
-    let distance = required_length_value(
+    let distance = eval_named_arg(
         "distance",
         kind,
         args,
@@ -3614,7 +3588,8 @@ fn sweep_extrude_symmetric(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    )
+    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
     match distance.as_f64() {
         Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
         Some(v) => {
@@ -3813,7 +3788,7 @@ fn sweep_pipe(
         step_handles,
         named_steps,
     )?;
-    let radius = required_length_value(
+    let radius = eval_named_arg(
         "radius",
         kind,
         args,
@@ -3821,7 +3796,8 @@ fn sweep_pipe(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    )
+    .ok_or_else(|| format!("missing required argument 'radius' for {}", kind))?;
     Ok(reify_ir::GeometryOp::Pipe {
         path: path_handle,
         radius,
