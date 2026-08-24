@@ -35,7 +35,7 @@
 
 use crate::common::{assert_eq_rel, expect_scalar};
 use reify_core::{DimensionVector, Severity};
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::compile_source_with_stdlib_allow_parse_errors;
 
 /// Compile `structure def S { let x = <quantity> }` and return the `x` cell's
 /// (si_value, dimension).
@@ -47,9 +47,14 @@ use reify_test_support::compile_source_with_stdlib;
 /// `pub unit rad : Angle`), and `m^2·kg·s^-2` is Energy-shaped but the fixture
 /// binds it untyped.  Guessing a type would either fail to compile or silently
 /// measure a different quantity.  Untyped `let` cells match the fixture's own form.
+///
+/// Uses the same `_allow_parse_errors` helper as [`compile_fixture`], for the same
+/// reason: the `errs.is_empty()` assertion below is meant to be the ONE place a
+/// bad probe is reported, and the plain helper would instead panic inside the
+/// parse step with a message that names no `quantity`.
 fn let_cell_si_value(quantity: &str) -> (f64, DimensionVector) {
     let source = format!("structure def S {{ let x = {quantity} }}");
-    let module = compile_source_with_stdlib(&source);
+    let module = compile_source_with_stdlib_allow_parse_errors(&source);
     let errs: Vec<_> = module
         .diagnostics
         .iter()
@@ -96,7 +101,15 @@ fn let_cell_si_value(quantity: &str) -> (f64, DimensionVector) {
 /// edit while still saying nothing about the `let` lines.
 ///
 /// Returns the compiled module.  Asserts nothing about the COMPILE on its own, so
-/// each numbered assertion below reports its own failure.
+/// each numbered assertion below reports its own failure — which is why this
+/// routes through `compile_source_with_stdlib_allow_parse_errors` rather than
+/// plain `compile_source_with_stdlib`.  The plain helper parses via
+/// `parse_with_stdlib_or_panic` (`crates/reify-test-support/src/helpers.rs`),
+/// which `assert!(parsed.errors.is_empty())` — so a `·` PARSE regression would
+/// panic INSIDE this function with `parse errors: [...]` and test (i)'s
+/// `Severity::Error` filter would never run.  The `_allow_parse_errors` variant
+/// folds parse errors into `module.diagnostics` as `Severity::Error` instead, so
+/// (i) genuinely covers the `Parse error: syntax error: ·m` shape it claims to.
 fn compile_fixture() -> reify_compiler::CompiledModule {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/prd-gate/fixtures/unit_middot_mul.ri");
@@ -115,13 +128,16 @@ fn compile_fixture() -> reify_compiler::CompiledModule {
          in:\n{code_only}",
         code_only.matches('·').count()
     );
-    compile_source_with_stdlib(&src)
+    compile_source_with_stdlib_allow_parse_errors(&src)
 }
 
-/// (i) The fixture compiles with zero `Severity::Error` diagnostics.
+/// (i) The fixture compiles with zero `Severity::Error` diagnostics — parse-layer
+/// AND compile-layer, since [`compile_fixture`] folds the former in.
 ///
 /// Before κ this failed loudly with three `Parse error: syntax error: ·m`-class
-/// diagnostics.
+/// diagnostics, and this assertion is the one that observes them: they arrive as
+/// `Severity::Error` entries in `module.diagnostics`, not as a panic somewhere
+/// upstream.
 #[test]
 fn prd_gate_fixture_unit_middot_mul_compiles_clean() {
     let module = compile_fixture();
