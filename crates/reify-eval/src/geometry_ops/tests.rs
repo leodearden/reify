@@ -4034,6 +4034,401 @@
         );
     }
 
+    // ---- units-length γ (task 5744 step-4): the 7 modify magnitude slots ----
+
+    /// γ's modify slice, each as `(kind, &[(arg name, is_length_semantic)])` in
+    /// the op's own arg order.
+    ///
+    /// The `bool` is the SLICE BOUNDARY made data: `true` marks a slot this leaf
+    /// gates, `false` marks one it must leave alone. Only `Draft` carries a
+    /// `false` entry — its `angle` is an ANGLE position owned by
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree,
+    /// so gating it HERE would be a scope violation, not an improvement. It sits
+    /// in this table rather than in prose so an over-broad edit fails
+    /// `compile_geometry_op_draft_angle_stays_on_the_bare_path` below.
+    ///
+    /// `Fillet` is deliberately ABSENT: step-2 already gated its `radius`, and
+    /// its three-state behaviour is pinned end to end by
+    /// `tests/harness_geometry/modify_sweep_length_units_e2e.rs`. This table is
+    /// the SEVEN slots step-5 adds.
+    ///
+    /// Arg names are the compiler's, read from the lowering arms in
+    /// `reify-compiler/src/geometry_modify.rs` — `zone_slab` takes `width` (not
+    /// `thickness`), `thicken` takes `offset` (not `distance`), and
+    /// `chamfer_asymmetric` takes `d1`/`d2` (not `distance1`/`distance2`).
+    const GAMMA_MODIFY_SLOTS: &[(reify_compiler::ModifyKind, &[(&str, bool)])] = &[
+        (
+            reify_compiler::ModifyKind::Chamfer,
+            &[("distance", true)],
+        ),
+        (
+            reify_compiler::ModifyKind::ChamferAsymmetric,
+            &[("d1", true), ("d2", true)],
+        ),
+        (
+            reify_compiler::ModifyKind::Shell,
+            &[("thickness", true)],
+        ),
+        (
+            reify_compiler::ModifyKind::Thicken,
+            &[("offset", true)],
+        ),
+        (
+            reify_compiler::ModifyKind::ZoneSlab,
+            &[("width", true)],
+        ),
+        (
+            reify_compiler::ModifyKind::OffsetSolid,
+            &[("distance", true)],
+        ),
+        (
+            reify_compiler::ModifyKind::OffsetCurve,
+            &[("distance", true)],
+        ),
+        (
+            // ANGLE SLICE BOUNDARY — NOT gated by this leaf (PRD 3).
+            reify_compiler::ModifyKind::Draft,
+            &[("angle", false)],
+        ),
+    ];
+
+    /// The single step handle backing a Modify `target = GeomRef::Step(0)`.
+    /// `modify_draft` also derives its neutral plane from `step_handles.last()`,
+    /// so this same handle serves both roles (mirrors `modify_step_handles` in
+    /// `tests/compile_geometry_op_characterization.rs`).
+    fn gamma_modify_step_handles() -> Vec<GeometryHandleId> {
+        vec![GeometryHandleId(50)]
+    }
+
+    /// Helper: build one of [`GAMMA_MODIFY_SLOTS`]' modify ops with `slot` bound
+    /// to `expr` and every other arg bound to a valid value for its own kind — a
+    /// LENGTH `Scalar` for a length-semantic slot, a bare `Real` for a
+    /// dimensionless one. Lets each slot's three-state table vary ONLY the value
+    /// under test.
+    fn gamma_modify_with(
+        kind: reify_compiler::ModifyKind,
+        arg_names: &[(&str, bool)],
+        slot: &str,
+        expr: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Modify {
+            kind,
+            target: reify_compiler::GeomRef::Step(0),
+            args: arg_names
+                .iter()
+                .map(|(name, is_length)| {
+                    let bound = if *name == slot {
+                        expr.clone()
+                    } else if *is_length {
+                        literal_length(0.05)
+                    } else {
+                        literal_f64(0.1)
+                    };
+                    ((*name).to_string(), bound)
+                })
+                .collect(),
+        }
+    }
+
+    /// Helper: read the field named `slot` out of a compiled modify
+    /// `GeometryOp`. Keeps the slot table above the single source of truth for
+    /// which names exist, instead of repeating a destructuring `let else` per
+    /// kind.
+    fn gamma_modify_stored_slot(op: &reify_ir::GeometryOp, slot: &str) -> reify_ir::Value {
+        use reify_ir::GeometryOp as G;
+        let found = match (op, slot) {
+            (G::Chamfer { distance, .. }, "distance") => Some(distance),
+            (G::ChamferAsymmetric { d1, .. }, "d1") => Some(d1),
+            (G::ChamferAsymmetric { d2, .. }, "d2") => Some(d2),
+            (G::Shell { thickness, .. }, "thickness") => Some(thickness),
+            (G::Thicken { offset, .. }, "offset") => Some(offset),
+            (G::ZoneSlab { width, .. }, "width") => Some(width),
+            (G::OffsetSolid { distance, .. }, "distance") => Some(distance),
+            (G::OffsetCurve { distance, .. }, "distance") => Some(distance),
+            (G::Draft { angle, .. }, "angle") => Some(angle),
+            _ => None,
+        };
+        found
+            .unwrap_or_else(|| panic!("no slot '{slot}' on {op:?}"))
+            .clone()
+    }
+
+    /// Contract C1's THREE-STATE mapping at the SEVEN modify LENGTH slots —
+    /// `chamfer` distance, `chamfer_asymmetric` d1/d2, `shell` thickness,
+    /// `thicken` offset, `zone_slab` width, `offset_solid` distance and
+    /// `offset_curve` distance — asserted through `compile_geometry_op`, the
+    /// sole IR-build funnel (contract C2).
+    ///
+    /// This is β's primitive/profile table driven over γ's slot table rather
+    /// than re-spelled per kind. Every slot is exercised INDEPENDENTLY (the
+    /// other args stay valid), so a gate applied to only some slots of a kind —
+    /// say `chamfer_asymmetric`'s `d1` but not its `d2` — cannot pass.
+    ///
+    /// RED until step-5 routes the seven `modify_*` fns through
+    /// `required_length_value`: today each bare value is stored in the
+    /// `GeometryOp` field unchallenged and read as SI METRES downstream, so
+    /// `shell(solid, 2)` is a 2-METRE wall.
+    #[test]
+    fn compile_geometry_op_modify_magnitude_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+        let step_handles = gamma_modify_step_handles();
+
+        for (kind, arg_names) in GAMMA_MODIFY_SLOTS {
+            for (slot, is_length) in arg_names.iter() {
+                if !*is_length {
+                    // ANGLE slice boundary — covered by the dedicated negative
+                    // test below, not by this rejection table.
+                    continue;
+                }
+                let at = format!("{kind}.{slot}");
+
+                // (i) ACCEPTED — stored unchanged, no diagnostics.
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &gamma_modify_with(*kind, arg_names, slot, literal_length(0.02)),
+                    &values,
+                    &step_handles,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let op = result
+                    .unwrap_or_else(|e| panic!("{at}: a LENGTH Scalar must be accepted, got: {e}"));
+                assert_eq!(
+                    gamma_modify_stored_slot(&op, slot),
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "{at}: the stored field must stay a LENGTH Scalar with a \
+                     byte-identical SI value (the gate must not rescale or \
+                     re-wrap)"
+                );
+                assert!(
+                    diagnostics.is_empty(),
+                    "{at}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+                );
+
+                // (ii) REJECTED — the same four shapes as β's tables, incl. bare
+                // ZERO (D1 / PRD boundary row 3: `0` is NOT special-cased).
+                for (label, expr) in [
+                    ("bare Real", literal_f64(0.02)),
+                    (
+                        "bare Int",
+                        reify_ir::CompiledExpr::literal(
+                            reify_ir::Value::Int(20),
+                            reify_core::Type::dimensionless_scalar(),
+                        ),
+                    ),
+                    ("bare ZERO", literal_f64(0.0)),
+                    (
+                        "wrong-dimension Scalar (MASS)",
+                        literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                    ),
+                ] {
+                    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                    let result = compile_geometry_op(
+                        &gamma_modify_with(*kind, arg_names, slot, expr),
+                        &values,
+                        &step_handles,
+                        &[],
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &mut diagnostics,
+                    );
+                    assert!(
+                        result.is_err(),
+                        "{at} / {label}: must drop the op, got: {result:?}"
+                    );
+
+                    let rejections: Vec<&Diagnostic> = diagnostics
+                        .iter()
+                        .filter(|d| d.message.contains("argument expects Length"))
+                        .collect();
+                    assert_eq!(
+                        rejections.len(),
+                        1,
+                        "{at} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                    );
+                    let rej = rejections[0];
+                    assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                    assert_eq!(
+                        rej.code,
+                        Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                        "{rej:?}"
+                    );
+                    // ANCHORED on `"{slot} argument expects"`, not a bare
+                    // `contains(slot)` — β's `wedge` width/top_width lesson.
+                    // `ArgRejection::message` renders
+                    // `"{builtin}: {arg} argument expects …"`, so the anchored
+                    // shape is available for free.
+                    assert!(
+                        rej.message.contains(&kind.to_string())
+                            && rej.message.contains(&format!("{slot} argument expects"))
+                            && rej
+                                .message
+                                .contains("pass a dimensioned length such as `5mm`"),
+                        "{at} / {label}: must name the builtin, the arg and carry the \
+                         migration hint; got: {:?}",
+                        rej.message
+                    );
+                }
+
+                // (iii) UNDEFINED — the DISTINCT unresolved wording, and no
+                // rejection diagnostic (D10 / INV-SF-1).
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &gamma_modify_with(*kind, arg_names, slot, literal_undef()),
+                    &values,
+                    &step_handles,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{at}: an Undef magnitude must drop the op"));
+                // `'{slot}'` QUOTED, matching `required_length_arg`'s wording.
+                assert!(
+                    err.contains("unresolved (Undef)") && err.contains(&format!("'{slot}'")),
+                    "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                     not \"missing or non-Length\"; got: {err:?}"
+                );
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("argument expects Length")),
+                    "{at}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    /// ALL-FAILURES-AT-ONCE for `chamfer_asymmetric`: a fully bare `d1` + `d2`
+    /// must report BOTH slots in ONE build.
+    ///
+    /// The COUNT is the load-bearing half, exactly as in
+    /// `assert_every_bare_position_reported`'s `reported == gated.len()` idiom:
+    /// a names-only check stays green if the group read is split back into
+    /// `?`-chained `required_length_value` calls, because the first call's `?`
+    /// returns before the second is ever attempted. Only `== 2` catches that.
+    ///
+    /// RED until step-5 reads both through ONE
+    /// `required_length_values(["d1","d2"], …)` call.
+    #[test]
+    fn compile_geometry_op_chamfer_asymmetric_reports_both_bare_distances_in_one_build() {
+        let values = ValueMap::new();
+        let step_handles = gamma_modify_step_handles();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::ChamferAsymmetric,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                // Two DISTINCT bare values so a slot transposition is
+                // detectable in the reported wording.
+                ("d1".to_string(), literal_f64(0.004)),
+                ("d2".to_string(), literal_f64(0.006)),
+            ],
+        };
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a bare chamfer_asymmetric distance pair must drop the op; got: {result:?}"
+        );
+
+        let rejections: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("argument expects Length"))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            2,
+            "BOTH `d1` and `d2` must be reported in ONE build — this is the half \
+             that catches the group read being split back into `?`-chained \
+             single-slot calls; got: {diagnostics:?}"
+        );
+        for slot in ["d1", "d2"] {
+            assert!(
+                rejections
+                    .iter()
+                    .any(|d| d.message.contains(&format!("{slot} argument expects"))),
+                "the all-at-once report must name `{slot}`; got: {rejections:?}"
+            );
+        }
+        for rej in &rejections {
+            assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{rej:?}"
+            );
+        }
+    }
+
+    /// NEGATIVE SCOPE LOCK: `draft`'s `angle` must STAY on the bare-accepting
+    /// path after the seven magnitudes are gated.
+    ///
+    /// Every ANGLE position in the geometry surface — `draft.angle`, `revolve`'s
+    /// angle, `circular_pattern`'s angle — belongs to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree.
+    /// Gating one here would be a SCOPE VIOLATION, not an improvement: it would
+    /// ship half of that PRD's surface with none of its migration, and split the
+    /// angle rollout across two leaves that cannot be reviewed together.
+    ///
+    /// `draft` is the only modify kind with an angle slot, and it sits in
+    /// [`GAMMA_MODIFY_SLOTS`] with `is_length = false` so the boundary is DATA.
+    /// This test is what makes that datum load-bearing: a bare `Real` angle must
+    /// still yield `Ok` with the angle stored as the bare `Real` it was written
+    /// as — re-wrapping it as an ANGLE `Scalar` would be just as wrong as
+    /// rejecting it.
+    #[test]
+    fn compile_geometry_op_draft_angle_stays_on_the_bare_path() {
+        let values = ValueMap::new();
+        let step_handles = gamma_modify_step_handles();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("angle".to_string(), literal_f64(0.1))],
+        };
+        let compiled = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect(
+            "draft's angle is PRD 3's (angle-units-surface-convergence), not \
+             this leaf's — a bare Real angle must still compile",
+        );
+
+        assert_eq!(
+            gamma_modify_stored_slot(&compiled, "angle"),
+            reify_ir::Value::Real(0.1),
+            "the draft angle must be stored as the bare Real it was written as, \
+             neither rejected nor re-wrapped as a dimensioned Scalar"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a bare draft angle must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+    }
+
     /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
     /// bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
     /// LENGTH Scalar passes.
