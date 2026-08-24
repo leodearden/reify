@@ -4927,6 +4927,18 @@ type EscapeSite = {
    *  post-dispatch assertion that it was really driven (click spy, store, …). */
   mountHit: (value: string) => () => void;
   expectHit: (value: string) => unknown;
+  /**
+   * A JSON-supplied NON-string this site hands to the escape unvalidated, plus
+   * the diagnostic it must still reach.
+   *
+   * Present only where the handler casts a param straight out of the JSON
+   * payload (`params.testId as string`, `params.name as string`) with no typeof
+   * guard, so a `{"testId": 3}` request reaches `escapeAttrValue` as a number.
+   * Absent where the value cannot arrive non-string: the tree rows interpolate
+   * `path` into a template BEFORE escaping, and the fea row's `viewportId` is
+   * rejected by a typeof guard first (case (n) of the set_fea_channel block).
+   */
+  nonString?: { value: unknown; expected: unknown };
 };
 
 /**
@@ -4974,6 +4986,7 @@ const ESCAPE_SITES: EscapeSite[] = [
     },
     // A single match, so the response stays the bare success shape.
     expectHit: () => ({ ok: true }),
+    nonString: { value: 3, expected: { error: RESOLVE_BY_TESTID_ERRORS.notFound('3') } },
   },
   // open_menu's `name` — menu names are simple lowercase identifiers BY
   // CONVENTION only, and this tool boundary does not enforce it.
@@ -4991,6 +5004,7 @@ const ESCAPE_SITES: EscapeSite[] = [
     // names, so `ctx.menuBar` is undefined and `open` falls back to the
     // requested name. This row is about the selector round trip, not menu state.
     expectHit: (value) => ({ ok: true, open: value }),
+    nonString: { value: 3, expected: { error: 'menu trigger not found: 3' } },
   },
   // driveTreeNode, design panel. Both panels feed the same escape through a
   // different testid prefix, so each is its own row.
@@ -5136,6 +5150,30 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
         expect(result).toEqual(site.expectHit(value));
         verifyHit();
       });
+
+      // The two arms must agree on NON-strings too, not just on metacharacters.
+      // `CSS.escape` takes a WebIDL DOMString and so coerces its argument, but
+      // the fallback arm calls `String.prototype.replace` — which THROWS
+      // `TypeError: v.replace is not a function` on a number. The dispatcher
+      // turns that into `{error: 'v.replace is not a function'}`: exactly the
+      // opaque-internal-message failure the escape exists to prevent, reached
+      // through a wrong TYPE instead of a metacharacter. Only the fallback arm
+      // can regress here, so an arm-blind version of this case would be green
+      // on the branch that cannot break.
+      if (site.nonString) {
+        const { value, expected } = site.nonString;
+        it(`[${arm.name}] ${site.label}: a JSON-supplied non-string coerces rather than throwing inside the escape`, async () => {
+          arm.install();
+          const stores = makeStores();
+          await initDebugBridge(stores);
+          const verifyMiss = site.setUpMiss();
+
+          const result = await dispatchCmd(nextId++, ...site.dispatch(value));
+
+          expect(result).toEqual(expected);
+          verifyMiss();
+        });
+      }
     }
   }
 });

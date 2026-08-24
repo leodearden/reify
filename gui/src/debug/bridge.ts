@@ -222,11 +222,23 @@ function pickFeaChannelSelect(
  * can still yield a throwing selector under that arm. CSS.escape handles those
  * too, and it is present in every real webview — the fallback runs only where
  * `CSS` is undefined, which today is jsdom alone.
+ *
+ * Takes `unknown` and coerces FIRST so the two arms cannot diverge on input
+ * type. `CSS.escape` takes a WebIDL DOMString and so coerces its argument
+ * itself; the fallback calls `String.prototype.replace`, which THROWS on a
+ * non-string — surfacing as `{error: 'v.replace is not a function'}`, exactly
+ * the opaque-internal-message failure this helper exists to prevent, reached
+ * through a wrong TYPE rather than a metacharacter. Coercing here closes every
+ * call site at once, which matters because the handlers cast their params
+ * straight out of the JSON payload (`params.testId as string`,
+ * `params.name as string`) with no typeof guard, so `{"name": 3}` arrives here
+ * as a number and must still reach its own not-found diagnostic.
  */
-function escapeAttrValue(v: string): string {
+function escapeAttrValue(v: unknown): string {
+  const s = String(v);
   return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(v)
-    : v.replace(/["\\]/g, '\\$&');
+    ? CSS.escape(s)
+    : s.replace(/["\\]/g, '\\$&');
 }
 
 export interface ResolvedByTestId {
@@ -926,8 +938,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // caller-supplied interpolation in this file. Unescaped, a quote or
       // backslash makes querySelector THROW a DOMException, which the dispatcher
       // surfaces as an opaque CSS-parser message instead of the
-      // `menu trigger not found` diagnostic below. Pinned by cases (e)/(f) of
-      // the `debug bridge open_menu` block in debugBridge.test.tsx.
+      // `menu trigger not found` diagnostic below. Pinned by the
+      // `open_menu name` row of the `debug bridge escapeAttrValue` table in
+      // debugBridge.test.tsx, which also covers a non-string `name` — this
+      // handler's `!name` guard rejects only a missing or empty one.
       const el = document.querySelector(
         `[data-testid="menu-trigger-${escapeAttrValue(name)}"]`,
       );
