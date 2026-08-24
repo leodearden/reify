@@ -17,6 +17,21 @@
 #                                   diagnostics.
 #   --list                        — print the canonical load-bearing path set,
 #                                   one repo-relative path per line, sorted-unique.
+#   --list-plan-derived           — print ONLY the plan-derived contribution to
+#                                   the 'emitted' clause below (4b): the *.sh
+#                                   paths named by verify.sh's RESOLVED
+#                                   --print-plan output. One repo-relative path
+#                                   per line, sorted-unique; a strict SUBSET of
+#                                   --list. Always exit 0, and legitimately
+#                                   EMPTY on the fail-soft route (a failed
+#                                   --print-plan is not an error here — the
+#                                   union still answers correctly from 4a).
+#                                   Diagnostic only, never a diff verdict. It
+#                                   exists because under the union a broken 4b
+#                                   is INVISIBLE in --list: this is what lets a
+#                                   test — and an operator debugging a
+#                                   surprising classification — see that half
+#                                   on its own.
 #
 # Exit-code contract:
 #   0 — full gate REQUIRED (at least one load-bearing file in the diff)
@@ -62,11 +77,31 @@
 #
 # Environment knobs:
 #   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
-#             BOTH live derivations that read verify.sh: the sourced-lib clause
-#             and the emitted-gate clause (testability / operator override;
-#             mirrors the REIFY_* knob idiom used throughout verify.sh and its
-#             libs). One knob, both clauses — a synthetic verify.sh injected
-#             here drives sourced-lib and emitted-gate coverage alike.
+#             ALL THREE live derivations that consult verify.sh: the sourced-lib
+#             clause (3), the source-text emitted-gate clause (4a) and the
+#             plan-derived emitted-gate clause (4b) (testability / operator
+#             override; mirrors the REIFY_* knob idiom used throughout verify.sh
+#             and its libs). One knob, three clauses — a synthetic verify.sh
+#             injected here drives all three alike, and they can never disagree
+#             about WHICH verify.sh they describe.
+#             SEMANTICS WIDENED (task 6426) — READ BEFORE SETTING THIS: clauses
+#             3 and 4a only READ the file; clause 4b EXECUTES it
+#             (`bash "$VALUE" … --print-plan`). Pointing this knob somewhere is
+#             therefore choosing WHAT CODE THE GUARD RUNS, not merely what it
+#             parses. In practice that adds no attack surface — whoever sets the
+#             guard's environment already controls the guard invocation itself —
+#             but it must not be discovered by surprise. Verified non-recursive:
+#             verify.sh never invokes verify-pipeline-guard.sh (grepped, zero
+#             hits), so executing it from inside the guard cannot loop.
+#   REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT — seconds; wall-clock ceiling
+#             on clause 4b's single --print-plan fork. Default 45, roughly 100x
+#             the measured ~0.4s cost of the real invocation. This guard runs on
+#             EVERY dark-factory merge-worker classification, so a wedged
+#             verify.sh must not be able to hang it; on expiry clause 4b derives
+#             nothing and the classifier degrades to its clause-4a source-text
+#             floor (bounded, never fail-open). Lowered by
+#             tests/infra/test_verify_pipeline_guard.sh Pair E (c-bis)'s BOUNDED
+#             case so that assertion stays cheap rather than paying the default.
 #   REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS — override path to the doc-sync
 #             manifest (testability / synthetic-injection + operator override;
 #             mirrors REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH above). Defaults to
@@ -225,9 +260,16 @@ fi
 #    Shares the $_verify_sh resolved at clause 3 — one knob, three clauses, no
 #    second env var. NOTE that the knob's semantics WIDEN here from READ to
 #    EXECUTE; see the header's Environment knobs block.
+#    Captured into its OWN variable as well as unioned into _SET, so
+#    --list-plan-derived can print this half ALONE without a second fork. That
+#    isolation is not a nicety: under the union a broken 4b is invisible in
+#    --list, and being able to see it alone is what makes the non-vacuity
+#    assertion in Pair E (c-bis) possible at all.
+_PLAN_DERIVED_SET=""
 if [ -f "$_verify_sh" ]; then
     while IFS= read -r _gate; do
         [ -z "$_gate" ] && continue
+        _PLAN_DERIVED_SET="${_PLAN_DERIVED_SET}"$'\n'"${_gate}"
         _SET="${_SET}"$'\n'"${_gate}"
     #    Three things about the pipeline below are load-bearing. (Same tail-of-
     #    loop-body placement as clause 4a, and for the same reason: bash admits
@@ -262,11 +304,40 @@ if [ -f "$_verify_sh" ]; then
     #    statements, so the anchor would match nothing and silently zero this
     #    entire clause. Do not "restore" it for symmetry. The comment-exclusion
     #    job the anchor does for 4a is done here by (b)'s '^#' filter instead.
-    done < <(DF_VERIFY_ROLE=merge bash "$_verify_sh" \
+    #
+    #    (d) THE FOUR HARDENING ELEMENTS, each load-bearing:
+    #      - `timeout "${REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT:-45}"`
+    #        bounds the merge-worker hot path: this guard runs on EVERY
+    #        classification, so a wedged verify.sh must not be able to hang it.
+    #        45s is ~100x the measured ~0.4s cost of the real invocation, and
+    #        /usr/bin/timeout is already the idiom throughout verify.sh's own
+    #        plan lines. On expiry the clause derives nothing and the classifier
+    #        degrades to its 4a floor — bounded, never fail-open.
+    #      - `REIFY_NEXTEST_PROBE_RETRY_SLEEP=0`: verify.sh's nextest probe runs
+    #        UNCONDITIONALLY in print mode and is explicitly NOT covered by the
+    #        "hermetic oracle" guarantee (its own scope note at
+    #        scripts/verify.sh:1702-1714 names this knob and says automation
+    #        invoking --print-plan repeatedly should set it). Worst case without
+    #        it: 4 cargo forks plus 2x the retry sleep before a hard fail.
+    #      - `DF_VERIFY_ROLE=merge` is part of the canonical widest shape (a),
+    #        but setting it EXPLICITLY also stops an ambient DF_VERIFY_ROLE in
+    #        the caller's environment from silently narrowing the derived set —
+    #        an inherited role=task would drop tests/infra/run_all.sh.
+    #      - `2>/dev/null` + `|| true`: verify.sh warns on stderr for benign
+    #        reasons and the guard must not pollute its caller's log with them;
+    #        the `|| true` keeps a non-zero --print-plan (the fail-soft route)
+    #        from aborting the guard under this file's `set -euo pipefail`, the
+    #        same errexit hazard the header's CAVEAT documents for the guard's
+    #        own callers.
+    done < <(DF_VERIFY_ROLE=merge REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+                 timeout "${REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT:-45}" \
+                 bash "$_verify_sh" \
                  all --scope all --profile both --include-infra --print-plan \
+                 2>/dev/null \
              | grep -v '^#' \
              | grep -oE '(^|[^A-Za-z0-9_./-])(\./)?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh([^A-Za-z0-9_.-]|$)' \
-             | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|')
+             | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|' \
+             || true)
 fi
 
 # 5. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
@@ -287,6 +358,12 @@ fi
 # Sort and deduplicate the set (a lib in both the manifest and sourced is fine).
 _SORTED_SET="$(printf '%s\n' "$_SET" | sort -u)"
 
+# Clause 4b's contribution alone, for the --list-plan-derived diagnostic. `sed`
+# rather than `grep -v '^$'` to drop the accumulator's leading blank: sed always
+# exits 0, whereas grep exits 1 on an all-empty set and `set -o pipefail` would
+# turn the documented fail-soft outcome (empty derivation) into a hard abort.
+_SORTED_PLAN_DERIVED_SET="$(printf '%s\n' "$_PLAN_DERIVED_SET" | sed '/^$/d' | sort -u)"
+
 # ---------------------------------------------------------------------------
 # Subcommand dispatch
 # ---------------------------------------------------------------------------
@@ -296,6 +373,19 @@ _subcmd="${1:-}"
 case "$_subcmd" in
     --list)
         printf '%s\n' "$_SORTED_SET"
+        exit 0
+        ;;
+    --list-plan-derived)
+        # Diagnostic: clause 4b's contribution in ISOLATION — a strict subset of
+        # --list. Reuses the set built above; does NOT re-run --print-plan.
+        # An EMPTY set is a legitimate exit-0 outcome, not an error: it is what
+        # the documented fail-soft route produces when the plan derivation
+        # fails, and the union means the classifier is still correct. Guarded by
+        # an `if` rather than `[ -n ... ] && printf` so an empty set neither
+        # prints a spurious blank line nor trips errexit before `exit 0`.
+        if [ -n "$_SORTED_PLAN_DERIVED_SET" ]; then
+            printf '%s\n' "$_SORTED_PLAN_DERIVED_SET"
+        fi
         exit 0
         ;;
     requires-full-gate)
@@ -339,10 +429,12 @@ case "$_subcmd" in
         exit 1
         ;;
     *)
-        printf 'Usage: %s requires-full-gate [file...] | --list\n' "$(basename "$0")" >&2
+        printf 'Usage: %s requires-full-gate [file...] | --list | --list-plan-derived\n' "$(basename "$0")" >&2
         printf '  requires-full-gate: exits 0 if any file is load-bearing (full gate required),\n' >&2
         printf '                      1 if none (fast-path safe); reads stdin when no args.\n' >&2
         printf '  --list: print the canonical load-bearing path set (one path per line).\n' >&2
+        printf '  --list-plan-derived: print only the --print-plan-derived subset of that set\n' >&2
+        printf '                       (diagnostic; exit 0, possibly empty on the fail-soft route).\n' >&2
         exit 2
         ;;
 esac
