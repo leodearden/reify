@@ -845,6 +845,11 @@ mod tests {
         ),
     ];
 
+    /// Byte offsets of every occurrence of `needle` in `source`, ascending.
+    fn occurrences(source: &str, needle: &str) -> Vec<usize> {
+        source.match_indices(needle).map(|(i, _)| i).collect()
+    }
+
     /// Convert an LSP range back to the `[start, end)` byte range it covers.
     fn range_to_byte_range(source: &str, range: Range) -> (usize, usize) {
         (
@@ -925,6 +930,115 @@ mod tests {
         assert!(
             compute_goto_definition(source, &test_uri(), position).is_none(),
             "a purpose-nested structure name is not a top-level declaration"
+        );
+    }
+
+    #[test]
+    fn goto_def_use_site_resolves_to_top_level_declaration_name_token() {
+        // Task 6388's headline symptom: goto-def on a USE of a top-level
+        // declaration (far from the declaration itself) must jump to that
+        // declaration's name token. `(source, name, use_occurrence_index)` —
+        // occurrence 0 is always the declaration, so the assertion is that the
+        // jump LEFT the use site and LANDED on the definition.
+        let rows: &[(&str, &str, usize)] = &[
+            // structure construction — the `sub b = Bracket()` case.
+            (
+                "structure def Bracket {\n    param w : Length = 5mm\n}\nstructure Asm {\n    sub b = Bracket()\n}",
+                "Bracket",
+                1,
+            ),
+            // fn call.
+            (
+                "fn area(x: Length) -> Length { x }\nstructure S {\n    let v = area(2mm)\n}",
+                "area",
+                1,
+            ),
+            // type alias in a type-annotation position.
+            (
+                "type Pressure = Force\nstructure S {\n    param p : Pressure = 1.0\n}",
+                "Pressure",
+                1,
+            ),
+            // enum name in a type position (occurrence 2 is `Dir.In`).
+            (
+                "enum Dir { In, Out }\nstructure S {\n    param d : Dir = Dir.In\n}",
+                "Dir",
+                1,
+            ),
+            // trait name in a bound.
+            (
+                "trait Rigid { param mass : Mass }\nstructure S : Rigid {\n    param mass : Mass\n}",
+                "Rigid",
+                1,
+            ),
+        ];
+
+        for (source, name, use_index) in rows {
+            let offsets = occurrences(source, name);
+            assert!(
+                offsets.len() > *use_index,
+                "fixture must contain a use of {name:?} at occurrence {use_index}: {source}"
+            );
+            let decl_offset = offsets[0];
+            let use_offset = offsets[*use_index];
+            let position =
+                crate::convert::offset_to_position(source, (use_offset + name.len() / 2) as u32);
+
+            let loc = compute_goto_definition(source, &test_uri(), position).unwrap_or_else(|| {
+                panic!("goto-def on the USE of {name:?} returned None for: {source}")
+            });
+            assert_eq!(loc.uri, test_uri(), "uri mismatch for {name:?}: {source}");
+
+            let (lo, hi) = range_to_byte_range(source, loc.range);
+            assert_eq!(
+                &source[lo..hi],
+                *name,
+                "goto-def range sliced to {:?}, expected exactly {name:?} for: {source}",
+                &source[lo..hi]
+            );
+            assert_eq!(
+                lo, decl_offset,
+                "goto-def on a use of {name:?} must land on the DECLARATION's name \
+                 token (offset {decl_offset}), not on the use site (offset {use_offset}): {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn goto_def_local_declaration_wins_over_same_named_import() {
+        // Precedence pin: a LOCAL top-level declaration beats an import of the
+        // same name. This is the one ordering decision task 6388 makes that a
+        // later refactor could silently invert — same-file Phase C runs inside
+        // the single-file core, which the cross-file entry point delegates to at
+        // its Phase 1 slot, so it necessarily precedes cross-file Phase 2.
+        let source = "import parts.Hole\nstructure Hole {\n    param d : Length = 1mm\n}\nstructure Asm {\n    sub h = Hole()\n}";
+        let target_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        let target_uri = parts_uri();
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (target_uri.clone(), target_source.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        // Occurrence 0 = the import, 1 = the local declaration, 2 = the use.
+        let offsets = occurrences(source, "Hole");
+        assert_eq!(offsets.len(), 3, "fixture should mention Hole three times");
+        let position = crate::convert::offset_to_position(source, offsets[2] as u32 + 1);
+
+        let loc = compute_goto_definition_cross_file(source, &test_uri(), position, &resolver)
+            .expect("goto-def on `sub h = Hole()` should resolve");
+        assert_eq!(
+            loc.uri,
+            test_uri(),
+            "must resolve to the LOCAL declaration, not the imported target"
+        );
+        let (lo, hi) = range_to_byte_range(source, loc.range);
+        assert_eq!(&source[lo..hi], "Hole");
+        assert_eq!(
+            lo, offsets[1],
+            "must land on the local `structure Hole` name token"
         );
     }
 
