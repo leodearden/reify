@@ -77,6 +77,45 @@ pub(crate) fn crack_dimensioned_scalar(
     }
 }
 
+/// Crack a `List<Scalar>` requiring each entry to carry `expected` units (a bare
+/// `Real` is still accepted per entry for ergonomics) — the list lifting of
+/// [`crack_dimensioned_scalar`], whose `code` / `label` / `hint` it threads
+/// through unchanged.
+///
+/// Each entry's located name is `"{what}[{i}]"`, so a wrong-unit diagnostic tells
+/// the author WHICH entry is wrong rather than merely naming the list. Shared by
+/// `tensegrity_load.rs`'s `crack_forces` and `membrane_load.rs`'s `crack_forces`
+/// / `crack_pressures`, which supply the FORCE / PRESSURE choice.
+pub(crate) fn crack_scalar_list(
+    v: &Value,
+    what: &str,
+    expected: DimensionVector,
+    label: &str,
+    code: &str,
+    hint: &str,
+) -> Result<Vec<f64>, String> {
+    let list = match v {
+        Value::List(items) => items,
+        other => {
+            return Err(format!(
+                "{code}: {what} must be a list of {label} scalars, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        out.push(crack_dimensioned_scalar(
+            item,
+            &format!("{what}[{i}]"),
+            expected,
+            label,
+            code,
+            hint,
+        )?);
+    }
+    Ok(out)
+}
+
 /// Range-check a signed node index against `0..n`, returning a located
 /// `"{code}: {ctx} index N is out of range 0..n"` error. A negative index — or
 /// one at/after the node count — is rejected here rather than wrapping to a huge
@@ -467,7 +506,13 @@ mod tests {
         );
         // Guards against both degenerate labellings: a constant index and a
         // bare `what` with no index at all.
-        assert!(!err.contains("prestress[0]"), "must name entry 1, got: {err}");
-        assert!(err.contains("prestress[1]"), "must carry a located index: {err}");
+        assert!(
+            !err.contains("prestress[0]"),
+            "must name entry 1, got: {err}"
+        );
+        assert!(
+            err.contains("prestress[1]"),
+            "must carry a located index: {err}"
+        );
     }
 }

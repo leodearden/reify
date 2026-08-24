@@ -52,6 +52,7 @@ use reify_solver_elastic::{
 
 use super::tensegrity_crack::{
     check_index, crack_dimensioned_scalar, crack_index_pairs, crack_index_triples, crack_nodes,
+    crack_scalar_list,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -286,43 +287,19 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
 
 /// Crack a `List<Force>` into f64 newtons (one per line member).
 fn crack_forces(v: &Value, what: &str) -> Result<Vec<f64>, String> {
-    crack_scalar_list(v, what, DimensionVector::FORCE, "Force")
+    crack_scalar_list(v, what, DimensionVector::FORCE, "Force", CODE, UNIT_HINT)
 }
 
 /// Crack a `List<Pressure>` into f64 pascals (one per surface triangle).
 fn crack_pressures(v: &Value, what: &str) -> Result<Vec<f64>, String> {
-    crack_scalar_list(v, what, DimensionVector::PRESSURE, "Pressure")
-}
-
-/// Crack a `List<Scalar>` requiring each entry to carry `expected` units (a bare
-/// `Real` is still accepted for ergonomics). Shared by [`crack_forces`] and
-/// [`crack_pressures`].
-fn crack_scalar_list(
-    v: &Value,
-    what: &str,
-    expected: DimensionVector,
-    label: &str,
-) -> Result<Vec<f64>, String> {
-    let list = match v {
-        Value::List(items) => items,
-        other => {
-            return Err(format!(
-                "E_MembraneLoadInfeasible: {what} must be a list of {label} scalars, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, item) in list.iter().enumerate() {
-        out.push(crack_dimensioned_scalar(
-            item,
-            &format!("{what}[{i}]"),
-            expected,
-            label,
-            CODE,
-            UNIT_HINT,
-        )?);
-    }
-    Ok(out)
+    crack_scalar_list(
+        v,
+        what,
+        DimensionVector::PRESSURE,
+        "Pressure",
+        CODE,
+        UNIT_HINT,
+    )
 }
 
 /// Crack a bare real number (e.g. Poisson's ratio) — a `Value::Real` or any

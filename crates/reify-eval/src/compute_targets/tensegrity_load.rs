@@ -45,7 +45,7 @@ use reify_solver_elastic::{
 };
 
 use super::tensegrity_crack::{
-    check_index, crack_dimensioned_scalar, crack_index_pairs, crack_nodes,
+    check_index, crack_dimensioned_scalar, crack_index_pairs, crack_nodes, crack_scalar_list,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -207,29 +207,11 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
 
 /// Crack a `List<Force>` into f64 newtons. Each entry must be FORCE-dimensioned
 /// (a bare `Real` is still accepted for ergonomics); a *dimensioned* `Scalar`
-/// carrying the wrong unit is rejected — see
+/// carrying the wrong unit is rejected, located as `"{what}[{i}]"` — see
+/// [`crack_scalar_list`](super::tensegrity_crack::crack_scalar_list) and
 /// [`crack_dimensioned_scalar`](super::tensegrity_crack::crack_dimensioned_scalar).
 fn crack_forces(v: &Value, what: &str) -> Result<Vec<f64>, String> {
-    let list = match v {
-        Value::List(items) => items,
-        other => {
-            return Err(format!(
-                "E_TensegrityLoadInfeasible: {what} must be a list of forces, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, item) in list.iter().enumerate() {
-        out.push(crack_dimensioned_scalar(
-            item,
-            &format!("{what}[{i}]"),
-            DimensionVector::FORCE,
-            "Force",
-            CODE,
-            UNIT_HINT,
-        )?);
-    }
-    Ok(out)
+    crack_scalar_list(v, what, DimensionVector::FORCE, "Force", CODE, UNIT_HINT)
 }
 
 /// Crack `loads` (a `List<Vector3<Force>>`) into per-node `[f64; 3]` force
