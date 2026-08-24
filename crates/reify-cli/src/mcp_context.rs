@@ -89,7 +89,20 @@ impl CliToolContext {
             reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
-            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
+            // Render through `ParseError::render` rather than cloning the bare message, so an
+            // MCP client gets `line:column: message` and can jump to the fault instead of
+            // being handed an unlocatable sentence.  INV-SF-7 `parse-is-value-faithful`
+            // (docs/legibility/design-invariants.md), task #5392: this is the third and last
+            // caller brought onto the single byte-offset → line:col converter, alongside the
+            // two loops in `reify-cli/src/main.rs`, so `render`'s "every caller reports
+            // positions the same way" doc claim is now true rather than aspirational.
+            //
+            // `source` is the exact string the spans index (read from disk immediately above
+            // and handed unmodified to `parse_with_stdlib`), so `render`'s prelude-sentinel
+            // and out-of-range-clamp branches apply unchanged.  The `Parse errors: {joined}`
+            // envelope and the `"; "` separator are deliberately unchanged so existing MCP
+            // consumers keep parsing the response.
+            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.render(&source)).collect();
             return Err(format!("Parse errors: {}", msgs.join("; ")));
         }
 
