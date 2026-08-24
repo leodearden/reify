@@ -1737,7 +1737,7 @@ const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] =
 /// see `geometry_ops.rs` Modify arm for each kind's required `eval_arg` names.
 fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
     let args = match k {
-        ModifyKind::Fillet => vec![("radius".to_string(), lit(0.005))],
+        ModifyKind::Fillet => vec![("radius".to_string(), lit_len(0.005))],
         ModifyKind::Chamfer => vec![("distance".to_string(), lit(0.005))],
         ModifyKind::ChamferAsymmetric => vec![
             ("d1".to_string(), lit(0.004)),
@@ -1779,9 +1779,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         edges: [],
-        radius: Real(
-            0.005,
-        ),
+        radius: Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         ModifyKind::Chamfer => r#"Ok(

@@ -2199,11 +2199,19 @@ fn modify_fillet(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let radius = eval_arg("radius")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ; PRD
+    // `docs/prds/v0_6/units-length-gate-completion.md` §6 boundary row 4). A
+    // bare `fillet(solid, 1)` asked for a 1-METRE blend and surfaced only as a
+    // span-less `BRepFilletAPI_MakeFillet failed`; this rejects it by name.
+    let radius = required_length_value(
+        "radius",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::Fillet {
