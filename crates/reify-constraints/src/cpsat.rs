@@ -6,7 +6,7 @@
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Type, ValueCellId};
-use reify_ir::{AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, ConstraintSolver, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, Value, ValueMap};
 use std::collections::{HashMap, HashSet};
 
 /// Maximum number of integer domain values to enumerate.
@@ -40,6 +40,28 @@ const MAX_INT_DOMAIN: i64 = 1000;
 /// consumer having to know WHICH truncation mode fired, and no second,
 /// drifting notion of completeness can grow (D5).
 const ENUMERATION_NODE_BUDGET: usize = 100_000;
+
+/// How many ranked candidates a [`RankedSolveResult::Ranked`] carries out
+/// (PRD2 §10 Q1, "suggested top-N 16").
+///
+/// A CARRIER bound, and nothing more. Truncation happens strictly AFTER the
+/// sort, so it can only ever drop candidates the ranking already judged worse
+/// than the sixteen it keeps — `candidates[0]` is unaffected, and so is the
+/// `optimality` verdict, which reads `complete` alone. PRD2 §4.2 states that
+/// separation directly ("truncation never affects optimality") because
+/// conflating the two is the natural implementation slip: a list that got
+/// shorter LOOKS like a search that stopped early, and it is not one.
+const RANKED_CANDIDATE_CAP: usize = 16;
+
+/// The solution cap the ranked path enumerates under.
+///
+/// Far above [`RANKED_CANDIDATE_CAP`] on purpose: the ranking has to SEE every
+/// feasible model to know which one is the argmin, and a cap that stopped at 16
+/// would return the sixteen models found FIRST rather than the sixteen best —
+/// while `complete: false` would then also strip the honest `ProvenOptimal`
+/// off every solve. The real bound on this path is
+/// [`ENUMERATION_NODE_BUDGET`], which bounds work rather than answers.
+const ENUMERATION_SOLUTION_CAP: usize = 100_000;
 
 /// A discrete constraint solver using backtracking search with forward-checking.
 ///
@@ -761,7 +783,7 @@ impl CpSatSolver {
                     // production until the γ wiring — so the demotion POLICY
                     // belongs with the step that first makes it observable. See
                     // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
-                    // and follow-up ticket tkt_0RSVBYFVRP1PSNJPY26HYHAZXT.
+                    // and task #6554, which owns that observable half.
                     //
                     // #5388 is this fix's continuous-side twin — the same
                     // uniqueness-honesty question for `DimensionalSolver`, in
@@ -797,6 +819,42 @@ impl CpSatSolver {
             }
         }
     }
+
+    /// A ranking that makes NO ordering claim: one feasible point, no score.
+    ///
+    /// Defined by delegation to [`ConstraintSolver::solve`] rather than by a
+    /// second enumeration, and that is the whole point. `solve` already
+    /// enumerates at `cap = 2` and derives `unique` from it, so this arm agrees
+    /// with `solve` about the same problem BY CONSTRUCTION — values, `unique`,
+    /// and every degenerate verdict alike — instead of by two implementations
+    /// happening to stay in step. `Infeasible` and `NoProgress` go through
+    /// `into_ranked_pass_through`, reify-ir's canonical anti-drift seam for
+    /// exactly these two arms (constraint.rs:349), which the trait default lift
+    /// also uses.
+    ///
+    /// Reached from two places: an absent objective, and — deliberately — an
+    /// objective that failed to score EVERY model. On that second path
+    /// `FeasibilityOnly` is in tension with F-result I3's "iff no objective
+    /// governs the solve", and it is still the right answer: the alternative is
+    /// `BestFound` carrying `objective_score: None`, which is the pairing I4
+    /// forbids outright, and it would additionally assert a ranking quality over
+    /// a set nothing could be ranked in. Making no ordering claim is the honest
+    /// description of having no orderable scores.
+    fn feasibility_ranking(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        match self.solve(problem) {
+            SolveResult::Solved { values, unique } => RankedSolveResult::Ranked {
+                candidates: vec![RankedCandidate {
+                    values,
+                    objective_score: None,
+                    unique,
+                }],
+                optimality: OptimalityStatus::FeasibilityOnly,
+            },
+            non_solved => non_solved
+                .into_ranked_pass_through()
+                .expect("Solved arm already handled above"),
+        }
+    }
 }
 
 /// Why an enumeration declined to answer, in the words a user eventually reads.
@@ -823,6 +881,182 @@ fn enumeration_budget_exhausted_reason(problem: &ResolutionProblem, node_budget:
 impl ConstraintSolver for CpSatSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         self.solve_with_budget(problem, ENUMERATION_NODE_BUDGET)
+    }
+
+    /// Rank every feasible model by the governing objective (PRD2 §4.2, D2;
+    /// F-result invariants I2/I4).
+    ///
+    /// # What this replaces
+    ///
+    /// Without this override, `CpSatSolver` inherits reify-ir's default lift
+    /// (constraint.rs:564): `solve()`'s answer wrapped in one candidate with
+    /// `objective_score: None` and `BestFound { Unreported }`. The lift is
+    /// honest about knowing nothing, but its practical effect is that a
+    /// `minimize` over a discrete model is SILENTLY IGNORED — `solve()` returns
+    /// the first feasible point in search order, so flipping the sense to
+    /// `maximize` returns the same point (PRD2 §2.3, spike rows n3/n3b).
+    ///
+    /// # Why `ProvenOptimal` is honest here
+    ///
+    /// Earned by three properties of this search, not asserted. Domains are
+    /// FINITE and materialised before the search starts. Pruning is SOUND — a
+    /// branch is cut only when a constraint whose auto refs are all assigned
+    /// evaluates to `Bool(false)`; a non-`Bool` result takes the
+    /// skip-don't-prune arm — so no feasible point is ever lost. And the
+    /// per-trial fold means every point is scored against correctly
+    /// materialised dependent cells. So `complete == true` means every feasible
+    /// point was visited and scored, and the ascending minimum IS the global
+    /// minimum. Mixed discrete+continuous components never reach here (PRD2 ζ
+    /// owns them, and always reports `BestFound`), so the pure-discrete
+    /// precondition D2 puts on `ProvenOptimal` holds by construction.
+    ///
+    /// # Invariant I1
+    ///
+    /// This method adds information; it never changes what `solve` returns.
+    /// `solve` is untouched, and the argmin computed here is a separate
+    /// projection over the same enumeration.
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        // No objective ⇒ no ordering claim to make. Step β.10's arm; delegating
+        // to `solve` keeps `solve_ranked` and `solve` in agreement by
+        // construction rather than by coincidence.
+        let Some(objective) = problem.objective.as_ref() else {
+            return self.feasibility_ranking(problem);
+        };
+
+        let (solutions, complete) = match self.solve_all(problem, ENUMERATION_SOLUTION_CAP) {
+            // Verbatim the reason `solve()` hands to `SolveResult::NoProgress`
+            // for this problem, so the two entry points give a user the same
+            // account of the same failure.
+            SolveAllResult::NotEnumerable { reason } => {
+                return RankedSolveResult::NoProgress { reason };
+            }
+            SolveAllResult::Enumerated {
+                solutions,
+                complete,
+            } => (solutions, complete),
+        };
+
+        // Score every model, remembering its ENUMERATION INDEX — the tiebreak
+        // below needs it, and it is only available here.
+        let mut scored: Vec<(usize, HashMap<ValueCellId, Value>, f64)> =
+            Vec::with_capacity(solutions.len());
+        for (index, solution) in solutions.into_iter().enumerate() {
+            // `build_scoring_values` rather than a hand-rolled overlay. It
+            // documents a crate-scoped INVARIANT that no site may build a
+            // scoring map as `current_values.clone()` overlaid with the solved
+            // autos: that leaves every DEPENDENT CELL holding its pre-solve
+            // value, so an objective reading one scores the model against
+            // arithmetic that never happened.
+            //
+            // `dispatch: None` — cpsat has no compute-dispatch plumbing of its
+            // own, and its forward-check evaluates through a bare
+            // `EvalContext::new` for the same reason. Passing `None` keeps
+            // scoring and pruning reading the same context shape, so this adds
+            // no dispatch capability cpsat did not already have.
+            let full = crate::solver::build_scoring_values(
+                &problem.current_values,
+                &solution,
+                &problem.dependent_cells,
+                &problem.functions,
+                None,
+            );
+            // `eval_objective_set` already normalises `Maximize` to
+            // "lower is better" (it accumulates `-weight · v`) and rejects any
+            // non-finite fold with `None`, so every score reaching the sort is
+            // a finite, well-ordered, minimisation-sense f64 (F-result I2).
+            if let Some(score) =
+                crate::solver::eval_objective_set(objective, &full, &problem.functions, None)
+            {
+                scored.push((index, solution, score));
+            }
+            // A model that did not score is DROPPED, mirroring
+            // `solve_ranked_impl`'s "Solved-but-unscored candidate is dropped".
+            // Carrying it would mean a candidate with `objective_score: None`
+            // inside a scored ranking — the pairing I4 forbids — and it could
+            // not be placed in the order anyway.
+        }
+
+        // Nothing scored at all. Not an empty `Ranked` (I2 requires a non-empty
+        // candidate list) and not a claim of infeasibility either — the models
+        // exist, they just could not be ordered. See `feasibility_ranking`.
+        if scored.is_empty() {
+            return self.feasibility_ranking(problem);
+        }
+
+        // Ascending score, ties broken by ascending enumeration index — the
+        // same score-then-start-index shape `DimensionalSolver::solve_ranked_impl`
+        // uses. Without the second key, tied candidates land wherever the sort
+        // leaves them, which makes the ranking unstable run-to-run for exactly
+        // the problems where the choice is arbitrary (D4).
+        //
+        // `partial_cmp` returns `None` only for NaN, which `eval_objective_set`
+        // already filtered out, so `unwrap_or(Equal)` is a defensive fallback
+        // that is never exercised.
+        scored.sort_by(|a, b| {
+            a.2.partial_cmp(&b.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+
+        // `RankedCandidate.unique` is a claim about the SCORE — "no other
+        // solution with the same objective value exists" — not about the model
+        // count. Two models tying at the optimum makes the winner non-unique
+        // even though each is individually a perfectly good answer.
+        //
+        // Exact `==` on f64 is deliberate: the question is whether two models
+        // attained the SAME score, and `eval_objective_set` has already
+        // filtered NaN out, so equality here is the total, reflexive kind.
+        //
+        // `complete` is a conjunct for the same reason it is in `solve`: a
+        // truncated enumeration never saw the models it did not visit, so it
+        // cannot know none of them ties.
+        let best_score = scored[0].2;
+        let winner_unique =
+            complete && scored.iter().filter(|(_, _, s)| *s == best_score).count() == 1;
+
+        // Derived from `complete` ALONE, and computed before truncation so the
+        // dependency cannot accidentally acquire a second input. A shorter list
+        // is not a shorter search (PRD2 §4.2).
+        //
+        // `IterationLimit` for the truncated case is a deliberate, imperfect
+        // choice. It is the ONLY existing `BestFoundReason` variant that gates
+        // the engine's `W_SOLVER_OPTIMALITY_UNPROVEN` warning — engine_eval.rs
+        // (6127, 7539) matches on it explicitly, and `ConvergedWithinBudget` /
+        // `Unreported` do NOT fire the warning. Picking either of those would
+        // make a truncated enumeration SILENT, which is precisely what D5
+        // forbids. The cost is that `describe()` says "iteration limit reached;
+        // derivative-free solver cannot prove global optimality", which is
+        // inaccurate for an enumeration cap on an exact solver. An honest
+        // `BestFoundReason::EnumerationBudget` variant plus the two engine gate
+        // arms is task #6553 — cross-crate (reify-ir + reify-eval), outside
+        // this task's module scope.
+        let optimality = if complete {
+            OptimalityStatus::ProvenOptimal
+        } else {
+            OptimalityStatus::BestFound {
+                reason: BestFoundReason::IterationLimit,
+            }
+        };
+
+        // Truncate strictly AFTER the sort, so the carrier keeps the best
+        // `RANKED_CANDIDATE_CAP` rather than the first ones found.
+        let candidates: Vec<RankedCandidate> = scored
+            .into_iter()
+            .take(RANKED_CANDIDATE_CAP)
+            .enumerate()
+            .map(|(rank, (_, values, score))| RankedCandidate {
+                values,
+                objective_score: Some(score),
+                // Only the winner can be unique; an alternative optimum is by
+                // definition not *the* solution. Mirrors `solve_ranked_impl`.
+                unique: rank == 0 && winner_unique,
+            })
+            .collect();
+
+        RankedSolveResult::Ranked {
+            candidates,
+            optimality,
+        }
     }
 }
 
@@ -2507,8 +2741,7 @@ mod solve_ranked_override_tests {
     use super::*;
     use super::cpsat_test_fixtures::*;
     use reify_ir::{
-        BestFoundReason, ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate,
-        RankedSolveResult,
+        ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate, RankedSolveResult,
     };
 
     /// The objective's weight on `a`, and on `b`. Distinct and non-equal so the
@@ -2756,8 +2989,8 @@ mod solve_ranked_override_tests {
         let mut got: Vec<((bool, bool), f64)> =
             candidates.iter().map(|c| (shape(c).0, score(c))).collect();
         let mut want = expected(ObjectiveSense::Minimize, WEIGHT_A, WEIGHT_B);
-        got.sort_by(|x, y| x.0.cmp(&y.0));
-        want.sort_by(|x, y| x.0.cmp(&y.0));
+        got.sort_by_key(|x| x.0);
+        want.sort_by_key(|x| x.0);
 
         assert_eq!(
             got, want,
