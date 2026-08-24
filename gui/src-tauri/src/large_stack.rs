@@ -89,6 +89,12 @@
 //!    task #6195.
 //! 2. **`main.rs::mcp_tool_call`** remains unrouted; it is task 5466's scope, and
 //!    joins the ENGINE lane as a lane choice rather than a redesign.
+//! 3. **Concurrency WITHIN a lane.** A lane has one consumer, so routing
+//!    `lsp_request` onto [`LSP_LANE`] serializes LSP requests against each
+//!    other, where the multi-threaded tauri runtime previously ran them
+//!    concurrently. The split buys isolation from ENGINE work, not from other
+//!    LSP work — see [`Lane`]'s "What the split does NOT buy" for what that
+//!    costs and what bounding it would take.
 //!
 //! So the invariant this module establishes is: "compile-bearing and
 //! high-frequency engine work, plus the inline LSP dispatch arms, run on a large
@@ -456,6 +462,38 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// A second lane costs one extra thread whose 256 MiB stack is a virtual-address
 /// reservation committed page-by-page — near-zero RSS until used — and it is
 /// created only if something actually submits to it.
+///
+/// # What the split does NOT buy: LSP requests now serialize against EACH OTHER
+///
+/// Stated as a limit rather than left to be inferred from "two lanes", because
+/// the argument above is about the OTHER lane's work and does not carry over.
+/// A lane has a single consumer, and [`LSP_LANE`]'s consumer parks in
+/// `Handle::block_on(fut)` for the whole request, so `lsp_request` calls now run
+/// strictly one at a time.
+///
+/// That is a real change, not merely a theoretical one. Before task 5772 these
+/// futures were awaited on the multi-threaded tauri runtime, and
+/// `textDocument/hover` — which takes only a brief `state.read().await` and never
+/// touches the `eval_state` mutex that `didChange` holds across its diagnostics
+/// eval — genuinely ran concurrently with an in-flight `didChange` eval.
+///
+/// The sharpest case is the four `spawn_blocking` arms from the module docs'
+/// "What is still NOT covered". They hand their compiler work to tokio's
+/// blocking pool, but the lane thread stays parked in `block_on` for the whole
+/// duration — so a workspace-wide `textDocument/references` now stalls every
+/// subsequent keystroke's `didChange` and `hover` behind it, while gaining
+/// nothing from the lane in exchange (its own frames on the lane's stack are
+/// shallow; the deep ones are on the blocking pool's ~2 MiB threads).
+///
+/// So the accurate claim is: the lane split protects the keystroke path from
+/// ENGINE work, not from other LSP work. Bounding the remainder means either
+/// keeping the four `spawn_blocking` arms off the lane, or making [`LSP_LANE`] a
+/// small fixed pool of large-stack consumers instead of a single-consumer queue.
+/// Both are follow-up work rather than part of this routing: a method-keyed
+/// bypass couples this module to `reify-lsp`'s internal choice of which arms
+/// offload — a coupling that would rot silently if that choice changed — and a
+/// pool is a different concurrency design than the one this task specified,
+/// needing its own reentrancy and ordering argument.
 pub(crate) struct Lane {
     /// The lane thread's name, for backtraces, `top -H` and profiler rows.
     name: &'static str,

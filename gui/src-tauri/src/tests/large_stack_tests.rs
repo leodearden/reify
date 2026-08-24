@@ -656,6 +656,12 @@ fn dispatch_recovers_a_handed_back_job_inline_on_the_caller() {
 // true — a second lane must be a second INSTANCE, not a second design, and must
 // inherit every property the engine lane already proves (large stack, panic
 // isolation, per-lane amortisation).
+//
+// What none of them claims — and what no test here should be read as claiming —
+// is concurrency WITHIN a lane. A lane has one consumer, so LSP requests now
+// serialize against each other; (r) pins that the two lanes are separate
+// threads, not that either lane runs two jobs at once. See `Lane`'s "What the
+// split does NOT buy" for that boundary.
 
 /// (p) The LSP lane runs its jobs on its OWN named thread
 /// ([`crate::large_stack::LSP_WORKER_THREAD_NAME`]), distinct from the caller.
