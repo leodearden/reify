@@ -73,6 +73,13 @@ use reify_core::primitives::{
     SOLVER_HINT_ANNOTATION as SOLVER_MOD, TEST_ANNOTATION as TEST_MOD,
 };
 
+// ── units ────────────────────────────────────────────────────────────────────
+use reify_core::{BUILTIN_UNITS, ri_emittable_units, unit_symbol_to_si};
+use reify_core::units::{
+    BUILTIN_UNITS as BUILTIN_UNITS_MOD, ri_emittable_units as ri_emittable_units_mod,
+    unit_symbol_to_si as unit_symbol_to_si_mod,
+};
+
 // ── flat PortDirection ────────────────────────────────────────────────────────
 use reify_core::PortDirection as PortDirectionFlat;
 
@@ -259,4 +266,46 @@ fn port_direction_flat_and_module_path() {
     let pd2: PortDirection = PortDirection::Out;
     assert_ne!(pd, pd2);
     assert_eq!(pd, PortDirectionFlat::In);
+}
+
+#[test]
+fn units_flat_and_module_path() {
+    // The built-in symbol → SI table, in both spellings.
+    let (factor, dim) = unit_symbol_to_si("mm").expect("mm is a built-in symbol");
+    assert_eq!(dim, DimensionVector::LENGTH);
+    assert_eq!(factor, 0.001);
+    assert_eq!(unit_symbol_to_si_mod("mm"), Some((factor, dim)));
+    assert_eq!(unit_symbol_to_si("furlong"), None);
+
+    // The reverse (.ri-emission) table, in both spellings. `reify-ir`'s
+    // `value_to_ri_literal` depends on this surface, so pin it at compile
+    // time rather than incidentally (task #5095).
+    //
+    // Deliberately NOT asserting the ladder's CONTENTS here. That is this
+    // file's remit boundary: it pins reachability and the SIGNATURE (the
+    // `&'static [&'static str]` annotation below is load-bearing — it fails to
+    // compile if the return type moves to an owned or borrowed form). The
+    // table's contents belong to `units.rs`, where the ladder and its two
+    // drift guards live; duplicating `["mm", "cm", "m"]` here would add a
+    // third edit site for a deliberate ladder change and no coverage.
+    let ladder: &'static [&'static str] = ri_emittable_units(&DimensionVector::LENGTH);
+    assert!(!ladder.is_empty(), "LENGTH must have an emission ladder");
+    assert_eq!(ri_emittable_units_mod(&DimensionVector::LENGTH), ladder);
+    assert!(ri_emittable_units(&DimensionVector::DIMENSIONLESS).is_empty());
+
+    // The built-in table itself, in both spellings. `reify-compiler`'s
+    // stdlib/built-in cross-guard iterates this slice to decide which symbols
+    // to check for registry drift, so its reachability from OUTSIDE the crate
+    // is load-bearing, not incidental (task #5095).
+    //
+    // Same remit boundary as the ladder above: the annotation below is the
+    // assertion — it fails to compile if the entry shape moves (to a struct, an
+    // owned form, or a different factor type), which would silently change what
+    // every table-driven guard iterates. The table's CONTENTS stay in
+    // `units.rs`, where the entries and the guards over them live — a count
+    // here would be one more hand-maintained number to drift, which is the
+    // exact defect this task removed.
+    let table: &'static [(&'static str, f64, DimensionVector)] = BUILTIN_UNITS;
+    assert!(!table.is_empty(), "the built-in unit table must be reachable");
+    assert_eq!(BUILTIN_UNITS_MOD, table);
 }

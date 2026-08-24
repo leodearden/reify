@@ -32,6 +32,7 @@ pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
 pub mod ranked;
+pub mod ri_literal;
 pub mod sampled;
 pub mod structure_registry;
 pub mod traits;
@@ -85,6 +86,7 @@ pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
+pub use ri_literal::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     KeyedMember, MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation, MemberKey, RegionRef,
