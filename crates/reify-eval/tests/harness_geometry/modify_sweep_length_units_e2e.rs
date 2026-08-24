@@ -420,3 +420,79 @@ fn dimensioned_chamfer_asymmetric_raises_no_units_rejection() {
          {diagnostics:?}"
     );
 }
+
+fn is_extrude(op: &GeometryOp) -> bool {
+    matches!(op, GeometryOp::Extrude { .. })
+}
+
+// ---------------------------------------------------------------------------
+// `extrude` distance — the sweep family's pair (step-6)
+// ---------------------------------------------------------------------------
+
+/// BARE `extrude(rectangle(10mm, 10mm), 20)` → a coded `DimensionedArgRejected`
+/// Error naming the builtin, the `distance` argument and the migration hint,
+/// with NO `Extrude` op reaching the kernel.
+///
+/// The pre-gate reading of that source was a 20-METRE extrusion of a 10 mm
+/// square — 1000× the intended 20 mm, and silently buildable, because
+/// `Value::as_f64` reads a bare `Real` as SI metres and `extrude`'s only
+/// existing guard is a degeneracy floor at 1e-12 m that a 20 sails past.
+#[test]
+fn bare_extrude_distance_drops_the_op_with_a_coded_error() {
+    assert_rejected(
+        "extrude(rectangle(10mm, 10mm), 20)",
+        r#"
+        structure def BareExtrude {
+            let body = extrude(rectangle(10mm, 10mm), 20)
+        }
+        "#,
+        &[
+            "extrude",
+            "distance",
+            "expects Length",
+            "pass a dimensioned length such as `5mm`",
+        ],
+        is_extrude,
+    );
+}
+
+/// The inseparable control: the SAME extrude with a DIMENSIONED distance builds
+/// with ZERO Error diagnostics and exactly ONE `Extrude` op whose SI distance is
+/// still 0.02 — the gate re-wraps the accepted f64 and must not re-scale it.
+#[test]
+fn dimensioned_extrude_distance_builds_one_op_with_unchanged_si_distance() {
+    let (diagnostics, ops) = build_capturing_ops(
+        r#"
+        structure def DimExtrude {
+            let body = extrude(rectangle(10mm, 10mm), 20mm)
+        }
+        "#,
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a dimensioned extrude must build with zero Error diagnostics; got: {errors:?}"
+    );
+
+    let extrudes: Vec<_> = ops.iter().filter(|op| is_extrude(op)).collect();
+    assert_eq!(
+        extrudes.len(),
+        1,
+        "a dimensioned extrude must emit exactly one Extrude op; got: {extrudes:?}"
+    );
+
+    let GeometryOp::Extrude { distance, .. } = extrudes[0] else {
+        unreachable!("filtered to Extrude above")
+    };
+    let si = distance
+        .as_f64()
+        .unwrap_or_else(|| panic!("distance must carry a numeric SI value; got {distance:?}"));
+    assert!(
+        (si - 0.02).abs() < 1e-12,
+        "the gate must not re-scale: distance should stay 0.02 SI metres, got {si}"
+    );
+}

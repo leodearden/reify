@@ -4435,6 +4435,256 @@
         );
     }
 
+    // ---- units-length γ (task 5744 step-6): the 3 sweep magnitude slots ----
+
+    /// γ's sweep slice, in the same `(kind, &[(arg name, is_length_semantic)])`
+    /// shape as [`GAMMA_MODIFY_SLOTS`].
+    ///
+    /// Only THREE sweep args are LENGTH magnitudes: `extrude` distance,
+    /// `extrude_symmetric` distance and `pipe` radius. Every other sweep arg is
+    /// either dimensionless by construction or owned by another PRD, and both
+    /// exclusions already carry their own executable lock rather than prose:
+    ///
+    ///   * `extrude_infinite`'s `dx`/`dy`/`dz` are a dimensionless DIRECTION —
+    ///     [`compile_geometry_op_extrude_infinite_bare_direction_still_accepted`].
+    ///   * `revolve`'s `angle` belongs to
+    ///     `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3) —
+    ///     [`compile_geometry_op_revolve_length_origin_bare_axis_angle_accepted`],
+    ///     whose "BARE angle emits NO diagnostic" half is exactly that lock.
+    ///
+    /// Both are CITED here rather than duplicated: a second copy of a negative
+    /// lock is a second thing to forget to update.
+    const GAMMA_SWEEP_SLOTS: &[(SweepKind, &[(&str, bool)])] = &[
+        (SweepKind::Extrude, &[("distance", true)]),
+        (SweepKind::ExtrudeSymmetric, &[("distance", true)]),
+        (SweepKind::Pipe, &[("radius", true)]),
+    ];
+
+    /// The single step handle backing a Sweep `profiles = [GeomRef::Step(0)]`
+    /// (mirrors `sweep_step_handles` in
+    /// `tests/compile_geometry_op_characterization.rs`).
+    fn gamma_sweep_step_handles() -> Vec<GeometryHandleId> {
+        vec![GeometryHandleId(60)]
+    }
+
+    /// Helper: build one of [`GAMMA_SWEEP_SLOTS`]' sweep ops with `slot` bound to
+    /// `expr`. All three kinds take a single profile, so one `profiles` shape
+    /// serves the whole table.
+    ///
+    /// The non-tested args are supplied exactly as in [`gamma_modify_with`] — a
+    /// LENGTH `Scalar` for a length-semantic slot — but note that each of these
+    /// three kinds has exactly ONE arg today, so that branch is currently
+    /// unexercised and exists so a future second slot is covered by
+    /// construction rather than by a later edit.
+    fn gamma_sweep_with(
+        kind: SweepKind,
+        arg_names: &[(&str, bool)],
+        slot: &str,
+        expr: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Sweep {
+            kind,
+            profiles: vec![GeomRef::Step(0)],
+            args: arg_names
+                .iter()
+                .map(|(name, is_length)| {
+                    let bound = if *name == slot {
+                        expr.clone()
+                    } else if *is_length {
+                        literal_length(0.05)
+                    } else {
+                        literal_f64(0.1)
+                    };
+                    ((*name).to_string(), bound)
+                })
+                .collect(),
+        }
+    }
+
+    /// Helper: read the field named `slot` out of a compiled sweep
+    /// `GeometryOp`, keeping [`GAMMA_SWEEP_SLOTS`] the single source of truth
+    /// for which names exist.
+    fn gamma_sweep_stored_slot(op: &reify_ir::GeometryOp, slot: &str) -> reify_ir::Value {
+        use reify_ir::GeometryOp as G;
+        let found = match (op, slot) {
+            (G::Extrude { distance, .. }, "distance") => Some(distance),
+            (G::ExtrudeSymmetric { distance, .. }, "distance") => Some(distance),
+            (G::Pipe { radius, .. }, "radius") => Some(radius),
+            _ => None,
+        };
+        found
+            .unwrap_or_else(|| panic!("no slot '{slot}' on {op:?}"))
+            .clone()
+    }
+
+    /// Contract C1's THREE-STATE mapping at the THREE sweep LENGTH slots —
+    /// `extrude` distance, `extrude_symmetric` distance and `pipe` radius —
+    /// asserted through `compile_geometry_op`, the sole IR-build funnel (C2).
+    ///
+    /// THE BARE-ZERO ROW IS THE SUBTLE ONE. `extrude` and `extrude_symmetric`
+    /// already drop a zero distance, via the site-specific
+    /// `extrude dropped: distance=0 is degenerate` Warning + `Err` that sits
+    /// BELOW the arg read. So a row asserting merely `is_err()` on a bare `0`
+    /// is satisfied by the WRONG mechanism and would stay green with no units
+    /// gate at all. Every rejection arm here therefore asserts the CODED
+    /// `DimensionedArgRejected` Error and its wording — which the degenerate
+    /// guard cannot produce — and asserts the rejection COUNT, which the
+    /// degenerate Warning (a Warning, and not carrying the wrong-type wording)
+    /// cannot inflate.
+    ///
+    /// D1 / PRD boundary row 3: `0` is NOT special-cased. `extrude(profile, 0)`
+    /// is a units mistake exactly like `extrude(profile, 20)`; being degenerate
+    /// as well does not earn it an exemption.
+    ///
+    /// RED until step-7 routes `sweep_extrude`, `sweep_extrude_symmetric` and
+    /// `sweep_pipe` through `required_length_value`.
+    #[test]
+    fn compile_geometry_op_sweep_magnitude_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+        let step_handles = gamma_sweep_step_handles();
+
+        for (kind, arg_names) in GAMMA_SWEEP_SLOTS {
+            for (slot, is_length) in arg_names.iter() {
+                assert!(
+                    *is_length,
+                    "GAMMA_SWEEP_SLOTS carries only gated slots today; a \
+                     boundary row needs its own negative lock, not this table"
+                );
+                let at = format!("{kind}.{slot}");
+
+                // (i) ACCEPTED — stored unchanged, no diagnostics. 0.02 m
+                // clears both degeneracy floors (`DEGENERATE_LENGTH_M` and
+                // `extrude_symmetric`'s doubled one) by ten orders of
+                // magnitude, so a green result here is the units gate's doing.
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &gamma_sweep_with(*kind, arg_names, slot, literal_length(0.02)),
+                    &values,
+                    &step_handles,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let op = result
+                    .unwrap_or_else(|e| panic!("{at}: a LENGTH Scalar must be accepted, got: {e}"));
+                assert_eq!(
+                    gamma_sweep_stored_slot(&op, slot),
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "{at}: the stored field must stay a LENGTH Scalar with a \
+                     byte-identical SI value (the gate must not rescale or \
+                     re-wrap)"
+                );
+                assert!(
+                    diagnostics.is_empty(),
+                    "{at}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+                );
+
+                // (ii) REJECTED — four shapes, incl. the bare ZERO discussed
+                // above.
+                for (label, expr) in [
+                    ("bare Real", literal_f64(0.02)),
+                    (
+                        "bare Int",
+                        reify_ir::CompiledExpr::literal(
+                            reify_ir::Value::Int(20),
+                            reify_core::Type::dimensionless_scalar(),
+                        ),
+                    ),
+                    ("bare ZERO", literal_f64(0.0)),
+                    (
+                        "wrong-dimension Scalar (MASS)",
+                        literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                    ),
+                ] {
+                    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                    let result = compile_geometry_op(
+                        &gamma_sweep_with(*kind, arg_names, slot, expr),
+                        &values,
+                        &step_handles,
+                        &[],
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &mut diagnostics,
+                    );
+                    assert!(
+                        result.is_err(),
+                        "{at} / {label}: must drop the op, got: {result:?}"
+                    );
+
+                    let rejections: Vec<&Diagnostic> = diagnostics
+                        .iter()
+                        .filter(|d| d.message.contains("argument expects Length"))
+                        .collect();
+                    assert_eq!(
+                        rejections.len(),
+                        1,
+                        "{at} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                    );
+                    let rej = rejections[0];
+                    assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                    assert_eq!(
+                        rej.code,
+                        Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                        "{rej:?}"
+                    );
+                    assert!(
+                        rej.message.contains(&kind.to_string())
+                            && rej.message.contains(&format!("{slot} argument expects"))
+                            && WRONG_TYPE_WORDING
+                                .iter()
+                                .all(|want| rej.message.contains(want)),
+                        "{at} / {label}: must name the builtin, the arg and carry every \
+                         one of {WRONG_TYPE_WORDING:?}; got: {:?}",
+                        rej.message
+                    );
+
+                    // The units gate must fire INSTEAD OF the site-specific
+                    // degenerate guard, not alongside it: the guard sits below
+                    // the arg read, so reaching it would mean the gate let the
+                    // value through.
+                    assert!(
+                        !diagnostics
+                            .iter()
+                            .any(|d| d.message.contains("is degenerate")),
+                        "{at} / {label}: the units gate must reject BEFORE the \
+                         site-specific degeneracy guard is reached; got: {diagnostics:?}"
+                    );
+                }
+
+                // (iii) UNDEFINED — the DISTINCT unresolved wording, and no
+                // rejection diagnostic (D10 / INV-SF-1).
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &gamma_sweep_with(*kind, arg_names, slot, literal_undef()),
+                    &values,
+                    &step_handles,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{at}: an Undef magnitude must drop the op"));
+                assert!(
+                    err.contains("unresolved (Undef)") && err.contains(&format!("'{slot}'")),
+                    "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                     not \"missing or non-Length\"; got: {err:?}"
+                );
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("argument expects Length")),
+                    "{at}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
     /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
     /// bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
     /// LENGTH Scalar passes.
@@ -9232,6 +9482,15 @@
     /// executable protection — an over-eager sweep that gated it would make
     /// every `extrude_infinite` call in the corpus fail. Green before and after
     /// this task by design.
+    ///
+    /// RE-CITED by task 5744 (units-length γ) as its SWEEP negative scope lock.
+    /// γ gates the three sweep MAGNITUDES ([`GAMMA_SWEEP_SLOTS`]) and reaches
+    /// `sweep_extrude_infinite`'s neighbourhood while doing it, so the hazard is
+    /// live a second time: `dx`/`dy`/`dz` sit in the same `Sweep` arm, take the
+    /// same `f64`s, and are the obvious next thing to "finish". They are not
+    /// γ's, and this test is why an over-broad edit fails instead of shipping.
+    /// Extended rather than duplicated — a second copy of a negative lock is a
+    /// second thing to forget to update.
     #[test]
     fn compile_geometry_op_extrude_infinite_bare_direction_still_accepted() {
         let step_handles = vec![GeometryHandleId(42)];
