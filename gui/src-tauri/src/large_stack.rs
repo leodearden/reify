@@ -50,6 +50,18 @@
 //! the per-call cost becomes a queue push and a channel round trip. The `'static`
 //! bound is the price (see [`run_on_worker`]).
 //!
+//! The two lanes differ in their JOB TYPE, not only in their name. `ENGINE_LANE`
+//! takes a BLOCKING closure `FnOnce() -> T`, submitted via [`run_on_worker`] /
+//! [`dispatch`]; `LSP_LANE` takes a `Future`, submitted via
+//! [`run_on_lsp_worker`] / [`dispatch_async`]. That split is a correctness
+//! constraint rather than a style choice: when a lane is absent its work must
+//! still run somewhere, and an async submission's fallback frame is inside the
+//! tokio runtime — a future can be `.await`ed there, whereas a closure with a
+//! [`tokio::runtime::Handle::block_on`] already baked in cannot, because
+//! `block_on` from inside a runtime panics "Cannot start a runtime from within a
+//! runtime". Taking the future and letting the lane decide how to drive it is
+//! what keeps the degraded arm legal.
+//!
 //! * ENGINE lane — the fourteen projection / incremental-re-eval Tauri commands:
 //!   `set_parameter` (per slider-drag frame), `get_initial_state`,
 //!   `sync_observed_demand`, `sync_demand`, `export`, `get_source_location`,
@@ -81,6 +93,30 @@
 //! So the invariant this module establishes is: "compile-bearing and
 //! high-frequency engine work, plus the inline LSP dispatch arms, run on a large
 //! stack" — NOT "all engine-bearing GUI work", and NOT "all of LSP".
+//!
+//! # The degradation invariant, across all three tiers
+//!
+//! Every tier can fail to get its large stack, and every degradation arm here
+//! RESOLVES — no arm needs a resource that the condition triggering it would
+//! have denied, so "never lose a result, never block, never nest a runtime" is
+//! true of the async lane too and not only of the two tiers that predate it.
+//!
+//! * The mapping-refusal arms take no new resource at all. [`run_on_large_stack`]
+//!   and [`dispatch`] run their closure INLINE in the submitting frame, which is
+//!   legal on any thread because those closures are runtime-agnostic by stated
+//!   precondition (see [`dispatch`]); [`dispatch_async`]'s `None` arm and its
+//!   no-ambient-runtime arm `.await` the future natively. That matters because
+//!   an OS that has just refused a 256 MiB mapping will equally refuse a
+//!   recovery thread — any thread-based fallback would be circular.
+//! * The ONE arm that does ask for a resource is [`dispatch_async`]'s
+//!   `SendError` recovery: the job it gets handed back carries a `Handle::block_on`
+//!   and so must not run in the submitting async frame, which leaves
+//!   [`spawn_on_large_stack`] — a plain `std` thread, never a runtime context.
+//!   Its trigger is a DEAD LANE rather than a refused mapping, so asking for a
+//!   thread is not circular there; and if even that spawn fails the job is
+//!   dropped, its reply channel resolves `Err` at once, and the loud-panic arm
+//!   fires. The worst outcome anywhere in this module is therefore a loud panic
+//!   — never a silent hang, and never a nested runtime.
 
 /// Stack size for the large-stack compile thread: 256 MiB.
 ///
