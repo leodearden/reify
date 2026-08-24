@@ -60,7 +60,10 @@ pub use source_location::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
     line_col_to_byte_offset_with_offsets,
 };
-pub use overload::heads_unifiable;
+pub use overload::{
+    heads_unifiable, type_carries_dim_param, type_carries_trait_object,
+    type_carries_type_param,
+};
 pub use panic_payload::panic_payload_to_string;
 pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;

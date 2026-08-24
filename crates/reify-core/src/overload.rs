@@ -7,6 +7,220 @@
 
 use crate::ty::Type;
 
+/// Returns `true` when `t` is, or recursively wraps, a `Type::TraitObject`.
+///
+/// Covers bare `TraitObject(name)` and the four generic wrappers
+/// `Option<T>`, `List<T>`, `Set<T>`, and `Map<K,V>`.  A `Map<TraitObject, V>`
+/// or `Map<K, TraitObject>` is also trait-carrying because both positions
+/// participate in conformance checking.  `Applied` type args and a
+/// `Projection` base are also walked (task 4602 β).
+///
+/// Used by the overload wildcard tier to make trait-carrying params act as
+/// resolution wildcards (match any arg type), while concrete params keep
+/// exact-equality semantics.  This disjunct is NOT gated on candidate
+/// genericity, so it applies to every function in the program.
+///
+/// NOTE the DELIBERATE asymmetry with the two sibling predicates
+/// [`type_carries_type_param`] and [`type_carries_dim_param`]: this one walks a
+/// strictly NARROWER constructor set — no `Field`, `Function`, `Union`,
+/// `Keyed`, `Complex`, `Range`, or quantity-slot recursion. That is existing
+/// behaviour and must be preserved, not "fixed"; widening it widens overload
+/// resolution for every call site. The boundary is pinned by
+/// `type_carries_trait_object_covers_its_narrower_walk` in this module's tests.
+pub fn type_carries_trait_object(t: &Type) -> bool {
+    match t {
+        Type::TraitObject(_) => true,
+        Type::Option(inner) => type_carries_trait_object(inner),
+        Type::List(inner) => type_carries_trait_object(inner),
+        Type::Set(inner) => type_carries_trait_object(inner),
+        Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // Added explicitly (not compiler-forced) to stay verbatim-synced with
+        // the reify-expr copy (esc-4231-120/126) and for §5 substrate correctness.
+        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
+        Type::Projection { base, .. } => type_carries_trait_object(base),
+        _ => false,
+    }
+}
+
+/// Returns `true` when `t` is, or recursively wraps, a `Type::TypeParam`.
+///
+/// Recurses through the **same** inner-`Type`-bearing constructor set as
+/// `unify` and `substitute_type_params` —
+/// `List`/`Set`/`Keyed`/`Option`/`Complex`/`Range`,
+/// `Point`/`Vector`/`Tensor`/`Matrix` (quantity slot), `Map`, `Field`,
+/// `Function` (params + return), and `Union` — so a generic param that embeds a
+/// type-param inside ANY of those (e.g. `Field<T, Real>`, `List<Field<T>>`) is
+/// recognized. Keeping this predicate aligned with the unify/substitute walks
+/// avoids the asymmetry where overload resolution would reject a param shape
+/// the downstream inference machinery can actually handle.
+///
+/// Used by the overload wildcard tier to make a *generic* candidate's
+/// type-param-carrying params act as resolution wildcards (match any arg type),
+/// gated on `!f.type_params.is_empty()` so non-generic fns are completely
+/// unaffected (INV-6, task 4231 β).
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
+/// variant forces a compile-time decision here, in lock-step with the sibling
+/// `unify` / `substitute_type_params` walks.
+///
+/// See also [`type_carries_dim_param`] for the sibling predicate that covers
+/// dimension-kinded parameters (`Type::ScalarParam`). The two predicates are
+/// kept separate because dimension params are a distinct kind (D7) — they are
+/// NOT substituted by type-param logic. The overload-resolution wildcard ORs
+/// them together at two sites.
+pub fn type_carries_type_param(t: &Type) -> bool {
+    match t {
+        // The type-parameter leaf itself.
+        Type::TypeParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_type_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_type_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_type_param(domain) || type_carries_type_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_type_param) || type_carries_type_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
+        Type::Projection { base, .. } => type_carries_type_param(base),
+
+        // All remaining leaves carry no inner `Type`.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | Type::Feature
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        // Dimension-param scalar: carries no *type* param; dimension binding is
+        // handled by the dedicated `unify` ScalarParam arm (ζ / D8) and by
+        // `type_carries_dim_param` — not by type-param substitution.
+        | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
+/// Whether `t` (or any type nested within it) carries a dimension-kinded
+/// parameter (`Type::ScalarParam`).
+///
+/// This is the sibling of [`type_carries_type_param`] for dimension params.
+/// It uses the SAME constructor recursion (List/Set/Keyed/Option/Complex/Range;
+/// Map; Field; Function params+return; Point/Vector/Tensor/Matrix quantity;
+/// Union) and returns `true` at the `ScalarParam(_)` leaf, `false` at all
+/// other leaves.
+///
+/// The match is intentionally exhaustive (no `_` wildcard) so that a new
+/// `Type` variant forces a compile-time decision here, in lock-step with
+/// [`type_carries_type_param`], `unify`, and `substitute_type_params`.
+///
+/// Wired into the generic-candidate wildcard tier (OR'd with
+/// [`type_carries_type_param`]) so that a `Scalar<Q>` parameter is recognised
+/// as a generic wildcard slot (task 4235 ζ / D8).
+pub fn type_carries_dim_param(t: &Type) -> bool {
+    match t {
+        // The dimension-parameter leaf itself.
+        Type::ScalarParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_dim_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
+        Type::Projection { base, .. } => type_carries_dim_param(base),
+
+        // All remaining leaves carry no `ScalarParam`.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | Type::Feature
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        // Type-param leaf: carries no *dimension* param.
+        | Type::TypeParam(_)
+        | Type::Error => false,
+    }
+}
+
 /// Strict constructor-head compatibility check — the middle tie-break tier
 /// of the overload ladder (D-head-exact, result-fallback Layer-B task, B2).
 ///
