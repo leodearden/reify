@@ -2304,6 +2304,171 @@ mod tests {
         }
     }
 
+    /// Audit a STEP file's PLANE-ANGLE unit declarations.
+    ///
+    /// Returns `(n_plane_angle_unit, n_global_unit_assigned_context,
+    /// n_conversion_based_unit, plane_angle_unit_records)`.
+    ///
+    /// STEP wraps long lines at ~72 chars, so every `contains`/parse here runs
+    /// over the whitespace-stripped text — the same idiom the sibling
+    /// `export_step_declares_millimetres_and_scales_metre_coordinates` uses.
+    /// Part-21 instances terminate at `;`, so splitting the stripped text on
+    /// `;` yields one string per entity instance, which is what makes a
+    /// per-record ("EVERY declaration is radians") assertion possible rather
+    /// than a file-wide substring grep.
+    fn plane_angle_unit_audit(step_text: &str) -> (usize, usize, usize, Vec<String>) {
+        let stripped: String = step_text
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+        let n_plane_angle_unit = stripped.matches("PLANE_ANGLE_UNIT()").count();
+        let n_global_unit_assigned_context =
+            stripped.matches("GLOBAL_UNIT_ASSIGNED_CONTEXT(").count();
+        let n_conversion_based_unit = stripped.matches("CONVERSION_BASED_UNIT").count();
+        let records: Vec<String> = stripped
+            .split(';')
+            .filter(|rec| rec.contains("PLANE_ANGLE_UNIT()"))
+            .map(str::to_owned)
+            .collect();
+        (
+            n_plane_angle_unit,
+            n_global_unit_assigned_context,
+            n_conversion_based_unit,
+            records,
+        )
+    }
+
+    /// STEP export must declare SI RADIANS for plane angles in **every** unit
+    /// context the file carries — the boundary declaration INV-AD-4 requires
+    /// (`docs/prds/v0_6/angle-dimension-completion.md`, §9 B7; task #6184).
+    ///
+    /// REGRESSION PIN, GREEN ON ARRIVAL — exactly the posture task 6186's
+    /// `export_unit_regime_e2e.rs` documents for the length regime. reify's
+    /// angle declaration is correct *by construction*:
+    /// `STEPConstruct_UnitContext::Init`, the sole builder of the write-side
+    /// unit context, emits `SI_UNIT($,.RADIAN.)` unconditionally, with no
+    /// preceding branch and no data dependence on any argument. There is no
+    /// write-side angle knob to get wrong. So this pin does not prove a fix
+    /// landed — it guards a correct-today property against an OCCT bump or a
+    /// future writer-option change. **If it ever fails, the defect is real:
+    /// debug it, do not relax it.**
+    ///
+    /// Why the universal quantifier rather than `content.contains(".RADIAN.")`:
+    /// STEP scopes units *per representation_context*, and OCCT uses that
+    /// freedom for every compound. Measured on this branch against the linked
+    /// system OCCT 7.8, the two-cone union below emits **three**
+    /// `GLOBAL_UNIT_ASSIGNED_CONTEXT` entities, each carrying its **own**
+    /// `PLANE_ANGLE_UNIT` (n_pau == n_guac == 3, `CONVERSION_BASED_UNIT` count
+    /// 0, `CONICAL_SURFACE` count 2) — units are *not* shared across contexts.
+    /// A substring grep is therefore satisfied by any one of N contexts and
+    /// stays green through a *partial* flip, and it cannot detect a context
+    /// that declares no plane-angle unit at all. The count equality closes
+    /// that second hole, and is sound without walking entity associations
+    /// because STEP requires every geometric representation context to assign
+    /// a plane-angle unit.
+    ///
+    /// Token detail a naive pin gets wrong: the emitted form is
+    /// `SI_UNIT($,.RADIAN.)` — `$` is the *null SI prefix*. The `*` in the
+    /// sibling `NAMED_UNIT(*)` is the *redeclared* marker, so a pin written
+    /// for `SI_UNIT(*,.RADIAN.)` fails immediately.
+    ///
+    /// No runtime `OCCT_AVAILABLE` skip: inside a `#[cfg(all(test, has_occt))]`
+    /// module such a check is tautological (`lib.rs`'s module docs, #6343), and
+    /// build-time OCCT presence is gated before any compile by the OCCT arm of
+    /// `scripts/check-manifold-deps.sh`.
+    #[test]
+    fn export_step_declares_si_radians_in_every_unit_context() {
+        // Two disjoint 30 mm cones, unioned — a compound, which is what makes
+        // OCCT emit more than one representation context.
+        let handle = super::OcctKernelHandle::spawn();
+        let cone = GeometryOp::Cone {
+            bottom_radius: Value::Real(0.015),
+            top_radius: Value::Real(0.0),
+            height: Value::Real(0.030),
+        };
+        let left = handle.execute(&cone).unwrap();
+        let right_untranslated = handle.execute(&cone).unwrap();
+        let right = handle
+            .execute(&GeometryOp::Translate {
+                target: right_untranslated.id,
+                dx: 0.100,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        let union = handle
+            .execute(&GeometryOp::Union {
+                left: left.id,
+                right: right.id,
+            })
+            .unwrap();
+
+        let mut buf = Vec::new();
+        handle
+            .export(union.id, reify_ir::ExportFormat::Step, &mut buf)
+            .unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        let stripped: String = content
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+
+        let (n_plane_angle_unit, n_global_unit_assigned_context, n_conversion_based_unit, records) =
+            plane_angle_unit_audit(&content);
+
+        // (a) EVERY plane-angle declaration is the SI radian.
+        assert!(
+            n_plane_angle_unit > 0,
+            "STEP export declared no PLANE_ANGLE_UNIT at all — the angular boundary convention \
+             INV-AD-4 requires is missing from the file entirely"
+        );
+        for rec in &records {
+            assert!(
+                rec.contains("SI_UNIT($,.RADIAN.)"),
+                "every PLANE_ANGLE_UNIT record must declare SI radians as `SI_UNIT($,.RADIAN.)` \
+                 (`$` is the null SI prefix; the `*` in the sibling `NAMED_UNIT(*)` is the \
+                 redeclared marker, NOT a prefix), but this record does not: {rec}"
+            );
+        }
+
+        // (b) No degree/grad CONVERSION_BASED_UNIT chain — the shape the LENGTH
+        // unit takes when `write.step.unit` is non-mm, and the shape a flipped
+        // angle unit would have to take.
+        assert_eq!(
+            n_conversion_based_unit, 0,
+            "STEP export must not wrap any unit in a CONVERSION_BASED_UNIT chain (that is how a \
+             degree or grad plane-angle unit would be spelled), but found {n_conversion_based_unit}"
+        );
+
+        // (c) Count equality — the assertion that makes this pin sound. A
+        // context that declares NO plane-angle unit fails here even though
+        // every record it does declare is radians.
+        assert!(
+            n_global_unit_assigned_context >= 2,
+            "this pin exists to exercise the MULTI-context case, but the file carries only \
+             {n_global_unit_assigned_context} GLOBAL_UNIT_ASSIGNED_CONTEXT entity/entities — the \
+             two-cone union fixture no longer produces a compound, so the pin has silently \
+             degraded into the single-context case"
+        );
+        assert_eq!(
+            n_plane_angle_unit, n_global_unit_assigned_context,
+            "every unit context must assign a plane-angle unit, but the file has \
+             {n_plane_angle_unit} PLANE_ANGLE_UNIT declaration(s) across \
+             {n_global_unit_assigned_context} GLOBAL_UNIT_ASSIGNED_CONTEXT entities — some \
+             context crosses the boundary with no declared angular convention"
+        );
+
+        // (d) Branch-reached witness: the BRep angle path (GeomToStep_Make-
+        // ConicalSurface writes a semi-angle) was actually exercised, so the
+        // pin cannot degrade into testing an angle-free file.
+        assert!(
+            stripped.contains("CONICAL_SURFACE"),
+            "expected the cone fixture to emit a CONICAL_SURFACE (whose semi-angle is the BRep \
+             angular payload this pin covers); without it the file carries no angle at all and \
+             the assertions above are vacuous"
+        );
+    }
+
     /// Real-OCCT schema selection through the new `export_with_options`.
     ///
     /// Asserts the declared STEP schema reaches the OCCT writer and is
