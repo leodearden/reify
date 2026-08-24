@@ -14,7 +14,7 @@
 //! candidate gated set via `NodePolicyOverrides::resolve()` and feed it to
 //! these helpers; no such consumer exists today — the concurrent scheduler
 //! was deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065).  See
-//! [`has_non_final_inputs`] for the end-to-end test witness.
+//! [`has_non_final_inputs`] for the unit-level test witness.
 
 use std::collections::HashSet;
 
@@ -64,7 +64,7 @@ fn entry_has_non_final_inputs(cache: &CacheStore, entry: &NodeCache) -> bool {
 /// consistent with the "Final is the only safe-to-run state" principle and
 /// keeps this helper a single `bool` predicate.
 ///
-/// The canonical end-to-end witness is
+/// The unit-level witness is
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
 /// See arch §7.3 lines 762–767 and §3.5 line 436.
@@ -97,7 +97,7 @@ pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
 /// `I` is any iterator over `&NodeId` references — callers can pass a slice,
 /// a `Vec`, a `HashSet`, etc.
 ///
-/// The canonical end-to-end witness is
+/// The unit-level witness is
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
 /// See arch §3.5 line 436 ("freshness propagation can unlock gated work").

@@ -97,6 +97,10 @@ impl NodePolicyOverrides {
     /// 1. Instance override (if set for this exact node)
     /// 2. Type override (if set for the node's [`NodeKind`])
     /// 3. [`NodeCommitmentOverride::default()`] (`CommitIfSlow`)
+    ///
+    /// Has no production consumer today: the concurrent scheduler was
+    /// deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065); every
+    /// remaining caller is a test.
     pub fn resolve(&self, node_id: &NodeId) -> NodeCommitmentOverride {
         if let Some(o) = self.instance_overrides.get(node_id) {
             return *o;
@@ -120,10 +124,8 @@ impl NodePolicyOverrides {
     /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
     ///
     /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
-    /// Reached today only through `reify_cli::dev::render_inspection` (δ step); the
-    /// single-arg [`resolve`](Self::resolve) has no production consumer since the
-    /// concurrent scheduler was deleted with `concurrent.rs` in c1b8dba3f7
-    /// (task ο, #5065).
+    /// Reached today only through `crates/reify-cli/src/dev.rs::render_inspection`
+    /// (the `reify dev inspect-node` subcommand, δ step).
     pub fn resolve_with_traits(
         &self,
         node_id: &NodeId,
