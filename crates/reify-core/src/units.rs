@@ -161,6 +161,27 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
 /// round-trip contingent on the target module's imports. `sr` (SolidAngle)
 /// and `USD` (Money) are simply absent from [`unit_symbol_to_si`].
 ///
+/// # Those dimensions now have a SIBLING, not a widening
+///
+/// [`ri_compound_unit_expr`] writes exactly the dimensions this function
+/// refuses (task #6400). The split is deliberate and must stay: this table
+/// answers "which BARE symbols may be written, most-preferred first" — an
+/// ORDERED ladder the caller WALKS for bit-exactness, whose factor-1.0
+/// TERMINATOR contract is meaningless for a compound expression — while that
+/// one answers "which `UnitExpr`-shaped string spells this dimension out of SI
+/// base symbols", and is unordered and total.
+///
+/// The preconditions differ too, which is the half that actually matters: a
+/// bare symbol round-trips in ANY module because the built-in table is an
+/// unconditional `or_else` fallback, whereas a compound expression needs a
+/// seeded registry and is therefore gated behind an explicit
+/// `reify_ir::ri_literal::UnitScope`. Merging the two tables would silently
+/// attach the weaker precondition to every bare emission, and would force
+/// rewriting all four drift guards below — including
+/// `ri_emittable_units_is_empty_for_dimensionless_and_unsupported_dimensions`,
+/// whose empty-ladder assertions are what make the compound path's containment
+/// STRUCTURAL at the `reify-ir` call site. Do not "fix" this by unifying them.
+///
 /// # Intentionally NOT [`crate::display_units::unit_ladders`]
 ///
 /// That table is also an ordered per-dimension unit ladder, and unifying the
@@ -223,6 +244,17 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 ///
 /// Every `Some` symbol resolves to factor exactly `1.0`, and that is the whole
 /// point: see [`ri_compound_unit_expr`] for what the identity buys.
+///
+/// # What the guard actually measured
+///
+/// All seven `Some` slots are present in the stdlib-seeded registry at factor
+/// exactly `1.0` with no offset, and all three `None` slots are absent —
+/// observed, not inferred. `sr` in particular is worth naming: it is generated
+/// bare from `si_units.rs`'s `SI_DERIVED_UNITS` rather than declared in
+/// `stdlib/units.ri`, so its presence was a real open question when this table
+/// was written. It IS generated, so SolidAngle is emittable. Had it not been,
+/// the fix would have been slot 8 → `None`; the structured refusal is the
+/// correct behaviour in that case, not a defect.
 pub const RI_COMPOUND_BASE_SYMBOLS: [Option<&'static str>; 10] = [
     Some("m"),   // 0 Length
     Some("kg"),  // 1 Mass

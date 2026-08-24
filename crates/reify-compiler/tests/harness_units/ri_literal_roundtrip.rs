@@ -915,6 +915,13 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
         // One per compound dimension, each pinning its exact literal.
         compound("area", 2.5, DimensionVector::AREA).emitting("2.5m^2"),
         compound("volume", 1e-6, DimensionVector::VOLUME).emitting("1e-6m^3"),
+        // ASSOCIATIVITY WITNESS. `unit_expr` is `prec.left(1)` for `*` and `/`,
+        // so this must fold as `Div(Div(kg, m), Pow(s, 2))`. Under RIGHT
+        // association it would be `Div(kg, Div(m, Pow(s, 2)))` — dimension
+        // `kg·m^-1·s^+2`, with the Time exponent's SIGN flipped — which
+        // `assert_identical`'s dimension check catches. So this case confirms
+        // the association against the real parse rather than assuming it, and
+        // it is the reason a division CHAIN is safe to emit at all.
         compound("pressure", 101_325.0, DimensionVector::PRESSURE).emitting("101325kg/m/s^2"),
         compound("force", -9.81, DimensionVector::FORCE).emitting("-9.81m*kg/s^2"),
         compound("density", 7850.0, DimensionVector::MASS_DENSITY).emitting("7850kg/m^3"),

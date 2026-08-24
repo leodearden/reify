@@ -12,10 +12,10 @@
 //! There is no third outcome. A "close enough" literal would silently corrupt
 //! a user's design file, which is strictly worse than refusing to edit it.
 //!
-//! # The two qualifications on that sentence
+//! # The three qualifications on that sentence
 //!
-//! Both are load-bearing for a caller deciding whether a splice is safe, so
-//! they are stated here rather than left in an inline comment.
+//! All three are load-bearing for a caller deciding whether a splice is safe,
+//! so they are stated here rather than left in an inline comment.
 //!
 //! **1. One documented variant change.** A *dimensionless* `Value::Scalar` has
 //! no unit to write, so it is emitted as a bare real and re-parses as
@@ -49,6 +49,40 @@
 //! different factor; nothing in this crate can see that, and a caller splicing
 //! into arbitrary user source should treat a user-shadowed unit symbol as
 //! outside the guarantee.
+//!
+//! **3. Compound emission is OPT-IN, and its precondition is strictly
+//! stronger.** [`value_to_ri_literal`] and [`value_to_ri_literal_with_unit`]
+//! write bare built-in symbols only, and refuse every dimension that would
+//! need a compound `UnitExpr`. [`value_to_ri_literal_in_scope`] with
+//! [`UnitScope::SiBaseUnitsSeeded`] lifts that refusal (`2.5m^2`,
+//! `101325kg/m/s^2`, `7850kg/m^3`) — but qualification 2 above says a bare
+//! symbol resolves as `registry.lookup(..).or_else(|| unit_to_scalar(..))`,
+//! and the `or_else` is what makes the bare guarantee TOTAL: it holds even in
+//! a module that imports nothing. A compound `UnitExpr` has no such fallback.
+//! `resolve_unit_expr` (reify-compiler `units.rs`) does a bare
+//! `registry.lookup(name)` and returns `UnknownUnit` on a miss, and the
+//! registry is populated purely from prelude/imported `.ri` `unit`
+//! declarations. So the compound guarantee is CONTINGENT on the target module,
+//! where the bare one is not — measured, not inferred: a `2.5m^2` spliced into
+//! a `#no_prelude` module is answered `unknown unit: m`, pinned by
+//! `ri_literal_roundtrip.rs`'s
+//! `a_compound_literal_does_not_compile_without_a_seeded_registry`.
+//!
+//! `stdlib/units.ri`'s own `STANDARD_GRAVITY` is the in-repo statement of that
+//! asymmetry: its body writes the compositional `1m / (1s * 1s)` rather than
+//! the compound literal `9.80665m/s^2`, with the comment that "compound-unit
+//! resolution requires the unit registry in scope". Making compound the
+//! default would silently downgrade a total contract to a contingent one for
+//! every existing caller, so it is a named [`UnitScope`] the caller must
+//! consciously assert — a thing this crate structurally cannot verify, since
+//! it has no view of the target module's registry.
+//!
+//! One corollary, easy to mistake for an oversight: **the unit hint is inert
+//! for a compound dimension.** A hinted `mm^2` would fold `0.001.powi(2)`,
+//! reintroducing exactly the fold-order matching hazard that emitting
+//! factor-1.0 atoms structurally avoids (see
+//! `reify_core::units::ri_compound_unit_expr`). A hint may change WHICH exact
+//! literal is written for a bare dimension; it may never reach a compound one.
 //!
 //! # Why not `Display for Value`
 //!
