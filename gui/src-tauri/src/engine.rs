@@ -2132,20 +2132,26 @@ impl EngineSession {
         value_str: &str,
     ) -> Result<GuiState, String> {
         let cell_id = parse_cell_id(cell_id_str)?;
-        let value = parse_value_string(value_str)?;
 
-        // Validate cell exists in compiled module
+        // Resolve the cell in the compiled module BEFORE parsing (task #5757).
+        // The declared type is what makes the parse dimension-aware, and doing
+        // the lookup first also keeps "Unknown parameter" ahead of any parse
+        // diagnostic — an unknown cell is the more specific complaint.
+        //
+        // The type is cloned rather than borrowed because `with_solve_slot`
+        // below needs `&mut self`, which the `compiled()` borrow would block.
         let compiled = self
             .core
             .compiled()
             .ok_or_else(|| "No module loaded".to_string())?;
-        let cell_exists = compiled
+        let cell_type = compiled
             .templates
             .iter()
-            .any(|t| t.value_cells.iter().any(|vc| vc.id == cell_id));
-        if !cell_exists {
-            return Err(format!("Unknown parameter '{}'", cell_id_str));
-        }
+            .find_map(|t| t.value_cells.iter().find(|vc| vc.id == cell_id))
+            .map(|vc| vc.cell_type.clone())
+            .ok_or_else(|| format!("Unknown parameter '{}'", cell_id_str))?;
+
+        let value = parse_value_string_for_cell(value_str, &cell_type)?;
 
         // Task #5338: captured BEFORE `edit_check` consumes `cell_id`. Only the
         // entity half is needed, and the invalidation must happen after the commit
@@ -6846,6 +6852,76 @@ fn parse_value_string_with_unit_hint(
     }
 
     Err(format!("Cannot parse value '{}'", s))
+}
+
+/// Parse a value string for a SPECIFIC declared cell type (task #5757).
+///
+/// Two things the context-free [`parse_value_string`] cannot do:
+///
+/// 1. **Unit resolution is dimension-directed.** The cell's declared dimension
+///    becomes [`resolve_unit_label`]'s hint, so the backend resolves units the
+///    same way `PropertyEditor`'s per-cell `quantityReFor` alphabet does.
+///
+/// 2. **A bare number is refused for a dimensioned cell.** This is the GUI-side
+///    fix for the silent 1000× hazard: `parse_value_string("120")` yields
+///    `Value::Int(120)`, and reify-eval then ACCEPTS it into a `Length` cell —
+///    `value_type_kind_matches` maps Int/Real onto `Type::Scalar { .. }` with a
+///    dimension WILDCARD, and `validate_param_override` guards its dimension
+///    comparison on `let Value::Scalar { .. } = value`, which an Int never
+///    matches, so the dimension check is skipped entirely and `120` becomes 120
+///    METRES.
+///
+///    Fixed HERE rather than in reify-eval deliberately: that Int/Real coercion
+///    is load-bearing there (it is what lets `edit_param` emit a Warning rather
+///    than a hard error — see the `edit_param_non_int_*_count_emits_warning`
+///    tests) and sits on the hot path for every param override in the
+///    workspace, not just GUI edits. Rejecting before `edit_check` is ever
+///    called fixes the user-visible defect with no risk to the evaluator.
+///
+/// The gate is scoped as narrowly as it can be:
+///
+///   * only `Value::Int` / `Value::Real` are refused. Every other variant falls
+///     through so reify-eval keeps emitting its own `TypeKindMismatch` /
+///     `DimensionMismatch` diagnostics — notably `Value::Bool`, whose message
+///     an existing test depends on;
+///   * keyed on `!dimension.is_dimensionless()` rather than on
+///     `canonical_name().is_some()`, so a COMPOSED dimension (which has no
+///     `NAMED_DIMENSIONS` entry, hence no canonical name) is still gated. The
+///     message then falls back to the `DimensionVector` Display form, the same
+///     degradation `to_display_units` already performs;
+///   * `Type::Int`, `Type::Real` and `Type::Scalar { DIMENSIONLESS }` cells are
+///     untouched, so every dimensionless slider in the panel keeps working.
+///
+/// The wording echoes the shape reify-eval's `arg_acceptance::ArgRejection`
+/// uses for the same defect class at the geometry-argument chokepoint
+/// (`E_DIMENSIONED_ARG_REJECTED`, same PRD). It is re-phrased rather than
+/// reused because that module is `pub(crate)` in reify-eval and unreachable
+/// from here.
+pub(crate) fn parse_value_string_for_cell(
+    s: &str,
+    cell_type: &reify_core::Type,
+) -> Result<Value, String> {
+    let declared_dimension = match cell_type {
+        reify_core::Type::Scalar { dimension } => Some(*dimension),
+        _ => None,
+    };
+
+    let value = parse_value_string_with_unit_hint(s, declared_dimension.as_ref())?;
+
+    if let Some(dimension) = declared_dimension {
+        if !dimension.is_dimensionless() && matches!(value, Value::Int(_) | Value::Real(_)) {
+            let expected = dimension
+                .canonical_name()
+                .map(str::to_string)
+                .unwrap_or_else(|| dimension.to_string());
+            return Err(format!(
+                "expects {expected}, got the bare number '{s}'; pass a dimensioned \
+                 {expected} literal (this cell's unit picker lists the accepted units)"
+            ));
+        }
+    }
+
+    Ok(value)
 }
 
 /// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).
