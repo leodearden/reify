@@ -712,20 +712,62 @@ impl CpSatSolver {
             };
         }
 
-        // `solve()` IS `solve_all(problem, 1)` plus the first-solution
+        // `solve()` IS `solve_all(problem, 2)` plus the first-solution
         // extraction — one backtracker, one preamble, one fold (PRD2 §3.9 G7).
-        // At `cap = 1` the base case stops the search the instant it collects a
-        // solution, so this explores exactly the nodes the pre-β `backtrack`
-        // explored, in the same order, and returns the same point.
-        match self.solve_all_with_budget(problem, 1, node_budget) {
+        //
+        // WHY `cap = 2` AND NOT 1. One is enough to ANSWER; two is the minimum
+        // that can tell "exactly one model" from "at least two", and so the
+        // minimum that can derive `unique` from something the solver actually
+        // observed. The extra work is one more solution's worth of search,
+        // bounded above by `node_budget`.
+        //
+        // It does not change WHICH point comes back. The search is depth-first
+        // in a fixed order, so the first solution collected at `cap = 2` is the
+        // same one `cap = 1` collected; the second is found strictly after it
+        // and is discarded here (D1 / the `ConstraintSolver` I1 spirit — a
+        // derivation must not perturb the thing it derives from). Pinned by
+        // `deriving_unique_does_not_change_which_model_solve_returns`.
+        match self.solve_all_with_budget(problem, 2, node_budget) {
             SolveAllResult::NotEnumerable { reason } => SolveResult::NoProgress { reason },
             SolveAllResult::Enumerated {
                 solutions,
                 complete,
-            } => match solutions.into_iter().next() {
+            } => {
+                // Read the count BEFORE the `into_iter` consumes the vector.
+                let model_count = solutions.len();
+                match solutions.into_iter().next() {
                 Some(values) => SolveResult::Solved {
                     values,
-                    unique: true,
+                    // HONEST `unique` (PRD2 D3, §3 decision 5). This replaces a
+                    // hardcoded `true` that every `Solved` arm emitted for every
+                    // problem — never a checked claim, because the pre-β search
+                    // stopped at the first solution and could not have known.
+                    //
+                    // `complete` is a CONJUNCT, not decoration. A search that
+                    // stopped early — solution cap or node budget — has not
+                    // proven a second model absent, and `model_count == 1` is
+                    // TRUE in exactly that case: one collected, the rest never
+                    // visited. Deriving the flag from the count alone would
+                    // reproduce the original lie with better manners. Pinned by
+                    // `a_model_found_before_the_budget_bit_is_not_reported_as_unique`.
+                    //
+                    // β sets the flag and stops there. It does NOT copy
+                    // `DimensionalSolver::finalise_uniqueness` (solver.rs:2686),
+                    // which demotes a non-unique STRICT-auto solve to
+                    // `Infeasible { ConstraintNonUnique }`. The engine's
+                    // non-unique warning is gated on `ap.free`
+                    // (engine_eval.rs:3355/5975), so nothing user-visible turns
+                    // on the strict case yet, and CP-SAT is unreachable in
+                    // production until the γ wiring — so the demotion POLICY
+                    // belongs with the step that first makes it observable. See
+                    // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
+                    // and follow-up ticket tkt_0RSVBYFVRP1PSNJPY26HYHAZXT.
+                    //
+                    // #5388 is this fix's continuous-side twin — the same
+                    // uniqueness-honesty question for `DimensionalSolver`, in
+                    // `solver.rs`/`registry.rs` (PRD2 §0.1, §7). Disjoint files;
+                    // coordinate, do not duplicate.
+                    unique: complete && model_count == 1,
                 },
                 // Nothing found — and `complete` is the ENTIRE discriminator
                 // between the two opposite verdicts that share this shape.
@@ -751,7 +793,8 @@ impl CpSatSolver {
                 None => SolveResult::NoProgress {
                     reason: enumeration_budget_exhausted_reason(problem, node_budget),
                 },
-            },
+                }
+            }
         }
     }
 }
