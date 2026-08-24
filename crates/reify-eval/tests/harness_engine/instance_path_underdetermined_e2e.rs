@@ -450,3 +450,56 @@ fn an_auto_pinned_only_by_a_constraint_inside_its_declaring_child_is_not_flagged
          instance, so honouring it cannot mask a sibling. Got {flagged:#?}",
     );
 }
+
+/// The counterexample that forces the DECLARING-TEMPLATE guard on the
+/// template-local-provenance disjunct: the reading `let` lives in the shared
+/// CONTAINER, not in the declaring child, and reads only ONE of two siblings.
+const CONTAINER_LOCAL_LET_READING_ONE_SIBLING: &str = r#"
+structure Bearing {
+    param bore : Length = 10mm
+}
+
+structure Cont {
+    sub b1 : Bearing { bore = auto }
+    sub b2 : Bearing { bore = auto }
+    let fit = self.b1.bore * 2.0
+    constraint self.fit == 20mm
+}
+"#;
+
+/// `Cont.fit` is template-local to `Cont` AND is surfaced as a reader of BOTH
+/// siblings — b2's probe reaches it through the shared normalised `Bearing.bore`
+/// key — so an unguarded template-local-provenance disjunct masks the genuinely
+/// free `Cont.b2.bore`.
+///
+/// MEASURED: with the `reader.entity == declaring` guard removed from
+/// `auto_is_pinned_through_a_reader`, this fixture reports ZERO diagnostics.
+/// The guard restricts that disjunct to readers living in the auto's own
+/// DECLARING template (`Bearing` here, which owns no constraint at all), which
+/// is the only population for which "already template-keyed at its source"
+/// actually implies "pins every instance of the thing this auto belongs to".
+#[test]
+fn a_container_local_let_reading_one_sibling_does_not_mask_the_other() {
+    let result = eval_through_reify_check(
+        CONTAINER_LOCAL_LET_READING_ONE_SIBLING,
+        "container-local let",
+    );
+
+    let flagged = underdetermined(&result);
+    assert_eq!(
+        flagged.len(),
+        1,
+        "only `Cont.b2.bore` is free: `Cont.b1.bore` is pinned through \
+         `let fit = self.b1.bore * 2.0`, and nothing reads b2 at all. ZERO here \
+         means the template-local-provenance disjunct fired on `Cont.fit`, a \
+         reader that belongs to the CONTAINER rather than to the declaring \
+         `Bearing` — b1's pin masking b2, the same false negative the \
+         re-projection disjunct is shaped to avoid. Got {flagged:#?}",
+    );
+    assert!(
+        flagged[0].message.contains("Cont.b2.bore"),
+        "the surviving diagnostic must name the unread sibling `Cont.b2.bore`; \
+         got: {}",
+        flagged[0].message,
+    );
+}

@@ -656,6 +656,17 @@ fn build_combined_param_let_graph(
 /// claim above and false-positive on every instance-path-keyed auto, because
 /// the membership test below uses the RAW `cell.id`.
 ///
+/// **The closure is necessary but not sufficient (task #5467 amendment round
+/// 2).**  It is additive only about ids it actually WALKS, so when the reading
+/// `let` lives in the auto's DECLARING CHILD its dep is already canonical and
+/// the walk never produces the instance-path spelling the compiler declared.
+/// A closure-only membership test therefore false-positives on exactly the
+/// shape layer 1's additive seeding now SOLVES — the two layers disagreeing,
+/// which is a worse outcome than either being uniformly wrong.  Cells that fail
+/// the closure probe get a second, REVERSE one:
+/// [`auto_is_pinned_through_a_reader`], which carries the design argument for
+/// why that probe is not a flat membership test over the readers.
+///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
 /// `has_active_solver` gate so the warning surfaces on `reify check` even
 /// when no constraint solver is attached (exactly as `detect_scope_coupling`
@@ -712,14 +723,30 @@ fn detect_underdetermined<'t>(
     // themselves (LAYER 4, task #5467 / PRD2 α).  See the "let-tracing" section
     // of this fn's doc comment for why one hop is not enough.
     let mut seeds: Vec<&CompiledExpr> = Vec::new();
+    // TEMPLATE-LOCAL PROVENANCE, feeding the third membership disjunct below
+    // (task #5467 amendment round 2): the subset of these same reads that were
+    // ALREADY template-keyed AT THEIR SOURCE — template `T`'s own constraint or
+    // objective naming a cell spelled `T.<member>`. Accumulated in THIS loop
+    // rather than by a second sweep so the two can never come to describe
+    // different expression sets. Costs one extra `extract_value_deps` pass over
+    // the seeds per eval, against `read_closure`'s same pass plus a transitive
+    // walk.
+    let mut template_local_reads: HashSet<ValueCellId> = HashSet::new();
     for template in templates {
-        for constraint in &template.constraints {
-            seeds.push(&constraint.expr);
-        }
-        // Objective read-sets (mirrors detect_scope_coupling at engine_eval.rs:609-614).
-        if let Some(obj) = &template.objective {
-            for term in &obj.terms {
-                seeds.push(&term.expr);
+        // Constraints, then objective terms — objective read-sets mirror
+        // `detect_scope_coupling` at engine_eval.rs:609-614.
+        let own_exprs = template.constraints.iter().map(|c| &c.expr).chain(
+            template
+                .objective
+                .iter()
+                .flat_map(|obj| obj.terms.iter().map(|term| &term.expr)),
+        );
+        for expr in own_exprs {
+            seeds.push(expr);
+            for dep in crate::deps::extract_value_deps(expr) {
+                if dep.entity == template.name {
+                    template_local_reads.insert(dep);
+                }
             }
         }
     }
@@ -727,9 +754,9 @@ fn detect_underdetermined<'t>(
     // `OnceCell` per eval and every consumer draws from it, so the template
     // sweep and the budgeted instance-path unfold are paid ONCE per eval. This
     // consumer used to build its own throwaway index right here.
-    let global_reads = read_index
-        .get_or_init(|| CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes))
-        .read_closure(seeds);
+    let index = read_index
+        .get_or_init(|| CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes));
+    let global_reads = index.read_closure(seeds);
 
     // Emit W_UNDERDETERMINED for each STRICTLY-auto cell (not auto(free)) absent
     // from the global read-set.  auto(free) cells are intentionally free by
@@ -738,22 +765,127 @@ fn detect_underdetermined<'t>(
     for template in templates {
         let scope = &template.name;
         for cell in &template.value_cells {
-            if cell.kind.is_auto()
-                && !cell.kind.is_auto_free()
-                && !global_reads.contains(&cell.id)
-            {
-                let cell_id = &cell.id;
-                let msg = format!(
-                    "W_UNDERDETERMINED: auto parameter '{cell_id}' in scope '{scope}' \
-                     is not touched by any constraint (touching constraints: none); \
-                     its value is underdetermined (free)"
-                );
-                diagnostics
-                    .push(Diagnostic::warning(msg).with_code(DiagnosticCode::Underdetermined));
+            if !cell.kind.is_auto() || cell.kind.is_auto_free() {
+                continue;
             }
+            // DISJUNCT 1 — the RAW probe, unchanged. This is what
+            // `read_closure_is_a_superset_of_the_unnormalised_reads` pins, and
+            // it already covers the PARENT-side-`let` shape: the constraint
+            // names `self.b.bore` directly, so the raw instance-path spelling
+            // enters the closure from the seed sweep.
+            if global_reads.contains(&cell.id) {
+                continue;
+            }
+            // DISJUNCTS 2 and 3 — the REVERSE answer. Deliberately ordered
+            // AFTER disjunct 1 so the reverse probe runs only for a cell that
+            // would OTHERWISE BE WARNED ABOUT, a set that is empty in the
+            // overwhelming majority of models. The reverse graph itself is
+            // memoized inside the per-eval `CellReadIndex`, so N such probes
+            // cost ONE `extract_value_deps` sweep rather than N.
+            if auto_is_pinned_through_a_reader(
+                index,
+                &global_reads,
+                &template_local_reads,
+                &cell.id,
+            ) {
+                continue;
+            }
+            let cell_id = &cell.id;
+            let msg = format!(
+                "W_UNDERDETERMINED: auto parameter '{cell_id}' in scope '{scope}' \
+                 is not touched by any constraint (touching constraints: none); \
+                 its value is underdetermined (free)"
+            );
+            diagnostics.push(Diagnostic::warning(msg).with_code(DiagnosticCode::Underdetermined));
         }
     }
     diagnostics
+}
+
+/// LAYER 4's second and third membership disjuncts (task #5467 amendment round
+/// 2, review finding 1): is `auto` pinned by a constraint that reaches it only
+/// THROUGH a reader cell whose own spelling the forward closure never projects
+/// back onto `auto`?
+///
+/// # The gap this closes
+///
+/// [`CellReadIndex::read_closure`] is additive, but only about ids it actually
+/// WALKS. When the reading `let` lives in the DECLARING CHILD —
+/// `Bearing.fit = self.bore * 2` under `sub b : Bearing { bore = auto }` — that
+/// cell's dep is ALREADY canonical (`Bearing.bore`), so `normalize_ref` answers
+/// `None` and the walk adds the one spelling. The compiler minted the decl as
+/// `ValueCellId("Holder.b", "bore")`, which is therefore nowhere in the
+/// closure, and disjunct 1 alone reports a pinned auto free. Layer 1's additive
+/// SEEDING in [`CellReadIndex::cells_reaching`] already SOLVES that shape, so
+/// leaving layer 4 behind makes the two disagree — a NEW false positive that
+/// `main`, where the constraint was dropped and the warning was true, did not
+/// have. Pinned by
+/// `child_side_let_instance_path_auto_emits_no_underdetermined_warning`.
+///
+/// # Why not just `reaching.iter().any(|r| global_reads.contains(r))`
+///
+/// Because `cells_reaching`'s additive seeding is MANY-TO-ONE: `Sib.b1.bore`
+/// and `Sib.b2.bore` both normalise to `Bearing.bore`, so BOTH siblings' probes
+/// return the shared reader `Bearing.fit`, and a flat membership test on it lets
+/// b1's pin mask the genuinely free b2. Measured: that spelling takes
+/// `two_sibling_instances_sharing_a_child_side_let_are_flagged_independently`
+/// from 2 diagnostics to 0 while both autos remain `Value::Undef` — the
+/// loud-correct-warning-becomes-a-silent-`Undef` failure this branch guards
+/// against everywhere else, and strictly worse than the false positive it cures.
+/// The two disjuncts below cover every shape it covers and none it does not.
+///
+/// * **INSTANCE RE-PROJECTION.** Ask whether the reader is named under THIS
+///   auto's OWN instance path anywhere in the closure:
+///   `ValueCellId::new(auto.entity, reader.member)`. For `Holder.b.bore` the
+///   reader is `Bearing.fit`, the re-projection is `Holder.b.fit`, and
+///   `constraint self.b.fit == 20mm` already put exactly that raw spelling in
+///   the closure. Note this is the INVERSE of normalising `auto` — unlike
+///   `normalize_cell_id` it is one-to-one in the direction used, so a pin on
+///   `Sib.b1.fit` cannot reach `Sib.b2.bore`. The masking argument at
+///   [`CellReadIndex::read_closure`] is respected, not worked around.
+/// * **TEMPLATE-LOCAL PROVENANCE.** A read that was already template-keyed at
+///   its SOURCE — `Bearing2`'s own `constraint self.fit == 20mm` reading
+///   `Bearing2.fit` — genuinely applies to every instance of `Bearing2`, so
+///   honouring it cannot mask a sibling. This is the disjunct re-projection
+///   provably cannot replace: the reader is `Bearing2.fit` and `Own.b.fit` is
+///   nowhere in the closure. Pinned by
+///   `an_auto_pinned_only_by_a_constraint_inside_its_declaring_child_is_not_flagged`.
+///
+/// The guard `reader.entity == normalised(auto.entity)` narrows the second
+/// disjunct to readers that genuinely live in the auto's DECLARING template.
+/// Without it, `cells_reaching`'s normalised seeding can surface a reader that
+/// is template-local to the auto's CONTAINER instead — `Sib`'s own
+/// `let fit = self.b1.bore * 2` is reached from `Sib.b2.bore`'s normalised seed
+/// via the shared `Bearing.bore` key — and masking b2 with b1's pin is exactly
+/// the false negative the first disjunct is shaped to avoid. Pinned by
+/// `a_container_local_let_reading_one_sibling_does_not_mask_the_other`.
+///
+/// # D1 / B2 identity
+///
+/// By construction, as with every other α widening: an auto whose
+/// `cells_reaching` is EMPTY — every auto in a model with no dependent cells at
+/// all — keeps today's verdict byte-identically, and both disjuncts can only
+/// ever UNFLAG, never flag.
+fn auto_is_pinned_through_a_reader(
+    index: &CellReadIndex<'_>,
+    global_reads: &HashSet<ValueCellId>,
+    template_local_reads: &HashSet<ValueCellId>,
+    auto: &ValueCellId,
+) -> bool {
+    let mut seed: HashSet<ValueCellId> = HashSet::with_capacity(1);
+    seed.insert(auto.clone());
+    // The declaring template of the auto's own entity: `Bearing2` for
+    // `Own.b.bore`, and the entity itself when it is already template-keyed.
+    let declaring = index
+        .normalize_ref(auto)
+        .map_or_else(|| auto.entity.clone(), |norm| norm.entity);
+    index.cells_reaching(&seed).iter().any(|reader| {
+        (reader.entity == declaring && template_local_reads.contains(reader))
+            || global_reads.contains(&ValueCellId::new(
+                auto.entity.clone(),
+                reader.member.clone(),
+            ))
+    })
 }
 
 /// Detect W_OBJECTIVE_INHERIT_AMBIGUOUS: an objective-less structure is
