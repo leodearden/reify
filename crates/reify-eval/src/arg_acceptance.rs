@@ -36,11 +36,16 @@
 //! The last two rows are the R7 **raw-`Value`** positions: unlike every row
 //! above them, these 26 are stored into their `GeometryOp` field as a `Value`
 //! and read by the kernel via `as_f64`, never through a named-arg `f64` helper.
-//! They reach the chokepoint through `geometry_ops`' `required_length_value`,
-//! which layers over the named-arg route (`required_length_arg` →
-//! `eval_named_arg_length`) and re-wraps the ACCEPTED SI f64 back into a
+//! They reach the chokepoint through `geometry_ops`' `required_length_values`
+//! (and its `N == 1` wrapper `required_length_value`), which layers over the
+//! named-arg route (`required_length_args` → `required_length_arg` →
+//! `eval_named_arg_length`) and re-wraps each ACCEPTED SI f64 back into a
 //! dimensioned `Value` — so the stored representation is unchanged and the
 //! rejection wording is shared, rather than forked for the kernel boundary.
+//! Every builtin with MORE THAN ONE gated slot reads its whole set in one
+//! `required_length_values` call, so a bare `box(20, 20, 10)` is diagnosed at
+//! `width`, `height` AND `depth` in a single build rather than one arg name
+//! per rebuild.
 //! Task 5743 also attached `reify_core::DiagnosticCode::DimensionedArgRejected`
 //! to every `ArgSpec`-backed rejection emitted in `geometry_ops`, retrofitting
 //! the previously code-less Contract C sites on BOTH routes at once.
@@ -62,8 +67,10 @@
 //!   `eval_named_arg` and coerced as SI metres at the kernel boundary, so it
 //!   leaves no `as_f64` fingerprint — which is exactly why repeated hand audits
 //!   missed them, and why they are listed here rather than left to be
-//!   re-derived. Gating each is now a one-line swap of its `eval_arg` closure
-//!   for a `length_arg` one.
+//!   re-derived. Gating each is now a one-line swap of its `eval_arg` read for
+//!   a `required_length_value` one — or, where a builtin has several
+//!   (`chamfer_asymmetric`'s `d1`/`d2`), one `required_length_values` call over
+//!   the whole set, so every bare magnitude is reported in one build.
 //! - The SEVERITY residuals — task 6157. Task 5743 promoted the shared
 //!   `accept_length_value` rejection from `Warning` to `Error` + code, but
 //!   deliberately left three classes alone: the quiet-degrade readers

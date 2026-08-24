@@ -446,16 +446,23 @@ pub(crate) fn required_length_arg(
 
 /// As [`required_length_arg`], re-wrapped as a LENGTH `Value::Scalar`.
 ///
-/// This is the **R7 raw-Value chokepoint**: the single place a length-semantic
-/// `reify_ir::GeometryOp` *field* is produced. Every such field goes through
-/// here — the IR spacing slots (`LinearPattern`/`LinearPattern2D`), and since
-/// task 5743 the primitive and profile dimensions (`Box` width/height/depth,
-/// `Cylinder` radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
+/// This is the SINGULAR form of the **R7 raw-Value chokepoint**: the one place
+/// a length-semantic `reify_ir::GeometryOp` *field* is produced. Every such
+/// field goes through here or through its group sibling
+/// [`required_length_values`] (which this delegates to at `N == 1`, so
+/// `reify_ir::Value::length` is still called from exactly one site) — the IR
+/// spacing slots (`LinearPattern`/`LinearPattern2D`), and since task 5743 the
+/// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
+/// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
 /// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`). The stored
 /// representation is deliberately unchanged by the check — the kernel still
 /// reads a dimensioned `Value` — so gating a slot is a one-line swap of its
 /// `eval_arg` closure for a `length_arg` one, and inherits C1's three-state
 /// mapping, its wording, and its `Undef` handling for free.
+///
+/// Reach for [`required_length_values`] whenever a builtin has MORE THAN ONE
+/// gated slot: this singular form is `?`-chained at its call sites, so a
+/// per-field read reports only the first bare dimension.
 ///
 /// DESIGN ALTERNATIVE CONSIDERED AND REJECTED (decision D3, recorded at the
 /// implementation site so it is findable from the code rather than only from
@@ -477,8 +484,8 @@ pub(crate) fn required_length_value(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::Value, String> {
-    required_length_arg(
-        name,
+    required_length_values(
+        [name],
         kind_label,
         args,
         values,
@@ -486,7 +493,48 @@ pub(crate) fn required_length_value(
         meta_map,
         diagnostics,
     )
-    .map(reify_ir::Value::length)
+    .map(|[v]| v)
+}
+
+/// The GROUP form of [`required_length_value`]: read a whole set of
+/// length-semantic raw-`Value` fields in one call, diagnosing EVERY failing
+/// member, and re-wrap each as a LENGTH `Scalar`.
+///
+/// This is [`required_length_args`] (the `f64` group reader) with the R7
+/// re-wrap applied, and it is the SINGLE site at which `reify_ir::Value::length`
+/// mints a length-semantic `GeometryOp` field — [`required_length_value`] is
+/// the `N == 1` special case of it, not a second minting site.
+///
+/// ALL FAILURES AT ONCE, restated here because it is the reason this exists
+/// (reviewer amendment, task 5743): a primitive's `width`/`height`/`depth` and
+/// a profile's `semi_major`/`semi_minor` are written as ONE gesture, exactly
+/// like a `translate` triple, so a bare primitive is usually bare in EVERY
+/// dimension. Reading them through per-field `?`-chained
+/// [`required_length_value`] calls short-circuits on the first failure and
+/// hands the author one arg name per rebuild — three edit-build cycles to fix
+/// `box(20, 20, 10)`, four for `wedge`. Routing the WHOLE gated set of a
+/// builtin through one call is what makes [`required_length_args`]'
+/// every-member guarantee (and its `Unresolved`-beats-a-later-`Invalid`
+/// precedence) reach the primitive and profile slots too.
+fn required_length_values<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[reify_ir::Value; N], String> {
+    required_length_args(
+        names,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|si| si.map(reify_ir::Value::length))
 }
 
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
@@ -1937,13 +1985,22 @@ fn prim_box(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    // ONE grouped read, not three `?`-chained ones: a bare `box(20, 20, 10)`
+    // is bare in every dimension, so every failing slot must be diagnosed in a
+    // single build (see `required_length_values`).
+    let [width, height, depth] = required_length_values(
+        ["width", "height", "depth"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Box {
-        width: length_arg("width")?,
-        height: length_arg("height")?,
-        depth: length_arg("depth")?,
+        width,
+        height,
+        depth,
     })
 }
 
@@ -1955,13 +2012,16 @@ fn prim_cylinder(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
-    Ok(reify_ir::GeometryOp::Cylinder {
-        radius: length_arg("radius")?,
-        height: length_arg("height")?,
-    })
+    let [radius, height] = required_length_values(
+        ["radius", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::Cylinder { radius, height })
 }
 
 fn prim_sphere(
@@ -1972,11 +2032,12 @@ fn prim_sphere(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    // One gated slot, so the singular form is the whole set — nothing to
+    // short-circuit past.
     Ok(reify_ir::GeometryOp::Sphere {
-        radius: length_arg("radius")?,
+        radius: required_length_value(
+            "radius", kind, args, values, functions, meta_map, diagnostics,
+        )?,
     })
 }
 
@@ -1988,13 +2049,19 @@ fn prim_tube(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    let [outer_r, inner_r, height] = required_length_values(
+        ["outer_r", "inner_r", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Tube {
-        outer_r: length_arg("outer_r")?,
-        inner_r: length_arg("inner_r")?,
-        height: length_arg("height")?,
+        outer_r,
+        inner_r,
+        height,
     })
 }
 
@@ -2006,13 +2073,19 @@ fn prim_cone(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    let [bottom_radius, top_radius, height] = required_length_values(
+        ["bottom_radius", "top_radius", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Cone {
-        bottom_radius: length_arg("bottom_radius")?,
-        top_radius: length_arg("top_radius")?,
-        height: length_arg("height")?,
+        bottom_radius,
+        top_radius,
+        height,
     })
 }
 
@@ -2024,14 +2097,20 @@ fn prim_wedge(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    let [width, depth, height, top_width] = required_length_values(
+        ["width", "depth", "height", "top_width"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Wedge {
-        width: length_arg("width")?,
-        depth: length_arg("depth")?,
-        height: length_arg("height")?,
-        top_width: length_arg("top_width")?,
+        width,
+        depth,
+        height,
+        top_width,
     })
 }
 
@@ -2043,12 +2122,18 @@ fn prim_torus(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    let [major_radius, minor_radius] = required_length_values(
+        ["major_radius", "minor_radius"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Torus {
-        major_radius: length_arg("major_radius")?,
-        minor_radius: length_arg("minor_radius")?,
+        major_radius,
+        minor_radius,
     })
 }
 
@@ -2061,7 +2146,8 @@ fn prim_half_space(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
     // `half_space` is the ONE primitive whose args are split across the units
-    // boundary, so it keeps BOTH closures.
+    // boundary, so it is the ONE primitive that reads its args through two
+    // different paths.
     //
     // `(px, py, pz)` is a point on the boundary plane — length-semantic, and
     // gated: a bare component would be read as SI METRES by `Value::as_f64`
@@ -2072,15 +2158,20 @@ fn prim_half_space(
     // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
     // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
     //
-    // BORROW ORDERING (the reason the point triple is read into locals up
-    // front rather than via a second closure): each `required_length_value`
-    // call takes `&mut diagnostics`, and the `eval_arg` closure below captures
-    // `diagnostics` mutably for its whole lifetime — so the triple must be
-    // fully read BEFORE that closure is declared. Reading it into locals
-    // satisfies that ordering by construction instead of by convention.
-    let px = required_length_value("px", kind, args, values, functions, meta_map, diagnostics)?;
-    let py = required_length_value("py", kind, args, values, functions, meta_map, diagnostics)?;
-    let pz = required_length_value("pz", kind, args, values, functions, meta_map, diagnostics)?;
+    // The point triple goes through the GROUP reader — the same
+    // `["px", "py", "pz"]` call `transform_rotate_around` makes — so it
+    // inherits all-failures-at-once, `Unresolved`-beats-`Invalid` precedence
+    // and the borrow ordering the group readers document (see
+    // `required_length_args`), rather than restating any of them here.
+    let [px, py, pz] = required_length_values(
+        ["px", "py", "pz"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
         eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
             .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
@@ -4042,13 +4133,16 @@ fn profile_rectangle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
-    Ok(reify_ir::GeometryOp::RectangleProfile {
-        width: length_arg("width")?,
-        height: length_arg("height")?,
-    })
+    let [width, height] = required_length_values(
+        ["width", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::RectangleProfile { width, height })
 }
 
 fn profile_circle(
@@ -4059,11 +4153,11 @@ fn profile_circle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    // One gated slot — see `prim_sphere`.
     Ok(reify_ir::GeometryOp::CircleProfile {
-        radius: length_arg("radius")?,
+        radius: required_length_value(
+            "radius", kind, args, values, functions, meta_map, diagnostics,
+        )?,
     })
 }
 
@@ -4121,12 +4215,18 @@ fn profile_ellipse(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
-    };
+    let [semi_major, semi_minor] = required_length_values(
+        ["semi_major", "semi_minor"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::EllipseProfile {
-        semi_major: length_arg("semi_major")?,
-        semi_minor: length_arg("semi_minor")?,
+        semi_major,
+        semi_minor,
     })
 }
 
