@@ -2504,6 +2504,102 @@ mod tests {
         assert!(decl.is_none(), "empty declarations should return None");
     }
 
+    // --- decl_name_and_span free function tests (task 6388) ---
+
+    /// One verified-parseable snippet per NAMED `Declaration` variant, paired
+    /// with the name that variant declares.
+    ///
+    /// Every snippet is lifted (verbatim or near-verbatim) from an existing
+    /// passing source — `crates/reify-syntax/tests/harness_syntax/*` or
+    /// `tree-sitter-reify/test/corpus/*` — rather than invented, so a RED
+    /// assertion can never be doomed by a surface-syntax guess. Shared with
+    /// goto_def.rs's equivalent table so the two stay in lockstep.
+    const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
+        ("structure S { param x : Length = 5mm }", "S"),
+        ("occurrence def Welding { param method : Length }", "Welding"),
+        ("enum Dir { In, Out }", "Dir"),
+        ("fn id_length(x: Length) -> Length { x }", "id_length"),
+        ("trait Rigid { param mass : Mass }", "Rigid"),
+        (
+            "field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
+            "temp",
+        ),
+        (
+            "purpose lightweight(subject : Structure) { minimize subject.mass }",
+            "lightweight",
+        ),
+        ("constraint def Foo { x > 0 }", "Foo"),
+        ("unit meter : Length", "meter"),
+        ("type Pressure = Force", "Pressure"),
+        (
+            "joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)",
+            "ball",
+        ),
+    ];
+
+    #[test]
+    fn decl_name_and_span_returns_name_and_span_for_every_named_kind() {
+        for (source, expected_name) in NAMED_DECL_SNIPPETS {
+            let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+            // Assert parse cleanliness FIRST: a grammar drift must fail loudly
+            // here rather than silently yielding zero declarations below.
+            assert!(
+                parsed.errors.is_empty(),
+                "snippet must parse clean, got {:?} for source: {source}",
+                parsed.errors
+            );
+            assert_eq!(
+                parsed.declarations.len(),
+                1,
+                "expected exactly one declaration for source: {source}"
+            );
+
+            let got = decl_name_and_span(&parsed.declarations[0]);
+            let (name, span) = got.unwrap_or_else(|| {
+                panic!("decl_name_and_span returned None for named kind, source: {source}")
+            });
+            assert_eq!(name, *expected_name, "name mismatch for source: {source}");
+            assert!(
+                span.start < span.end,
+                "span must be non-empty for source: {source}, got {span:?}"
+            );
+            let sliced = &source[span.start as usize..span.end as usize];
+            assert!(
+                sliced.contains(expected_name),
+                "declaration span {span:?} sliced to {sliced:?} must contain \
+                 {expected_name:?} for source: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn decl_name_and_span_returns_none_for_unnamed_kinds() {
+        // The three variants that declare no name of their own: Import binds a
+        // path/entity, Module is a dotted path, Default binds an existing type.
+        let unnamed = [
+            "import parts.Hole",
+            "module a.b.c",
+            "default Material = steel",
+        ];
+        for source in unnamed {
+            let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "snippet must parse clean, got {:?} for source: {source}",
+                parsed.errors
+            );
+            assert_eq!(
+                parsed.declarations.len(),
+                1,
+                "expected exactly one declaration for source: {source}"
+            );
+            assert!(
+                decl_name_and_span(&parsed.declarations[0]).is_none(),
+                "unnamed declaration kind must yield None for source: {source}"
+            );
+        }
+    }
+
     // --- depth-limit tests for find_named_member_span ---
 
     /// Build a member tree with `depth` levels of GuardedGroup nesting,
