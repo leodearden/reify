@@ -739,6 +739,125 @@ assert "--list includes scripts/zzz-print-plan-variable.sh (plan-derived, not so
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" --list | grep -qxF scripts/zzz-print-plan-variable.sh' \
     _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
 
+# --- (c-bis) ROBUSTNESS of the plan-derived half (task 6426) ---------------
+# Four properties the plan-derived half needs before it is safe in the
+# merge-worker hot path, where the guard runs on EVERY classification. Each is
+# a separate failure mode of "the guard now FORKS verify.sh instead of only
+# reading it", and none is covered by the emission-shape cases above.
+
+# (a) LIVE NON-VACUITY — the anti-drift net for the plan-derived half itself.
+#
+# Under a UNION, a silently-broken plan-derived clause is INVISIBLE: the
+# source-text clause still covers every literal gate, so the classifier keeps
+# answering correctly for today's inputs, nothing goes red, and the residual
+# gap reopens unnoticed. That is exactly the failure mode sub-block (a)'s
+# hard-coded ground truth exists to prevent for the source-text half — and the
+# plan-derived half needs the same net.
+#
+# Isolating the set is the only way a test can observe that half ALONE, hence
+# the `--list-plan-derived` diagnostic subcommand (which doubles as an operator
+# affordance for debugging a surprising classification, mirroring `--list`).
+# Asserted against the REAL tree, not a fixture: a fixture would only prove the
+# plumbing runs, not that it still derives anything from the verify.sh that
+# actually ships.
+#
+# RED today: the subcommand does not exist, so the `*)` usage branch fires
+# exit 2 and both assertions below fail.
+assert_exit "NON-VACUITY: --list-plan-derived is a real subcommand, exits 0 (diagnostic, not a diff verdict)" 0 \
+    run_guard --list-plan-derived
+
+assert "NON-VACUITY: --list-plan-derived prints a NON-EMPTY set against the real tree" \
+    bash -c '_o=$(bash "$1" --list-plan-derived) && [ -n "$_o" ]' \
+    _ "$GUARD_SH"
+
+assert "NON-VACUITY: --list-plan-derived contains scripts/check-manifold-deps.sh (derived from the EMITTED plan)" \
+    bash -c 'bash "$1" --list-plan-derived | grep -qxF scripts/check-manifold-deps.sh' \
+    _ "$GUARD_SH"
+
+# PIN (green on arrival) — adding a subcommand must not loosen the documented
+# 0/1/2 exit contract for a genuinely unknown flag.
+assert_exit "CONTRACT: an unknown flag still exits 2 (0/1/2 contract not loosened by the new subcommand)" 2 \
+    run_guard --list-bogus
+
+# (b) FAIL-SOFT / NEVER-FAIL-OPEN — the property that makes the hybrid safe.
+#
+# A deliberately LIB-LESS fixture: a bare `cp verify.sh $tmp/verify.sh` with no
+# sibling libs beside it, i.e. exactly the pre-6426 Pair E (c) fixture shape.
+# Measured: --print-plan on such a copy exits 1 in 0.028s with EMPTY stdout and
+# "verify.sh: ERROR — scripts/occt-scope-lib.sh not found next to verify.sh" on
+# stderr. An empty derivation means "nothing extra is load-bearing", so a
+# plan-derived clause that REPLACED the source-text one would fail OPEN here —
+# the #4618/#4624 -> #4288 ambush class all over again.
+#
+# The union degrades instead: the source-text floor still sees the appended
+# literal, so the gate stays load-bearing. THIS IS THE ASSERTION THAT STOPS A
+# FUTURE AUTHOR FROM "SIMPLIFYING" THE UNION INTO A REPLACEMENT. The classifier
+# can never call something LESS load-bearing than it did before task 6426.
+_LIBLESS_DIR_E="$(mktemp -d)"
+_TMPDIRS+=("$_LIBLESS_DIR_E")
+_LIBLESS_VERIFY_E="$_LIBLESS_DIR_E/verify.sh"
+cp "$REPO_ROOT/scripts/verify.sh" "$_LIBLESS_VERIFY_E"
+printf '\nadd_tool "./scripts/zzz-failsoft-gate.sh"\n' >> "$_LIBLESS_VERIFY_E"
+
+assert_exit "FAIL-SOFT: a failing --print-plan degrades to the source-text floor — zzz-failsoft-gate.sh stays load-bearing (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-failsoft-gate.sh' \
+    _ "$_LIBLESS_VERIFY_E" "$GUARD_SH"
+
+# (c) BOUNDED / NO-HANG — the merge-worker hot-path requirement.
+#
+# A RUNNABLE fixture with a `sleep 600` injected at the same in-build_plan
+# anchor the reachable variable-assembled case uses, so the block happens
+# during PLAN CONSTRUCTION, before anything is printed — the shape a wedged
+# gate script or a stuck probe would produce in the field.
+#
+# RED today (measured): with no bound inside the plan-derived clause the guard
+# inherits the block, and an outer `timeout 8` killed it at exit 124 in 8.01s.
+# The fix is a bound INSIDE the clause. Its ceiling is
+# REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT (default in the tens of
+# seconds — three orders of magnitude over the ~0.4s measured cost of the real
+# invocation); this case pins it low so the assertion stays cheap, and keeps
+# the outer `timeout 30` as the thing that must NEVER fire.
+#
+# Exit 0 rather than "0 or 1" is the deterministic form of the same property:
+# the fixture is a full verify.sh copy, so the source-text floor covers
+# check-manifold-deps.sh regardless of what the wedged plan does. Any 124 here
+# means the bound is gone.
+make_runnable_verify_fixture _BLOCKING_VERIFY_E
+awk '
+    /^[[:space:]]*add_tool "\.\/scripts\/tree-sitter-generate\.sh"$/ && !_injected {
+        match($0, /^[[:space:]]*/)
+        print substr($0, 1, RLENGTH) "sleep 600"
+        _injected = 1
+    }
+    { print }
+' "$_BLOCKING_VERIFY_E" > "$_BLOCKING_VERIFY_E.blocking"
+mv "$_BLOCKING_VERIFY_E.blocking" "$_BLOCKING_VERIFY_E"
+chmod +x "$_BLOCKING_VERIFY_E"
+
+assert_exit "BOUNDED: a wedged --print-plan cannot hang the guard — returns via the source-text floor under an outer timeout 30, never 124" 0 \
+    env REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$_BLOCKING_VERIFY_E" \
+        REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT=3 \
+        timeout 30 bash "$GUARD_SH" requires-full-gate scripts/check-manifold-deps.sh
+
+# (d) STDOUT CONTRACT — the merge worker parses the guard's stdout as
+# `result=$(...)`, the first matched load-bearing path (see the header's usage
+# block). ANY --print-plan output or clause diagnostic leaking to stdout
+# corrupts that parse, and the leak would be invisible to every exit-code
+# assertion above.
+#
+# Driven on the FAIL-SOFT fixture specifically, because that is the route that
+# actually produces output to leak: verify.sh writes its lib-resolution error
+# to stderr there. stderr is left UNREDIRECTED by these cases on purpose — a
+# clause diagnostic written to stderr is permitted, one written to stdout is
+# not, and only leaving stderr alone can tell the two apart.
+assert "STDOUT CONTRACT: fail-soft route prints EXACTLY the matched path and nothing else" \
+    bash -c '_o=$(REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-failsoft-gate.sh); [ "$_o" = "scripts/zzz-failsoft-gate.sh" ]' \
+    _ "$_LIBLESS_VERIFY_E" "$GUARD_SH"
+
+assert "STDOUT CONTRACT: an exit-1 (fast-path-safe) classification prints NOTHING on stdout" \
+    bash -c '_o=$(bash "$1" requires-full-gate docs/note.md) || true; [ -z "$_o" ]' \
+    _ "$GUARD_SH"
+
 # (d) MAP-WIRING: this guard's own oracle and static manifest must select this
 # test as a per-task fail-fast pole.
 #
