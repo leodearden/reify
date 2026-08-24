@@ -1514,11 +1514,17 @@ mod has_test_annotation_tests {
     }
 }
 
+/// Shared hand-built `MemberDecl`/`SubDecl` fixture constructors — no parser.
+///
+/// Hoisted out of `find_param_default_span_tests` (pre-1) so more than one
+/// `#[cfg(test)]` module in this file can build the same nested-member shapes
+/// without duplicating any `ParamDecl`/`LetDecl`/`GuardedGroupDecl`/`PortDecl`/
+/// `MatchArmDeclGroupDecl`/`SubDecl` literal.
 #[cfg(test)]
-mod find_param_default_span_tests {
+mod member_test_fixtures {
     use super::{
         Expr, GuardedGroupDecl, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
-        ParamDecl, PortDecl, find_param_default_span,
+        ParamDecl, PortDecl, SubDecl,
     };
     use crate::ast::ExprKind;
     use reify_core::{ContentHash, PortDirection, SourceSpan};
@@ -1528,7 +1534,11 @@ mod find_param_default_span_tests {
     /// `decl_span` is the whole `param … = …` declaration's span; `default_span`,
     /// when `Some`, is the span of the default EXPRESSION alone. Keeping the two
     /// distinct is what makes the §6.1 invariant assertable.
-    fn param(name: &str, decl_span: (u32, u32), default_span: Option<(u32, u32)>) -> MemberDecl {
+    pub(super) fn param(
+        name: &str,
+        decl_span: (u32, u32),
+        default_span: Option<(u32, u32)>,
+    ) -> MemberDecl {
         MemberDecl::Param(ParamDecl {
             name: name.to_string(),
             doc: None,
@@ -1550,7 +1560,11 @@ mod find_param_default_span_tests {
 
     /// Build a `MemberDecl::Let` by hand — the sibling variant that
     /// [`super::find_named_member_span`] matches but this helper deliberately does not.
-    fn let_member(name: &str, decl_span: (u32, u32), value_span: (u32, u32)) -> MemberDecl {
+    pub(super) fn let_member(
+        name: &str,
+        decl_span: (u32, u32),
+        value_span: (u32, u32),
+    ) -> MemberDecl {
         MemberDecl::Let(LetDecl {
             name: name.to_string(),
             doc: None,
@@ -1573,7 +1587,7 @@ mod find_param_default_span_tests {
     }
 
     /// A `BoolLiteral(true)` stand-in for a guard condition / match discriminant.
-    fn dummy_expr() -> Expr {
+    pub(super) fn dummy_expr() -> Expr {
         Expr {
             kind: ExprKind::BoolLiteral(true),
             span: SourceSpan::new(0, 1),
@@ -1581,7 +1595,7 @@ mod find_param_default_span_tests {
     }
 
     /// `where <cond> { members } else { else_members }`.
-    fn guarded(members: Vec<MemberDecl>, else_members: Vec<MemberDecl>) -> MemberDecl {
+    pub(super) fn guarded(members: Vec<MemberDecl>, else_members: Vec<MemberDecl>) -> MemberDecl {
         MemberDecl::GuardedGroup(GuardedGroupDecl {
             condition: dummy_expr(),
             members,
@@ -1592,7 +1606,7 @@ mod find_param_default_span_tests {
     }
 
     /// `port <name> : in <T> { members }`.
-    fn port(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
+    pub(super) fn port(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
         MemberDecl::Port(PortDecl {
             name: name.to_string(),
             direction: Some(PortDirection::In),
@@ -1606,7 +1620,7 @@ mod find_param_default_span_tests {
     }
 
     /// `match <disc> { P => <member> … }` at decl level.
-    fn match_arm_group(arms: Vec<(&str, MemberDecl)>) -> MemberDecl {
+    pub(super) fn match_arm_group(arms: Vec<(&str, MemberDecl)>) -> MemberDecl {
         MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
             discriminant: dummy_expr(),
             arms: arms
@@ -1627,7 +1641,7 @@ mod find_param_default_span_tests {
     /// Same shape as `build_nested_guarded_members` in
     /// crates/reify-lsp/src/analysis.rs, but with a default attached so the
     /// depth assertions can name the exact span rather than settling for `is_some`.
-    fn build_nested_guarded_members(
+    pub(super) fn build_nested_guarded_members(
         depth: usize,
         target: &str,
         default_span: (u32, u32),
@@ -1638,6 +1652,43 @@ mod find_param_default_span_tests {
         }
         current
     }
+
+    /// Build a `SubDecl` by hand — no parser. Mirrors the field-literal shape
+    /// established by `make_sub_with_body` in
+    /// `crates/reify-syntax/tests/harness_syntax/match_decl_block_tests.rs` and
+    /// `sub_decl_specialization_tests.rs` (reify-ast had no `SubDecl` test
+    /// builder of its own before this).
+    ///
+    /// `body: None` yields a bare-instantiation/collection-shaped `SubDecl`
+    /// (no specialization scope); `body: Some(members)` opens one.
+    pub(super) fn sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
+        SubDecl {
+            name: name.to_string(),
+            structure_name: "Foo".to_string(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            is_collection: false,
+            where_clause: None,
+            body,
+            spec_param_overrides: Vec::new(),
+            keyed_members: Vec::new(),
+            is_aux: false,
+            is_priv: false,
+            pose_expr: None,
+            index_binder: None,
+            index_domain: None,
+            relate_relations: Vec::new(),
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        }
+    }
+}
+
+#[cfg(test)]
+mod find_param_default_span_tests {
+    use super::find_param_default_span;
+    use super::member_test_fixtures::*;
+    use reify_core::SourceSpan;
 
     #[test]
     fn param_with_default_returns_the_default_expression_span() {
