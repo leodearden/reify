@@ -34,8 +34,8 @@ use reify_test_support::{compile_source_with_stdlib, errors_only, get_let_expr_i
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-const EULER_ARG_OK: &str = include_str!("fixtures/euler_convention_arg_ok.ri");
-const EULER_ARG_REJECT: &str = include_str!("fixtures/euler_convention_arg_reject.ri");
+const EULER_ARG_OK: &str = include_str!("../fixtures/euler_convention_arg_ok.ri");
+const EULER_ARG_REJECT: &str = include_str!("../fixtures/euler_convention_arg_reject.ri");
 
 // ── REJECT: a String convention is an ArgTypeMismatch ─────────────────────────
 
