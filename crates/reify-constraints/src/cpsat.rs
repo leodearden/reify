@@ -2741,7 +2741,8 @@ mod solve_ranked_override_tests {
     use super::*;
     use super::cpsat_test_fixtures::*;
     use reify_ir::{
-        ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate, RankedSolveResult,
+        BestFoundReason, ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate,
+        RankedSolveResult,
     };
 
     /// The objective's weight on `a`, and on `b`. Distinct and non-equal so the
@@ -3096,6 +3097,426 @@ mod solve_ranked_override_tests {
              wherever the sort puts them makes the ranking unstable run-to-run \
              for exactly the problems where the choice is arbitrary — the worst \
              place to be non-reproducible",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // HONESTY EDGES AND NON-OBJECTIVE ARMS (PRD2 §4.2, D2, D5; F-result I2/I4).
+    //
+    // The units above cover the happy path: an objective, a complete
+    // enumeration, a clean argmin. These cover everything else — the arms where
+    // a ranking is asked a question it cannot answer, and where the tempting
+    // reply is a confident-looking one. Each is a place a `Ranked` could come
+    // back well-formed and WRONG:
+    //
+    //   * an empty candidate list (I2 says non-empty)
+    //   * a ranking of 3 models under no objective, claiming an order it has
+    //     no basis for
+    //   * `ProvenOptimal` on a search that stopped early (D2)
+    //   * `BestFound` alongside `objective_score: None` (I4)
+    //   * `Infeasible` for a search that merely ran out of budget (D5)
+    //
+    // Two of these — the top-N carrier cap and the node budget — BOTH produce a
+    // shorter answer, and only one of them is a shorter SEARCH. Conflating them
+    // is the single most likely implementation slip on this path, so (c) and (d)
+    // pin them from opposite sides.
+    // -----------------------------------------------------------------------
+
+    /// Twenty models, `n ∈ 0..=19`, more than [`RANKED_CANDIDATE_CAP`] so the
+    /// carrier truncation is genuinely exercised, and cheap enough (20 nodes)
+    /// that the node budget is nowhere near binding.
+    fn twenty_ints(sense: ObjectiveSense) -> ResolutionProblem {
+        problem_with_objective(
+            vec![int_auto("n", 0, 19)],
+            Vec::new(),
+            ObjectiveSet::single(sense, iref("n")),
+        )
+    }
+
+    /// The `S.n` of one candidate.
+    fn n_of(c: &RankedCandidate) -> i64 {
+        match c.values.get(&ValueCellId::new("S", "n")) {
+            Some(Value::Int(v)) => *v,
+            other => panic!("expected an Int at S.n; got {other:?}"),
+        }
+    }
+
+    /// (a) NO OBJECTIVE ⇒ ONE CANDIDATE, NO SCORE, `FeasibilityOnly`.
+    ///
+    /// The size-1 claim is the substantive one and is asserted explicitly. A
+    /// feasibility ranking makes NO ordering claim — there is nothing to order
+    /// by — so returning all three models would be a false ordering claim
+    /// dressed as generosity: `candidates[0]` is documented as "the selected
+    /// optimum", and under no objective there is no such thing.
+    #[test]
+    fn a_ranking_with_no_objective_is_one_unordered_feasible_point() {
+        let p = problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            Vec::new(),
+        );
+        let (candidates, optimality) = ranked(CpSatSolver.solve_ranked(&p));
+
+        assert_eq!(
+            candidates.len(),
+            1,
+            "no objective means no ordering claim; returning all 3 models would \
+             assert that candidates[0] is the best of them, which nothing here \
+             established; got {:?}",
+            candidates.iter().map(shape).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            candidates[0].objective_score, None,
+            "I4: a feasibility-only candidate carries no score - there is no \
+             objective to have scored it with",
+        );
+        assert!(
+            matches!(optimality, OptimalityStatus::FeasibilityOnly),
+            "I3: `FeasibilityOnly` is used iff no objective governs the solve; \
+             got {optimality:?}",
+        );
+    }
+
+    /// (b) A FEASIBILITY RANKING'S `unique` AGREES WITH `solve()`.
+    ///
+    /// Both directions in ONE unit, and both compared against `solve()` on the
+    /// SAME problem, because the failure worth catching is not "the flag is
+    /// wrong" but "the two entry points disagree". A consumer that reads
+    /// `solve()` in one place and `solve_ranked()` in another would then get
+    /// two different accounts of one design's determinacy, with nothing
+    /// anywhere to reconcile them.
+    #[test]
+    fn a_feasibility_rankings_unique_flag_matches_what_solve_reports() {
+        let many = problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            Vec::new(),
+        );
+        let one = problem(
+            vec![bool_auto("a")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("a")))],
+            Vec::new(),
+        );
+
+        for (p, expected, label) in [(&many, false, "3 models"), (&one, true, "1 model")] {
+            let (candidates, _) = ranked(CpSatSolver.solve_ranked(p));
+            let solve_unique = match CpSatSolver.solve(p) {
+                SolveResult::Solved { unique, .. } => unique,
+                other => panic!("expected Solved for the {label} fixture; got {other:?}"),
+            };
+
+            assert_eq!(
+                candidates[0].unique, expected,
+                "the {label} fixture must report unique = {expected}",
+            );
+            assert_eq!(
+                candidates[0].unique, solve_unique,
+                "`solve_ranked` and `solve` must agree about the same problem \
+                 ({label}); disagreeing gives a consumer two accounts of one \
+                 design's determinacy and no way to reconcile them",
+            );
+        }
+    }
+
+    /// (c) A SHORTER LIST IS NOT A SHORTER SEARCH. Twenty models, complete
+    /// enumeration, carrier cap 16: sixteen candidates AND `ProvenOptimal`.
+    ///
+    /// The direct pin on PRD2 §4.2's "truncated to top-N carrier cap
+    /// (truncation never affects optimality)". The slip this catches is
+    /// entirely natural — the code has just dropped four answers on the floor,
+    /// and downgrading the verdict feels like the conservative thing to do. It
+    /// is not: the search DID exhaust the space and DID prove the winner
+    /// optimal; the four dropped candidates were the four WORST, and dropping
+    /// them cannot unprove anything. Downgrading here would fire
+    /// `W_SOLVER_OPTIMALITY_UNPROVEN` at a user whose answer is provably
+    /// optimal.
+    ///
+    /// `candidates[0]` is asserted to be the true global argmin as well, so the
+    /// unit cannot pass on an implementation that truncated BEFORE sorting and
+    /// kept the first sixteen models found instead of the best sixteen.
+    #[test]
+    fn carrier_truncation_keeps_the_best_and_never_downgrades_optimality() {
+        let (candidates, optimality) =
+            ranked(CpSatSolver.solve_ranked(&twenty_ints(ObjectiveSense::Minimize)));
+
+        assert_eq!(
+            candidates.len(),
+            RANKED_CANDIDATE_CAP,
+            "20 scored models truncate to the {RANKED_CANDIDATE_CAP}-candidate \
+             carrier cap",
+        );
+        assert_eq!(
+            (n_of(&candidates[0]), score(&candidates[0])),
+            (0, 0.0),
+            "minimising `n` over 0..=19 has argmin n = 0. A different head means \
+             truncation happened BEFORE the sort, keeping the first sixteen \
+             models found rather than the sixteen best",
+        );
+        assert!(
+            matches!(optimality, OptimalityStatus::ProvenOptimal),
+            "the SEARCH exhausted the space; only the LIST was shortened, and \
+             the four dropped candidates were the four worst. Downgrading here \
+             would fire W_SOLVER_OPTIMALITY_UNPROVEN at a user whose answer is \
+             provably optimal; got {optimality:?}",
+        );
+    }
+
+    /// (d) A SHORTER SEARCH *IS* A WEAKER CLAIM. The same twenty models under a
+    /// node budget that stops the search early: `BestFound`, never
+    /// `ProvenOptimal`, and `candidates[0]` is the best OF THOSE ENUMERATED.
+    ///
+    /// `Maximize` is the sense on purpose. Under it the score is `-n`, so the
+    /// GLOBAL argmin is `n = 19` — the very last node the search would reach,
+    /// and one the budget guarantees it never does. So "best of those
+    /// enumerated" and "best overall" give visibly different answers here, and
+    /// the unit pins which one is returned rather than letting a fixture where
+    /// they coincide prove nothing.
+    ///
+    /// The returned head is compared against the minimum over the returned SET
+    /// rather than against a hardcoded `n`, so the assertion does not depend on
+    /// exactly where the budget lands.
+    #[test]
+    fn a_budget_truncated_ranking_returns_the_best_of_what_it_saw_and_says_so() {
+        let (candidates, optimality) = ranked(
+            CpSatSolver.solve_ranked_with_budget(&twenty_ints(ObjectiveSense::Maximize), 5),
+        );
+
+        assert!(
+            candidates.len() >= 2 && candidates.len() < 20,
+            "the budget must truncate the search without aborting it, or the \
+             best-of-enumerated claim below is vacuous; got {} candidates",
+            candidates.len(),
+        );
+        assert_ne!(
+            n_of(&candidates[0]),
+            19,
+            "n = 19 is the GLOBAL argmin under Maximize (score -19) and sits at \
+             the last node in the space — a 5-node budget cannot have reached \
+             it, so returning it would mean the budget was not consulted",
+        );
+
+        let best_seen = candidates
+            .iter()
+            .map(score)
+            .fold(f64::INFINITY, f64::min);
+        assert_eq!(
+            score(&candidates[0]),
+            best_seen,
+            "candidates[0] must be the best of what WAS enumerated — a \
+             truncated search still ranks honestly over the set it saw",
+        );
+        assert!(
+            matches!(
+                optimality,
+                OptimalityStatus::BestFound {
+                    reason: BestFoundReason::IterationLimit
+                }
+            ),
+            "a search that stopped early cannot have proven anything global. \
+             `ProvenOptimal` here would be the loudest possible lie: it tells a \
+             user their design is optimal on the strength of a search that \
+             visited a quarter of it; got {optimality:?}",
+        );
+    }
+
+    /// (e) THE OPTIMALITY VERDICT REACHES THE ENGINE'S WARNING GATE CORRECTLY.
+    ///
+    /// `engine_eval.rs` (6127, 7539) gates `W_SOLVER_OPTIMALITY_UNPROVEN` on
+    /// `BestFound` AND `matches!(reason, BestFoundReason::IterationLimit)` —
+    /// `ConvergedWithinBudget` and `Unreported` explicitly do NOT fire it. That
+    /// predicate is REPRODUCED here rather than described, so the two arms are
+    /// pinned as what they are: PRD2 B6 ("warning fires" on a capped
+    /// enumeration) and B5 ("no warning" on a complete one) both remain
+    /// satisfiable downstream at γ/ε with zero engine changes.
+    ///
+    /// The `IterationLimit` choice is deliberate and imperfect — its
+    /// `describe()` text is inaccurate for an enumeration cap on an exact
+    /// solver — but it is the ONLY variant that keeps the truncated case
+    /// audible, and silence is the one outcome D5 rules out. Task #6553 owns
+    /// the honest variant.
+    #[test]
+    fn the_optimality_verdict_matches_the_engines_warning_gate_predicate() {
+        // Exactly `engine_eval.rs`'s gate, spelled out.
+        fn fires_warning(o: &OptimalityStatus) -> bool {
+            matches!(
+                o,
+                OptimalityStatus::BestFound {
+                    reason: BestFoundReason::IterationLimit
+                }
+            )
+        }
+
+        let (_, truncated) = ranked(
+            CpSatSolver.solve_ranked_with_budget(&twenty_ints(ObjectiveSense::Maximize), 5),
+        );
+        let (_, complete) =
+            ranked(CpSatSolver.solve_ranked(&twenty_ints(ObjectiveSense::Minimize)));
+
+        assert!(
+            fires_warning(&truncated),
+            "PRD2 B6: a capped enumeration must reach the engine's warning gate. \
+             `ConvergedWithinBudget` or `Unreported` would be SILENT — the user \
+             would read an unproven answer as a proven one; got {truncated:?}",
+        );
+        assert!(
+            !fires_warning(&complete),
+            "PRD2 B5: an honest `ProvenOptimal` silences the warning with zero \
+             engine changes; got {complete:?}",
+        );
+    }
+
+    /// (f) A DOMAIN THAT CANNOT BE BUILT ⇒ `NoProgress`, NOT AN EMPTY `Ranked`.
+    ///
+    /// I2 requires `Ranked.candidates` to be non-empty, so a ranking has no
+    /// well-formed way to say "I could not start". `NoProgress` is that channel,
+    /// carrying the same `domain_spec` rejection `solve()` reports for this
+    /// problem.
+    #[test]
+    fn an_unbuildable_domain_ranks_as_no_progress() {
+        let p = problem_with_objective(
+            vec![unbounded_int_auto("n")],
+            Vec::new(),
+            ObjectiveSet::single(ObjectiveSense::Minimize, iref("n")),
+        );
+
+        match CpSatSolver.solve_ranked(&p) {
+            RankedSolveResult::NoProgress { reason } => assert!(
+                reason.contains("S.n"),
+                "the rejection must name the param it could not enumerate; got {reason:?}",
+            ),
+            other => panic!(
+                "an unbuildable domain has no candidates to rank, and I2 forbids \
+                 an empty `Ranked`; got {other:?}",
+            ),
+        }
+    }
+
+    /// (g) A PROVEN CONTRADICTION ⇒ `Infeasible`, WITH THE SAME CODE `solve()`
+    /// REPORTS.
+    ///
+    /// The code is asserted, not just the variant: `ConstraintUnsatisfiable` is
+    /// what a consumer branches on, and an `Infeasible` carrying a different
+    /// code (or none) is a different diagnostic wearing the right variant.
+    #[test]
+    fn a_proven_contradiction_ranks_as_infeasible_with_the_same_code_solve_uses() {
+        let p = problem_with_objective(
+            vec![bool_auto("a")],
+            vec![(
+                ConstraintNodeId::new("S", 0),
+                and(bref("a"), not(bref("a"))),
+            )],
+            ObjectiveSet::single(ObjectiveSense::Minimize, int_if(bref("a"), 1, 0)),
+        );
+
+        let ranked_codes = match CpSatSolver.solve_ranked(&p) {
+            RankedSolveResult::Infeasible { diagnostics } => {
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
+            }
+            other => panic!(
+                "`a && !a` was refuted at every point of a fully-walked space — \
+                 that IS a proof, and the ranking must report it as one; got {other:?}",
+            ),
+        };
+        let solve_codes = match CpSatSolver.solve(&p) {
+            SolveResult::Infeasible { diagnostics } => {
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
+            }
+            other => panic!("expected solve() to report Infeasible too; got {other:?}"),
+        };
+
+        assert!(
+            ranked_codes.contains(&Some(DiagnosticCode::ConstraintUnsatisfiable)),
+            "the diagnostic a consumer branches on must be present; got {ranked_codes:?}",
+        );
+        assert_eq!(
+            ranked_codes, solve_codes,
+            "`solve_ranked` and `solve` must hand a user the SAME account of the \
+             same contradiction",
+        );
+    }
+
+    /// (h) AN OBJECTIVE THAT SCORES NOTHING STILL RETURNS A WELL-FORMED ANSWER.
+    ///
+    /// The objective here reads `S.ghost`, a cell that exists nowhere, so it
+    /// folds to `Undef` at every model and `eval_objective_set` rejects all
+    /// three. Every candidate is dropped — and the tempting reply is an empty
+    /// `Ranked`, which I2 forbids outright.
+    ///
+    /// The fallback is the feasibility lift: one point, `objective_score: None`,
+    /// and an optimality that makes NO scored claim. The pairing that must never
+    /// appear is `BestFound` (or `ProvenOptimal`) alongside a `None` score —
+    /// I4 — which would tell a consumer "here is the best one, and no, I will
+    /// not say how good it is".
+    #[test]
+    fn an_objective_that_scores_no_model_falls_back_rather_than_ranking_nothing() {
+        let p = problem_with_objective(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            ObjectiveSet::single(ObjectiveSense::Minimize, iref("ghost")),
+        );
+
+        let (candidates, optimality) = ranked(CpSatSolver.solve_ranked(&p));
+
+        assert!(
+            !candidates.is_empty(),
+            "I2: `Ranked.candidates` is never empty. The models EXIST — they \
+             just could not be ordered — so dropping them all leaves a carrier \
+             that violates its own contract",
+        );
+        assert!(
+            candidates.iter().all(|c| c.objective_score.is_none()),
+            "nothing scored, so nothing may carry a score",
+        );
+        assert!(
+            matches!(optimality, OptimalityStatus::FeasibilityOnly),
+            "I4: an unscored candidate list may not carry a SCORED optimality \
+             verdict. `BestFound` here would claim a ranking quality over a set \
+             that could not be ranked; got {optimality:?}",
+        );
+    }
+
+    /// (i) NO AUTO PARAMS, UNDER AN OBJECTIVE, IS STILL A WELL-FORMED RANKING.
+    ///
+    /// The degenerate shape that most easily becomes a panic or an empty list:
+    /// there is nothing to search, so the enumeration returns ONE point — the
+    /// empty assignment — and it is trivially both feasible and optimal. The
+    /// answer must agree with `solve()`'s zero-auto fast path, which reports
+    /// `Solved { values: {}, unique: true }`.
+    #[test]
+    fn a_problem_with_no_auto_params_ranks_as_a_single_trivially_optimal_point() {
+        let p = problem_with_objective(
+            Vec::new(),
+            Vec::new(),
+            ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                CompiledExpr::literal(Value::Int(7), Type::Int),
+            ),
+        );
+
+        let (candidates, optimality) = ranked(CpSatSolver.solve_ranked(&p));
+
+        assert_eq!(
+            candidates.len(),
+            1,
+            "the empty assignment is the only assignment; got {candidates:?}",
+        );
+        assert!(
+            candidates[0].values.is_empty(),
+            "there are no autos to report values for; got {:?}",
+            candidates[0].values,
+        );
+        assert!(
+            candidates[0].unique,
+            "with zero autos the empty assignment is the ONLY one, so it is \
+             honestly unique — the same answer `solve()`'s fast path gives",
+        );
+        assert!(
+            matches!(
+                optimality,
+                OptimalityStatus::ProvenOptimal | OptimalityStatus::FeasibilityOnly
+            ),
+            "a one-point space is exhausted by definition, so the verdict may \
+             not be `BestFound` — nothing was left unexplored; got {optimality:?}",
         );
     }
 }
