@@ -6545,6 +6545,214 @@ fn parse_constraint_key(key: &str) -> Option<ConstraintNodeId> {
     Some(ConstraintNodeId::new(entity, index))
 }
 
+/// The ASCII normal form of a CURATED unit label — the Rust twin of
+/// `normalizeUnitLabel` in `gui/src/stores/unitLadder.ts`.
+///
+/// Rewrites the two superscript exponent glyphs the curated ladder tables use
+/// (U+00B2 → `^2`, U+00B3 → `^3`) and touches nothing else.
+///
+/// KEEP THE TWO IN LOCKSTEP. The frontend folds every curated label through its
+/// copy to build the typed-input alphabet, so a divergence here is precisely a
+/// spelling the property editor admits and the engine then refuses — the class
+/// of defect task #5757 exists to close.
+///
+/// Like its twin this is a pure glyph substitution with no exceptions, so it
+/// must only ever be handed a unit LABEL. The `×10ⁿ` engineering-notation
+/// superscripts `reify-ir` produces format a MAGNITUDE, not a unit, and are
+/// deliberately out of scope.
+pub(crate) fn normalize_unit_label(label: &str) -> String {
+    label.replace('\u{00B2}', "^2").replace('\u{00B3}', "^3")
+}
+
+/// One resolvable unit spelling in [`composed_unit_index`].
+#[derive(Debug)]
+pub(crate) struct ComposedUnit {
+    /// The exact spelling matched — suffix-wise by `parse_value_string`,
+    /// whole-string by [`resolve_unit_label`].
+    pub(crate) label: String,
+    /// Conversion to canonical SI: `si_value = magnitude * si_scale`. Same
+    /// direction as `reify_core::unit_symbol_to_si`'s factor and as
+    /// `UnitOption::si_scale`, so composing the two sources needs no inversion.
+    pub(crate) si_scale: f64,
+    pub(crate) dimension: DimensionVector,
+}
+
+/// Every unit spelling the GUI parameter editor can parse, LONGEST LABEL FIRST.
+///
+/// Composed once from the two Rust-authored tables the GUI already depends on
+/// rather than hand-maintained (task #5757 — this replaces the five-entry
+/// `UNIT_TABLE` the PRD's open question 5 asks to retire):
+///
+///   * `reify_core::display_units::unit_ladders()` — the curated per-dimension
+///     DISPLAY ladders. The frontend derives its own typed-input alphabet from
+///     this very table, fetched over the `get_unit_ladders` IPC command (see
+///     `quantityUnitAlphabet` in `gui/src/stores/unitLadder.ts`), so making it
+///     the backend's accept-set is what makes the two ENDS AGREE rather than
+///     adding a second table to keep in lockstep. Before this they disagreed
+///     on 19 labels the panel admitted and the engine refused with
+///     `Cannot parse value '<input>'`.
+///
+///     BOTH spellings of every rung are registered: the raw superscript one a
+///     user sees in the picker and may copy-paste, and the ASCII one
+///     [`normalize_unit_label`] produces — which is the only one the frontend
+///     gate admits, since `normalizeUnitLabel` is one-way. Registering both
+///     makes the backend a strict SUPERSET of that gate, so no
+///     frontend-accepted spelling can ever be refused here.
+///
+///   * `reify_core::BUILTIN_UNITS` — the DSL's bare built-in unit symbols, the
+///     table `reify_core::unit_symbol_to_si` is a faithful view of. This is the
+///     delegation the units-length PRD §M9 names, and it contributes the SI
+///     bases no curated ladder carries (`s`, `K`, `A`, `mol`, `cd`).
+///
+/// DELIBERATELY NOT the compiler's per-module `UnitRegistry` (`km`, `ft`,
+/// `psi`, `degC`, `bar`, `rpm`, and arbitrary compounds). Reaching it needs the
+/// prelude-seeding from `compile_builder/units_phase.rs`, handling for affine
+/// offset units (`si = v*factor + offset`), and a `&str -> reify_ast::UnitExpr`
+/// parser that exists nowhere in the workspace — all to admit spellings the
+/// frontend gate rejects outright, so they are unreachable from the property
+/// editor.
+///
+/// ORDERING IS LOAD-BEARING. `parse_value_string` scans this by suffix and
+/// takes the first match whose remainder parses as a number, so descending
+/// label length is what stops `m` shadowing `cm`, `Pa` shadowing `MPa`, and
+/// `m^3` shadowing `kg/m^3`. Byte length (not char count) is the right key:
+/// `strip_suffix` works on bytes, and the superscript glyphs are two bytes
+/// each. Pinned in debug builds by the `debug_assert!` in `parse_value_string`
+/// and in release builds by `unit_table_ordering_invariant_holds`.
+static COMPOSED_UNIT_INDEX: std::sync::LazyLock<Vec<ComposedUnit>> =
+    std::sync::LazyLock::new(|| {
+        /// Register one spelling. `(label, dimension)` is the identity: the
+        /// eight labels carried by BOTH source tables would otherwise appear
+        /// twice. Which copy wins is unobservable today — the two tables agree
+        /// bit-for-bit, and
+        /// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`
+        /// is what keeps it that way.
+        fn push(
+            entries: &mut Vec<ComposedUnit>,
+            label: String,
+            si_scale: f64,
+            dimension: DimensionVector,
+        ) {
+            if entries
+                .iter()
+                .any(|e| e.label == label && e.dimension == dimension)
+            {
+                return;
+            }
+            entries.push(ComposedUnit {
+                label,
+                si_scale,
+                dimension,
+            });
+        }
+
+        let mut entries: Vec<ComposedUnit> = Vec::new();
+
+        // Curated display ladders first, so that on a same-length collision the
+        // spelling the user is being SHOWN wins.
+        for ladder in crate::display_units::unit_ladders() {
+            // A ladder carries its dimension as a canonical NAME, not a vector.
+            // Map it back with the same first-match `NAMED_DIMENSIONS` scan
+            // reify-compiler's `resolve_dimension_type` uses (that function is
+            // `pub(crate)`, so it cannot be called from here).
+            //
+            // Totality across the curated table is already guaranteed by
+            // reify-core's `every_ladder_dimension_round_trips_through_canonical_name`,
+            // so a miss means that guard has itself broken. Degrade by skipping
+            // the ladder — its labels simply stay unparseable, and the picker
+            // keeps working — rather than panicking inside a `LazyLock`, which
+            // would poison it for every later caller on this process.
+            let Some(dimension) = reify_core::NAMED_DIMENSIONS
+                .iter()
+                .find(|(_, name)| *name == ladder.dimension)
+                .map(|(dim, _)| *dim)
+            else {
+                tracing::debug!(
+                    target: "reify_gui::engine::unit_index",
+                    dimension = %ladder.dimension,
+                    "curated unit ladder names a dimension with no NAMED_DIMENSIONS \
+                     entry — its rungs will not be parseable"
+                );
+                continue;
+            };
+            for opt in ladder.units {
+                let normalized = normalize_unit_label(&opt.label);
+                if normalized != opt.label {
+                    push(&mut entries, normalized, opt.si_scale, dimension);
+                }
+                push(&mut entries, opt.label, opt.si_scale, dimension);
+            }
+        }
+
+        // Then the DSL's bare built-in symbols.
+        for &(symbol, factor, dimension) in reify_core::BUILTIN_UNITS {
+            push(&mut entries, symbol.to_string(), factor, dimension);
+        }
+
+        // `sort_by_key` is stable, so equal-length entries keep insertion order
+        // (curated ladders before builtins).
+        entries.sort_by_key(|e| std::cmp::Reverse(e.label.len()));
+        entries
+    });
+
+/// The composed unit index, longest label first. See [`COMPOSED_UNIT_INDEX`].
+pub(crate) fn composed_unit_index() -> &'static [ComposedUnit] {
+    &COMPOSED_UNIT_INDEX
+}
+
+/// Resolve a unit LABEL to `(si_scale, dimension)`, optionally narrowed by the
+/// declared dimension of the cell being edited.
+///
+/// `si_value = magnitude * si_scale`.
+///
+/// Resolution order, mirroring the compiler's own "registry first, builtin
+/// fallback" shape in `reify-compiler/src/expr.rs`:
+///
+/// 1. **Dimension-directed.** Given a hint, an entry carrying exactly that
+///    dimension wins. This is the use `reify_core::units`' own doc-comment
+///    sanctions for the display table — legitimate "as a typed label→si_scale
+///    map once you already know the declared dimension" — and it is what makes
+///    `resolve_unit_label` mirror `PropertyEditor`'s per-cell `quantityReFor`
+///    narrowing rather than matching one flat global table.
+///
+/// 2. **The union**, over every ladder plus the builtins. This is the branch
+///    the frontend itself falls back to for cells with no dimension and for
+///    dimensions no curated ladder covers.
+///
+///    Arm 2 is deliberately NOT skipped when a hint is present. The frontend's
+///    per-dimension alphabet always carries the `BASE_UNIT_LABELS` floor
+///    (`mm`, `cm`, `m`, `deg`, `rad`) alongside the cell's own ladder, so
+///    refusing a floor label here would re-open the very frontend/backend
+///    disagreement this task closes, just in the opposite direction. A
+///    genuinely cross-dimension literal is not silently accepted: it resolves
+///    to its OWN dimension and is then refused one layer down by reify-eval's
+///    `DimensionMismatch`, which names both dimensions.
+///
+/// The `unit_symbol_to_si` arm the PRD names is folded into the index itself
+/// (its builtin half) rather than chained on here, because the other consumer —
+/// `parse_value_string` — scans by SUFFIX and has no candidate symbol to hand
+/// that function.
+///
+/// Arm 2 is unambiguous because curated labels are unique across ladders,
+/// pinned by `curated_ladder_labels_are_unique_across_every_dimension`.
+pub(crate) fn resolve_unit_label(
+    label: &str,
+    dimension_hint: Option<&DimensionVector>,
+) -> Option<(f64, DimensionVector)> {
+    if let Some(hint) = dimension_hint {
+        if let Some(entry) = composed_unit_index()
+            .iter()
+            .find(|e| e.label == label && e.dimension == *hint)
+        {
+            return Some((entry.si_scale, entry.dimension));
+        }
+    }
+    composed_unit_index()
+        .iter()
+        .find(|e| e.label == label)
+        .map(|e| (e.si_scale, e.dimension))
+}
+
 /// Unit suffixes ordered by descending length — longest match first.
 ///
 /// Exported as `pub(crate)` so tests can directly verify the ordering invariant
