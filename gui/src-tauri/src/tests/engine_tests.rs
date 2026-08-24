@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, find_moi_principal_constraint,
@@ -19958,3 +19958,60 @@ fn build_gui_state_clean_source_has_no_error_compile_diagnostics() {
     );
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5096 γ — EngineSession::apply_param_to_source (INV-GUI-3 write-back)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn unit_hint_from_default_literal_reads_the_symbol_off_a_dimensioned_literal() {
+    // The hint is what keeps `width = 50mm` writing millimetres instead of
+    // hopping to the canonical ladder (see value_to_ri_literal_with_unit's
+    // doc on `preferred_unit`). Table-driven across the literal shapes the
+    // splice source can actually contain.
+    let cases: &[(&str, &str)] = &[
+        ("80mm", "mm"),
+        ("0.5m", "m"),
+        ("0.08 m", "m"), // Display-style spaced form.
+        ("1.5in", "in"),
+        ("250mm", "mm"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            unit_hint_from_default_literal(input),
+            Some(*expected),
+            "expected {input:?} to yield hint {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn unit_hint_from_default_literal_returns_none_for_a_non_dimensioned_default() {
+    // A false hint here can only make value_to_ri_literal_with_unit fall back
+    // to the canonical ladder — it validates the hint before ever honouring
+    // it — so these must read None rather than a spurious unit: bare
+    // numbers, booleans, `auto`, and plain identifiers all lack a digit/`.`
+    // predecessor to anchor a trailing alpha run.
+    //
+    // `"width - 10mm"` is deliberately NOT covered here: the helper is
+    // lexical, not a parser, and expression defaults are out of its
+    // contract.
+    let cases: &[&str] = &[
+        "3",
+        "3.0",
+        "true",
+        "false",
+        "undef",
+        "auto",
+        "auto(free)",
+        "width",
+        "base_width",
+    ];
+    for input in cases {
+        assert_eq!(
+            unit_hint_from_default_literal(input),
+            None,
+            "expected {input:?} to yield no unit hint"
+        );
+    }
+}
