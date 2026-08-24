@@ -1,10 +1,160 @@
-//! Shared overload-resolution vocabulary (placeholder).
+//! Shared overload-resolution vocabulary.
 //!
-//! This module will hold the single definition of the per-slot overload
-//! match predicates and their supporting type-shape helpers, shared by the
+//! This module holds the single definition of the per-slot overload match
+//! predicates and their supporting type-shape helpers, shared by the
 //! compile-time resolver (`reify-compiler`) and the eval-time selector
-//! (`reify-expr`). It is currently empty; the contract lands with the
-//! predicates themselves.
+//! (`reify-expr`).
+
+use crate::ty::Type;
+
+/// Strict constructor-head compatibility check — the middle tie-break tier
+/// of the overload ladder (D-head-exact, result-fallback Layer-B task, B2).
+///
+/// Mirrors `unify`'s arm structure (the same constructor pairs recurse on
+/// the same shape), but is a STRICT match gate rather than a permissive one:
+/// `unify` treats a constructor-head mismatch as its conservative
+/// `Ok(())` fallthrough (binds nothing, never errors), which is exactly why
+/// it cannot discriminate `Option<T>` from `Applied{"Result", [T, E]}` — both
+/// "unify" against any subject without erroring. `heads_unifiable` instead
+/// returns `false` on a head mismatch, so it can serve as a genuine
+/// disambiguator between two generic overloads whose type-param-carrying
+/// params would otherwise both wildcard-match the same subject.
+///
+/// Differences from `unify`, both deliberate:
+/// - A bare `Type::TypeParam` / `Type::ScalarParam` (matched against a
+///   concrete `Scalar`) leaf is a wildcard slot (`true`) — the slot itself
+///   carries no constructor head to disagree on.
+/// - `Applied{name, ..}` vs `Enum(name)` (same name) is a head match:
+///   variant construction (`Ok { .. }` / `Err { .. }`) type-erases its
+///   result to `Type::Enum(name)` (`variant_construct.rs`), so a declared
+///   `Applied{"Result", ..}` param must still recognise an erased `Result`
+///   subject.
+/// - The catch-all is `param == arg` (plain equality) rather than `unify`'s
+///   permissive `Ok(())` — a head mismatch (or two leaves) must agree
+///   exactly to count as "unifiable" here.
+pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
+    match (param, arg) {
+        // Type-param / dim-param leaves: wildcard slots, always compatible.
+        (Type::TypeParam(_), _) => true,
+        (Type::ScalarParam(_), Type::Scalar { .. }) => true,
+
+        // Single-inner-Type constructors: same head → recurse on the child.
+        (Type::List(d), Type::List(a))
+        | (Type::Set(d), Type::Set(a))
+        | (Type::Keyed(d), Type::Keyed(a))
+        | (Type::Option(d), Type::Option(a))
+        | (Type::Complex(d), Type::Complex(a))
+        | (Type::Range(d), Type::Range(a)) => heads_unifiable(d, a),
+
+        // Two-inner-Type constructors.
+        (Type::Map(dk, dv), Type::Map(ak, av)) => {
+            heads_unifiable(dk, ak) && heads_unifiable(dv, av)
+        }
+        (
+            Type::Field {
+                domain: dd,
+                codomain: dc,
+            },
+            Type::Field {
+                domain: ad,
+                codomain: ac,
+            },
+        ) => heads_unifiable(dd, ad) && heads_unifiable(dc, ac),
+
+        // Function: equal arity → recurse on each param + the return type.
+        (
+            Type::Function {
+                params: dp,
+                return_type: dr,
+            },
+            Type::Function {
+                params: ap,
+                return_type: ar,
+            },
+        ) if dp.len() == ap.len() => {
+            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a)) && heads_unifiable(dr, ar)
+        }
+
+        // Quantity-bearing aggregates: same shape → recurse on the quantity slot.
+        (
+            Type::Point {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Point {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Vector {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Vector {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Tensor {
+                rank: drk,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Tensor {
+                rank: ark,
+                n: an,
+                quantity: aq,
+            },
+        ) if drk == ark && dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Matrix {
+                m: dm,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Matrix {
+                m: am,
+                n: an,
+                quantity: aq,
+            },
+        ) if dm == am && dn == an => heads_unifiable(dq, aq),
+
+        // Union: equal length → recurse arm-by-arm.
+        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Applied: same name + same arity → recurse element-wise on args.
+        (Type::Applied { name: dn, args: da }, Type::Applied { name: an, args: aa })
+            if dn == an && da.len() == aa.len() =>
+        {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Erased-subject rule: a declared `Applied{name}` param head-matches
+        // an erased `Enum(name)` arg (same name) — see the doc comment above.
+        (Type::Applied { name: dn, .. }, Type::Enum(en)) if dn == en => true,
+
+        // Projection: same member → recurse on the bases.
+        (
+            Type::Projection {
+                base: db,
+                member: dm,
+            },
+            Type::Projection {
+                base: ab,
+                member: am,
+            },
+        ) if dm == am => heads_unifiable(db, ab),
+
+        // Catch-all: leaves and mismatched/differently-shaped constructors
+        // must agree by plain equality — unlike `unify`'s permissive
+        // `Ok(())` fallthrough, a head mismatch here is `false`.
+        _ => param == arg,
+    }
+}
 
 #[cfg(test)]
 mod tests {
