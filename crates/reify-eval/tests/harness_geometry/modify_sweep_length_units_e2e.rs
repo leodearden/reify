@@ -217,3 +217,206 @@ fn bare_fillet_source_compiles_strictly_so_the_rejection_is_the_eval_gate() {
          gate; got: {compile_errors:?}"
     );
 }
+
+fn is_chamfer(op: &GeometryOp) -> bool {
+    matches!(op, GeometryOp::Chamfer { .. })
+}
+
+fn is_chamfer_asymmetric(op: &GeometryOp) -> bool {
+    matches!(op, GeometryOp::ChamferAsymmetric { .. })
+}
+
+// ---------------------------------------------------------------------------
+// `chamfer` distance — the buildable modify pair (step-4)
+// ---------------------------------------------------------------------------
+
+/// BARE `chamfer(box(10mm,10mm,10mm), 1)` → a coded `DimensionedArgRejected`
+/// Error naming the builtin, the `distance` argument and the migration hint,
+/// with NO `Chamfer` op reaching the kernel.
+///
+/// `chamfer`'s 2-arg form is the modify family's buildable e2e vehicle: it takes
+/// no `edges` selector, so the whole `.ri` → build → kernel path is exercised
+/// against `MockGeometryKernel` without needing curated edge resolution (which
+/// this pipeline does not yet offer — see
+/// [`dimensioned_chamfer_asymmetric_raises_no_units_rejection`]).
+#[test]
+fn bare_chamfer_distance_drops_the_op_with_a_coded_error() {
+    assert_rejected(
+        "chamfer(box(10mm,10mm,10mm), 1)",
+        r#"
+        structure def BareChamfer {
+            let body = chamfer(box(10mm, 10mm, 10mm), 1)
+        }
+        "#,
+        &[
+            "chamfer",
+            "distance",
+            "expects Length",
+            "pass a dimensioned length such as `5mm`",
+        ],
+        is_chamfer,
+    );
+}
+
+/// The inseparable control for the row above: the SAME chamfer with a
+/// DIMENSIONED distance builds with ZERO Error diagnostics and exactly ONE
+/// `Chamfer` op whose SI distance is still 0.001 — the gate re-wraps the
+/// accepted f64 and must not re-scale it.
+#[test]
+fn dimensioned_chamfer_distance_builds_one_op_with_unchanged_si_distance() {
+    let (diagnostics, ops) = build_capturing_ops(
+        r#"
+        structure def DimChamfer {
+            let body = chamfer(box(10mm, 10mm, 10mm), 1mm)
+        }
+        "#,
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a dimensioned chamfer must build with zero Error diagnostics; got: {errors:?}"
+    );
+
+    let chamfers: Vec<_> = ops.iter().filter(|op| is_chamfer(op)).collect();
+    assert_eq!(
+        chamfers.len(),
+        1,
+        "a dimensioned chamfer must emit exactly one Chamfer op; got: {chamfers:?}"
+    );
+
+    let GeometryOp::Chamfer { distance, .. } = chamfers[0] else {
+        unreachable!("filtered to Chamfer above")
+    };
+    let si = distance
+        .as_f64()
+        .unwrap_or_else(|| panic!("distance must carry a numeric SI value; got {distance:?}"));
+    assert!(
+        (si - 0.001).abs() < 1e-12,
+        "the gate must not re-scale: distance should stay 0.001 SI metres, got {si}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `chamfer_asymmetric` d1 + d2 — ALL FAILURES AT ONCE, end to end
+// ---------------------------------------------------------------------------
+
+/// A fully BARE `chamfer_asymmetric(body, edges(body), 1, 2)` must report BOTH
+/// `d1` AND `d2` in ONE build.
+///
+/// The COUNT is the load-bearing half, exactly as in the unit-level
+/// `compile_geometry_op_chamfer_asymmetric_reports_both_bare_distances_in_one_build`:
+/// a names-only check stays green if the single
+/// `required_length_values(["d1","d2"], …)` group read is split back into
+/// `?`-chained single-slot calls, because the first call's `?` returns before
+/// the second is ever attempted. Only `== 2` catches that regression, and only
+/// this row catches it through the real `.ri` → compile → build path.
+///
+/// SURFACE FORM NOTE: `chamfer_asymmetric` is the exact 4-arg
+/// `chamfer_asymmetric(solid, edges, d1, d2)` — the compiler rejects a 3-arg
+/// call with an arity diagnostic, which would make this row pass VACUOUSLY (no
+/// op, because nothing compiled). The mandatory `edges` selector is why this
+/// pair's control below is shaped differently from `chamfer`'s.
+#[test]
+fn bare_chamfer_asymmetric_reports_both_distances_in_one_build() {
+    let (diagnostics, ops) = build_capturing_ops(
+        r#"
+        structure def BareChamferAsym {
+            let body = box(10mm, 10mm, 10mm)
+            let out = chamfer_asymmetric(body, edges(body), 1, 2)
+        }
+        "#,
+    );
+
+    let coded: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        })
+        .collect();
+    assert_eq!(
+        coded.len(),
+        2,
+        "BOTH `d1` and `d2` must be reported in ONE build — this is the half \
+         that catches the group read being split back into `?`-chained \
+         single-slot calls; got: {diagnostics:?}"
+    );
+    for slot in ["d1", "d2"] {
+        assert!(
+            coded.iter().any(|d| {
+                d.message.contains(slot)
+                    && d.message.contains("expects Length")
+                    && d.message
+                        .contains("pass a dimensioned length such as `5mm`")
+            }),
+            "the all-at-once report must name `{slot}` with the wrong-type \
+             wording and the migration hint; got: {:?}",
+            coded.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    let built: Vec<_> = ops.iter().filter(|op| is_chamfer_asymmetric(op)).collect();
+    assert!(
+        built.is_empty(),
+        "the op must be DROPPED, not silently built with SI-metre distances; \
+         got: {built:?}"
+    );
+}
+
+/// The non-vacuity control for the row above, shaped for what this build
+/// pipeline can actually do.
+///
+/// `chamfer_asymmetric`'s `edges` argument is MANDATORY, and curated edge
+/// selection is not yet resolvable on the current build pipeline — the
+/// DIMENSIONED form is therefore also dropped, but for a wholly unrelated,
+/// PRE-EXISTING reason that carries its own distinct wording ("curated edge
+/// selection is not yet available on the current build pipeline", owned by
+/// tasks 4360/4358). So the control here cannot be "builds one op"; it is
+/// instead the sharper claim that the DIMENSIONED form raises NO units
+/// rejection at all.
+///
+/// That is exactly the non-vacuity guarantee the pairing doctrine exists for:
+/// it proves the two `DimensionedArgRejected` Errors asserted above are caused
+/// by the BARE magnitudes and not by the fixture's shape, the `edges(..)`
+/// selector, or the pipeline limitation. Do not delete "the redundant half".
+///
+/// When curated edge selection lands, this row should be upgraded to the
+/// ordinary "builds one op with both SI values unchanged" form.
+#[test]
+fn dimensioned_chamfer_asymmetric_raises_no_units_rejection() {
+    let (diagnostics, _ops) = build_capturing_ops(
+        r#"
+        structure def DimChamferAsym {
+            let body = box(10mm, 10mm, 10mm)
+            let out = chamfer_asymmetric(body, edges(body), 1mm, 2mm)
+        }
+        "#,
+    );
+
+    let coded: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DimensionedArgRejected))
+        .collect();
+    assert!(
+        coded.is_empty(),
+        "a DIMENSIONED chamfer_asymmetric must raise no units rejection; got: {coded:?}"
+    );
+
+    // Pin the reason the op is nonetheless absent, so this control cannot
+    // silently start passing for a NEW reason (e.g. the fixture ceasing to
+    // compile) without the wording changing too.
+    assert!(
+        diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.message
+                    .contains("curated edge selection is not yet available")
+        }),
+        "the dimensioned form must still be dropped by the PRE-EXISTING curated \
+         edge-selection limitation (tasks 4360/4358) — if that has landed, \
+         upgrade this control to the ordinary `builds one op` form; got: \
+         {diagnostics:?}"
+    );
+}

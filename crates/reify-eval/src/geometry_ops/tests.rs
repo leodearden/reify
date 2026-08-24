@@ -4258,19 +4258,25 @@
                         Some(reify_core::DiagnosticCode::DimensionedArgRejected),
                         "{rej:?}"
                     );
-                    // ANCHORED on `"{slot} argument expects"`, not a bare
-                    // `contains(slot)` — β's `wedge` width/top_width lesson.
+                    // The shared needle set is [`WRONG_TYPE_WORDING`], never a
+                    // hand-copied full message: `ArgRejection::message` is the
+                    // wording's sole owner, so a rewording must move ONE place.
+                    //
+                    // The arg is ANCHORED on `"{slot} argument expects"` rather
+                    // than a bare `contains(slot)` — β's `wedge`
+                    // width/top_width lesson, where a substring arg name
+                    // matched its own superstring's diagnostic.
                     // `ArgRejection::message` renders
                     // `"{builtin}: {arg} argument expects …"`, so the anchored
                     // shape is available for free.
                     assert!(
                         rej.message.contains(&kind.to_string())
                             && rej.message.contains(&format!("{slot} argument expects"))
-                            && rej
-                                .message
-                                .contains("pass a dimensioned length such as `5mm`"),
-                        "{at} / {label}: must name the builtin, the arg and carry the \
-                         migration hint; got: {:?}",
+                            && WRONG_TYPE_WORDING
+                                .iter()
+                                .all(|want| rej.message.contains(want)),
+                        "{at} / {label}: must name the builtin, the arg and carry every \
+                         one of {WRONG_TYPE_WORDING:?}; got: {:?}",
                         rej.message
                     );
                 }
